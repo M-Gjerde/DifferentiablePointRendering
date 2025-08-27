@@ -7,14 +7,16 @@ module;
 #include <sycl/sycl.hpp>
 
 
-export module Vale.DeviceSelector;
+export module MG.DeviceSelector;
 
 
-export namespace Vale {
+export namespace MG {
 
     class DeviceSelector {
     public:
         DeviceSelector();
+
+        sycl::queue getQueue();
 
     private:
         sycl::device m_syclDevice;

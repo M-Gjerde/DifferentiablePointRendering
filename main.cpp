@@ -1,14 +1,17 @@
-import Vale.DeviceSelector;
+import MG.DeviceSelector;
+import MG.Scene;
+import MG.SceneSerializer;
+
+#include <memory>
 
 int main() {
     // Select suitable SYCL device
+    MG::DeviceSelector selector;
 
-    Vale::DeviceSelector selector;
-
-    // Load in xml file
-
-
-    // Create Scene from xml
+    // Load in xml file and Create Scene from xml
+    std::shared_ptr<MG::Scene> scene = std::make_shared<MG::Scene>();
+    MG::SceneSerializer serializer(scene);
+    serializer.deserialize("../Scenes/cornell_box.xml");
 
     // Initialize a path tracer from sycl
 

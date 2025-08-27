@@ -5,9 +5,9 @@
 module;
 #include <sycl/sycl.hpp>
 
-module Vale.DeviceSelector;
+module MG.DeviceSelector;
 
-namespace Vale {
+namespace MG {
     DeviceSelector::DeviceSelector() {
         // Find appropriate sycl devices
         sycl::device d;
@@ -21,5 +21,9 @@ namespace Vale {
         }
         m_syclDevice = d;
         std::cout << "Using " << d.get_info<sycl::info::device::name>();
+    }
+
+    sycl::queue DeviceSelector::getQueue() {
+        return sycl::queue(m_syclDevice);
     }
 }
