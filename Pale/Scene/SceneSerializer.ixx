@@ -4,10 +4,10 @@
 module;
 
 #include <filesystem>
+#include <pugixml.hpp>
 
 export module Pale.SceneSerializer;
 
-import pugixml;
 import Pale.Scene;
 import Pale.Assets.Core;
 import Pale.Assets.API;

@@ -3,7 +3,7 @@ project(DifferentiablePointRendering LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 find_package(AdaptiveCpp REQUIRED)
 
 ## Adding Vendor Libraries
@@ -11,23 +11,9 @@ add_subdirectory(vendor/pugixml)
 include_directories(vendor/pugixml/src)
 
 # --- Pugi module wrapper (module interface + link reqs)
-add_library(pugixml_mod)
-target_sources(pugixml_mod
-        PUBLIC
-        FILE_SET CXX_MODULES
-        BASE_DIRS vendor/pugixml
-        FILES     vendor/pugixml/src/pugixml.cppm
-)
-
-# Tell consumers of pugixml_mod how to link/include (do this *now*)
-target_link_libraries(pugixml_mod
-        PUBLIC pugixml         # transitive; anyone linking pugixml_mod gets pugixml
-)
-target_include_directories(pugixml_mod
-        PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/pugixml/src>
-)
-
+add_library(pugixml_iface INTERFACE)
+target_include_directories(pugixml_iface INTERFACE ${CMAKE_SOURCE_DIR}/vendor/pugixml/src)
+target_link_libraries(pugixml_iface INTERFACE pugixml)
 
 # Entt
 set(ENTT_DIR vendor/entt)
@@ -114,7 +100,7 @@ target_sources(${PROJECT_NAME}  PUBLIC
 FetchContent_MakeAvailable(spdlog glm assimp yaml_cpp)
 target_link_libraries(${PROJECT_NAME}
         PRIVATE
-        pugixml_mod
+        pugixml
         EnTT::EnTT
         spdlog
         glm

@@ -9,6 +9,7 @@ module;
 export module Pale.Scene;
 
 import Pale.UUID;
+import Pale.Log;
 
 export import :Entity;
 
