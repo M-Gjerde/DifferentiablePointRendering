@@ -104,6 +104,7 @@ int main() {
     am.registerLoader<Pale::Material>(Pale::AssetType::Material,
         std::make_shared<Pale::YamlMaterialLoader>());
 
+    am.registry().load("asset_registry.yaml");
 
     // Select suitable SYCL device
     Pale::DeviceSelector selector;

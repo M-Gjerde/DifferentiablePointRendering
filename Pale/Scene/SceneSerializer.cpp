@@ -116,11 +116,7 @@ namespace Pale {
                 auto filenameNode = s.find_child_by_attribute("string", "name", "filename");
                 if (filenameNode) {
                     std::filesystem::path path = filenameNode.attribute("value").as_string();
-                    // Normalize relative to the scene file if needed:
-                    if (path.is_relative()) {
-                        auto sceneDir = std::filesystem::path(xmlPath).parent_path();
-                        path = std::filesystem::weakly_canonical(sceneDir / path);
-                    }
+
                     // Reuse existing ID or import a new one
                     if (auto id = m_assets.findByPath(path)) return *id;
                     return m_assets.importPath(path, Pale::AssetType::Mesh);
