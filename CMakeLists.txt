@@ -65,6 +65,9 @@ add_executable(${PROJECT_NAME}
         Pale/Scene/SceneSerializer.cpp
 
         Pale/Asset/AssetRegistry.cpp
+
+        Pale/Renderer/PathTracer.cpp
+        Pale/Utils/stb_image_impl.cpp
 )
 
 
@@ -93,6 +96,13 @@ target_sources(${PROJECT_NAME}  PUBLIC
         Pale/Asset/MaterialBakerCommon.ixx
         Pale/Asset/MaterialBakerMitsuba.ixx
 
+        Pale/Renderer/Framebuffer.ixx
+        Pale/Renderer/PathTracer.ixx
+        Pale/Renderer/Sensors.ixx
+        Pale/Renderer/SceneGPU.ixx
+        Pale/Renderer/PathTracerConfig.ixx
+
+        Pale/Utils/ImageIO.ixx
 
 )
 
@@ -115,6 +125,8 @@ include_directories(${PROJECT_NAME} PRIVATE Pale)
 target_include_directories(${PROJECT_NAME} PRIVATE
         "vendor/yaml-cpp/include"
 )
+# STB_Image
+include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
 
 
 # Debug/Release backend choice
