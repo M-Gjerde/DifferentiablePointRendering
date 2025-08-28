@@ -10,30 +10,126 @@ find_package(AdaptiveCpp REQUIRED)
 add_subdirectory(vendor/pugixml)
 include_directories(vendor/pugixml/src)
 
-# Wrap vulkan.hpp as a module
+# --- Pugi module wrapper (module interface + link reqs)
 add_library(pugixml_mod)
-target_sources(pugixml_mod PUBLIC
+target_sources(pugixml_mod
+        PUBLIC
         FILE_SET CXX_MODULES
         BASE_DIRS vendor/pugixml
-        FILES vendor/pugixml/src/pugixml.cppm
+        FILES     vendor/pugixml/src/pugixml.cppm
 )
+
+# Tell consumers of pugixml_mod how to link/include (do this *now*)
+target_link_libraries(pugixml_mod
+        PUBLIC pugixml         # transitive; anyone linking pugixml_mod gets pugixml
+)
+target_include_directories(pugixml_mod
+        PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/pugixml/src>
+)
+
+
+# Entt
+set(ENTT_DIR vendor/entt)
+add_subdirectory(${ENTT_DIR})
+
+## SPD LOG
+
+include(FetchContent)
+set(SPDLOG_USE_STD_FORMAT ON)
+FetchContent_Declare(
+        spdlog
+        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/spdlog"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/spdlog-build"
+)
+
+## GLM
+FetchContent_Declare(
+        glm
+        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/glm"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/glm-build"
+)
+## assimp
+FetchContent_Declare(
+        assimp
+        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/assimp"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/assimp-build"
+)
+
+## yaml_cpp
+FetchContent_Declare(
+        yaml_cpp
+        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/yaml-cpp"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/yaml-cpp-build"
+)
+
+
+## SOURCES
 
 add_executable(${PROJECT_NAME}
         main.cpp
-        Src/DeviceSelector.cpp
-        Src/Scene/Scene.cpp
+        Pale/DeviceSelector.cpp
+
+        Pale/Core/UUID.cpp
+
+        Pale/Renderer/Camera.cpp
+
+        Pale/Scene/Entity.cpp
+        Pale/Scene/Scene.cpp
+        Pale/Scene/SceneSerializer.cpp
+
+        Pale/Asset/AssetRegistry.cpp
 )
 
 
 ## Module files
 target_sources(${PROJECT_NAME}  PUBLIC
         FILE_SET CXX_MODULES FILES
-        Src/DeviceSelector.ixx
-        Src/Scene/Scene.ixx
-        Src/Scene/SceneSerializer.ixx
+        Pale/DeviceSelector.ixx
+
+        Pale/Core/UUID.ixx
+        Pale/Core/Log.ixx
+
+        Pale/Renderer/Camera.ixx
+
+        Pale/Scene/Scene.ixx
+        Pale/Scene/Entity.ixx
+        Pale/Scene/SceneSerializer.ixx
+
+        Pale/Asset/AssetRegistry.ixx
+        Pale/Asset/Assets.ixx
+        Pale/Asset/AssetManager.ixx
+        Pale/Asset/AssimpMeshLoader.ixx
+        Pale/Asset/MaterialYamlLoader.ixx
+        Pale/Asset/IAssetProvider.ixx
+        Pale/Asset/MeshAsset.ixx
+        Pale/Asset/MaterialAsset.ixx
+        Pale/Asset/MaterialBakerCommon.ixx
+        Pale/Asset/MaterialBakerMitsuba.ixx
+
+
 )
 
-target_link_libraries(${PROJECT_NAME} PRIVATE pugixml_mod)
+# Link your exe to the module wrapper (must come after add_executable)
+FetchContent_MakeAvailable(spdlog glm assimp yaml_cpp)
+target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+        pugixml_mod
+        EnTT::EnTT
+        spdlog
+        glm
+        assimp
+        yaml-cpp
+)
+
+# Link core directory
+include_directories(${PROJECT_NAME} PRIVATE Pale)
+
+# Link vendor directories
+target_include_directories(${PROJECT_NAME} PRIVATE
+        "vendor/yaml-cpp/include"
+)
+
 
 # Debug/Release backend choice
 if (CMAKE_BUILD_TYPE STREQUAL "Release")

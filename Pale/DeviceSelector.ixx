@@ -7,10 +7,10 @@ module;
 #include <sycl/sycl.hpp>
 
 
-export module MG.DeviceSelector;
+export module Pale.DeviceSelector;
 
 
-export namespace MG {
+export namespace Pale {
 
     class DeviceSelector {
     public:
