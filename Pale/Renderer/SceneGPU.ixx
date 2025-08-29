@@ -31,11 +31,6 @@ export namespace Pale {
     class SceneBuild {
     public:
 
-        struct MeshInput {
-            UUID meshId;
-            MeshRange   meshRange;          // firstVert, vertCount, firstTri, triCount
-        };
-
         struct InstanceRecord {
             GeometryType geometryType{GeometryType::Mesh};
             uint32_t     geometryIndex{0};      // meshRanges index or pointRanges index
@@ -48,16 +43,13 @@ export namespace Pale {
             std::vector<BVHNode> nodes;   // the BLAS node array
             BLASRange range;              // [firstNode, nodeCount] in the global BVH node array
             std::vector<uint32_t> triPermutation; // local triangle reordering
-            uint32_t meshIndex;           // to associate back with MeshInput
+            uint32_t meshIndex;           // to associate back with meshRanges
         };
 
         struct TLASResult {
             std::vector<TLASNode> nodes;  // top-level BVH nodes
             uint32_t rootIndex;           // index of the root (often 0)
         };
-
-        struct GeometryInput { std::vector<MeshInput> meshes;};
-        struct InstanceInput { std::vector<InstanceRecord> instances; };
 
 
         struct BuildProducts {
@@ -79,9 +71,7 @@ export namespace Pale {
 
             std::vector<Transform>     transforms;    // index by transformIndex
             std::vector<GPUMaterial>   materials;     // index by materialIndex
-
-            GeometryInput  geometryInput;
-            InstanceInput  instanceInput;
+            std::vector<InstanceRecord> instances;
         };
 
         struct BuildOptions {
@@ -95,24 +85,21 @@ export namespace Pale {
                                    const  BuildOptions& buildOptions) {
             BuildProducts buildProducts;
 
-            buildProducts.geometryInput =
-                collectGeometry(scene, assetAccess, buildProducts);
+            collectGeometry(scene, assetAccess, buildProducts);
 
-            buildProducts.instanceInput =
-                collectInstances(scene,
-                                 assetAccess,
-                                 buildProducts.meshIndexById,
-                                 buildProducts.transforms,
-                                 buildProducts.materials);
+            collectInstances(scene,
+                             assetAccess,
+                             buildProducts.meshIndexById,
+                             buildProducts);
 
-            for (const MeshInput& meshInput : buildProducts.geometryInput.meshes) {
-                BLASResult blasResult = buildMeshBLAS(meshInput, buildOptions);
+            for (uint32_t meshIndex = 0; meshIndex < buildProducts.meshRanges.size(); ++meshIndex) {
+                BLASResult blasResult = buildMeshBLAS(meshIndex, buildProducts.meshRanges[meshIndex], buildOptions);
                 appendBLAS(buildProducts, blasResult);
             }
 
             // TLAS over instances
             TLASResult tlasResult =
-                buildTLAS(buildProducts.instanceInput,
+                buildTLAS(buildProducts.instances,
                           buildProducts.bottomLevelRanges,
                           buildOptions);
             buildProducts.topLevelNodes = std::move(tlasResult.nodes);
@@ -127,18 +114,17 @@ export namespace Pale {
 
     private:
 
-        static GeometryInput collectGeometry(const std::shared_ptr<Scene>& scene,
-                                             IAssetAccess& assetAccess,
-                                             BuildProducts& outBuildProducts);
+        static void collectGeometry(const std::shared_ptr<Scene>& scene,
+                                    IAssetAccess& assetAccess,
+                                    BuildProducts& outBuildProducts);
 
-        static InstanceInput collectInstances(const std::shared_ptr<Scene>& scene,
-                                              IAssetAccess& assetAccess,
-                                              const std::unordered_map<UUID,uint32_t>& meshIndexById,
-                                              std::vector<Transform>& outTransforms,
-                                              std::vector<GPUMaterial>& outMaterials);
+        static void collectInstances(const std::shared_ptr<Scene>& scene,
+                                     IAssetAccess& assetAccess,
+                                     const std::unordered_map<UUID,uint32_t>& meshIndexById,
+                                     BuildProducts& outBuildProducts);
 
-        static BLASResult buildMeshBLAS(const MeshInput&, const BuildOptions&);
-        static TLASResult buildTLAS(const InstanceInput&,
+        static BLASResult buildMeshBLAS(uint32_t meshIndex, const MeshRange&, const BuildOptions&);
+        static TLASResult buildTLAS(const std::vector<InstanceRecord>&,
                                     const std::vector<BLASRange>&,
                                     const BuildOptions&);
 

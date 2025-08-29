@@ -16,16 +16,11 @@ import Pale.Render.GPUDataTypes;
 
 namespace Pale {
     // ==== Geometry collector ====
-    SceneBuild::GeometryInput
-    SceneBuild::collectGeometry(const std::shared_ptr<Scene> &scene,
-                                IAssetAccess &assetAccess,
-                                BuildProducts &outBuildProducts) {
-        GeometryInput geometryInput;
-
+    void SceneBuild::collectGeometry(const std::shared_ptr<Scene> &scene,
+                                     IAssetAccess &assetAccess,
+                                     BuildProducts &outBuildProducts) {
         std::vector<Vertex> vertices;
         std::vector<Triangle> triangles;
-        std::vector<OrientedPoint> orientedPoints;
-        std::vector<UUID> meshUUIDs;
 
         auto view = scene->getAllEntitiesWith<MeshComponent>();
 
@@ -68,31 +63,17 @@ namespace Pale {
             meshRange.firstTri = triangleBaseIndex;
             meshRange.triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
             outBuildProducts.meshRanges.push_back(meshRange);
-            meshUUIDs.push_back(meshComponent.meshID);
-            outBuildProducts.meshIndexById[meshComponent.meshID] = static_cast<uint32_t>(outBuildProducts.meshRanges.size() - 1);
+            outBuildProducts.meshIndexById[meshComponent.meshID] =
+                static_cast<uint32_t>(outBuildProducts.meshRanges.size() - 1);
         }
-
-        // pack into GeometryInput (extend it with the fields you need)
-
-        geometryInput.meshes.reserve(outBuildProducts.meshRanges.size());
-        for (size_t meshRangeIndex = 0; meshRangeIndex < outBuildProducts.meshRanges.size(); ++meshRangeIndex) {
-            const UUID meshUUID = meshUUIDs[meshRangeIndex];/* store alongside when you push the range */ ;
-            geometryInput.meshes.push_back(MeshInput{
-                .meshId    = meshUUID,
-                .meshRange = outBuildProducts.meshRanges[meshRangeIndex],
-            });
-        }
-
-        return geometryInput;
+        outBuildProducts.vertices = std::move(vertices);
+        outBuildProducts.triangles = std::move(triangles);
     }
 
-    SceneBuild::InstanceInput
-    SceneBuild::collectInstances(const std::shared_ptr<Pale::Scene> &scene,
-                                 IAssetAccess &assetAccess,
-                                 const std::unordered_map<UUID, uint32_t> &meshIndexById,
-                                 std::vector<Transform> &outTransforms,
-                                 std::vector<GPUMaterial> &outMaterials) {
-        InstanceInput instanceInput;
+    void SceneBuild::collectInstances(const std::shared_ptr<Pale::Scene> &scene,
+                                      IAssetAccess &assetAccess,
+                                      const std::unordered_map<UUID, uint32_t> &meshIndexById,
+                                      BuildProducts &outBuildProducts) {
         std::unordered_map<UUID, uint32_t> materialIndexByUuid;
 
         auto view = scene->getAllEntitiesWith<MeshComponent, MaterialComponent, TransformComponent, TagComponent>();
@@ -113,8 +94,8 @@ namespace Pale {
                 gpuMaterial.diffuse = materialAsset->roughness;
                 gpuMaterial.phongExp = 16;
 
-                materialIndex = static_cast<uint32_t>(outMaterials.size());
-                outMaterials.push_back(gpuMaterial);
+                materialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
+                outBuildProducts.materials.push_back(gpuMaterial);
                 materialIndexByUuid.emplace(materialComponent.materialID, materialIndex);
             }
 
@@ -123,10 +104,10 @@ namespace Pale {
             const glm::mat4 objectToWorldGLM = transformComponent.getTransform();
             gpuTransform.objectToWorld = glm2sycl(objectToWorldGLM);
             gpuTransform.worldToObject = glm2sycl(glm::inverse(objectToWorldGLM));
-            const uint32_t transformIndex = static_cast<uint32_t>(outTransforms.size());
-            outTransforms.push_back(gpuTransform);
+            const uint32_t transformIndex = static_cast<uint32_t>(outBuildProducts.transforms.size());
+            outBuildProducts.transforms.push_back(gpuTransform);
 
-            instanceInput.instances.push_back(InstanceRecord{
+            outBuildProducts.instances.push_back(InstanceRecord{
                 .geometryType = GeometryType::Mesh,
                 .geometryIndex = geometryIndex,
                 .materialIndex = materialIndex,
@@ -134,15 +115,13 @@ namespace Pale {
                 .name = tagComponent.tag
             });
         }
-
-        return instanceInput;
     }
 
-    SceneBuild::BLASResult SceneBuild::buildMeshBLAS(const MeshInput &, const BuildOptions &) {
+    SceneBuild::BLASResult SceneBuild::buildMeshBLAS(uint32_t, const MeshRange &, const BuildOptions &) {
         return {};
     }
 
-    SceneBuild::TLASResult SceneBuild::buildTLAS(const InstanceInput &, const std::vector<BLASRange> &,
+    SceneBuild::TLASResult SceneBuild::buildTLAS(const std::vector<InstanceRecord> &, const std::vector<BLASRange> &,
                                                  const BuildOptions &) {
         return {};
     }
