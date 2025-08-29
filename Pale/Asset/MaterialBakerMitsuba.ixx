@@ -7,7 +7,7 @@ module;
 
 export module Pale.Assets:MaterialBakerMitsuba;
 
-import Pale.Assets;
+import :MaterialBakerCommon;
 
 export namespace Pale {
 
