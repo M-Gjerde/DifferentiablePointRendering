@@ -17,14 +17,14 @@ export namespace Pale {
     class SceneSerializer {
         public:
 
-        SceneSerializer(std::shared_ptr<Scene> scene, IAssetProvider& assets)
+        SceneSerializer(std::shared_ptr<Scene> scene, IAssetIndex& assets)
           : m_scene(std::move(scene)), m_assets(assets) {}
 
         bool deserialize(const std::filesystem::path& xmlPath);
 
     private:
         std::shared_ptr<Scene> m_scene;
-        IAssetProvider& m_assets;
+        IAssetIndex& m_assets;
 
         AssetHandle loadMeshFromMitsubaNode(const pugi::xml_node& shape) {
             // Mitsuba: <shape type="obj"><string name="filename" value="meshes/rect.obj"/></shape>

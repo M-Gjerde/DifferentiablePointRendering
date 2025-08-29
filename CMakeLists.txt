@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.1)
+cmake_minimum_required(VERSION 3.5)
 project(DifferentiablePointRendering LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -53,20 +53,16 @@ FetchContent_Declare(
 ## SOURCES
 
 add_executable(${PROJECT_NAME}
-        main.cpp
-        Pale/DeviceSelector.cpp
+        Pale/main.cpp
 
+        Pale/Core/DeviceSelector.cpp
         Pale/Core/UUID.cpp
-
-        Pale/Renderer/Camera.cpp
-
         Pale/Scene/Entity.cpp
         Pale/Scene/Scene.cpp
         Pale/Scene/SceneSerializer.cpp
-
         Pale/Asset/AssetRegistry.cpp
-
         Pale/Renderer/PathTracer.cpp
+        Pale/Renderer/Camera.cpp
         Pale/Utils/stb_image_impl.cpp
 )
 
@@ -74,34 +70,29 @@ add_executable(${PROJECT_NAME}
 ## Module files
 target_sources(${PROJECT_NAME}  PUBLIC
         FILE_SET CXX_MODULES FILES
-        Pale/DeviceSelector.ixx
-
+        Pale/Core/DeviceSelector.ixx
         Pale/Core/UUID.ixx
         Pale/Core/Log.ixx
-
-        Pale/Renderer/Camera.ixx
-
         Pale/Scene/Scene.ixx
         Pale/Scene/Entity.ixx
         Pale/Scene/SceneSerializer.ixx
-
         Pale/Asset/AssetRegistry.ixx
         Pale/Asset/Assets.ixx
         Pale/Asset/AssetManager.ixx
         Pale/Asset/AssimpMeshLoader.ixx
+        Pale/Asset/IAssetIndex.ixx
+        Pale/Asset/IAssetAccess.ixx
         Pale/Asset/MaterialYamlLoader.ixx
-        Pale/Asset/IAssetProvider.ixx
         Pale/Asset/MeshAsset.ixx
         Pale/Asset/MaterialAsset.ixx
         Pale/Asset/MaterialBakerCommon.ixx
         Pale/Asset/MaterialBakerMitsuba.ixx
-
+        Pale/Renderer/Camera.ixx
         Pale/Renderer/Framebuffer.ixx
         Pale/Renderer/PathTracer.ixx
         Pale/Renderer/Sensors.ixx
         Pale/Renderer/SceneGPU.ixx
         Pale/Renderer/PathTracerConfig.ixx
-
         Pale/Utils/ImageIO.ixx
 
 )

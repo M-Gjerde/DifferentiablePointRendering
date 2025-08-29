@@ -9,6 +9,7 @@ module;
 export module Pale.Render.SceneGPU;
 
 import Pale.Scene;
+import Pale.Assets.Provider;
 
 export namespace Pale {
 
@@ -23,4 +24,40 @@ export namespace Pale {
 
     private:
     };
+
+    struct BuildProducts {
+
+        /*
+        // BLAS
+        std::vector<Pale::PackedMesh>             packedMeshes;
+        std::vector<Pale::BvhNode>                bottomLevelBvhs;
+
+        // TLAS
+        std::vector<Pale::TlasNode>               topLevelBvh;
+        std::vector<Pale::InstanceRecord>         instanceRecords;
+
+        // Shading
+        std::vector<Pale::PackedMaterial>         packedMaterials;
+        std::vector<Pale::LightRecord>            lightRecords;
+        Pale::AliasTable                          lightAlias;
+
+        // Textures
+        Pale::TextureAtlasCPU                     textureAtlas;
+        */
+    };
+
+    struct BuildOptions {
+
+    };
+
+
+    class SceneBuild {
+    public:
+        static BuildProducts build(const std::shared_ptr<Pale::Scene>& scene, IAssetAccess& assets,
+                                   const Pale::BuildOptions& buildOptions = {}) {
+
+            return {};
+        };
+    };
+
 }

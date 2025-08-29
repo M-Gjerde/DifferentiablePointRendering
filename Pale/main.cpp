@@ -3,7 +3,6 @@ import Pale.Scene;
 import Pale.SceneSerializer;
 import Pale.Log;
 import Pale.Utils.ImageIO;
-
 import Pale.Assets.Core;
 import Pale.Assets.Registry;
 import Pale.Assets.Manager;
@@ -12,7 +11,7 @@ import Pale.Assets.Material;
 import Pale.Assets.AssimpMeshLoader;
 import Pale.Assets.MaterialYamlLoader;
 import Pale.Assets.API;
-
+import Pale.Assets.Provider;
 import Pale.Render.SceneGPU;
 import Pale.Render.PathTracer;
 import Pale.Render.PathTracerConfig;
@@ -29,17 +28,19 @@ static std::string assetPathOrId(const Pale::AssetRegistry& reg, const Pale::Ass
     return std::string(id); // fallback if it's not in the registry
 }
 
-static void logSceneSummary(Pale::Scene& scene,
+static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
                             Pale::AssetManager& am)
 {
     auto& reg = am.registry();
 
     Pale::Log::PA_INFO("===== Scene Summary =====");
-    size_t entityCount = 0, meshCount = 0, emissiveCount = 0;
+    size_t entityCount = 0;
+    size_t meshCount = 0;
+    size_t emissiveCount = 0;
 
-    auto view = scene.getAllEntitiesWith<Pale::IDComponent>();
+    auto view = scene->getAllEntitiesWith<Pale::IDComponent>();
     for (entt::entity entity : view){
-        Pale::Entity e(entity, &scene);
+        Pale::Entity e(entity, scene.get());
         ++entityCount;
 
         const char* name = e.getName().c_str();
@@ -102,25 +103,29 @@ int main() {
 
     Pale::Log::init();
 
-    Pale::AssetManager am{256};
-    am.enableHotReload(true);
-    am.registerLoader<Pale::Mesh>(Pale::AssetType::Mesh,
+    Pale::AssetManager assetManager{256};
+    assetManager.enableHotReload(true);
+    assetManager.registerLoader<Pale::Mesh>(Pale::AssetType::Mesh,
         std::make_shared<Pale::AssimpMeshLoader>());
 
-    am.registerLoader<Pale::Material>(Pale::AssetType::Material,
+    assetManager.registerLoader<Pale::Material>(Pale::AssetType::Material,
         std::make_shared<Pale::YamlMaterialLoader>());
 
-    am.registry().load("asset_registry.yaml");
+    assetManager.registry().load("asset_registry.yaml");
 
     // Load in xml file and Create Scene from xml
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
-    Pale::AssetProviderFromRegistry assets(am.registry());
-    Pale::SceneSerializer serializer(scene, assets);
+    Pale::AssetIndexFromRegistry assetIndex(assetManager.registry());
+    Pale::SceneSerializer serializer(scene, assetIndex);
     serializer.deserialize("cbox.xml");
-    logSceneSummary(*scene, am);
+    logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device
     Pale::DeviceSelector deviceSelector;
+    // Build rendering products (BLAS. TLAS, Emissive lists, etc..)
+    Pale::AssetAccessFromManager assetProvider(assetManager);
+
+    auto buildProducts = Pale::SceneBuild::build(scene, assetProvider);
     // Upload Scene to GPU
     Pale::SceneGPU gpu = Pale::SceneGPU::upload(scene, deviceSelector.getQueue());   // scene only
     auto sensors   = Pale::makeSensorsForScene(deviceSelector.getQueue(), gpu);  // outputs derived from cameras
@@ -146,7 +151,7 @@ int main() {
         Pale::Utils::savePFM(("out_" + std::to_string(i) + ".pfm").c_str(), rgba, W, H);
     }
     // Write Registry:
-    am.registry().save("asset_registry.yaml");
+    assetManager.registry().save("asset_registry.yaml");
 
     return 0;
 }

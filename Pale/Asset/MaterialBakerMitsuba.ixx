@@ -63,7 +63,7 @@ inline MaterialDesc descFromBsdf(const pugi::xml_node& bsdf, const std::filesyst
 
     inline AssetHandle bakeFromMitsuba(const pugi::xml_node& bsdf,
                                           const std::filesystem::path& sceneXml,
-                                          IAssetProvider& assets,
+                                          IAssetIndex& assets,
                                           BakeKey keyMode = BakeKey::ByHash)
 {
     MaterialDesc d = descFromBsdf(bsdf, sceneXml.parent_path());
