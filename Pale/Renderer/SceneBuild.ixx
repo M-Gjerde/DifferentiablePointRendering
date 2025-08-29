@@ -53,6 +53,11 @@ export namespace Pale {
             std::vector<Transform> transforms; // index by transformIndex
             std::vector<GPUMaterial> materials; // index by materialIndex
             std::vector<InstanceRecord> instances;
+
+            std::vector<CameraGPU> cameraGPUs; // camera data for sensors
+
+            [[nodiscard]] std::size_t cameraCount() const { return cameraGPUs.size(); }
+            [[nodiscard]] const std::vector<CameraGPU>& cameras() const { return cameraGPUs; }
         };
 
         struct BuildOptions {
@@ -99,6 +104,8 @@ export namespace Pale {
                              buildProducts.meshIndexById,
                              buildProducts);
 
+            collectCameras(scene, buildProducts);
+
             for (uint32_t meshIndex = 0; meshIndex < buildProducts.meshRanges.size(); ++meshIndex) {
                 const MeshRange& meshRange = buildProducts.meshRanges[meshIndex];
                 BLASResult blasResult = buildMeshBLAS(meshIndex,
@@ -133,6 +140,9 @@ export namespace Pale {
                                      IAssetAccess &assetAccess,
                                      const std::unordered_map<UUID, uint32_t> &meshIndexById,
                                      BuildProducts &outBuildProducts);
+
+        static void collectCameras(const std::shared_ptr<Scene> &scene,
+                                   BuildProducts &outBuildProducts);
 
         static BLASResult buildMeshBLAS(
             uint32_t meshIndex,

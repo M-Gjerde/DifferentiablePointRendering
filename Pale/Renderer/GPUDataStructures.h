@@ -195,12 +195,9 @@ namespace Pale {
         uint32_t    blasNodeCount{0}, tlasNodeCount{0}, triangleCount{0}, vertexCount{0};
     };
 
-    struct Sensor {
-    };
-
     struct SensorGPU {
-        Sensor camera; // from GPUDataTypes
-        sycl::float4* framebuffer{nullptr}; // device pointers
+        CameraGPU camera;                 // camera parameters
+        sycl::float4* framebuffer{nullptr}; // device pointer
         uint32_t width{}, height{};
     };
 }
