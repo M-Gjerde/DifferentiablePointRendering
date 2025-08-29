@@ -1,5 +1,8 @@
+// Main.cpp
+#include <memory>
+#include <filesystem>
+
 import Pale.DeviceSelector;
-import Pale.Scene;
 import Pale.Scene.Components;
 import Pale.SceneSerializer;
 import Pale.Log;
@@ -10,11 +13,10 @@ import Pale.Render.SceneGPU;
 import Pale.Render.PathTracer;
 import Pale.Render.PathTracerConfig;
 import Pale.Render.Sensors;
+import Pale.Scene;
 
-#include <memory>
-#include <filesystem>
+
 #include <entt/entt.hpp>
-
 static std::string assetPathOrId(const Pale::AssetRegistry& reg, const Pale::AssetHandle& id) {
     if (auto m = reg.meta(id)) return m->path.string();
     return std::string(id); // fallback if it's not in the registry
