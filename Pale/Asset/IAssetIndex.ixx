@@ -3,10 +3,10 @@ module;
 #include <filesystem>
 #include <optional>
 
-export module Pale.Assets.API;
+export module Pale.Assets:API;
 
-import Pale.Assets.Core;
-import Pale.Assets.Registry;
+import :Core;
+import :Registry;
 
 export namespace Pale {
     struct IAssetIndex {
