@@ -7,6 +7,8 @@ export import :Mesh;
 export import :Material;
 export import :AssimpMeshLoader;
 export import :MaterialYamlLoader;
+export import :MaterialBakerCommon;
+export import :MaterialBakerMitsuba;
 export import :API;
 export import :Provider;
 

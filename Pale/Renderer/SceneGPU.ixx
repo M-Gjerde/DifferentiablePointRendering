@@ -9,7 +9,6 @@ module;
 export module Pale.Render.SceneGPU;
 
 import Pale.Scene;
-import Pale.Assets:Provider;
 
 export namespace Pale {
 

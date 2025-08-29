@@ -5,11 +5,9 @@ module;
 #include <glm/glm.hpp>
 #include <optional>
 
-export module Pale.Import.MaterialBakerMitsuba;
+export module Pale.Assets:MaterialBakerMitsuba;
 
-import Pale.Assets:Core;
-import Pale.Assets:API;
-import Pale.Import.MaterialBakerCommon;
+import Pale.Assets;
 
 export namespace Pale {
 

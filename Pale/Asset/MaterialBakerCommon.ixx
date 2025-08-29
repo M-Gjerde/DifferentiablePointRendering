@@ -8,10 +8,9 @@ module;
 #include <yaml-cpp/yaml.h>
 #include <glm/glm.hpp>
 
-export module Pale.Import.MaterialBakerCommon;
+export module Pale.Assets:MaterialBakerCommon;
 
 
-import Pale.Assets:Core;
 import Pale.UUID;
 
 export namespace Pale {

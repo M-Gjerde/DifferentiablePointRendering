@@ -12,7 +12,6 @@ module;
 module Pale.SceneSerializer;
 
 import Pale.Log;
-import Pale.Import.MaterialBakerMitsuba;
 
 namespace Pale {
     // --- small utils ---

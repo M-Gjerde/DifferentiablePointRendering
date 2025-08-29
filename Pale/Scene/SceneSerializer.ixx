@@ -9,8 +9,6 @@ module;
 export module Pale.SceneSerializer;
 
 import Pale.Scene;
-import Pale.Assets:Core;
-import Pale.Assets:API;
 
 export namespace Pale {
 
