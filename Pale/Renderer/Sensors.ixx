@@ -13,16 +13,19 @@ export namespace Pale {
 
 
     SensorGPU
-    makeSensorsForScene(sycl::queue q, const SceneBuild::BuildProducts& scene) {
+    makeSensorsForScene(sycl::queue queue, const SceneBuild::BuildProducts& buildProducts) {
         SensorGPU out{};
-        if (scene.cameraCount() == 0) {
+        if (buildProducts.cameraCount() == 0) {
             return out;
         }
 
-        const auto& cam = scene.cameras().front();
+        const auto& cam = buildProducts.cameras().front();
         const size_t pixelCount = static_cast<size_t>(cam.width) * static_cast<size_t>(cam.height);
-        auto* dev = static_cast<sycl::float4*>(sycl::malloc_device(pixelCount * sizeof(sycl::float4), q));
-        q.fill(dev, sycl::float4{0, 0, 0, 0}, pixelCount).wait();
+        sycl::float4* dev = reinterpret_cast<sycl::float4*>(sycl::malloc_device(pixelCount * sizeof(sycl::float4), queue));
+
+        queue.wait();
+
+        queue.fill(dev, sycl::float4{0, 0, 0, 0}, pixelCount).wait();
 
         out.camera = cam;
         out.framebuffer = dev;

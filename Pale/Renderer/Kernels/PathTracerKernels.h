@@ -11,12 +11,14 @@ namespace Pale {
         PathTracerMeshKernel(
         GPUSceneBuffers scene,
         SensorGPU sensors
-        ) : m_scene(scene) {
+        ) : m_scene(scene), m_sensor(sensors) {
         }
 
 
         void operator()(sycl::item<1> item) const {
-            uint32_t totalPhotonCount = item.get_range().get(0);
+            uint32_t pixel = item.get_linear_id();
+
+            m_sensor.framebuffer[pixel] = 1.0f;
 
 
             //traceOnePhoton(0, 0);
@@ -40,5 +42,6 @@ namespace Pale {
         */
     private:
         GPUSceneBuffers m_scene;
+        SensorGPU m_sensor;
     };
 }

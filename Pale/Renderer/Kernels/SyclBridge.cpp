@@ -23,9 +23,12 @@ namespace Pale {
     struct ClearSensorKernelTag {};
     void submitKernel(sycl::queue& queue, GPUSceneBuffers scene, SensorGPU sensor) {
 
+        queue.fill(sensor.framebuffer, sycl::float4{0, 0, 0, 0}, sensor.height * sensor.width).wait();
+
+
         queue.submit([&](sycl::handler& commandGroupHandler) {
             PathTracerMeshKernel kernel(scene, sensor);
-            commandGroupHandler.parallel_for<PathTracerMeshKernel>(sycl::range<1>(1000), kernel);
+            commandGroupHandler.parallel_for<PathTracerMeshKernel>(sycl::range<1>(sensor.width * sensor.height), kernel);
         });
 
     }

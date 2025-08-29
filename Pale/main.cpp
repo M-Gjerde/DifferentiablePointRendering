@@ -18,15 +18,15 @@ import Pale.Scene;
 
 
 #include <entt/entt.hpp>
-static std::string assetPathOrId(const Pale::AssetRegistry& reg, const Pale::AssetHandle& id) {
+
+static std::string assetPathOrId(const Pale::AssetRegistry &reg, const Pale::AssetHandle &id) {
     if (auto m = reg.meta(id)) return m->path.string();
     return std::string(id); // fallback if it's not in the registry
 }
 
-static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
-                            Pale::AssetManager& am)
-{
-    auto& reg = am.registry();
+static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
+                            Pale::AssetManager &am) {
+    auto &reg = am.registry();
 
     Pale::Log::PA_INFO("===== Scene Summary =====");
     size_t entityCount = 0;
@@ -34,20 +34,20 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
     size_t emissiveCount = 0;
 
     auto view = scene->getAllEntitiesWith<Pale::IDComponent>();
-    for (entt::entity entity : view){
+    for (entt::entity entity: view) {
         Pale::Entity e(entity, scene.get());
         ++entityCount;
 
-        const char* name = e.getName().c_str();
+        const char *name = e.getName().c_str();
         bool hasMesh = e.hasComponent<Pale::MeshComponent>();
-        bool hasMat  = e.hasComponent<Pale::MaterialComponent>();
-        bool hasEm   = e.hasComponent<Pale::AreaLightComponent>();
+        bool hasMat = e.hasComponent<Pale::MaterialComponent>();
+        bool hasEm = e.hasComponent<Pale::AreaLightComponent>();
 
         Pale::Log::PA_INFO("[Entity] {}", name);
 
         // Mesh
         if (hasMesh) {
-            auto& mc = e.getComponent<Pale::MeshComponent>();
+            auto &mc = e.getComponent<Pale::MeshComponent>();
             ++meshCount;
             std::string meshLabel = assetPathOrId(reg, mc.meshID);
 
@@ -63,7 +63,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
 
         // Material
         if (hasMat) {
-            auto& matc = e.getComponent<Pale::MaterialComponent>();
+            auto &matc = e.getComponent<Pale::MaterialComponent>();
             std::string matLabel = assetPathOrId(reg, matc.materialID);
 
             if (auto mat = am.get<Pale::Material>(matc.materialID)) {
@@ -81,7 +81,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
         // Emissive
         if (hasEm) {
             ++emissiveCount;
-            auto& em = e.getComponent<Pale::AreaLightComponent>();
+            auto &em = e.getComponent<Pale::AreaLightComponent>();
             Pale::Log::PA_INFO("  Emissive radiance=({:.3f},{:.3f},{:.3f})",
                                em.radiance.x, em.radiance.y, em.radiance.z);
         }
@@ -101,9 +101,9 @@ int main() {
     Pale::AssetManager assetManager{256};
     assetManager.enableHotReload(true);
     assetManager.registerLoader<Pale::Mesh>(Pale::AssetType::Mesh,
-        std::make_shared<Pale::AssimpMeshLoader>());
+                                            std::make_shared<Pale::AssimpMeshLoader>());
     assetManager.registerLoader<Pale::Material>(Pale::AssetType::Material,
-        std::make_shared<Pale::YamlMaterialLoader>());
+                                                std::make_shared<Pale::YamlMaterialLoader>());
 
     assetManager.registry().load("asset_registry.yaml");
 
@@ -121,27 +121,30 @@ int main() {
 
     auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
     // Upload Scene to GPU
-    auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue());   // scene only
+    auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue()); // scene only
 
-    auto sensor   = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);  // outputs derived from cameras
+    auto sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts); // outputs derived from cameras
     // Start a Tracer
     Pale::PathTracer tracer(deviceSelector.getQueue());
     // Register the scene with the Tracer
     tracer.setScene(gpu);
 
     // Render
-    Pale::RenderBatch batch{ .samples = 500'000, .maxBounces = 6, .seed = 0 };
-    tracer.renderForward(batch, sensor);          // films is span/array
+    Pale::RenderBatch batch{.samples = 500'000, .maxBounces = 6, .seed = 0};
+    tracer.renderForward(batch, sensor); // films is span/array
 
     // 4) (Optional) load or compute residuals on host, upload pointer
     //    tracer.setResidualsDevice(d_residuals, W*H);  // if you have them
     //    tracer.renderBackward();                      // PRNG replay adjoint
 
     // // Save each sensor image
-        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-        const uint32_t W = sensor.width, H = sensor.height;
-        Pale::Utils::savePNG("out.png", rgba, W, H);
-        Pale::Utils::savePFM("out.pfm", rgba, W, H);
+    auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+    const uint32_t W = sensor.width, H = sensor.height;
+    if (std::filesystem::path filePath = "Output/out.png"; Pale::Utils::savePNG(filePath, rgba, W, H)) {
+        Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
+    };
+
+    Pale::Utils::savePFM("Output/out.pfm", rgba, W, H);
 
     // Write Registry:
     assetManager.registry().save("asset_registry.yaml");

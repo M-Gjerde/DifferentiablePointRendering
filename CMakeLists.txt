@@ -129,9 +129,9 @@ include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
 
 # Debug/Release backend choice
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(ACPP_TARGETS "omp")        # or set to your GPU backend: cuda / hip
+    set(ACPP_TARGETS "generic")        # or set to your GPU backend: cuda / hip
 else()
-    set(ACPP_TARGETS "omp")
+    set(ACPP_TARGETS "generic")
     message(STATUS "[VkRenderINFO]: Compiling using AdaptiveCpp without optimization")
 endif()
 

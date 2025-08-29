@@ -7,6 +7,7 @@ module;
 #include <fstream>
 #include <vector>
 #include <algorithm>
+#include <filesystem>
 #include <stb_image_write.h>
 
 
@@ -17,12 +18,16 @@ export namespace Pale::Utils {
         // PNG saver: expects display-space (already tone-mapped + gamma-encoded) RGBA in [0,1]
     // If writeAlpha=false, the alpha channel is ignored and RGB is written.
     inline bool savePNG(
-        const std::string& filePath,
+        const std::filesystem::path& filePath,
         const std::vector<float>& displaySpaceRGBA,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         bool writeAlpha = false)
     {
+
+        if (!std::filesystem::exists(filePath.parent_path())) {
+            std::filesystem::create_directories(filePath.parent_path());
+        }
         if (imageWidth == 0 || imageHeight == 0) return false;
         const std::size_t expected = std::size_t(imageWidth) * imageHeight * 4u;
         if (displaySpaceRGBA.size() < expected) return false;
@@ -104,13 +109,17 @@ export namespace Pale::Utils {
 
     // Convenience overload for std::vector<float> (linear HDR)
     inline bool savePFM(
-        const std::string& filePath,
+        const std::filesystem::path& filePath,
         const std::vector<float>& linearFloatData,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         std::uint32_t channels = 3,
         bool flipY = true)
     {
+        if (!std::filesystem::exists(filePath.parent_path())) {
+            std::filesystem::create_directories(filePath.parent_path());
+        }
+
         const std::size_t expected = std::size_t(imageWidth) * imageHeight * channels;
         if (linearFloatData.size() < expected) return false;
         return savePFM(filePath, linearFloatData.data(), imageWidth, imageHeight, channels, flipY);
