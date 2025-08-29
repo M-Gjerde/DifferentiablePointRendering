@@ -10,11 +10,11 @@ module;
 #include <future>
 #include <filesystem>
 
-export module Pale.Assets.Manager;
+export module Pale.Assets:Manager;
 
 
-import Pale.Assets.Core;
-import Pale.Assets.Registry;
+import :Core;
+import :Registry;
 
 
 export namespace Pale {

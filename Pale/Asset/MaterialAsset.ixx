@@ -2,8 +2,8 @@ module;
 
 #include <glm/glm.hpp>
 
-export module Pale.Assets.Material;
-import Pale.Assets.Core;
+export module Pale.Assets:Material;
+import :Core;
 
 export namespace Pale {
 
