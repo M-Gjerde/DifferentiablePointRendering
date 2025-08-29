@@ -63,9 +63,9 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
         // Material
         if (hasMat) {
             auto& matc = e.getComponent<Pale::MaterialComponent>();
-            std::string matLabel = assetPathOrId(reg, matc.material);
+            std::string matLabel = assetPathOrId(reg, matc.materialID);
 
-            if (auto mat = am.get<Pale::Material>(matc.material)) {
+            if (auto mat = am.get<Pale::Material>(matc.materialID)) {
                 Pale::Log::PA_INFO(
                     "  Material: {}  [baseColor=({:.3f},{:.3f},{:.3f}) roughness={:.3f} metallic={:.3f}]",
                     matLabel,
@@ -108,17 +108,17 @@ int main() {
 
     // Load in xml file and Create Scene from xml
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
-    Pale::AssetIndexFromRegistry assetIndex(assetManager.registry());
-    Pale::SceneSerializer serializer(scene, assetIndex);
+    Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
+    Pale::SceneSerializer serializer(scene, assetIndexer);
     serializer.deserialize("cbox.xml");
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device
     Pale::DeviceSelector deviceSelector;
     // Build rendering products (BLAS. TLAS, Emissive lists, etc..)
-    Pale::AssetAccessFromManager assetProvider(assetManager);
+    Pale::AssetAccessFromManager assetAccessor(assetManager);
 
-    auto buildProducts = Pale::SceneBuild::build(scene, assetProvider);
+    auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
     // Upload Scene to GPU
     Pale::SceneGPU gpu = Pale::SceneGPU::upload(scene, deviceSelector.getQueue());   // scene only
     auto sensors   = Pale::makeSensorsForScene(deviceSelector.getQueue(), gpu);  // outputs derived from cameras

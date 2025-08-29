@@ -94,7 +94,7 @@ export namespace Pale {
 
     /*************************  Appearance ***************************/
     struct alignas(16) GPUMaterial {
-        float baseColor{};
+        float3 baseColor{};
         float diffuse{};
         float specular{};
         float phongExp{}; // 16

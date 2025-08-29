@@ -72,9 +72,11 @@ namespace Pale {
         for (auto shape: scene.children("shape")) {
             std::string type = attrs(shape, "type", "");
             if (type.empty()) return false;
+            std::string name = attrs(shape, "id", "");
+            if (name.empty()) return false;
 
             // Create entity per shape
-            Entity entity = m_scene->createEntity(type);
+            Entity entity = m_scene->createEntity(name);
 
             auto &transformComponent = entity.getComponent<TransformComponent>();
 
@@ -152,7 +154,7 @@ namespace Pale {
             if (auto ref = shape.child("ref")) {
                 std::string rid = ref.attribute("id").as_string();
                 if (auto it = materialById.find(rid); it != materialById.end())
-                    entity.addComponent<MaterialComponent>().material = it->second;
+                    entity.addComponent<MaterialComponent>().materialID = it->second;
             }
 
             if (auto emitter = shape.child("emitter")) {
