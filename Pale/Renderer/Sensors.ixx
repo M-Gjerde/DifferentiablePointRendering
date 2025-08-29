@@ -3,23 +3,18 @@
 //
 module;
 #include <sycl/sycl.hpp>
+#include <Renderer/GPUDataStructures.h>
+
 export module Pale.Render.Sensors;
 
 import Pale.Render.SceneBuild;
 
 export namespace Pale {
-    struct Sensor {
-    };
 
-    struct SensorGPU {
-        Sensor camera; // from GPUDataTypes
-        sycl::float4* framebuffer{nullptr};
-        uint32_t width{}, height{};
-    };
 
-    std::vector<SensorGPU>
+    SensorGPU
     makeSensorsForScene(sycl::queue q, const SceneBuild::BuildProducts& scene) {
-        std::vector<SensorGPU> out;
+        SensorGPU out;
 
         /*
         out.reserve(scene.cameraCount());

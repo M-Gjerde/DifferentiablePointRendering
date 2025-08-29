@@ -1,17 +1,11 @@
-//
-// Created by magnus on 8/29/25.
-//
-module;
+#pragma once
 
-#include <cstdint>
 #include <numbers>
-#include <string>
 
-export module Pale.Render.GPUDataStructures;
+#include "Renderer/GPUDataTypes.h"
 
-import Pale.Render.GPUDataTypes;
 
-export namespace Pale {
+namespace Pale {
 
 
     /*────────────────────────────────────────────────────────────────────────────*/
@@ -175,7 +169,7 @@ export namespace Pale {
 
     CHECK_16(MeshRange);
 
-    struct alignas(16) Camera {
+    struct alignas(16) CameraGPU {
         float4x4 view{}; //  64
         float4x4 proj{}; // 128
         float4x4 invView{}; //  64
@@ -186,5 +180,27 @@ export namespace Pale {
         uint32_t firstPixel{}; // 172
     };
 
-    CHECK_16(Camera);
+    CHECK_16(CameraGPU);
+
+    // UPLOAD CPU-GPU Structures
+
+    struct GPUSceneBuffers {
+        BVHNode*    d_blasNodes{nullptr};
+        BLASRange*  d_blasRanges{nullptr};
+        TLASNode*   d_tlasNodes{nullptr};
+        Triangle*   d_triangles{nullptr};
+        Vertex*     d_vertices{nullptr};
+        Transform*  d_transforms{nullptr};
+        GPUMaterial*d_materials{nullptr};
+        uint32_t    blasNodeCount{0}, tlasNodeCount{0}, triangleCount{0}, vertexCount{0};
+    };
+
+    struct Sensor {
+    };
+
+    struct SensorGPU {
+        Sensor camera; // from GPUDataTypes
+        sycl::float4* framebuffer{nullptr}; // device pointers
+        uint32_t width{}, height{};
+    };
 }

@@ -7,9 +7,10 @@ module;
 #include <memory>
 #include <sycl/sycl.hpp>
 
+#include "Renderer/GPUDataStructures.h"
+
 export module Pale.Render.SceneUpload;
 
-import Pale.Render.GPUDataStructures;
 import Pale.Scene;
 import Pale.Render.SceneBuild;
 
@@ -19,16 +20,6 @@ export namespace Pale {
     class SceneUpload {
     public:
 
-        struct GPUSceneBuffers {
-            BVHNode*    d_blasNodes{nullptr};
-            BLASRange*  d_blasRanges{nullptr};
-            TLASNode*   d_tlasNodes{nullptr};
-            Triangle*   d_triangles{nullptr};
-            Vertex*     d_vertices{nullptr};
-            Transform*  d_transforms{nullptr};
-            GPUMaterial*d_materials{nullptr};
-            uint32_t    blasNodeCount{0}, tlasNodeCount{0}, triangleCount{0}, vertexCount{0};
-        };
 
         static GPUSceneBuffers upload(const SceneBuild::BuildProducts& bp, sycl::queue queue) {
             GPUSceneBuffers g{};

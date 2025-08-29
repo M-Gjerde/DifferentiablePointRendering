@@ -123,7 +123,7 @@ int main() {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue());   // scene only
 
-    auto sensors   = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);  // outputs derived from cameras
+    auto sensor   = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);  // outputs derived from cameras
     // Start a Tracer
     Pale::PathTracer tracer(deviceSelector.getQueue());
     // Register the scene with the Tracer
@@ -131,19 +131,18 @@ int main() {
 
     // Render
     Pale::RenderBatch batch{ .samples = 500'000, .maxBounces = 6, .seed = 0 };
-    tracer.renderForward(batch, sensors);          // films is span/array
+    tracer.renderForward(batch, sensor);          // films is span/array
 
     // 4) (Optional) load or compute residuals on host, upload pointer
     //    tracer.setResidualsDevice(d_residuals, W*H);  // if you have them
     //    tracer.renderBackward();                      // PRNG replay adjoint
 
-    // Save each sensor image
-    for (size_t i = 0; i < sensors.size(); ++i) {
-        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensors[i]);
-        const uint32_t W = sensors[i].width, H = sensors[i].height;
-        Pale::Utils::savePNG("out_" + std::to_string(i) + ".png", rgba, W, H);
-        Pale::Utils::savePFM("out_" + std::to_string(i) + ".pfm", rgba, W, H);
-    }
+    // // Save each sensor image
+        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+        const uint32_t W = sensor.width, H = sensor.height;
+        Pale::Utils::savePNG("out.png", rgba, W, H);
+        Pale::Utils::savePFM("out.pfm", rgba, W, H);
+
     // Write Registry:
     assetManager.registry().save("asset_registry.yaml");
 

@@ -1,15 +1,11 @@
 //
 // Created by magnus on 8/29/25.
 //
-module;
 
 #include <glm/glm.hpp>
 #include <sycl/sycl.hpp>
 
-
-export module Pale.Render.GPUDataTypes;
-
-export namespace Pale {
+namespace Pale {
     // --- Generic M×N matrix wrapping sycl::vec<float,N> rows ---
 
     // --- Generic M×N matrix wrapping sycl::vec<float,N> rows ---

@@ -63,6 +63,9 @@ add_executable(${PROJECT_NAME}
         Pale/Renderer/PathTracer.cpp
         Pale/Renderer/Camera.cpp
         Pale/Renderer/SceneBuild.cpp
+        Pale/Renderer/Kernels/SyclBridge.cpp
+        Pale/Renderer/Kernels/PathTracerKernels.cpp
+
         Pale/Utils/stb_image_impl.cpp
 )
 
@@ -96,8 +99,6 @@ target_sources(${PROJECT_NAME}  PUBLIC
         Pale/Renderer/SceneBuild.ixx
         Pale/Renderer/SceneUpload.ixx
         Pale/Renderer/PathTracerConfig.ixx
-        Pale/Renderer/GPUDataStructures.ixx
-        Pale/Renderer/GPUDataTypes.ixx
         Pale/Renderer/BVH.ixx
         Pale/Utils/ImageIO.ixx
 

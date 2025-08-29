@@ -19,7 +19,11 @@ export namespace Pale {
         sycl::queue getQueue();
 
     private:
-        sycl::device m_syclDevice;
+        static void asyncHandler(sycl::exception_list exceptions);
+
+        sycl::device m_device;
+        sycl::queue m_queue;
+        sycl::context m_context;
     };
 
 

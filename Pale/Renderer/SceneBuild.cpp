@@ -9,11 +9,11 @@ module;
 #include <unordered_map>
 #include <unordered_set>
 #include <glm/glm.hpp>
+#include "Renderer/GPUDataStructures.h"
+
 
 module Pale.Render.SceneBuild;
-
 import Pale.Scene.Components;
-import Pale.Render.GPUDataTypes;
 import Pale.Render.BVH;
 
 namespace Pale {

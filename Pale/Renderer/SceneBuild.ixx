@@ -6,12 +6,13 @@ module;
 #include <memory>
 #include <sycl/sycl.hpp>
 
+#include "Renderer/GPUDataStructures.h"
+
 export module Pale.Render.SceneBuild;
 
 import Pale.UUID;
 import Pale.Scene;
 import Pale.Assets;
-import Pale.Render.GPUDataStructures;
 
 export namespace Pale {
 

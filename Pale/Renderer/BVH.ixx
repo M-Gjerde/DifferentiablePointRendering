@@ -6,13 +6,11 @@ module;
 #include <cstdint>
 #include <algorithm>
 #include <cfloat>
-
 #include <sycl/sycl.hpp>
 
-export module Pale.Render.BVH;
+#include <Renderer/GPUDataStructures.h>
 
-import Pale.Render.GPUDataStructures;
-import Pale.Render.GPUDataTypes;
+export module Pale.Render.BVH;
 
 
 export namespace Pale {
