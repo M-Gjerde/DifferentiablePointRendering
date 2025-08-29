@@ -12,7 +12,7 @@ module; // global module fragment for headers
 export module Pale.Assets:Registry;
 
 // partitions you depend on
-export import :Core;      // re-export Core to consumers of :Registry
+import Pale.Assets.Core;      // re-export Core to consumers of :Registry
 import Pale.UUID;         // internal use only (not re-exported)
 
 

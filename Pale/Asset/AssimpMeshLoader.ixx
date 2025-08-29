@@ -9,7 +9,7 @@ module;
 
 export module Pale.Assets:AssimpMeshLoader;
 
-import :Core;
+import Pale.Assets.Core;
 import :Mesh;
 
 export namespace Pale {

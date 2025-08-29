@@ -20,7 +20,7 @@ module;
 #include <chrono>
 
 
-export module Pale.Assets:Core;
+export module Pale.Assets.Core;
 
 
 import Pale.UUID; // Provides Pale::UUID

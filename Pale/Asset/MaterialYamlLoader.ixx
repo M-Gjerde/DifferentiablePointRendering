@@ -4,7 +4,7 @@ module;
 #include <glm/glm.hpp>
 export module Pale.Assets:MaterialYamlLoader;
 
-import :Core;
+import Pale.Assets.Core;
 import :Material;
 
 export namespace Pale {

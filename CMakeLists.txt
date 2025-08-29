@@ -73,6 +73,7 @@ target_sources(${PROJECT_NAME}  PUBLIC
         Pale/Core/UUID.ixx
         Pale/Core/Log.ixx
         Pale/Scene/Scene.ixx
+        Pale/Scene/Components.ixx
         Pale/Scene/Entity.ixx
         Pale/Scene/SceneSerializer.ixx
         Pale/Asset/AssetRegistry.ixx

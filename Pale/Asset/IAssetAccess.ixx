@@ -6,7 +6,7 @@ module;
 
 export module Pale.Assets:Access;
 
-import :Core;
+import Pale.Assets.Core;
 import :Mesh;
 import :Material;
 import :Manager;

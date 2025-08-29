@@ -4,12 +4,12 @@
 
 module;
 #include <entt/entt.hpp>
-#include "Scene/Components.h"
 
 export module Pale.Scene;
 
 import Pale.UUID;
 import Pale.Log;
+import Pale.Scene.Components;
 
 export import :Entity;
 

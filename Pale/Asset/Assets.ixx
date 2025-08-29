@@ -1,6 +1,7 @@
 export module Pale.Assets;
 
-export import :Core;
+import Pale.Assets.Core;
+
 export import :Registry;
 export import :Manager;
 export import :Mesh;

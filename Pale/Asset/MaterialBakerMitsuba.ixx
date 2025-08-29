@@ -8,7 +8,7 @@ module;
 export module Pale.Assets:MaterialBakerMitsuba;
 
 import :MaterialBakerCommon;
-import :Core;
+import Pale.Assets.Core;
 import :Index;
 
 export namespace Pale {

@@ -3,7 +3,7 @@ module;
 #include <glm/glm.hpp>
 
 export module Pale.Assets:Material;
-import :Core;
+import Pale.Assets.Core;
 
 export namespace Pale {
 

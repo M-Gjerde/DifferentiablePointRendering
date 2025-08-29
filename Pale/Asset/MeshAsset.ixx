@@ -6,7 +6,7 @@ module;
 export module Pale.Assets:Mesh;
 
 
-import :Core;
+import Pale.Assets.Core;
 
 
 export namespace Pale {

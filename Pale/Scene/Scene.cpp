@@ -3,11 +3,11 @@
 //
 module;
 
-#include "Scene/Components.h"
 #include <entt/entt.hpp>
 module Pale.Scene;
 
 import Pale.Log;
+import Pale.Scene.Components;
 
 namespace Pale {
 

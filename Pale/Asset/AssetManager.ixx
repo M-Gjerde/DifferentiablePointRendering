@@ -13,7 +13,7 @@ module;
 export module Pale.Assets:Manager;
 
 
-import :Core;
+import Pale.Assets.Core;
 import :Registry;
 
 

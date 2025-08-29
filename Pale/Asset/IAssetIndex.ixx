@@ -5,7 +5,7 @@ module;
 
 export module Pale.Assets:Index;
 
-import :Core;
+import Pale.Assets.Core;
 import :Registry;
 
 export namespace Pale {

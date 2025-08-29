@@ -6,12 +6,12 @@ module;
 #include <pugixml.hpp>
 #include <filesystem>
 #include <optional>
-
-#include "Components.h"
-
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 module Pale.SceneSerializer;
 
 import Pale.Log;
+import Pale.Scene.Components;
 
 namespace Pale {
     // --- small utils ---

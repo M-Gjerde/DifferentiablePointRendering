@@ -1,9 +1,11 @@
 import Pale.DeviceSelector;
 import Pale.Scene;
+import Pale.Scene.Components;
 import Pale.SceneSerializer;
 import Pale.Log;
 import Pale.Utils.ImageIO;
-
+import Pale.Assets;
+import Pale.Assets.Core;
 import Pale.Render.SceneGPU;
 import Pale.Render.PathTracer;
 import Pale.Render.PathTracerConfig;
@@ -12,8 +14,6 @@ import Pale.Render.Sensors;
 #include <memory>
 #include <filesystem>
 #include <entt/entt.hpp>
-
-#include "Scene/Components.h"
 
 static std::string assetPathOrId(const Pale::AssetRegistry& reg, const Pale::AssetHandle& id) {
     if (auto m = reg.meta(id)) return m->path.string();

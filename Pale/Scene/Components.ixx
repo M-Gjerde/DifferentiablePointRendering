@@ -1,21 +1,17 @@
 //
 // Created by magnus on 8/28/25.
-//
-
-#ifndef COMPONENTS_H
-#define COMPONENTS_H
-
+module;
 #include <string>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+export module Pale.Scene.Components;
 
 import Pale.UUID;
 import Pale.Camera;
-import Pale.Assets;
+import Pale.Assets.Core;
 
-
-namespace Pale {
+export namespace Pale {
     struct TagComponent {
         std::string tag;
         std::string &getTag() { return tag; }
@@ -184,5 +180,3 @@ namespace Pale {
         AssetHandle material;
     };
 }
-
-#endif //COMPONENTS_H
