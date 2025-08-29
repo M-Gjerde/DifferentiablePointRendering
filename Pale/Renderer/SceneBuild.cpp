@@ -128,6 +128,36 @@ namespace Pale {
         }
     }
 
+    void SceneBuild::collectCameras(const std::shared_ptr<Scene> &scene,
+                                    BuildProducts &outBuildProducts) {
+        auto view = scene->getAllEntitiesWith<CameraComponent, TransformComponent>();
+        for (auto [entityId, cameraComponent, transformComponent] : view.each()) {
+            CameraGPU gpuCam{};
+
+            const glm::mat4 world = transformComponent.getTransform();
+            const glm::mat4 viewMat = glm::inverse(world);
+            const glm::mat4 projMat = cameraComponent.camera.getProjectionMatrix();
+
+            gpuCam.view = glm2sycl(viewMat);
+            gpuCam.proj = glm2sycl(projMat);
+            gpuCam.invView = glm2sycl(world);
+            gpuCam.invProj = glm2sycl(glm::inverse(projMat));
+
+            const glm::vec3 pos = transformComponent.getPosition();
+            gpuCam.pos = float3{pos.x, pos.y, pos.z};
+
+            glm::vec3 forward = glm::mat3(world) * glm::vec3(0.0f, 0.0f, -1.0f);
+            forward = glm::normalize(forward);
+            gpuCam.forward = float3{forward.x, forward.y, forward.z};
+
+            gpuCam.width = 600;
+            gpuCam.height = 600;
+            gpuCam.firstPixel = 0;
+
+            outBuildProducts.cameraGPUs.push_back(gpuCam);
+        }
+    }
+
     // ---- BLAS build: localize -> build -> return nodes + permutation ----
     SceneBuild::BLASResult
     SceneBuild::buildMeshBLAS(uint32_t meshIndex,
