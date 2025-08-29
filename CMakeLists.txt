@@ -60,7 +60,6 @@ add_executable(${PROJECT_NAME}
         Pale/Scene/Entity.cpp
         Pale/Scene/Scene.cpp
         Pale/Scene/SceneSerializer.cpp
-        Pale/Asset/AssetRegistry.cpp
         Pale/Renderer/PathTracer.cpp
         Pale/Renderer/Camera.cpp
         Pale/Utils/stb_image_impl.cpp

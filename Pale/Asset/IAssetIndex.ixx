@@ -3,7 +3,7 @@ module;
 #include <filesystem>
 #include <optional>
 
-export module Pale.Assets:API;
+export module Pale.Assets:Index;
 
 import :Core;
 import :Registry;

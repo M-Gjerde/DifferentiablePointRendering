@@ -12,6 +12,7 @@
 
 import Pale.UUID;
 import Pale.Camera;
+import Pale.Assets;
 
 
 namespace Pale {

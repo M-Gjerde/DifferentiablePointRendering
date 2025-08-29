@@ -4,8 +4,6 @@ import Pale.SceneSerializer;
 import Pale.Log;
 import Pale.Utils.ImageIO;
 
-import Pale.Assets;
-
 import Pale.Render.SceneGPU;
 import Pale.Render.PathTracer;
 import Pale.Render.PathTracerConfig;

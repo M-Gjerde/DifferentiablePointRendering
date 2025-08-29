@@ -9,6 +9,6 @@ export import :AssimpMeshLoader;
 export import :MaterialYamlLoader;
 export import :MaterialBakerCommon;
 export import :MaterialBakerMitsuba;
-export import :API;
-export import :Provider;
+export import :Index;
+export import :Access;
 

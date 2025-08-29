@@ -4,13 +4,12 @@
 module;
 #include <memory>
 
-export module Pale.Assets:Provider;
+export module Pale.Assets:Access;
 
-import :API;
-import :Manager;
+import :Core;
 import :Mesh;
 import :Material;
-import :Core;
+import :Manager;
 
 export namespace Pale {
     struct IAssetAccess {
