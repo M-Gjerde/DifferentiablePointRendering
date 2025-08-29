@@ -2,9 +2,9 @@
 // Created by magnus-desktop on 8/28/25.
 //
 module;
-#include <sycl/sycl.hpp>;
-#include <cstdint>;
-#include <vector>;
+#include <sycl/sycl.hpp>
+#include <cstdint>
+#include <vector>
 
 export module Pale.Render.Framebuffer;
 

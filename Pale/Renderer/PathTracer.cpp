@@ -7,11 +7,12 @@ module;
 
 module Pale.Render.PathTracer;
 
+
 namespace Pale {
     PathTracer::PathTracer(sycl::queue q) : m_queue(q) {
     }
 
-    void PathTracer::setScene(const SceneGPU& s) {
+    void PathTracer::setScene(const SceneUpload::GPUSceneBuffers& s) {
     }
 
     void PathTracer::renderForward(const RenderBatch& b, std::span<const SensorGPU> sensors) {

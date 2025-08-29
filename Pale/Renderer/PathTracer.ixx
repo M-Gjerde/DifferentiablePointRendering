@@ -7,7 +7,7 @@ module;
 export module Pale.Render.PathTracer;
 
 import Pale.Render.Sensors;
-import Pale.Render.SceneGPU;
+import Pale.Render.SceneUpload;
 import Pale.Render.PathTracerConfig;
 
 export namespace Pale {
@@ -15,7 +15,7 @@ export namespace Pale {
     class PathTracer {
     public:
         explicit PathTracer(sycl::queue q);
-        void setScene(const SceneGPU& s);
+        void setScene(const SceneUpload::GPUSceneBuffers& s);
         void renderForward(const RenderBatch& b,
                            std::span<const SensorGPU> sensors);
 
@@ -25,7 +25,7 @@ export namespace Pale {
     private:
 
         sycl::queue& m_queue;
-        SceneGPU m_scene{};
+        SceneUpload::GPUSceneBuffers m_scene{};
 
     };
 

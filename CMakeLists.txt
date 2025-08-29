@@ -62,7 +62,7 @@ add_executable(${PROJECT_NAME}
         Pale/Scene/SceneSerializer.cpp
         Pale/Renderer/PathTracer.cpp
         Pale/Renderer/Camera.cpp
-        Pale/Renderer/SceneGPU.cpp
+        Pale/Renderer/SceneBuild.cpp
         Pale/Utils/stb_image_impl.cpp
 )
 
@@ -93,10 +93,12 @@ target_sources(${PROJECT_NAME}  PUBLIC
         Pale/Renderer/Framebuffer.ixx
         Pale/Renderer/PathTracer.ixx
         Pale/Renderer/Sensors.ixx
-        Pale/Renderer/SceneGPU.ixx
+        Pale/Renderer/SceneBuild.ixx
+        Pale/Renderer/SceneUpload.ixx
         Pale/Renderer/PathTracerConfig.ixx
         Pale/Renderer/GPUDataStructures.ixx
         Pale/Renderer/GPUDataTypes.ixx
+        Pale/Renderer/BVH.ixx
         Pale/Utils/ImageIO.ixx
 
 )
@@ -129,7 +131,6 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release")
     set(ACPP_TARGETS "omp")        # or set to your GPU backend: cuda / hip
 else()
     set(ACPP_TARGETS "omp")
-    target_compile_options(${PROJECT_NAME} PRIVATE -O0 -g)
     message(STATUS "[VkRenderINFO]: Compiling using AdaptiveCpp without optimization")
 endif()
 

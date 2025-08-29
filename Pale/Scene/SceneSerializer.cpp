@@ -81,10 +81,9 @@ namespace Pale {
             auto &transformComponent = entity.getComponent<TransformComponent>();
 
             // Transform
-            glm::mat4 M(1.f);
             if (auto tw = shape.find_child_by_attribute("transform", "name", "to_world")) {
-                glm::vec3 translateVec, scaleVec;
-                glm::quat rotationQuat;
+                glm::vec3 translateVec(0.0f), scaleVec(1.0f);
+                glm::quat rotationQuat(1.0f, 0.0f, 0.0f, 0.0f);
                 for (auto child: tw.children()) {
                     std::string n = child.name();
                     if (n == "translate") {

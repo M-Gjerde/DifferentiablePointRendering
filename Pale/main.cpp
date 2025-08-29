@@ -9,7 +9,8 @@ import Pale.Log;
 import Pale.Utils.ImageIO;
 import Pale.Assets;
 import Pale.Assets.Core;
-import Pale.Render.SceneGPU;
+import Pale.Render.SceneBuild;
+import Pale.Render.SceneUpload;
 import Pale.Render.PathTracer;
 import Pale.Render.PathTracerConfig;
 import Pale.Render.Sensors;
@@ -110,7 +111,7 @@ int main() {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    serializer.deserialize("cbox.xml");
+    serializer.deserialize("cbox_custom.xml");
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device
@@ -120,8 +121,9 @@ int main() {
 
     auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
     // Upload Scene to GPU
-    Pale::SceneGPU gpu = Pale::SceneGPU::upload(scene, deviceSelector.getQueue());   // scene only
-    auto sensors   = Pale::makeSensorsForScene(deviceSelector.getQueue(), gpu);  // outputs derived from cameras
+    auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue());   // scene only
+
+    auto sensors   = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);  // outputs derived from cameras
     // Start a Tracer
     Pale::PathTracer tracer(deviceSelector.getQueue());
     // Register the scene with the Tracer

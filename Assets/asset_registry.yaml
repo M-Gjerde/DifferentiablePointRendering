@@ -1,4 +1,13 @@
 assets:
+  - id: 3339555672218185918
+    type: Material
+    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
+  - id: 5377391263815739387
+    type: Material
+    path: Materials/cbox_custom/bsdf_white_0.mat.yaml
+  - id: 2130818562016894621
+    type: Material
+    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
   - id: 13159810095024651016
     type: Mesh
     path: meshes/rectangle.obj
@@ -11,6 +20,9 @@ assets:
   - id: 1027348735684273460
     type: Material
     path: Materials/cbox/bsdf_white_0.mat.yaml
+  - id: 9276227938270739776
+    type: Material
+    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
   - id: 1430651076161149809
     type: Material
     path: Materials/cbox/bsdf_red_0.mat.yaml

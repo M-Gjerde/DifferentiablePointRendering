@@ -2,10 +2,10 @@
 // Created by magnus-desktop on 8/28/25.
 //
 module;
-#include <sycl/sycl.hpp>;
+#include <sycl/sycl.hpp>
 export module Pale.Render.Sensors;
 
-import Pale.Render.SceneGPU;
+import Pale.Render.SceneBuild;
 
 export namespace Pale {
     struct Sensor {
@@ -18,7 +18,7 @@ export namespace Pale {
     };
 
     std::vector<SensorGPU>
-    makeSensorsForScene(sycl::queue q, const Pale::SceneGPU& scene) {
+    makeSensorsForScene(sycl::queue q, const SceneBuild::BuildProducts& scene) {
         std::vector<SensorGPU> out;
 
         /*
