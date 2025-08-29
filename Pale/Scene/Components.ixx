@@ -173,7 +173,7 @@ export namespace Pale {
     };
 
     struct MeshComponent {
-        AssetHandle meshID;
+        AssetHandle meshID{};
     };
 
     struct MaterialComponent {

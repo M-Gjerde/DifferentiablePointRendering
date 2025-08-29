@@ -62,6 +62,7 @@ add_executable(${PROJECT_NAME}
         Pale/Scene/SceneSerializer.cpp
         Pale/Renderer/PathTracer.cpp
         Pale/Renderer/Camera.cpp
+        Pale/Renderer/SceneGPU.cpp
         Pale/Utils/stb_image_impl.cpp
 )
 
@@ -94,6 +95,8 @@ target_sources(${PROJECT_NAME}  PUBLIC
         Pale/Renderer/Sensors.ixx
         Pale/Renderer/SceneGPU.ixx
         Pale/Renderer/PathTracerConfig.ixx
+        Pale/Renderer/GPUDataStructures.ixx
+        Pale/Renderer/GPUDataTypes.ixx
         Pale/Utils/ImageIO.ixx
 
 )

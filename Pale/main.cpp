@@ -99,7 +99,6 @@ int main() {
     assetManager.enableHotReload(true);
     assetManager.registerLoader<Pale::Mesh>(Pale::AssetType::Mesh,
         std::make_shared<Pale::AssimpMeshLoader>());
-
     assetManager.registerLoader<Pale::Material>(Pale::AssetType::Material,
         std::make_shared<Pale::YamlMaterialLoader>());
 
@@ -134,13 +133,12 @@ int main() {
     //    tracer.setResidualsDevice(d_residuals, W*H);  // if you have them
     //    tracer.renderBackward();                      // PRNG replay adjoint
 
-
     // Save each sensor image
     for (size_t i = 0; i < sensors.size(); ++i) {
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensors[i]);
         const uint32_t W = sensors[i].width, H = sensors[i].height;
-        Pale::Utils::savePNG(("out_" + std::to_string(i) + ".png").c_str(), rgba, W, H);
-        Pale::Utils::savePFM(("out_" + std::to_string(i) + ".pfm").c_str(), rgba, W, H);
+        Pale::Utils::savePNG("out_" + std::to_string(i) + ".png", rgba, W, H);
+        Pale::Utils::savePFM("out_" + std::to_string(i) + ".pfm", rgba, W, H);
     }
     // Write Registry:
     assetManager.registry().save("asset_registry.yaml");

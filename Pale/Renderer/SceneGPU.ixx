@@ -8,8 +8,10 @@ module;
 
 export module Pale.Render.SceneGPU;
 
+import Pale.UUID;
 import Pale.Scene;
 import Pale.Assets;
+import Pale.Render.GPUDataStructures;
 
 export namespace Pale {
 
@@ -27,37 +29,96 @@ export namespace Pale {
 
     struct BuildProducts {
 
-        /*
-        // BLAS
-        std::vector<Pale::PackedMesh>             packedMeshes;
-        std::vector<Pale::BvhNode>                bottomLevelBvhs;
+        std::vector<BVHNode> bottomLevelNodes;     // concatenated BLAS nodes
+        std::vector<BLASRange> bottomLevelRanges;  // [offset,count] per mesh
+        std::vector<TLASNode> topLevelNodes;       // single TLAS
+        std::vector<uint32_t> trianglePermutation; // maps old->new tri order
 
-        // TLAS
-        std::vector<Pale::TlasNode>               topLevelBvh;
-        std::vector<Pale::InstanceRecord>         instanceRecords;
-
-        // Shading
-        std::vector<Pale::PackedMaterial>         packedMaterials;
-        std::vector<Pale::LightRecord>            lightRecords;
-        Pale::AliasTable                          lightAlias;
-
-        // Textures
-        Pale::TextureAtlasCPU                     textureAtlas;
-        */
+        // optional packing for upload
+        uint32_t nodeStrideBytes{0};
+        uint32_t blasNodeBaseOffset{0};
+        uint32_t tlasNodeBaseOffset{0};
     };
 
     struct BuildOptions {
-
+        uint32_t bvhMaxLeafTriangles{4};
+        uint32_t sahBinCount{32};
+        uint32_t tlasMaxLeafInstances{1};
     };
 
 
     class SceneBuild {
     public:
-        static BuildProducts build(const std::shared_ptr<Pale::Scene>& scene, IAssetAccess& assets,
+
+        struct MeshInput {
+            UUID meshId;
+            MeshRange   meshRange;          // firstVert, vertCount, firstTri, triCount
+        };
+
+        struct InstanceRecord {
+            GeometryType geometryType{GeometryType::Mesh};
+            uint32_t     geometryIndex{0};      // meshRanges index or pointRanges index
+            uint32_t     materialIndex{0};      // dense index into GPUMaterial array
+            uint32_t     transformIndex{0};     // index into transforms
+            std::string  name;
+        };
+
+        struct BLASResult {
+            std::vector<BVHNode> nodes;   // the BLAS node array
+            BLASRange range;              // [firstNode, nodeCount] in the global BVH node array
+            std::vector<uint32_t> triPermutation; // local triangle reordering
+            uint32_t meshIndex;           // to associate back with MeshInput
+        };
+
+        struct TLASResult {
+            std::vector<TLASNode> nodes;  // top-level BVH nodes
+            uint32_t rootIndex;           // index of the root (often 0)
+        };
+
+        struct GeometryInput { std::vector<MeshInput> meshes;};
+        struct InstanceInput { std::vector<InstanceRecord> instances; };
+
+
+        static BuildProducts build(const std::shared_ptr<Pale::Scene>& scene, IAssetAccess& assetAccess,
                                    const Pale::BuildOptions& buildOptions = {}) {
 
-            return {};
+            GeometryInput geometryInput = collectGeometry(scene, assetAccess);
+            InstanceInput instanceInput = collectInstances(scene, assetAccess);
+
+            BuildProducts buildProducts;
+
+            // BLAS per mesh
+            for (const MeshInput& meshInput : geometryInput.meshes) {
+                BLASResult blasResult = buildMeshBLAS(meshInput, buildOptions);
+                appendBLAS(buildProducts, blasResult);
+            }
+
+            // TLAS over instances
+            TLASResult tlasResult = buildTLAS(instanceInput, buildProducts.bottomLevelRanges, buildOptions);
+            buildProducts.topLevelNodes = std::move(tlasResult.nodes);
+
+            // finalize permutation and packing metadata
+            finalizePermutation(buildProducts);
+            computePacking(buildProducts);
+
+            return buildProducts;
+
         };
+
+    private:
+
+        static GeometryInput collectGeometry(const std::shared_ptr<Pale::Scene>& scene, IAssetAccess& assetAccess);
+        static InstanceInput collectInstances(const std::shared_ptr<Pale::Scene>& scene, IAssetAccess& assetAccess);
+
+        static BLASResult buildMeshBLAS(const MeshInput&, const BuildOptions&);
+        static TLASResult buildTLAS(const InstanceInput&,
+                                    const std::vector<BLASRange>&,
+                                    const BuildOptions&);
+
+        static void appendBLAS(BuildProducts& buildProducts, const BLASResult& blasResult);
+        static void finalizePermutation(BuildProducts& buildProducts);
+        static void computePacking(BuildProducts& buildProducts);
+
     };
 
 }
