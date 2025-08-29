@@ -7,12 +7,12 @@ module;
 #include <yaml-cpp/yaml.h>
 
 // ---------- partition implementation ----------
-module Pale.Assets.Registry;
+module Pale.Assets:Registry;
 
 
-import Pale.Assets.Core;
+import :Core;
 import Pale.UUID;
-import Pale.Assets.API;
+import :API;
 
 namespace YAML {
 

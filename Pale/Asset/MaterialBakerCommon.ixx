@@ -11,7 +11,7 @@ module;
 export module Pale.Import.MaterialBakerCommon;
 
 
-import Pale.Assets.Core;
+import Pale.Assets;
 import Pale.UUID;
 
 export namespace Pale {

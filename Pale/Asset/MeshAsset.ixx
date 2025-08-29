@@ -3,10 +3,10 @@ module;
 #include <glm/vec3.hpp>
 
 
-export module Pale.Assets.Mesh;
+export module Pale.Assets:Mesh;
 
 
-import Pale.Assets.Core;
+import :Core;
 
 
 export namespace Pale {

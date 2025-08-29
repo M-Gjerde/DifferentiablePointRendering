@@ -3,9 +3,9 @@ module;
 #include <filesystem>
 #include <optional>
 
-export module Pale.Assets.API;
-import Pale.Assets.Core;
-import Pale.Assets.Registry;
+export module Pale.Assets:API;
+import :Core;
+import :Registry;
 
 export namespace Pale {
     struct IAssetProvider {

@@ -2,10 +2,10 @@ module;
 #include <filesystem>
 #include <yaml-cpp/yaml.h>
 #include <glm/glm.hpp>
-export module Pale.Assets.MaterialYamlLoader;
+export module Pale.Assets:MaterialYamlLoader;
 
-import Pale.Assets.Core;
-import Pale.Assets.Material;
+import :Core;
+import :Material;
 
 export namespace Pale {
 

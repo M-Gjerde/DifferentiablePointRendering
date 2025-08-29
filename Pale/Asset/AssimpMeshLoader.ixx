@@ -7,10 +7,10 @@ module;
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
-export module Pale.Assets.AssimpMeshLoader;
+export module Pale.Assets:AssimpMeshLoader;
 
-import Pale.Assets.Core;
-import Pale.Assets.Mesh;
+import :Core;
+import :Mesh;
 
 export namespace Pale {
     struct AssimpMeshLoader : IAssetLoader<Mesh> {

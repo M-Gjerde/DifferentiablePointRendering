@@ -87,6 +87,7 @@ target_sources(${PROJECT_NAME}  PUBLIC
 
         Pale/Asset/AssetRegistry.ixx
         Pale/Asset/Assets.ixx
+        Pale/Asset/Core.ixx
         Pale/Asset/AssetManager.ixx
         Pale/Asset/AssimpMeshLoader.ixx
         Pale/Asset/MaterialYamlLoader.ixx

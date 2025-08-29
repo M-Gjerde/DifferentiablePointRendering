@@ -8,9 +8,9 @@ module;
 #include <unordered_map>
 #include <yaml-cpp/yaml.h>
 
-export module Pale.Assets.Registry;
+export module Pale.Assets:Registry;
 
-export import Pale.Assets.Core;
+import :Core;
 
 export namespace Pale {
 

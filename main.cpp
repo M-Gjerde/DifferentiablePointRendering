@@ -4,14 +4,7 @@ import Pale.SceneSerializer;
 import Pale.Log;
 import Pale.Utils.ImageIO;
 
-import Pale.Assets.Core;
-import Pale.Assets.Registry;
-import Pale.Assets.Manager;
-import Pale.Assets.Mesh;
-import Pale.Assets.Material;
-import Pale.Assets.AssimpMeshLoader;
-import Pale.Assets.MaterialYamlLoader;
-import Pale.Assets.API;
+import Pale.Assets;
 
 import Pale.Render.SceneGPU;
 import Pale.Render.PathTracer;
