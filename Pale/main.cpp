@@ -1,6 +1,7 @@
 // Main.cpp
 #include <memory>
 #include <filesystem>
+#include <entt/entt.hpp>
 
 import Pale.DeviceSelector;
 import Pale.Scene.Components;
@@ -12,12 +13,9 @@ import Pale.Assets.Core;
 import Pale.Render.SceneBuild;
 import Pale.Render.SceneUpload;
 import Pale.Render.PathTracer;
-import Pale.Render.PathTracerConfig;
 import Pale.Render.Sensors;
 import Pale.Scene;
 
-
-#include <entt/entt.hpp>
 
 static std::string assetPathOrId(const Pale::AssetRegistry &reg, const Pale::AssetHandle &id) {
     if (auto m = reg.meta(id)) return m->path.string();
@@ -130,8 +128,7 @@ int main() {
     tracer.setScene(gpu);
 
     // Render
-    Pale::RenderBatch batch{.samples = 500'000, .maxBounces = 6, .seed = 0};
-    tracer.renderForward(batch, sensor); // films is span/array
+    tracer.renderForward(sensor); // films is span/array
 
     // 4) (Optional) load or compute residuals on host, upload pointer
     //    tracer.setResidualsDevice(d_residuals, W*H);  // if you have them

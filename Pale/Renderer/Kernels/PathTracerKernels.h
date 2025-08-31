@@ -16,12 +16,8 @@ namespace Pale {
 
 
         void operator()(sycl::item<1> item) const {
-            uint32_t pixel = item.get_linear_id();
-
-            m_sensor.framebuffer[pixel] = 1.0f;
-
-
-            //traceOnePhoton(0, 0);
+            uint32_t id = item.get_linear_id();
+            traceOnePhoton(id, 0);
         }
 
 
@@ -34,12 +30,8 @@ namespace Pale {
 
         //float traceVisibility(const Ray &rayIn, float tMax, const SceneDesc &scene, PCG32& rng) const;
 
-
-
-        SYCL_EXTERNAL void traceOnePhoton(uint64_t photonID, uint32_t totalPhotonCount) const {
-
-        };
         */
+        SYCL_EXTERNAL void traceOnePhoton(uint64_t photonID, uint32_t totalPhotonCount) const;
     private:
         GPUSceneBuffers m_scene;
         SensorGPU m_sensor;

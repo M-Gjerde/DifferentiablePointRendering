@@ -200,4 +200,47 @@ namespace Pale {
         sycl::float4* framebuffer{nullptr}; // device pointer
         uint32_t width{}, height{};
     };
+
+    // ---- PODs ---------------------------------------------------------------
+    // ---- Config -------------------------------------------------------------
+    enum class RayGenMode : uint32_t { Camera = 0, Emitter = 1, Hybrid = 2, Adjoint = 3 };
+    struct RayState {
+        float3 rayOrigin;
+        float3 rayDirection;
+        float3 pathThroughput;
+        uint32_t     pixelIndex{};
+        uint32_t     bounceIndex{};
+    };
+
+    struct HitRecord {
+        uint32_t     didHit{};
+        uint32_t     geometryIndex{};
+        uint32_t     primitiveIndex{};
+        float3 hitPosition;
+        float3 shadingNormal;
+    };
+
+    struct PathTracerSettings {
+        uint32_t photonsPerLaunch = 1e4;
+        uint64_t randomSeed = 42;
+        RayGenMode rayGenMode = RayGenMode::Emitter;
+        uint32_t maxBounces = 12;
+    };
+
+    struct RenderIntermediatesGPU {
+        RayState* primaryRays;
+        RayState* extensionRaysA;
+        RayState* extensionRaysB;
+        HitRecord* hitRecords;
+        uint32_t* countPrimary;
+        uint32_t* countExtensionOut;
+    };
+
+    struct RenderPackage {
+        sycl::queue queue;
+        PathTracerSettings settings{};
+        GPUSceneBuffers scene{};
+        RenderIntermediatesGPU intermediates{};
+        SensorGPU sensor{};
+    };
 }

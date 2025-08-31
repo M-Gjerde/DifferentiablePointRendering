@@ -96,16 +96,13 @@ export namespace Pale {
         static BuildProducts build(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
                                    const BuildOptions &buildOptions) {
             BuildProducts buildProducts;
-
             collectGeometry(scene, assetAccess, buildProducts);
-
             collectInstances(scene,
                              assetAccess,
                              buildProducts.meshIndexById,
                              buildProducts);
 
             collectCameras(scene, buildProducts);
-
             for (uint32_t meshIndex = 0; meshIndex < buildProducts.meshRanges.size(); ++meshIndex) {
                 const MeshRange& meshRange = buildProducts.meshRanges[meshIndex];
                 BLASResult blasResult = buildMeshBLAS(meshIndex,
@@ -121,13 +118,10 @@ export namespace Pale {
                                               buildProducts.transforms,
                                               buildOptions);
             buildProducts.topLevelNodes = std::move(tlasResult.nodes);
-
             write_tlas_dot(buildProducts.topLevelNodes, "tlas.dot");
             write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
             // finalize permutation and packing metadata
-
             computePacking(buildProducts);
-
             return buildProducts;
         };
 

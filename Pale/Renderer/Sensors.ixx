@@ -25,7 +25,7 @@ export namespace Pale {
 
         queue.wait();
 
-        queue.fill(dev, sycl::float4{0, 0, 0, 0}, pixelCount).wait();
+        //queue.fill(dev, sycl::float4{0, 0, 0, 0}, pixelCount).wait();
 
         out.camera = cam;
         out.framebuffer = dev;

@@ -98,7 +98,6 @@ target_sources(${PROJECT_NAME}  PUBLIC
         Pale/Renderer/Sensors.ixx
         Pale/Renderer/SceneBuild.ixx
         Pale/Renderer/SceneUpload.ixx
-        Pale/Renderer/PathTracerConfig.ixx
         Pale/Renderer/BVH.ixx
         Pale/Utils/ImageIO.ixx
 
@@ -129,13 +128,41 @@ include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
 
 # Debug/Release backend choice
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(ACPP_TARGETS "generic")        # or set to your GPU backend: cuda / hip
+    set(ACPP_TARGETS "omp")        # or set to your GPU backend: cuda / hip
 else()
-    set(ACPP_TARGETS "generic")
-    message(STATUS "[VkRenderINFO]: Compiling using AdaptiveCpp without optimization")
+    set(ACPP_TARGETS "omp")
+    target_compile_options(${PROJECT_NAME} PRIVATE -O0 -g)
+    message(STATUS "Compiling using AdaptiveCpp without optimization")
 endif()
 
-message(STATUS "[VkRenderINFO]: Using AdaptiveCpp with targets: ${ACPP_TARGETS} for ${PROJECT_NAME}")
+message(STATUS "Using AdaptiveCpp with targets: ${ACPP_TARGETS} for ${PROJECT_NAME}")
 
 # Add SYCL to target via AdaptiveCpp's helper
 add_sycl_to_target(TARGET ${PROJECT_NAME} TARGETS ${ACPP_TARGETS})
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fno-inline" CACHE STRING "" FORCE)
+
+# Cleanup old SYCL kernels in case a recompilation doesn't trigger a replacement
+set(ACPP_APP_BASE_DIR "$ENV{HOME}/.acpp/apps")
+
+# Script that cleans up old dirs
+set(CLEAN_SCRIPT "${CMAKE_BINARY_DIR}/cleanup.cmake")
+file(WRITE "${CLEAN_SCRIPT}" "
+file(GLOB PROJECT_DIRS \"${ACPP_APP_BASE_DIR}/${PROJECT_NAME}*\")
+foreach(DIR IN LISTS PROJECT_DIRS)
+    if(IS_DIRECTORY \"\${DIR}\")
+        message(STATUS \"Found \${DIR}\")
+        file(REMOVE_RECURSE \"\${DIR}\")
+        message(STATUS \"Removed \${DIR}\")
+    endif()
+endforeach()
+")
+
+# Define a target that runs the script
+add_custom_target(clean_acpp ALL
+        COMMAND ${CMAKE_COMMAND} -P "${CLEAN_SCRIPT}"
+        COMMENT "Cleaning AdaptiveCpp app dirs"
+)
+
+# Ensure it runs before your executable
+add_dependencies(${PROJECT_NAME} clean_acpp)
