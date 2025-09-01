@@ -1,10 +1,12 @@
 cmake_minimum_required(VERSION 3.5)
 project(DifferentiablePointRendering LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-find_package(AdaptiveCpp REQUIRED)
+
+set(SYCL_IMPL "acpp" CACHE STRING "SYCL implementation: acpp or dpcpp")
+set_property(CACHE SYCL_IMPL PROPERTY STRINGS acpp dpcpp)
 
 ## Adding Vendor Libraries
 add_subdirectory(vendor/pugixml)
@@ -71,7 +73,7 @@ add_executable(${PROJECT_NAME}
 
 
 ## Module files
-target_sources(${PROJECT_NAME}  PUBLIC
+target_sources(${PROJECT_NAME} PUBLIC
         FILE_SET CXX_MODULES FILES
         Pale/Core/DeviceSelector.ixx
         Pale/Core/UUID.ixx
@@ -126,28 +128,24 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
 
 
-# Debug/Release backend choice
-if (CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(ACPP_TARGETS "omp")        # or set to your GPU backend: cuda / hip
-else()
-    set(ACPP_TARGETS "omp")
-    target_compile_options(${PROJECT_NAME} PRIVATE -O0 -g)
-    message(STATUS "Compiling using AdaptiveCpp without optimization")
-endif()
-
-message(STATUS "Using AdaptiveCpp with targets: ${ACPP_TARGETS} for ${PROJECT_NAME}")
-
-# Add SYCL to target via AdaptiveCpp's helper
-add_sycl_to_target(TARGET ${PROJECT_NAME} TARGETS ${ACPP_TARGETS})
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fno-inline" CACHE STRING "" FORCE)
-
-# Cleanup old SYCL kernels in case a recompilation doesn't trigger a replacement
-set(ACPP_APP_BASE_DIR "$ENV{HOME}/.acpp/apps")
-
-# Script that cleans up old dirs
-set(CLEAN_SCRIPT "${CMAKE_BINARY_DIR}/cleanup.cmake")
-file(WRITE "${CLEAN_SCRIPT}" "
+if (SYCL_IMPL STREQUAL "acpp")
+    # Debug/Release backend choice
+    find_package(AdaptiveCpp REQUIRED)
+    if (CMAKE_BUILD_TYPE STREQUAL "Release")
+        set(ACPP_TARGETS "omp")        # or set to your GPU backend: cuda / hip
+    else ()
+        set(ACPP_TARGETS "omp")
+        target_compile_options(${PROJECT_NAME} PRIVATE -O0 -g)
+        message(STATUS "Compiling using AdaptiveCpp without optimization")
+    endif ()
+    message(STATUS "Using AdaptiveCpp with targets: ${ACPP_TARGETS} for ${PROJECT_NAME}")
+    # Add SYCL to target via AdaptiveCpp's helper
+    add_sycl_to_target(TARGET ${PROJECT_NAME} TARGETS ${ACPP_TARGETS})
+    # Cleanup old SYCL kernels in case a recompilation doesn't trigger a replacement
+    set(ACPP_APP_BASE_DIR "$ENV{HOME}/.acpp/apps")
+    # Script that cleans up old dirs
+    set(CLEAN_SCRIPT "${CMAKE_BINARY_DIR}/cleanup.cmake")
+    file(WRITE "${CLEAN_SCRIPT}" "
 file(GLOB PROJECT_DIRS \"${ACPP_APP_BASE_DIR}/${PROJECT_NAME}*\")
 foreach(DIR IN LISTS PROJECT_DIRS)
     if(IS_DIRECTORY \"\${DIR}\")
@@ -157,12 +155,34 @@ foreach(DIR IN LISTS PROJECT_DIRS)
     endif()
 endforeach()
 ")
+    # Define a target that runs the script
+    add_custom_target(clean_acpp ALL
+            COMMAND ${CMAKE_COMMAND} -P "${CLEAN_SCRIPT}"
+            COMMENT "Cleaning AdaptiveCpp app dirs"
+    )
+    # Ensure it runs before your executable
+    add_dependencies(${PROJECT_NAME} clean_acpp)
 
-# Define a target that runs the script
-add_custom_target(clean_acpp ALL
-        COMMAND ${CMAKE_COMMAND} -P "${CLEAN_SCRIPT}"
-        COMMENT "Cleaning AdaptiveCpp app dirs"
-)
+elseif (SYCL_IMPL STREQUAL "dpcpp")
+    # Compiler
+    set(DPCPP_COMPILER "${DPCPP_COMPILER}" CACHE FILEPATH "Path to DPC++ clang++")
+    if (DPCPP_COMPILER)
+        set(CMAKE_CXX_COMPILER "${DPCPP_COMPILER}")
+    elseif (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(WARNING "DPCPP_COMPILER not set; relying on current compiler (${CMAKE_CXX_COMPILER}).")
+    endif ()
 
-# Ensure it runs before your executable
-add_dependencies(${PROJECT_NAME} clean_acpp)
+    set(SYCL_TARGET "spir64,nvptx64-nvidia-cuda")
+
+    # Flags per-target, not global
+    target_compile_options(${PROJECT_NAME} PRIVATE
+            -fsycl
+            -fsycl-targets=${SYCL_TARGET}
+            $<$<CONFIG:Release>:-O3>
+            $<$<NOT:$<CONFIG:Release>>:-g -O0>
+    )
+
+    message(STATUS "[SYCL] DPC++ enabled: targets=${SYCL_TARGET} opts='${SYCL_TGT_OPTS}'")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE SYCL_IMPL_DPCPP=1)
+
+endif()

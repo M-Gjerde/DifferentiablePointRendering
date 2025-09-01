@@ -90,6 +90,7 @@ namespace Pale {
                 gpuMaterial.baseColor = materialAsset->baseColor;
                 gpuMaterial.specular = materialAsset->metallic;
                 gpuMaterial.diffuse = materialAsset->roughness;
+                gpuMaterial.emissive = materialAsset->emissive;
                 gpuMaterial.phongExp = 16;
                 materialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
                 outBuildProducts.materials.push_back(gpuMaterial);
@@ -112,10 +113,70 @@ namespace Pale {
         }
     }
 
+    inline float SceneBuild::triangleArea(const float3 &p0,
+                                          const float3 &p1,
+                                          const float3 &p2) {
+        const float3 e0 = p1 - p0;
+        const float3 e1 = p2 - p0;
+        return 0.5f * length(cross(e0, e1));
+    }
+
+    inline float SceneBuild::luminance(const float3 &rgb) {
+        return 0.2126f * rgb.x() +
+               0.7152f * rgb.y() +
+               0.0722f * rgb.z();
+    }
+
+    void SceneBuild::collectLights(const std::shared_ptr<Pale::Scene> &scene,
+                                   IAssetAccess &assetAccess,
+                                   BuildProducts &out) {
+        out.lights.clear();
+        out.emissiveTriangles.clear();
+
+        for (const InstanceRecord &instanceRecord: out.instances) {
+            const GPUMaterial &gpuMaterial = out.materials[instanceRecord.materialIndex];
+            const bool isEmissive = (gpuMaterial.emissive.x() > 0.f) ||
+                                    (gpuMaterial.emissive.y() > 0.f) ||
+                                    (gpuMaterial.emissive.z() > 0.f);
+            if (!isEmissive) continue;
+
+            const MeshRange &meshRange = out.meshRanges[instanceRecord.geometryIndex];
+            const uint32_t triangleOffset = static_cast<uint32_t>(out.emissiveTriangles.size());
+
+            float totalArea = 0.f;
+            out.emissiveTriangles.reserve(out.emissiveTriangles.size() + meshRange.triCount);
+
+            for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
+                const uint32_t globalTriIndex = meshRange.firstTri + localTri;
+                const Triangle &tri = out.triangles[globalTriIndex];
+
+                const float3 p0 = out.vertices[tri.v0].pos;
+                const float3 p1 = out.vertices[tri.v1].pos;
+                const float3 p2 = out.vertices[tri.v2].pos;
+
+                const float area = triangleArea(p0, p1, p2);
+                totalArea += area;
+
+                out.emissiveTriangles.push_back(GPUEmissiveTriangle{globalTriIndex});
+            }
+
+            GPULightRecord light{};
+            light.lightType = 0u; // mesh area
+            light.geometryIndex = instanceRecord.geometryIndex;
+            light.transformIndex = instanceRecord.transformIndex;
+            light.triangleOffset = triangleOffset;
+            light.triangleCount = meshRange.triCount;
+            light.emissionRgb = gpuMaterial.emissive;
+            light.totalArea = totalArea;
+
+            out.lights.push_back(light);
+        }
+    }
+
     void SceneBuild::collectCameras(const std::shared_ptr<Scene> &scene,
                                     BuildProducts &outBuildProducts) {
         auto view = scene->getAllEntitiesWith<CameraComponent, TransformComponent>();
-        for (auto [entityId, cameraComponent, transformComponent] : view.each()) {
+        for (auto [entityId, cameraComponent, transformComponent]: view.each()) {
             CameraGPU gpuCam{};
             const glm::mat4 world = transformComponent.getTransform();
             const glm::mat4 viewMat = glm::inverse(world);

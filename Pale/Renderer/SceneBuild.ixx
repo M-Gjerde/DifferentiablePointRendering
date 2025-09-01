@@ -15,7 +15,6 @@ import Pale.Scene;
 import Pale.Assets;
 
 export namespace Pale {
-
     class SceneBuild {
     public:
         struct InstanceRecord {
@@ -54,10 +53,13 @@ export namespace Pale {
             std::vector<GPUMaterial> materials; // index by materialIndex
             std::vector<InstanceRecord> instances;
 
+            std::vector<GPULightRecord> lights;
+            std::vector<GPUEmissiveTriangle> emissiveTriangles;
+
             std::vector<CameraGPU> cameraGPUs; // camera data for sensors
 
             [[nodiscard]] std::size_t cameraCount() const { return cameraGPUs.size(); }
-            [[nodiscard]] const std::vector<CameraGPU>& cameras() const { return cameraGPUs; }
+            [[nodiscard]] const std::vector<CameraGPU> &cameras() const { return cameraGPUs; }
         };
 
         struct BuildOptions {
@@ -67,29 +69,31 @@ export namespace Pale {
         };
 
 
-        static void write_tlas_dot(const std::vector<TLASNode>& nodes, const char* path) {
+        static void write_tlas_dot(const std::vector<TLASNode> &nodes, const char *path) {
             std::ofstream f(path);
             f << "digraph TLAS{\nnode[shape=box,fontname=mono];\n";
             for (size_t i = 0; i < nodes.size(); ++i) {
-                const auto& n = nodes[i];
+                const auto &n = nodes[i];
                 f << i << " [label=\"#" << i
-                  << "\\ncount=" << n.count
-                  << "\\nmin=(" << n.aabbMin.x() << "," << n.aabbMin.y() << "," << n.aabbMin.z() << ")"
-                  << "\\nmax=(" << n.aabbMax.x() << "," << n.aabbMax.y() << "," << n.aabbMax.z() << ")\"];\n";
-                if (n.count == 0) { f << i << " -> " << n.leftChild  << ";\n"
-                                      << i << " -> " << n.rightChild << ";\n"; }
+                        << "\\ncount=" << n.count
+                        << "\\nmin=(" << n.aabbMin.x() << "," << n.aabbMin.y() << "," << n.aabbMin.z() << ")"
+                        << "\\nmax=(" << n.aabbMax.x() << "," << n.aabbMax.y() << "," << n.aabbMax.z() << ")\"];\n";
+                if (n.count == 0) {
+                    f << i << " -> " << n.leftChild << ";\n"
+                            << i << " -> " << n.rightChild << ";\n";
+                }
             }
             f << "}\n";
         }
 
-        static void write_tlas_csv(const std::vector<TLASNode>& nodes, const char* path) {
+        static void write_tlas_csv(const std::vector<TLASNode> &nodes, const char *path) {
             std::ofstream f(path);
             f << "node,left,right,count,minx,miny,minz,maxx,maxy,maxz\n";
             for (size_t i = 0; i < nodes.size(); ++i) {
-                const auto& n = nodes[i];
+                const auto &n = nodes[i];
                 f << i << "," << n.leftChild << "," << n.rightChild << "," << n.count << ","
-                  << n.aabbMin.x() << "," << n.aabbMin.y() << "," << n.aabbMin.z() << ","
-                  << n.aabbMax.x() << "," << n.aabbMax.y() << "," << n.aabbMax.z() << "\n";
+                        << n.aabbMin.x() << "," << n.aabbMin.y() << "," << n.aabbMin.z() << ","
+                        << n.aabbMax.x() << "," << n.aabbMax.y() << "," << n.aabbMax.z() << "\n";
             }
         }
 
@@ -101,10 +105,11 @@ export namespace Pale {
                              assetAccess,
                              buildProducts.meshIndexById,
                              buildProducts);
+            collectLights(scene, assetAccess, buildProducts);
 
             collectCameras(scene, buildProducts);
             for (uint32_t meshIndex = 0; meshIndex < buildProducts.meshRanges.size(); ++meshIndex) {
-                const MeshRange& meshRange = buildProducts.meshRanges[meshIndex];
+                const MeshRange &meshRange = buildProducts.meshRanges[meshIndex];
                 BLASResult blasResult = buildMeshBLAS(meshIndex,
                                                       meshRange,
                                                       buildProducts.triangles,
@@ -135,6 +140,11 @@ export namespace Pale {
                                      const std::unordered_map<UUID, uint32_t> &meshIndexById,
                                      BuildProducts &outBuildProducts);
 
+        static void collectLights(const std::shared_ptr<Scene> &scene,
+                                  IAssetAccess &assetAccess,
+                                  BuildProducts &out);
+        static float luminance(const float3 &rgb);
+        static float triangleArea(const float3 &p0, const float3 &p1, const float3 &p2);
         static void collectCameras(const std::shared_ptr<Scene> &scene,
                                    BuildProducts &outBuildProducts);
 
@@ -146,11 +156,11 @@ export namespace Pale {
             const BuildOptions &buildOptions);
 
 
-        static TLASResult buildTLAS(const std::vector<InstanceRecord>& instances,
-                                    const std::vector<BLASRange>& blasRanges,
-                                    const std::vector<BVHNode>& blasNodes,
-                                    const std::vector<Transform>& transforms,
-                                    const BuildOptions& opts);
+        static TLASResult buildTLAS(const std::vector<InstanceRecord> &instances,
+                                    const std::vector<BLASRange> &blasRanges,
+                                    const std::vector<BVHNode> &blasNodes,
+                                    const std::vector<Transform> &transforms,
+                                    const BuildOptions &opts);
 
         static void appendBLAS(BuildProducts &buildProducts, const BLASResult &blasResult);
 

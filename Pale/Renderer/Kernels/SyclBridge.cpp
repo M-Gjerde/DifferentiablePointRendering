@@ -58,39 +58,95 @@ namespace Pale {
                     // Choose any generator you like:
                    rng::Xorshift128 rng128(perItemSeed);
 
-                    /*
-                    // 1) pick emitter by power CDF
-                    const float u = rng128.nextFloat();
-                    const uint32_t emitterIdx = sampleEmitterIndex(scene.emitterCdf, scene.emitterCount, u);
+                    if (scene.lightCount == 0) return;
 
-                    const EmitterGPU emitter = scene.emitters[emitterIdx];
-                    */
+                    const float uL = rng128.nextFloat();
+                    uint32_t lightIndex = sycl::min((uint32_t)(uL * scene.lightCount), scene.lightCount - 1);
+                    const GPULightRecord light = scene.d_lights[lightIndex];
+                    const float pdfSelectLight = 1.0f / (float)scene.lightCount;
 
-                    // 2) sample position and direction on the emitter
-                    // TODO: implement for your emitter types (area, point, directional)
-                    sycl::float3 x = /* sample position on emitter */ sycl::float3{0, 0, 0};
-                    sycl::float3 n = /* emitter normal           */ sycl::float3{0, 0, 1};
-                    sycl::float3 wo; // sampled emission direction
-                    {
-                        // cosine hemisphere as placeholder
-                        const float r1 = rng128.nextFloat();
-                        const float r2 = rng128.nextFloat();
-                        const float phi = 2.f * 3.1415926535f * r1;
-                        const float z = r2;
-                        const float r = sycl::sqrt(1.f - z * z);
-                        wo = sycl::float3{r * sycl::cos(phi), r * sycl::sin(phi), z};
-                    }
+                    // 2) pick a triangle uniformly from this light
+                    if (light.triangleCount == 0) return;
+                    const float uT = rng128.nextFloat();
+                    const uint32_t triangleRelativeIndex = sycl::min((uint32_t)(uT * light.triangleCount), light.triangleCount - 1);
+                    const GPUEmissiveTriangle emissiveTri =
+                        scene.d_emissiveTriangles[light.triangleOffset + triangleRelativeIndex];
+
+                    const Triangle tri = scene.d_triangles[emissiveTri.globalTriangleIndex];
+                    const Vertex v0 = scene.d_vertices[tri.v0];
+                    const Vertex v1 = scene.d_vertices[tri.v1];
+                    const Vertex v2 = scene.d_vertices[tri.v2];
+
+                    // triangle area and geometric normal in object space
+                    const float3 p0 = v0.pos, p1 = v1.pos, p2 = v2.pos;
+                    const float3 e0 = p1 - p0, e1 = p2 - p0;
+                    const float3 nObjU = float3{
+                        e0.y()*e1.z() - e0.z()*e1.y(),
+                        e0.z()*e1.x() - e0.x()*e1.z(),
+                        e0.x()*e1.y() - e0.y()*e1.x()
+                    };
+                    const float triArea = 0.5f * sycl::sqrt(nObjU.x()*nObjU.x() + nObjU.y()*nObjU.y() + nObjU.z()*nObjU.z());
+                    if (triArea <= 0.f) return;
+                    const float3 nObj = nObjU * (1.0f / (2.0f * triArea));
+
+                    // 2b) sample uniform point on triangle (barycentric)
+                    const float u1 = rng128.nextFloat();
+                    const float u2 = rng128.nextFloat();
+                    const float su1 = sycl::sqrt(u1);
+                    const float b1 = 1.f - su1;
+                    const float b2 = u2 * su1;
+                    const float b0 = 1.f - b1 - b2;
+                    const float3 xObj = p0*b0 + p1*b1 + p2*b2;
+
+                    // transform to world
+                    const Transform xf = scene.d_transforms[light.transformIndex];
+                    const float4 x4 = xf.objectToWorld * float4{xObj.x(), xObj.y(), xObj.z(), 1.f};
+                    float3 x = float3{x4.x(), x4.y(), x4.z()};
+                    // normal with inverse-transpose; worldToObject^T on a direction
+                    const float4 n4 = xf.objectToWorld * float4{nObj.x(), nObj.y(), nObj.z(), 0.f};
+                    const float nL = sycl::sqrt(n4.x()*n4.x() + n4.y()*n4.y() + n4.z()*n4.z());
+                    float3 n = (nL > 0.f) ? float3{n4.x()/nL, n4.y()/nL, n4.z()/nL} : float3{0,0,1};
 
 
-                    // 3) initial photon throughput = emitter radiance * jacobian / pdf
-                    sycl::float3 initialThroughput = sycl::float3{1.f, 1.f, 1.f}; // placeholder
+                    // 2c) cosine-hemisphere direction about n
+                    const float uD1 = rng128.nextFloat();
+                    const float uD2 = rng128.nextFloat();
+                    const float r   = sycl::sqrt(uD1);
+                    const float phi = 6.28318530718f * uD2;
+                    float3 lLocal{ r * sycl::cos(phi), r * sycl::sin(phi), sycl::sqrt(sycl::fmax(0.f, 1.f - uD1)) };
+                    // build ONB(n)
+                    float3 t, b;
+                    if (sycl::fabs(n.z()) < 0.999f)
+                        t = normalize(cross(float3{0,0,1}, n));
+                    else
+                        t = normalize(cross(float3{0,1,0}, n));
 
+                    b = cross(n, t);
+
+                    float3 vec = t*lLocal.x() + (b*lLocal.y()) + (n*lLocal.z());
+                    float3 wo = normalize(vec);
+
+                    // 3) PDFs
+                    const float pdfTriangle = 1.0f / (float)light.triangleCount;
+                    const float pdfPointGivenTriangle = 1.0f / triArea;          // area domain
+                    const float pdfArea = pdfTriangle * pdfPointGivenTriangle;   // P_A(x)
+                    const float cosTheta = sycl::fmax(0.f, wo.x()*n.x() + wo.y()*n.y() + wo.z()*n.z());
+                    const float pdfDir = cosTheta > 0.f ? (cosTheta / 3.1415926535f) : 0.f; // cosine hemisphere
+                    const float pdfTotal = pdfSelectLight * pdfArea * pdfDir;
+                    if (pdfTotal <= 0.f || cosTheta <= 0.f) return;
+
+                    // 4) initial throughput
+                    const sycl::float3 Le = light.emissionRgb; // radiance scale
+                    const float invPdf = 1.0f / pdfTotal;
+                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf);
+
+                    // write ray
                     RayState ray{};
-                    ray.rayOrigin = x;
-                    ray.rayDirection = wo;
+                    ray.rayOrigin      = x;
+                    ray.rayDirection   = wo;
                     ray.pathThroughput = initialThroughput;
-                    ray.pixelIndex = 0u; // not tied to a pixel yet
-                    ray.bounceIndex = 0u;
+                    ray.pixelIndex     = 0u;
+                    ray.bounceIndex    = 0u;
 
                     auto counter = sycl::atomic_ref<uint32_t,
                                                     sycl::memory_order::relaxed,
@@ -191,14 +247,20 @@ namespace Pale {
         }
 
 
+        uint32_t activeCount = 0;
+        pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
+
+        std::vector<RayState> rays(activeCount);
+
+        pkg.queue.memcpy(rays.data(), pkg.intermediates.primaryRays, activeCount * sizeof(RayState)).wait();
 
         RayState* raysIn  = pkg.intermediates.primaryRays;
         RayState* raysOut = pkg.intermediates.extensionRaysA;
 
-        uint32_t activeCount = 0;
-        pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
 
         for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
+            launchIntersectKernel(pkg.queue, pkg.scene, raysIn, activeCount, pkg.intermediates.hitRecords);
+
             /*
             launchIntersectKernel(queue, scene, raysIn, activeCount, sensor.hitRecords);
             launchShadeKernel(queue, scene, sensor, sensor.hitRecords, raysIn, activeCount, raysOut);

@@ -142,29 +142,61 @@ namespace Pale {
 
             std::unordered_map<std::string, AssetHandle> materialById;
 
-            for (auto bsdf: scene.children("bsdf")) {
-                std::string id = bsdf.attribute("id").as_string();
-                if (id.empty()) continue;
-                AssetHandle h = bakeFromMitsuba(bsdf, xmlPath, m_assets,
-                                                /*keyMode=*/BakeKey::ByIdThenHash);
-                materialById.emplace(id, h);
+            // 1) Bake all BSDFs by id (scene-wide)
+            for (auto bsdfNode: scene.children("bsdf")) {
+                std::string bsdfId = bsdfNode.attribute("id").as_string();
+                if (bsdfId.empty()) continue;
+
+                AssetHandle bakedMaterialHandle =
+                        bakeFromMitsuba(bsdfNode, xmlPath, m_assets, /*keyMode=*/BakeKey::ByIdThenHash);
+
+                materialById.emplace(bsdfId, bakedMaterialHandle);
             }
 
-            if (auto ref = shape.child("ref")) {
-                std::string rid = ref.attribute("id").as_string();
-                if (auto it = materialById.find(rid); it != materialById.end())
-                    entity.addComponent<MaterialComponent>().materialID = it->second;
-            }
+            // Track emissive for this specific shape
+            std::optional<AssetHandle> emissiveMaterialHandle;
 
-            if (auto emitter = shape.child("emitter")) {
-                std::string emitterType = emitter.attribute("type").as_string();
+            if (auto emitterNode = shape.child("emitter")) {
+                std::string emitterType = emitterNode.attribute("type").as_string();
                 if (emitterType == "area") {
-                    glm::vec3 L = parse_rgb(emitter.find_child_by_attribute("rgb","name","radiance"));
-                    auto& light = entity.addComponent<AreaLightComponent>();
-                    light.radiance = L;
+                    glm::vec3 radianceRgb =
+                            parse_rgb(emitterNode.find_child_by_attribute("rgb", "name", "radiance"));
+
+                    auto &areaLightComponent = entity.addComponent<AreaLightComponent>();
+                    areaLightComponent.radiance = radianceRgb;
+
+                    // Bake an emissive material variant for the area emitter
+                    AssetHandle bakedEmissiveHandle =
+                            bakeFromMitsuba(emitterNode, xmlPath, m_assets,
+                                            /*keyMode=*/BakeKey::ByIdThenHash,
+                                            /*isEmitter=*/true);
+
+                    emissiveMaterialHandle = bakedEmissiveHandle;
                 }
             }
 
+            // Decide which material to attach
+            // Preference rule: if entity has the tag `UseEmitterMaterialTag` and we baked an emissive, use that.
+            // Otherwise fall back to the <ref id="..."> BSDF link if present.
+            MaterialComponent &materialComponent = entity.addComponent<MaterialComponent>();
+
+            const bool preferEmissiveMaterial =
+                    entity.hasComponent<AreaLightComponent>() && emissiveMaterialHandle.has_value();
+
+            if (preferEmissiveMaterial) {
+                materialComponent.materialID = *emissiveMaterialHandle;
+            } else if (auto refNode = shape.child("ref")) {
+                std::string referencedId = refNode.attribute("id").as_string();
+                if (auto iterator = materialById.find(referencedId); iterator != materialById.end()) {
+                    materialComponent.materialID = iterator->second;
+                } else if (emissiveMaterialHandle.has_value()) {
+                    // Fallback: if BSDF id not found but emissive exists, attach emissive
+                    materialComponent.materialID = *emissiveMaterialHandle;
+                }
+            } else if (emissiveMaterialHandle.has_value()) {
+                // No <ref>, but emissive exists
+                materialComponent.materialID = *emissiveMaterialHandle;
+            }
         }
 
         return true;

@@ -26,3 +26,6 @@ assets:
   - id: 1430651076161149809
     type: Material
     path: Materials/cbox/bsdf_red_0.mat.yaml
+  - id: 11668450334107268217
+    type: Material
+    path: Materials/cbox_custom/emissive_1.mat.yaml

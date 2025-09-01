@@ -6,8 +6,6 @@
 
 
 namespace Pale {
-
-
     /*────────────────────────────────────────────────────────────────────────────*/
     /*  Helper macro – verify every struct is 16‑byte aligned & sized             */
     /*────────────────────────────────────────────────────────────────────────────*/
@@ -35,6 +33,7 @@ namespace Pale {
         Gaussian2DPoint,
         QuadricPoint
     };
+
     struct alignas(16) OrientedPoint {
         // QUadric version
         float c{};
@@ -92,6 +91,7 @@ namespace Pale {
         float diffuse{};
         float specular{};
         float phongExp{}; // 16
+        float3 emissive{};
     };
 
     CHECK_16(GPUMaterial);
@@ -182,40 +182,62 @@ namespace Pale {
 
     CHECK_16(CameraGPU);
 
+
+    struct GPULightRecord {
+        uint32_t lightType;          // 0 = mesh area
+        uint32_t geometryIndex;
+        uint32_t transformIndex;
+        uint32_t triangleOffset;     // into emissiveTriangles[]
+        uint32_t triangleCount;
+        float3 emissionRgb;    // radiance scale
+        float  totalArea;       // sum of areas of this light’s tris
+    };
+
+    struct GPUEmissiveTriangle {
+        uint32_t globalTriangleIndex; // index into your global triangle pool
+    };
+
     // UPLOAD CPU-GPU Structures
 
     struct GPUSceneBuffers {
-        BVHNode*    d_blasNodes{nullptr};
-        BLASRange*  d_blasRanges{nullptr};
-        TLASNode*   d_tlasNodes{nullptr};
-        Triangle*   d_triangles{nullptr};
-        Vertex*     d_vertices{nullptr};
-        Transform*  d_transforms{nullptr};
-        GPUMaterial*d_materials{nullptr};
-        uint32_t    blasNodeCount{0}, tlasNodeCount{0}, triangleCount{0}, vertexCount{0};
+        BVHNode *d_blasNodes{nullptr};
+        BLASRange *d_blasRanges{nullptr};
+        TLASNode *d_tlasNodes{nullptr};
+        Triangle *d_triangles{nullptr};
+        Vertex *d_vertices{nullptr};
+        Transform *d_transforms{nullptr};
+        GPUMaterial *d_materials{nullptr};
+        uint32_t blasNodeCount{0}, tlasNodeCount{0}, triangleCount{0}, vertexCount{0};
+
+        GPULightRecord*      d_lights{nullptr};
+        GPUEmissiveTriangle* d_emissiveTriangles{nullptr};
+        uint32_t             lightCount{0};
+        uint32_t             emissiveTriangleCount{0};
+
     };
 
     struct SensorGPU {
-        CameraGPU camera;                 // camera parameters
-        sycl::float4* framebuffer{nullptr}; // device pointer
+        CameraGPU camera; // camera parameters
+        sycl::float4 *framebuffer{nullptr}; // device pointer
         uint32_t width{}, height{};
     };
 
     // ---- PODs ---------------------------------------------------------------
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Camera = 0, Emitter = 1, Hybrid = 2, Adjoint = 3 };
+
     struct RayState {
         float3 rayOrigin;
         float3 rayDirection;
         float3 pathThroughput;
-        uint32_t     pixelIndex{};
-        uint32_t     bounceIndex{};
+        uint32_t pixelIndex{};
+        uint32_t bounceIndex{};
     };
 
     struct HitRecord {
-        uint32_t     didHit{};
-        uint32_t     geometryIndex{};
-        uint32_t     primitiveIndex{};
+        uint32_t didHit{};
+        uint32_t geometryIndex{};
+        uint32_t primitiveIndex{};
         float3 hitPosition;
         float3 shadingNormal;
     };
@@ -228,12 +250,12 @@ namespace Pale {
     };
 
     struct RenderIntermediatesGPU {
-        RayState* primaryRays;
-        RayState* extensionRaysA;
-        RayState* extensionRaysB;
-        HitRecord* hitRecords;
-        uint32_t* countPrimary;
-        uint32_t* countExtensionOut;
+        RayState *primaryRays;
+        RayState *extensionRaysA;
+        RayState *extensionRaysB;
+        HitRecord *hitRecords;
+        uint32_t *countPrimary;
+        uint32_t *countExtensionOut;
     };
 
     struct RenderPackage {
