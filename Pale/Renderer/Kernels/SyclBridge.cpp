@@ -161,15 +161,12 @@ namespace Pale {
         });
     }
 
-    SYCL_EXTERNAL [[clang::noinline]]
-    void dbgHook_Intersect(uint32_t) {}
 
     struct LaunchIntersectKernel {
 
         LaunchIntersectKernel(GPUSceneBuffers scene, const RayState* ray, WorldHit* hit) : m_scene(scene), m_rays(ray), m_hitRecords(hit) {}
         void operator()(sycl::id<1> globalId) const {
             const uint32_t rayIndex = globalId[0];
-            dbgHook_Intersect(rayIndex);            // set breakpoint here
             WorldHit hit{};
             RayState rayState = m_rays[rayIndex];
             intersectScene(rayState.ray, &hit, m_scene);

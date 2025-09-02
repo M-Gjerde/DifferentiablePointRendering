@@ -5,16 +5,15 @@ project(DifferentiablePointRendering
         LANGUAGES C CXX
 )
 
-
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Debug/Release backend choice
-find_package(AdaptiveCpp CONFIG REQUIRED)
+find_package(AdaptiveCpp REQUIRED)
 
-## Adding Vendor Libraries
+add_executable(${PROJECT_NAME})
+
+# Adding Vendor Libraries
 add_subdirectory(vendor/pugixml)
 include_directories(vendor/pugixml/src)
 
@@ -56,13 +55,13 @@ FetchContent_Declare(
         BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/yaml-cpp-build"
 )
 
-
-## SOURCES
+# SOURCES
 set(KERNEL_SOURCES
         Pale/Renderer/Kernels/SyclBridge.cpp
 )
 
-add_executable(${PROJECT_NAME}
+
+target_sources(${PROJECT_NAME} PRIVATE
         Pale/main.cpp
         Pale/Core/DeviceSelector.cpp
         Pale/Core/UUID.cpp
@@ -74,20 +73,11 @@ add_executable(${PROJECT_NAME}
         Pale/Renderer/SceneBuild.cpp
         Pale/Utils/stb_image_impl.cpp
         ${KERNEL_SOURCES}
-
 )
-
-# kernels: no modules
-set_source_files_properties(${KERNEL_SOURCES} PROPERTIES
-        CMAKE_CXX_SCAN_FOR_MODULES OFF
-        SKIP_PRECOMPILE_HEADERS ON
-        COMPILE_FLAGS "-Xclang -fno-implicit-modules -fno-implicit-module-maps -g -O0"
-)
-
 
 ## Module files
-target_sources(${PROJECT_NAME} PUBLIC
-        FILE_SET CXX_MODULES FILES
+target_sources(${PROJECT_NAME}
+        PUBLIC FILE_SET CXX_MODULES FILES
         Pale/Core/DeviceSelector.ixx
         Pale/Core/UUID.ixx
         Pale/Core/Log.ixx
@@ -140,20 +130,16 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # STB_Image
 include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
 
-if (CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(ACPP_TARGETS "generic")        # or set to your GPU backend: cuda / hip
-else ()
-    set(ACPP_TARGETS "omp.library-only")
-    target_compile_options(${PROJECT_NAME} PRIVATE -g -O0 -fno-omit-frame-pointer)
-    message(STATUS "Compiling using AdaptiveCpp without optimization")
-endif ()
-message(STATUS "Using AdaptiveCpp with targets: ${ACPP_TARGETS} for ${PROJECT_NAME}")
+
+#set(ACPP_TARGETS "omp.library-only" CACHE STRING "")
+#set(ACPP_USE_ACCELERATED_CPU OFF CACHE BOOL "")
+target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
+
+
 # Add SYCL to target via AdaptiveCpp's helper
-add_sycl_to_target(TARGET ${PROJECT_NAME}
-        TARGETS ${ACPP_TARGETS}
-        SOURCES
-        ${KERNEL_SOURCES}
-)
+target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp=libomp)  # or -fno-openmp
+
+add_sycl_to_target(TARGET ${PROJECT_NAME})
 
 # Cleanup old SYCL kernels in case a recompilation doesn't trigger a replacement
 set(ACPP_APP_BASE_DIR "$ENV{HOME}/.acpp/apps")
