@@ -1,39 +1,142 @@
-//
-// Created by magnus on 8/29/25.
-//
+#pragma once
 
 #include <sycl/sycl.hpp>
-#include "Renderer/GPUDataStructures.h"
+#include <Renderer/GPUDataStructures.h>
+
+#include "KernelHelpers.h"
 
 namespace Pale {
-    class PathTracerMeshKernel {
-    public:
-        PathTracerMeshKernel(
-        GPUSceneBuffers scene,
-        SensorGPU sensors
-        ) : m_scene(scene), m_sensor(sensors) {
+    // ── PathTracerMeshKernel.cpp ────────────────────────────────────────────────
+    // Returns the closest hit inside one mesh’s BLAS (object space)
+    SYCL_EXTERNAL bool intersectBLASMesh(const Ray &rayO,
+                                         uint32_t geomIdx,
+                                         LocalHit &out, const GPUSceneBuffers &scene) {
+        /* 1.  Locate the sub‑tree that belongs to this mesh
+               ────────────────────────────────────────────── */
+        const BLASRange &br = scene.blasRanges[geomIdx];
+        const BVHNode *nodes = scene.blasNodes + br.firstNode; // root = nodes[0]
+        const Triangle *tris = scene.triangles;
+        const Vertex *verts = scene.vertices;
+
+        /* 2.  Standard iterative depth‑first traversal
+               ────────────────────────────────────────────── */
+        float bestT = std::numeric_limits<float>::infinity();
+        bool hitAny = false;
+        float3 invDir = safeInvDir(rayO.direction);
+
+        SmallStack<4096> stack;
+        stack.push(0); // root
+
+        while (!stack.empty()) {
+            int nIdx = stack.pop();
+
+            const BVHNode &N = nodes[nIdx];
+
+            float tEntry;
+            if (!slabIntersectAABB(rayO, N, invDir, bestT, tEntry))
+                continue; // miss or farther than current best
+
+            if (N.triCount == 0) // ── internal ─────────────────────
+            {
+                /* Push children – right first so left is processed next.
+                   Children are stored immediately after the parent once
+                   we patched indices in buildBLASForAllMeshes().          */
+                // when you push children:
+
+                if (!stack.push(N.leftFirst + 1)) return hitAny; // overflow → miss
+                if (!stack.push(N.leftFirst)) return hitAny;
+            } else // ── leaf ─────────────────────────
+            {
+                for (uint32_t i = 0; i < N.triCount; ++i) {
+                    uint32_t triIdx = N.leftFirst + i; // *global* index
+
+                    const Triangle &T = tris[triIdx]; // existing line
+                    const float3 A = verts[T.v0].pos;
+                    const float3 B = verts[T.v1].pos;
+                    const float3 C = verts[T.v2].pos;
+
+                    float t = FLT_MAX;
+                    float u = 0;
+                    float v = 0;
+
+                    /* ---- new call --------------------------------------------------------- */
+                    if (intersectTriangle(rayO, A, B, C,
+                                          t, u, v, 1e-4f)
+                        && t < bestT) {
+                        bestT = t;
+                        hitAny = true;
+
+                        out.t = t;
+                        out.u = u;
+                        out.v = v;
+                        out.primitiveIndex = triIdx; // global – good for shading
+                    }
+                }
+            }
         }
 
+        return hitAny;
+    }
 
-        void operator()(sycl::item<1> item) const {
-            uint32_t id = item.get_linear_id();
-            traceOnePhoton(id, 0);
+    SYCL_EXTERNAL bool intersectScene(const Ray &rayWorld, WorldHit *worldHit, const GPUSceneBuffers &scene) {
+        /* abort if scene is empty */
+        //if (scene.tlasNodeCount == 0) return false;
+
+        const TLASNode *tlas = scene.tlasNodes;
+        const InstanceRecord *instances = scene.instances;
+        const Transform *xforms = scene.transforms;
+
+        /* ------------------------------------------------------------------ */
+        /* stack‑based depth‑first traversal                                   */
+        /* ------------------------------------------------------------------ */
+        bool foundAnyHit = false;
+        float3 invDir = safeInvDir(rayWorld.direction);;
+
+        SmallStack<> stack;
+        stack.push(0); // root
+        float bestTWorld = std::numeric_limits<float>::infinity();
+
+        while (!stack.empty()) {
+            int nIdx = stack.pop();
+            const TLASNode &node = tlas[nIdx];
+
+
+            float tEntry;
+            if (!slabIntersectAABB(rayWorld, node, invDir, bestTWorld, tEntry))
+                continue;
+
+            if (node.count == 0) // internal
+            {
+                if (!stack.push(node.rightChild)) return false;
+                if (!stack.push(node.leftChild)) return false;
+            } // leaf – exactly one instance
+            else {
+                const uint32_t instanceIndex = node.leftChild;
+                const InstanceRecord &instance = instances[instanceIndex];
+                const Transform &transform = xforms[instance.transformIndex];
+                Ray rayObject = toObjectSpace(rayWorld, transform);
+                LocalHit localHit{};
+                bool ok = false;
+                ok = intersectBLASMesh(rayObject, instance.geometryIndex, localHit, scene);
+
+                if (ok) {
+                    const float3 hitPointW = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
+                                                          transform);
+                    const float tWorld = dot(hitPointW - rayWorld.origin, rayWorld.direction);
+                    if (tWorld < 0.0f || tWorld >= bestTWorld) continue;
+                    bestTWorld = tWorld;
+                    foundAnyHit = true;
+
+                    worldHit->t = tWorld;
+                    worldHit->u = localHit.u;
+                    worldHit->v = localHit.v;
+                    worldHit->primitiveIndex = localHit.primitiveIndex;
+                    worldHit->geometryIndex = localHit.geometryIndex;
+                    worldHit->instanceIndex = instanceIndex;
+                    worldHit->hitPositionW = hitPointW;
+                }
+            }
         }
-
-
-        /*
-        SYCL_EXTERNAL static bool intersectBLASMesh(const Ray &rayO, uint32_t geomIdx, Hit &out, const SceneDesc &scene);
-        SYCL_EXTERNAL static bool intersectBLASQuadric(const Ray &rayO, uint32_t geomIdx, Hit &out, const SceneDesc &scene);
-
-        SYCL_EXTERNAL static bool intersectScene(const Ray &rayW, Hit *hit, const SceneDesc &scene);
-
-
-        //float traceVisibility(const Ray &rayIn, float tMax, const SceneDesc &scene, PCG32& rng) const;
-
-        */
-        SYCL_EXTERNAL void traceOnePhoton(uint64_t photonID, uint32_t totalPhotonCount) const;
-    private:
-        GPUSceneBuffers m_scene;
-        SensorGPU m_sensor;
-    };
+        return foundAnyHit;
+    }
 }

@@ -1,7 +1,5 @@
 // SyclWarmup.h (bridge, no modules)
 #pragma once
-#include <cstddef>
-#include <sycl/sycl.hpp>
 #include <glm/glm.hpp>
 
 #include "Renderer/GPUDataStructures.h"

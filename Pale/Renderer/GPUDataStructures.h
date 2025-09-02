@@ -153,15 +153,6 @@ namespace Pale {
     /*************************  Scene graph **************************/
     enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1 };
 
-    struct alignas(16) Instance {
-        GeometryType geomType{GeometryType::Mesh};
-        uint32_t geomIndex{0};
-        uint32_t materialIndex{0};
-        uint32_t transformIndex{0};
-    };
-
-    CHECK_16(Instance);
-
     struct alignas(16) MeshRange {
         uint32_t firstTri{}, triCount{};
         uint32_t firstVert{}, vertCount{}; // 16
@@ -197,20 +188,30 @@ namespace Pale {
         uint32_t globalTriangleIndex; // index into your global triangle pool
     };
 
+    struct InstanceRecord {
+        GeometryType geometryType{GeometryType::Mesh};
+        uint32_t geometryIndex{0}; // meshRanges index or pointRanges index
+        uint32_t materialIndex{0}; // dense index into GPUMaterial array
+        uint32_t transformIndex{0}; // index into transforms
+        std::string name;
+    };
+
+
     // UPLOAD CPU-GPU Structures
 
     struct GPUSceneBuffers {
-        BVHNode *d_blasNodes{nullptr};
-        BLASRange *d_blasRanges{nullptr};
-        TLASNode *d_tlasNodes{nullptr};
-        Triangle *d_triangles{nullptr};
-        Vertex *d_vertices{nullptr};
-        Transform *d_transforms{nullptr};
-        GPUMaterial *d_materials{nullptr};
+        BVHNode *blasNodes{nullptr};
+        BLASRange *blasRanges{nullptr};
+        TLASNode *tlasNodes{nullptr};
+        Triangle *triangles{nullptr};
+        Vertex *vertices{nullptr};
+        Transform *transforms{nullptr};
+        GPUMaterial *materials{nullptr};
+        InstanceRecord* instances{nullptr};
         uint32_t blasNodeCount{0}, tlasNodeCount{0}, triangleCount{0}, vertexCount{0};
 
-        GPULightRecord*      d_lights{nullptr};
-        GPUEmissiveTriangle* d_emissiveTriangles{nullptr};
+        GPULightRecord*      lights{nullptr};
+        GPUEmissiveTriangle* emissiveTriangles{nullptr};
         uint32_t             lightCount{0};
         uint32_t             emissiveTriangleCount{0};
 
@@ -226,20 +227,36 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Camera = 0, Emitter = 1, Hybrid = 2, Adjoint = 3 };
 
+    /*************************  Ray & Hit *****************************/
+    struct alignas(16) Ray {
+        float3 origin; // 16
+        float3 direction; // 32
+    };
+
     struct RayState {
-        float3 rayOrigin;
-        float3 rayDirection;
+        Ray ray;
         float3 pathThroughput;
         uint32_t pixelIndex{};
         uint32_t bounceIndex{};
     };
 
-    struct HitRecord {
-        uint32_t didHit{};
-        uint32_t geometryIndex{};
+    struct LocalHit {
+        float t;                 // object-space t
+        float u;                 // barycentric u
+        float v;                 // barycentric v
+        uint32_t primitiveIndex; // triangle or prim id within the BLAS geometry
+        uint32_t geometryIndex;  // mesh/geometry id within scene
+    };
+
+    struct WorldHit {
+        float t{};                 // world-space t
+        float u{};
+        float v{};
         uint32_t primitiveIndex{};
-        float3 hitPosition;
-        float3 shadingNormal;
+        uint32_t geometryIndex{};
+        uint32_t instanceIndex{};
+        float3 hitPositionW;
+        float3 geometricNormalW; // optional: fill if you have it cheaply
     };
 
     struct PathTracerSettings {
@@ -253,7 +270,7 @@ namespace Pale {
         RayState *primaryRays;
         RayState *extensionRaysA;
         RayState *extensionRaysB;
-        HitRecord *hitRecords;
+        WorldHit *hitRecords;
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;
     };

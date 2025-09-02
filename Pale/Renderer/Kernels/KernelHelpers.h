@@ -1,5 +1,5 @@
-// xorshift_sycl.hpp
 #pragma once
+
 #include <sycl/sycl.hpp>
 #include <cstdint>
 
@@ -102,4 +102,124 @@ inline uint64_t makePerItemSeed1D(uint64_t baseSeed, sycl::id<1> globalId) {
     return sm.nextUint64();
 }
 
+
+
 } // namespace pale::rng
+
+namespace Pale {
+    inline float3 safeInvDir(const float3 &dir) {
+        constexpr float EPS = 1e-8f; // treat anything smaller as “zero”
+        constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
+        float3 inv;
+        inv.x() = (sycl::fabs(dir.x()) < EPS) ? HUGE : 1.f / dir.x();
+        inv.y() = (sycl::fabs(dir.y()) < EPS) ? HUGE : 1.f / dir.y();
+        inv.z() = (sycl::fabs(dir.z()) < EPS) ? HUGE : 1.f / dir.z();
+        return inv;
+    }
+
+        inline bool slabIntersectAABB(const Ray &ray,
+                                  const TLASNode &node,
+                                  const float3 &invDir,
+                                  float tMaxLimit,
+                                  float &tEntry) {
+        float3 t0 = (node.aabbMin - ray.origin) * invDir;
+        float3 t1 = (node.aabbMax - ray.origin) * invDir;
+
+        float3 tmin3 = min(t0, t1);
+        float3 tmax3 = max(t0, t1);
+
+        float tmin = sycl::fmax(sycl::fmax(tmin3.x(), tmin3.y()), tmin3.z());
+        float tmax = sycl::fmin(sycl::fmin(tmax3.x(), tmax3.y()), tmax3.z());
+
+        /* 1.  Origin outside slabs AND entry after exit  ➜  miss          */
+        if (tmin > tmax) return false;
+
+        /* 2.  Whole box lies behind the ray                                  */
+        if (tmax < 0.0f) return false;
+
+        /* 3.  Already found a closer hit in the SAME SPACE                   */
+        if (tmin > tMaxLimit) return false;
+
+        tEntry = sycl::fmax(tmin, 0.0f); // clamp if origin is inside
+        return true;
+    }
+
+
+    inline bool slabIntersectAABB(const Ray &ray,
+                                  const BVHNode &node,
+                                  const float3 &invDir,
+                                  float tMaxLimit,
+                                  float &tEntry) {
+        float3 t0 = (node.aabbMin - ray.origin) * invDir;
+        float3 t1 = (node.aabbMax - ray.origin) * invDir;
+
+        float3 tmin3 = min(t0, t1);
+        float3 tmax3 = max(t0, t1);
+
+        float tmin = sycl::fmax(sycl::fmax(tmin3.x(), tmin3.y()), tmin3.z());
+        float tmax = sycl::fmin(sycl::fmin(tmax3.x(), tmax3.y()), tmax3.z());
+
+        /* 1.  Origin outside slabs AND entry after exit  ➜  miss          */
+        if (tmin > tmax) {
+            return false;
+        }
+        /* 2.  Whole box lies behind the ray                                  */
+        if (tmax < 0.0f) return false;
+
+        /* 3.  Already found a closer hit in the SAME SPACE                   */
+
+        if (tmin > tMaxLimit) return false;
+        constexpr float kEps = 1e-4f;
+        tEntry = sycl::fmax(tmin, kEps); // clamp if origin is inside
+        return true;
+    }
+
+    //──────────────── world → object and back ────────────────────────────────
+    inline Ray toObjectSpace(const Ray &rayW, const Transform &xf) {
+        Ray r;
+        /* 1.  Transform origin – w = 1                                      */
+        float4 hO = xf.worldToObject * float4{rayW.origin, 1.f};
+        r.origin = float3{hO.x(), hO.y(), hO.z()} / hO.w(); // <- perspective divide
+
+        /* 2.  Transform direction – w = 0  (no translation component)       */
+        float4 hD = xf.worldToObject * float4{rayW.direction, 0.f};
+        r.direction = normalize(float3{hD.x(), hD.y(), hD.z()}); // w is already 0
+        return r;
+    }
+
+    inline float3 toWorldPoint(const float3 &pO, const Transform &xf) {
+        float4 hp = xf.objectToWorld * float4{pO, 1.f};
+        return float3{hp.x(), hp.y(), hp.z()} / hp.w();
+    }
+
+    SYCL_EXTERNAL bool intersectTriangle(const Ray &ray, const float3 v0, const float3 v1, const float3 v2, float &outT, float &outU,
+    float &outV, float tMin)     {
+        const float3 e1 = v1 - v0;
+        const float3 e2 = v2 - v0;
+
+        const float3 h  = cross(ray.direction, e2);
+        const float  a  = dot(e1, h);
+
+        // 1. Parallel?
+        if (sycl::fabs(a) < 1.0e-4f) return false;
+
+        const float  f  = 1.0f / a;
+        const float3 s  = ray.origin - v0;
+        const float  u  = f * dot(s, h);
+        if (u < 0.0f || u > 1.0f) return false;
+
+        const float3 q  = cross(s, e1);
+        const float  v  = f * dot(ray.direction, q);
+        if (v < 0.0f || u + v > 1.0f) return false;
+
+        const float  t  = f * dot(e2, q);
+        if (t <= tMin) return false;  // behind the ray or farther than a previous hit
+
+        outT = t;
+        outU = u;
+        outV = v;
+
+        return true;
+    }
+
+}

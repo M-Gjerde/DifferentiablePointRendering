@@ -30,7 +30,7 @@ namespace Pale {
         m_intermediates.primaryRays = sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
         m_intermediates.extensionRaysA = sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
         m_intermediates.extensionRaysB = sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
-        m_intermediates.hitRecords = sycl::malloc_device<HitRecord>(m_rayQueueCapacity, m_queue);
+        m_intermediates.hitRecords = sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
 

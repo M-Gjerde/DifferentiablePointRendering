@@ -17,13 +17,6 @@ import Pale.Assets;
 export namespace Pale {
     class SceneBuild {
     public:
-        struct InstanceRecord {
-            GeometryType geometryType{GeometryType::Mesh};
-            uint32_t geometryIndex{0}; // meshRanges index or pointRanges index
-            uint32_t materialIndex{0}; // dense index into GPUMaterial array
-            uint32_t transformIndex{0}; // index into transforms
-            std::string name;
-        };
 
         struct BLASResult {
             std::vector<BVHNode> nodes; // the BLAS node array

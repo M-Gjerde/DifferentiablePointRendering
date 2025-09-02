@@ -21,13 +21,22 @@ namespace Pale {
         }
 
         m_context = sycl::context{m_device};
+
         m_queue = sycl::queue{
             m_device,
             &DeviceSelector::asyncHandler,
-            sycl::property_list{sycl::property::queue::in_order{}},
+             sycl::property_list{sycl::property::queue::in_order{}},
         };
 
+
         Log::PA_INFO("Using {}", m_device.get_info<sycl::info::device::name>());
+
+        m_queue.submit([&](sycl::handler& commandGroupHandler){
+            commandGroupHandler.single_task<class WarmupKernel>([](){});
+        }).wait();
+
+
+        Log::PA_INFO("Warmup kernel succeeded: {}", m_device.get_info<sycl::info::device::name>());
     }
 
     sycl::queue DeviceSelector::getQueue() {

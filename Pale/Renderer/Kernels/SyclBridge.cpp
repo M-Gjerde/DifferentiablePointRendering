@@ -1,10 +1,11 @@
 // SyclWarmup.cpp (no imports of your modules)
 #include <sycl/sycl.hpp>
-#include "SyclBridge.h"
+#include "Renderer/Kernels/SyclBridge.h"
 
-#include "Renderer/Kernels/KernelHelpers.h"
-#include "Renderer/Kernels/PathTracerKernels.h"
 #include "Renderer/GPUDataStructures.h"
+
+#include "Renderer/Kernels/PathTracerKernels.h"
+#include "Renderer/Kernels/KernelHelpers.h"
 
 namespace Pale {
     // ---- Tags ---------------------------------------------------------------
@@ -30,6 +31,7 @@ namespace Pale {
                 });
         }).wait();
     }
+
 
     // ---- Helpers ------------------------------------------------------------
     inline void resetDeviceCounter(sycl::queue& queue, uint32_t* counterPtr) {
@@ -62,7 +64,7 @@ namespace Pale {
 
                     const float uL = rng128.nextFloat();
                     uint32_t lightIndex = sycl::min((uint32_t)(uL * scene.lightCount), scene.lightCount - 1);
-                    const GPULightRecord light = scene.d_lights[lightIndex];
+                    const GPULightRecord light = scene.lights[lightIndex];
                     const float pdfSelectLight = 1.0f / (float)scene.lightCount;
 
                     // 2) pick a triangle uniformly from this light
@@ -70,12 +72,12 @@ namespace Pale {
                     const float uT = rng128.nextFloat();
                     const uint32_t triangleRelativeIndex = sycl::min((uint32_t)(uT * light.triangleCount), light.triangleCount - 1);
                     const GPUEmissiveTriangle emissiveTri =
-                        scene.d_emissiveTriangles[light.triangleOffset + triangleRelativeIndex];
+                        scene.emissiveTriangles[light.triangleOffset + triangleRelativeIndex];
 
-                    const Triangle tri = scene.d_triangles[emissiveTri.globalTriangleIndex];
-                    const Vertex v0 = scene.d_vertices[tri.v0];
-                    const Vertex v1 = scene.d_vertices[tri.v1];
-                    const Vertex v2 = scene.d_vertices[tri.v2];
+                    const Triangle tri = scene.triangles[emissiveTri.globalTriangleIndex];
+                    const Vertex v0 = scene.vertices[tri.v0];
+                    const Vertex v1 = scene.vertices[tri.v1];
+                    const Vertex v2 = scene.vertices[tri.v2];
 
                     // triangle area and geometric normal in object space
                     const float3 p0 = v0.pos, p1 = v1.pos, p2 = v2.pos;
@@ -99,7 +101,7 @@ namespace Pale {
                     const float3 xObj = p0*b0 + p1*b1 + p2*b2;
 
                     // transform to world
-                    const Transform xf = scene.d_transforms[light.transformIndex];
+                    const Transform xf = scene.transforms[light.transformIndex];
                     const float4 x4 = xf.objectToWorld * float4{xObj.x(), xObj.y(), xObj.z(), 1.f};
                     float3 x = float3{x4.x(), x4.y(), x4.z()};
                     // normal with inverse-transpose; worldToObject^T on a direction
@@ -142,8 +144,8 @@ namespace Pale {
 
                     // write ray
                     RayState ray{};
-                    ray.rayOrigin      = x;
-                    ray.rayDirection   = wo;
+                    ray.ray.origin      = x;
+                    ray.ray.direction   = wo;
                     ray.pathThroughput = initialThroughput;
                     ray.pixelIndex     = 0u;
                     ray.bounceIndex    = 0u;
@@ -159,24 +161,42 @@ namespace Pale {
         });
     }
 
+    SYCL_EXTERNAL [[clang::noinline]]
+    void dbgHook_Intersect(uint32_t) {}
+
+    struct LaunchIntersectKernel {
+
+        LaunchIntersectKernel(GPUSceneBuffers scene, const RayState* ray, WorldHit* hit) : m_scene(scene), m_rays(ray), m_hitRecords(hit) {}
+        void operator()(sycl::id<1> globalId) const {
+            const uint32_t rayIndex = globalId[0];
+            dbgHook_Intersect(rayIndex);            // set breakpoint here
+            WorldHit hit{};
+            RayState rayState = m_rays[rayIndex];
+            intersectScene(rayState.ray, &hit, m_scene);
+            m_hitRecords[rayIndex] = hit;
+        }
+
+    private:
 
 
-    inline void launchIntersectKernel(sycl::queue& queue,
+        GPUSceneBuffers m_scene{};
+        const RayState* m_rays{};
+        WorldHit* m_hitRecords{};
+
+    };
+
+    void launchIntersectKernel(sycl::queue& queue,
                                       GPUSceneBuffers scene,
                                       const RayState* raysIn,
                                       uint32_t rayCount,
-                                      HitRecord* hitRecords) {
+                                      WorldHit* hitRecords) {
         queue.submit([&](sycl::handler& cgh) {
+            LaunchIntersectKernel kernel(scene, raysIn, hitRecords);
             cgh.parallel_for<IntersectKernelTag>(
-                sycl::range<1>(rayCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t i = globalId[0];
-                    HitRecord hit{};
-                    // TODO: BVH traversal
-                    hit.didHit = 0;
-                    hitRecords[i] = hit;
-                });
+                            sycl::range<1>(rayCount), kernel);
         });
+        queue.wait_and_throw(); // DEBUG: ensure the thread blocks here
+
     }
     /*
     inline void launchShadeKernel(sycl::queue& queue,
@@ -225,14 +245,7 @@ namespace Pale {
     // ---- Orchestrator -------------------------------------------------------
     void submitKernel(RenderPackage& pkg) {
 
-        pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
-
-
-        pkg.queue.submit([&](sycl::handler& commandGroupHandler) {
-            PathTracerMeshKernel kernel(pkg.scene, pkg.sensor);
-            commandGroupHandler.parallel_for<PathTracerMeshKernel>(sycl::range<1>(pkg.sensor.width * pkg.sensor.height), kernel);
-        });
-
+        //pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
         // Ray generation mode
         switch (pkg.settings.rayGenMode) {
         case RayGenMode::Emitter:
@@ -260,6 +273,11 @@ namespace Pale {
 
         for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
             launchIntersectKernel(pkg.queue, pkg.scene, raysIn, activeCount, pkg.intermediates.hitRecords);
+
+            std::vector<WorldHit> worldHits(activeCount);
+            pkg.queue.memcpy(worldHits.data(), pkg.intermediates.hitRecords, activeCount * sizeof(WorldHit)).wait();
+
+            int debug = 1;
 
             /*
             launchIntersectKernel(queue, scene, raysIn, activeCount, sensor.hitRecords);
