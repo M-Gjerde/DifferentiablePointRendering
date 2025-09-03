@@ -219,7 +219,7 @@ namespace Pale {
 
     struct SensorGPU {
         CameraGPU camera; // camera parameters
-        sycl::float4 *framebuffer{nullptr}; // device pointer
+        float4 *framebuffer{nullptr}; // device pointer
         uint32_t width{}, height{};
     };
 
@@ -234,8 +234,8 @@ namespace Pale {
     };
 
     struct RayState {
-        Ray ray;
-        float3 pathThroughput;
+        Ray ray{};
+        float3 pathThroughput{};
         uint32_t pixelIndex{};
         uint32_t bounceIndex{};
     };
@@ -249,21 +249,21 @@ namespace Pale {
     };
 
     struct WorldHit {
-        float t{};                 // world-space t
+        float t{FLT_MAX};                 // world-space t
         float u{};
         float v{};
         uint32_t primitiveIndex{};
         uint32_t geometryIndex{};
         uint32_t instanceIndex{};
-        float3 hitPositionW;
+        float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW; // optional: fill if you have it cheaply
     };
 
     struct PathTracerSettings {
-        uint32_t photonsPerLaunch = 1e4;
+        uint32_t photonsPerLaunch = 1e5;
         uint64_t randomSeed = 42;
         RayGenMode rayGenMode = RayGenMode::Emitter;
-        uint32_t maxBounces = 12;
+        uint32_t maxBounces = 4;
     };
 
     struct RenderIntermediatesGPU {

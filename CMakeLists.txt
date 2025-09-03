@@ -133,7 +133,7 @@ include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
 
 #set(ACPP_TARGETS "omp.library-only" CACHE STRING "")
 #set(ACPP_USE_ACCELERATED_CPU OFF CACHE BOOL "")
-target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
+#target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
 
 
 # Add SYCL to target via AdaptiveCpp's helper

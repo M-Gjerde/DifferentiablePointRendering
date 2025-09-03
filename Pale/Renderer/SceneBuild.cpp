@@ -10,6 +10,7 @@ module;
 #include <unordered_set>
 #include <glm/glm.hpp>
 #include "Renderer/GPUDataStructures.h"
+#include "Renderer/Kernels/KernelHelpers.h"
 
 
 module Pale.Render.SceneBuild;
@@ -190,8 +191,8 @@ namespace Pale {
             glm::vec3 forward = glm::mat3(world) * glm::vec3(0.0f, 0.0f, -1.0f);
             forward = glm::normalize(forward);
             gpuCam.forward = float3{forward.x, forward.y, forward.z};
-            gpuCam.width = 600;
-            gpuCam.height = 600;
+            gpuCam.width = cameraComponent.camera.width;
+            gpuCam.height = cameraComponent.camera.height;
             gpuCam.firstPixel = 0;
             outBuildProducts.cameraGPUs.push_back(gpuCam);
         }
@@ -229,6 +230,7 @@ namespace Pale {
                         buildOptions.bvhMaxLeafTriangles);
         // range.firstNode is filled in appendBLAS
         BLASResult result{};
+        result.localTriangles = std::move(localTriangles);
         result.nodes = std::move(localNodes);
         result.range = {0u, 0u};
         result.triPermutation = std::move(localTriangleOrder);
@@ -239,45 +241,7 @@ namespace Pale {
 
     // ---- splice into global pools, reorder tris, patch leaves, record range ----
     void SceneBuild::appendBLAS(BuildProducts &buildProducts,
-                                const BLASResult &blasResult) {
-        const MeshRange &meshRange = buildProducts.meshRanges[blasResult.meshIndex];
-        const uint32_t globalTriangleStart = meshRange.firstTri;
-        const uint32_t localTriangleCount = meshRange.triCount;
-        // A) reorder the mesh triangle slice using the permutation
-        //    triPermutation[i_new] = i_old (local indices)
-        std::vector<Triangle> reorderedTriangles;
-        reorderedTriangles.reserve(localTriangleCount);
-        for (uint32_t iNew = 0; iNew < localTriangleCount; ++iNew) {
-            const uint32_t oldLocal = blasResult.triPermutation[iNew];
-            reorderedTriangles.push_back(
-                buildProducts.triangles[globalTriangleStart + oldLocal]
-            );
-        }
-        std::copy(reorderedTriangles.begin(),
-                  reorderedTriangles.end(),
-                  buildProducts.triangles.begin() + globalTriangleStart);
-        // Also fill a global old->new mapping if you want it later
-        if (buildProducts.trianglePermutation.empty())
-            buildProducts.trianglePermutation.resize(buildProducts.triangles.size());
-        for (uint32_t iNew = 0; iNew < localTriangleCount; ++iNew) {
-            const uint32_t iOld = blasResult.triPermutation[iNew];
-            buildProducts.trianglePermutation[globalTriangleStart + iOld] =
-                    globalTriangleStart + iNew;
-        }
-        // B) patch leaf ranges from local to global triangle indices
-        std::vector<BVHNode> patchedNodes = blasResult.nodes;
-        for (BVHNode &node: patchedNodes) {
-            if (node.isLeaf())
-                node.leftFirst += globalTriangleStart; // shift leaf's first triangle
-        }
-        // C) append nodes and record BLAS range
-        const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
-        buildProducts.bottomLevelNodes.insert(buildProducts.bottomLevelNodes.end(),
-                                              patchedNodes.begin(), patchedNodes.end());
-        buildProducts.bottomLevelRanges.push_back({
-            firstNode,
-            static_cast<uint32_t>(patchedNodes.size())
-        });
+                                const BLASResult &blasResult, const MeshRange &meshRange) {
     }
 
     static inline float get(const float3 &v, int axis) { return axis == 0 ? v.x() : axis == 1 ? v.y() : v.z(); }
@@ -304,13 +268,12 @@ namespace Pale {
             float3 wmax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
             for (int c = 0; c < 8; ++c) {
                 const bool bx = c & 4, by = c & 2, bz = c & 1;
-                const float4 pObj{
+                const float3 pObj{
                     bx ? root.aabbMax.x() : root.aabbMin.x(),
                     by ? root.aabbMax.y() : root.aabbMin.y(),
-                    bz ? root.aabbMax.z() : root.aabbMin.z(),
-                    0.0f
+                    bz ? root.aabbMax.z() : root.aabbMin.z()
                 };
-                const float3 pW = float3(xf.objectToWorld * pObj);
+                float3 pW = toWorldPoint(pObj, xf);
                 wmin = min(wmin, pW);
                 wmax = max(wmax, pW);
             }
@@ -332,39 +295,35 @@ namespace Pale {
             N.aabbMin = bmin;
             N.aabbMax = bmax;
             const uint32_t count = end - start;
-            if (count <= std::max(1u, opts.tlasMaxLeafInstances)) {
-                N.count = count; // leaf
-                N.leftChild = boxes[start].inst; // instance index
-                N.rightChild = (count == 2) ? boxes[start + 1].inst : 0;
-                return n;
+            if (count == 1) {
+                N.count = 1; // leaf
+                N.leftChild = boxes[start].inst; // points to Instance index
+                N.rightChild = 0;
+            } else {
+                N.count = 0; // internal
+
+                float3 cmin{FLT_MAX, FLT_MAX, FLT_MAX}, cmax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+                for (uint32_t i = start; i < end; ++i) {
+                    float3 cent = (boxes[i].bmin + boxes[i].bmax) * 0.5f;
+
+                    cmin = min(cmin, cent);
+                    cmax = max(cmax, cent);
+                }
+                float3 ext = cmax - cmin;
+                int axis = (ext.x() > ext.y() && ext.x() > ext.z()) ? 0 : (ext.y() > ext.z()) ? 1 : 2;
+                float pivot = (cmin[axis] + cmax[axis]) * 0.5f;
+
+                auto midIter = std::partition(boxes.begin() + start, boxes.begin() + end,
+                                              [&](const Box &b) {
+                                                  float3 cc = (b.bmin + b.bmax) * 0.5f;
+                                                  return cc[axis] < pivot;
+                                              });
+                int mid = int(midIter - boxes.begin());
+                if (mid == start || mid == end) mid = start + count / 2;
+
+                N.leftChild = build(start, mid);
+                N.rightChild = build(mid, end);
             }
-            float3 cmin{FLT_MAX, FLT_MAX, FLT_MAX}, cmax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
-            for (uint32_t i = start; i < end; ++i) {
-                const float3 c = {
-                    (boxes[i].bmin.x() + boxes[i].bmax.x()) * 0.5f,
-                    (boxes[i].bmin.y() + boxes[i].bmax.y()) * 0.5f,
-                    (boxes[i].bmin.z() + boxes[i].bmax.z()) * 0.5f
-                };
-                cmin = min(cmin, c);
-                cmax = max(cmax, c);
-            }
-            const float3 ext = {cmax.x() - cmin.x(), cmax.y() - cmin.y(), cmax.z() - cmin.z()};
-            const int axis = (ext.x() >= ext.y() && ext.x() >= ext.z()) ? 0 : (ext.y() >= ext.z() ? 1 : 2);
-            const float pivot = 0.5f * (get(cmin, axis) + get(cmax, axis));
-            auto midIt = std::partition(boxes.begin() + start, boxes.begin() + end,
-                                        [&](const Box &b) {
-                                            const float3 c = {
-                                                (b.bmin.x() + b.bmax.x()) * 0.5f,
-                                                (b.bmin.y() + b.bmax.y()) * 0.5f,
-                                                (b.bmin.z() + b.bmax.z()) * 0.5f
-                                            };
-                                            return get(c, axis) < pivot;
-                                        });
-            uint32_t mid = static_cast<uint32_t>(midIt - boxes.begin());
-            if (mid == start || mid == end) mid = start + count / 2;
-            N.count = 0; // internal
-            N.leftChild = build(start, mid);
-            N.rightChild = build(mid, end);
             return n;
         };
         R.rootIndex = boxes.empty() ? UINT32_MAX : build(0, static_cast<uint32_t>(boxes.size()));

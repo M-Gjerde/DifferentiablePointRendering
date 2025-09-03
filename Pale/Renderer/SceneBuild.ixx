@@ -19,6 +19,7 @@ export namespace Pale {
     public:
 
         struct BLASResult {
+            std::vector<Triangle> localTriangles;
             std::vector<BVHNode> nodes; // the BLAS node array
             BLASRange range; // [firstNode, nodeCount] in the global BVH node array
             std::vector<uint32_t> triPermutation; // local triangle reordering
@@ -108,8 +109,49 @@ export namespace Pale {
                                                       buildProducts.triangles,
                                                       buildProducts.vertices,
                                                       buildOptions);
-                appendBLAS(buildProducts, blasResult);
+
+                uint32_t globalTriStart = meshRange.firstTri;
+                // 1.  Temporary copy that will hold triangles in BVH order
+                std::vector<Triangle> reordered;
+                reordered.reserve(blasResult.localTriangles.size());
+
+                for (unsigned int i: blasResult.triPermutation) {
+                    Triangle T = blasResult.localTriangles[i];
+
+                    // convert vertex indices back to GLOBAL space
+                    T.v0 += meshRange.firstVert;
+                    T.v1 += meshRange.firstVert;
+                    T.v2 += meshRange.firstVert;
+
+                    reordered.push_back(T);
+                }
+
+                // 2.  Overwrite the slice in m_tris with the reordered triangles
+                std::copy(reordered.begin(), reordered.end(),
+                          buildProducts.triangles.begin() + globalTriStart);
+
+                // 3.  Now patch the BVH nodes ----------------------------------------------
+                //     (children still contiguous, only need global offset)
+
+                uint32_t firstNode = uint32_t(buildProducts.bottomLevelNodes.size());
+
+                // 4C) Patch all *leaf* nodes so their triangle slices shift by globalTriStart
+                for (BVHNode &N: blasResult.nodes) {
+                    if (N.isLeaf())
+                        N.leftFirst += globalTriStart;
+                }
+
+                //---------------- 5.  Append to the big BLAS pool & record range -----
+                buildProducts.bottomLevelNodes.insert(buildProducts.bottomLevelNodes.end(),
+                                   blasResult.nodes.begin(), blasResult.nodes.end());
+
+                buildProducts.bottomLevelRanges.push_back({
+                        firstNode,
+                        uint32_t(blasResult.nodes.size())
+                    });
+                //appendBLAS(buildProducts, blasResult, meshRange);
             }
+
             TLASResult tlasResult = buildTLAS(buildProducts.instances,
                                               buildProducts.bottomLevelRanges,
                                               buildProducts.bottomLevelNodes,
@@ -155,7 +197,7 @@ export namespace Pale {
                                     const std::vector<Transform> &transforms,
                                     const BuildOptions &opts);
 
-        static void appendBLAS(BuildProducts &buildProducts, const BLASResult &blasResult);
+        static void appendBLAS(BuildProducts &buildProducts, const BLASResult &blasResult, const MeshRange &);
 
         static void computePacking(BuildProducts &buildProducts);
     };

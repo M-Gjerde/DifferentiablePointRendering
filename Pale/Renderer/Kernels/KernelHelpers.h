@@ -2,6 +2,7 @@
 
 #include <sycl/sycl.hpp>
 #include <cstdint>
+#include "Renderer/GPUDataTypes.h"
 
 namespace Pale::rng {
 
@@ -192,8 +193,8 @@ namespace Pale {
         return float3{hp.x(), hp.y(), hp.z()} / hp.w();
     }
 
-    SYCL_EXTERNAL bool intersectTriangle(const Ray &ray, const float3 v0, const float3 v1, const float3 v2, float &outT, float &outU,
-    float &outV, float tMin)     {
+    SYCL_EXTERNAL inline bool intersectTriangle(const Ray &ray, const float3 v0, const float3 v1, const float3 v2, float &outT, float &outU,
+                                                float &outV, float tMin)     {
         const float3 e1 = v1 - v0;
         const float3 e2 = v2 - v0;
 
@@ -220,6 +221,55 @@ namespace Pale {
         outV = v;
 
         return true;
+    }
+
+    inline float3 buildTangentFrisvad(const float3& unitNormal) {
+        // Frisvad 2012: "Building an Orthonormal Basis, Revisited"
+        // Handles all normals without branching issues.
+        const float sign = std::copysign(1.0f, unitNormal.z());
+        const float a = -1.0f / (sign + unitNormal.z());
+        const float b = unitNormal.x() * unitNormal.y() * a;
+
+        float3 tangent{
+            1.0f + sign * unitNormal.x() * unitNormal.x() * a,
+            sign * b,
+            -sign * unitNormal.x()
+        };
+        return normalize(tangent);
+    }
+
+
+    inline void buildOrthonormalBasis(const float3& unitNormal, float3& tangent, float3& bitangent) {
+        tangent = buildTangentFrisvad(unitNormal);
+        bitangent = cross(unitNormal, tangent);
+    }
+
+    inline float3 sampleCosineHemisphere(const float3& unitNormal, rng::Xorshift128& rng, float& pdf) {
+        // 1) Draw two uniform variates
+        const float uniformSample1 = rng.nextFloat(); // in [0,1)
+        const float uniformSample2 = rng.nextFloat(); // in [0,1)
+
+        // 2) Map to cosine-weighted polar coords on hemisphere (z = up)
+        const float radial = sycl::sqrt(uniformSample1);
+        const float azimuth = 6.28318530717958647692f * uniformSample2; // 2*pi
+        const float localX = radial * sycl::cos(azimuth);
+        const float localY = radial * sycl::sin(azimuth);
+        const float localZ = sycl::sqrt(sycl::fmax(0.0f, 1.0f - uniformSample1)); // cosTheta
+
+        // 3) Build ONB around the normal
+        float3 tangent, bitangent;
+        buildOrthonormalBasis(unitNormal, tangent, bitangent);
+
+        // 4) Transform to world
+        const float3 sampledDirectionW =
+            tangent * localX + bitangent * localY + unitNormal * localZ;
+
+        // 5) Normalize for safety and compute pdf = cosTheta / pi
+        const float3 unitSampledDirectionW = normalize(sampledDirectionW);
+        const float cosineTheta = sycl::fmax(0.0f, dot(unitSampledDirectionW, unitNormal));
+        pdf = cosineTheta * (1.0f / 3.14159265358979323846f);
+
+        return unitSampledDirectionW;
     }
 
 }

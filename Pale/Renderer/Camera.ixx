@@ -17,7 +17,10 @@ export namespace Pale {
         Camera(const float degFov, const float width, const float height, const float nearP, const float farP);
 
         [[nodiscard]] const glm::mat4& getProjectionMatrix() const;
+        void  setProjectionMatrix(glm::mat4& mat){m_projectionMatrix = mat;};
 
+        float width = 0;
+        float height = 0;
     private:
         glm::mat4 m_projectionMatrix = glm::mat4(1.0f);
 

@@ -42,6 +42,28 @@ namespace Pale {
         return parse_csv_vec3(attrs(n, "value", "1,1,1"));
     }
 
+    static float computeFovYDegrees(float fovDegrees, const std::string &fovAxis,
+                                    int filmWidth, int filmHeight) {
+        const float aspect = static_cast<float>(filmWidth) / static_cast<float>(filmHeight);
+        if (fovAxis == "y") return fovDegrees;
+        if (fovAxis == "x") {
+            const float fovXrad = glm::radians(fovDegrees);
+            const float fovYrad = 2.0f * std::atan(std::tan(fovXrad * 0.5f) / aspect);
+            return glm::degrees(fovYrad);
+        }
+        // "smaller": fov applies to the smaller image dimension
+        if (filmWidth <= filmHeight) {
+            // smaller is width ⇒ given fov is fovX
+            const float fovXrad = glm::radians(fovDegrees);
+            const float fovYrad = 2.0f * std::atan(std::tan(fovXrad * 0.5f) / aspect);
+            return glm::degrees(fovYrad);
+        } else {
+            // smaller is height ⇒ given fov is fovY
+            return fovDegrees;
+        }
+    }
+
+
     bool SceneSerializer::deserialize(const std::filesystem::path &xmlPath) {
         Log::PA_INFO("Loading xml file: {}", xmlPath.string());
 
@@ -61,10 +83,73 @@ namespace Pale {
         // (2) sensor -> camera
         if (auto sensor = scene.child("sensor")) {
             Entity cameraEntity = m_scene->createEntity("Camera");
-            auto &camera = cameraEntity.addComponent<CameraComponent>();
+            auto &cameraComponent = cameraEntity.addComponent<CameraComponent>();
+
+            const std::string sensorType = sensor.attribute("type").as_string();
+            cameraComponent.projectionType =
+                    (sensorType == "orthographic")
+                        ? CameraComponent::Type::Orthographic
+                        : CameraComponent::Type::Perspective;
+
+            // film
+            const auto filmNode = sensor.child("film");
+            const int filmWidth = filmNode.child("integer").attribute("name").as_string() == std::string("width")
+                                      ? filmNode.child("integer").attribute("value").as_int()
+                                      : filmNode.find_child_by_attribute("integer", "name", "width").attribute("value").
+                                      as_int();
+            const int filmHeight = filmNode.find_child_by_attribute("integer", "name", "height").attribute("value").
+                    as_int();
+            const float aspectRatio = static_cast<float>(filmWidth) / static_cast<float>(filmHeight);
+
+            // frustum
+            const float nearClip = sensor.find_child_by_attribute("float", "name", "near_clip").attribute("value").
+                    as_float(0.01f);
+            const float farClip = sensor.find_child_by_attribute("float", "name", "far_clip").attribute("value").
+                    as_float(1000.0f);
+            const float fovDegreesRaw = sensor.find_child_by_attribute("float", "name", "fov").attribute("value").
+                    as_float(45.0f);
+            const std::string fovAxis =
+                    sensor.find_child_by_attribute("string", "name", "fov_axis").attribute("value").
+                    as_string("smaller");
+
+            const float fovYDegrees = computeFovYDegrees(fovDegreesRaw, fovAxis, filmWidth, filmHeight);
+
+            // to_world via <lookat>
+            const auto toWorld = sensor.child("transform");
+            const auto lookAt = toWorld.child("lookat");
+            auto parseVec3 = [](const char *s) {
+                float x = 0, y = 0, z = 0;
+                std::sscanf(s, "%f,%f,%f", &x, &y, &z);
+                return glm::vec3{x, y, z};
+            };
+            const glm::vec3 cameraOrigin = parseVec3(lookAt.attribute("origin").as_string());
+            const glm::vec3 cameraTarget = parseVec3(lookAt.attribute("target").as_string());
+            const glm::vec3 cameraUpHint = parseVec3(lookAt.attribute("up").as_string());
+
+            // View matrix: world→camera
+            const glm::mat4 viewMatrix = glm::lookAt(cameraOrigin, cameraTarget, cameraUpHint);
+
+            // World transform (camera→world) is the inverse of view
+            const glm::mat4 worldFromCamera = glm::inverse(viewMatrix);
+
+            // Projection matrix
+            const float fovYRadians = glm::radians(fovYDegrees);
+            glm::mat4 projectionMatrix = glm::perspectiveFovRH_ZO(fovYRadians, static_cast<float>(filmWidth), static_cast<float>(filmHeight), nearClip, farClip);
+
+            // Optionally fix Vulkan's Y if your NDC expects flipped Y:
+            // projectionMatrix[1][1] *= -1.0f;
+
+            // Store
+            cameraComponent.camera.setProjectionMatrix(projectionMatrix) ;
+            cameraComponent.camera.width = filmWidth;
+            cameraComponent.camera.height = filmHeight;
+            cameraComponent.primary = true;
+            auto &transform = cameraEntity.getComponent<TransformComponent>();
+            transform.setTransform(worldFromCamera);
+
         } else {
             Log::PA_INFO("No <sensor> found; creating default camera");
-            // optionally create a default camera entity here…
+            // create default if desired
         }
 
 

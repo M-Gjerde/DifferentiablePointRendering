@@ -1,6 +1,7 @@
 //
 // Created by magnus on 8/29/25.
 //
+#pragma once
 
 #include <glm/glm.hpp>
 #include <sycl/sycl.hpp>
@@ -128,7 +129,7 @@ namespace Pale {
         float3(float x, float y, float z) : v{x, y, z} {
         }
 
-        explicit float3(float x) : v{x, x, x} {
+        explicit float3(float scalar) : v{scalar, scalar, scalar} {
         }
 
         explicit float3(sycl::vec<float, 4> const &b) : v{b.x(), b.y(), b.z()} {
