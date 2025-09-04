@@ -13,7 +13,7 @@ module Pale.Render.PathTracer;
 namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings& settings) : m_queue(q), m_settings(settings) {
 
-        m_settings.photonsPerLaunch = 1e5;
+        m_settings.photonsPerLaunch = 1e8;
     }
 
     // Call this before first render, or inside submitKernel() after computing capacity.
@@ -31,7 +31,6 @@ namespace Pale {
 
         m_intermediates.primaryRays = sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
         m_intermediates.extensionRaysA = sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
-        m_intermediates.extensionRaysB = sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
         m_intermediates.hitRecords = sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
@@ -45,7 +44,6 @@ namespace Pale {
         if (!m_rayQueueCapacity) return;
         sycl::free(m_intermediates.primaryRays, m_queue);
         sycl::free(m_intermediates.extensionRaysA, m_queue);
-        sycl::free(m_intermediates.extensionRaysB, m_queue);
         sycl::free(m_intermediates.hitRecords, m_queue);
         sycl::free(m_intermediates.countPrimary, m_queue);
         sycl::free(m_intermediates.countExtensionOut, m_queue);

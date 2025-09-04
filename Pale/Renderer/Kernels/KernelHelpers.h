@@ -272,4 +272,26 @@ namespace Pale {
         return unitSampledDirectionW;
     }
 
+    inline void sampleCosineHemisphere(
+        rng::Xorshift128& rng, const float3 &n,
+        float3 &outDir, float &outPdf) {
+        float u1 = rng.nextFloat();
+        float u2 = rng.nextFloat();
+
+        float r = sycl::sqrt(u1);
+        float phi = 2.f * M_PIf * u2;
+
+        float x = r * sycl::cos(phi);
+        float y = r * sycl::sin(phi);
+        float z = sycl::sqrt(1.f - u1);
+
+        // build an ONB around n
+        float3 up = fabs(n.z()) < .999f ? float3{0, 0, 1} : float3{1, 0, 0};
+        float3 tang = normalize(cross(up, n));
+        float3 bit = cross(n, tang);
+
+        outDir = normalize(x * tang + y * bit + z * n);
+        outPdf = max(0.f, dot(outDir, n)) / M_PIf; // cosθ/π
+    }
+
 }

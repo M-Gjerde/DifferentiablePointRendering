@@ -236,7 +236,6 @@ namespace Pale {
     struct RayState {
         Ray ray{};
         float3 pathThroughput{};
-        uint32_t pixelIndex{};
         uint32_t bounceIndex{};
     };
 
@@ -269,7 +268,6 @@ namespace Pale {
     struct RenderIntermediatesGPU {
         RayState *primaryRays;
         RayState *extensionRaysA;
-        RayState *extensionRaysB;
         WorldHit *hitRecords;
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;

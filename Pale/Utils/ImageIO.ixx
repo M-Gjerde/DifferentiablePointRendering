@@ -19,8 +19,8 @@ export namespace Pale::Utils {
     // gammaEncode:  typical 2.2 for sRGB-like output
     // normalizeHDR: if true, first map global RGB min..max to [0,1]
     inline bool savePNGWithToneMap(
-        const std::filesystem::path &filePath,
-        const std::vector<float> &inputRGBA,
+        const std::filesystem::path& filePath,
+        const std::vector<float>& inputRGBA,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         float exposureEV = 0.0f,
@@ -91,7 +91,8 @@ export namespace Pale::Utils {
                                   static_cast<int>(imageHeight),
                                   4, rgba8.data(),
                                   static_cast<int>(imageWidth * 4)) != 0;
-        } else {
+        }
+        else {
             std::vector<std::uint8_t> rgb8(pixelCount * 3u);
             for (std::size_t i = 0; i < pixelCount; ++i) {
                 rgb8[i * 3 + 0] = encodeChannel(inputRGBA[i * 4 + 0]);
@@ -109,8 +110,8 @@ export namespace Pale::Utils {
     // PNG saver: expects display-space (already tone-mapped + gamma-encoded) RGBA in [0,1]
     // If writeAlpha=false, the alpha channel is ignored and RGB is written.
     inline bool savePNG(
-        const std::filesystem::path &filePath,
-        const std::vector<float> &displaySpaceRGBA,
+        const std::filesystem::path& filePath,
+        const std::vector<float>& displaySpaceRGBA,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         bool writeAlpha = false) {
@@ -142,7 +143,8 @@ export namespace Pale::Utils {
                                   /*components*/4,
                                   rgba8.data(),
                                   static_cast<int>(imageWidth * 4)) != 0;
-        } else {
+        }
+        else {
             std::vector<std::uint8_t> rgb8(pixelCount * 3u);
             for (std::size_t i = 0; i < pixelCount; ++i) {
                 rgb8[i * 3 + 0] = toUNorm8(displaySpaceRGBA[i * 4 + 0]);
@@ -158,57 +160,98 @@ export namespace Pale::Utils {
         }
     }
 
-    // --- PFM (Portable Float Map) -------------------------------------------
-    // Writes floating point image in PFM format. Data is written as 32-bit floats.
-    // channels = 1 → grayscale "Pf", channels = 3 → RGB "PF".
-    // PFM convention is bottom-to-top; set flipY=true if your buffer is top-to-bottom.
-    inline bool savePFM(const std::string &filePath,
-                        const float *floatData,
-                        std::uint32_t imageWidth,
-                        std::uint32_t imageHeight,
-                        std::uint32_t channels = 3,
-                        bool flipY = true) {
+    // --- Core writer: accepts only 1 or 3 channels (PFM spec) -------------------
+    inline bool writePFM_RGBorGray(const std::filesystem::path& filePath,
+                                   const float* floatData,
+                                   std::uint32_t imageWidth,
+                                   std::uint32_t imageHeight,
+                                   std::uint32_t channels, // 1 or 3
+                                   bool flipY = true) {
         if (!floatData || imageWidth == 0 || imageHeight == 0) return false;
         if (channels != 1 && channels != 3) return false;
+
+        if (!std::filesystem::exists(filePath.parent_path())) {
+            std::filesystem::create_directories(filePath.parent_path());
+        }
 
         std::ofstream fileStream(filePath, std::ios::binary);
         if (!fileStream) return false;
 
-        // Header
-        // "PF" for RGB, "Pf" for grayscale
+        // Header: "PF" for RGB, "Pf" for grayscale
         fileStream << (channels == 3 ? "PF\n" : "Pf\n");
         fileStream << imageWidth << " " << imageHeight << "\n";
+        fileStream << "-1.0\n"; // little-endian scale
 
-        // Scale: negative means little-endian (common on x86)
-        // Typically -1.0 is used.
-        fileStream << "-1.0\n";
-
-        // Write rows. PFM expects the first row in the file to be the bottom row of the image.
         const std::size_t rowFloatCount = static_cast<std::size_t>(imageWidth) * channels;
         for (std::uint32_t row = 0; row < imageHeight; ++row) {
             const std::uint32_t sourceRow = flipY ? (imageHeight - 1 - row) : row;
-            const float *rowPtr = floatData + static_cast<std::size_t>(sourceRow) * rowFloatCount;
-            fileStream.write(reinterpret_cast<const char *>(rowPtr),
+            const float* rowPtr = floatData + static_cast<std::size_t>(sourceRow) * rowFloatCount;
+            fileStream.write(reinterpret_cast<const char*>(rowPtr),
                              static_cast<std::streamsize>(rowFloatCount * sizeof(float)));
             if (!fileStream) return false;
         }
         return true;
     }
 
-    // Convenience overload for std::vector<float> (linear HDR)
-    inline bool savePFM(
-        const std::filesystem::path &filePath,
-        const std::vector<float> &linearFloatData,
-        std::uint32_t imageWidth,
-        std::uint32_t imageHeight,
-        std::uint32_t channels = 3,
-        bool flipY = true) {
-        if (!std::filesystem::exists(filePath.parent_path())) {
-            std::filesystem::create_directories(filePath.parent_path());
-        }
+    // --- Convenience: accepts vector with 1, 3, or 4 channels -------------------
+    inline bool savePFM(const std::filesystem::path& filePath,
+                        const std::vector<float>& linearFloatDataRGBAorRGB,
+                        std::uint32_t imageWidth,
+                        std::uint32_t imageHeight,
+                        bool flipY = true,
+                        bool writeAlphaAsPf = false,
+                        std::filesystem::path alphaFilePath = {}) {
+        if (imageWidth == 0 || imageHeight == 0) return false;
 
-        const std::size_t expected = std::size_t(imageWidth) * imageHeight * channels;
-        if (linearFloatData.size() < expected) return false;
-        return savePFM(filePath, linearFloatData.data(), imageWidth, imageHeight, channels, flipY);
+        const std::size_t pixelCount = static_cast<std::size_t>(imageWidth) * imageHeight;
+        if (linearFloatDataRGBAorRGB.size() % pixelCount != 0) return false;
+
+        const std::uint32_t channels =
+            static_cast<std::uint32_t>(linearFloatDataRGBAorRGB.size() / pixelCount);
+
+        if (channels == 1) {
+            return writePFM_RGBorGray(filePath,
+                                      linearFloatDataRGBAorRGB.data(),
+                                      imageWidth, imageHeight, 1, flipY);
+        }
+        if (channels == 3) {
+            return writePFM_RGBorGray(filePath,
+                                      linearFloatDataRGBAorRGB.data(),
+                                      imageWidth, imageHeight, 3, flipY);
+        }
+        if (channels == 4) {
+            // 1) Write RGB by dropping alpha
+            std::vector<float> rgbPixels;
+            rgbPixels.resize(pixelCount * 3u);
+            for (std::size_t i = 0, j = 0; i < pixelCount; ++i) {
+                rgbPixels[j++] = linearFloatDataRGBAorRGB[4 * i + 0];
+                rgbPixels[j++] = linearFloatDataRGBAorRGB[4 * i + 1];
+                rgbPixels[j++] = linearFloatDataRGBAorRGB[4 * i + 2];
+            }
+            const bool okRGB = writePFM_RGBorGray(filePath,
+                                                  rgbPixels.data(),
+                                                  imageWidth, imageHeight, 3, flipY);
+            if (!okRGB) return false;
+
+            // 2) Optionally write alpha as Pf
+            if (writeAlphaAsPf) {
+                if (alphaFilePath.empty()) {
+                    alphaFilePath = filePath;
+                    alphaFilePath.replace_filename(
+                        alphaFilePath.stem().string() + std::string(".alpha") + alphaFilePath.extension().string());
+                }
+                std::vector<float> alphaPixels;
+                alphaPixels.resize(pixelCount);
+                for (std::size_t i = 0; i < pixelCount; ++i) {
+                    alphaPixels[i] = linearFloatDataRGBAorRGB[4 * i + 3];
+                }
+                const bool okA = writePFM_RGBorGray(alphaFilePath,
+                                                    alphaPixels.data(),
+                                                    imageWidth, imageHeight, 1, flipY);
+                if (!okA) return false;
+            }
+            return true;
+        }
+        return false; // unsupported channel count
     }
 }
