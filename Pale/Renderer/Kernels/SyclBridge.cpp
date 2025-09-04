@@ -21,6 +21,107 @@ namespace Pale {
     struct ShadeKernelTag {
     };
 
+    float traceVisibility(const Ray& rayIn, float tMax, const GPUSceneBuffers& scene) {
+        WorldHit worldHit{};
+        if (!intersectScene(rayIn, &worldHit, scene)) return 1.0f;
+
+        return 0.0f; // opaque geometry
+    }
+
+    inline void launchDirectShadeKernel(sycl::queue& queue,
+                                        GPUSceneBuffers scene,
+                                        SensorGPU sensor,
+                                        const WorldHit* hitRecords,
+                                        const RayState* raysIn,
+                                        uint32_t rayCount,
+                                        RenderIntermediatesGPU renderIntermediates,
+                                        const PathTracerSettings& settings
+
+    ) {
+        queue.submit([&](sycl::handler& cgh) {
+            uint64_t baseSeed = settings.randomSeed;
+            cgh.parallel_for<ShadeKernelTag>(
+                sycl::range<1>(rayCount),
+                [=](sycl::id<1> globalId) {
+                    const uint32_t i = globalId[0];
+                    constexpr float kEps = 1e-4f;
+
+                    // Choose any generator you like:
+                    const RayState rayState = raysIn[i];
+                    float3 throughput = rayState.pathThroughput;
+
+                    // Construct Ray towards camera
+                    auto& camera = sensor.camera;
+                    float3 toPinhole = camera.pos - rayState.ray.origin;
+                    float distanceToPinhole = length(toPinhole);
+                    float3 directionToPinhole = toPinhole / distanceToPinhole;
+                    // distance to camera:
+
+                    Ray contribRay{
+                        .origin = rayState.ray.origin + directionToPinhole * kEps,
+                        .direction = directionToPinhole
+                    };
+                    // Shoot contribution ray towards camera
+                    // If we have non-zero transmittance
+                    float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
+                    if (traceVisibility(contribRay, tMax, scene) > 0.0f) {
+                        // perspective projection
+                        float4 clip = camera.proj * (camera.view * float4(rayState.ray.origin, 1.f));
+
+                        if (clip.w() > 0.0f) {
+                            float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
+                            if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
+                                /* 2)  raster coords (clamp to avoid the right/top fenceposts) */
+                                uint32_t px = sycl::clamp(
+                                    static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
+                                    0u, camera.width - 1);
+                                uint32_t py = sycl::clamp(
+                                    static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
+                                    0u, camera.height - 1);
+
+                                // FLIP Y
+                                const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
+
+                                float4& dst = sensor.framebuffer[idx];
+                                const sycl::atomic_ref<float,
+                                                       sycl::memory_order::relaxed,
+                                                       sycl::memory_scope::device,
+                                                       sycl::access::address_space::global_space>
+                                    r(dst.x());
+                                const sycl::atomic_ref<float,
+                                                       sycl::memory_order::relaxed,
+                                                       sycl::memory_scope::device,
+                                                       sycl::access::address_space::global_space>
+                                    g(dst.y());
+                                const sycl::atomic_ref<float,
+                                                       sycl::memory_order::relaxed,
+                                                       sycl::memory_scope::device,
+                                                       sycl::access::address_space::global_space>
+                                    b(dst.z());
+                                const sycl::atomic_ref<float,
+                                                       sycl::memory_order::relaxed,
+                                                       sycl::memory_scope::device,
+                                                       sycl::access::address_space::global_space>
+                                    a(dst.w());
+
+                                // Attenuation (Geometry term)
+                                float surfaceCos = sycl::fabs(dot(float3{0, -1, 0}, directionToPinhole));
+                                float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
+                                float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
+                                float3 color = throughput * G_cam;
+
+                                r.fetch_add(color.x());
+                                g.fetch_add(color.y());
+                                b.fetch_add(color.z());
+                                a.store(1.0f);
+                            };
+                        }
+                    }
+                });
+        });
+    }
+
+
     // ---- Warmup -------------------------------------------------------------
     void warmupKernelSubmit(void* queuePtr, std::size_t totalWorkItems) {
         auto& queue = *static_cast<sycl::queue*>(queuePtr);
@@ -156,18 +257,33 @@ namespace Pale {
                 m_hitRecords[rayIndex] = worldHit;
                 return;
             }
-            const Triangle& tri = m_scene.triangles[worldHit.primitiveIndex];
-            auto& instance = m_scene.instances[worldHit.instanceIndex];
-            auto& transform = m_scene.transforms[instance.transformIndex];
 
-            // Build geometric normal in world space and normalize
-            float3 p0W = toWorldPoint(m_scene.vertices[tri.v0].pos, transform);
-            float3 p1W = toWorldPoint(m_scene.vertices[tri.v1].pos, transform);
-            float3 p2W = toWorldPoint(m_scene.vertices[tri.v2].pos, transform);
-            float3 geometricNormalW = normalize(cross(p1W - p0W, p2W - p0W));
-            worldHit.geometricNormalW = geometricNormalW;
-            std::string name = instance.name;
-            m_hitRecords[rayIndex] = worldHit;
+            auto& instance = m_scene.instances[worldHit.instanceIndex];
+            switch (instance.geometryType) {
+            case GeometryType::Mesh:
+                {
+                    const Triangle& tri = m_scene.triangles[worldHit.primitiveIndex];
+                    auto& transform = m_scene.transforms[instance.transformIndex];
+
+                    // Build geometric normal in world space and normalize
+                    float3 p0W = toWorldPoint(m_scene.vertices[tri.v0].pos, transform);
+                    float3 p1W = toWorldPoint(m_scene.vertices[tri.v1].pos, transform);
+                    float3 p2W = toWorldPoint(m_scene.vertices[tri.v2].pos, transform);
+                    float3 geometricNormalW = normalize(cross(p1W - p0W, p2W - p0W));
+                    worldHit.geometricNormalW = geometricNormalW;
+                    std::string name = instance.name;
+                    m_hitRecords[rayIndex] = worldHit;
+                }
+                break;
+            case GeometryType::PointCloud:
+                {
+                    auto& surfel = m_scene.points[worldHit.primitiveIndex];
+                    const float3 normalObject = normalize(cross(surfel.tanU, surfel.tanV));
+                    worldHit.geometricNormalW = normalObject;
+                    m_hitRecords[rayIndex] = worldHit;
+                }
+                break;
+            }
         }
 
     private:
@@ -190,105 +306,7 @@ namespace Pale {
     }
 
 
-    float traceVisibility(const Ray& rayIn, float tMax, const GPUSceneBuffers& scene) {
-        WorldHit worldHit{};
-        if (!intersectScene(rayIn, &worldHit, scene)) return 1.0f;
 
-        return (worldHit.t >= tMax) ? 1.0f : 0.0f; // opaque geometry
-    }
-
-    inline void launchDirectShadeKernel(sycl::queue& queue,
-                                        GPUSceneBuffers scene,
-                                        SensorGPU sensor,
-                                        const WorldHit* hitRecords,
-                                        const RayState* raysIn,
-                                        uint32_t rayCount,
-                                        RenderIntermediatesGPU renderIntermediates,
-                                        const PathTracerSettings& settings
-
-    ) {
-        queue.submit([&](sycl::handler& cgh) {
-            uint64_t baseSeed = settings.randomSeed;
-            cgh.parallel_for<ShadeKernelTag>(
-                sycl::range<1>(rayCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t i = globalId[0];
-                    constexpr float kEps = 1e-4f;
-
-                    // Choose any generator you like:
-                    const RayState rayState = raysIn[i];
-                    float3 throughput = rayState.pathThroughput;
-
-                    // Construct Ray towards camera
-                    auto& camera = sensor.camera;
-                    float3 toPinhole = camera.pos - rayState.ray.origin;
-                    float distanceToPinhole = length(toPinhole);
-                    float3 directionToPinhole = toPinhole / distanceToPinhole;
-                    // distance to camera:
-
-                    Ray contribRay{
-                        .origin = rayState.ray.origin + directionToPinhole * kEps,
-                        .direction = directionToPinhole
-                    };
-                    // Shoot contribution ray towards camera
-                    // If we have non-zero transmittance
-                    float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    if (traceVisibility(contribRay, tMax, scene) > 0.0f) {
-                        // perspective projection
-                        float4 clip = camera.proj * (camera.view * float4(rayState.ray.origin, 1.f));
-
-                        if (clip.w() > 0.0f) {
-                            float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
-                            if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
-                                /* 2)  raster coords (clamp to avoid the right/top fenceposts) */
-                                uint32_t px = sycl::clamp(
-                                    static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
-                                    0u, camera.width - 1);
-                                uint32_t py = sycl::clamp(
-                                    static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
-                                    0u, camera.height - 1);
-
-                                // FLIP Y
-                                const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
-
-                                float4& dst = sensor.framebuffer[idx];
-                                const sycl::atomic_ref<float,
-                                                       sycl::memory_order::relaxed,
-                                                       sycl::memory_scope::device,
-                                                       sycl::access::address_space::global_space>
-                                    r(dst.x());
-                                const sycl::atomic_ref<float,
-                                                       sycl::memory_order::relaxed,
-                                                       sycl::memory_scope::device,
-                                                       sycl::access::address_space::global_space>
-                                    g(dst.y());
-                                const sycl::atomic_ref<float,
-                                                       sycl::memory_order::relaxed,
-                                                       sycl::memory_scope::device,
-                                                       sycl::access::address_space::global_space>
-                                    b(dst.z());
-                                const sycl::atomic_ref<float,
-                                                       sycl::memory_order::relaxed,
-                                                       sycl::memory_scope::device,
-                                                       sycl::access::address_space::global_space>
-                                    a(dst.w());
-
-                                // Attenuation (Geometry term)
-                                float surfaceCos   = sycl::fabs(dot(float3{0, -1, 0}, directionToPinhole));
-                                float cameraCos    = sycl::fabs(dot(camera.forward, -directionToPinhole));
-                                float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
-                                float3 color = throughput * G_cam;
-
-                                r.fetch_add(color.x());
-                                g.fetch_add(color.y());
-                                b.fetch_add(color.z());
-                                a.store(1.0f);
-                            };
-                        }
-                    }
-                });
-        });
-    }
 
     inline void launchShadeKernel(sycl::queue& queue,
                                   GPUSceneBuffers scene,
@@ -321,7 +339,18 @@ namespace Pale {
 
                     float3 throughput = rayState.pathThroughput;
                     auto& instance = scene.instances[worldHit.instanceIndex];
-                    auto& material = scene.materials[instance.materialIndex];
+                    GPUMaterial material;
+                    switch (instance.geometryType) {
+                    case GeometryType::Mesh:
+                        material = scene.materials[instance.materialIndex];
+                        break;
+                    case GeometryType::PointCloud:
+                        {
+                            auto val = scene.points[worldHit.primitiveIndex];
+                            material.baseColor = val.color;
+                        }
+                        break;
+                    }
 
                     // Construct Ray towards camera
                     auto& camera = sensor.camera;
@@ -378,11 +407,10 @@ namespace Pale {
                                     a(dst.w());
 
                                 // BRDF to camera direction
-                                float3 brdf  = material.baseColor / M_PIf;
-                                float  cosS   = sycl::fmax(0.f, dot(worldHit.geometricNormalW, directionToPinhole));
+                                float3 brdf = material.baseColor / M_PIf;
                                 // Attenuation (Geometry term)
-                                float surfaceCos   = sycl::fabs(dot(worldHit.geometricNormalW, directionToPinhole));
-                                float cameraCos    = sycl::fabs(dot(camera.forward, -directionToPinhole));
+                                float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, directionToPinhole));
+                                float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
                                 float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
                                 float3 color = throughput * brdf * G_cam;
 
@@ -390,6 +418,7 @@ namespace Pale {
                                 g.fetch_add(color.y());
                                 b.fetch_add(color.z());
                                 a.store(1.0f);
+
                             };
                         }
                     }
@@ -399,14 +428,14 @@ namespace Pale {
                     sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
 
                     float3 shadingNormal = worldHit.geometricNormalW;
-                    float  cosTheta       = sycl::fmax(0.f, dot(newDirection, shadingNormal));
-                    float  pdfCosine      = cosinePDF;                         // cosθ/π
-                    float  minPdf         = 1e-6f;
-                    pdfCosine             = sycl::fmax(pdfCosine, minPdf);
+                    float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
+                    float pdfCosine = cosinePDF; // cosθ/π
+                    float minPdf = 1e-6f;
+                    pdfCosine = sycl::fmax(pdfCosine, minPdf);
 
                     // Lambertian BRDF
-                    float3 albedo         = material.baseColor;                   // in [0,1]
-                    float3 brdf           = albedo * (1.0f / M_PIf);
+                    float3 albedo = material.baseColor; // in [0,1]
+                    float3 brdf = albedo * (1.0f / M_PIf);
 
                     // Sample next
                     RayState next{};
@@ -450,11 +479,12 @@ namespace Pale {
 
         // Launch direct light kernel
 
-        /*
+
+
         launchDirectShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
-                              pkg.intermediates.primaryRays, activeCount,
-                              pkg.intermediates, pkg.settings);
-        */
+                                pkg.intermediates.primaryRays, activeCount,
+                                pkg.intermediates, pkg.settings);
+
 
         for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
             pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1).wait();

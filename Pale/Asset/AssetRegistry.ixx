@@ -14,6 +14,7 @@ export module Pale.Assets:Registry;
 // partitions you depend on
 import Pale.Assets.Core;      // re-export Core to consumers of :Registry
 import Pale.UUID;         // internal use only (not re-exported)
+import Pale.Log;
 
 
 // -------------------- exported API --------------------
@@ -44,6 +45,7 @@ export namespace Pale {
             switch (assetType) {
                 case AssetType::Mesh: return "Mesh";
                 case AssetType::Material: return "Material";
+                case AssetType::PointCloud: return "PointCloud";
                 case AssetType::Shader: return "Shader";
                 default: return "Unknown";
             }
@@ -61,6 +63,10 @@ export namespace Pale {
             if (lower == "shader") {
                 return AssetType::Shader;
             }
+            if (lower == "pointcloud") {
+                return AssetType::PointCloud;
+            }
+            Log::PA_WARN("Failed to convert AssetType string {}", text);
             return AssetType::Unknown;
         }
 

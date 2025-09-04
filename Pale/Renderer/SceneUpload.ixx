@@ -24,6 +24,7 @@ export namespace Pale {
 
             // geometry sizes
             g.vertexCount = static_cast<uint32_t>(bp.vertices.size());
+            g.pointCount = static_cast<uint32_t>(bp.points.size());
             g.triangleCount = static_cast<uint32_t>(bp.triangles.size());
             g.blasNodeCount = static_cast<uint32_t>(bp.bottomLevelNodes.size());
             g.tlasNodeCount = static_cast<uint32_t>(bp.topLevelNodes.size());
@@ -35,6 +36,7 @@ export namespace Pale {
             // alloc
             g.vertices = (Vertex *) sycl::malloc_device(g.vertexCount * sizeof(Vertex), queue);
             g.triangles = (Triangle *) sycl::malloc_device(g.triangleCount * sizeof(Triangle), queue);
+            g.points = (Point *) sycl::malloc_device(g.pointCount * sizeof(Point), queue);
             g.blasNodes = (BVHNode *) sycl::malloc_device(g.blasNodeCount * sizeof(BVHNode), queue);
             g.blasRanges = (BLASRange *) sycl::malloc_device(bp.bottomLevelRanges.size() * sizeof(BLASRange), queue);
             g.tlasNodes = (TLASNode *) sycl::malloc_device(g.tlasNodeCount * sizeof(TLASNode), queue);
@@ -58,6 +60,9 @@ export namespace Pale {
             if (g.triangleCount)
                 queue.memcpy(g.triangles, bp.triangles.data(),
                              g.triangleCount * sizeof(Triangle));
+            if (g.pointCount)
+                queue.memcpy(g.points, bp.points.data(),
+                             g.pointCount * sizeof(Point));
             if (g.blasNodeCount)
                 queue.memcpy(g.blasNodes, bp.bottomLevelNodes.data(),
                              g.blasNodeCount * sizeof(BVHNode));

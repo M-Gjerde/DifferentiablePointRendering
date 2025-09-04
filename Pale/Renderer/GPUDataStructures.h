@@ -22,9 +22,7 @@ namespace Pale {
 
     struct alignas(16) Triangle {
         uint32_t v0{}, v1{}, v2{}; // 12 B
-        uint32_t _pad0{}; // 16 B     ← keeps centroid 16‑aligned
         float3 centroid; // 16 B
-        uint32_t _pad1{}; // 32 B ↦ sizeof()==32
     };
 
     CHECK_16(Triangle);
@@ -34,24 +32,16 @@ namespace Pale {
         QuadricPoint
     };
 
-    struct alignas(16) OrientedPoint {
-        // QUadric version
-        float c{};
-        float threshold{};
-        float beta{};
-        float _pad0{}; // align next float2 to 16‑byte boundary
-        uint32_t material{};
-        uint32_t _pad1{}; // 32 B
-        // 2DGS
-        float opacity;
-        float3 color{};
-        float covX;
-        float covY;
-        PointType type = QuadricPoint;
-        uint32_t _pad2{}; // 32 B
+    struct alignas(16) Point {
+        float3 position{0.0f};
+        float3 tanU{0.0f};
+        float3 tanV{0.0f};
+        float2 scale{0.0f};
+        float3 color{0.0f};
+        float opacity{0.0f};
     };
 
-    CHECK_16(OrientedPoint);
+    CHECK_16(Point);
 
     struct alignas(16) BVHNode {
         float3 aabbMin; // 16
@@ -121,10 +111,10 @@ namespace Pale {
 
         Transform transform{};
 
-        void addTriangle(const float3 &p0,
-                         const float3 &e1,
-                         const float3 &e2,
-                         const float3 &n,
+        void addTriangle(const float3& p0,
+                         const float3& e1,
+                         const float3& e2,
+                         const float3& n,
                          float area) {
             if (triangleCount >= MAX_TRIANGLES)
                 return; // (host version throws; device just skips)
@@ -151,6 +141,8 @@ namespace Pale {
     CHECK_16(MeshLight);
 
     /*************************  Scene graph **************************/
+    constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
+
     enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1 };
 
     struct alignas(16) MeshRange {
@@ -175,13 +167,13 @@ namespace Pale {
 
 
     struct GPULightRecord {
-        uint32_t lightType;          // 0 = mesh area
+        uint32_t lightType; // 0 = mesh area
         uint32_t geometryIndex;
         uint32_t transformIndex;
-        uint32_t triangleOffset;     // into emissiveTriangles[]
+        uint32_t triangleOffset; // into emissiveTriangles[]
         uint32_t triangleCount;
-        float3 emissionRgb;    // radiance scale
-        float  totalArea;       // sum of areas of this light’s tris
+        float3 emissionRgb; // radiance scale
+        float totalArea; // sum of areas of this light’s tris
     };
 
     struct GPUEmissiveTriangle {
@@ -191,8 +183,9 @@ namespace Pale {
     struct InstanceRecord {
         GeometryType geometryType{GeometryType::Mesh};
         uint32_t geometryIndex{0}; // meshRanges index or pointRanges index
-        uint32_t materialIndex{0}; // dense index into GPUMaterial array
+        uint32_t materialIndex{0}; // mesh only; point cloud = kInvalidMaterialIndex
         uint32_t transformIndex{0}; // index into transforms
+        uint32_t blasRangeIndex; // index into bottomLevelRanges of mesh or pointcloud
         std::string name;
     };
 
@@ -200,26 +193,30 @@ namespace Pale {
     // UPLOAD CPU-GPU Structures
 
     struct GPUSceneBuffers {
-        BVHNode *blasNodes{nullptr};
-        BLASRange *blasRanges{nullptr};
-        TLASNode *tlasNodes{nullptr};
-        Triangle *triangles{nullptr};
-        Vertex *vertices{nullptr};
-        Transform *transforms{nullptr};
-        GPUMaterial *materials{nullptr};
+        BVHNode* blasNodes{nullptr};
+        BLASRange* blasRanges{nullptr};
+        TLASNode* tlasNodes{nullptr};
+        Triangle* triangles{nullptr};
+        Vertex* vertices{nullptr};
+        Transform* transforms{nullptr};
+        GPUMaterial* materials{nullptr};
+        Point* points{nullptr};
         InstanceRecord* instances{nullptr};
-        uint32_t blasNodeCount{0}, tlasNodeCount{0}, triangleCount{0}, vertexCount{0};
+        uint32_t blasNodeCount{0};
+        uint32_t tlasNodeCount{0};
+        uint32_t triangleCount{0};
+        uint32_t vertexCount{0};
+        uint32_t pointCount{0};
 
-        GPULightRecord*      lights{nullptr};
+        GPULightRecord* lights{nullptr};
         GPUEmissiveTriangle* emissiveTriangles{nullptr};
-        uint32_t             lightCount{0};
-        uint32_t             emissiveTriangleCount{0};
-
+        uint32_t lightCount{0};
+        uint32_t emissiveTriangleCount{0};
     };
 
     struct SensorGPU {
         CameraGPU camera; // camera parameters
-        float4 *framebuffer{nullptr}; // device pointer
+        float4* framebuffer{nullptr}; // device pointer
         uint32_t width{}, height{};
     };
 
@@ -240,19 +237,14 @@ namespace Pale {
     };
 
     struct LocalHit {
-        float t;                 // object-space t
-        float u;                 // barycentric u
-        float v;                 // barycentric v
+        float t; // object-space t
         uint32_t primitiveIndex; // triangle or prim id within the BLAS geometry
-        uint32_t geometryIndex;  // mesh/geometry id within scene
+        uint32_t geometryIndex; // mesh/geometry id within scene
     };
 
     struct WorldHit {
-        float t{FLT_MAX};                 // world-space t
-        float u{};
-        float v{};
+        float t{FLT_MAX}; // world-space t
         uint32_t primitiveIndex{};
-        uint32_t geometryIndex{};
         uint32_t instanceIndex{};
         float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW; // optional: fill if you have it cheaply
@@ -266,11 +258,11 @@ namespace Pale {
     };
 
     struct RenderIntermediatesGPU {
-        RayState *primaryRays;
-        RayState *extensionRaysA;
-        WorldHit *hitRecords;
-        uint32_t *countPrimary;
-        uint32_t *countExtensionOut;
+        RayState* primaryRays;
+        RayState* extensionRaysA;
+        WorldHit* hitRecords;
+        uint32_t* countPrimary;
+        uint32_t* countExtensionOut;
     };
 
     struct RenderPackage {

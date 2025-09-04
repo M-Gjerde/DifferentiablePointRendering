@@ -62,9 +62,9 @@ inline void orthonormalizeTangents(glm::vec3 &tangentU, glm::vec3 &tangentV)
 
 export namespace Pale {
 
-struct PLYPointLoader : IAssetLoader<Point>
+struct PLYPointLoader : IAssetLoader<PointAsset>
 {
-    AssetPtr<Point> load(const AssetHandle& /*id*/, const AssetMeta& meta) override
+    AssetPtr<PointAsset> load(const AssetHandle& /*id*/, const AssetMeta& meta) override
     {
         Log::PA_INFO("PLYPointLoader: loading '{}'", meta.path.string());
 
@@ -140,14 +140,14 @@ struct PLYPointLoader : IAssetLoader<Point>
         }
 
         // Build asset
-        auto pointAsset = std::make_shared<Point>();
+        auto pointAsset = std::make_shared<PointAsset>();
         pointAsset->points.emplace_back();
         PointGeometry &geom = pointAsset->points.back();
 
         geom.positions.resize(vertexCount);
         geom.tanU.resize(vertexCount);
         geom.tanV.resize(vertexCount);
-        geom.scale.resize(vertexCount);
+        geom.scales.resize(vertexCount);
         geom.colors.resize(vertexCount);
         geom.opacities.resize(vertexCount);
 
@@ -157,7 +157,7 @@ struct PLYPointLoader : IAssetLoader<Point>
             geom.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
             geom.tanU[i]      = glm::vec3(tuFloats[i3 + 0],  tuFloats[i3 + 1],  tuFloats[i3 + 2]);
             geom.tanV[i]      = glm::vec3(tvFloats[i3 + 0],  tvFloats[i3 + 1],  tvFloats[i3 + 2]);
-            geom.scale[i]     = glm::vec2(scaleFloats[i2 + 0], scaleFloats[i2 + 1]);
+            geom.scales[i]     = glm::vec2(scaleFloats[i2 + 0], scaleFloats[i2 + 1]);
             geom.colors[i]    = glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]);
             geom.opacities[i] = opacityFloats[i];
             ply_detail::orthonormalizeTangents(geom.tanU[i], geom.tanV[i]);

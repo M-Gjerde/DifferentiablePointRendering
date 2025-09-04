@@ -16,14 +16,13 @@ export namespace Pale {
         std::vector<glm::vec3> positions{};
         std::vector<glm::vec3> tanU{};
         std::vector<glm::vec3> tanV{};
-        std::vector<glm::vec2> scale{};
-
+        std::vector<glm::vec2> scales{};
         std::vector<glm::vec3> colors{};
-        std::vector<float> opacities{};
+        std::vector<float>     opacities{};
     };
 
 
-    struct Point : IAsset {
+    struct PointAsset : IAsset {
         std::vector<PointGeometry> points{};
     };
 

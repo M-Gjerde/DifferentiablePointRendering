@@ -19,7 +19,8 @@ export namespace Pale {
         AssetRegistry& registry;
         explicit AssetIndexFromRegistry(AssetRegistry& r) : registry(r) {}
         AssetHandle importPath(const std::filesystem::path& p, AssetType t) override {
-            if (auto id = registry.findByPath(p)) return *id;
+            if (auto id = registry.findByPath(p))
+                return *id;
             return registry.import(p, t);
         }
         std::optional<AssetHandle> findByPath(const std::filesystem::path& p) const override {

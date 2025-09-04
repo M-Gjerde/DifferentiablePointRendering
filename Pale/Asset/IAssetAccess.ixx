@@ -17,7 +17,7 @@ export namespace Pale {
         virtual ~IAssetAccess() = default;
         virtual AssetPtr<Mesh>     getMesh(AssetHandle) = 0;
         virtual AssetPtr<Material> getMaterial(AssetHandle) = 0;
-        virtual AssetPtr<Point> getPointcloud(AssetHandle) = 0;
+        virtual AssetPtr<PointAsset> getPointCloud(AssetHandle) = 0;
     };
 
     class AssetAccessFromManager final : public IAssetAccess {
@@ -25,7 +25,7 @@ export namespace Pale {
         explicit AssetAccessFromManager(AssetManager& m) : m_assetManager(m) {}
         AssetPtr<Mesh>     getMesh(AssetHandle h) override     { return m_assetManager.get<Mesh>(h); }
         AssetPtr<Material> getMaterial(AssetHandle h) override { return m_assetManager.get<Material>(h); }
-        AssetPtr<Point> getPointcloud(AssetHandle h) override { return m_assetManager.get<Point>(h); }
+        AssetPtr<PointAsset> getPointCloud(AssetHandle h) override { return m_assetManager.get<PointAsset>(h); }
     private:
         AssetManager& m_assetManager;
     };

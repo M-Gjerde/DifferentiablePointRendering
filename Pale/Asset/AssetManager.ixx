@@ -45,14 +45,19 @@ export namespace Pale {
 
         template <typename T>
         AssetPtr<T> get(const AssetHandle& id) {
-            if (auto ptr = std::static_pointer_cast<T>(m_cache.get(id)); ptr) return ptr;
-            auto meta = m_registry.meta(id); if (!meta) return {};
+            if (auto ptr = std::static_pointer_cast<T>(m_cache.get(id)); ptr)
+                return ptr;
+            auto meta = m_registry.meta(id);
+            if (!meta)
+                return {};
             LoaderFn loader;
             { std::shared_lock lk(m_loaderMtx);
                 if (auto it = m_loaders.find(meta->type); it != m_loaders.end()) loader = it->second; }
-            if (!loader) return {};
+            if (!loader)
+                return {};
             auto asset = loader(id, *meta);
-            if (!asset) return {};
+            if (!asset)
+                return {};
             m_cache.put(id, asset);
             return std::static_pointer_cast<T>(asset);
         }

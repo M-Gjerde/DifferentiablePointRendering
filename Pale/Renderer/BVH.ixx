@@ -14,6 +14,9 @@ export module Pale.Render.BVH;
 
 
 export namespace Pale {
+    struct AABB { float3 minP, maxP; };
+    inline float3 aabbCentroid(const AABB& b){ return (b.minP + b.maxP) * 0.5f; }
+
       //------------------------------------------------------------------------------
     // Basic BVH interface
     //------------------------------------------------------------------------------
@@ -41,7 +44,99 @@ export namespace Pale {
             subdivide(tris, verts, nodes, triIndices, 0, maxLeafSize);
         }
 
+         /// Build BVH over boxes (AABBs). Produces node array and a permutation
+    /// newOrder[i] = oldLocalIndex of the i-th primitive in BVH order.
+    static void buildFromBoxes(const std::vector<AABB>& localAabbs,
+                               const std::vector<float3>& localCentroids, // same size as localAabbs
+                               std::vector<BVHNode>& outNodes,
+                               std::vector<uint32_t>& outNewOrder,
+                               uint32_t maxLeafSize = 16)
+    {
+        const auto primitiveCount = static_cast<uint32_t>(localAabbs.size());
+        outNodes.clear();
+        outNodes.reserve(std::max<uint32_t>(1u, primitiveCount * 2));
+
+        outNewOrder.resize(primitiveCount);
+        for (uint32_t i = 0; i < primitiveCount; ++i) outNewOrder[i] = i;
+
+        outNodes.emplace_back(); // root
+        outNodes[0].leftFirst = 0;
+        outNodes[0].triCount  = primitiveCount;
+        updateBoundsFromBoxes(localAabbs, outNewOrder, outNodes[0]);
+        subdivideBoxes(localAabbs, localCentroids, outNodes, outNewOrder, 0, maxLeafSize);
+    }
+
+private:
+    // Fit node AABB to the primitives in [leftFirst, leftFirst+triCount)
+    static void updateBoundsFromBoxes(const std::vector<AABB>& localAabbs,
+                                      const std::vector<uint32_t>& newOrder,
+                                      BVHNode& node)
+    {
+        float3 boxMin{ std::numeric_limits<float>::infinity() };
+        float3 boxMax{ -std::numeric_limits<float>::infinity() };
+        for (uint32_t i = 0; i < node.triCount; ++i) {
+            const AABB& b = localAabbs[newOrder[node.leftFirst + i]];
+            boxMin = min(boxMin, b.minP);
+            boxMax = max(boxMax, b.maxP);
+        }
+        node.aabbMin = boxMin;
+        node.aabbMax = boxMax;
+    }
+
+    // Recursive median split on centroids along longest axis
+    static void subdivideBoxes(const std::vector<AABB>& localAabbs,
+                               const std::vector<float3>& localCentroids,
+                               std::vector<BVHNode>& nodes,
+                               std::vector<uint32_t>& newOrder,
+                               uint32_t nodeIndex,
+                               uint32_t maxLeafSize)
+    {
+        BVHNode& node = nodes[nodeIndex];
+        if (node.triCount <= maxLeafSize) return;
+
+        const float3 nodeExtent = node.aabbMax - node.aabbMin;
+        const int splitAxis =
+            (nodeExtent.y() > nodeExtent.x() && nodeExtent.y() > nodeExtent.z()) ? 1 :
+            (nodeExtent.z() > nodeExtent.x() && nodeExtent.z() > nodeExtent.y()) ? 2 : 0;
+
+        auto rangeBegin = newOrder.begin() + node.leftFirst;
+        auto rangeEnd   = rangeBegin + node.triCount;
+        auto rangeMid   = rangeBegin + (node.triCount >> 1);
+
+        std::nth_element(rangeBegin, rangeMid, rangeEnd,
+            [&](uint32_t a, uint32_t b) {
+                const float ca = axisValue(localCentroids[a], splitAxis);
+                const float cb = axisValue(localCentroids[b], splitAxis);
+                return ca < cb;
+            });
+        const uint32_t leftCount = static_cast<uint32_t>(rangeMid - rangeBegin);
+        if (leftCount == 0 || leftCount == node.triCount) return; // degenerate; stop
+
+        const uint32_t leftChild  = static_cast<uint32_t>(nodes.size());
+        const uint32_t rightChild = leftChild + 1;
+        nodes.emplace_back();
+        nodes.emplace_back();
+
+        nodes[leftChild].leftFirst  = node.leftFirst;
+        nodes[leftChild].triCount   = leftCount;
+        nodes[rightChild].leftFirst = node.leftFirst + leftCount;
+        nodes[rightChild].triCount  = node.triCount - leftCount;
+
+        node.leftFirst = leftChild; // internal
+        node.triCount  = 0;
+
+        updateBoundsFromBoxes(localAabbs, newOrder, nodes[leftChild]);
+        updateBoundsFromBoxes(localAabbs, newOrder, nodes[rightChild]);
+
+        subdivideBoxes(localAabbs, localCentroids, nodes, newOrder, leftChild,  maxLeafSize);
+        subdivideBoxes(localAabbs, localCentroids, nodes, newOrder, rightChild, maxLeafSize);
+    }
+
     private:
+
+        static inline float axisValue(const float3& v, int axis) {
+            return axis == 0 ? v.x() : (axis == 1 ? v.y() : v.z());
+        }
         // (b) fit node.aabb to its triangles
         static void updateBounds(const std::vector<Triangle> &tris,
                                  const std::vector<Vertex> &verts,
@@ -125,152 +220,6 @@ export namespace Pale {
         }
     };
 
-    inline void buildOrthonormalBasis(const float3 &n, float3 &u, float3 &v) {
-        // pick the axis least parallel to n
-        float3 a = (fabs(n.x()) > 0.9f) ? float3(0, 1, 0) : float3(1, 0, 0);
-        u = normalize(cross(a, n));
-        v = cross(n, u); // already normalized
-    }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // QuadricBVH2D.h – BVH for z-up beta patches using min/max extents
-    // ─────────────────────────────────────────────────────────────────────────────
-    class QuadricBVH2D {
-    public:
-        static void build(const std::vector<OrientedPoint> &pts,
-                          std::vector<BVHNode> &nodes,
-                          std::vector<uint32_t> &permutation,
-                          uint32_t maxLeaf = 8) {
-            const uint32_t N = uint32_t(pts.size());
-            permutation.resize(N);
-            std::iota(permutation.begin(), permutation.end(), 0u);
 
-            nodes.clear();
-            nodes.reserve(N * 2);
-            nodes.emplace_back(); // root
-            nodes[0].leftFirst = 0;
-            nodes[0].triCount = N;
-
-            updateBounds(pts, permutation, nodes[0]);
-            subdivide(pts, nodes, permutation, 0, maxLeaf);
-        }
-
-    private:
-        // helper – identical math you used while deciding keepVertex
-        static float radiusFromKernel(float kernelScale,
-                                      float beta,
-                                      float threshold) {
-            const float p = 4.0f * sycl::exp(beta); // 4 e^β
-            const float rSq = 1.0f - sycl::pow(threshold, 1.0f / p);
-            return kernelScale * sycl::sqrt(sycl::max(rSq, 0.f));
-        }
-
-        /* --------------------------------------------------------------------- */
-        static constexpr float eps = 1.0e-4f; // half-thickness along z
-
-        static void updateBounds(const std::vector<OrientedPoint> &pts,
-                                 const std::vector<uint32_t> &perm,
-                                 BVHNode &n) {
-            float3 bmin(+FLT_MAX), bmax(-FLT_MAX);
-            constexpr float eps = 1.0e-4f; // thin slab around z=0
-
-            for (uint32_t i = 0; i < n.triCount; ++i) {
-                const OrientedPoint &P = pts[perm[n.leftFirst + i]];
-
-                /* 2. scale canonical rectangle by that radius            */
-                float3 pMin, pMax;
-                switch (P.type) {
-                    case Gaussian2DPoint: {
-                        // 2-sigma ellipse: cover ±2·σx in X, ±2·σy in Y
-                        float rx = 2.0f * P.covX;
-                        float ry = 2.0f * P.covY;
-                        pMin = float3{-rx, -ry, -eps};
-                        pMax = float3{ rx,  ry,  eps};
-                        break;
-                    }
-
-                    case QuadricPoint: {
-                        // spherical support as before
-                        float R = radiusFromKernel(1.0f, P.beta, P.threshold);
-                        pMin = float3{-R, -R, -eps};
-                        pMax = float3{ R,  R,  eps};
-                        break;
-                    }
-                }
-
-                bmin = min(bmin, pMin);
-                bmax = max(bmax, pMax);
-            }
-            n.aabbMin = bmin;
-            n.aabbMax = bmax;
-        }
-
-        //---------------------------------------------------------------------
-        //  Compute the patch’s axis-aligned centroid for splitting
-        //---------------------------------------------------------------------
-        static float3 centroid(const OrientedPoint &P) {
-            switch (P.type) {
-                case Gaussian2DPoint: {
-                    // 2-sigma ellipse in X and Y
-                    float rx = 2.0f * P.covX;
-                    float ry = 2.0f * P.covY;
-                    // average of [-rx,rx] × [-ry,ry] is (0,0)
-                    // If your OrientedPoint also carries a translation/orientation,
-                    // multiply by its frame here.'
-                    return float3{0.0f, 0.0f, 0.0f};
-                }
-
-                case QuadricPoint: {
-                    // spherical support
-                    float R = radiusFromKernel(1.0f, P.beta, P.threshold);
-                    // average of [-R,R] is 0
-                    return float3{0.0f, 0.0f, 0.0f};
-                }
-            }
-            // fallback—shouldn’t happen
-            return float3{0.0f, 0.0f, 0.0f};
-        }
-
-        static void subdivide(const std::vector<OrientedPoint> &pts,
-                              std::vector<BVHNode> &nodes,
-                              std::vector<uint32_t> &perm,
-                              uint32_t nodeIdx,
-                              uint32_t maxLeaf) {
-            BVHNode &node = nodes[nodeIdx];
-            if (node.triCount <= maxLeaf) return;
-
-            /* longest axis of this node’s extents */
-            float3 ext = node.aabbMax - node.aabbMin;
-            int axis = (ext.y() > ext.x() && ext.y() > ext.z()) ? 1 : (ext.z() > ext.x() && ext.z() > ext.y()) ? 2 : 0;
-
-            auto S = perm.begin() + node.leftFirst,
-                    E = S + node.triCount,
-                    M = S + (node.triCount >> 1);
-
-            std::nth_element(S, M, E,
-                             [&](uint32_t a, uint32_t b) {
-                                 return centroid(pts[a])[axis] < centroid(pts[b])[axis];
-                             });
-
-            uint32_t leftCnt = uint32_t(M - S);
-            if (leftCnt == 0 || leftCnt == node.triCount) return; // degenerate
-
-            uint32_t L = uint32_t(nodes.size()), R = L + 1;
-            nodes.emplace_back();
-            nodes.emplace_back();
-
-            nodes[L].leftFirst = node.leftFirst;
-            nodes[L].triCount = leftCnt;
-            nodes[R].leftFirst = node.leftFirst + leftCnt;
-            nodes[R].triCount = node.triCount - leftCnt;
-
-            node.leftFirst = L;
-            node.triCount = 0; // internal
-
-            updateBounds(pts, perm, nodes[L]);
-            updateBounds(pts, perm, nodes[R]);
-            subdivide(pts, nodes, perm, L, maxLeaf);
-            subdivide(pts, nodes, perm, R, maxLeaf);
-        }
-    };
 }

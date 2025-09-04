@@ -294,4 +294,37 @@ namespace Pale {
         outPdf = max(0.f, dot(outDir, n)) / M_PIf; // cosθ/π
     }
 
+    SYCL_EXTERNAL static bool intersectSurfel(const Ray& rayObject,
+                                   const Point& surfel,
+                                   float tMin,
+                                   float tMax,
+                                   float& outTHit)
+    {
+        const float3 tangentU = normalize(surfel.tanU);
+        const float3 tangentV = normalize(surfel.tanV);
+        float3 normalObject = normalize(cross(tangentU, tangentV));
+
+        const float nDotD = dot(rayObject.direction, normalObject);
+        if (abs(nDotD) < 1e-6f) return false;
+
+        const float t = dot(surfel.position - rayObject.origin, normalObject) / nDotD;
+        if (t <= tMin || t >= tMax) return false;
+
+        const float3 hitPoint = rayObject.origin + t * rayObject.direction;
+        const float3 relative = hitPoint - surfel.position;
+
+        const float alpha = dot(relative, tangentU);
+        const float beta  = dot(relative, tangentV);
+
+        const float su = fmax(surfel.scale.x(), 1e-8f);
+        const float sv = fmax(surfel.scale.y(), 1e-8f);
+        const float uHat = alpha / su;
+        const float vHat = beta  / sv;
+        float exponent = -((uHat*uHat) + (vHat*vHat)) / 2.0f;
+        float G = std::exp(exponent);
+        if (G < 0.75f) return false; // clip to ellipse
+
+        outTHit = t;
+        return true;
+    }
 }

@@ -31,7 +31,7 @@ export namespace Pale {
     using AssetHandle = UUID;
 
 
-    enum class AssetType { Unknown, Mesh, Material, Point, Shader };
+    enum class AssetType { Unknown, Mesh, Material, PointCloud, Shader };
 
 
     struct AssetMeta {
@@ -82,9 +82,11 @@ export namespace Pale {
         std::shared_ptr<IAsset> get(const AssetHandle &id) {
             std::scoped_lock lk(m_mtx);
             auto it = m_map.find(id);
-            if (it == m_map.end()) return {};
+            if (it == m_map.end())
+                return {};
             touch(it->second);
-            return it->second->value;
+            return
+            it->second->value;
         }
 
 
