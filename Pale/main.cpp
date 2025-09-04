@@ -103,6 +103,9 @@ int main() {
     assetManager.registerLoader<Pale::Material>(Pale::AssetType::Material,
                                                 std::make_shared<Pale::YamlMaterialLoader>());
 
+    assetManager.registerLoader<Pale::Point>(Pale::AssetType::Point,
+                                                std::make_shared<Pale::PLYPointLoader>());
+
     assetManager.registry().load("asset_registry.yaml");
 
     // Load in xml file and Create Scene from xml
@@ -110,6 +113,15 @@ int main() {
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
     serializer.deserialize("cbox_custom.xml");
+
+    // Add Single Gaussian
+    auto assetHandle = assetIndexer.importPath("Pointclouds/pc.ply", Pale::AssetType::Point);
+    auto entityGaussian = scene->createEntity("Gaussian");
+    auto comp = entityGaussian.addComponent<Pale::PointCloudComponent>();
+    comp.pointCloudID = assetHandle;
+
+    //auto pointAsset = assetManager.get<Pale::Point>(assetHandle);
+
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device
@@ -137,7 +149,7 @@ int main() {
     // // Save each sensor image
     auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
     const uint32_t W = sensor.width, H = sensor.height;
-    float gamma = 5;
+    float gamma = 3;
     float exposure = 1.5f;
     if (std::filesystem::path filePath = "Output/out.png";
         Pale::Utils::savePNGWithToneMap(

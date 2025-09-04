@@ -26,6 +26,12 @@ target_link_libraries(pugixml_iface INTERFACE pugixml)
 set(ENTT_DIR vendor/entt)
 add_subdirectory(${ENTT_DIR})
 
+## TinyPLY
+set(TINY_PLY_DIR vendor/tinyply)
+add_subdirectory(${TINY_PLY_DIR})
+include_directories("${TINY_PLY_DIR}/source")
+
+
 ## SPD LOG
 include(FetchContent)
 set(SPDLOG_USE_STD_FORMAT ON)
@@ -90,10 +96,12 @@ target_sources(${PROJECT_NAME}
         Pale/Asset/AssetsCore.ixx
         Pale/Asset/AssetManager.ixx
         Pale/Asset/AssimpMeshLoader.ixx
+        Pale/Asset/PLYPointLoader.ixx
         Pale/Asset/IAssetIndex.ixx
         Pale/Asset/IAssetAccess.ixx
         Pale/Asset/MaterialYamlLoader.ixx
         Pale/Asset/MeshAsset.ixx
+        Pale/Asset/PointAsset.ixx
         Pale/Asset/MaterialAsset.ixx
         Pale/Asset/MaterialBakerCommon.ixx
         Pale/Asset/MaterialBakerMitsuba.ixx
@@ -117,7 +125,7 @@ target_link_libraries(${PROJECT_NAME}
         glm
         assimp
         yaml-cpp
-
+        tinyply
 )
 
 # Link core directory

@@ -379,6 +379,7 @@ namespace Pale {
 
                                 // BRDF to camera direction
                                 float3 brdf  = material.baseColor / M_PIf;
+                                float  cosS   = sycl::fmax(0.f, dot(worldHit.geometricNormalW, directionToPinhole));
                                 // Attenuation (Geometry term)
                                 float surfaceCos   = sycl::fabs(dot(worldHit.geometricNormalW, directionToPinhole));
                                 float cameraCos    = sycl::fabs(dot(camera.forward, -directionToPinhole));
@@ -449,9 +450,11 @@ namespace Pale {
 
         // Launch direct light kernel
 
+        /*
         launchDirectShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
                               pkg.intermediates.primaryRays, activeCount,
                               pkg.intermediates, pkg.settings);
+        */
 
         for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
             pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1).wait();

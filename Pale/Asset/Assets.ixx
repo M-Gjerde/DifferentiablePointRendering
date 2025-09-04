@@ -7,6 +7,8 @@ export import :Manager;
 export import :Mesh;
 export import :Material;
 export import :AssimpMeshLoader;
+export import :Point;
+export import :PLYPointLoader;
 export import :MaterialYamlLoader;
 export import :MaterialBakerCommon;
 export import :MaterialBakerMitsuba;

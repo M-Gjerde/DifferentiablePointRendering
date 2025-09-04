@@ -179,4 +179,7 @@ export namespace Pale {
     struct MaterialComponent {
         AssetHandle materialID;
     };
+    struct PointCloudComponent {
+        AssetHandle pointCloudID;
+    };
 }

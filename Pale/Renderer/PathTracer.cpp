@@ -13,7 +13,7 @@ module Pale.Render.PathTracer;
 namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings& settings) : m_queue(q), m_settings(settings) {
 
-        m_settings.photonsPerLaunch = 1e8;
+        m_settings.photonsPerLaunch = 1e6;
     }
 
     // Call this before first render, or inside submitKernel() after computing capacity.

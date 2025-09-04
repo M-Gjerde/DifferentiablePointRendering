@@ -31,7 +31,7 @@ export namespace Pale {
     using AssetHandle = UUID;
 
 
-    enum class AssetType { Unknown, Mesh, Material, Shader };
+    enum class AssetType { Unknown, Mesh, Material, Point, Shader };
 
 
     struct AssetMeta {

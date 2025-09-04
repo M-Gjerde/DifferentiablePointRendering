@@ -17,3 +17,6 @@
 	path = vendor/assimp
 	url = https://github.com/assimp/assimp.git
 	branch = master
+[submodule "vendor/tinyply"]
+	path = vendor/tinyply
+	url = https://github.com/ddiakopoulos/tinyply
