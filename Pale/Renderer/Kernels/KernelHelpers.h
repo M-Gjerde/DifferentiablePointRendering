@@ -112,9 +112,9 @@ namespace Pale {
         constexpr float EPS = 1e-8f; // treat anything smaller as “zero”
         constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
         float3 inv;
-        inv.x() = (sycl::fabs(dir.x()) < EPS) ? HUGE : 1.f / dir.x();
-        inv.y() = (sycl::fabs(dir.y()) < EPS) ? HUGE : 1.f / dir.y();
-        inv.z() = (sycl::fabs(dir.z()) < EPS) ? HUGE : 1.f / dir.z();
+        inv.x() = (abs(dir.x()) < EPS) ? HUGE : 1.f / dir.x();
+        inv.y() = (abs(dir.y()) < EPS) ? HUGE : 1.f / dir.y();
+        inv.z() = (abs(dir.z()) < EPS) ? HUGE : 1.f / dir.z();
         return inv;
     }
 
@@ -129,8 +129,8 @@ namespace Pale {
         float3 tmin3 = min(t0, t1);
         float3 tmax3 = max(t0, t1);
 
-        float tmin = sycl::fmax(sycl::fmax(tmin3.x(), tmin3.y()), tmin3.z());
-        float tmax = sycl::fmin(sycl::fmin(tmax3.x(), tmax3.y()), tmax3.z());
+        float tmin = max(max(tmin3.x(), tmin3.y()), tmin3.z());
+        float tmax = min(min(tmax3.x(), tmax3.y()), tmax3.z());
 
         /* 1.  Origin outside slabs AND entry after exit  ➜  miss          */
         if (tmin > tmax) return false;
@@ -141,7 +141,7 @@ namespace Pale {
         /* 3.  Already found a closer hit in the SAME SPACE                   */
         if (tmin > tMaxLimit) return false;
 
-        tEntry = sycl::fmax(tmin, 0.0f); // clamp if origin is inside
+        tEntry = max(tmin, 0.0f); // clamp if origin is inside
         return true;
     }
 
@@ -157,8 +157,8 @@ namespace Pale {
         float3 tmin3 = min(t0, t1);
         float3 tmax3 = max(t0, t1);
 
-        float tmin = sycl::fmax(sycl::fmax(tmin3.x(), tmin3.y()), tmin3.z());
-        float tmax = sycl::fmin(sycl::fmin(tmax3.x(), tmax3.y()), tmax3.z());
+        float tmin = max(max(tmin3.x(), tmin3.y()), tmin3.z());
+        float tmax = min(min(tmax3.x(), tmax3.y()), tmax3.z());
 
         /* 1.  Origin outside slabs AND entry after exit  ➜  miss          */
         if (tmin > tmax) {
@@ -171,7 +171,7 @@ namespace Pale {
 
         if (tmin > tMaxLimit) return false;
         constexpr float kEps = 1e-4f;
-        tEntry = sycl::fmax(tmin, kEps); // clamp if origin is inside
+        tEntry = max(tmin, kEps); // clamp if origin is inside
         return true;
     }
 
@@ -202,7 +202,7 @@ namespace Pale {
         const float  a  = dot(e1, h);
 
         // 1. Parallel?
-        if (sycl::fabs(a) < 1.0e-4f) return false;
+        if (abs(a) < 1.0e-4f) return false;
 
         const float  f  = 1.0f / a;
         const float3 s  = ray.origin - v0;
@@ -254,7 +254,7 @@ namespace Pale {
         const float azimuth = 6.28318530717958647692f * uniformSample2; // 2*pi
         const float localX = radial * sycl::cos(azimuth);
         const float localY = radial * sycl::sin(azimuth);
-        const float localZ = sycl::sqrt(sycl::fmax(0.0f, 1.0f - uniformSample1)); // cosTheta
+        const float localZ = sycl::sqrt(max(0.0f, 1.0f - uniformSample1)); // cosTheta
 
         // 3) Build ONB around the normal
         float3 tangent, bitangent;
@@ -266,7 +266,7 @@ namespace Pale {
 
         // 5) Normalize for safety and compute pdf = cosTheta / pi
         const float3 unitSampledDirectionW = normalize(sampledDirectionW);
-        const float cosineTheta = sycl::fmax(0.0f, dot(unitSampledDirectionW, unitNormal));
+        const float cosineTheta = max(0.0f, dot(unitSampledDirectionW, unitNormal));
         pdf = cosineTheta * (1.0f / 3.14159265358979323846f);
 
         return unitSampledDirectionW;
@@ -286,7 +286,7 @@ namespace Pale {
         float z = sycl::sqrt(1.f - u1);
 
         // build an ONB around n
-        float3 up = fabs(n.z()) < .999f ? float3{0, 0, 1} : float3{1, 0, 0};
+        float3 up = abs(n.z()) < .999f ? float3{0, 0, 1} : float3{1, 0, 0};
         float3 tang = normalize(cross(up, n));
         float3 bit = cross(n, tang);
 
@@ -294,7 +294,7 @@ namespace Pale {
         outPdf = max(0.f, dot(outDir, n)) / M_PIf; // cosθ/π
     }
 
-    SYCL_EXTERNAL static bool intersectSurfel(const Ray& rayObject,
+    SYCL_EXTERNAL static bool intersectNearestSurfel(const Ray& rayObject,
                                    const Point& surfel,
                                    float tMin,
                                    float tMax,
@@ -325,6 +325,41 @@ namespace Pale {
         if (G < 0.75f) return false; // clip to ellipse
 
         outTHit = t;
+        return true;
+    }
+    SYCL_EXTERNAL static bool intersectSurfel(const Ray& rayObject,
+                                   const Point& surfel,
+                                   float tMin,
+                                   float tMax,
+                                   float& outTHit,
+                                   float& contrib)
+    {
+        const float3 tangentU = normalize(surfel.tanU);
+        const float3 tangentV = normalize(surfel.tanV);
+        float3 normalObject = normalize(cross(tangentU, tangentV));
+
+        const float nDotD = dot(rayObject.direction, normalObject);
+        if (abs(nDotD) < 1e-6f) return false;
+
+        const float t = dot(surfel.position - rayObject.origin, normalObject) / nDotD;
+        if (t <= tMin || t >= tMax) return false;
+
+        const float3 hitPoint = rayObject.origin + t * rayObject.direction;
+        const float3 relative = hitPoint - surfel.position;
+
+        const float alpha = dot(relative, tangentU);
+        const float beta  = dot(relative, tangentV);
+
+        const float su = fmax(surfel.scale.x(), 1e-8f);
+        const float sv = fmax(surfel.scale.y(), 1e-8f);
+        const float uHat = alpha / su;
+        const float vHat = beta  / sv;
+        float exponent = -((uHat*uHat) + (vHat*vHat)) / 2.0f;
+        float G = std::exp(exponent);
+        //if (G < 0.6f) return false; // clip to ellipse
+
+        outTHit = t;
+        contrib = G;
         return true;
     }
 }

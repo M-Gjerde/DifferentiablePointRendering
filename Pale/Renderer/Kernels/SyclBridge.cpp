@@ -21,9 +21,11 @@ namespace Pale {
     struct ShadeKernelTag {
     };
 
-    float traceVisibility(const Ray& rayIn, float tMax, const GPUSceneBuffers& scene) {
+    float traceVisibility(const Ray& rayIn, float tMax, const GPUSceneBuffers& scene, rng::Xorshift128& rng128) {
+
+
         WorldHit worldHit{};
-        if (!intersectScene(rayIn, &worldHit, scene)) return 1.0f;
+        if (!intersectScene(rayIn, &worldHit, scene, rng128)) return 1.0f;
 
         return 0.0f; // opaque geometry
     }
@@ -43,11 +45,14 @@ namespace Pale {
             cgh.parallel_for<ShadeKernelTag>(
                 sycl::range<1>(rayCount),
                 [=](sycl::id<1> globalId) {
-                    const uint32_t i = globalId[0];
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
+                    rng::Xorshift128 rng128(perItemSeed);
+
                     constexpr float kEps = 1e-4f;
 
                     // Choose any generator you like:
-                    const RayState rayState = raysIn[i];
+                    const RayState rayState = raysIn[rayIndex];
                     float3 throughput = rayState.pathThroughput;
 
                     // Construct Ray towards camera
@@ -64,7 +69,7 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // If we have non-zero transmittance
                     float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    if (traceVisibility(contribRay, tMax, scene) > 0.0f) {
+                    if (traceVisibility(contribRay, tMax, scene, rng128) > 0.0f) {
                         // perspective projection
                         float4 clip = camera.proj * (camera.view * float4(rayState.ray.origin, 1.f));
 
@@ -244,15 +249,18 @@ namespace Pale {
 
 
     struct LaunchIntersectKernel {
-        LaunchIntersectKernel(GPUSceneBuffers scene, const RayState* ray, WorldHit* hit) : m_scene(scene), m_rays(ray),
-            m_hitRecords(hit) {
+        LaunchIntersectKernel(GPUSceneBuffers scene, const RayState* ray, WorldHit* hit, uint32_t seed) : m_scene(scene), m_rays(ray),
+            m_hitRecords(hit), m_baseSeed(seed) {
         }
 
         void operator()(sycl::id<1> globalId) const {
             const uint32_t rayIndex = globalId[0];
+            const uint64_t perItemSeed = rng::makePerItemSeed1D(m_baseSeed, rayIndex);
+            rng::Xorshift128 rng128(perItemSeed);
+
             WorldHit worldHit{};
             RayState rayState = m_rays[rayIndex];
-            intersectScene(rayState.ray, &worldHit, m_scene);
+            intersectScene(rayState.ray, &worldHit, m_scene, rng128);
             if (worldHit.t == FLT_MAX) {
                 m_hitRecords[rayIndex] = worldHit;
                 return;
@@ -290,15 +298,17 @@ namespace Pale {
         GPUSceneBuffers m_scene{};
         const RayState* m_rays{};
         WorldHit* m_hitRecords{};
+        uint32_t m_baseSeed = 0;
     };
 
     void launchIntersectKernel(sycl::queue& queue,
                                GPUSceneBuffers scene,
                                const RayState* raysIn,
                                uint32_t rayCount,
-                               WorldHit* hitRecords) {
+                               WorldHit* hitRecords,
+                               PathTracerSettings settings) {
         queue.submit([&](sycl::handler& cgh) {
-            LaunchIntersectKernel kernel(scene, raysIn, hitRecords);
+            LaunchIntersectKernel kernel(scene, raysIn, hitRecords, settings.randomSeed);
             cgh.parallel_for<IntersectKernelTag>(
                 sycl::range<1>(rayCount), kernel);
         });
@@ -324,14 +334,15 @@ namespace Pale {
             cgh.parallel_for<ShadeKernelTag>(
                 sycl::range<1>(rayCount),
                 [=](sycl::id<1> globalId) {
-                    const uint32_t i = globalId[0];
-                    constexpr float kEps = 1e-4f;
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, globalId);
-                    // Choose any generator you like:
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
 
-                    const WorldHit worldHit = hitRecords[i];
-                    const RayState rayState = raysIn[i];
+                    constexpr float kEps = 1e-4f;
+                    // Choose any generator you like:
+
+                    const WorldHit worldHit = hitRecords[rayIndex];
+                    const RayState rayState = raysIn[rayIndex];
 
                     if (worldHit.t == FLT_MAX) {
                         return;
@@ -366,7 +377,7 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // If we have non-zero transmittance
                     float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    if (traceVisibility(contribRay, tMax, scene) > 0.0f) {
+                    if (traceVisibility(contribRay, tMax, scene, rng128) > 0.0f) {
                         // perspective projection
                         float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
 
@@ -491,7 +502,7 @@ namespace Pale {
             pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount).wait();
 
             launchIntersectKernel(pkg.queue, pkg.scene, pkg.intermediates.primaryRays, activeCount,
-                                  pkg.intermediates.hitRecords);
+                                  pkg.intermediates.hitRecords, pkg.settings);
 
             launchShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
                               pkg.intermediates.primaryRays, activeCount,

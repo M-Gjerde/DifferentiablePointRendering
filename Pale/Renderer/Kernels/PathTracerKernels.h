@@ -8,15 +8,15 @@
 namespace Pale {
     // ── PathTracerMeshKernel.cpp ────────────────────────────────────────────────
     // Returns the closest hit inside one mesh’s BLAS (object space)
-    SYCL_EXTERNAL bool intersectBLASMesh(const Ray& rayO,
+    SYCL_EXTERNAL bool intersectBLASMesh(const Ray &rayO,
                                          uint32_t geomIdx,
-                                         LocalHit& out, const GPUSceneBuffers& scene) {
+                                         LocalHit &out, const GPUSceneBuffers &scene) {
         /* 1.  Locate the sub‑tree that belongs to this mesh
                ────────────────────────────────────────────── */
-        const BLASRange& br = scene.blasRanges[geomIdx];
-        const BVHNode* nodes = scene.blasNodes + br.firstNode; // root = nodes[0]
-        const Triangle* tris = scene.triangles;
-        const Vertex* verts = scene.vertices;
+        const BLASRange &br = scene.blasRanges[geomIdx];
+        const BVHNode *nodes = scene.blasNodes + br.firstNode; // root = nodes[0]
+        const Triangle *tris = scene.triangles;
+        const Vertex *verts = scene.vertices;
 
         /* 2.  Standard iterative depth‑first traversal
                ────────────────────────────────────────────── */
@@ -30,7 +30,7 @@ namespace Pale {
         while (!stack.empty()) {
             int nIdx = stack.pop();
 
-            const BVHNode& N = nodes[nIdx];
+            const BVHNode &N = nodes[nIdx];
 
             float tEntry;
             if (!slabIntersectAABB(rayO, N, invDir, bestT, tEntry))
@@ -45,13 +45,12 @@ namespace Pale {
 
                 if (!stack.push(N.leftFirst + 1)) return hitAny; // overflow → miss
                 if (!stack.push(N.leftFirst)) return hitAny;
-            }
-            else // ── leaf ─────────────────────────
+            } else // ── leaf ─────────────────────────
             {
                 for (uint32_t i = 0; i < N.triCount; ++i) {
                     uint32_t triIdx = N.leftFirst + i; // *global* index
 
-                    const Triangle& T = tris[triIdx]; // existing line
+                    const Triangle &T = tris[triIdx]; // existing line
                     const float3 A = verts[T.v0].pos;
                     const float3 B = verts[T.v1].pos;
                     const float3 C = verts[T.v2].pos;
@@ -78,70 +77,73 @@ namespace Pale {
 
     // ── PathTracerMeshKernel.cpp ────────────────────────────────────────────────
     // Returns the closest hit inside one mesh’s BLAS (object space)
-    SYCL_EXTERNAL bool intersectBLASPointCloud(const Ray& rayO,
-                                               uint32_t geomIdx,
-                                               LocalHit& out, const GPUSceneBuffers& scene) {
-        /* 1.  Locate the sub‑tree that belongs to this mesh
-               ────────────────────────────────────────────── */
-        const BLASRange& br = scene.blasRanges[geomIdx];
-        const BVHNode* nodes = scene.blasNodes + br.firstNode; // root = nodes[0]
-        /* 2.  Standard iterative depth‑first traversal
-               ────────────────────────────────────────────── */
-        float bestT = std::numeric_limits<float>::infinity();
-        bool hitAny = false;
-        float3 invDir = safeInvDir(rayO.direction);
-        constexpr float kRayEps = 1e-4f; // ignore hits closer than this
+    SYCL_EXTERNAL bool intersectBLASPointCloud(const Ray &rayObject,
+                                               uint32_t blasRangeIndex,
+                                               LocalHit &out, const GPUSceneBuffers &scene, rng::Xorshift128& rng128) {
+        const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
+        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
-        SmallStack<512> stack;
-        stack.push(0); // root
+        float bestAcceptedT = std::numeric_limits<float>::infinity();
+        bool foundAccepted = false;
+        const float3 inverseDirection = safeInvDir(rayObject.direction);
+        constexpr float rayEpsilon = 1e-4f;
 
-        while (!stack.empty()) {
-            int nIdx = stack.pop();
+        SmallStack<512> traversalStack;
+        traversalStack.push(0);
 
-            const BVHNode& N = nodes[nIdx];
+        // Optional: obtain frameIndex from your per-frame constants
 
-            float tEntry;
-            if (!slabIntersectAABB(rayO, N, invDir, bestT, tEntry))
-                continue; // miss or farther than current best
+        while (!traversalStack.empty()) {
+            const int nodeIndex = traversalStack.pop();
+            const BVHNode &node = bvhNodes[nodeIndex];
 
-            if (N.triCount == 0) // ── internal ─────────────────────
-            {
-                /* Push children – right first so left is processed next.
-                   Children are stored immediately after the parent once
-                   we patched indices in buildBLASForAllMeshes().          */
-                // when you push children:
+            float tEntry = 0.0f;
+            if (!slabIntersectAABB(rayObject, node, inverseDirection, bestAcceptedT, tEntry))
+                continue;
 
-                if (!stack.push(N.leftFirst + 1)) return hitAny; // overflow → miss
-                if (!stack.push(N.leftFirst)) return hitAny;
+            if (node.triCount == 0) {
+                if (!traversalStack.push(node.leftFirst + 1)) return foundAccepted;
+                if (!traversalStack.push(node.leftFirst)) return foundAccepted;
+                continue;
             }
-            else // ── leaf ─────────────────────────
-            {
-                for (uint32_t i = 0; i < N.triCount; ++i) {
-                    uint32_t pIdx = N.leftFirst + i; // *global* patch index
-                    const Point& P = scene.points[pIdx];
 
-                    float tHit = 0.0f;
+            // Leaf node - Start intersecting Gaussians
+            for (uint32_t local = 0; local < node.triCount; ++local) {
+                const uint32_t pointIndex = node.leftFirst + local;
+                const Point &surfel = scene.points[pointIndex];
 
-                    if (intersectSurfel(rayO, P, kRayEps, bestT, tHit) && // exact quadric test
-                        tHit > kRayEps && tHit < bestT) {
-                        bestT = tHit;
-                        hitAny = true;
-                        out.primitiveIndex = pIdx; // for shading
+
+                float tHit = 0.0f;
+                float contributionAtHit = 0.0f;
+                if (intersectSurfel(rayObject, surfel, rayEpsilon, 10.0f, tHit, contributionAtHit)) {
+
+                    // Find intersection point // Still in local coords
+                    const float3 hitPointLocal = rayObject.origin + tHit * rayObject.direction;
+
+                    // Generate a random number [0, 1] dependent on the position
+                    float xi = rng128.nextFloat();
+                    const float alphaAtHit = sycl::clamp(contributionAtHit * surfel.opacity, 0.0f, 1.0f);
+
+                    if (xi < alphaAtHit) {
+                        bestAcceptedT = tHit;
+                        foundAccepted = true;
+                        out.primitiveIndex = pointIndex; // for shading
                         out.t = tHit;
-
                     }
+
+
 
                 }
             }
         }
-        return hitAny;
+        return foundAccepted;
     }
 
-    SYCL_EXTERNAL bool intersectScene(const Ray& rayWorld, WorldHit* worldHit, const GPUSceneBuffers& scene) {
+    SYCL_EXTERNAL bool intersectScene(const Ray &rayWorld, WorldHit *worldHit, const GPUSceneBuffers &scene, rng::Xorshift128& rng128) {
         /* abort if scene is empty */
-        const TLASNode* tlas = scene.tlasNodes;
-        const InstanceRecord* instances = scene.instances;
-        const Transform* xforms = scene.transforms;
+        const TLASNode *tlas = scene.tlasNodes;
+        const InstanceRecord *instances = scene.instances;
+        const Transform *xforms = scene.transforms;
 
         /* ------------------------------------------------------------------ */
         /* stack‑based depth‑first traversal                                   */
@@ -155,7 +157,7 @@ namespace Pale {
 
         while (!stack.empty()) {
             int nIdx = stack.pop();
-            const TLASNode& node = tlas[nIdx];
+            const TLASNode &node = tlas[nIdx];
 
 
             float tEntry;
@@ -169,17 +171,16 @@ namespace Pale {
             } // leaf – exactly one instance
             else {
                 const uint32_t instanceIndex = node.leftChild;
-                const InstanceRecord& instance = instances[instanceIndex];
-                const Transform& transform = xforms[instance.transformIndex];
+                const InstanceRecord &instance = instances[instanceIndex];
+                const Transform &transform = xforms[instance.transformIndex];
                 Ray rayObject = toObjectSpace(rayWorld, transform);
                 LocalHit localHit{};
                 bool ok = false;
                 if (instance.geometryType == GeometryType::Mesh) {
                     ok = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene);
-                }
-                else {
+                } else {
                     // point cloud
-                    ok = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene);
+                    ok = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene, rng128);
                 }
 
                 if (ok) {

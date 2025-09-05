@@ -286,7 +286,8 @@ namespace Pale {
             return sycl::sqrt((su*tu)*(su*tu) + (sv*tv)*(sv*tv)) + normalThickness * nn;
         };
 
-        const float3 halfExtent{ axisExtent(0), axisExtent(1), axisExtent(2) };
+        float3 halfExtent{ axisExtent(0), axisExtent(1), axisExtent(2) };
+        halfExtent = halfExtent * 3;
         return { surfel.position - halfExtent, surfel.position + halfExtent };
     }
 

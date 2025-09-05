@@ -13,7 +13,14 @@ module Pale.Render.PathTracer;
 namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings& settings) : m_queue(q), m_settings(settings) {
 
-        m_settings.photonsPerLaunch = 1e7;
+#ifdef NDEBUG
+        // Release
+        m_settings.photonsPerLaunch = 1e8; // 1e7
+#else
+        // Debug
+        m_settings.photonsPerLaunch = 1e6;  // 1e6
+#endif
+
         m_settings.maxBounces = 4;
     }
 
