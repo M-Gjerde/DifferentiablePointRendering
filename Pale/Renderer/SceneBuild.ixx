@@ -118,7 +118,7 @@ export namespace Pale {
 
             collectCameras(scene, buildProducts);
 
-            std::vector<uint32_t> meshRangeToBlasRange(buildProducts.pointCloudRanges.size(), UINT32_MAX);
+            std::vector<uint32_t> meshRangeToBlasRange(buildProducts.meshRanges.size(), UINT32_MAX);
             for (uint32_t meshIndex = 0; meshIndex < buildProducts.meshRanges.size(); ++meshIndex) {
                 const MeshRange& meshRange = buildProducts.meshRanges[meshIndex];
                 BLASResult blasResult = buildMeshBLAS(meshIndex,

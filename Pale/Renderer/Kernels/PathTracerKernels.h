@@ -124,7 +124,7 @@ namespace Pale {
                     float xi = rng128.nextFloat();
                     const float alphaAtHit = sycl::clamp(contributionAtHit * surfel.opacity, 0.0f, 1.0f);
 
-                    if (xi < alphaAtHit) {
+                    if (xi > alphaAtHit && alphaAtHit < 0.9f) {
                         bestAcceptedT = tHit;
                         foundAccepted = true;
                         out.primitiveIndex = pointIndex; // for shading

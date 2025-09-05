@@ -29,6 +29,7 @@ namespace Pale {
 
         Log::PA_INFO("Using {}", m_device.get_info<sycl::info::device::name>());
 
+
         Log::PA_INFO("Warmup kernel Test: {}", m_device.get_info<sycl::info::device::name>());
         m_queue.submit([&](sycl::handler& commandGroupHandler){
             commandGroupHandler.single_task<class WarmupKernel>([](){});
@@ -45,7 +46,7 @@ namespace Pale {
         for (const auto& exception_ptr : exceptions) {
             try { std::rethrow_exception(exception_ptr); }
             catch (const sycl::exception& e) {
-                Log::PA_ERROR("SYCL async error: {}", e.what());
+                Log::PA_WARN("MODULE | SYCL async error: {}", e.what());
             }
         }
     }

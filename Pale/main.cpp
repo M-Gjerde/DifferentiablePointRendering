@@ -2,6 +2,7 @@
 #include <memory>
 #include <filesystem>
 #include <entt/entt.hpp>
+#include "Renderer/GPUDataStructures.h"
 
 import Pale.DeviceSelector;
 import Pale.Scene.Components;
@@ -117,10 +118,7 @@ int main() {
     // Add Single Gaussian
     auto assetHandle = assetIndexer.importPath("PointClouds/pc.ply", Pale::AssetType::PointCloud);
     auto entityGaussian = scene->createEntity("Gaussian");
-    auto& comp = entityGaussian.addComponent<Pale::PointCloudComponent>();
-    comp.pointCloudID = assetHandle;
-
-    //auto pointAsset = assetManager.get<Pale::Point>(assetHandle);
+    entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
 
     logSceneSummary(scene, assetManager);
 
@@ -133,7 +131,7 @@ int main() {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue()); // scene only
 
-    auto sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts); // outputs derived from cameras
+    Pale::SensorGPU sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts); // outputs derived from cameras
     // Start a Tracer
     Pale::PathTracer tracer(deviceSelector.getQueue());
     // Register the scene with the Tracer
@@ -143,13 +141,15 @@ int main() {
     tracer.renderForward(sensor); // films is span/array
 
     // 4) (Optional) load or compute residuals on host, upload pointer
+    tracer.setResiduals(sensor, "Output/Target/out.pfm");
+
     //    tracer.setResidualsDevice(d_residuals, W*H);  // if you have them
     //    tracer.renderBackward();                      // PRNG replay adjoint
 
     // // Save each sensor image
     auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
     const uint32_t W = sensor.width, H = sensor.height;
-    float gamma = 7.0f;
+    float gamma = 6.0f;
     float exposure = 2.5f;
     if (std::filesystem::path filePath = "Output/out.png";
         Pale::Utils::savePNGWithToneMap(

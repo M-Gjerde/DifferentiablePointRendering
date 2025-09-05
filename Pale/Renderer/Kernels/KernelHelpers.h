@@ -355,11 +355,11 @@ namespace Pale {
         const float uHat = alpha / su;
         const float vHat = beta  / sv;
         float exponent = -((uHat*uHat) + (vHat*vHat)) / 2.0f;
-        float G = std::exp(exponent);
+        float V_sigma = 1 - std::exp(exponent);
         //if (G < 0.6f) return false; // clip to ellipse
 
         outTHit = t;
-        contrib = G;
+        contrib = V_sigma;
         return true;
     }
 }

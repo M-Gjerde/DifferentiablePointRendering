@@ -19,8 +19,8 @@ export namespace Pale::Utils {
     // gammaEncode:  typical 2.2 for sRGB-like output
     // normalizeHDR: if true, first map global RGB min..max to [0,1]
     inline bool savePNGWithToneMap(
-        const std::filesystem::path& filePath,
-        const std::vector<float>& inputRGBA,
+        const std::filesystem::path &filePath,
+        const std::vector<float> &inputRGBA,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         float exposureEV = 0.0f,
@@ -91,8 +91,7 @@ export namespace Pale::Utils {
                                   static_cast<int>(imageHeight),
                                   4, rgba8.data(),
                                   static_cast<int>(imageWidth * 4)) != 0;
-        }
-        else {
+        } else {
             std::vector<std::uint8_t> rgb8(pixelCount * 3u);
             for (std::size_t i = 0; i < pixelCount; ++i) {
                 rgb8[i * 3 + 0] = encodeChannel(inputRGBA[i * 4 + 0]);
@@ -110,8 +109,8 @@ export namespace Pale::Utils {
     // PNG saver: expects display-space (already tone-mapped + gamma-encoded) RGBA in [0,1]
     // If writeAlpha=false, the alpha channel is ignored and RGB is written.
     inline bool savePNG(
-        const std::filesystem::path& filePath,
-        const std::vector<float>& displaySpaceRGBA,
+        const std::filesystem::path &filePath,
+        const std::vector<float> &displaySpaceRGBA,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         bool writeAlpha = false) {
@@ -143,8 +142,7 @@ export namespace Pale::Utils {
                                   /*components*/4,
                                   rgba8.data(),
                                   static_cast<int>(imageWidth * 4)) != 0;
-        }
-        else {
+        } else {
             std::vector<std::uint8_t> rgb8(pixelCount * 3u);
             for (std::size_t i = 0; i < pixelCount; ++i) {
                 rgb8[i * 3 + 0] = toUNorm8(displaySpaceRGBA[i * 4 + 0]);
@@ -161,8 +159,8 @@ export namespace Pale::Utils {
     }
 
     // --- Core writer: accepts only 1 or 3 channels (PFM spec) -------------------
-    inline bool writePFM_RGBorGray(const std::filesystem::path& filePath,
-                                   const float* floatData,
+    inline bool writePFM_RGBorGray(const std::filesystem::path &filePath,
+                                   const float *floatData,
                                    std::uint32_t imageWidth,
                                    std::uint32_t imageHeight,
                                    std::uint32_t channels, // 1 or 3
@@ -185,8 +183,8 @@ export namespace Pale::Utils {
         const std::size_t rowFloatCount = static_cast<std::size_t>(imageWidth) * channels;
         for (std::uint32_t row = 0; row < imageHeight; ++row) {
             const std::uint32_t sourceRow = flipY ? (imageHeight - 1 - row) : row;
-            const float* rowPtr = floatData + static_cast<std::size_t>(sourceRow) * rowFloatCount;
-            fileStream.write(reinterpret_cast<const char*>(rowPtr),
+            const float *rowPtr = floatData + static_cast<std::size_t>(sourceRow) * rowFloatCount;
+            fileStream.write(reinterpret_cast<const char *>(rowPtr),
                              static_cast<std::streamsize>(rowFloatCount * sizeof(float)));
             if (!fileStream) return false;
         }
@@ -194,8 +192,8 @@ export namespace Pale::Utils {
     }
 
     // --- Convenience: accepts vector with 1, 3, or 4 channels -------------------
-    inline bool savePFM(const std::filesystem::path& filePath,
-                        const std::vector<float>& linearFloatDataRGBAorRGB,
+    inline bool savePFM(const std::filesystem::path &filePath,
+                        const std::vector<float> &linearFloatDataRGBAorRGB,
                         std::uint32_t imageWidth,
                         std::uint32_t imageHeight,
                         bool flipY = true,
@@ -207,7 +205,7 @@ export namespace Pale::Utils {
         if (linearFloatDataRGBAorRGB.size() % pixelCount != 0) return false;
 
         const std::uint32_t channels =
-            static_cast<std::uint32_t>(linearFloatDataRGBAorRGB.size() / pixelCount);
+                static_cast<std::uint32_t>(linearFloatDataRGBAorRGB.size() / pixelCount);
 
         if (channels == 1) {
             return writePFM_RGBorGray(filePath,
@@ -253,5 +251,96 @@ export namespace Pale::Utils {
             return true;
         }
         return false; // unsupported channel count
+    }
+
+    // Reads next non-empty, non-comment line.
+    inline bool readNextHeaderLine(std::istream &in, std::string &outLine) {
+        while (std::getline(in, outLine)) {
+            // Trim
+            auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+            outLine.erase(outLine.begin(), std::find_if(outLine.begin(), outLine.end(), notSpace));
+            outLine.erase(std::find_if(outLine.rbegin(), outLine.rend(), notSpace).base(), outLine.end());
+            if (outLine.empty()) continue;
+            if (!outLine.empty() && outLine[0] == '#') continue;
+            return true;
+        }
+        return false;
+    }
+
+    // Load 3-channel PFM. Returns true on success.
+    // Output pixels are RGB float32, size = width*height*3.
+    // If flipY=true, the first row in outPixels is the top image row.
+    inline bool loadPFM_RGB(const std::filesystem::path &filePath,
+                            std::vector<float> &outPixelsRGB,
+                            std::uint32_t &outWidth,
+                            std::uint32_t &outHeight,
+                            bool flipY = true) {
+        outPixelsRGB.clear();
+        outWidth = 0;
+        outHeight = 0;
+
+        std::ifstream fileStream(filePath, std::ios::binary);
+        if (!fileStream) return false;
+
+        // 1) Magic
+        std::string line;
+        if (!readNextHeaderLine(fileStream, line)) return false;
+        if (line != "PF") return false; // enforce 3-channel RGB
+
+        // 2) Dimensions
+        if (!readNextHeaderLine(fileStream, line)) return false; {
+            std::istringstream dimStream(line);
+            int w = 0, h = 0;
+            if (!(dimStream >> w >> h)) return false;
+            if (w <= 0 || h <= 0) return false;
+            outWidth = static_cast<std::uint32_t>(w);
+            outHeight = static_cast<std::uint32_t>(h);
+        }
+
+        // 3) Scale (sign encodes endianness per spec)
+        if (!readNextHeaderLine(fileStream, line)) return false;
+        float scale = 0.f; {
+            std::istringstream scaleStream(line);
+            if (!(scaleStream >> scale)) return false;
+            if (scale == 0.f) return false;
+        }
+        const bool littleEndianStream = (scale < 0.f);
+        const float multiplicativeScale = std::abs(scale); // intensity scale factor
+
+        // Basic endianness check: typical files are little-endian with negative scale.
+        // This loader expects native little-endian. Refuse big-endian streams.
+        // If you need big-endian support, add byte-swapping here.
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        if (!littleEndianStream) return false;
+#else
+        if (littleEndianStream) return false; // not implemented
+#endif
+
+        // 4) Binary blob
+        const std::size_t pixelCount = static_cast<std::size_t>(outWidth) * outHeight;
+        const std::size_t floatCount = pixelCount * 3u;
+        outPixelsRGB.resize(floatCount);
+
+        // The next byte is the start of binary data; ensure stream at correct pos
+        fileStream.read(reinterpret_cast<char *>(outPixelsRGB.data()),
+                        static_cast<std::streamsize>(floatCount * sizeof(float)));
+        if (!fileStream) return false;
+
+        // 5) Apply scale if not 1.0. Most files use |scale|=1.0
+        if (multiplicativeScale != 1.f) {
+            for (float &v: outPixelsRGB) v *= multiplicativeScale;
+        }
+
+        // 6) Flip vertically if requested (PFM stores bottom-to-top by convention)
+        if (flipY) {
+            const std::size_t rowFloatCount = static_cast<std::size_t>(outWidth) * 3u;
+            for (std::uint32_t yTop = 0, yBot = outHeight - 1; yTop < yBot; ++yTop, --yBot) {
+                float *topRow = outPixelsRGB.data() + static_cast<std::size_t>(yTop) * rowFloatCount;
+                float *botRow = outPixelsRGB.data() + static_cast<std::size_t>(yBot) * rowFloatCount;
+                std::swap_ranges(topRow, topRow + rowFloatCount, botRow);
+            }
+        }
+
+        return true;
     }
 }
