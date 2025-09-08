@@ -238,12 +238,14 @@ namespace Pale {
 
     struct LocalHit {
         float t; // object-space t
+        float opacityAtHit;
         uint32_t primitiveIndex; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex; // mesh/geometry id within scene
     };
 
     struct WorldHit {
         float t{FLT_MAX}; // world-space t
+        float opacityAtHit = 1.0f; // world-space t
         uint32_t primitiveIndex{};
         uint32_t instanceIndex{};
         float3 hitPositionW = float3(0.0f);

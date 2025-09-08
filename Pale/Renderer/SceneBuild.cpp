@@ -270,24 +270,27 @@ namespace Pale {
 
 
 
-    inline AABB surfelObjectAabb(const Point& surfel) {
+    inline AABB surfelObjectAabb(const Point& surfel,
+                                  float kStdDevs = 3.5f,
+                                  float sigmaNormal = 0.0f) // set >0 model thickness
+    {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
         const float3 normalObject = normalize(cross(tangentU, tangentV));
 
-        const float su = std::fmax(surfel.scale.x(), 1e-8f);
-        const float sv = std::fmax(surfel.scale.y(), 1e-8f);
-        const float normalThickness = 0.1f * std::fmax(su, sv); // tune 0.1–0.5
+        const float suK = kStdDevs * std::fmax(surfel.scale.x(), 1e-8f);
+        const float svK = kStdDevs * std::fmax(surfel.scale.y(), 1e-8f);
+        const float snK = kStdDevs * std::fmax(sigmaNormal, 0.0f);
 
         auto axisExtent = [&](int axis)->float {
             const float tu = axis==0? tangentU.x(): axis==1? tangentU.y(): tangentU.z();
             const float tv = axis==0? tangentV.x(): axis==1? tangentV.y(): tangentV.z();
-            const float nn = axis==0? std::fabs(normalObject.x()): axis==1? std::fabs(normalObject.y()): fabs(normalObject.z());
-            return sycl::sqrt((su*tu)*(su*tu) + (sv*tv)*(sv*tv)) + normalThickness * nn;
+            const float nn = axis==0? std::fabs(normalObject.x()): axis==1? std::fabs(normalObject.y()): std::fabs(normalObject.z());
+            const float projInPlane = sycl::sqrt((suK*tu)*(suK*tu) + (svK*tv)*(svK*tv));
+            return projInPlane + snK * nn; // add normal thickness if used
         };
 
-        float3 halfExtent{ axisExtent(0), axisExtent(1), axisExtent(2) };
-        halfExtent = halfExtent * 3;
+        const float3 halfExtent{ axisExtent(0), axisExtent(1), axisExtent(2) };
         return { surfel.position - halfExtent, surfel.position + halfExtent };
     }
 

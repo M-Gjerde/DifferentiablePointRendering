@@ -10,6 +10,7 @@ module;
 module Pale.Render.PathTracer;
 
 import Pale.Utils.ImageIO;
+import Pale.Log;
 
 namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings& settings) : m_queue(q), m_settings(settings) {
@@ -66,10 +67,14 @@ namespace Pale {
     }
 
     void PathTracer::renderForward(SensorGPU& sensor) {
+
+
         const uint32_t numberOfImagePixels = sensor.width * sensor.height;
         const uint32_t photonBudget = m_settings.photonsPerLaunch;
         const uint32_t requiredCapacity = std::max(numberOfImagePixels, photonBudget);
         ensureCapacity(requiredCapacity);
+
+        m_settings.rayGenMode = RayGenMode::Emitter;
 
         RenderPackage renderPackage{
             .queue = m_queue,
@@ -97,11 +102,15 @@ namespace Pale {
     // 2) Load target reference image (RGB, linear)
     std::vector<float> targetRgb; // size = W*H*3
     uint32_t targetWidth = 0, targetHeight = 0;
-    Utils::loadPFM_RGB(targetImagePath, targetRgb, targetWidth, targetHeight);
+    if (!Utils::loadPFM_RGB(targetImagePath, targetRgb, targetWidth, targetHeight)) {
+        Log::PA_ERROR("Failed to find target image at {}", targetImagePath.string());
+        return;
+    };
 
     // 3) Validate dimensions
     if (predictedWidth != targetWidth || predictedHeight != targetHeight) {
-        throw std::runtime_error("setResiduals(): predicted and target image sizes differ");
+        Log::PA_ERROR("setResiduals(): predicted and target image sizes differ");
+        return;
     }
     const uint32_t imageWidth  = predictedWidth;
     const uint32_t imageHeight = predictedHeight;
@@ -128,7 +137,7 @@ namespace Pale {
     // for (float& v : residualRgb) v *= invPixelCount;
 
         // 6) Save adjoint image to disk (PFM, RGB)
-        const std::filesystem::path adjointPath = "Output/adjoint_rgb.pfm";
+        const std::filesystem::path adjointPath = "Output/adjoint/adjoint_rgb.pfm";
         Utils::savePFM(adjointPath, residualRgb, imageWidth, imageHeight,
                        /*channels=*/3, /*flipY=*/true);
 
@@ -143,11 +152,11 @@ namespace Pale {
             residualB[i] = residualRgb[i * 3 + 2];
         }
 
-        Utils::savePFM("Output/adjoint_r.pfm", residualR, imageWidth, imageHeight,
+        Utils::savePFM("Output/adjoint/adjoint_r.pfm", residualR, imageWidth, imageHeight,
                        /*channels=*/1, /*flipY=*/true);
-        Utils::savePFM("Output/adjoint_g.pfm", residualG, imageWidth, imageHeight,
+        Utils::savePFM("Output/adjoint/adjoint_g.pfm", residualG, imageWidth, imageHeight,
                        /*channels=*/1, /*flipY=*/true);
-        Utils::savePFM("Output/adjoint_b.pfm", residualB, imageWidth, imageHeight,
+        Utils::savePFM("Output/adjoint/adjoint_b.pfm", residualB, imageWidth, imageHeight,
                        /*channels=*/1, /*flipY=*/true);
 
     // 7) (Optional) also save residual magnitude for debugging
@@ -159,12 +168,27 @@ namespace Pale {
             const float b = residualRgb[i * 3 + 2];
             residualLuminance[i] = std::sqrt(r*r + g*g + b*b);
         }
-        Utils::savePFM("Output/adjoint_mag.pfm", residualLuminance, imageWidth, imageHeight, /*channels=*/1, /*flipY=*/true);
+        Utils::savePFM("Output/adjoint/adjoint_mag.pfm", residualLuminance, imageWidth, imageHeight, /*channels=*/1, /*flipY=*/true);
     }
 
     }
 
-    void PathTracer::renderBackward(SensorGPU& sensors) {
+    void PathTracer::renderBackward(SensorGPU& sensor) {
+
+        m_settings.rayGenMode = RayGenMode::Adjoint;
+
+        RenderPackage renderPackage{
+            .queue = m_queue,
+            .settings = m_settings,
+            .scene = m_scene,
+            .intermediates = m_intermediates,
+            .sensor = sensor
+        };
+
+        submitKernel(renderPackage);
+
+        m_queue.wait();
+
     }
 
     void PathTracer::reset() {

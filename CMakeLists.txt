@@ -64,6 +64,7 @@ FetchContent_Declare(
 # SOURCES
 set(KERNEL_SOURCES
         Pale/Renderer/Kernels/SyclBridge.cpp
+        Pale/Renderer/Kernels/AdjointKernels.cpp
 )
 
 

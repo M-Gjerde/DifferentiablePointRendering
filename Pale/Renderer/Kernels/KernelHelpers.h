@@ -327,39 +327,43 @@ namespace Pale {
         outTHit = t;
         return true;
     }
+
     SYCL_EXTERNAL static bool intersectSurfel(const Ray& rayObject,
-                                   const Point& surfel,
-                                   float tMin,
-                                   float tMax,
-                                   float& outTHit,
-                                   float& contrib)
+                                              const Point& surfel,
+                                              float tMin, float tMax,
+                                              float& outTHit, float& contrib,
+                                              float kSigmas = 3.0f)
     {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
-        float3 normalObject = normalize(cross(tangentU, tangentV));
+        const float3 normalObject = normalize(cross(tangentU, tangentV));
 
         const float nDotD = dot(rayObject.direction, normalObject);
-        if (abs(nDotD) < 1e-6f) return false;
+        if (sycl::fabs(nDotD) < 1e-6f) return false;
 
         const float t = dot(surfel.position - rayObject.origin, normalObject) / nDotD;
         if (t <= tMin || t >= tMax) return false;
 
         const float3 hitPoint = rayObject.origin + t * rayObject.direction;
-        const float3 relative = hitPoint - surfel.position;
+        const float3 rel = hitPoint - surfel.position;
 
-        const float alpha = dot(relative, tangentU);
-        const float beta  = dot(relative, tangentV);
+        const float alpha = dot(rel, tangentU);
+        const float beta  = dot(rel, tangentV);
 
-        const float su = fmax(surfel.scale.x(), 1e-8f);
-        const float sv = fmax(surfel.scale.y(), 1e-8f);
+        const float su = sycl::fmax(surfel.scale.x(), 1e-8f); // 1-σ in u
+        const float sv = sycl::fmax(surfel.scale.y(), 1e-8f); // 1-σ in v
+
         const float uHat = alpha / su;
         const float vHat = beta  / sv;
-        float exponent = -((uHat*uHat) + (vHat*vHat)) / 2.0f;
-        float V_sigma = 1 - std::exp(exponent);
-        //if (G < 0.6f) return false; // clip to ellipse
+        const float r2   = uHat*uHat + vHat*vHat;
+
+        // hard cutoff outside kσ
+        //if (r2 > kSigmas * kSigmas) return false;
+
+        // decaying Gaussian weight
+        contrib = sycl::exp(-0.5f * r2);
 
         outTHit = t;
-        contrib = V_sigma;
         return true;
     }
 }

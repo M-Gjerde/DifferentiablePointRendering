@@ -122,16 +122,14 @@ namespace Pale {
 
                     // Generate a random number [0, 1] dependent on the position
                     float xi = rng128.nextFloat();
-                    const float alphaAtHit = sycl::clamp(contributionAtHit * surfel.opacity, 0.0f, 1.0f);
-
-                    if (xi > alphaAtHit && alphaAtHit < 0.9f) {
+                    const float alphaAtHit = contributionAtHit * surfel.opacity;
+                    if (xi < alphaAtHit) {                 // accept with probability alphaAtHit
                         bestAcceptedT = tHit;
                         foundAccepted = true;
-                        out.primitiveIndex = pointIndex; // for shading
+                        out.primitiveIndex = pointIndex;
                         out.t = tHit;
+                        out.opacityAtHit = alphaAtHit;
                     }
-
-
 
                 }
             }
@@ -192,6 +190,7 @@ namespace Pale {
                     foundAnyHit = true;
 
                     worldHit->t = tWorld;
+                    worldHit->opacityAtHit = localHit.opacityAtHit;
                     worldHit->primitiveIndex = localHit.primitiveIndex;
                     worldHit->instanceIndex = instanceIndex;
                     worldHit->hitPositionW = hitPointW;
