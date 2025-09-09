@@ -16,13 +16,13 @@ namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
 #ifdef NDEBUG
         // Release
-        m_settings.photonsPerLaunch = 1e7; // 1e7
+        m_settings.photonsPerLaunch = 1e8; // 1e7
         m_settings.maxBounces = 6;
 
 #else
         // Debug
         m_settings.photonsPerLaunch = 1e6; // 1e6
-        m_settings.maxBounces = 2;
+        m_settings.maxBounces = 4;
 #endif
 
     }
@@ -45,6 +45,7 @@ namespace Pale {
         m_intermediates.hitRecords = sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.capacity = m_rayQueueCapacity;
 
         // optional: zero counters once
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
@@ -94,6 +95,9 @@ namespace Pale {
             Log::PA_WARN("Adjoint image is not set but renderBackward is called");
             return;
         }
+
+        const uint32_t requiredRayCapacity = sensor.width * sensor.height;
+        ensureCapacity(requiredRayCapacity);
 
         m_settings.rayGenMode = RayGenMode::Adjoint;
 

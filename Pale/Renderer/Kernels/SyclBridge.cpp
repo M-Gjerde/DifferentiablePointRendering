@@ -474,7 +474,7 @@ namespace Pale {
                 launchRayGenEmitterKernel(pkg.queue, pkg.settings, pkg.scene, pkg.intermediates);
                 break;
             case RayGenMode::Adjoint:
-                launchRayGenAdjointKernel(pkg.queue, pkg.settings, pkg.sensor, pkg.scene, pkg.intermediates);
+                launchRayGenAdjointKernel(pkg.queue, pkg.settings, pkg.sensor, pkg.adjoint, pkg.scene, pkg.intermediates);
                 break;
             default:
                 ;
@@ -505,15 +505,15 @@ namespace Pale {
             }
         } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
 
-            for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces; ++bounce) {
+            for (uint32_t bounce = 0; bounce < 1  && activeCount > 0; ++bounce) {
                 pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                 pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                 pkg.queue.wait();
                 launchIntersectKernel(pkg.queue, pkg.scene, pkg.intermediates.primaryRays, activeCount,
                                       pkg.intermediates.hitRecords, pkg.settings);
 
-                launchAdjointShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
-                                  pkg.intermediates.primaryRays, 100,
+                launchAdjointShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.adjoint, pkg.intermediates.hitRecords,
+                                  pkg.intermediates.primaryRays, activeCount,
                                   pkg.intermediates.extensionRaysA, pkg.intermediates, pkg.settings);
             }
             // Launch intersect kernel

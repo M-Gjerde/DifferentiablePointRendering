@@ -188,6 +188,22 @@ namespace Pale {
         return r;
     }
 
+
+    SYCL_EXTERNAL inline float3 transformPoint(const float4x4& tf, const float3& p, float w = 1.0f) {
+        const float4 v = {p, w};
+        float4 result = tf * v;
+        float invW = 1.f / result.w();
+        return float3{result.x() * invW, result.y()* invW, result.z()* invW};
+
+    }
+
+    SYCL_EXTERNAL inline float3 transformDirection(const float4x4& tf, const float3& dir) {
+        const float4 v = {dir, 0.f};
+        float4 r = tf * v;
+        return normalize(float3{r.x(), r.y(), r.z()});
+
+    }
+
     inline float3 toWorldPoint(const float3 &pO, const Transform &xf) {
         float4 hp = xf.objectToWorld * float4{pO, 1.f};
         return float3{hp.x(), hp.y(), hp.z()} / hp.w();

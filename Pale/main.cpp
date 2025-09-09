@@ -139,13 +139,7 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sy
         residualRgba[i] = Pale::float4{residualRgb[k+0], residualRgb[k+1], residualRgb[k+2], 0.0f};
     }
 
-    auto* deviceResidualRgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-    queue.memcpy(deviceResidualRgba, residualRgba.data(),
-                 sizeof(Pale::float4) * pixelCount).wait();
 
-    adjoint.framebuffer = deviceResidualRgba;
-    adjoint.width = imageWidth;
-    adjoint.height = imageHeight;
 
     // Optional: if you use mean squared error over N pixels, scale by 1/N
     // const float invPixelCount = 1.0f / static_cast<float>(pixelCount);
@@ -154,8 +148,7 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sy
     // 6) Save adjoint image to disk (PFM, RGB)
     const std::filesystem::path adjointPath = "Output/initial/adjoint_rgb.pfm";
     Pale::Utils::savePFM(adjointPath, residualRgb, imageWidth, imageHeight);
-    return adjoint;
-    /*
+
     // 6b) Also save each RGB component separately
     std::vector<float> residualR(pixelCount);
     std::vector<float> residualG(pixelCount);
@@ -167,9 +160,9 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sy
         residualB[i] = residualRgb[i * 3 + 2];
     }
 
-    Pale::Utils::savePFM("Output/adjoint/adjoint_r.pfm", residualR, imageWidth, imageHeight);
-    Pale::Utils::savePFM("Output/adjoint/adjoint_g.pfm", residualG, imageWidth, imageHeight);
-    Pale::Utils::savePFM("Output/adjoint/adjoint_b.pfm", residualB, imageWidth, imageHeight);
+    Pale::Utils::savePFM("Output/initial/adjoint_r.pfm", residualR, imageWidth, imageHeight);
+    Pale::Utils::savePFM("Output/initial/adjoint_g.pfm", residualG, imageWidth, imageHeight);
+    Pale::Utils::savePFM("Output/initial/adjoint_b.pfm", residualB, imageWidth, imageHeight);
 
     // 7) (Optional) also save residual magnitude for debugging
     {
@@ -180,13 +173,22 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sy
             const float b = residualRgb[i * 3 + 2];
             residualLuminance[i] = std::sqrt(r * r + g * g + b * b);
         }
-        Pale::Utils::savePFM("Output/adjoint/adjoint_mag.pfm", residualLuminance, imageWidth, imageHeight
+        Pale::Utils::savePFM("Output/initial/adjoint_mag.pfm", residualLuminance, imageWidth, imageHeight,
                              1,
                              true);
     }
 
+
+    auto* deviceResidualRgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+    queue.memcpy(deviceResidualRgba, residualRgba.data(),
+                 sizeof(Pale::float4) * pixelCount).wait();
+
+    adjoint.framebuffer = deviceResidualRgba;
+    adjoint.width = imageWidth;
+    adjoint.height = imageHeight;
+
     return adjoint;
-    */
+
 }
 
 int main() {

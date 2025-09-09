@@ -263,7 +263,6 @@ namespace Pale {
             gpuCam.forward = float3{forward.x, forward.y, forward.z};
             gpuCam.width = cameraComponent.camera.width;
             gpuCam.height = cameraComponent.camera.height;
-            gpuCam.firstPixel = 0;
             outBuildProducts.cameraGPUs.push_back(gpuCam);
         }
     }

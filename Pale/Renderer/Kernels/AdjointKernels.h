@@ -9,13 +9,15 @@
 namespace Pale {
     void launchRayGenAdjointKernel(sycl::queue queue,
                                    PathTracerSettings settings,
-                                   SensorGPU sensor,
+                                   SensorGPU cameraSensor,
+                                   AdjointGPU adjointSensor,
                                    GPUSceneBuffers scene,
                                    RenderIntermediatesGPU renderIntermediates);
 
     void launchAdjointShadeKernel(sycl::queue &queue,
                                   GPUSceneBuffers scene,
                                   SensorGPU sensor,
+                                  AdjointGPU adjointSensor,
                                   const WorldHit *hitRecords,
                                   const RayState *raysIn,
                                   uint32_t rayCount,

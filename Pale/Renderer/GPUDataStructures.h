@@ -160,7 +160,6 @@ namespace Pale {
         float3 pos{}; // 144
         float3 forward{}; // 160
         uint32_t width{}, height{}; // 168
-        uint32_t firstPixel{}; // 172
     };
 
     CHECK_16(CameraGPU);
@@ -265,6 +264,7 @@ namespace Pale {
     };
 
     struct RenderIntermediatesGPU {
+        uint32_t capacity = 0;
         RayState* primaryRays;
         RayState* extensionRaysA;
         WorldHit* hitRecords;
