@@ -91,6 +91,104 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 }
 
 
+Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sycl::queue queue, Pale::SensorGPU &sensor) {
+    // 1) Download current predicted image (RGBA, linear)
+    Pale::AdjointGPU adjoint;
+    std::vector<float> predictedRgba; // size = W*H*4
+    uint32_t predictedWidth = 0, predictedHeight = 0; {
+        predictedRgba = Pale::downloadSensorRGBA(queue, sensor);
+        predictedWidth = sensor.width;
+        predictedHeight = sensor.height;
+    }
+
+    // 2) Load target reference image (RGB, linear)
+    std::vector<float> targetRgb; // size = W*H*3
+    uint32_t targetWidth = 0, targetHeight = 0;
+    if (!Pale::Utils::loadPFM_RGB(targetImagePath, targetRgb, targetWidth, targetHeight)) {
+        Pale::Log::PA_ERROR("Failed to find target image at {}", targetImagePath.string());
+        return adjoint;
+    };
+
+    // 3) Validate dimensions
+    if (predictedWidth != targetWidth || predictedHeight != targetHeight) {
+        Pale::Log::PA_ERROR("setResiduals(): predicted and target image sizes differ");
+        return adjoint;
+    }
+    const uint32_t imageWidth = predictedWidth;
+    const uint32_t imageHeight = predictedHeight;
+    const size_t pixelCount = static_cast<size_t>(imageWidth) * imageHeight;
+
+    // 4) Extract predicted RGB from RGBA
+    std::vector<float> predictedRgb(pixelCount * 3u);
+    for (size_t i = 0, j = 0; i < pixelCount; ++i, j += 4) {
+        predictedRgb[i * 3 + 0] = predictedRgba[j + 0];
+        predictedRgb[i * 3 + 1] = predictedRgba[j + 1];
+        predictedRgb[i * 3 + 2] = predictedRgba[j + 2];
+    }
+
+    // 5) Compute per-pixel residuals and adjoint (for 0.5 * L2)
+    //     residual = predicted - target
+    //     adjoint  = residual  (∂L/∂predicted)
+    std::vector<float> residualRgb(pixelCount * 3u);
+    for (size_t k = 0; k < residualRgb.size(); ++k) {
+        residualRgb[k] = predictedRgb[k] - targetRgb[k];
+    }
+    std::vector<Pale::float4> residualRgba(pixelCount);
+    for (size_t i = 0; i < pixelCount; ++i) {
+        const size_t k = i * 3u;
+        residualRgba[i] = Pale::float4{residualRgb[k+0], residualRgb[k+1], residualRgb[k+2], 0.0f};
+    }
+
+    auto* deviceResidualRgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+    queue.memcpy(deviceResidualRgba, residualRgba.data(),
+                 sizeof(Pale::float4) * pixelCount).wait();
+
+    adjoint.framebuffer = deviceResidualRgba;
+    adjoint.width = imageWidth;
+    adjoint.height = imageHeight;
+
+    // Optional: if you use mean squared error over N pixels, scale by 1/N
+    // const float invPixelCount = 1.0f / static_cast<float>(pixelCount);
+    // for (float& v : residualRgb) v *= invPixelCount;
+
+    // 6) Save adjoint image to disk (PFM, RGB)
+    const std::filesystem::path adjointPath = "Output/initial/adjoint_rgb.pfm";
+    Pale::Utils::savePFM(adjointPath, residualRgb, imageWidth, imageHeight);
+    return adjoint;
+    /*
+    // 6b) Also save each RGB component separately
+    std::vector<float> residualR(pixelCount);
+    std::vector<float> residualG(pixelCount);
+    std::vector<float> residualB(pixelCount);
+
+    for (size_t i = 0; i < pixelCount; ++i) {
+        residualR[i] = residualRgb[i * 3 + 0];
+        residualG[i] = residualRgb[i * 3 + 1];
+        residualB[i] = residualRgb[i * 3 + 2];
+    }
+
+    Pale::Utils::savePFM("Output/adjoint/adjoint_r.pfm", residualR, imageWidth, imageHeight);
+    Pale::Utils::savePFM("Output/adjoint/adjoint_g.pfm", residualG, imageWidth, imageHeight);
+    Pale::Utils::savePFM("Output/adjoint/adjoint_b.pfm", residualB, imageWidth, imageHeight);
+
+    // 7) (Optional) also save residual magnitude for debugging
+    {
+        std::vector<float> residualLuminance(pixelCount);
+        for (size_t i = 0; i < pixelCount; ++i) {
+            const float r = residualRgb[i * 3 + 0];
+            const float g = residualRgb[i * 3 + 1];
+            const float b = residualRgb[i * 3 + 2];
+            residualLuminance[i] = std::sqrt(r * r + g * g + b * b);
+        }
+        Pale::Utils::savePFM("Output/adjoint/adjoint_mag.pfm", residualLuminance, imageWidth, imageHeight
+                             1,
+                             true);
+    }
+
+    return adjoint;
+    */
+}
+
 int main() {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
@@ -105,7 +203,7 @@ int main() {
                                                 std::make_shared<Pale::YamlMaterialLoader>());
 
     assetManager.registerLoader<Pale::PointAsset>(Pale::AssetType::PointCloud,
-                                                std::make_shared<Pale::PLYPointLoader>());
+                                                  std::make_shared<Pale::PLYPointLoader>());
 
     assetManager.registry().load("asset_registry.yaml");
 
@@ -116,7 +214,8 @@ int main() {
     serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
-    auto assetHandle = assetIndexer.importPath("PointClouds/pc.ply", Pale::AssetType::PointCloud);
+    std::filesystem::path pointCloudPath = "initial.ply";
+    auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
     auto entityGaussian = scene->createEntity("Gaussian");
     entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
 
@@ -131,7 +230,8 @@ int main() {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue()); // scene only
 
-    Pale::SensorGPU sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts); // outputs derived from cameras
+    Pale::SensorGPU sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+    // outputs derived from cameras
     // Start a Tracer
     Pale::PathTracer tracer(deviceSelector.getQueue());
     // Register the scene with the Tracer
@@ -140,28 +240,46 @@ int main() {
     // Render
     tracer.renderForward(sensor); // films is span/array
 
+    {
+        // // Save each sensor image
+        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+        const uint32_t W = sensor.width, H = sensor.height;
+        float gamma = 3.0f;
+        float exposure = 6.5f;
+        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("")  /"out.png";
+        if (Pale::Utils::savePNGWithToneMap(
+                filePath, rgba, W, H,
+                exposure,
+                gamma,
+                true)) {
+            Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
+                };
+
+
+    Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
+    }
+
     // 4) (Optional) load or compute residuals on host, upload pointer
-    tracer.setResiduals(sensor, "Output/Target/out.pfm");
+    auto adjoint = calculateAdjointImage("Output/target/out.pfm", deviceSelector.getQueue(), sensor);
+    Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+    tracer.renderBackward(adjointSensor, adjoint);                      // PRNG replay adjoint
 
-    //    tracer.setResidualsDevice(d_residuals, W*H);  // if you have them
-    //    tracer.renderBackward();                      // PRNG replay adjoint
-
-    // // Save each sensor image
-    auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-    const uint32_t W = sensor.width, H = sensor.height;
-    float gamma = 6.0f;
-    float exposure = 2.5f;
-    if (std::filesystem::path filePath = "Output/out.png";
-        Pale::Utils::savePNGWithToneMap(
-            filePath, rgba, W, H,
-            gamma,
-            exposure,
-            true)) {
-        Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-    };
-
-    Pale::Utils::savePFM("Output/out.pfm", rgba, W, H);                // writes RGB, drops A
-
+    {
+        // // Save each sensor image
+        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), adjointSensor);
+        const uint32_t W = adjointSensor.width, H = adjointSensor.height;
+        float gamma = 1.0f;
+        float exposure = 0.0f;
+        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("")  /"adjoint_out.png";
+        if (Pale::Utils::savePNGWithToneMap(
+                filePath, rgba, W, H,
+                exposure,
+                gamma,
+                false)) {
+            Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
+                };
+        Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A}
+    }
     // Write Registry:
     assetManager.registry().save("asset_registry.yaml");
 

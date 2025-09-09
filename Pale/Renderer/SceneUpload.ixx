@@ -18,6 +18,7 @@ export namespace Pale {
     // device pointers & counts (triangles, vertices, instances, materials, lights, cameras, BVHs…)
     class SceneUpload {
     public:
+
         static GPUSceneBuffers upload(const SceneBuild::BuildProducts &bp,
                                       sycl::queue queue) {
             GPUSceneBuffers g{};

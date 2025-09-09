@@ -43,6 +43,7 @@ export namespace Pale {
                                      * 4u;
         // Allocate host-side buffer
         std::vector<float> hostSideFramebuffer(totalFloatCount);
+        queue.wait();
         // Copy device framebuffer → host buffer
         queue.memcpy(
             hostSideFramebuffer.data(),       // destination

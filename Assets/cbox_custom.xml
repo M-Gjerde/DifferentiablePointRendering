@@ -30,7 +30,7 @@
         <rgb name="reflectance" value="0.85,0.85,0.85"/>
     </bsdf>
     <bsdf type="diffuse" id="white">
-        <rgb name="reflectance" value="0.885809,0.698859,0.666422"/>
+        <rgb name="reflectance" value="0.3,0.3,0.3"/>
     </bsdf>
     <bsdf type="diffuse" id="green">
         <rgb name="reflectance" value="0.105421,0.37798,0.076425"/>

@@ -32,10 +32,8 @@ namespace Pale {
     inline void launchDirectShadeKernel(sycl::queue &queue,
                                         GPUSceneBuffers scene,
                                         SensorGPU sensor,
-                                        const WorldHit *hitRecords,
                                         const RayState *raysIn,
                                         uint32_t rayCount,
-                                        RenderIntermediatesGPU renderIntermediates,
                                         const PathTracerSettings &settings
 
     ) {
@@ -123,6 +121,8 @@ namespace Pale {
                     }
                 });
         });
+
+        queue.wait();
     }
 
 
@@ -244,6 +244,7 @@ namespace Pale {
                     renderIntermediates.primaryRays[slot] = ray;
                 });
         });
+        queue.wait();
     }
 
 
@@ -310,7 +311,7 @@ namespace Pale {
             cgh.parallel_for<IntersectKernelTag>(
                 sycl::range<1>(rayCount), kernel);
         });
-        queue.wait_and_throw(); // DEBUG: ensure the thread blocks here
+        queue.wait(); // DEBUG: ensure the thread blocks here
     }
 
 
@@ -333,7 +334,6 @@ namespace Pale {
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
-
                     constexpr float kEps = 1e-4f;
                     // Choose any generator you like:
 
@@ -459,12 +459,13 @@ namespace Pale {
                     raysOut[slot] = next;
                 });
         });
+        queue.wait();
     }
 
 
     // ---- Orchestrator -------------------------------------------------------
     void submitKernel(RenderPackage &pkg) {
-        //pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
+        pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
         // Ray generation mode
         pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
 
@@ -473,37 +474,51 @@ namespace Pale {
                 launchRayGenEmitterKernel(pkg.queue, pkg.settings, pkg.scene, pkg.intermediates);
                 break;
             case RayGenMode::Adjoint:
-                launchRayGenAdjointKernel(pkg.queue, pkg.settings, pkg.scene, pkg.intermediates);
+                launchRayGenAdjointKernel(pkg.queue, pkg.settings, pkg.sensor, pkg.scene, pkg.intermediates);
                 break;
             default:
                 ;
         }
-
         uint32_t activeCount = 0;
-        pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t));
+        pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
 
-        // Launch direct light kernel
-        launchDirectShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
-                                pkg.intermediates.primaryRays, activeCount,
-                                pkg.intermediates, pkg.settings);
+        if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
+            // Launch direct light kernel
+            launchDirectShadeKernel(pkg.queue, pkg.scene, pkg.sensor,
+                                    pkg.intermediates.primaryRays, activeCount, pkg.settings);
+            for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
+                pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
+                pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
+                pkg.queue.wait();
+                launchIntersectKernel(pkg.queue, pkg.scene, pkg.intermediates.primaryRays, activeCount,
+                                      pkg.intermediates.hitRecords, pkg.settings);
+                launchShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
+                                  pkg.intermediates.primaryRays, activeCount,
+                                  pkg.intermediates.extensionRaysA, pkg.intermediates, pkg.settings);
+                uint32_t nextCount = 0;
+                pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
+                pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
+                                 nextCount * sizeof(RayState));
+                pkg.queue.wait();
+                activeCount = nextCount;
+                pkg.queue.wait();
+            }
+        } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
 
-        for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
-            pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
-            pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
+            for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces; ++bounce) {
+                pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
+                pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
+                pkg.queue.wait();
+                launchIntersectKernel(pkg.queue, pkg.scene, pkg.intermediates.primaryRays, activeCount,
+                                      pkg.intermediates.hitRecords, pkg.settings);
 
-            launchIntersectKernel(pkg.queue, pkg.scene, pkg.intermediates.primaryRays, activeCount,
-                                  pkg.intermediates.hitRecords, pkg.settings);
+                launchAdjointShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
+                                  pkg.intermediates.primaryRays, 100,
+                                  pkg.intermediates.extensionRaysA, pkg.intermediates, pkg.settings);
+            }
+            // Launch intersect kernel
 
-            launchShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
-                              pkg.intermediates.primaryRays, activeCount,
-                              pkg.intermediates.extensionRaysA, pkg.intermediates, pkg.settings);
-            uint32_t nextCount = 0;
-
-            pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t));
-            pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
-                             nextCount * sizeof(RayState));
-
-            activeCount = nextCount;
+            // Launch shade kernel//
         }
     }
 }

@@ -220,6 +220,11 @@ namespace Pale {
         uint32_t width{}, height{};
     };
 
+    struct AdjointGPU {
+        float4* framebuffer{nullptr}; // device pointer
+        uint32_t width{}, height{};
+    };
+
     // ---- PODs ---------------------------------------------------------------
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Camera = 0, Emitter = 1, Hybrid = 2, Adjoint = 3 };
@@ -273,5 +278,6 @@ namespace Pale {
         GPUSceneBuffers scene{};
         RenderIntermediatesGPU intermediates{};
         SensorGPU sensor{};
+        AdjointGPU adjoint{};
     };
 }
