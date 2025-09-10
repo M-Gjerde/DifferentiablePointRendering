@@ -67,9 +67,9 @@ namespace Pale {
                     const float4 residualRgba = adjointSensor.framebuffer[pixelIndex]; // linear RGB adjoint source
 
                     float3 initialAdjointWeight = {
-                        residualRgba.x(), // R
-                        residualRgba.y(), // G
-                        residualRgba.z() // B
+                        residualRgba.x() * invSamplesPerPixel,
+                        residualRgba.y() * invSamplesPerPixel,
+                        residualRgba.z() * invSamplesPerPixel
                     };
 
                     const float weightLen2 =

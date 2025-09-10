@@ -51,7 +51,7 @@
             <rgb name="reflectance" value="0,0,0"/>
         </bsdf>
         <emitter type="area">
-            <!--  <rgb name="radiance" value="20, 20, 20"/> -->
+            <!--  <rgb name="radiance" value="600.387,400.9873,200.75357"/> -->
             <rgb name="radiance" value="18.387,13.9873,6.75357"/>
         </emitter>
         <ref id="red"/>

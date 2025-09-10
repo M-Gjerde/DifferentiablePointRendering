@@ -23,7 +23,7 @@ namespace Pale {
 #else
         // Debug
         m_settings.photonsPerLaunch = 1e6; // 1e6
-        m_settings.maxBounces = 4;
+        m_settings.maxBounces = 1;
         m_settings.adjointSamplesPerPixel = 1;
 
 #endif
