@@ -50,12 +50,12 @@ namespace Pale {
     template<size_t M, size_t N>
     sycl::vec<float, M> operator*(Matrix<M, N> const &A,
                                   sycl::vec<float, N> const &v) {
+        static_assert(M > 0 && M <= 16, "M must be in [1,16]");
+        static_assert(N > 0 && N <= 16, "N must be in [1,16]");
         sycl::vec<float, M> r{};
         for (size_t i = 0; i < M; ++i) {
-            float sum = 0.0f;
-            for (size_t j = 0; j < N; ++j)
-                sum += A.row[i][j] * v[j];
-            r[i] = sum;
+            // Use dot product to avoid any out-of-bounds indexing
+            r[i] = sycl::dot(A.row[i], v);
         }
         return r;
     }
@@ -335,7 +335,6 @@ namespace Pale {
         uint32_t data[MaxN];
         int sp = 0;
 
-
         bool push(uint32_t v) // returns false on overflow
         {
             if (sp >= MaxN) return false;
@@ -343,9 +342,9 @@ namespace Pale {
             return true;
         }
 
-
-        uint32_t pop() // *call only when !empty()*
+        uint32_t pop() // safe pop – returns 0 on underflow
         {
+            if (sp <= 0) return 0u;
             return data[--sp];
         }
 
@@ -364,6 +363,7 @@ namespace Pale {
         }
 
         T pop() {
+            if (sp <= 0) return T{};
             return data[--sp];
         }
 
