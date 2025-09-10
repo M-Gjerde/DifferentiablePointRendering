@@ -256,6 +256,7 @@ namespace Pale {
         uint32_t instanceIndex{};
         float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW; // optional: fill if you have it cheaply
+        bool hasVisibilityTest = false;
     };
 
     struct PathTracerSettings {
@@ -263,10 +264,10 @@ namespace Pale {
         uint64_t randomSeed = 42;
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 4;
+        uint32_t adjointSamplesPerPixel = 2;
     };
 
     struct RenderIntermediatesGPU {
-        uint32_t capacity = 0;
         RayState* primaryRays;
         RayState* extensionRaysA;
         WorldHit* hitRecords;

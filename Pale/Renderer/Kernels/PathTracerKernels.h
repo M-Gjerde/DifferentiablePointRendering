@@ -87,6 +87,8 @@ namespace Pale {
         bool foundAccepted = false;
         const float3 inverseDirection = safeInvDir(rayObject.direction);
         constexpr float rayEpsilon = 1e-4f;
+        out.hasVisibilityTest = false;                  // reset for this BLAS
+        bool sawTransmissionOnThisBLAS = false;         // sticky flag
 
         SmallStack<512> traversalStack;
         traversalStack.push(0);
@@ -129,14 +131,14 @@ namespace Pale {
                         out.primitiveIndex = pointIndex;
                         out.t = tHit;
                         out.opacityAtHit = alphaAtHit;
-                        out.hasVisibilityTest = false;
                     } else {
-                        out.hasVisibilityTest = true;
+                        sawTransmissionOnThisBLAS = true;
                     }
 
                 }
             }
         }
+        out.hasVisibilityTest = sawTransmissionOnThisBLAS;
         return foundAccepted;
     }
 
@@ -150,8 +152,13 @@ namespace Pale {
         /* stack‑based depth‑first traversal                                   */
         /* ------------------------------------------------------------------ */
         bool foundAnyHit = false;
+        bool sawVisibilityTestOnScene = false;      // sticky across all instances
+
         float3 invDir = safeInvDir(rayWorld.direction);;
 
+        // initialize output
+        worldHit->t = FLT_MAX;
+        worldHit->hasVisibilityTest = false;
         SmallStack<256> stack;
         stack.push(0); // root
         float bestTWorld = std::numeric_limits<float>::infinity();
@@ -184,6 +191,9 @@ namespace Pale {
                     ok = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene, rng128);
                 }
 
+                sawVisibilityTestOnScene = sawVisibilityTestOnScene || localHit.hasVisibilityTest;
+
+
                 if (ok) {
                     const float3 hitPointW = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
                                                           transform);
@@ -197,8 +207,16 @@ namespace Pale {
                     worldHit->primitiveIndex = localHit.primitiveIndex;
                     worldHit->instanceIndex = instanceIndex;
                     worldHit->hitPositionW = hitPointW;
+                    worldHit->hasVisibilityTest = sawVisibilityTestOnScene;
+                    if (worldHit->hasVisibilityTest) {
+                        int debug = 1;
+                    }
                 }
             }
+        }
+
+        if (!foundAnyHit && sawVisibilityTestOnScene) {
+            worldHit->hasVisibilityTest = true;
         }
         return foundAnyHit;
     }

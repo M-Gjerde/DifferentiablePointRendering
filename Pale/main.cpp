@@ -194,7 +194,7 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sy
 
 }
 
-int main() {
+int main(int argc, char** argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
@@ -219,7 +219,14 @@ int main() {
     serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
-    std::filesystem::path pointCloudPath = "initial.ply";
+    // Check CLI input for point cloud file
+    std::filesystem::path pointCloudPath;
+    if (argc > 1) {
+        pointCloudPath = argv[1];
+    } else {
+        pointCloudPath = "initial.ply"; // default
+    }
+
     auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
     auto entityGaussian = scene->createEntity("Gaussian");
     entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
@@ -274,7 +281,7 @@ int main() {
     deviceSelector.getQueue().memcpy(gradients.data(), adjoint.gradient_pk, 10 * sizeof(Pale::float3)).wait();;
 
     for (size_t instanceIndex = 0; instanceIndex < 1; ++instanceIndex)
-        Pale::Log::PA_INFO("Point Gradient: x: {}, y: {}, z: {}", gradients.at(instanceIndex).x(), gradients.at(instanceIndex).y(), gradients.at(instanceIndex).z());
+        Pale::Log::PA_INFO("Point Gradient: x: {}, y: {}, z: {}, contributions: {}", gradients.at(instanceIndex).x(), gradients.at(instanceIndex).y(), gradients.at(instanceIndex).z(), gradients.at(1).x());
 
     {
         // // Save each sensor image

@@ -505,6 +505,7 @@ namespace Pale {
             }
         } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
 
+            //for (uint32_t bounce = 0; bounce < 1  && activeCount > 0; ++bounce) {
             for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces  && activeCount > 0; ++bounce) {
                 pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                 pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);

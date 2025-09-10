@@ -15,17 +15,23 @@ namespace Pale {
                                    RenderIntermediatesGPU renderIntermediates) {
         const uint32_t imageWidth = cameraSensor.camera.width;
         const uint32_t imageHeight = cameraSensor.camera.height;
-        const uint32_t rayCount = imageWidth * imageHeight;
+        const uint32_t samplesPerPixel = settings.adjointSamplesPerPixel; // add to settings
+        const uint32_t rayCount = imageWidth * imageHeight * samplesPerPixel;
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t baseSeed = settings.randomSeed;
-            const float invWidth = 1.f / imageWidth;
-            const float invHeight = 1.f / imageHeight;
+            const float invWidth = 1.f / static_cast<float>(imageWidth);
+            const float invHeight = 1.f / static_cast<float>(imageHeight);
+            const float invSamplesPerPixel = 1.f / static_cast<float>(samplesPerPixel);
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
                 sycl::range<1>(rayCount),
                 [=](sycl::id<1> globalId) {
-                    const auto pixelLinearIndex = static_cast<uint32_t>(globalId[0]);
+                    const uint32_t globalLinearIndex = static_cast<uint32_t>(globalId[0]);
+
+                    // Decompose into pixel and sample index
+                    const uint32_t pixelLinearIndex = globalLinearIndex / samplesPerPixel;
+                    const uint32_t sampleIndexInPixel = globalLinearIndex % samplesPerPixel;
 
                     const uint32_t pixelX = pixelLinearIndex % imageWidth;
                     const uint32_t pixelY = pixelLinearIndex / imageWidth;
@@ -72,6 +78,7 @@ namespace Pale {
                             initialAdjointWeight.z() * initialAdjointWeight.z();
 
                     //if (residualRgba.x() == 0.0f) return;
+                    if (residualRgba.x()==0.f && residualRgba.y()==0.f && residualRgba.z()==0.f) return;
 
                     RayState rayState{};
                     rayState.ray.origin = rayOriginWorld;
@@ -129,24 +136,28 @@ namespace Pale {
                         case GeometryType::PointCloud: {
                             auto val = scene.points[worldHit.primitiveIndex];
                             material.baseColor = val.color;
-                            return;
                         }
                         break;
                     }
 
-                    auto &transform = scene.transforms[instance.transformIndex];
+                    if (!worldHit.hasVisibilityTest) {
+                        return;
+                    }
+                    auto &camera = cameraSensor.camera;
+
                     // Calculate intersection derivative:
                     // Visibility gradient
                     auto &surfel = scene.points[0];
-                    float3 pointNormal = cross(surfel.tanU, surfel.tanV);
+                    float3 pointNormal = normalize(cross(surfel.tanU, surfel.tanV));
 
                     float3 segmentDirection = worldHit.hitPositionW - ray.origin;
                     const float denom = dot(pointNormal, segmentDirection);
                     if (sycl::fabs(denom) < kEps) return;
 
+
                     // Intersection parameter and clamp to the segment if needed.
                     const float t = dot(pointNormal, (surfel.position - ray.origin)) / denom;
-                    if (t < 0.f || t > 1.f) return;
+                    if (t < 0.f || t > 1.0) return;
 
                     const float3 surfelIntersectionPoint = ray.origin + t * segmentDirection;
                     const float3 offsetR = surfelIntersectionPoint - surfel.position;
@@ -217,12 +228,25 @@ namespace Pale {
 
                     // grad = G * (g_loc @ dploc_dpk)  -> 3-vector
                     float3 gradVisibilityWrtPk = {
-                        -gaussianG * (gLocU * dplocRowU[0] + gLocV * dplocRowV[0]),
-                        -gaussianG * (gLocU * dplocRowU[1] + gLocV * dplocRowV[1]),
-                        -gaussianG * (gLocU * dplocRowU[2] + gLocV * dplocRowV[2])
+                        gaussianG * (gLocU * dplocRowU[0] + gLocV * dplocRowV[0]),
+                        gaussianG * (gLocU * dplocRowU[1] + gLocV * dplocRowV[1]),
+                        gaussianG * (gLocU * dplocRowU[2] + gLocV * dplocRowV[2])
                     };
 
+                    // Multiply by Light contribution
+                    gradVisibilityWrtPk = gradVisibilityWrtPk * rayState.pathThroughput;
+
+                    // Multiply by Geometric Term:
+                    float3 toPinhole = camera.pos - worldHit.hitPositionW;
+                    float distanceToPinhole = length(toPinhole);
+                    float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, -ray.direction));
+                    float cameraCos = sycl::fabs(dot(camera.forward, ray.direction));
+                    float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
+
+                    gradVisibilityWrtPk = gradVisibilityWrtPk * G_cam;
+
                     float3 &dst = adjointSensor.gradient_pk[0];
+                    float3 &gradCounter = adjointSensor.gradient_pk[1];
                     const sycl::atomic_ref<float,
                                 sycl::memory_order::relaxed,
                                 sycl::memory_scope::device,
@@ -242,6 +266,14 @@ namespace Pale {
                     xGrad.fetch_add(gradVisibilityWrtPk.x());
                     yGrad.fetch_add(gradVisibilityWrtPk.y());
                     zGrad.fetch_add(gradVisibilityWrtPk.z());
+
+                    const sycl::atomic_ref<float,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>
+                    gradCount(gradCounter.x());
+                    gradCount.fetch_add(1.0f);
+
                     /*
                     auto &camera = cameraSensor.camera;
                     float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
@@ -299,11 +331,16 @@ namespace Pale {
                     float minPdf = 1e-6f;
                     pdfCosine = sycl::fmax(pdfCosine, minPdf);
 
+
+                    // Lambertian BRDF
+                    float3 albedo = material.baseColor; // in [0,1]
+                    float3 brdf = albedo * (1.0f / M_PIf);
+
                     // Sample next
                     RayState next{};
                     next.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
                     next.ray.direction = newDirection;
-                    next.pathThroughput = rayState.pathThroughput * (cosTheta / pdfCosine);
+                    next.pathThroughput = rayState.pathThroughput * brdf * (cosTheta / pdfCosine);
                     next.bounceIndex = rayState.bounceIndex + 1;
 
                     auto counter = sycl::atomic_ref<uint32_t,

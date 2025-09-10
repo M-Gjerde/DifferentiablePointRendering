@@ -18,11 +18,14 @@ namespace Pale {
         // Release
         m_settings.photonsPerLaunch = 1e7; // 1e7
         m_settings.maxBounces = 6;
+        m_settings.adjointSamplesPerPixel = 1;
 
 #else
         // Debug
         m_settings.photonsPerLaunch = 1e6; // 1e6
         m_settings.maxBounces = 4;
+        m_settings.adjointSamplesPerPixel = 1;
+
 #endif
 
     }
@@ -45,7 +48,6 @@ namespace Pale {
         m_intermediates.hitRecords = sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.capacity = m_rayQueueCapacity;
 
         // optional: zero counters once
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
@@ -69,7 +71,7 @@ namespace Pale {
     }
 
     void PathTracer::renderForward(SensorGPU &sensor) {
-        const uint32_t numberOfImagePixels = sensor.width * sensor.height;
+        const uint32_t numberOfImagePixels = sensor.width * sensor.height * 2;
         const uint32_t photonBudget = m_settings.photonsPerLaunch;
         const uint32_t requiredCapacity = std::max(numberOfImagePixels, photonBudget);
         ensureCapacity(requiredCapacity);
@@ -96,7 +98,7 @@ namespace Pale {
             return;
         }
 
-        const uint32_t requiredRayCapacity = sensor.width * sensor.height;
+        const uint32_t requiredRayCapacity = sensor.width * sensor.height * m_settings.adjointSamplesPerPixel;
         ensureCapacity(requiredRayCapacity);
 
         m_settings.rayGenMode = RayGenMode::Adjoint;
