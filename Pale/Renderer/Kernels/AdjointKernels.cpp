@@ -42,9 +42,6 @@ namespace Pale {
                     float sampleX = (static_cast<float>(pixelX) + jitterX) * invWidth;
                     float sampleY = (static_cast<float>(pixelY) + jitterY) * invHeight;
 
-                    sampleX = 850 * invWidth;
-                    sampleY = 700 * invHeight;
-
                     // NDC → clip (OpenGL-style NDC in [-1,1])
                     const float ndcX = 2.f * sampleX - 1.f;
                     const float ndcY = 1.f - 2.f * sampleY;
@@ -137,11 +134,10 @@ namespace Pale {
                         break;
                     }
 
-                    worldHit.hitPositionW = float3(0.144048715f, -0.0502380419f, -1.0f);
-                    auto& transform = scene.transforms[instance.transformIndex];
+                    auto &transform = scene.transforms[instance.transformIndex];
                     // Calculate intersection derivative:
                     // Visibility gradient
-                    auto& surfel = scene.points[0];
+                    auto &surfel = scene.points[0];
                     float3 pointNormal = cross(surfel.tanU, surfel.tanV);
 
                     float3 segmentDirection = worldHit.hitPositionW - ray.origin;
@@ -153,7 +149,6 @@ namespace Pale {
                     if (t < 0.f || t > 1.f) return;
 
                     const float3 surfelIntersectionPoint = ray.origin + t * segmentDirection;
-
                     const float3 offsetR = surfelIntersectionPoint - surfel.position;
 
 
@@ -171,33 +166,48 @@ namespace Pale {
                     float quadraticForm = u * u * invSu2 + v * v * invSv2;
                     float gaussianG = sycl::exp(-0.5f * quadraticForm);
 
-
                     // Jacobians
                     // dp_dpk = (d n^T) / (n^T d)  (3x3)
                     float dp_dpk[3][3] = {
-                        { segmentDirection.x() * pointNormal.x() / denom, segmentDirection.x() * pointNormal.y() / denom, segmentDirection.x() * pointNormal.z() / denom },
-                        { segmentDirection.y() * pointNormal.x() / denom, segmentDirection.y() * pointNormal.y() / denom, segmentDirection.y() * pointNormal.z() / denom },
-                        { segmentDirection.z() * pointNormal.x() / denom, segmentDirection.z() * pointNormal.y() / denom, segmentDirection.z() * pointNormal.z() / denom }
+                        {
+                            segmentDirection.x() * pointNormal.x() / denom,
+                            segmentDirection.x() * pointNormal.y() / denom,
+                            segmentDirection.x() * pointNormal.z() / denom
+                        },
+                        {
+                            segmentDirection.y() * pointNormal.x() / denom,
+                            segmentDirection.y() * pointNormal.y() / denom,
+                            segmentDirection.y() * pointNormal.z() / denom
+                        },
+                        {
+                            segmentDirection.z() * pointNormal.x() / denom,
+                            segmentDirection.z() * pointNormal.y() / denom,
+                            segmentDirection.z() * pointNormal.z() / denom
+                        }
                     };
 
                     // dr_dpk = dp_dpk - I  (3x3)
                     float dr_dpk[3][3] = {
-                        { dp_dpk[0][0] - 1.0f, dp_dpk[0][1]        , dp_dpk[0][2]         },
-                        { dp_dpk[1][0]        , dp_dpk[1][1] - 1.0f, dp_dpk[1][2]         },
-                        { dp_dpk[2][0]        , dp_dpk[2][1]        , dp_dpk[2][2] - 1.0f }
+                        {dp_dpk[0][0] - 1.0f, dp_dpk[0][1], dp_dpk[0][2]},
+                        {dp_dpk[1][0], dp_dpk[1][1] - 1.0f, dp_dpk[1][2]},
+                        {dp_dpk[2][0], dp_dpk[2][1], dp_dpk[2][2] - 1.0f}
                     };
 
                     // dploc_dpk = B * dr_dpk, where B rows are (tangentU^T) and (tangentV^T)
                     // Row for u:
                     float dplocRowU[3] = {
-                        surfel.tanU.x() * dr_dpk[0][0] + surfel.tanU.y() * dr_dpk[1][0] + surfel.tanU.z() * dr_dpk[2][0],
-                        surfel.tanU.x() * dr_dpk[0][1] + surfel.tanU.y() * dr_dpk[1][1] + surfel.tanU.z() * dr_dpk[2][1],
+                        surfel.tanU.x() * dr_dpk[0][0] + surfel.tanU.y() * dr_dpk[1][0] + surfel.tanU.z() * dr_dpk[2][
+                            0],
+                        surfel.tanU.x() * dr_dpk[0][1] + surfel.tanU.y() * dr_dpk[1][1] + surfel.tanU.z() * dr_dpk[2][
+                            1],
                         surfel.tanU.x() * dr_dpk[0][2] + surfel.tanU.y() * dr_dpk[1][2] + surfel.tanU.z() * dr_dpk[2][2]
                     };
                     // Row for v:
                     float dplocRowV[3] = {
-                        surfel.tanV.x() * dr_dpk[0][0] + surfel.tanV.y() * dr_dpk[1][0] + surfel.tanV.z() * dr_dpk[2][0],
-                        surfel.tanV.x() * dr_dpk[0][1] + surfel.tanV.y() * dr_dpk[1][1] + surfel.tanV.z() * dr_dpk[2][1],
+                        surfel.tanV.x() * dr_dpk[0][0] + surfel.tanV.y() * dr_dpk[1][0] + surfel.tanV.z() * dr_dpk[2][
+                            0],
+                        surfel.tanV.x() * dr_dpk[0][1] + surfel.tanV.y() * dr_dpk[1][1] + surfel.tanV.z() * dr_dpk[2][
+                            1],
                         surfel.tanV.x() * dr_dpk[0][2] + surfel.tanV.y() * dr_dpk[1][2] + surfel.tanV.z() * dr_dpk[2][2]
                     };
 
@@ -207,12 +217,10 @@ namespace Pale {
 
                     // grad = G * (g_loc @ dploc_dpk)  -> 3-vector
                     float3 gradVisibilityWrtPk = {
-                        gaussianG * (gLocU * dplocRowU[0] + gLocV * dplocRowV[0]),
-                        gaussianG * (gLocU * dplocRowU[1] + gLocV * dplocRowV[1]),
-                        gaussianG * (gLocU * dplocRowU[2] + gLocV * dplocRowV[2])
+                        -gaussianG * (gLocU * dplocRowU[0] + gLocV * dplocRowV[0]),
+                        -gaussianG * (gLocU * dplocRowU[1] + gLocV * dplocRowV[1]),
+                        -gaussianG * (gLocU * dplocRowU[2] + gLocV * dplocRowV[2])
                     };
-
-                    const sycl::float3 dV_dp_k;
 
                     float3 &dst = adjointSensor.gradient_pk[0];
                     const sycl::atomic_ref<float,
@@ -231,9 +239,9 @@ namespace Pale {
                                 sycl::access::address_space::global_space>
                             zGrad(dst.z());
 
-                    xGrad.fetch_add(dV_dp_k.x());
-                    yGrad.fetch_add(dV_dp_k.y());
-                    zGrad.fetch_add(dV_dp_k.z());
+                    xGrad.fetch_add(gradVisibilityWrtPk.x());
+                    yGrad.fetch_add(gradVisibilityWrtPk.y());
+                    zGrad.fetch_add(gradVisibilityWrtPk.z());
                     /*
                     auto &camera = cameraSensor.camera;
                     float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
@@ -280,6 +288,32 @@ namespace Pale {
                         }
                     }
                     */
+
+                    float cosinePDF = 0.0f;
+                    float3 newDirection;
+                    sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
+
+                    float3 shadingNormal = worldHit.geometricNormalW;
+                    float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
+                    float pdfCosine = cosinePDF; // cosθ/π
+                    float minPdf = 1e-6f;
+                    pdfCosine = sycl::fmax(pdfCosine, minPdf);
+
+                    // Sample next
+                    RayState next{};
+                    next.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
+                    next.ray.direction = newDirection;
+                    next.pathThroughput = rayState.pathThroughput * (cosTheta / pdfCosine);
+                    next.bounceIndex = rayState.bounceIndex + 1;
+
+                    auto counter = sycl::atomic_ref<uint32_t,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(
+                        *renderIntermediates.countExtensionOut);
+                    uint32_t slot = counter.fetch_add(1);
+
+                    raysOut[slot] = next;
                 });
         });
         queue.wait();

@@ -505,7 +505,7 @@ namespace Pale {
             }
         } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
 
-            for (uint32_t bounce = 0; bounce < 1  && activeCount > 0; ++bounce) {
+            for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces  && activeCount > 0; ++bounce) {
                 pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                 pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                 pkg.queue.wait();
@@ -515,6 +515,14 @@ namespace Pale {
                 launchAdjointShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.adjoint, pkg.intermediates.hitRecords,
                                   pkg.intermediates.primaryRays, activeCount,
                                   pkg.intermediates.extensionRaysA, pkg.intermediates, pkg.settings);
+
+                uint32_t nextCount = 0;
+                pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
+                pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
+                                 nextCount * sizeof(RayState));
+                pkg.queue.wait();
+                activeCount = nextCount;
+                pkg.queue.wait();
             }
             // Launch intersect kernel
 

@@ -244,6 +244,7 @@ namespace Pale {
     struct LocalHit {
         float t; // object-space t
         float opacityAtHit;
+        bool hasVisibilityTest = false;
         uint32_t primitiveIndex; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex; // mesh/geometry id within scene
     };

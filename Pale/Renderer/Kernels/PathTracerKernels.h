@@ -129,6 +129,9 @@ namespace Pale {
                         out.primitiveIndex = pointIndex;
                         out.t = tHit;
                         out.opacityAtHit = alphaAtHit;
+                        out.hasVisibilityTest = false;
+                    } else {
+                        out.hasVisibilityTest = true;
                     }
 
                 }

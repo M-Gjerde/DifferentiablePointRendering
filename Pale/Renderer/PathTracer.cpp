@@ -16,7 +16,7 @@ namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
 #ifdef NDEBUG
         // Release
-        m_settings.photonsPerLaunch = 1e8; // 1e7
+        m_settings.photonsPerLaunch = 1e7; // 1e7
         m_settings.maxBounces = 6;
 
 #else
