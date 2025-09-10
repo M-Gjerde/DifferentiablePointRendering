@@ -372,7 +372,8 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // If we have non-zero transmittance
                     float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    if (traceVisibility(contribRay, tMax, scene, rng128) > 0.0f) {
+                    float transmittance = traceVisibility(contribRay, tMax, scene, rng128);
+                    if (transmittance > 0.0f) {
                         // perspective projection
                         float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
 
