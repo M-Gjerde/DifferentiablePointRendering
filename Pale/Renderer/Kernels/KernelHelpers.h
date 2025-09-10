@@ -126,11 +126,16 @@ namespace Pale {
         float3 t0 = (node.aabbMin - ray.origin) * invDir;
         float3 t1 = (node.aabbMax - ray.origin) * invDir;
 
-        float3 tmin3 = min(t0, t1);
-        float3 tmax3 = max(t0, t1);
+        // Component-wise interval test to avoid relying on vector min/max
+        float txmin = sycl::min(t0.x(), t1.x());
+        float txmax = sycl::max(t0.x(), t1.x());
+        float tymin = sycl::min(t0.y(), t1.y());
+        float tymax = sycl::max(t0.y(), t1.y());
+        float tzmin = sycl::min(t0.z(), t1.z());
+        float tzmax = sycl::max(t0.z(), t1.z());
 
-        float tmin = max(max(tmin3.x(), tmin3.y()), tmin3.z());
-        float tmax = min(min(tmax3.x(), tmax3.y()), tmax3.z());
+        float tmin = sycl::max(sycl::max(txmin, tymin), tzmin);
+        float tmax = sycl::min(sycl::min(txmax, tymax), tzmax);
 
         /* 1.  Origin outside slabs AND entry after exit  ➜  miss          */
         if (tmin > tmax) return false;
@@ -154,11 +159,15 @@ namespace Pale {
         float3 t0 = (node.aabbMin - ray.origin) * invDir;
         float3 t1 = (node.aabbMax - ray.origin) * invDir;
 
-        float3 tmin3 = min(t0, t1);
-        float3 tmax3 = max(t0, t1);
+        float txmin = sycl::min(t0.x(), t1.x());
+        float txmax = sycl::max(t0.x(), t1.x());
+        float tymin = sycl::min(t0.y(), t1.y());
+        float tymax = sycl::max(t0.y(), t1.y());
+        float tzmin = sycl::min(t0.z(), t1.z());
+        float tzmax = sycl::max(t0.z(), t1.z());
 
-        float tmin = max(max(tmin3.x(), tmin3.y()), tmin3.z());
-        float tmax = min(min(tmax3.x(), tmax3.y()), tmax3.z());
+        float tmin = sycl::max(sycl::max(txmin, tymin), tzmin);
+        float tmax = sycl::min(sycl::min(txmax, tymax), tzmax);
 
         /* 1.  Origin outside slabs AND entry after exit  ➜  miss          */
         if (tmin > tmax) {
