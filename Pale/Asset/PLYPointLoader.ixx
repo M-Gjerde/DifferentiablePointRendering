@@ -155,12 +155,11 @@ struct PLYPointLoader : IAssetLoader<PointAsset>
             const std::size_t i3 = i * 3, i2 = i * 2;
 
             geom.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
-            geom.tanU[i]      = glm::vec3(tuFloats[i3 + 0],  tuFloats[i3 + 1],  tuFloats[i3 + 2]);
-            geom.tanV[i]      = glm::vec3(tvFloats[i3 + 0],  tvFloats[i3 + 1],  tvFloats[i3 + 2]);
+            geom.tanU[i]      = glm::normalize(glm::vec3(tuFloats[i3 + 0],  tuFloats[i3 + 1],  tuFloats[i3 + 2]));
+            geom.tanV[i]      = glm::normalize(glm::vec3(tvFloats[i3 + 0],  tvFloats[i3 + 1],  tvFloats[i3 + 2]));
             geom.scales[i]     = glm::vec2(scaleFloats[i2 + 0], scaleFloats[i2 + 1]);
             geom.colors[i]    = glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]);
             geom.opacities[i] = opacityFloats[i];
-            ply_detail::orthonormalizeTangents(geom.tanU[i], geom.tanV[i]);
         }
 
         Log::PA_INFO("PLYPointLoader: loaded {} splats", vertexCount);

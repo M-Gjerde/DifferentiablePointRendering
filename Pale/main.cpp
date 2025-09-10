@@ -180,12 +180,15 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sy
 
 
     auto* deviceResidualRgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+    auto* gradient_pk = sycl::malloc_device<Pale::float3>(10, queue);
     queue.memcpy(deviceResidualRgba, residualRgba.data(),
                  sizeof(Pale::float4) * pixelCount).wait();
 
+    queue.fill(gradient_pk, Pale::float3(0.0f), 10);
     adjoint.framebuffer = deviceResidualRgba;
     adjoint.width = imageWidth;
     adjoint.height = imageHeight;
+    adjoint.gradient_pk = gradient_pk;
 
     return adjoint;
 
@@ -265,6 +268,13 @@ int main() {
     auto adjoint = calculateAdjointImage("Output/target/out.pfm", deviceSelector.getQueue(), sensor);
     Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
     tracer.renderBackward(adjointSensor, adjoint);                      // PRNG replay adjoint
+
+    std::vector<Pale::float3> gradients(10);
+
+    deviceSelector.getQueue().memcpy(gradients.data(), adjoint.gradient_pk, 10 * sizeof(Pale::float3)).wait();;
+
+    for (size_t instanceIndex = 0; instanceIndex < 1; ++instanceIndex)
+        Pale::Log::PA_INFO("Point Gradient: x: {}, y: {}, z: {}", gradients.at(instanceIndex).x(), gradients.at(instanceIndex).y(), gradients.at(instanceIndex).z());
 
     {
         // // Save each sensor image

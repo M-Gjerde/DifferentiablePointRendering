@@ -222,6 +222,7 @@ namespace Pale {
     struct AdjointGPU {
         float4* framebuffer{nullptr}; // device pointer
         uint32_t width{}, height{};
+        float3* gradient_pk{nullptr};
     };
 
     // ---- PODs ---------------------------------------------------------------

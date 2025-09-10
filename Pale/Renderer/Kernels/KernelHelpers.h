@@ -108,7 +108,7 @@ inline uint64_t makePerItemSeed1D(uint64_t baseSeed, sycl::id<1> globalId) {
 } // namespace pale::rng
 
 namespace Pale {
-    inline float3 safeInvDir(const float3 &dir) {
+    SYCL_EXTERNAL inline float3 safeInvDir(const float3 &dir) {
         constexpr float EPS = 1e-8f; // treat anything smaller as “zero”
         constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
         float3 inv;
@@ -118,7 +118,7 @@ namespace Pale {
         return inv;
     }
 
-        inline bool slabIntersectAABB(const Ray &ray,
+        SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray &ray,
                                   const TLASNode &node,
                                   const float3 &invDir,
                                   float tMaxLimit,
@@ -146,7 +146,7 @@ namespace Pale {
     }
 
 
-    inline bool slabIntersectAABB(const Ray &ray,
+    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray &ray,
                                   const BVHNode &node,
                                   const float3 &invDir,
                                   float tMaxLimit,
@@ -176,7 +176,7 @@ namespace Pale {
     }
 
     //──────────────── world → object and back ────────────────────────────────
-    inline Ray toObjectSpace(const Ray &rayW, const Transform &xf) {
+    SYCL_EXTERNAL inline Ray toObjectSpace(const Ray &rayW, const Transform &xf) {
         Ray r;
         /* 1.  Transform origin – w = 1                                      */
         float4 hO = xf.worldToObject * float4{rayW.origin, 1.f};
@@ -204,7 +204,7 @@ namespace Pale {
 
     }
 
-    inline float3 toWorldPoint(const float3 &pO, const Transform &xf) {
+    SYCL_EXTERNAL inline float3 toWorldPoint(const float3 &pO, const Transform &xf) {
         float4 hp = xf.objectToWorld * float4{pO, 1.f};
         return float3{hp.x(), hp.y(), hp.z()} / hp.w();
     }
@@ -260,7 +260,7 @@ namespace Pale {
         bitangent = cross(unitNormal, tangent);
     }
 
-    inline float3 sampleCosineHemisphere(const float3& unitNormal, rng::Xorshift128& rng, float& pdf) {
+    SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3& unitNormal, rng::Xorshift128& rng, float& pdf) {
         // 1) Draw two uniform variates
         const float uniformSample1 = rng.nextFloat(); // in [0,1)
         const float uniformSample2 = rng.nextFloat(); // in [0,1)
@@ -288,7 +288,7 @@ namespace Pale {
         return unitSampledDirectionW;
     }
 
-    inline void sampleCosineHemisphere(
+    SYCL_EXTERNAL inline void sampleCosineHemisphere(
         rng::Xorshift128& rng, const float3 &n,
         float3 &outDir, float &outPdf) {
         float u1 = rng.nextFloat();
