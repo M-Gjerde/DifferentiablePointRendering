@@ -383,7 +383,7 @@ namespace Pale {
         const float r2   = uHat*uHat + vHat*vHat;
 
         // hard cutoff outside kσ
-        //if (r2 > kSigmas * kSigmas) return false;
+        if (r2 > kSigmas * kSigmas) return false;
 
         // decaying Gaussian weight
         contrib = sycl::exp(-0.5f * r2);

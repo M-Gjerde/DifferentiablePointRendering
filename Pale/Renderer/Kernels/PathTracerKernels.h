@@ -130,9 +130,12 @@ namespace Pale {
                         foundAccepted = true;
                         out.primitiveIndex = pointIndex;
                         out.t = tHit;
-                        out.opacityAtHit = alphaAtHit;
+                        out.transmissivity = 1 - alphaAtHit;
                     } else {
                         sawTransmissionOnThisBLAS = true;
+                        out.transmissivity = 1 - alphaAtHit;
+                        out.primitiveIndex = pointIndex;
+                        out.t = tHit;
                     }
 
                 }
@@ -152,8 +155,6 @@ namespace Pale {
         /* stack‑based depth‑first traversal                                   */
         /* ------------------------------------------------------------------ */
         bool foundAnyHit = false;
-        bool sawVisibilityTestOnScene = false;      // sticky across all instances
-
         float3 invDir = safeInvDir(rayWorld.direction);;
 
         // initialize output
@@ -191,9 +192,6 @@ namespace Pale {
                     ok = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene, rng128);
                 }
 
-                sawVisibilityTestOnScene = sawVisibilityTestOnScene || localHit.hasVisibilityTest;
-
-
                 if (ok) {
                     const float3 hitPointW = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
                                                           transform);
@@ -201,23 +199,26 @@ namespace Pale {
                     if (tWorld < 0.0f || tWorld >= bestTWorld) continue;
                     bestTWorld = tWorld;
                     foundAnyHit = true;
-
                     worldHit->t = tWorld;
-                    worldHit->opacityAtHit = localHit.opacityAtHit;
+                    worldHit->transmissivity = localHit.transmissivity;
                     worldHit->primitiveIndex = localHit.primitiveIndex;
                     worldHit->instanceIndex = instanceIndex;
                     worldHit->hitPositionW = hitPointW;
-                    worldHit->hasVisibilityTest = sawVisibilityTestOnScene;
-                    if (worldHit->hasVisibilityTest) {
-                        int debug = 1;
-                    }
+                }
+
+                if (!ok && localHit.hasVisibilityTest) {
+                                        const float3 hitPointW = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
+                                                          transform);
+                    const float tWorld = dot(hitPointW - rayWorld.origin, rayWorld.direction);
+
+                    worldHit->t = tWorld;
+                    worldHit->transmissivity = localHit.transmissivity;
+                    worldHit->hasVisibilityTest = localHit.hasVisibilityTest;
+
                 }
             }
         }
 
-        if (!foundAnyHit && sawVisibilityTestOnScene) {
-            worldHit->hasVisibilityTest = true;
-        }
         return foundAnyHit;
     }
 }

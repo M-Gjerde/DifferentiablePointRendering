@@ -17,12 +17,12 @@ namespace Pale {
 #ifdef NDEBUG
         // Release
         m_settings.photonsPerLaunch = 1e7; // 1e7
-        m_settings.maxBounces = 6;
+        m_settings.maxBounces = 2;
 
 #else
         // Debug
         m_settings.photonsPerLaunch = 1e6; // 1e6
-        m_settings.maxBounces = 3;
+        m_settings.maxBounces = 2;
 #endif
 
     }
@@ -43,17 +43,21 @@ namespace Pale {
         m_intermediates.primaryRays = sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
         m_intermediates.extensionRaysA = sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
         m_intermediates.hitRecords = sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
+        m_intermediates.adjoint = sycl::malloc_device<AdjointIntermediates>(m_rayQueueCapacity, m_queue);
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
 
         // optional: zero counters once
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
+
+        m_queue.fill(m_intermediates.adjoint, AdjointIntermediates(), m_rayQueueCapacity);
     }
 
     void PathTracer::freeIntermediates() {
         if (!m_rayQueueCapacity) return;
         sycl::free(m_intermediates.primaryRays, m_queue);
+        sycl::free(m_intermediates.adjoint, m_queue);
         sycl::free(m_intermediates.extensionRaysA, m_queue);
         sycl::free(m_intermediates.hitRecords, m_queue);
         sycl::free(m_intermediates.countPrimary, m_queue);

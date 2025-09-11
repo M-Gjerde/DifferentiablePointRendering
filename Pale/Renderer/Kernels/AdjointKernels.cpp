@@ -15,7 +15,7 @@ namespace Pale {
                                    RenderIntermediatesGPU renderIntermediates) {
         const uint32_t imageWidth = cameraSensor.camera.width;
         const uint32_t imageHeight = cameraSensor.camera.height;
-        const uint32_t rayCount = imageWidth * imageHeight ;
+        const uint32_t rayCount = imageWidth * imageHeight;
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t baseSeed = settings.randomSeed;
@@ -82,6 +82,7 @@ namespace Pale {
 
                     const uint32_t outputSlot = outputCounter.fetch_add(1u);
                     renderIntermediates.primaryRays[outputSlot] = rayState;
+                    renderIntermediates.adjoint[outputSlot].pixelID = pixelIndex;
                 });
         });
         queue.wait();
@@ -236,6 +237,21 @@ namespace Pale {
                     }
 
 
+                    float cosinePDF = 0.0f;
+                    float3 newDirection;
+                    sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
+
+                    float3 shadingNormal = worldHit.geometricNormalW;
+                    float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
+                    float pdfCosine = cosinePDF; // cosθ/π
+                    float minPdf = 1e-6f;
+                    pdfCosine = sycl::fmax(pdfCosine, minPdf);
+
+
+                    // Lambertian BRDF
+                    float3 albedo = material.baseColor; // in [0,1]
+                    float3 brdf = albedo * (1.0f / M_PIf);
+
                     float3 &dst = adjointSensor.gradient_pk[0];
                     float3 &gradCounter = adjointSensor.gradient_pk[1];
                     const sycl::atomic_ref<float,
@@ -260,33 +276,14 @@ namespace Pale {
                                 sycl::access::address_space::global_space>
                             gradCount(gradCounter.x());
 
-                    xGrad.fetch_add(gradVisibilityWrtPk.x());
-                    yGrad.fetch_add(gradVisibilityWrtPk.y());
-                    zGrad.fetch_add(gradVisibilityWrtPk.z());
+                    if (rayState.bounceIndex > 0) {
+                        xGrad.fetch_add(gradVisibilityWrtPk.x());
+                        yGrad.fetch_add(gradVisibilityWrtPk.y());
+                        zGrad.fetch_add(gradVisibilityWrtPk.z());
 
-                    gradCount.fetch_add(1.0f);
+                        gradCount.fetch_add(1.0f);
 
-
-                    float cosinePDF = 0.0f;
-                    float3 newDirection;
-                    sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
-
-                    float3 shadingNormal = worldHit.geometricNormalW;
-                    float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
-                    float pdfCosine = cosinePDF; // cosθ/π
-                    float minPdf = 1e-6f;
-                    pdfCosine = sycl::fmax(pdfCosine, minPdf);
-
-
-                    // Lambertian BRDF
-                    float3 albedo = material.baseColor; // in [0,1]
-                    float3 brdf = albedo * (1.0f / M_PIf);
-
-
-                    uint32_t pixelX, pixelY;
-                    if (worldRayToPixel(cameraSensor.camera, rayState.ray.origin, rayState.ray.direction, pixelX,
-                                        pixelY)) {
-                        const size_t pixelIndex = static_cast<size_t>(pixelY) * cameraSensor.camera.width + pixelX;
+                        const size_t pixelIndex =  renderIntermediates.adjoint[rayIndex].pixelID;
                         float4 &gradImage = cameraSensor.framebuffer[pixelIndex];
                         // atomic adds here
 
@@ -309,8 +306,9 @@ namespace Pale {
 
 
                         float3 local_dKernel_dpk = gradVisibilityWrtPk;
-                        float3 w = rayState.pathThroughput * brdf; // include adjoint BSDF ratio consistent with forward
-                        float3 contrib = w * local_dKernel_dpk * 10;
+                        float3 w = rayState.pathThroughput * brdf;
+                        // include adjoint BSDF ratio consistent with forward
+                        float3 contrib = gradVisibilityWrtPk * 1000;
 
                         float grad = contrib.y();
                         gradImageX.fetch_add(grad);
@@ -322,7 +320,7 @@ namespace Pale {
                     RayState next{};
                     next.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
                     next.ray.direction = newDirection;
-                    next.pathThroughput = rayState.pathThroughput * brdf * (cosTheta / pdfCosine);
+                    next.pathThroughput = rayState.pathThroughput; //* brdf * (cosTheta / pdfCosine);
                     next.bounceIndex = rayState.bounceIndex + 1;
 
                     auto counter = sycl::atomic_ref<uint32_t,

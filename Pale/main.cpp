@@ -257,14 +257,14 @@ int main(int argc, char** argv) {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
         const uint32_t W = sensor.width, H = sensor.height;
-        float gamma = 3.0f;
-        float exposure = 6.5f;
+        float gamma = 3.2f;
+        float exposure = 1.5f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("")  /"out.png";
         if (Pale::Utils::savePNGWithToneMap(
                 filePath, rgba, W, H,
                 exposure,
                 gamma,
-                true)) {
+                false)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
                 };
 
@@ -288,7 +288,7 @@ int main(int argc, char** argv) {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), adjointSensor);
         const uint32_t W = adjointSensor.width, H = adjointSensor.height;
-        float gamma = 1.0f;
+        float gamma = 2.2f;
         float exposure = 0.0f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("")  /"adjoint_out.png";
         if (Pale::Utils::savePNGWithToneMap(

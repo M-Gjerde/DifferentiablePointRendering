@@ -244,7 +244,7 @@ namespace Pale {
 
     struct LocalHit {
         float t; // object-space t
-        float opacityAtHit;
+        float transmissivity;
         bool hasVisibilityTest = false;
         uint32_t primitiveIndex; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex; // mesh/geometry id within scene
@@ -252,7 +252,7 @@ namespace Pale {
 
     struct WorldHit {
         float t{FLT_MAX}; // world-space t
-        float opacityAtHit = 1.0f; // world-space t
+        float transmissivity = 1.0f; // world-space t
         uint32_t primitiveIndex{};
         uint32_t instanceIndex{};
         float3 hitPositionW = float3(0.0f);
@@ -267,10 +267,15 @@ namespace Pale {
         uint32_t maxBounces = 4;
     };
 
+    struct AdjointIntermediates {
+        uint32_t pixelID = 0;
+    };
+
     struct RenderIntermediatesGPU {
         RayState* primaryRays;
         RayState* extensionRaysA;
         WorldHit* hitRecords;
+        AdjointIntermediates* adjoint;
         uint32_t* countPrimary;
         uint32_t* countExtensionOut;
     };

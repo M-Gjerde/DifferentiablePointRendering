@@ -22,11 +22,10 @@ namespace Pale {
     struct ShadeKernelTag {
     };
 
-    float traceVisibility(const Ray &rayIn, float tMax, const GPUSceneBuffers &scene, rng::Xorshift128 &rng128) {
+    WorldHit traceVisibility(const Ray &rayIn, float tMax, const GPUSceneBuffers &scene, rng::Xorshift128 &rng128) {
         WorldHit worldHit{};
-        if (!intersectScene(rayIn, &worldHit, scene, rng128)) return 1.0f;
-
-        return worldHit.opacityAtHit; // opaque geometry
+        intersectScene(rayIn, &worldHit, scene, rng128);
+        return worldHit; // opaque geometry
     }
 
     inline void launchDirectShadeKernel(sycl::queue &queue,
@@ -66,7 +65,8 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // If we have non-zero transmittance
                     float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    if (traceVisibility(contribRay, tMax, scene, rng128) > 0.0f) {
+                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
+                    if (transmittance.transmissivity > 0.0f) {
                         // perspective projection
                         float4 clip = camera.proj * (camera.view * float4(rayState.ray.origin, 1.f));
 
@@ -106,11 +106,15 @@ namespace Pale {
                                             sycl::access::address_space::global_space>
                                         a(dst.w());
 
+                                float3 pointbrdf = scene.points[transmittance.instanceIndex].color / M_PIf;
+
                                 // Attenuation (Geometry term)
                                 float surfaceCos = sycl::fabs(dot(float3{0, -1, 0}, directionToPinhole));
                                 float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
                                 float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
-                                float3 color = throughput * G_cam;
+                                float3 color = throughput * G_cam * pointbrdf * transmittance.transmissivity;
+
+
 
                                 r.fetch_add(color.x());
                                 g.fetch_add(color.y());
@@ -193,8 +197,6 @@ namespace Pale {
                                               nObjU.x() * nObjU.x() + nObjU.y() * nObjU.y() + nObjU.z() * nObjU.z());
                     if (triArea <= 0.f) return;
 
-                    const float3 nObj = nObjU * (1.0f / (2.0f * triArea));
-
                     // 2b) sample uniform point on triangle (barycentric)
                     const float u1 = rng128.nextFloat();
                     const float u2 = rng128.nextFloat();
@@ -226,7 +228,7 @@ namespace Pale {
                     // 4) initial throughput
                     const sycl::float3 Le = light.emissionRgb; // radiance scale
                     const float invPdf = 1.0f / pdfTotal;
-                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf);
+                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) ;
 
                     // write ray
                     RayState ray{};
@@ -372,8 +374,8 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // If we have non-zero transmittance
                     float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    float transmittance = traceVisibility(contribRay, tMax, scene, rng128);
-                    if (transmittance > 0.0f) {
+                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
+                    if (transmittance.transmissivity > 0.0f) {
                         // perspective projection
                         float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
 
@@ -419,7 +421,13 @@ namespace Pale {
                                 float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, directionToPinhole));
                                 float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
                                 float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
-                                float3 color = throughput * brdf * G_cam;
+
+                                float3 pointbrdf{1.0f};
+                                if (transmittance.hasVisibilityTest) {
+                                    //pointbrdf = scene.points[transmittance.instanceIndex].color / M_PIf;
+                                }
+
+                                float3 color = throughput * brdf * G_cam * transmittance.transmissivity * pointbrdf;
 
                                 r.fetch_add(color.x());
                                 g.fetch_add(color.y());
@@ -443,11 +451,17 @@ namespace Pale {
                     float3 albedo = material.baseColor; // in [0,1]
                     float3 brdf = albedo * (1.0f / M_PIf);
 
+                    float3 pointbrdf{1.0f};
+                    if (worldHit.hasVisibilityTest) {
+                        pointbrdf = scene.points[0].color / M_PIf;
+                    }
+
+
                     // Sample next
                     RayState next{};
                     next.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
                     next.ray.direction = newDirection;
-                    next.pathThroughput = throughput * brdf * (cosTheta / pdfCosine);
+                    next.pathThroughput = throughput * brdf *  pointbrdf* (cosTheta / pdfCosine);
                     next.bounceIndex = rayState.bounceIndex + 1;
 
                     auto counter = sycl::atomic_ref<uint32_t,
@@ -485,8 +499,8 @@ namespace Pale {
 
         if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
             // Launch direct light kernel
-            launchDirectShadeKernel(pkg.queue, pkg.scene, pkg.sensor,
-                                    pkg.intermediates.primaryRays, activeCount, pkg.settings);
+
+            launchDirectShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.primaryRays, activeCount, pkg.settings);
             for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
                 pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                 pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
