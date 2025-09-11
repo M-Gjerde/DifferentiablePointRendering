@@ -185,6 +185,7 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sy
                  sizeof(Pale::float4) * pixelCount).wait();
 
     queue.fill(gradient_pk, Pale::float3(0.0f), 10);
+
     adjoint.framebuffer = deviceResidualRgba;
     adjoint.width = imageWidth;
     adjoint.height = imageHeight;

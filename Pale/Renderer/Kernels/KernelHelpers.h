@@ -391,4 +391,44 @@ namespace Pale {
         outTHit = t;
         return true;
     }
+
+    SYCL_EXTERNAL inline bool worldRayToPixel(const CameraGPU& camera,
+                            const float3& rayOriginWorld,
+                            const float3& rayDirectionWorld,
+                            uint32_t& outPixelX,
+                            uint32_t& outPixelY)
+    {
+        // 1) World -> view
+        const float3 rayOriginView     = transformPoint(camera.view, rayOriginWorld, 1.f);
+        const float3 rayDirectionView  = transformDirection(camera.view, rayDirectionWorld);
+
+        // Ray must go toward the image plane (z decreases in OpenGL view)
+        constexpr float kEps = 1e-6f;
+        if (rayDirectionView.z() >= -kEps) return false;
+
+        // 2) Intersect view-space ray with canonical plane z = -1
+        const float zPlane = -1.f;
+        const float t = (zPlane - rayOriginView.z()) / rayDirectionView.z();
+        if (t <= 0.f) return false;
+
+        const float3 pointOnPlaneView = rayOriginView + t * rayDirectionView;
+
+        // 3) View -> clip -> NDC
+        const float4 clip = camera.proj * float4(pointOnPlaneView, 1.f);
+        if (clip.w() <= 0.f) return false;
+
+        const float2 ndc = { clip.x() / clip.w(), clip.y() / clip.w() };
+        if (ndc.x() < -1.f || ndc.x() > 1.f || ndc.y() < -1.f || ndc.y() > 1.f) return false;
+
+        // 4) NDC -> raster (match your forward mapping and Y flip)
+        const float u = ndc.x() * 0.5f + 0.5f;
+        const float v = ndc.y() * 0.5f + 0.5f;
+
+        const uint32_t px = sycl::clamp<uint32_t>(static_cast<uint32_t>(u * camera.width),  0u, camera.width  - 1u);
+        const uint32_t py = sycl::clamp<uint32_t>(static_cast<uint32_t>(v * camera.height), 0u, camera.height - 1u);
+
+        outPixelX = px;
+        outPixelY = camera.height - 1u - py; // flip to match your writes
+        return true;
+    }
 }

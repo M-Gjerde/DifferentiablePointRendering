@@ -176,6 +176,9 @@ namespace Pale {
         float4(float x, float y, float z, float w) : v{x, y, z, w} {
         }
 
+        explicit float4(float scalar) : v{scalar, scalar, scalar, scalar} {
+        }
+
         float4(float3 const &p, float w) : v{p.x(), p.y(), p.z(), w} {
         }
 

@@ -18,14 +18,11 @@ namespace Pale {
         // Release
         m_settings.photonsPerLaunch = 1e7; // 1e7
         m_settings.maxBounces = 6;
-        m_settings.adjointSamplesPerPixel = 1;
 
 #else
         // Debug
         m_settings.photonsPerLaunch = 1e6; // 1e6
-        m_settings.maxBounces = 1;
-        m_settings.adjointSamplesPerPixel = 1;
-
+        m_settings.maxBounces = 3;
 #endif
 
     }
@@ -98,7 +95,7 @@ namespace Pale {
             return;
         }
 
-        const uint32_t requiredRayCapacity = sensor.width * sensor.height * m_settings.adjointSamplesPerPixel;
+        const uint32_t requiredRayCapacity = sensor.width * sensor.height;
         ensureCapacity(requiredRayCapacity);
 
         m_settings.rayGenMode = RayGenMode::Adjoint;

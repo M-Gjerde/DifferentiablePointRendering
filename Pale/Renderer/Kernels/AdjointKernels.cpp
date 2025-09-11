@@ -15,38 +15,27 @@ namespace Pale {
                                    RenderIntermediatesGPU renderIntermediates) {
         const uint32_t imageWidth = cameraSensor.camera.width;
         const uint32_t imageHeight = cameraSensor.camera.height;
-        const uint32_t samplesPerPixel = settings.adjointSamplesPerPixel; // add to settings
-        const uint32_t rayCount = imageWidth * imageHeight * samplesPerPixel;
+        const uint32_t rayCount = imageWidth * imageHeight ;
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t baseSeed = settings.randomSeed;
             const float invWidth = 1.f / static_cast<float>(imageWidth);
             const float invHeight = 1.f / static_cast<float>(imageHeight);
-            const float invSamplesPerPixel = 1.f / static_cast<float>(samplesPerPixel);
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
                 sycl::range<1>(rayCount),
                 [=](sycl::id<1> globalId) {
-                    const uint32_t globalLinearIndex = static_cast<uint32_t>(globalId[0]);
-
-                    // Decompose into pixel and sample index
-                    const uint32_t pixelLinearIndex = globalLinearIndex / samplesPerPixel;
-                    const uint32_t sampleIndexInPixel = globalLinearIndex % samplesPerPixel;
+                    const uint32_t pixelLinearIndex = static_cast<uint32_t>(globalId[0]);
 
                     const uint32_t pixelX = pixelLinearIndex % imageWidth;
                     const uint32_t pixelY = pixelLinearIndex / imageWidth;
 
                     // RNG per pixel
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, globalId[0]);
-                    rng::Xorshift128 rng128(perItemSeed);
-                    const float jitterX = rng128.nextFloat();
-                    const float jitterY = rng128.nextFloat();
-
                     const CameraGPU adjointCamera = cameraSensor.camera;
 
                     // Subpixel sample in [0,1]^2
-                    float sampleX = (static_cast<float>(pixelX) + jitterX) * invWidth;
-                    float sampleY = (static_cast<float>(pixelY) + jitterY) * invHeight;
+                    float sampleX = static_cast<float>(pixelX) * invWidth;
+                    float sampleY = static_cast<float>(pixelY) * invHeight;
 
                     // NDC → clip (OpenGL-style NDC in [-1,1])
                     const float ndcX = 2.f * sampleX - 1.f;
@@ -67,9 +56,9 @@ namespace Pale {
                     const float4 residualRgba = adjointSensor.framebuffer[pixelIndex]; // linear RGB adjoint source
 
                     float3 initialAdjointWeight = {
-                        residualRgba.x() * invSamplesPerPixel,
-                        residualRgba.y() * invSamplesPerPixel,
-                        residualRgba.z() * invSamplesPerPixel
+                        residualRgba.x(),
+                        residualRgba.y(),
+                        residualRgba.z()
                     };
 
                     const float weightLen2 =
@@ -78,7 +67,7 @@ namespace Pale {
                             initialAdjointWeight.z() * initialAdjointWeight.z();
 
                     //if (residualRgba.x() == 0.0f) return;
-                    if (residualRgba.x()==0.f && residualRgba.y()==0.f && residualRgba.z()==0.f) return;
+                    if (residualRgba.x() == 0.f && residualRgba.y() == 0.f && residualRgba.z() == 0.f) return;
 
                     RayState rayState{};
                     rayState.ray.origin = rayOriginWorld;
@@ -237,13 +226,15 @@ namespace Pale {
                     gradVisibilityWrtPk = gradVisibilityWrtPk * rayState.pathThroughput;
 
                     // Multiply by Geometric Term:
-                    float3 toPinhole = camera.pos - worldHit.hitPositionW;
-                    float distanceToPinhole = length(toPinhole);
-                    float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, -ray.direction));
-                    float cameraCos = sycl::fabs(dot(camera.forward, ray.direction));
-                    float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
+                    if (rayState.bounceIndex == 0) {
+                        float3 toPinhole = camera.pos - worldHit.hitPositionW;
+                        float distanceToPinhole = length(toPinhole);
+                        float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, -ray.direction));
+                        float cameraCos = sycl::fabs(dot(camera.forward, ray.direction));
+                        float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
+                        gradVisibilityWrtPk = gradVisibilityWrtPk * G_cam;
+                    }
 
-                    gradVisibilityWrtPk = gradVisibilityWrtPk * G_cam;
 
                     float3 &dst = adjointSensor.gradient_pk[0];
                     float3 &gradCounter = adjointSensor.gradient_pk[1];
@@ -263,63 +254,18 @@ namespace Pale {
                                 sycl::access::address_space::global_space>
                             zGrad(dst.z());
 
+                    const sycl::atomic_ref<float,
+                                sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space>
+                            gradCount(gradCounter.x());
+
                     xGrad.fetch_add(gradVisibilityWrtPk.x());
                     yGrad.fetch_add(gradVisibilityWrtPk.y());
                     zGrad.fetch_add(gradVisibilityWrtPk.z());
 
-                    const sycl::atomic_ref<float,
-                        sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>
-                    gradCount(gradCounter.x());
                     gradCount.fetch_add(1.0f);
 
-                    /*
-                    auto &camera = cameraSensor.camera;
-                    float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
-                    if (clip.w() > 0.0f) {
-                        float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
-                        if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
-                            uint32_t px = sycl::clamp(
-                                static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
-                                0u, camera.width - 1);
-                            uint32_t py = sycl::clamp(
-                                static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
-                                0u, camera.height - 1);
-
-                            // FLIP Y
-                            const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
-
-                            float4 &dst = cameraSensor.framebuffer[idx];
-                            const sycl::atomic_ref<float,
-                                        sycl::memory_order::relaxed,
-                                        sycl::memory_scope::device,
-                                        sycl::access::address_space::global_space>
-                                    r(dst.x());
-                            const sycl::atomic_ref<float,
-                                        sycl::memory_order::relaxed,
-                                        sycl::memory_scope::device,
-                                        sycl::access::address_space::global_space>
-                                    g(dst.y());
-                            const sycl::atomic_ref<float,
-                                        sycl::memory_order::relaxed,
-                                        sycl::memory_scope::device,
-                                        sycl::access::address_space::global_space>
-                                    b(dst.z());
-                            const sycl::atomic_ref<float,
-                                        sycl::memory_order::relaxed,
-                                        sycl::memory_scope::device,
-                                        sycl::access::address_space::global_space>
-                                    a(dst.w());
-                            float3 color = material.baseColor;
-                            color = float3(rayState.pathThroughput);
-                            r.fetch_add(color.x());
-                            g.fetch_add(color.y());
-                            b.fetch_add(color.z());
-                            a.store(1.0f);
-                        }
-                    }
-                    */
 
                     float cosinePDF = 0.0f;
                     float3 newDirection;
@@ -335,6 +281,42 @@ namespace Pale {
                     // Lambertian BRDF
                     float3 albedo = material.baseColor; // in [0,1]
                     float3 brdf = albedo * (1.0f / M_PIf);
+
+
+                    uint32_t pixelX, pixelY;
+                    if (worldRayToPixel(cameraSensor.camera, rayState.ray.origin, rayState.ray.direction, pixelX,
+                                        pixelY)) {
+                        const size_t pixelIndex = static_cast<size_t>(pixelY) * cameraSensor.camera.width + pixelX;
+                        float4 &gradImage = cameraSensor.framebuffer[pixelIndex];
+                        // atomic adds here
+
+
+                        const sycl::atomic_ref<float,
+                                    sycl::memory_order::relaxed,
+                                    sycl::memory_scope::device,
+                                    sycl::access::address_space::global_space>
+                                gradImageX(gradImage.x());
+                        const sycl::atomic_ref<float,
+                                    sycl::memory_order::relaxed,
+                                    sycl::memory_scope::device,
+                                    sycl::access::address_space::global_space>
+                                gradImageY(gradImage.y());
+                        const sycl::atomic_ref<float,
+                                    sycl::memory_order::relaxed,
+                                    sycl::memory_scope::device,
+                                    sycl::access::address_space::global_space>
+                                gradImageZ(gradImage.z());
+
+
+                        float3 local_dKernel_dpk = gradVisibilityWrtPk;
+                        float3 w = rayState.pathThroughput * brdf; // include adjoint BSDF ratio consistent with forward
+                        float3 contrib = w * local_dKernel_dpk * 10;
+
+                        float grad = contrib.y();
+                        gradImageX.fetch_add(grad);
+                        gradImageY.fetch_add(grad);
+                        gradImageZ.fetch_add(grad);
+                    }
 
                     // Sample next
                     RayState next{};

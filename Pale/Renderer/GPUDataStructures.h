@@ -220,7 +220,8 @@ namespace Pale {
     };
 
     struct AdjointGPU {
-        float4* framebuffer{nullptr}; // device pointer
+        float4* framebuffer{nullptr}; // input adjoint image
+        float4* framebufferGrad{nullptr}; // ouput gradient image
         uint32_t width{}, height{};
         float3* gradient_pk{nullptr};
     };
@@ -264,7 +265,6 @@ namespace Pale {
         uint64_t randomSeed = 42;
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 4;
-        uint32_t adjointSamplesPerPixel = 2;
     };
 
     struct RenderIntermediatesGPU {
