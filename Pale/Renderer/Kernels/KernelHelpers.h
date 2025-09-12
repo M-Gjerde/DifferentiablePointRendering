@@ -297,6 +297,26 @@ namespace Pale {
         return unitSampledDirectionW;
     }
 
+    SYCL_EXTERNAL inline void sampleUniformSphere(
+        rng::Xorshift128 &randomNumberGenerator,
+        float3 &outDirection,
+        float &outPdf
+    ) {
+        const float uniformRandomOne  = randomNumberGenerator.nextFloat();
+        const float uniformRandomTwo  = randomNumberGenerator.nextFloat();
+
+        const float zCoordinate       = 1.0f - 2.0f * uniformRandomOne;          // in [-1, 1]
+        const float azimuthAngle      = 2.0f * M_PIf * uniformRandomTwo;
+        const float radialComponent   = sycl::sqrt(sycl::fmax(0.0f, 1.0f - zCoordinate * zCoordinate));
+
+        const float xCoordinate       = radialComponent * sycl::cos(azimuthAngle);
+        const float yCoordinate       = radialComponent * sycl::sin(azimuthAngle);
+
+        outDirection = normalize(float3{xCoordinate, yCoordinate, zCoordinate});
+        outPdf       = 1.0f / (4.0f * M_PIf);                                     // uniform sphere pdf
+    }
+
+
     SYCL_EXTERNAL inline void sampleCosineHemisphere(
         rng::Xorshift128& rng, const float3 &n,
         float3 &outDir, float &outPdf) {

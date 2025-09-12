@@ -8,7 +8,7 @@
 namespace Pale {
     // ── PathTracerMeshKernel.cpp ────────────────────────────────────────────────
     // Returns the closest hit inside one mesh’s BLAS (object space)
-    SYCL_EXTERNAL bool intersectBLASMesh(const Ray &rayO,
+    SYCL_EXTERNAL static bool intersectBLASMesh(const Ray &rayO,
                                          uint32_t geomIdx,
                                          LocalHit &out, const GPUSceneBuffers &scene) {
         /* 1.  Locate the sub‑tree that belongs to this mesh
@@ -67,6 +67,7 @@ namespace Pale {
                         hitAny = true;
                         out.t = t;
                         out.primitiveIndex = triIdx; // global – good for shading
+                        out.transmissivity = 0.0f;
                     }
                 }
             }
@@ -77,7 +78,7 @@ namespace Pale {
 
     // ── PathTracerMeshKernel.cpp ────────────────────────────────────────────────
     // Returns the closest hit inside one mesh’s BLAS (object space)
-    SYCL_EXTERNAL bool intersectBLASPointCloud(const Ray &rayObject,
+    SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray &rayObject,
                                                uint32_t blasRangeIndex,
                                                LocalHit &out, const GPUSceneBuffers &scene, rng::Xorshift128& rng128) {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
@@ -145,7 +146,7 @@ namespace Pale {
         return foundAccepted;
     }
 
-    SYCL_EXTERNAL bool intersectScene(const Ray &rayWorld, WorldHit *worldHit, const GPUSceneBuffers &scene, rng::Xorshift128& rng128) {
+    SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld, WorldHit *worldHit, const GPUSceneBuffers &scene, rng::Xorshift128& rng128) {
         /* abort if scene is empty */
         const TLASNode *tlas = scene.tlasNodes;
         const InstanceRecord *instances = scene.instances;
@@ -159,7 +160,7 @@ namespace Pale {
 
         // initialize output
         worldHit->t = FLT_MAX;
-        worldHit->hasVisibilityTest = false;
+        worldHit->visitedSplatField = false;
         SmallStack<256> stack;
         stack.push(0); // root
         float bestTWorld = std::numeric_limits<float>::infinity();
@@ -190,6 +191,8 @@ namespace Pale {
                 } else {
                     // point cloud
                     ok = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene, rng128);
+                    worldHit->visitedSplatField |= localHit.hasVisibilityTest;
+
                 }
 
                 if (ok) {
@@ -204,16 +207,16 @@ namespace Pale {
                     worldHit->primitiveIndex = localHit.primitiveIndex;
                     worldHit->instanceIndex = instanceIndex;
                     worldHit->hitPositionW = hitPointW;
+                    worldHit->visitedSplatField = localHit.hasVisibilityTest;
                 }
 
                 if (!ok && localHit.hasVisibilityTest) {
                                         const float3 hitPointW = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
                                                           transform);
                     const float tWorld = dot(hitPointW - rayWorld.origin, rayWorld.direction);
-
                     worldHit->t = tWorld;
                     worldHit->transmissivity = localHit.transmissivity;
-                    worldHit->hasVisibilityTest = localHit.hasVisibilityTest;
+                    worldHit->visitedSplatField = localHit.hasVisibilityTest;
 
                 }
             }

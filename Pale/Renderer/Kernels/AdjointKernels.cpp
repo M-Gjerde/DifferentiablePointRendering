@@ -130,7 +130,7 @@ namespace Pale {
                         break;
                     }
 
-                    if (!worldHit.hasVisibilityTest) {
+                    if (!worldHit.visitedSplatField) {
                         return;
                     }
                     auto &camera = cameraSensor.camera;

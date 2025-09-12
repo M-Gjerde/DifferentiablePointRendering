@@ -7,6 +7,7 @@
 
 #include "Renderer/Kernels/PathTracerKernels.h"
 #include "Renderer/Kernels/KernelHelpers.h"
+#include "Renderer/Kernels/PrimalKernels.h"
 
 namespace Pale {
     // ---- Tags ---------------------------------------------------------------
@@ -28,6 +29,7 @@ namespace Pale {
         return worldHit; // opaque geometry
     }
 
+    /*
     inline void launchDirectShadeKernel(sycl::queue &queue,
                                         GPUSceneBuffers scene,
                                         SensorGPU sensor,
@@ -73,7 +75,7 @@ namespace Pale {
                         if (clip.w() > 0.0f) {
                             float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
                             if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
-                                /* 2)  raster coords (clamp to avoid the right/top fenceposts) */
+                                /* 2)  raster coords (clamp to avoid the right/top fenceposts)
                                 uint32_t px = sycl::clamp(
                                     static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
                                     0u, camera.width - 1);
@@ -128,24 +130,8 @@ namespace Pale {
 
         queue.wait();
     }
+    */
 
-
-    // ---- Warmup -------------------------------------------------------------
-    void warmupKernelSubmit(void *queuePtr, std::size_t totalWorkItems) {
-        auto &queue = *static_cast<sycl::queue *>(queuePtr);
-        queue.submit([&](sycl::handler &cgh) {
-            cgh.parallel_for<WarmupKernelTag>(
-                sycl::range<1>(totalWorkItems),
-                [](sycl::id<1>) {
-                });
-        }).wait();
-    }
-
-
-    // ---- Helpers ------------------------------------------------------------
-    inline void resetDeviceCounter(sycl::queue &queue, uint32_t *counterPtr) {
-        queue.memset(counterPtr, 0, sizeof(uint32_t));
-    }
 
     // ---- Kernels ------------------------------------------------------------
     void launchRayGenEmitterKernel(sycl::queue queue,
@@ -250,234 +236,6 @@ namespace Pale {
     }
 
 
-    struct LaunchIntersectKernel {
-        LaunchIntersectKernel(GPUSceneBuffers scene, const RayState *ray, WorldHit *hit,
-                              uint32_t seed) : m_scene(scene), m_rays(ray),
-                                               m_hitRecords(hit), m_baseSeed(seed) {
-        }
-
-        void operator()(sycl::id<1> globalId) const {
-            const uint32_t rayIndex = globalId[0];
-            const uint64_t perItemSeed = rng::makePerItemSeed1D(m_baseSeed, rayIndex);
-            rng::Xorshift128 rng128(perItemSeed);
-
-            WorldHit worldHit{};
-            RayState rayState = m_rays[rayIndex];
-            intersectScene(rayState.ray, &worldHit, m_scene, rng128);
-            if (worldHit.t == FLT_MAX) {
-                m_hitRecords[rayIndex] = worldHit;
-                return;
-            }
-
-            auto &instance = m_scene.instances[worldHit.instanceIndex];
-            switch (instance.geometryType) {
-                case GeometryType::Mesh: {
-                    const Triangle &tri = m_scene.triangles[worldHit.primitiveIndex];
-                    auto &transform = m_scene.transforms[instance.transformIndex];
-
-                    // Build geometric normal in world space and normalize
-                    float3 p0W = toWorldPoint(m_scene.vertices[tri.v0].pos, transform);
-                    float3 p1W = toWorldPoint(m_scene.vertices[tri.v1].pos, transform);
-                    float3 p2W = toWorldPoint(m_scene.vertices[tri.v2].pos, transform);
-                    float3 geometricNormalW = normalize(cross(p1W - p0W, p2W - p0W));
-                    worldHit.geometricNormalW = geometricNormalW;
-                    std::string name = instance.name;
-                    m_hitRecords[rayIndex] = worldHit;
-                }
-                break;
-                case GeometryType::PointCloud: {
-                    auto &surfel = m_scene.points[worldHit.primitiveIndex];
-                    const float3 normalObject = normalize(cross(surfel.tanU, surfel.tanV));
-                    worldHit.geometricNormalW = normalObject;
-                    m_hitRecords[rayIndex] = worldHit;
-                }
-                break;
-            }
-        }
-
-    private:
-        GPUSceneBuffers m_scene{};
-        const RayState *m_rays{};
-        WorldHit *m_hitRecords{};
-        uint32_t m_baseSeed = 0;
-    };
-
-    void launchIntersectKernel(sycl::queue &queue,
-                               GPUSceneBuffers scene,
-                               const RayState *raysIn,
-                               uint32_t rayCount,
-                               WorldHit *hitRecords,
-                               PathTracerSettings settings) {
-        queue.submit([&](sycl::handler &cgh) {
-            LaunchIntersectKernel kernel(scene, raysIn, hitRecords, settings.randomSeed);
-            cgh.parallel_for<IntersectKernelTag>(
-                sycl::range<1>(rayCount), kernel);
-        });
-        queue.wait(); // DEBUG: ensure the thread blocks here
-    }
-
-
-    inline void launchShadeKernel(sycl::queue &queue,
-                                  GPUSceneBuffers scene,
-                                  SensorGPU sensor,
-                                  const WorldHit *hitRecords,
-                                  const RayState *raysIn,
-                                  uint32_t rayCount,
-                                  RayState *raysOut,
-                                  RenderIntermediatesGPU renderIntermediates,
-                                  const PathTracerSettings &settings
-
-    ) {
-        queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = settings.randomSeed;
-            cgh.parallel_for<ShadeKernelTag>(
-                sycl::range<1>(rayCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
-                    constexpr float kEps = 1e-4f;
-                    // Choose any generator you like:
-
-                    const WorldHit worldHit = hitRecords[rayIndex];
-                    const RayState rayState = raysIn[rayIndex];
-
-                    if (worldHit.t == FLT_MAX) {
-                        return;
-                    }
-
-                    float3 throughput = rayState.pathThroughput;
-                    auto &instance = scene.instances[worldHit.instanceIndex];
-                    GPUMaterial material;
-                    switch (instance.geometryType) {
-                        case GeometryType::Mesh:
-                            material = scene.materials[instance.materialIndex];
-                            break;
-                        case GeometryType::PointCloud: {
-                            auto val = scene.points[worldHit.primitiveIndex];
-                            material.baseColor = val.color;
-                        }
-                        break;
-                    }
-
-                    // Construct Ray towards camera
-                    auto &camera = sensor.camera;
-                    float3 toPinhole = camera.pos - worldHit.hitPositionW;
-                    float distanceToPinhole = length(toPinhole);
-                    float3 directionToPinhole = toPinhole / distanceToPinhole;
-                    // distance to camera:
-
-                    Ray contribRay{
-                        .origin = worldHit.hitPositionW + directionToPinhole * kEps,
-                        .direction = directionToPinhole
-                    };
-                    // Shoot contribution ray towards camera
-                    // If we have non-zero transmittance
-                    float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
-                    if (transmittance.transmissivity > 0.0f) {
-                        // perspective projection
-                        float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
-
-                        if (clip.w() > 0.0f) {
-                            float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
-                            if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
-                                /* 2)  raster coords (clamp to avoid the right/top fenceposts) */
-                                uint32_t px = sycl::clamp(
-                                    static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
-                                    0u, camera.width - 1);
-                                uint32_t py = sycl::clamp(
-                                    static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
-                                    0u, camera.height - 1);
-
-                                // FLIP Y
-                                const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
-
-                                float4 &dst = sensor.framebuffer[idx];
-                                const sycl::atomic_ref<float,
-                                            sycl::memory_order::relaxed,
-                                            sycl::memory_scope::device,
-                                            sycl::access::address_space::global_space>
-                                        r(dst.x());
-                                const sycl::atomic_ref<float,
-                                            sycl::memory_order::relaxed,
-                                            sycl::memory_scope::device,
-                                            sycl::access::address_space::global_space>
-                                        g(dst.y());
-                                const sycl::atomic_ref<float,
-                                            sycl::memory_order::relaxed,
-                                            sycl::memory_scope::device,
-                                            sycl::access::address_space::global_space>
-                                        b(dst.z());
-                                const sycl::atomic_ref<float,
-                                            sycl::memory_order::relaxed,
-                                            sycl::memory_scope::device,
-                                            sycl::access::address_space::global_space>
-                                        a(dst.w());
-
-                                // BRDF to camera direction
-                                float3 brdf = material.baseColor / M_PIf;
-                                // Attenuation (Geometry term)
-                                float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, directionToPinhole));
-                                float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
-                                float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
-
-                                float3 pointbrdf{1.0f};
-                                if (transmittance.hasVisibilityTest) {
-                                    //pointbrdf = scene.points[transmittance.instanceIndex].color / M_PIf;
-                                }
-
-                                float3 color = throughput * brdf * G_cam * transmittance.transmissivity * pointbrdf;
-
-                                r.fetch_add(color.x());
-                                g.fetch_add(color.y());
-                                b.fetch_add(color.z());
-                                a.store(1.0f);
-                            };
-                        }
-                    }
-
-                    float cosinePDF = 0.0f;
-                    float3 newDirection;
-                    sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
-
-                    float3 shadingNormal = worldHit.geometricNormalW;
-                    float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
-                    float pdfCosine = cosinePDF; // cosθ/π
-                    float minPdf = 1e-6f;
-                    pdfCosine = sycl::fmax(pdfCosine, minPdf);
-
-                    // Lambertian BRDF
-                    float3 albedo = material.baseColor; // in [0,1]
-                    float3 brdf = albedo * (1.0f / M_PIf);
-
-                    float3 pointbrdf{1.0f};
-                    if (worldHit.hasVisibilityTest) {
-                        pointbrdf = scene.points[0].color / M_PIf;
-                    }
-
-
-                    // Sample next
-                    RayState next{};
-                    next.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
-                    next.ray.direction = newDirection;
-                    next.pathThroughput = throughput * brdf *  pointbrdf* (cosTheta / pdfCosine);
-                    next.bounceIndex = rayState.bounceIndex + 1;
-
-                    auto counter = sycl::atomic_ref<uint32_t,
-                        sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>(
-                        *renderIntermediates.countExtensionOut);
-                    uint32_t slot = counter.fetch_add(1);
-
-                    raysOut[slot] = next;
-                });
-        });
-        queue.wait();
-    }
-
-
     // ---- Orchestrator -------------------------------------------------------
     void submitKernel(RenderPackage &pkg) {
         pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
@@ -498,18 +256,20 @@ namespace Pale {
         pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
 
         if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
-            // Launch direct light kernel
 
-            launchDirectShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.primaryRays, activeCount, pkg.settings);
+            //launchDirectShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.primaryRays, activeCount, pkg.settings);
             for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
                 pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                 pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                 pkg.queue.wait();
-                launchIntersectKernel(pkg.queue, pkg.scene, pkg.intermediates.primaryRays, activeCount,
-                                      pkg.intermediates.hitRecords, pkg.settings);
-                launchShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.intermediates.hitRecords,
-                                  pkg.intermediates.primaryRays, activeCount,
-                                  pkg.intermediates.extensionRaysA, pkg.intermediates, pkg.settings);
+                launchIntersectKernel(pkg, activeCount);
+
+                launchVolumeKernel(pkg, activeCount);
+
+                launchContributionKernel(pkg, activeCount);
+
+                generateNextRays(pkg, activeCount);
+
                 uint32_t nextCount = 0;
                 pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
                 pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
@@ -525,8 +285,7 @@ namespace Pale {
                 pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                 pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                 pkg.queue.wait();
-                launchIntersectKernel(pkg.queue, pkg.scene, pkg.intermediates.primaryRays, activeCount,
-                                      pkg.intermediates.hitRecords, pkg.settings);
+                launchIntersectKernel(pkg, activeCount);
 
                 launchAdjointShadeKernel(pkg.queue, pkg.scene, pkg.sensor, pkg.adjoint, pkg.intermediates.hitRecords,
                                   pkg.intermediates.primaryRays, activeCount,

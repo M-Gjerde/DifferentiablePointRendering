@@ -17,7 +17,7 @@ namespace Pale {
 #ifdef NDEBUG
         // Release
         m_settings.photonsPerLaunch = 1e7; // 1e7
-        m_settings.maxBounces = 2;
+        m_settings.maxBounces = 4;
 
 #else
         // Debug

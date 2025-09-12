@@ -257,7 +257,7 @@ namespace Pale {
         uint32_t instanceIndex{};
         float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW; // optional: fill if you have it cheaply
-        bool hasVisibilityTest = false;
+        bool visitedSplatField = false;
     };
 
     struct PathTracerSettings {

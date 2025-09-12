@@ -264,7 +264,7 @@ int main(int argc, char** argv) {
                 filePath, rgba, W, H,
                 exposure,
                 gamma,
-                false)) {
+                true)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
                 };
 
