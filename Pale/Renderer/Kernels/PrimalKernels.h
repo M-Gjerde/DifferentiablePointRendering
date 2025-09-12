@@ -6,6 +6,7 @@
 
 #include "Renderer/GPUDataStructures.h"
 namespace Pale {
+    void launchRayGenEmitterKernel(RenderPackage& pkg);
 
     void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount);
 

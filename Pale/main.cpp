@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
 
     auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
     auto entityGaussian = scene->createEntity("Gaussian");
-    entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
+    //entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
 
     logSceneSummary(scene, assetManager);
 
