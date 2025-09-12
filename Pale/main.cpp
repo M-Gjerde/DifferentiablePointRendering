@@ -181,10 +181,9 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath, sy
 
     auto* deviceResidualRgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
     auto* gradient_pk = sycl::malloc_device<Pale::float3>(10, queue);
-    queue.memcpy(deviceResidualRgba, residualRgba.data(),
-                 sizeof(Pale::float4) * pixelCount).wait();
+    //queue.memcpy(deviceResidualRgba, residualRgba.data(), sizeof(Pale::float4) * pixelCount).wait();
 
-    queue.fill(gradient_pk, Pale::float3(0.0f), 10);
+    //queue.fill(gradient_pk, Pale::float3(0.0f), 10);
 
     adjoint.framebuffer = deviceResidualRgba;
     adjoint.width = imageWidth;
