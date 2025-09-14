@@ -119,7 +119,6 @@ namespace Pale {
                 float tHit = 0.0f;
                 float contributionAtHit = 0.0f;
                 if (intersectSurfel(rayObject, surfel, rayEpsilon, 10.0f, tHit, contributionAtHit)) {
-
                     // Find intersection point // Still in local coords
                     const float3 hitPointLocal = rayObject.origin + tHit * rayObject.direction;
 
@@ -203,20 +202,21 @@ namespace Pale {
                     bestTWorld = tWorld;
                     foundAnyHit = true;
                     worldHit->t = tWorld;
-                    //worldHit->transmissivity = localHit.transmissivity;
+                    worldHit->hit = true;
+                    worldHit->transmissivity = localHit.transmissivity;
                     worldHit->primitiveIndex = localHit.primitiveIndex;
                     worldHit->instanceIndex = instanceIndex;
                     worldHit->hitPositionW = hitPointW;
-                    //worldHit->visitedSplatField = localHit.hasVisibilityTest;
+                    worldHit->visitedSplatField = localHit.hasVisibilityTest;
                 }
 
                 if (!ok && localHit.hasVisibilityTest) {
                                         const float3 hitPointW = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
                                                           transform);
                     const float tWorld = dot(hitPointW - rayWorld.origin, rayWorld.direction);
-                    //worldHit->t = tWorld;
-                    //worldHit->transmissivity = localHit.transmissivity;
-                    //worldHit->visitedSplatField = localHit.hasVisibilityTest;
+                    worldHit->t = tWorld;
+                    worldHit->transmissivity = localHit.transmissivity;
+                    worldHit->visitedSplatField = localHit.hasVisibilityTest;
 
                 }
             }

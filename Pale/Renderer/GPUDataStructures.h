@@ -251,6 +251,7 @@ namespace Pale {
     };
 
     struct alignas(16) WorldHit {
+        bool hit = false;
         float t = FLT_MAX; // world-space t
         float transmissivity = FLT_MAX;
         uint32_t primitiveIndex = UINT32_MAX;
@@ -264,7 +265,8 @@ namespace Pale {
         uint32_t photonsPerLaunch = 1e5;
         uint64_t randomSeed = 42;
         RayGenMode rayGenMode = RayGenMode::Emitter;
-        uint32_t maxBounces = 4;
+        uint32_t maxBounces = 8;
+        uint32_t russianRouletteStart = 2; // Which bounce to start RR
     };
 
     // -------------------- Photon storage (device) --------------------------

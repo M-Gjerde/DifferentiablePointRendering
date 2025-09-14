@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
 
     auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
     auto entityGaussian = scene->createEntity("Gaussian");
-    //entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
+    entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
 
     logSceneSummary(scene, assetManager);
 
@@ -256,8 +256,8 @@ int main(int argc, char** argv) {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
         const uint32_t W = sensor.width, H = sensor.height;
-        float gamma = 3.2f;
-        float exposure = 1.5f;
+        float gamma = 2.0f;
+        float exposure = 3.0f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("")  /"out.png";
         if (Pale::Utils::savePNGWithToneMap(
                 filePath, rgba, W, H,
