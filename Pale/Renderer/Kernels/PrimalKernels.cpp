@@ -581,6 +581,22 @@ namespace Pale {
         return ray;
     }
 
+    inline Ray makePrimaryRayFromPixelJittered(const CameraGPU& cam,
+                                           float px, float py, float jx, float jy, bool flipY=true) {
+        const float sx = (px + 0.5f + jx) / float(cam.width);
+        float sy       = (py + 0.5f + jy) / float(cam.height);
+        if (flipY) sy = 1.f - sy;
+        const float ndcX = 2.f*sx - 1.f, ndcY = 2.f*sy - 1.f;
+        const float4 clipFar = float4{ndcX, ndcY, 1.f, 1.f};
+        const float4 worldFarH = cam.invView * (cam.invProj * clipFar);
+        const float invW = 1.f / worldFarH.w();
+        const float3 worldFar{worldFarH.x()*invW, worldFarH.y()*invW, worldFarH.z()*invW};
+        const float4 camPosH = cam.invView * float4{0,0,0,1};
+        const float3 origin{camPosH.x(), camPosH.y(), camPosH.z()};
+        return Ray{origin, normalize(worldFar - origin)};
+    }
+
+
     inline bool intersectRayWithViewPlane(const float3 &rayOrigin,
                                           const float3 &rayDir,
                                           const float3 &planePoint,
@@ -614,6 +630,18 @@ namespace Pale {
         return length(pRight - pCenter);
     }
 
+    inline bool advancePastTransmitHits(const GPUSceneBuffers& scene, Ray& ray, WorldHit& H,
+                                    rng::Xorshift128& rng, float eps=5e-4f, int maxSteps=32) {
+        for (int i=0;i<maxSteps;++i) {
+            H = {};
+            intersectScene(ray, &H, scene, rng);
+            if (!H.hit) return false;
+            if (!H.visitedSplatField) return true; // real surface
+            ray.origin = H.hitPositionW + ray.direction * eps;      // transmit → advance
+        }
+        return false;
+    }
+
 
     // ---- Kernel: Camera gather (one thread per pixel) --------------------------
     void launchCameraGatherKernel(RenderPackage &pkg) {
@@ -641,18 +669,21 @@ namespace Pale {
 
                     // 1) Trace camera ray to first diffuse mesh hit
                     rng::Xorshift128 rng128(rng::makePerItemSeed1D(pkg.settings.randomSeed, pixelIndex));
-                    int spp = 32;
+                    int samplesPerPixel = 4;
                     float3 radianceRGB(0.0f);
-                    for (uint32_t s = 0; s < spp; ++s) {
+                    for (uint32_t sampleIndex = 0; sampleIndex < samplesPerPixel; ++sampleIndex) {
                         // subpixel jitter
                         const float jx = rng128.nextFloat() - 0.5f;
                         const float jy = rng128.nextFloat() - 0.5f;
 
-                        Ray primary = makePrimaryRayFromPixel(sensor.camera, (px + jx), (py + jy));
+                        Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, float(px), float(py), jx, jy, /*flipY=*/true);
 
                         WorldHit worldHit{};
                         intersectScene(primary, &worldHit, scene, rng128);
-                        if (!worldHit.hit) return; // miss → black (or add env if desired)
+                        if (!worldHit.hit) continue; // miss → black (or add env if desired)
+
+                        //if (!advancePastTransmitHits(scene, primary, worldHit, rng128)) continue;
+
 
                         const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
                         float3 diffuseAlbedoRGB;
@@ -687,25 +718,27 @@ namespace Pale {
                                                                 sensor.camera, px, py, depthFromCamera, /*flipY=*/
                                                                 true));
 
-                        const float betaScale = 2.0f; // tune 1–3
+                        const float betaScale = 3.0f; // tune 1–3
                         const float localRadius = sycl::clamp(betaScale * pixelWidth,
                                                               1e-3f * baseRadius,
                                                               4.0f * baseRadius);
 
                         const float localRadiusSquared = localRadius * localRadius;
 
-                        const float kappa = 1.3f;
+                        const float kappa = 2.5f;
                         const float invConeNorm =
-                                1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * float(M_PI) * localRadiusSquared);
+                                1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * M_PIf * localRadiusSquared);
 
                         // If you emit M photons this pass, invNumEmittedPhotons = 1/M.
                         // If you accumulate across P passes, use 1/(M*P) or track a running scale.
-                        const float invNumEmittedPhotons = 1.0f / float(pkg.settings.photonsPerLaunch);
+                        const float invNumEmittedPhotons = 1.0f / static_cast<float>(pkg.settings.photonsPerLaunch);
 
                         // center cell and accumulation
                         const sycl::int3 centerCell = worldToCell(surfacePosition, map);
                         float3 weightedSumPhotonPowerRGB = float3{0.f, 0.f, 0.f};
 
+                        // before the neighbor loops:
+                        // replace the fixed -1..1 loops with:
                         for (int dz = -1; dz <= 1; ++dz)
                             for (int dy = -1; dy <= 1; ++dy)
                                 for (int dx = -1; dx <= 1; ++dx) {
@@ -728,21 +761,16 @@ namespace Pale {
                                         const float weight = sycl::fmax(0.f, 1.f - distance / (kappa * localRadius));
 
                                         // If photon.power already includes cosine at store time, drop * photon.cosineIncident here.
-                                        weightedSumPhotonPowerRGB =
-                                                weightedSumPhotonPowerRGB + weight * (
-                                                    photon.power * photon.cosineIncident);
+                                        weightedSumPhotonPowerRGB = weightedSumPhotonPowerRGB + weight * photon.power;
+
                                     }
                                 }
 
                         const float3 irradianceRGB = weightedSumPhotonPowerRGB * (invConeNorm * invNumEmittedPhotons);
-                        radianceRGB = radianceRGB + radianceDirect + irradianceRGB * (
-                                          diffuseAlbedoRGB * (1.0f / static_cast<float>(M_PI)));
+                        radianceRGB = radianceRGB + radianceDirect + irradianceRGB * (diffuseAlbedoRGB * (1.0f / static_cast<float>(M_PI)));
                     }
-                    const float invSPP = 1.0f / float(spp);
 
-                    radianceRGB = radianceRGB * invSPP;
-                    // irradiance and radiance
-
+                    radianceRGB = radianceRGB * (1.0f / static_cast<float>(samplesPerPixel));
                     // Atomic accumulate
                     const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code
                     float4 &dst = sensor.framebuffer[fbIndex];

@@ -266,7 +266,7 @@ namespace Pale {
         uint64_t randomSeed = 42;
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 8;
-        uint32_t russianRouletteStart = 2; // Which bounce to start RR
+        uint32_t russianRouletteStart = 3; // Which bounce to start RR
     };
 
     // -------------------- Photon storage (device) --------------------------
