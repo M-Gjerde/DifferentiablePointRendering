@@ -10,13 +10,15 @@ export module Pale.Render.PathTracer;
 
 import Pale.Render.Sensors;
 import Pale.Render.SceneUpload;
+import Pale.Render.BVH;
+import Pale.Render.SceneBuild;
 
 export namespace Pale {
 
     class PathTracer {
     public:
         explicit PathTracer(sycl::queue q, const PathTracerSettings& settings = {});
-        void setScene(const GPUSceneBuffers& s);
+        void setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp);
         void renderForward(SensorGPU& sensors);
         void renderBackward(SensorGPU &sensor, AdjointGPU& adjoint);
         void reset();
@@ -25,6 +27,7 @@ export namespace Pale {
         void ensureCapacity(uint32_t requiredRayQueueCapacity);
         void allocateIntermediates(uint32_t newCapacity);
         void freeIntermediates();
+        void configurePhotonGrid(const AABB& sceneAabb, float gatherRadiusWorld);
     private:
         sycl::queue m_queue;
         GPUSceneBuffers m_scene{};

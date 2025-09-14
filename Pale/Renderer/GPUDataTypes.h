@@ -163,6 +163,10 @@ namespace Pale {
         float &y() { return v.y(); }
         float z() const { return v.z(); }
         float &z() { return v.z(); }
+
+        bool operator==(const float3 & float3) const {
+            return v.x() == float3.x() && v.y() == float3.y() && v.z() == float3.z();
+        };
     };
 
     /* float4, same idea -------------------------------------------------------- */

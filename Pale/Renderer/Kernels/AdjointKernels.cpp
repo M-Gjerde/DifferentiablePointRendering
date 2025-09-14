@@ -82,7 +82,6 @@ namespace Pale {
 
                     const uint32_t outputSlot = outputCounter.fetch_add(1u);
                     renderIntermediates.primaryRays[outputSlot] = rayState;
-                    renderIntermediates.adjoint[outputSlot].pixelID = pixelIndex;
                 });
         });
         queue.wait();
@@ -283,7 +282,7 @@ namespace Pale {
 
                         gradCount.fetch_add(1.0f);
 
-                        const size_t pixelIndex =  renderIntermediates.adjoint[rayIndex].pixelID;
+                        const size_t pixelIndex = 0;
                         float4 &gradImage = cameraSensor.framebuffer[pixelIndex];
                         // atomic adds here
 

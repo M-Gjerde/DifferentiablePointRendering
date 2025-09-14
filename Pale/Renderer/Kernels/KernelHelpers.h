@@ -95,9 +95,9 @@ struct Xorshift128 {
 };
 
 // ---------- Helper: per-item deterministic seeding ----------
-inline uint64_t makePerItemSeed1D(uint64_t baseSeed, sycl::id<1> globalId) {
+inline uint64_t makePerItemSeed1D(uint64_t baseSeed, uint64_t globalId) {
     // Mix base seed with global id to minimize collisions
-    uint64_t mixed = baseSeed ^ (0x9E3779B97F4A7C15ull + static_cast<uint64_t>(globalId[0]));
+    uint64_t mixed = baseSeed ^ (0x9E3779B97F4A7C15ull + static_cast<uint64_t>(globalId));
     // One SplitMix64 step to decorrelate contiguous ids
     SplitMix64 sm(mixed);
     return sm.nextUint64();

@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
     // Start a Tracer
     Pale::PathTracer tracer(deviceSelector.getQueue());
     // Register the scene with the Tracer
-    tracer.setScene(gpu);
+    tracer.setScene(gpu, buildProducts);
 
     // Render
     tracer.renderForward(sensor); // films is span/array
@@ -271,6 +271,7 @@ int main(int argc, char** argv) {
     Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
     }
 
+/*
     // 4) (Optional) load or compute residuals on host, upload pointer
     auto adjoint = calculateAdjointImage("Output/target/out.pfm", deviceSelector.getQueue(), sensor);
     Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
@@ -299,6 +300,7 @@ int main(int argc, char** argv) {
                 };
         Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A}
     }
+    */
     // Write Registry:
     assetManager.registry().save("asset_registry.yaml");
 

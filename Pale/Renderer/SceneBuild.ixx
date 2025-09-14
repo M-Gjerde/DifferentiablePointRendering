@@ -64,6 +64,8 @@ export namespace Pale {
 
             std::vector<CameraGPU> cameraGPUs; // camera data for sensors
 
+            float diffuseSurfaceArea = 0.0f;
+
             [[nodiscard]] std::size_t cameraCount() const { return cameraGPUs.size(); }
             [[nodiscard]] const std::vector<CameraGPU>& cameras() const { return cameraGPUs; }
         };
@@ -221,6 +223,9 @@ export namespace Pale {
             write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
             // finalize permutation and packing metadata
             computePacking(buildProducts);
+
+            buildProducts.diffuseSurfaceArea = computeDiffuseSurfaceAreaWorld(buildProducts);
+
             return buildProducts;
         };
 
@@ -279,5 +284,7 @@ export namespace Pale {
         static void appendBLAS(BuildProducts& buildProducts, const BLASResult& blasResult, const MeshRange&);
 
         static void computePacking(BuildProducts& buildProducts);
+        static float computeDiffuseSurfaceAreaWorld(const BuildProducts& buildProducts);
+
     };
 }

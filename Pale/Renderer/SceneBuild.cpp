@@ -469,4 +469,32 @@ namespace Pale {
 
     void SceneBuild::computePacking(BuildProducts& buildProducts) {
     }
+
+    float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts &buildProducts) {
+        float totalDiffuseArea = 0.0f;
+
+        for (const InstanceRecord& instanceRecord : buildProducts.instances) {
+            if (instanceRecord.geometryType != GeometryType::Mesh)
+                continue;
+
+            const GPUMaterial& material = buildProducts.materials[instanceRecord.materialIndex];
+            if (material.emissive != float3(0.0f))
+                continue;
+
+            const MeshRange& meshRange = buildProducts.meshRanges[instanceRecord.geometryIndex];
+            const Transform& xf        = buildProducts.transforms[instanceRecord.transformIndex];
+
+            for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
+                const uint32_t triIndex = meshRange.firstTri + localTri;
+                const Triangle& tri     = buildProducts.triangles[triIndex];
+
+                const float3 p0W = toWorldPoint(buildProducts.vertices[tri.v0].pos, xf);
+                const float3 p1W = toWorldPoint(buildProducts.vertices[tri.v1].pos, xf);
+                const float3 p2W = toWorldPoint(buildProducts.vertices[tri.v2].pos, xf);
+
+                totalDiffuseArea += triangleArea(p0W, p1W, p2W);
+            }
+        }
+        return totalDiffuseArea;
+    }
 }

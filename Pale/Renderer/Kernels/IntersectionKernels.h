@@ -203,20 +203,20 @@ namespace Pale {
                     bestTWorld = tWorld;
                     foundAnyHit = true;
                     worldHit->t = tWorld;
-                    worldHit->transmissivity = localHit.transmissivity;
+                    //worldHit->transmissivity = localHit.transmissivity;
                     worldHit->primitiveIndex = localHit.primitiveIndex;
                     worldHit->instanceIndex = instanceIndex;
                     worldHit->hitPositionW = hitPointW;
-                    worldHit->visitedSplatField = localHit.hasVisibilityTest;
+                    //worldHit->visitedSplatField = localHit.hasVisibilityTest;
                 }
 
                 if (!ok && localHit.hasVisibilityTest) {
                                         const float3 hitPointW = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
                                                           transform);
                     const float tWorld = dot(hitPointW - rayWorld.origin, rayWorld.direction);
-                    worldHit->t = tWorld;
-                    worldHit->transmissivity = localHit.transmissivity;
-                    worldHit->visitedSplatField = localHit.hasVisibilityTest;
+                    //worldHit->t = tWorld;
+                    //worldHit->transmissivity = localHit.transmissivity;
+                    //worldHit->visitedSplatField = localHit.hasVisibilityTest;
 
                 }
             }

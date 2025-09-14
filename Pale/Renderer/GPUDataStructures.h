@@ -111,10 +111,10 @@ namespace Pale {
 
         Transform transform{};
 
-        void addTriangle(const float3& p0,
-                         const float3& e1,
-                         const float3& e2,
-                         const float3& n,
+        void addTriangle(const float3 &p0,
+                         const float3 &e1,
+                         const float3 &e2,
+                         const float3 &n,
                          float area) {
             if (triangleCount >= MAX_TRIANGLES)
                 return; // (host version throws; device just skips)
@@ -192,38 +192,38 @@ namespace Pale {
     // UPLOAD CPU-GPU Structures
 
     struct GPUSceneBuffers {
-        BVHNode* blasNodes{nullptr};
-        BLASRange* blasRanges{nullptr};
-        TLASNode* tlasNodes{nullptr};
-        Triangle* triangles{nullptr};
-        Vertex* vertices{nullptr};
-        Transform* transforms{nullptr};
-        GPUMaterial* materials{nullptr};
-        Point* points{nullptr};
-        InstanceRecord* instances{nullptr};
+        BVHNode *blasNodes{nullptr};
+        BLASRange *blasRanges{nullptr};
+        TLASNode *tlasNodes{nullptr};
+        Triangle *triangles{nullptr};
+        Vertex *vertices{nullptr};
+        Transform *transforms{nullptr};
+        GPUMaterial *materials{nullptr};
+        Point *points{nullptr};
+        InstanceRecord *instances{nullptr};
         uint32_t blasNodeCount{0};
         uint32_t tlasNodeCount{0};
         uint32_t triangleCount{0};
         uint32_t vertexCount{0};
         uint32_t pointCount{0};
 
-        GPULightRecord* lights{nullptr};
-        GPUEmissiveTriangle* emissiveTriangles{nullptr};
+        GPULightRecord *lights{nullptr};
+        GPUEmissiveTriangle *emissiveTriangles{nullptr};
         uint32_t lightCount{0};
         uint32_t emissiveTriangleCount{0};
     };
 
     struct SensorGPU {
         CameraGPU camera; // camera parameters
-        float4* framebuffer{nullptr}; // device pointer
+        float4 *framebuffer{nullptr}; // device pointer
         uint32_t width{}, height{};
     };
 
     struct AdjointGPU {
-        float4* framebuffer{nullptr}; // input adjoint image
-        float4* framebufferGrad{nullptr}; // ouput gradient image
+        float4 *framebuffer{nullptr}; // input adjoint image
+        float4 *framebufferGrad{nullptr}; // ouput gradient image
         uint32_t width{}, height{};
-        float3* gradient_pk{nullptr};
+        float3 *gradient_pk{nullptr};
     };
 
     // ---- PODs ---------------------------------------------------------------
@@ -236,48 +236,82 @@ namespace Pale {
         float3 direction; // 32
     };
 
-    struct RayState {
+    struct alignas(16) RayState {
         Ray ray{};
         float3 pathThroughput{};
         uint32_t bounceIndex{};
     };
 
-    struct LocalHit {
-        float t; // object-space t
-        float transmissivity;
+    struct alignas(16) LocalHit {
+        float t = FLT_MAX; // world-space t
+        float transmissivity = FLT_MAX;
         bool hasVisibilityTest = false;
-        uint32_t primitiveIndex; // triangle or prim id within the BLAS geometry
-        uint32_t geometryIndex; // mesh/geometry id within scene
+        uint32_t primitiveIndex = UINT32_MAX; // triangle or prim id within the BLAS geometry
+        uint32_t geometryIndex = UINT32_MAX; // mesh/geometry id within scene
     };
 
-    struct WorldHit {
-        float t{FLT_MAX}; // world-space t
-        float transmissivity = 1.0f; // world-space t
-        uint32_t primitiveIndex{};
-        uint32_t instanceIndex{};
+    struct alignas(16) WorldHit {
+        float t = FLT_MAX; // world-space t
+        float transmissivity = FLT_MAX;
+        uint32_t primitiveIndex = UINT32_MAX;
+        uint32_t instanceIndex = UINT32_MAX;
         float3 hitPositionW = float3(0.0f);
-        float3 geometricNormalW; // optional: fill if you have it cheaply
+        float3 geometricNormalW = float3(0.0f);; // optional: fill if you have it cheaply
         bool visitedSplatField = false;
     };
 
-    struct PathTracerSettings {
+    struct alignas(16) PathTracerSettings {
         uint32_t photonsPerLaunch = 1e5;
         uint64_t randomSeed = 42;
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 4;
     };
 
-    struct AdjointIntermediates {
-        uint32_t pixelID = 0;
+    // -------------------- Photon storage (device) --------------------------
+    // Filled during the emitter pass by appending at an atomic counter.
+    // One entry per stored photon (only diffuse hits).
+    struct alignas(16) DevicePhotonSurface {
+        // Positions in world space
+        float3 position{0.0f};
+
+        // Photon power (throughput × emission), RGB channels
+        float3 power{0.0f};
+
+        // Incident direction at hit (from light toward hit)
+        float3 incidentDir{0.0f};
+        // |n · ω_i| at the hit (used to convert flux→irradiance)
+        float cosineIncident = 0.0f;
     };
 
-    struct RenderIntermediatesGPU {
-        RayState* primaryRays;
-        RayState* extensionRaysA;
-        WorldHit* hitRecords;
-        AdjointIntermediates* adjoint;
-        uint32_t* countPrimary;
-        uint32_t* countExtensionOut;
+    // ----------------- Full surface photon map handle (device) -------------------
+    struct alignas(16) DeviceSurfacePhotonMapGrid {
+        DevicePhotonSurface* photons;   // [photonCapacity]
+        uint32_t *photonCountDevicePtr; // atomic append counter on device
+        uint32_t photonCapacity; // total allocated slots
+
+        // Grid params
+        float3 gridOriginWorld;
+        float3 cellSizeWorld;               // set = gatherRadiusWorld
+        sycl::int3   gridResolution;              // Nx,Ny,Nz
+        uint32_t totalCellCount;
+
+        // Per-cell lists
+        uint32_t* cellHeadIndexArray;       // [totalCellCount], init to kInvalidIndex
+        uint32_t* photonNextIndexArray;     // [photonCapacity]
+
+        // For clarity
+        float gatherRadiusWorld = 0.0f;
+    };
+
+
+    struct alignas(16) RenderIntermediatesGPU {
+        RayState *primaryRays;
+        RayState *extensionRaysA;
+        WorldHit *hitRecords;
+        uint32_t *countPrimary;
+        uint32_t *countExtensionOut;
+
+        DeviceSurfacePhotonMapGrid map;
     };
 
     struct RenderPackage {
