@@ -669,7 +669,7 @@ namespace Pale {
 
                     // 1) Trace camera ray to first diffuse mesh hit
                     rng::Xorshift128 rng128(rng::makePerItemSeed1D(pkg.settings.randomSeed, pixelIndex));
-                    int samplesPerPixel = 4;
+                    int samplesPerPixel = 32;
                     float3 radianceRGB(0.0f);
                     for (uint32_t sampleIndex = 0; sampleIndex < samplesPerPixel; ++sampleIndex) {
                         // subpixel jitter
