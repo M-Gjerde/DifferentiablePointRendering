@@ -256,7 +256,6 @@ export namespace Pale {
         static void collectLights(const std::shared_ptr<Scene>& scene,
                                   IAssetAccess& assetAccess,
                                   BuildProducts& out);
-        static float luminance(const float3& rgb);
         static float triangleArea(const float3& p0, const float3& p1, const float3& p2);
         static void collectCameras(const std::shared_ptr<Scene>& scene,
                                    BuildProducts& outBuildProducts);

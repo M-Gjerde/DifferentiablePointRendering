@@ -24,7 +24,10 @@ namespace Pale {
                                   RayState *raysOut,
                                   RenderIntermediatesGPU renderIntermediates,
                                   const PathTracerSettings &settings
-
     );
+
+    void launchAdjointKernel(RenderPackage &pkg, uint32_t activeRayCount);
+    void launchAdjointContributionKernel(RenderPackage &pkg, uint32_t activeRayCount);
+
 }
 

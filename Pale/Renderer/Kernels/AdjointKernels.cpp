@@ -3,6 +3,8 @@
 //
 
 #include "Renderer/Kernels/AdjointKernels.h"
+
+#include "IntersectionKernels.h"
 #include "Renderer/Kernels/KernelHelpers.h"
 
 
@@ -25,31 +27,22 @@ namespace Pale {
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
                 sycl::range<1>(rayCount),
                 [=](sycl::id<1> globalId) {
-                    const uint32_t pixelLinearIndex = static_cast<uint32_t>(globalId[0]);
+                    const auto pixelLinearIndex = static_cast<uint32_t>(globalId[0]);
 
-                    const uint32_t pixelX = pixelLinearIndex % imageWidth;
-                    const uint32_t pixelY = pixelLinearIndex / imageWidth;
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
+                    rng::Xorshift128 rng128(perItemSeed);
+
+                    const uint32_t px = pixelLinearIndex % imageWidth;
+                    const uint32_t py = cameraSensor.height - 1 - pixelLinearIndex / imageWidth;
 
                     // RNG per pixel
                     const CameraGPU adjointCamera = cameraSensor.camera;
+                    const float jx = rng128.nextFloat() - 0.5f;
+                    const float jy = rng128.nextFloat() - 0.5f;
 
-                    // Subpixel sample in [0,1]^2
-                    float sampleX = static_cast<float>(pixelX) * invWidth;
-                    float sampleY = static_cast<float>(pixelY) * invHeight;
-
-                    // NDC → clip (OpenGL-style NDC in [-1,1])
-                    const float ndcX = 2.f * sampleX - 1.f;
-                    const float ndcY = 1.f - 2.f * sampleY;
-
-                    // Ray in view space: unproject near and far, then get direction
-                    const float3 pNearView = transformPoint(adjointCamera.invProj, {ndcX, ndcY, -1.f}, 1.f);
-                    const float3 pFarView = transformPoint(adjointCamera.invProj, {ndcX, ndcY, 1.f}, 1.f);
-                    const float3 dirView = normalize(pFarView - pNearView);
-
-                    // To world
-                    const float3 rayOriginWorld = transformPoint(adjointCamera.invView, {0.f, 0.f, 0.f}, 1.f);
-                    // camera position
-                    const float3 rayDirectionWorld = transformDirection(adjointCamera.invView, dirView);
+                    Ray cameraRay = makePrimaryRayFromPixelJittered(cameraSensor.camera, static_cast<float>(px),
+                                                                    static_cast<float>(py), jx, jy);
 
                     // Initial adjoint throughput = residual (linear RGB). Alpha ignored.
                     const uint32_t pixelIndex = pixelLinearIndex;
@@ -61,19 +54,15 @@ namespace Pale {
                         residualRgba.z()
                     };
 
-                    const float weightLen2 =
-                            initialAdjointWeight.x() * initialAdjointWeight.x() +
-                            initialAdjointWeight.y() * initialAdjointWeight.y() +
-                            initialAdjointWeight.z() * initialAdjointWeight.z();
-
+                    //initialAdjointWeight = float3(1.0f);
                     //if (residualRgba.x() == 0.0f) return;
                     if (residualRgba.x() == 0.f && residualRgba.y() == 0.f && residualRgba.z() == 0.f) return;
 
                     RayState rayState{};
-                    rayState.ray.origin = rayOriginWorld;
-                    rayState.ray.direction = rayDirectionWorld;
+                    rayState.ray = cameraRay;
                     rayState.pathThroughput = initialAdjointWeight;
                     rayState.bounceIndex = 0;
+                    rayState.pixelIndex = pixelIndex;
 
                     auto outputCounter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
@@ -87,22 +76,24 @@ namespace Pale {
         queue.wait();
     }
 
-    void launchAdjointShadeKernel(sycl::queue &queue,
-                                  GPUSceneBuffers scene,
-                                  SensorGPU cameraSensor,
-                                  AdjointGPU adjointSensor,
-                                  const WorldHit *hitRecords,
-                                  const RayState *raysIn,
-                                  uint32_t rayCount,
-                                  RayState *raysOut,
-                                  RenderIntermediatesGPU renderIntermediates,
-                                  const PathTracerSettings &settings
 
-    ) {
+    void launchAdjointKernel(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto &adjoint = pkg.adjoint;
+
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
+        auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+
+        uint32_t imageWidth = sensor.width;
+
         queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<struct AjointShadeKernelTag>(
-                sycl::range<1>(rayCount),
+                sycl::range<1>(activeRayCount),
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
@@ -113,7 +104,8 @@ namespace Pale {
                     WorldHit worldHit = hitRecords[rayIndex];
                     const RayState rayState = raysIn[rayIndex];
                     const Ray ray = rayState.ray;
-                    if (worldHit.t == FLT_MAX) {
+
+                    if (!worldHit.hit) {
                         return;
                     }
                     auto &instance = scene.instances[worldHit.instanceIndex];
@@ -128,11 +120,6 @@ namespace Pale {
                         }
                         break;
                     }
-
-                    if (!worldHit.visitedSplatField) {
-                        return;
-                    }
-                    auto &camera = cameraSensor.camera;
 
                     // Calculate intersection derivative:
                     // Visibility gradient
@@ -222,37 +209,17 @@ namespace Pale {
                         gaussianG * (gLocU * dplocRowU[2] + gLocV * dplocRowV[2])
                     };
 
-                    // Multiply by Light contribution
-                    gradVisibilityWrtPk = gradVisibilityWrtPk * rayState.pathThroughput;
+                    // Mulitply with Radiance L
+                    float3 radianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap,
+                                                                       settings.photonsPerLaunch);
+                    float3 gradTransportAndRadiance = gradVisibilityWrtPk * radianceRGB;
 
-                    // Multiply by Geometric Term:
-                    if (rayState.bounceIndex == 0) {
-                        float3 toPinhole = camera.pos - worldHit.hitPositionW;
-                        float distanceToPinhole = length(toPinhole);
-                        float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, -ray.direction));
-                        float cameraCos = sycl::fabs(dot(camera.forward, ray.direction));
-                        float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
-                        gradVisibilityWrtPk = gradVisibilityWrtPk * G_cam;
-                    }
+                    // Multiply by the adjoint scalar
+                    float3 q = rayState.pathThroughput;
+                    float3 dcost_dpk = q * gradTransportAndRadiance;
 
-
-                    float cosinePDF = 0.0f;
-                    float3 newDirection;
-                    sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
-
-                    float3 shadingNormal = worldHit.geometricNormalW;
-                    float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
-                    float pdfCosine = cosinePDF; // cosθ/π
-                    float minPdf = 1e-6f;
-                    pdfCosine = sycl::fmax(pdfCosine, minPdf);
-
-
-                    // Lambertian BRDF
-                    float3 albedo = material.baseColor; // in [0,1]
-                    float3 brdf = albedo * (1.0f / M_PIf);
-
-                    float3 &dst = adjointSensor.gradient_pk[0];
-                    float3 &gradCounter = adjointSensor.gradient_pk[1];
+                    float3 &dst = adjoint.gradient_pk[0];
+                    float3 &gradCounter = adjoint.gradient_pk[1];
                     const sycl::atomic_ref<float,
                                 sycl::memory_order::relaxed,
                                 sycl::memory_scope::device,
@@ -275,61 +242,140 @@ namespace Pale {
                                 sycl::access::address_space::global_space>
                             gradCount(gradCounter.x());
 
-                    if (rayState.bounceIndex > 0) {
-                        xGrad.fetch_add(gradVisibilityWrtPk.x());
-                        yGrad.fetch_add(gradVisibilityWrtPk.y());
-                        zGrad.fetch_add(gradVisibilityWrtPk.z());
-
-                        gradCount.fetch_add(1.0f);
-
-                        const size_t pixelIndex = 0;
-                        float4 &gradImage = cameraSensor.framebuffer[pixelIndex];
-                        // atomic adds here
+                    xGrad.fetch_add(dcost_dpk.x());
+                    yGrad.fetch_add(dcost_dpk.y());
+                    zGrad.fetch_add(dcost_dpk.z());
 
 
-                        const sycl::atomic_ref<float,
-                                    sycl::memory_order::relaxed,
-                                    sycl::memory_scope::device,
-                                    sycl::access::address_space::global_space>
-                                gradImageX(gradImage.x());
-                        const sycl::atomic_ref<float,
-                                    sycl::memory_order::relaxed,
-                                    sycl::memory_scope::device,
-                                    sycl::access::address_space::global_space>
-                                gradImageY(gradImage.y());
-                        const sycl::atomic_ref<float,
-                                    sycl::memory_order::relaxed,
-                                    sycl::memory_scope::device,
-                                    sycl::access::address_space::global_space>
-                                gradImageZ(gradImage.z());
+                    if (rayState.bounceIndex >= 0) {
+                        const float3 parameterAxis = {1.0f, 0.0f, 0.0f}; // e.g. x-translation
+                        const float dVdp_scalar = dot(gradVisibilityWrtPk, parameterAxis);
+                        const float3 gradTransportTimesRadiance = dVdp_scalar * radianceRGB;
 
+                        const float3 dImageDp_rgb = rayState.pathThroughput * gradTransportTimesRadiance;
 
-                        float3 local_dKernel_dpk = gradVisibilityWrtPk;
-                        float3 w = rayState.pathThroughput * brdf;
-                        // include adjoint BSDF ratio consistent with forward
-                        float3 contrib = gradVisibilityWrtPk * 1000;
-
-                        float grad = contrib.y();
-                        gradImageX.fetch_add(grad);
-                        gradImageY.fetch_add(grad);
-                        gradImageZ.fetch_add(grad);
+                        // write into the pixel that launched this adjoint path
+                        float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex]; // make this buffer
+                        sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(gradImageDst.x()).fetch_add(dImageDp_rgb.x());
+                        sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(gradImageDst.y()).fetch_add(dImageDp_rgb.y());
+                        sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(gradImageDst.z()).fetch_add(dImageDp_rgb.z());
                     }
+                });
+        });
+        queue.wait();
+    }
 
-                    // Sample next
-                    RayState next{};
-                    next.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
-                    next.ray.direction = newDirection;
-                    next.pathThroughput = rayState.pathThroughput; //* brdf * (cosTheta / pdfCosine);
-                    next.bounceIndex = rayState.bounceIndex + 1;
+    void launchAdjointContributionKernel(RenderPackage &pkg, uint32_t activeRayCount) {
+        return;
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &adjointSensor = pkg.sensor;
+        auto &adjoint = pkg.adjoint;
+        auto &settings = pkg.settings;
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
 
-                    auto counter = sycl::atomic_ref<uint32_t,
-                        sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>(
-                        *renderIntermediates.countExtensionOut);
-                    uint32_t slot = counter.fetch_add(1);
+        queue.submit([&](sycl::handler &cgh) {
+            uint64_t baseSeed = settings.randomSeed;
+            cgh.parallel_for<class ShadeKernelTag>(
+                sycl::range<1>(activeRayCount),
+                [=](sycl::id<1> globalId) {
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
+                    rng::Xorshift128 rng128(perItemSeed);
+                    constexpr float kEps = 1e-4f;
+                    // Choose any generator you like:
+                    const WorldHit worldHit = hitRecords[rayIndex];
+                    const RayState rayState = raysIn[rayIndex];
+                    if (!worldHit.hit) {
+                        return;
+                    }
+                    float3 throughput = rayState.pathThroughput;
+                    auto &instance = scene.instances[worldHit.instanceIndex];
+                    GPUMaterial material;
+                    switch (instance.geometryType) {
+                        case GeometryType::Mesh:
+                            material = scene.materials[instance.materialIndex];
+                            break;
+                        case GeometryType::PointCloud: {
+                            auto val = scene.points[worldHit.primitiveIndex];
+                            material.baseColor = val.color;
+                        }
+                        break;
+                    }
+                    // Construct Ray towards camera
+                    auto &camera = adjointSensor.camera;
+                    float3 toPinhole = camera.pos - worldHit.hitPositionW;
+                    float distanceToPinhole = length(toPinhole);
+                    float3 directionToPinhole = toPinhole / distanceToPinhole;
+                    // distance to camera:
+                    Ray contribRay{
+                        .origin = worldHit.hitPositionW + directionToPinhole * kEps,
+                        .direction = directionToPinhole
+                    };
+                    // Shoot contribution ray towards camera
+                    // If we have non-zero transmittance
+                    float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
+                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
+                    if (transmittance.transmissivity > 0.0f && rayState.bounceIndex >= 0) {
+                        // perspective projection
+                        float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
+                        if (clip.w() > 0.0f) {
+                            float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
+                            if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
+                                /* 2)  raster coords (clamp to avoid the right/top fenceposts) */
+                                uint32_t px = sycl::clamp(
+                                    static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
+                                    0u, camera.width - 1);
+                                uint32_t py = sycl::clamp(
+                                    static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
+                                    0u, camera.height - 1);
+                                // FLIP Y
+                                const uint32_t idx = (py) * camera.width + px;
+                                float4 &dst = adjointSensor.framebuffer[idx];
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        r(dst.x());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        g(dst.y());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        b(dst.z());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        a(dst.w());
 
-                    raysOut[slot] = next;
+                                // BRDF to camera direction
+                                float3 brdf = material.baseColor / M_PIf;
+                                // Attenuation (Geometry term)
+                                float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, directionToPinhole));
+                                float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
+                                float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
+
+                                float3 color = throughput * brdf * G_cam;
+
+                                r.fetch_add(color.x());
+                                g.fetch_add(color.y());
+                                b.fetch_add(color.z());
+                                a.store(1.0f);
+                            };
+                        }
+                    }
                 });
         });
         queue.wait();

@@ -119,6 +119,10 @@ target_sources(${PROJECT_NAME}
 
 # Link your exe to the module wrapper (must come after add_executable)
 FetchContent_MakeAvailable(spdlog glm assimp yaml_cpp)
+
+find_package(OpenImageDenoise 2 REQUIRED HINTS /home/magnus/projects/oidn-2.3.3.x86_64.linux/lib/cmake/OpenImageDenoise-2.3.3)  # OIDN 2.x
+target_link_libraries(${PROJECT_NAME} PRIVATE OpenImageDenoise)
+
 target_link_libraries(${PROJECT_NAME}
         PRIVATE
         pugixml

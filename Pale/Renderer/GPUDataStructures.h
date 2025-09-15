@@ -2,6 +2,7 @@
 
 #include <numbers>
 
+#include "entt/entity/entity.hpp"
 #include "Renderer/GPUDataTypes.h"
 
 
@@ -185,9 +186,15 @@ namespace Pale {
         uint32_t materialIndex{0}; // mesh only; point cloud = kInvalidMaterialIndex
         uint32_t transformIndex{0}; // index into transforms
         uint32_t blasRangeIndex; // index into bottomLevelRanges of mesh or pointcloud
-        std::string name;
+        char name[256];
     };
 
+    inline void copyName(char (&dst)[256], const std::string& src) {
+        std::snprintf(dst, sizeof(dst), "%s", src.c_str()); // always null-terminated
+    }
+
+    static_assert(std::is_trivially_copyable_v<InstanceRecord>);
+    static_assert(sycl::is_device_copyable<InstanceRecord>::value);
 
     // UPLOAD CPU-GPU Structures
 
@@ -212,6 +219,8 @@ namespace Pale {
         uint32_t lightCount{0};
         uint32_t emissiveTriangleCount{0};
     };
+    static_assert(std::is_trivially_copyable_v<GPUSceneBuffers>);
+    static_assert(sycl::is_device_copyable<GPUSceneBuffers>::value);
 
     struct SensorGPU {
         CameraGPU camera; // camera parameters
@@ -240,6 +249,7 @@ namespace Pale {
         Ray ray{};
         float3 pathThroughput{};
         uint32_t bounceIndex{};
+        uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
     };
 
     struct alignas(16) LocalHit {
@@ -253,7 +263,7 @@ namespace Pale {
     struct alignas(16) WorldHit {
         bool hit = false;
         float t = FLT_MAX; // world-space t
-        float transmissivity = FLT_MAX;
+        float transmissivity = 1.0f; // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
         float3 hitPositionW = float3(0.0f);
@@ -266,8 +276,12 @@ namespace Pale {
         uint64_t randomSeed = 42;
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 8;
+        uint32_t maxAdjointBounces = 8;
+        uint32_t adjointSamplesPerPixel = 8;
         uint32_t russianRouletteStart = 3; // Which bounce to start RR
     };
+    static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
+    static_assert(sycl::is_device_copyable<PathTracerSettings>::value);
 
     // -------------------- Photon storage (device) --------------------------
     // Filled during the emitter pass by appending at an atomic counter.
@@ -303,6 +317,7 @@ namespace Pale {
 
         // For clarity
         float gatherRadiusWorld = 0.0f;
+        float kappa = 2.0f;
     };
 
 
@@ -315,6 +330,8 @@ namespace Pale {
 
         DeviceSurfacePhotonMapGrid map;
     };
+    static_assert(std::is_trivially_copyable_v<RenderIntermediatesGPU>);
+    static_assert(sycl::is_device_copyable<RenderIntermediatesGPU>::value);
 
     struct RenderPackage {
         sycl::queue queue;

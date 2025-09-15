@@ -224,4 +224,13 @@ namespace Pale {
 
         return foundAnyHit;
     }
+
+
+    static WorldHit traceVisibility(const Ray &rayIn, float tMax, const GPUSceneBuffers &scene,
+                                    rng::Xorshift128 &rng128) {
+        WorldHit worldHit{};
+        intersectScene(rayIn, &worldHit, scene, rng128);
+        return worldHit; // opaque geometry
+    }
+
 }

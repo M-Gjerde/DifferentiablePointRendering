@@ -17,13 +17,17 @@ namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
 #ifdef NDEBUG
         // Release
-        m_settings.photonsPerLaunch = 2e7; // 1e7
+        m_settings.photonsPerLaunch = 1e7; // 1e7
         m_settings.maxBounces = 8;
+        m_settings.maxAdjointBounces = 8;
+        m_settings.adjointSamplesPerPixel = 16;
 
 #else
         // Debug
         m_settings.photonsPerLaunch = 1e6; // 1e6
         m_settings.maxBounces = 3;
+        m_settings.maxAdjointBounces = 1;
+        m_settings.adjointSamplesPerPixel = 1;
 #endif
     }
 
@@ -117,7 +121,7 @@ namespace Pale {
         const float N     = float(m_settings.photonsPerLaunch);
 
 #ifdef NDEBUG
-        const float k     = 20.0f;
+        const float k     = 10.0f;
 #else
         const float k     = 5.0f;
 #endif
@@ -148,10 +152,12 @@ namespace Pale {
             Log::PA_WARN("Adjoint image is not set but renderBackward is called");
             return;
         }
-
         const uint32_t requiredRayCapacity = sensor.width * sensor.height;
-        ensureCapacity(requiredRayCapacity);
 
+        if (requiredRayCapacity > m_rayQueueCapacity) {
+            Log::PA_ERROR("RayQueue Capacity not sufficient. Try reducing image size");
+            return;
+        }
         m_settings.rayGenMode = RayGenMode::Adjoint;
 
         RenderPackage renderPackage{

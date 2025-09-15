@@ -119,13 +119,13 @@ namespace Pale {
 
     struct LaunchIntersectKernel {
         LaunchIntersectKernel(GPUSceneBuffers scene, RenderIntermediatesGPU intermediates,
-                              uint32_t seed) : m_scene(scene),
-                                               m_intermediates(intermediates), m_baseSeed(seed) {
+                              PathTracerSettings settings) : m_scene(scene),
+                                                             m_intermediates(intermediates), m_settings(settings) {
         }
 
         void operator()(sycl::id<1> globalId) const {
             const uint32_t rayIndex = globalId[0];
-            const uint64_t perItemSeed = rng::makePerItemSeed1D(m_baseSeed, rayIndex);
+            const uint64_t perItemSeed = rng::makePerItemSeed1D(m_settings.randomSeed, rayIndex);
             rng::Xorshift128 rng128(perItemSeed);
 
             WorldHit worldHit{};
@@ -157,30 +157,32 @@ namespace Pale {
                     m_intermediates.hitRecords[rayIndex] = worldHit;
 
                     // APpend to photon map
-                    const sycl::atomic_ref<uint32_t,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            counter(*m_intermediates.map.photonCountDevicePtr);
-                    const uint32_t slot = counter.fetch_add(1u);
-                    if (slot >= m_intermediates.map.photonCapacity) return; // drop safely
+                    if (m_settings.rayGenMode == RayGenMode::Emitter) {
+                        const sycl::atomic_ref<uint32_t,
+                                    sycl::memory_order::relaxed,
+                                    sycl::memory_scope::device,
+                                    sycl::access::address_space::global_space>
+                                counter(*m_intermediates.map.photonCountDevicePtr);
+                        const uint32_t slot = counter.fetch_add(1u);
+                        if (slot >= m_intermediates.map.photonCapacity) return; // drop safely
 
-                    DevicePhotonSurface entry;
-                    entry.position = worldHit.hitPositionW;
-                    entry.power = rayState.pathThroughput;
-                    entry.incidentDir = -rayState.ray.direction;
-                    entry.cosineIncident = std::fmax(0.f, dot(worldHit.geometricNormalW, entry.incidentDir));
-                    m_intermediates.map.photons[slot] = entry;
+                        DevicePhotonSurface entry;
+                        entry.position = worldHit.hitPositionW;
+                        entry.power = rayState.pathThroughput;
+                        entry.incidentDir = -rayState.ray.direction;
+                        entry.cosineIncident = std::fmax(0.f, dot(worldHit.geometricNormalW, entry.incidentDir));
+                        m_intermediates.map.photons[slot] = entry;
+                    }
                 }
                 break;
                 case GeometryType::PointCloud: {
                     auto &surfel = m_scene.points[worldHit.primitiveIndex];
-                    if (worldHit.hit && !worldHit.visitedSplatField) {
-                        // SURFACE: set geometric normal and record hit
-                        const float3 nW = normalize(cross(surfel.tanU, surfel.tanV));
-                        worldHit.geometricNormalW = nW;
-                        m_intermediates.hitRecords[rayIndex] = worldHit;
+                    // SURFACE: set geometric normal and record hit
+                    const float3 nW = normalize(cross(surfel.tanU, surfel.tanV));
+                    worldHit.geometricNormalW = nW;
+                    m_intermediates.hitRecords[rayIndex] = worldHit;
 
+                    if (m_settings.rayGenMode == RayGenMode::Emitter) {
                         // APpend to photon map
                         const sycl::atomic_ref<uint32_t,
                                     sycl::memory_order::relaxed,
@@ -198,10 +200,6 @@ namespace Pale {
                             entry.cosineIncident = sycl::fmax(0.f, dot(nW, entry.incidentDir));
                             m_intermediates.map.photons[slot] = entry;
                         }
-                    } else if (worldHit.visitedSplatField) {
-                        // TRANSMIT marker recorded by intersectScene:
-                        // store ONLY the marker so the shade stage can null-collide this ray
-                        m_intermediates.hitRecords[rayIndex] = worldHit; // t set, visitedSplatField=true
                     }
                 }
                 break;
@@ -211,7 +209,7 @@ namespace Pale {
     private:
         GPUSceneBuffers m_scene{};
         RenderIntermediatesGPU m_intermediates{};
-        uint32_t m_baseSeed = 0;
+        PathTracerSettings m_settings{};
     };
 
     void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
@@ -221,50 +219,14 @@ namespace Pale {
         auto &intermediates = pkg.intermediates;
 
         queue.submit([&](sycl::handler &cgh) {
-            LaunchIntersectKernel kernel(scene, intermediates, settings.randomSeed);
+            LaunchIntersectKernel kernel(scene, intermediates, settings);
             cgh.parallel_for<struct IntersectKernelTag>(
                 sycl::range<1>(activeRayCount), kernel);
         });
         queue.wait(); // DEBUG: ensure the thread blocks here
     }
 
-    //
-    static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
-    inline sycl::int3 worldToCell(const float3 &worldPosition,
-                                  const DeviceSurfacePhotonMapGrid &grid) {
-        const float3 safeCellSize = max(grid.cellSizeWorld, float3{1e-6f, 1e-6f, 1e-6f});
-        const float3 relative = worldPosition - grid.gridOriginWorld;
-        const float3 r = float3{
-            relative.x() / safeCellSize.x(),
-            relative.y() / safeCellSize.y(),
-            relative.z() / safeCellSize.z()
-        };
-
-        return sycl::int3{
-            static_cast<int>(sycl::floor(r.x())),
-            static_cast<int>(sycl::floor(r.y())),
-            static_cast<int>(sycl::floor(r.z()))
-        };
-    }
-
-    inline std::uint32_t linearCellIndex(const sycl::int3 &cell,
-                                         const sycl::int3 &resolution) {
-        const int ix = sycl::clamp(static_cast<int>(cell.x()), 0, static_cast<int>(resolution.x()) - 1);
-        const int iy = sycl::clamp(static_cast<int>(cell.y()), 0, static_cast<int>(resolution.y()) - 1);
-        const int iz = sycl::clamp(static_cast<int>(cell.z()), 0, static_cast<int>(resolution.z()) - 1);
-
-        const auto nx = static_cast<std::uint64_t>(resolution.x());
-        const auto ny = static_cast<std::uint64_t>(resolution.y());
-        const auto lix = static_cast<std::uint64_t>(ix);
-        const auto liy = static_cast<std::uint64_t>(iy);
-        const auto liz = static_cast<std::uint64_t>(iz);
-
-        const std::uint64_t linear =
-                liz * nx * ny + liy * nx + lix; // fits if totalCellCount < 2^32
-
-        return static_cast<std::uint32_t>(linear);
-    }
 
     void clearGridHeads(sycl::queue &q, DeviceSurfacePhotonMapGrid &g) {
         q.fill(g.cellHeadIndexArray, kInvalidIndex, g.totalCellCount).wait();
@@ -290,161 +252,6 @@ namespace Pale {
     }
 
 
-    void launchVolumeKernel(RenderPackage &pkg, uint32_t activeRayCount) {
-        auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
-        auto &settings = pkg.settings;
-        auto *hitRecords = pkg.intermediates.hitRecords;
-        auto *raysIn = pkg.intermediates.primaryRays;
-
-        queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = settings.randomSeed;
-            cgh.parallel_for<class ShadeKernelTag>(
-                sycl::range<1>(activeRayCount),
-                // ReSharper disable once CppDFAUnusedValue
-                [=](sycl::id<1> globalId) {
-                    const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
-                    constexpr float kEps = 1e-4f;
-                    // Choose any generator you like:
-                    WorldHit worldHit = hitRecords[rayIndex];
-                    RayState &rayState = raysIn[rayIndex];
-                    if (!worldHit.hit) {
-                        return;
-                    }
-                    if (!worldHit.visitedSplatField)
-                        return;
-                    auto &instance = scene.instances[worldHit.instanceIndex];
-                    auto geometryType = instance.geometryType;
-                    // Use the segment transmittance for THIS segment, not a per-hit alpha.
-                    float T = sycl::clamp(worldHit.transmissivity, 0.0f, 1.0f);
-                    // For a visible tint, use albedo directly (drop /π). Scale if needed.
-                    float3 splatAlbedo = scene.points[0].color;
-                    // Deterministic mix: I*T + f*(1-T)
-                    float3 tintFactor = T * float3{1.0f} + (1.0f - T) * (splatAlbedo);
-                    rayState.pathThroughput = rayState.pathThroughput * tintFactor;
-                });
-        });
-    }
-
-
-    /*
-    static WorldHit traceVisibility(const Ray &rayIn, float tMax, const GPUSceneBuffers &scene,
-                                    rng::Xorshift128 &rng128) {
-        WorldHit worldHit{};
-        intersectScene(rayIn, &worldHit, scene, rng128);
-        return worldHit; // opaque geometry
-    }
-
-    void launchContributionKernel(RenderPackage &pkg, uint32_t activeRayCount) {
-        auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
-        auto &sensor = pkg.sensor;
-        auto &settings = pkg.settings;
-        auto *hitRecords = pkg.intermediates.hitRecords;
-        auto *raysIn = pkg.intermediates.primaryRays;
-        auto *raysOut = pkg.intermediates.extensionRaysA;
-        auto *countExtensionOut = pkg.intermediates.countExtensionOut;
-        queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = settings.randomSeed;
-            cgh.parallel_for<class ShadeKernelTag>(
-                sycl::range<1>(activeRayCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
-                    constexpr float kEps = 1e-4f;
-                    // Choose any generator you like:
-                    const WorldHit worldHit = hitRecords[rayIndex];
-                    const RayState rayState = raysIn[rayIndex];
-                    if (worldHit.t == FLT_MAX) {
-                        return;
-                    }
-                    float3 throughput = rayState.pathThroughput;
-                    auto &instance = scene.instances[worldHit.instanceIndex];
-                    GPUMaterial material;
-                    switch (instance.geometryType) {
-                        case GeometryType::Mesh:
-                            material = scene.materials[instance.materialIndex];
-                            break;
-                        case GeometryType::PointCloud: {
-                            auto val = scene.points[worldHit.primitiveIndex];
-                            material.baseColor = val.color;
-                        }
-                        break;
-                    }
-                    // Construct Ray towards camera
-                    auto &camera = sensor.camera;
-                    float3 toPinhole = camera.pos - worldHit.hitPositionW;
-                    float distanceToPinhole = length(toPinhole);
-                    float3 directionToPinhole = toPinhole / distanceToPinhole;
-                    // distance to camera:
-                    Ray contribRay{
-                        .origin = worldHit.hitPositionW + directionToPinhole * kEps,
-                        .direction = directionToPinhole
-                    };
-                    // Shoot contribution ray towards camera
-                    // If we have non-zero transmittance
-                    float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
-                    if (transmittance.transmissivity > 0.0f) {
-                        // perspective projection
-                        float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
-                        if (clip.w() > 0.0f) {
-                            float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
-                            if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
-                                uint32_t px = sycl::clamp(
-                                    static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
-                                    0u, camera.width - 1);
-                                uint32_t py = sycl::clamp(
-                                    static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
-                                    0u, camera.height - 1);
-                                // FLIP Y
-                                const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
-                                float4 &dst = sensor.framebuffer[idx];
-                                const sycl::atomic_ref<float,
-                                            sycl::memory_order::relaxed,
-                                            sycl::memory_scope::device,
-                                            sycl::access::address_space::global_space>
-                                        r(dst.x());
-                                const sycl::atomic_ref<float,
-                                            sycl::memory_order::relaxed,
-                                            sycl::memory_scope::device,
-                                            sycl::access::address_space::global_space>
-                                        g(dst.y());
-                                const sycl::atomic_ref<float,
-                                            sycl::memory_order::relaxed,
-                                            sycl::memory_scope::device,
-                                            sycl::access::address_space::global_space>
-                                        b(dst.z());
-                                const sycl::atomic_ref<float,
-                                            sycl::memory_order::relaxed,
-                                            sycl::memory_scope::device,
-                                            sycl::access::address_space::global_space>
-                                        a(dst.w());
-
-                                // BRDF to camera direction
-                                float3 brdf = material.baseColor / M_PIf;
-                                // Attenuation (Geometry term)
-                                float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, directionToPinhole));
-                                float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
-                                float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
-
-                                float3 color = throughput * brdf * G_cam;
-
-                                r.fetch_add(color.x());
-                                g.fetch_add(color.y());
-                                b.fetch_add(color.z());
-                                a.store(1.0f);
-                            };
-                        }
-                    }
-                });
-        });
-        queue.wait();
-    }
-*/
 
     void generateNextRays(RenderPackage &pkg, uint32_t activeRayCount) {
         auto queue = pkg.queue;
@@ -510,11 +317,13 @@ namespace Pale {
                     nextState.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
                     nextState.ray.direction = newDirection;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
+                    nextState.pixelIndex = rayState.pixelIndex;
 
                     // Throughput update
                     float3 updatedThroughput = rayState.pathThroughput * (
                                                    brdf * cosTheta / sycl::fmax(cosinePDF, 1e-6f));
 
+                    /*
                     // Russian roulette
                     if (nextState.bounceIndex >= settings.russianRouletteStart) {
                         // Use luminance to avoid color bias; clamp to keep variance bounded
@@ -530,6 +339,7 @@ namespace Pale {
                         }
                         updatedThroughput = updatedThroughput * (1.0f / survivalProbability);
                     }
+                    */
                     nextState.pathThroughput = updatedThroughput;
 
                     // Enqueue survived ray
@@ -545,101 +355,209 @@ namespace Pale {
     }
 
 
-    // Generate a primary ray from pixel (uses inverse view-projection on the camera)
-    inline Ray makePrimaryRayFromPixel(const CameraGPU &camera,
-                                       std::uint32_t pixelX,
-                                       std::uint32_t pixelY,
-                                       bool flipY = true) {
-        // 1) Pixel center → NDC in [-1,1]^2
-        const float sx = (static_cast<float>(pixelX) + 0.5f) / static_cast<float>(camera.width);
-        float sy = (static_cast<float>(pixelY) + 0.5f) / static_cast<float>(camera.height);
-        if (flipY) sy = 1.0f - sy;
+    void launchDirectContributionKernel(RenderPackage &pkg, uint32_t activeRayCount
 
-        const float ndcX = 2.0f * sx - 1.0f;
-        const float ndcY = 2.0f * sy - 1.0f;
+    ) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto *raysIn = pkg.intermediates.primaryRays;
 
-        // 2) Unproject a far point on the view ray
-        const float4 clipFar = float4{ndcX, ndcY, 1.0f, 1.0f}; // OpenGL-style clip
-        const float4 worldFarH = camera.invView * (camera.invProj * clipFar);
-        const float invW = 1.0f / worldFarH.w();
-        const float3 worldFar = float3{
-            worldFarH.x() * invW,
-            worldFarH.y() * invW,
-            worldFarH.z() * invW
-        };
+        queue.submit([&](sycl::handler &cgh) {
+            uint64_t baseSeed = settings.randomSeed;
+            cgh.parallel_for<struct launchDirectShadeKernel>(
+                sycl::range<1>(activeRayCount),
+                [=](sycl::id<1> globalId) {
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
+                    rng::Xorshift128 rng128(perItemSeed);
 
-        // 3) Ray origin = camera position; dir = normalized (far - origin)
-        const float4 camPosH = camera.invView * float4{0.0f, 0.0f, 0.0f, 1.0f};
-        const float3 rayOrigin = float3{camPosH.x(), camPosH.y(), camPosH.z()};
+                    constexpr float kEps = 1e-4f;
 
-        float3 rayDirection = worldFar - rayOrigin;
-        rayDirection = normalize(rayDirection);
+                    // Choose any generator you like:
+                    const RayState rayState = raysIn[rayIndex];
+                    float3 throughput = rayState.pathThroughput;
 
-        Ray ray{};
-        ray.origin = rayOrigin;
-        ray.direction = rayDirection;
-        return ray;
+                    // Construct Ray towards camera
+                    auto &camera = sensor.camera;
+                    float3 toPinhole = camera.pos - rayState.ray.origin;
+                    float distanceToPinhole = length(toPinhole);
+                    float3 directionToPinhole = toPinhole / distanceToPinhole;
+                    // distance to camera:
+
+                    Ray contribRay{
+                        .origin = rayState.ray.origin + directionToPinhole * kEps,
+                        .direction = directionToPinhole
+                    };
+                    // Shoot contribution ray towards camera
+                    // If we have non-zero transmittance
+                    float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
+                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
+                    if (!transmittance.hit) {
+                        // perspective projection
+                        float4 clip = camera.proj * (camera.view * float4(rayState.ray.origin, 1.f));
+
+                        if (clip.w() > 0.0f) {
+                            float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
+                            if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
+                                uint32_t px = sycl::clamp(
+                                    static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
+                                    0u, camera.width - 1);
+                                uint32_t py = sycl::clamp(
+                                    static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
+                                    0u, camera.height - 1);
+
+                                // FLIP Y
+                                const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
+
+                                float4 &dst = sensor.framebuffer[idx];
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        r(dst.x());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        g(dst.y());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        b(dst.z());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        a(dst.w());
+
+                                // Attenuation (Geometry term)
+                                float surfaceCos = sycl::fabs(dot(float3{0, -1, 0}, directionToPinhole));
+                                float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
+                                float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
+                                float3 color = throughput * G_cam;
+
+                                r.fetch_add(color.x());
+                                g.fetch_add(color.y());
+                                b.fetch_add(color.z());
+                                a.store(1.0f);
+                            };
+                        }
+                    }
+                });
+        });
+
+        queue.wait();
     }
 
-    inline Ray makePrimaryRayFromPixelJittered(const CameraGPU& cam,
-                                           float px, float py, float jx, float jy, bool flipY=true) {
-        const float sx = (px + 0.5f + jx) / float(cam.width);
-        float sy       = (py + 0.5f + jy) / float(cam.height);
-        if (flipY) sy = 1.f - sy;
-        const float ndcX = 2.f*sx - 1.f, ndcY = 2.f*sy - 1.f;
-        const float4 clipFar = float4{ndcX, ndcY, 1.f, 1.f};
-        const float4 worldFarH = cam.invView * (cam.invProj * clipFar);
-        const float invW = 1.f / worldFarH.w();
-        const float3 worldFar{worldFarH.x()*invW, worldFarH.y()*invW, worldFarH.z()*invW};
-        const float4 camPosH = cam.invView * float4{0,0,0,1};
-        const float3 origin{camPosH.x(), camPosH.y(), camPosH.z()};
-        return Ray{origin, normalize(worldFar - origin)};
-    }
+    void launchContributionKernel(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
 
+        queue.submit([&](sycl::handler &cgh) {
+            uint64_t baseSeed = settings.randomSeed;
+            cgh.parallel_for<class ShadeKernelTag>(
+                sycl::range<1>(activeRayCount),
+                [=](sycl::id<1> globalId) {
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
+                    rng::Xorshift128 rng128(perItemSeed);
+                    constexpr float kEps = 1e-4f;
+                    // Choose any generator you like:
+                    const WorldHit worldHit = hitRecords[rayIndex];
+                    const RayState rayState = raysIn[rayIndex];
+                    if (!worldHit.hit) {
+                        return;
+                    }
+                    float3 throughput = rayState.pathThroughput;
+                    auto &instance = scene.instances[worldHit.instanceIndex];
+                    GPUMaterial material;
+                    switch (instance.geometryType) {
+                        case GeometryType::Mesh:
+                            material = scene.materials[instance.materialIndex];
+                            break;
+                        case GeometryType::PointCloud: {
+                            auto val = scene.points[worldHit.primitiveIndex];
+                            material.baseColor = val.color;
+                        }
+                        break;
+                    }
+                    // Construct Ray towards camera
+                    auto &camera = sensor.camera;
+                    float3 toPinhole = camera.pos - worldHit.hitPositionW;
+                    float distanceToPinhole = length(toPinhole);
+                    float3 directionToPinhole = toPinhole / distanceToPinhole;
+                    // distance to camera:
+                    Ray contribRay{
+                        .origin = worldHit.hitPositionW + directionToPinhole * kEps,
+                        .direction = directionToPinhole
+                    };
+                    // Shoot contribution ray towards camera
+                    // If we have non-zero transmittance
+                    float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
+                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
+                    if (transmittance.transmissivity > 0.0f) {
+                        // perspective projection
+                        float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
+                        if (clip.w() > 0.0f) {
+                            float2 ndc = {clip.x() / clip.w(), clip.y() / clip.w()};
+                            if (ndc.x() >= -1.f && ndc.x() <= 1.f && ndc.y() >= -1.f && ndc.y() <= 1.f) {
+                                /* 2)  raster coords (clamp to avoid the right/top fenceposts) */
+                                uint32_t px = sycl::clamp(
+                                    static_cast<uint32_t>((ndc.x() * 0.5f + 0.5f) * camera.width),
+                                    0u, camera.width - 1);
+                                uint32_t py = sycl::clamp(
+                                    static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
+                                    0u, camera.height - 1);
+                                // FLIP Y
+                                const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
+                                float4 &dst = sensor.framebuffer[idx];
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        r(dst.x());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        g(dst.y());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        b(dst.z());
+                                const sycl::atomic_ref<float,
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        a(dst.w());
 
-    inline bool intersectRayWithViewPlane(const float3 &rayOrigin,
-                                          const float3 &rayDir,
-                                          const float3 &planePoint,
-                                          const float3 &planeNormal,
-                                          float3 &outHit) {
-        const float denom = dot(rayDir, planeNormal);
-        if (sycl::fabs(denom) < 1e-6f) return false;
-        const float t = dot(planePoint - rayOrigin, planeNormal) / denom;
-        if (t <= 0.f) return false;
-        outHit = rayOrigin + rayDir * t;
-        return true;
-    }
+                                // BRDF to camera direction
+                                float3 brdf = material.baseColor / M_PIf;
+                                // Attenuation (Geometry term)
+                                float surfaceCos = sycl::fabs(dot(worldHit.geometricNormalW, directionToPinhole));
+                                float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
+                                float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
 
-    // world-space pixel width at distance `depthFromCamera` along camera.forward
-    inline float pixelWorldWidthAtDepth(const CameraGPU &cam,
-                                        std::uint32_t pixelX,
-                                        std::uint32_t pixelY,
-                                        float depthFromCamera,
-                                        bool flipY = true) {
-        // center and one-pixel-right rays
-        const Ray rCenter = makePrimaryRayFromPixel(cam, pixelX, pixelY, flipY);
-        const Ray rRight = makePrimaryRayFromPixel(cam, pixelX + 1, pixelY, flipY);
+                                float3 color = throughput * brdf * G_cam;
 
-        const float3 planePoint = cam.pos + cam.forward * depthFromCamera;
-        const float3 planeNormal = cam.forward;
-
-        float3 pCenter, pRight;
-        if (!intersectRayWithViewPlane(rCenter.origin, rCenter.direction, planePoint, planeNormal, pCenter)) return 0.f;
-        if (!intersectRayWithViewPlane(rRight.origin, rRight.direction, planePoint, planeNormal, pRight)) return 0.f;
-
-        return length(pRight - pCenter);
-    }
-
-    inline bool advancePastTransmitHits(const GPUSceneBuffers& scene, Ray& ray, WorldHit& H,
-                                    rng::Xorshift128& rng, float eps=5e-4f, int maxSteps=32) {
-        for (int i=0;i<maxSteps;++i) {
-            H = {};
-            intersectScene(ray, &H, scene, rng);
-            if (!H.hit) return false;
-            if (!H.visitedSplatField) return true; // real surface
-            ray.origin = H.hitPositionW + ray.direction * eps;      // transmit → advance
-        }
-        return false;
+                                r.fetch_add(color.x());
+                                g.fetch_add(color.y());
+                                b.fetch_add(color.z());
+                                a.store(1.0f);
+                            };
+                        }
+                    }
+                });
+        });
+        queue.wait();
     }
 
 
@@ -648,17 +566,15 @@ namespace Pale {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &sensor = pkg.sensor;
-        auto &map = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+        auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
 
         const std::uint32_t imageWidth = sensor.camera.width;
         const std::uint32_t imageHeight = sensor.camera.height;
         const std::uint32_t pixelCount = imageWidth * imageHeight;
 
         // Clear framebuffer before calling this, outside.
-        const float gatherRadius = map.gatherRadiusWorld;
+        const float gatherRadius = photonMap.gatherRadiusWorld;
         //const float normalization = 1.0f / (static_cast<float>(M_PI) * gatherRadius * gatherRadius);
-        const float normalization = 1.0f / (static_cast<float>(M_PI) * gatherRadius * gatherRadius);
-
         queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<class CameraGatherKernel>(
                 sycl::range<1>(pixelCount),
@@ -676,98 +592,12 @@ namespace Pale {
                         const float jx = rng128.nextFloat() - 0.5f;
                         const float jy = rng128.nextFloat() - 0.5f;
 
-                        Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, float(px), float(py), jx, jy, /*flipY=*/true);
-
+                        Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, float(px), float(py), jx, jy);
                         WorldHit worldHit{};
                         intersectScene(primary, &worldHit, scene, rng128);
                         if (!worldHit.hit) continue; // miss → black (or add env if desired)
 
-                        //if (!advancePastTransmitHits(scene, primary, worldHit, rng128)) continue;
-
-
-                        const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
-                        float3 diffuseAlbedoRGB;
-                        float3 radianceDirect = float3{0, 0, 0};
-
-                        if (instance.geometryType == GeometryType::Mesh) {
-                            const GPUMaterial mat = scene.materials[instance.materialIndex];
-                            diffuseAlbedoRGB = mat.baseColor;
-                            const GPUMaterial material = scene.materials[instance.materialIndex];
-                            const bool isEmissiveHit =
-                                    (material.emissive.x() > 0.f) || (material.emissive.y() > 0.f) || (
-                                        material.emissive.z() > 0.f);
-                            if (isEmissiveHit) {
-                                radianceDirect = radianceDirect + material.emissive; // Le toward camera
-                            }
-                        } else {
-                            // PointCloud splat surface
-                            const Point splat = scene.points[worldHit.primitiveIndex];
-                            diffuseAlbedoRGB = splat.color; // Lambertian splat
-                            // set emissiveRGB if you support emissive splats; otherwise keep zero
-                        }
-
-                        const float3 surfacePosition = worldHit.hitPositionW;
-
-                        // 2) Gather photons from 27 neighbor cells
-                        // --- per-hit local radius ---
-                        const float depthFromCamera = dot(surfacePosition - sensor.camera.pos, sensor.camera.forward);
-
-                        const float baseRadius = map.gatherRadiusWorld;
-                        const float pixelWidth = sycl::fmax(1e-8f,
-                                                            pixelWorldWidthAtDepth(
-                                                                sensor.camera, px, py, depthFromCamera, /*flipY=*/
-                                                                true));
-
-                        const float betaScale = 3.0f; // tune 1–3
-                        const float localRadius = sycl::clamp(betaScale * pixelWidth,
-                                                              1e-3f * baseRadius,
-                                                              4.0f * baseRadius);
-
-                        const float localRadiusSquared = localRadius * localRadius;
-
-                        const float kappa = 2.5f;
-                        const float invConeNorm =
-                                1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * M_PIf * localRadiusSquared);
-
-                        // If you emit M photons this pass, invNumEmittedPhotons = 1/M.
-                        // If you accumulate across P passes, use 1/(M*P) or track a running scale.
-                        const float invNumEmittedPhotons = 1.0f / static_cast<float>(pkg.settings.photonsPerLaunch);
-
-                        // center cell and accumulation
-                        const sycl::int3 centerCell = worldToCell(surfacePosition, map);
-                        float3 weightedSumPhotonPowerRGB = float3{0.f, 0.f, 0.f};
-
-                        // before the neighbor loops:
-                        // replace the fixed -1..1 loops with:
-                        for (int dz = -1; dz <= 1; ++dz)
-                            for (int dy = -1; dy <= 1; ++dy)
-                                for (int dx = -1; dx <= 1; ++dx) {
-                                    const sycl::int3 neighborCell = sycl::int3{
-                                        centerCell.x() + dx, centerCell.y() + dy, centerCell.z() + dz
-                                    };
-                                    const std::uint32_t cellIndex = linearCellIndex(neighborCell, map.gridResolution);
-
-                                    // walk linked list
-                                    for (std::uint32_t idx = map.cellHeadIndexArray[cellIndex];
-                                         idx != kInvalidIndex;
-                                         idx = map.photonNextIndexArray[idx]) {
-                                        const DevicePhotonSurface photon = map.photons[idx];
-                                        const float3 delta = photon.position - surfacePosition;
-
-                                        const float distanceSquared = dot(delta, delta);
-                                        if (distanceSquared > localRadiusSquared) continue;
-
-                                        const float distance = sycl::sqrt(distanceSquared);
-                                        const float weight = sycl::fmax(0.f, 1.f - distance / (kappa * localRadius));
-
-                                        // If photon.power already includes cosine at store time, drop * photon.cosineIncident here.
-                                        weightedSumPhotonPowerRGB = weightedSumPhotonPowerRGB + weight * photon.power;
-
-                                    }
-                                }
-
-                        const float3 irradianceRGB = weightedSumPhotonPowerRGB * (invConeNorm * invNumEmittedPhotons);
-                        radianceRGB = radianceRGB + radianceDirect + irradianceRGB * (diffuseAlbedoRGB * (1.0f / static_cast<float>(M_PI)));
+                        radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(worldHit, scene, photonMap, pkg.settings.photonsPerLaunch);
                     }
 
                     radianceRGB = radianceRGB * (1.0f / static_cast<float>(samplesPerPixel));

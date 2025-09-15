@@ -107,13 +107,19 @@ namespace Pale {
             gpuTransform.worldToObject = glm2sycl(glm::inverse(objectToWorldGLM));
             const uint32_t transformIndex = static_cast<uint32_t>(outBuildProducts.transforms.size());
             outBuildProducts.transforms.push_back(gpuTransform);
-            outBuildProducts.instances.push_back(InstanceRecord{
+
+            InstanceRecord record{
                 .geometryType = GeometryType::Mesh,
                 .geometryIndex = geometryIndex,
                 .materialIndex = materialIndex,
                 .transformIndex = transformIndex,
-                .name = tagComponent.tag
-            });
+            };
+            copyName(record.name, tagComponent.tag);
+
+
+            outBuildProducts.instances.push_back(record);
+
+
         }
     }
 
@@ -173,13 +179,14 @@ namespace Pale {
             const uint32_t transformIndex = static_cast<uint32_t>(outBuildProducts.transforms.size());
             outBuildProducts.transforms.push_back(gpuTransform);
 
-            outBuildProducts.instances.push_back(InstanceRecord{
+            InstanceRecord record{
                 .geometryType = GeometryType::PointCloud,
                 .geometryIndex = it->second,
-                .materialIndex = kInvalidMaterialIndex, // no shared material
+                .materialIndex = kInvalidMaterialIndex,
                 .transformIndex = transformIndex,
-                .name = tagComponent.tag
-            });
+            };
+            copyName(record.name, tagComponent.tag);
+            outBuildProducts.instances.push_back(record);
         }
     }
 
@@ -191,11 +198,6 @@ namespace Pale {
         return 0.5f * length(cross(e0, e1));
     }
 
-    inline float SceneBuild::luminance(const float3& rgb) {
-        return 0.2126f * rgb.x() +
-            0.7152f * rgb.y() +
-            0.0722f * rgb.z();
-    }
 
     void SceneBuild::collectLights(const std::shared_ptr<Pale::Scene>& scene,
                                    IAssetAccess& assetAccess,
