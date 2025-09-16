@@ -6,6 +6,7 @@ module;
 #include <sycl/sycl.hpp>
 #include <filesystem>
 #include "Kernels/SyclBridge.h"
+#include "Core/ScopedTimer.h"
 
 module Pale.Render.PathTracer;
 
@@ -134,6 +135,7 @@ namespace Pale {
     }
 
     void PathTracer::renderForward(SensorGPU &sensor) {
+        ScopedTimer forwardTimer("Forward pass total");
         m_settings.rayGenMode = RayGenMode::Emitter;
 
         RenderPackage renderPackage{
@@ -161,6 +163,8 @@ namespace Pale {
             return;
         }
         m_settings.rayGenMode = RayGenMode::Adjoint;
+
+        ScopedTimer adjointTimer("Adjoint pass total");
 
         RenderPackage renderPackage{
             .queue = m_queue,

@@ -24,6 +24,10 @@ export namespace Pale {
         }
         static void PA_TRACE(std::string_view msg){ getCoreLogger()->trace(msg);}
 
+        static bool isTraceEnabled() {
+            return s_coreLogger && s_coreLogger->should_log(spdlog::level::trace);
+        }
+
         template<typename... Args>
         static void PA_DEBUG(spdlog::format_string_t<Args...> fmt,
                                   Args&&... args) {

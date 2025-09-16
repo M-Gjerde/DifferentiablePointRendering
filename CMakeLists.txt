@@ -72,6 +72,7 @@ set(KERNEL_SOURCES
 target_sources(${PROJECT_NAME} PRIVATE
         Pale/main.cpp
         Pale/Core/DeviceSelector.cpp
+        Pale/Core/ScopedTimer.cpp
         Pale/Core/UUID.cpp
         Pale/Scene/Entity.cpp
         Pale/Scene/Scene.cpp
