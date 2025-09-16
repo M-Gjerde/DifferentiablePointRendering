@@ -107,7 +107,7 @@ namespace Pale {
         grid.photonNextIndexArray = sycl::malloc_device<std::uint32_t>(grid.photonCapacity, m_queue);
 
         std::vector<uint32_t> vec(grid.totalCellCount);
-        m_queue.memcpy(grid.cellHeadIndexArray, vec.data(), sizeof(std::uint32_t) * grid.totalCellCount);
+        m_queue.memcpy(grid.cellHeadIndexArray, vec.data(), sizeof(std::uint32_t) * grid.totalCellCount).wait();
         //m_queue.fill(grid.cellHeadIndexArray, kInvalidIndex, grid.totalCellCount).wait();
     }
 

@@ -249,7 +249,7 @@ namespace Pale {
 
                     if (rayState.bounceIndex >= 1) {
                         const float3 parameterAxis = {0.0f, 1.0f, 0.0f}; // e.g. x-translation
-                        const float dVdp_scalar = dot(gradVisibilityWrtPk, parameterAxis);
+                        const float dVdp_scalar = dot(dcost_dpk, parameterAxis);
                         const float3 gradTransportTimesRadiance = dVdp_scalar * radianceRGB;
 
                         const float3 dImageDp_rgb = rayState.pathThroughput * gradTransportTimesRadiance;
