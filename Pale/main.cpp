@@ -241,7 +241,7 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath,
     queue.memcpy(deviceResidualRgba, residualRgba.data(), sizeof(Pale::float4) * pixelCount).wait();
 
     std::vector<Pale::float3> gradient(10);
-    queue.memcpy(gradient_pk, gradient.data(), sizeof(Pale::float3) * 10);
+    queue.memcpy(gradient_pk, gradient.data(), sizeof(Pale::float3) * 10).wait();
     //queue.fill(gradient_pk, Pale::float3(0.0f), 10);
 
     adjoint.framebuffer = deviceResidualRgba;

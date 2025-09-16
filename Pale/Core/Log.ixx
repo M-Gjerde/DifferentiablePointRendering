@@ -13,7 +13,7 @@ export namespace Pale {
             // create colour console sinks for core and client
             s_coreLogger = spdlog::stdout_color_mt("PALE_CORE");
             s_coreLogger->set_pattern("[CORE] [%H:%M:%S.%e] [%^%l%$] %v");
-            s_coreLogger->set_level(spdlog::level::debug);
+            s_coreLogger->set_level(spdlog::level::trace);
 
             s_coreLogger->info("Logger initialized");
         }

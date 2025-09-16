@@ -15,12 +15,14 @@ class ScopedTimer {
 public:
     using Clock = std::chrono::steady_clock;
 
+    /*
     explicit ScopedTimer(std::string_view name) : m_enabled(ScopedTimerDetail::isTraceLoggingEnabled()) {
         if (m_enabled) {
             m_name.assign(name.data(), name.size());
             m_start = Clock::now();
         }
     }
+    */
 
     explicit ScopedTimer(std::string name) : m_enabled(ScopedTimerDetail::isTraceLoggingEnabled()) {
         if (m_enabled) {
