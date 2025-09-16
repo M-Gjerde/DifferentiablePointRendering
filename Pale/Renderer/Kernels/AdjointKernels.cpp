@@ -54,7 +54,7 @@ namespace Pale {
                         residualRgba.z()
                     };
 
-                    //initialAdjointWeight = float3(1.0f);
+                    initialAdjointWeight = float3(1.0f);
                     //if (residualRgba.x() == 0.0f) return;
                     if (residualRgba.x() == 0.f && residualRgba.y() == 0.f && residualRgba.z() == 0.f) return;
 
@@ -247,8 +247,8 @@ namespace Pale {
                     zGrad.fetch_add(dcost_dpk.z());
 
 
-                    if (rayState.bounceIndex >= 0) {
-                        const float3 parameterAxis = {1.0f, 0.0f, 0.0f}; // e.g. x-translation
+                    if (rayState.bounceIndex >= 1) {
+                        const float3 parameterAxis = {0.0f, 1.0f, 0.0f}; // e.g. x-translation
                         const float dVdp_scalar = dot(gradVisibilityWrtPk, parameterAxis);
                         const float3 gradTransportTimesRadiance = dVdp_scalar * radianceRGB;
 

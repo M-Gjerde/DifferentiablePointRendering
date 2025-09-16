@@ -17,17 +17,17 @@ namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
 #ifdef NDEBUG
         // Release
-        m_settings.photonsPerLaunch = 1e7; // 1e7
-        m_settings.maxBounces = 8;
-        m_settings.maxAdjointBounces = 8;
-        m_settings.adjointSamplesPerPixel = 16;
+        m_settings.photonsPerLaunch = 2e7; // 1e7
+        m_settings.maxBounces = 6;
+        m_settings.maxAdjointBounces = 6;
+        m_settings.adjointSamplesPerPixel = 32;
 
 #else
         // Debug
         m_settings.photonsPerLaunch = 1e6; // 1e6
         m_settings.maxBounces = 3;
-        m_settings.maxAdjointBounces = 1;
-        m_settings.adjointSamplesPerPixel = 1;
+        m_settings.maxAdjointBounces = 3;
+        m_settings.adjointSamplesPerPixel = 4;
 #endif
     }
 
@@ -60,7 +60,7 @@ namespace Pale {
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
 
-        m_queue.fill(m_intermediates.map.photons, DevicePhotonSurface(), m_rayQueueCapacity * m_settings.maxBounces);
+        //m_queue.fill(m_intermediates.map.photons, DevicePhotonSurface(), m_rayQueueCapacity * m_settings.maxBounces);
     }
 
     void PathTracer::freeIntermediates() {
@@ -106,7 +106,9 @@ namespace Pale {
         grid.cellHeadIndexArray   = sycl::malloc_device<std::uint32_t>(grid.totalCellCount, m_queue);
         grid.photonNextIndexArray = sycl::malloc_device<std::uint32_t>(grid.photonCapacity, m_queue);
 
-        m_queue.fill(grid.cellHeadIndexArray, kInvalidIndex, grid.totalCellCount).wait();
+        std::vector<uint32_t> vec(grid.totalCellCount);
+        m_queue.memcpy(grid.cellHeadIndexArray, vec.data(), sizeof(std::uint32_t) * grid.totalCellCount);
+        //m_queue.fill(grid.cellHeadIndexArray, kInvalidIndex, grid.totalCellCount).wait();
     }
 
 
@@ -121,7 +123,7 @@ namespace Pale {
         const float N     = float(m_settings.photonsPerLaunch);
 
 #ifdef NDEBUG
-        const float k     = 10.0f;
+        const float k     = 20.0f;
 #else
         const float k     = 5.0f;
 #endif

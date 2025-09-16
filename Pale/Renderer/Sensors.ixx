@@ -25,7 +25,7 @@ export namespace Pale {
 
         queue.wait();
 
-        queue.fill(dev, float4{0, 0, 0, 0}, pixelCount).wait();
+        //queue.fill(dev, float4{0, 0, 0, 0}, pixelCount).wait();
 
         out.camera = cam;
         out.framebuffer = dev;
@@ -41,8 +41,10 @@ export namespace Pale {
         const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
                                      * static_cast<size_t>(sensorGpu.height)
                                      * 4u;
-        // Allocate host-side buffer
         std::vector<float> hostSideFramebuffer(totalFloatCount);
+
+
+        // Allocate host-side buffer
         queue.wait();
         // Copy device framebuffer → host buffer
         queue.memcpy(
