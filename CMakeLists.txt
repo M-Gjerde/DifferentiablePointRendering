@@ -72,6 +72,7 @@ set(KERNEL_SOURCES
 target_sources(${PROJECT_NAME} PRIVATE
         Pale/main.cpp
         Pale/Core/DeviceSelector.cpp
+        Pale/Core/ScopedTimer.cpp
         Pale/Core/UUID.cpp
         Pale/Scene/Entity.cpp
         Pale/Scene/Scene.cpp
@@ -120,7 +121,7 @@ target_sources(${PROJECT_NAME}
 # Link your exe to the module wrapper (must come after add_executable)
 FetchContent_MakeAvailable(spdlog glm assimp yaml_cpp)
 
-find_package(OpenImageDenoise 2 REQUIRED HINTS /home/magnus/projects/oidn-2.3.3.x86_64.linux/lib/cmake/OpenImageDenoise-2.3.3)  # OIDN 2.x
+find_package(OpenImageDenoise 2 REQUIRED HINTS /home/magnus/projects/oidn-2.3.3.x86_64.linux/lib/cmake/OpenImageDenoise-2.3.3 /home/magnus-desktop/libraries/oidn/lib/cmake/OpenImageDenoise-2.3.1)  # OIDN 2.x
 target_link_libraries(${PROJECT_NAME} PRIVATE OpenImageDenoise)
 
 target_link_libraries(${PROJECT_NAME}

@@ -56,7 +56,7 @@ namespace Pale {
 
                     initialAdjointWeight = float3(1.0f);
                     //if (residualRgba.x() == 0.0f) return;
-                    if (residualRgba.x() == 0.f && residualRgba.y() == 0.f && residualRgba.z() == 0.f) return;
+                    //if (residualRgba.x() == 0.f && residualRgba.y() == 0.f && residualRgba.z() == 0.f) return;
 
                     RayState rayState{};
                     rayState.ray = cameraRay;

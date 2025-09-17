@@ -13,7 +13,7 @@ export namespace Pale {
             // create colour console sinks for core and client
             s_coreLogger = spdlog::stdout_color_mt("PALE_CORE");
             s_coreLogger->set_pattern("[CORE] [%H:%M:%S.%e] [%^%l%$] %v");
-            s_coreLogger->set_level(spdlog::level::debug);
+            s_coreLogger->set_level(spdlog::level::trace);
 
             s_coreLogger->info("Logger initialized");
         }
@@ -23,6 +23,10 @@ export namespace Pale {
             getCoreLogger()->trace(fmt, std::forward<Args>(args)...);
         }
         static void PA_TRACE(std::string_view msg){ getCoreLogger()->trace(msg);}
+
+        static bool isTraceEnabled() {
+            return s_coreLogger && s_coreLogger->should_log(spdlog::level::trace);
+        }
 
         template<typename... Args>
         static void PA_DEBUG(spdlog::format_string_t<Args...> fmt,
