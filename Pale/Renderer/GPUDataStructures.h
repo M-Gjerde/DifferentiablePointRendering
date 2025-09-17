@@ -243,6 +243,7 @@ namespace Pale {
     struct alignas(16) Ray {
         float3 origin; // 16
         float3 direction; // 32
+        float3 normal;
     };
 
     struct alignas(16) RayState {

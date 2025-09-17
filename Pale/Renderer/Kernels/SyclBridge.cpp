@@ -14,21 +14,16 @@
 namespace Pale {
     // ---- Orchestrator -------------------------------------------------------
     void submitKernel(RenderPackage &pkg) {
-        if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
-            pkg.queue
-                .fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width)
-                .wait();
-            pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+        pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
 
-            {
+        if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
+            pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
                 ScopedTimer timer("launchRayGenEmitterKernel");
                 launchRayGenEmitterKernel(pkg);
             }
 
             uint32_t activeCount = 0;
-            pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
-
-            {
+            pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait(); {
                 ScopedTimer timer("launchDirectContributionKernel");
                 launchDirectContributionKernel(pkg, activeCount);
             }
@@ -36,17 +31,13 @@ namespace Pale {
             for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
                 pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                 pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                pkg.queue.wait();
-
-                {
+                pkg.queue.wait(); {
                     ScopedTimer timer("launchIntersectKernel");
                     launchIntersectKernel(pkg, activeCount);
-                }
-                {
+                } {
                     ScopedTimer timer("launchContributionKernel");
                     launchContributionKernel(pkg, activeCount);
-                }
-                {
+                } {
                     ScopedTimer timer("generateNextRays");
                     generateNextRays(pkg, activeCount);
                 }
@@ -61,13 +52,10 @@ namespace Pale {
             }
 
             uint32_t photonMapCount = 0;
-            pkg.queue.memcpy(&photonMapCount, pkg.intermediates.map.photonCountDevicePtr, sizeof(uint32_t)).wait();
-
-            {
+            pkg.queue.memcpy(&photonMapCount, pkg.intermediates.map.photonCountDevicePtr, sizeof(uint32_t)).wait(); {
                 ScopedTimer timer("clearGridHeads");
                 clearGridHeads(pkg.queue, pkg.intermediates.map);
-            }
-            {
+            } {
                 ScopedTimer timer("buildPhotonGridLinkedLists");
                 buildPhotonGridLinkedLists(pkg.queue, pkg.intermediates.map, photonMapCount);
             }
@@ -75,18 +63,15 @@ namespace Pale {
             //launchCameraGatherKernel(pkg); // generate image from photon map
         } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
             pkg.queue
-                .fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width)
-                .wait();
+                    .fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width)
+                    .wait();
             pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
 
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
             for (int spp = 0; spp < samplesPerPixel; ++spp) {
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
-
-                {
+                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
                     ScopedTimer timer("launchRayGenAdjointKernel");
-                    launchRayGenAdjointKernel(pkg.queue, pkg.settings, pkg.sensor, pkg.adjoint, pkg.scene,
-                                              pkg.intermediates);
+                    launchRayGenAdjointKernel(pkg);
                 }
 
                 uint32_t activeCount = 0;
@@ -95,24 +80,13 @@ namespace Pale {
                 for (uint32_t bounce = 0; bounce < pkg.settings.maxAdjointBounces && activeCount > 0; ++bounce) {
                     pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                    pkg.queue.wait();
-
-                    {
+                    pkg.queue.wait(); {
                         ScopedTimer timer("launchIntersectKernel");
                         launchIntersectKernel(pkg, activeCount);
-                    }
-
-                    {
+                    } {
                         ScopedTimer timer("launchAdjointKernel");
                         launchAdjointKernel(pkg, activeCount);
-                    }
-
-                    {
-                        ScopedTimer timer("launchAdjointContributionKernel");
-                        launchAdjointContributionKernel(pkg, activeCount);
-                    }
-
-                    {
+                    } {
                         ScopedTimer timer("generateNextRays");
                         generateNextRays(pkg, activeCount);
                     }

@@ -158,7 +158,7 @@ struct PLYPointLoader : IAssetLoader<PointAsset>
             geom.tanU[i]      = glm::normalize(glm::vec3(tuFloats[i3 + 0],  tuFloats[i3 + 1],  tuFloats[i3 + 2]));
             geom.tanV[i]      = glm::normalize(glm::vec3(tvFloats[i3 + 0],  tvFloats[i3 + 1],  tvFloats[i3 + 2]));
             geom.scales[i]     = glm::vec2(scaleFloats[i2 + 0], scaleFloats[i2 + 1]);
-            geom.colors[i]    = glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]);
+            geom.colors[i]    = glm::normalize(glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]));
             geom.opacities[i] = opacityFloats[i];
         }
 

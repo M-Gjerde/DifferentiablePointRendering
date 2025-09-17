@@ -500,7 +500,7 @@ namespace Pale {
         const float3 worldFar{worldFarH.x() * invW, worldFarH.y() * invW, worldFarH.z() * invW};
         const float4 camPosH = cam.invView * float4{0, 0, 0, 1};
         const float3 origin{camPosH.x(), camPosH.y(), camPosH.z()};
-        return Ray{origin, normalize(worldFar - origin)};
+        return Ray{origin, normalize(worldFar - origin), normalize(cam.forward)};
     }
 
     // Photon map lookup helper.

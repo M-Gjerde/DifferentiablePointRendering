@@ -345,174 +345,173 @@ export namespace Pale::Utils {
     }
 
 
-inline bool saveGradientSignPNG(
-    const std::filesystem::path &filePath,
-    const std::vector<float> &inputRGBA,
-    std::uint32_t imageWidth,
-    std::uint32_t imageHeight,
-    float absQuantile = 0.99f
+    inline bool saveGradientSignPNG(
+        const std::filesystem::path &filePath,
+        const std::vector<float> &inputRGBA,
+        std::uint32_t imageWidth,
+        std::uint32_t imageHeight,
+        float absQuantile = 0.99f
 
-) {
-    if (!std::filesystem::exists(filePath.parent_path())) {
-        std::filesystem::create_directories(filePath.parent_path());
-    }
-    if (imageWidth == 0 || imageHeight == 0) return false;
-
-    const std::size_t pixelCount   = std::size_t(imageWidth) * imageHeight;
-    const std::size_t expectedSize = pixelCount * 4u;
-    if (inputRGBA.size() < expectedSize) return false;
-
-    // Collect finite absolute scalar values for robust scaling
-    std::vector<float> finiteAbsScalars;
-    finiteAbsScalars.reserve(pixelCount);
-
-    for (std::size_t i = 0; i < pixelCount; ++i) {
-        const float r = inputRGBA[i * 4 + 0];
-        const float g = inputRGBA[i * 4 + 1];
-        const float b = inputRGBA[i * 4 + 2];
-
-        float scalarValue = (r + g + b) / 3.0f;
-        if (std::isfinite(scalarValue)) {
-            finiteAbsScalars.push_back(std::fabs(scalarValue));
+    ) {
+        if (!std::filesystem::exists(filePath.parent_path())) {
+            std::filesystem::create_directories(filePath.parent_path());
         }
-    }
+        if (imageWidth == 0 || imageHeight == 0) return false;
 
-    // Determine symmetric scale
-    float scaleAbs = 1.0f;
-    if (!finiteAbsScalars.empty()) {
-        absQuantile = std::clamp(absQuantile, 0.0f, 1.0f);
-        if (absQuantile < 1.0f) {
-            const std::size_t k = static_cast<std::size_t>(
-                std::floor(absQuantile * (finiteAbsScalars.size() - 1))
-            );
-            std::nth_element(finiteAbsScalars.begin(),
-                             finiteAbsScalars.begin() + k,
-                             finiteAbsScalars.end());
-            scaleAbs = finiteAbsScalars[k];
-        } else {
-            scaleAbs = *std::max_element(finiteAbsScalars.begin(), finiteAbsScalars.end());
+        const std::size_t pixelCount = std::size_t(imageWidth) * imageHeight;
+        const std::size_t expectedSize = pixelCount * 4u;
+        if (inputRGBA.size() < expectedSize) return false;
+
+        // Collect finite absolute scalar values for robust scaling
+        std::vector<float> finiteAbsScalars;
+        finiteAbsScalars.reserve(pixelCount);
+
+        float numAdjointPasses = 32.0f;
+        for (std::size_t i = 0; i < pixelCount; ++i) {
+            const float r = inputRGBA[i * 4 + 0] / numAdjointPasses; // Divide by m_settings.adjointSamplesPerPixel
+            const float g = inputRGBA[i * 4 + 1] / numAdjointPasses; // Divide by m_settings.adjointSamplesPerPixel
+            const float b = inputRGBA[i * 4 + 2] / numAdjointPasses; // Divide by m_settings.adjointSamplesPerPixel
+
+            float scalarValue = (r + g + b) / 3.0f;
+            if (std::isfinite(scalarValue)) {
+                finiteAbsScalars.push_back(std::fabs(scalarValue));
+            }
         }
-        if (!(scaleAbs > 0.0f) || !std::isfinite(scaleAbs)) scaleAbs = 1.0f;
-    }
 
-    const float invScale = 1.0f / scaleAbs;
+        // Determine symmetric scale
+        float scaleAbs = 1.0f;
+        if (!finiteAbsScalars.empty()) {
+            absQuantile = std::clamp(absQuantile, 0.0f, 1.0f);
+            if (absQuantile < 1.0f) {
+                const std::size_t k = static_cast<std::size_t>(
+                    std::floor(absQuantile * (finiteAbsScalars.size() - 1))
+                );
+                std::nth_element(finiteAbsScalars.begin(),
+                                 finiteAbsScalars.begin() + k,
+                                 finiteAbsScalars.end());
+                scaleAbs = finiteAbsScalars[k];
+            } else {
+                scaleAbs = *std::max_element(finiteAbsScalars.begin(), finiteAbsScalars.end());
+            }
+            if (!(scaleAbs > 0.0f) || !std::isfinite(scaleAbs)) scaleAbs = 1.0f;
+        }
 
-    auto toByte = [](float v) -> std::uint8_t {
-        v = std::clamp(v, 0.0f, 1.0f);
-        return static_cast<std::uint8_t>(v * 255.0f + 0.5f);
-    };
+        const float invScale = 1.0f / scaleAbs;
 
-    std::vector<std::uint8_t> rgb8(pixelCount * 3u);
-    for (std::size_t i = 0; i < pixelCount; ++i) {
-        const float r = inputRGBA[i * 4 + 0];
-        const float g = inputRGBA[i * 4 + 1];
-        const float b = inputRGBA[i * 4 + 2];
+        auto toByte = [](float v) -> std::uint8_t {
+            v = std::clamp(v, 0.0f, 1.0f);
+            return static_cast<std::uint8_t>(v * 255.0f + 0.5f);
+        };
 
-        float scalarValue = (r + g + b) / 3.0f;
-        if (!std::isfinite(scalarValue)) scalarValue = 0.0f;
+        std::vector<std::uint8_t> rgb8(pixelCount * 3u);
+        for (std::size_t i = 0; i < pixelCount; ++i) {
+            const float r = inputRGBA[i * 4 + 0];
+            const float g = inputRGBA[i * 4 + 1];
+            const float b = inputRGBA[i * 4 + 2];
 
-        float normalized = scalarValue * invScale;
-        normalized = std::clamp(normalized, -1.0f, 1.0f);
+            float scalarValue = (r + g + b) / 3.0f;
+            if (!std::isfinite(scalarValue)) scalarValue = 0.0f;
 
-        const float redMapped   = normalized > 0.0f ?  normalized : 0.0f;
-        const float blueMapped  = normalized < 0.0f ? -normalized : 0.0f;
-        const float greenMapped = 0.0f;
+            float normalized = scalarValue * invScale;
+            normalized = std::clamp(normalized, -1.0f, 1.0f);
 
-        rgb8[i * 3 + 0] = toByte(redMapped);
-        rgb8[i * 3 + 1] = toByte(greenMapped);
-        rgb8[i * 3 + 2] = toByte(blueMapped);
-    }
+            const float redMapped = normalized > 0.0f ? normalized : 0.0f;
+            const float blueMapped = normalized < 0.0f ? -normalized : 0.0f;
+            const float greenMapped = 0.0f;
 
-    return stbi_write_png(filePath.c_str(),
-                          static_cast<int>(imageWidth),
-                          static_cast<int>(imageHeight),
-                          3, rgb8.data(),
-                          static_cast<int>(imageWidth * 3)) != 0;
+            rgb8[i * 3 + 0] = toByte(redMapped);
+            rgb8[i * 3 + 1] = toByte(greenMapped);
+            rgb8[i * 3 + 2] = toByte(blueMapped);
+        }
+
+        return stbi_write_png(filePath.c_str(),
+                              static_cast<int>(imageWidth),
+                              static_cast<int>(imageHeight),
+                              3, rgb8.data(),
+                              static_cast<int>(imageWidth * 3)) != 0;
     }
 
     inline bool saveGradientSignRGB(
-    const std::filesystem::path &filePath,
-    const std::vector<float> &inputRGB,   // 3 floats per pixel
-    std::uint32_t imageWidth,
-    std::uint32_t imageHeight,
-    float absQuantile = 0.99f      // robust scale from abs-quantile in (0,1]; 1.0 = max-abs
-) {
-    if (!std::filesystem::exists(filePath.parent_path())) {
-        std::filesystem::create_directories(filePath.parent_path());
-    }
-    if (imageWidth == 0 || imageHeight == 0) return false;
-
-    const std::size_t pixelCount   = std::size_t(imageWidth) * imageHeight;
-    const std::size_t expectedSize = pixelCount * 3u;
-    if (inputRGB.size() < expectedSize) return false;
-
-    // Collect finite absolute scalar values for robust scaling
-    std::vector<float> finiteAbsScalars;
-    finiteAbsScalars.reserve(pixelCount);
-
-    for (std::size_t i = 0; i < pixelCount; ++i) {
-        const float r = inputRGB[i * 3 + 0];
-        const float g = inputRGB[i * 3 + 1];
-        const float b = inputRGB[i * 3 + 2];
-
-        float scalarValue = (r + g + b) / 3.0f;
-        if (std::isfinite(scalarValue)) {
-            finiteAbsScalars.push_back(std::fabs(scalarValue));
+        const std::filesystem::path &filePath,
+        const std::vector<float> &inputRGB, // 3 floats per pixel
+        std::uint32_t imageWidth,
+        std::uint32_t imageHeight,
+        float absQuantile = 0.99f // robust scale from abs-quantile in (0,1]; 1.0 = max-abs
+    ) {
+        if (!std::filesystem::exists(filePath.parent_path())) {
+            std::filesystem::create_directories(filePath.parent_path());
         }
-    }
+        if (imageWidth == 0 || imageHeight == 0) return false;
 
-    // Determine symmetric scale
-    float scaleAbs = 1.0f;
-    if (!finiteAbsScalars.empty()) {
-        absQuantile = std::clamp(absQuantile, 0.0f, 1.0f);
-        if (absQuantile < 1.0f) {
-            const std::size_t k = static_cast<std::size_t>(
-                std::floor(absQuantile * (finiteAbsScalars.size() - 1))
-            );
-            std::nth_element(finiteAbsScalars.begin(),
-                             finiteAbsScalars.begin() + k,
-                             finiteAbsScalars.end());
-            scaleAbs = finiteAbsScalars[k];
-        } else {
-            scaleAbs = *std::max_element(finiteAbsScalars.begin(), finiteAbsScalars.end());
+        const std::size_t pixelCount = std::size_t(imageWidth) * imageHeight;
+        const std::size_t expectedSize = pixelCount * 3u;
+        if (inputRGB.size() < expectedSize) return false;
+
+        // Collect finite absolute scalar values for robust scaling
+        std::vector<float> finiteAbsScalars;
+        finiteAbsScalars.reserve(pixelCount);
+
+        for (std::size_t i = 0; i < pixelCount; ++i) {
+            const float r = inputRGB[i * 3 + 0];
+            const float g = inputRGB[i * 3 + 1];
+            const float b = inputRGB[i * 3 + 2];
+
+            float scalarValue = (r + g + b) / 3.0f;
+            if (std::isfinite(scalarValue)) {
+                finiteAbsScalars.push_back(std::fabs(scalarValue));
+            }
         }
-        if (!(scaleAbs > 0.0f) || !std::isfinite(scaleAbs)) scaleAbs = 1.0f;
+
+        // Determine symmetric scale
+        float scaleAbs = 1.0f;
+        if (!finiteAbsScalars.empty()) {
+            absQuantile = std::clamp(absQuantile, 0.0f, 1.0f);
+            if (absQuantile < 1.0f) {
+                const std::size_t k = static_cast<std::size_t>(
+                    std::floor(absQuantile * (finiteAbsScalars.size() - 1))
+                );
+                std::nth_element(finiteAbsScalars.begin(),
+                                 finiteAbsScalars.begin() + k,
+                                 finiteAbsScalars.end());
+                scaleAbs = finiteAbsScalars[k];
+            } else {
+                scaleAbs = *std::max_element(finiteAbsScalars.begin(), finiteAbsScalars.end());
+            }
+            if (!(scaleAbs > 0.0f) || !std::isfinite(scaleAbs)) scaleAbs = 1.0f;
+        }
+
+        const float invScale = 1.0f / scaleAbs;
+
+        auto toByte = [](float v) -> std::uint8_t {
+            v = std::clamp(v, 0.0f, 1.0f);
+            return static_cast<std::uint8_t>(v * 255.0f + 0.5f);
+        };
+
+        std::vector<std::uint8_t> rgb8(pixelCount * 3u);
+        for (std::size_t i = 0; i < pixelCount; ++i) {
+            const float r = inputRGB[i * 3 + 0];
+            const float g = inputRGB[i * 3 + 1];
+            const float b = inputRGB[i * 3 + 2];
+
+            float scalarValue = (r + g + b) / 3.0f;
+            if (!std::isfinite(scalarValue)) scalarValue = 0.0f;
+
+            float normalized = scalarValue * invScale;
+            normalized = std::clamp(normalized, -1.0f, 1.0f);
+
+            const float redMapped = normalized > 0.0f ? normalized : 0.0f;
+            const float blueMapped = normalized < 0.0f ? -normalized : 0.0f;
+            const float greenMapped = 0.0f;
+
+            rgb8[i * 3 + 0] = toByte(redMapped);
+            rgb8[i * 3 + 1] = toByte(greenMapped);
+            rgb8[i * 3 + 2] = toByte(blueMapped);
+        }
+
+        return stbi_write_png(filePath.c_str(),
+                              static_cast<int>(imageWidth),
+                              static_cast<int>(imageHeight),
+                              3, rgb8.data(),
+                              static_cast<int>(imageWidth * 3)) != 0;
     }
-
-    const float invScale = 1.0f / scaleAbs;
-
-    auto toByte = [](float v) -> std::uint8_t {
-        v = std::clamp(v, 0.0f, 1.0f);
-        return static_cast<std::uint8_t>(v * 255.0f + 0.5f);
-    };
-
-    std::vector<std::uint8_t> rgb8(pixelCount * 3u);
-    for (std::size_t i = 0; i < pixelCount; ++i) {
-        const float r = inputRGB[i * 3 + 0];
-        const float g = inputRGB[i * 3 + 1];
-        const float b = inputRGB[i * 3 + 2];
-
-        float scalarValue = (r + g + b) / 3.0f;
-        if (!std::isfinite(scalarValue)) scalarValue = 0.0f;
-
-        float normalized = scalarValue * invScale;
-        normalized = std::clamp(normalized, -1.0f, 1.0f);
-
-        const float redMapped   = normalized > 0.0f ?  normalized : 0.0f;
-        const float blueMapped  = normalized < 0.0f ? -normalized : 0.0f;
-        const float greenMapped = 0.0f;
-
-        rgb8[i * 3 + 0] = toByte(redMapped);
-        rgb8[i * 3 + 1] = toByte(greenMapped);
-        rgb8[i * 3 + 2] = toByte(blueMapped);
-    }
-
-    return stbi_write_png(filePath.c_str(),
-                          static_cast<int>(imageWidth),
-                          static_cast<int>(imageHeight),
-                          3, rgb8.data(),
-                          static_cast<int>(imageWidth * 3)) != 0;
-}
-
-
 }

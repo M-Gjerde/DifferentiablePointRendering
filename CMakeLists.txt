@@ -146,11 +146,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
 
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(ACPP_TARGETS "omp.library-only" CACHE STRING "" FORCE)
-    target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
-    target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp=libomp) # or -fno-openmp
-endif()
+#set(ACPP_TARGETS "omp.library-only" CACHE STRING "" FORCE)
+#target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
+target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp=libomp) # or -fno-openmp
 
 
 add_sycl_to_target(TARGET ${PROJECT_NAME})

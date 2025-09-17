@@ -27,10 +27,10 @@
 
     <!-- BSDFs -->
     <bsdf type="diffuse" id="gray">
-        <rgb name="reflectance" value="0.85,0.85,0.85"/>
+        <rgb name="reflectance" value="0.4,0.4,0.4"/>
     </bsdf>
     <bsdf type="diffuse" id="white">
-        <rgb name="reflectance" value="0.3,0.3,0.3"/>
+        <rgb name="reflectance" value="1.0, 1.0, 1.0"/>
     </bsdf>
     <bsdf type="diffuse" id="green">
         <rgb name="reflectance" value="0.105421,0.37798,0.076425"/>
@@ -44,7 +44,7 @@
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
             <rotate x="1" y="0" z="0" angle="90"/>
-            <scale x="0.3" y="0.3" z="0.3"/>
+            <scale x="0.01" y="0.01" z="0.01"/>
             <translate x="0" y="1.98" z="0"/>
         </transform>
         <bsdf type="diffuse">
@@ -53,7 +53,7 @@
         <emitter type="area">
             <!--  <rgb name="radiance" value="600.387,400.9873,200.75357"/> -->
             <!--  <rgb name="radiance" value="18.387,13.9873,6.75357"/>-->
-            <rgb name="radiance" value="1, 0.65, 0.3"/>
+            <rgb name="radiance" value="1, 1.0, 1.0"/>
         </emitter>
         <ref id="red"/>
     </shape>
@@ -66,7 +66,7 @@
             <rotate x="1" y="0" z="0" angle="-90"/>
             <translate x="0" y="0" z="0"/>
         </transform>
-        <ref id="white"/>
+        <ref id="gray"/>
     </shape>
 
 
@@ -76,7 +76,7 @@
             <rotate x="1" y="0" z="0" angle="90"/>
             <translate x="0" y="2" z="0"/>
         </transform>
-        <ref id="white"/>
+        <ref id="gray"/>
     </shape>
 
 
@@ -85,7 +85,7 @@
         <transform name="to_world">
             <translate x="0" y="1" z="-1"/>
         </transform>
-        <ref id="white"/>
+        <ref id="gray"/>
     </shape>
 
     <shape type="obj" id="left_red">
@@ -94,7 +94,7 @@
             <rotate x="0" y="1" z="0" angle="90"/>
             <translate x="-1" y="1" z="0"/>
         </transform>
-        <ref id="red"/>
+        <ref id="gray"/>
     </shape>
 
     <shape type="obj" id="right_green">
@@ -103,7 +103,7 @@
             <rotate x="0" y="1" z="0" angle="-90"/>
             <translate x="1" y="1" z="0"/>
         </transform>
-        <ref id="green"/>
+        <ref id="gray"/>
     </shape>
 
 

@@ -18,16 +18,22 @@ namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
 #ifdef NDEBUG
         // Release
-        m_settings.photonsPerLaunch = 2e7; // 1e7
-        m_settings.maxBounces = 6;
-        m_settings.maxAdjointBounces = 6;
-        m_settings.adjointSamplesPerPixel = 32;
+        m_settings.photonsPerLaunch = 1e7; // 1e7
+        m_settings.maxBounces = 8;
+        m_settings.maxAdjointBounces = 8;
+        m_settings.adjointSamplesPerPixel = 8;
 
 #else
-        // Debug
+        // omp
+        m_settings.photonsPerLaunch = 1e6; // 1e6
+        m_settings.maxBounces = 4;
+        m_settings.maxAdjointBounces = 4;
+        m_settings.adjointSamplesPerPixel = 2;
+
+        // cuda
         m_settings.photonsPerLaunch = 1e7; // 1e6
         m_settings.maxBounces = 6;
-        m_settings.maxAdjointBounces = 6;
+        m_settings.maxAdjointBounces = 8;
         m_settings.adjointSamplesPerPixel = 32;
 #endif
     }
@@ -136,7 +142,7 @@ namespace Pale {
     }
 
     void PathTracer::renderForward(SensorGPU &sensor) {
-        ScopedTimer forwardTimer("Forward pass total");
+        ScopedTimer forwardTimer("Forward pass total", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
         RenderPackage renderPackage{
@@ -165,7 +171,7 @@ namespace Pale {
         }
         m_settings.rayGenMode = RayGenMode::Adjoint;
 
-        ScopedTimer adjointTimer("Adjoint pass total");
+        ScopedTimer adjointTimer("Adjoint pass total", spdlog::level::debug);
 
         RenderPackage renderPackage{
             .queue = m_queue,

@@ -4,11 +4,12 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include "spdlog/spdlog.h"
 
 namespace Pale {
 namespace ScopedTimerDetail {
-    [[nodiscard]] bool isTraceLoggingEnabled() noexcept;
-    void logTraceDuration(std::string_view scopeName, double durationMs);
+    [[nodiscard]] bool isLogLevelEnabled( int logLevel) noexcept;
+    void logTraceDuration(std::string_view scopeName, double durationMs, spdlog::level::level_enum logLevel);
 }
 
 class ScopedTimer {
@@ -23,12 +24,12 @@ public:
         }
     }
     */
-
-    explicit ScopedTimer(std::string name) : m_enabled(ScopedTimerDetail::isTraceLoggingEnabled()) {
+    explicit ScopedTimer(std::string name, spdlog::level::level_enum logLevel = spdlog::level::trace) : m_enabled(ScopedTimerDetail::isLogLevelEnabled(logLevel)), m_logLevel(logLevel) {
         if (m_enabled) {
             m_name = std::move(name);
             m_start = Clock::now();
         }
+
     }
 
     ScopedTimer(const ScopedTimer &) = delete;
@@ -44,13 +45,14 @@ public:
 
         const auto end = Clock::now();
         const double durationMs = std::chrono::duration<double, std::milli>(end - m_start).count();
-        ScopedTimerDetail::logTraceDuration(m_name, durationMs);
+        ScopedTimerDetail::logTraceDuration(m_name, durationMs, m_logLevel);
     }
 
 private:
     bool m_enabled{false};
     std::string m_name{};
     Clock::time_point m_start{};
+    spdlog::level::level_enum m_logLevel{spdlog::level::trace};
 };
 
 } // namespace Pale

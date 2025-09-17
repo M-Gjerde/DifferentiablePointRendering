@@ -96,12 +96,13 @@ namespace Pale {
                     // 4) initial throughput
                     const sycl::float3 Le = light.emissionRgb; // radiance scale
                     const float invPdf = 1.0f / pdfTotal;
-                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf);
+                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / photonCount;
 
                     // write ray
                     RayState ray{};
                     ray.ray.origin = sampledWorldPoint;
                     ray.ray.direction = sampledDirection;
+                    ray.ray.normal = lightNormal;
                     ray.pathThroughput = initialThroughput;
                     ray.bounceIndex = 0u;
 
@@ -178,8 +179,13 @@ namespace Pale {
                 case GeometryType::PointCloud: {
                     auto &surfel = m_scene.points[worldHit.primitiveIndex];
                     // SURFACE: set geometric normal and record hit
-                    const float3 nW = normalize(cross(surfel.tanU, surfel.tanV));
+                    float3 nW = normalize(cross(surfel.tanU, surfel.tanV));
+                    if (dot(nW, -rayState.ray.direction) < 0.0f)
+                        nW = -nW;
                     worldHit.geometricNormalW = nW;
+
+
+
                     m_intermediates.hitRecords[rayIndex] = worldHit;
 
                     if (m_settings.rayGenMode == RayGenMode::Emitter) {
@@ -227,7 +233,6 @@ namespace Pale {
     }
 
 
-
     void clearGridHeads(sycl::queue &q, DeviceSurfacePhotonMapGrid &g) {
         q.fill(g.cellHeadIndexArray, kInvalidIndex, g.totalCellCount).wait();
     }
@@ -250,7 +255,6 @@ namespace Pale {
             });
         }).wait();
     }
-
 
 
     void generateNextRays(RenderPackage &pkg, uint32_t activeRayCount) {
@@ -288,11 +292,9 @@ namespace Pale {
                         case GeometryType::Mesh:
                             material = scene.materials[instance.materialIndex];
                             break;
-                        case GeometryType::PointCloud: {
-                            auto val = scene.points[worldHit.primitiveIndex];
-                            material.baseColor = val.color;
-                        }
-                        break;
+                        case GeometryType::PointCloud:
+                            material.baseColor = scene.points[worldHit.primitiveIndex].color;
+                            break;
                     }
                     float cosinePDF = 0.0f;
                     float3 newDirection;
@@ -316,8 +318,10 @@ namespace Pale {
                     RayState nextState{};
                     nextState.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
                     nextState.ray.direction = newDirection;
+                    nextState.ray.normal = worldHit.geometricNormalW;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;
+
 
                     // Throughput update
                     float3 updatedThroughput = rayState.pathThroughput * (
@@ -437,7 +441,7 @@ namespace Pale {
                                 float surfaceCos = sycl::fabs(dot(float3{0, -1, 0}, directionToPinhole));
                                 float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
                                 float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
-                                float3 color = throughput * G_cam;
+                                float3 color = throughput * G_cam ;
 
                                 r.fetch_add(color.x());
                                 g.fetch_add(color.y());
@@ -597,7 +601,8 @@ namespace Pale {
                         intersectScene(primary, &worldHit, scene, rng128);
                         if (!worldHit.hit) continue; // miss → black (or add env if desired)
 
-                        radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(worldHit, scene, photonMap, pkg.settings.photonsPerLaunch);
+                        radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(
+                                          worldHit, scene, photonMap, pkg.settings.photonsPerLaunch);
                     }
 
                     radianceRGB = radianceRGB * (1.0f / static_cast<float>(samplesPerPixel));

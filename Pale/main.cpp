@@ -309,20 +309,21 @@ int main(int argc, char **argv) {
     tracer.setScene(gpu, buildProducts);
 
     // Render
+    Pale::Log::PA_INFO("Forward Render Pass...");
     tracer.renderForward(sensor); // films is span/array
 
     {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
         const uint32_t W = sensor.width, H = sensor.height;
-        float gamma = 3.0f;
-        float exposure = 6.5f;
+        float gamma = 2.2f;
+        float exposure = 20.0f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out.png";
         if (Pale::Utils::savePNGWithToneMap(
             filePath, rgba, W, H,
             exposure,
             gamma,
-            true)) {
+            false)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
 
@@ -338,6 +339,8 @@ int main(int argc, char **argv) {
     // 4) (Optional) load or compute residuals on host, upload pointer
     auto adjoint = calculateAdjointImage("Output/target/out.pfm", deviceSelector.getQueue(), sensor, true);
     Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+
+    Pale::Log::PA_INFO("Adjoint Render Pass...");
     tracer.renderBackward(adjointSensor, adjoint); // PRNG replay adjoint
 
     std::vector<Pale::float3> gradients(10);
