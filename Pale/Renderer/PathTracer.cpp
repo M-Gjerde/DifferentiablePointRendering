@@ -24,10 +24,10 @@ namespace Pale {
 
 #else
         // Debug
-        m_settings.photonsPerLaunch = 1e6; // 1e6
-        m_settings.maxBounces = 3;
-        m_settings.maxAdjointBounces = 3;
-        m_settings.adjointSamplesPerPixel = 4;
+        m_settings.photonsPerLaunch = 1e7; // 1e6
+        m_settings.maxBounces = 6;
+        m_settings.maxAdjointBounces = 6;
+        m_settings.adjointSamplesPerPixel = 32;
 #endif
     }
 
@@ -107,8 +107,9 @@ namespace Pale {
         grid.photonNextIndexArray = sycl::malloc_device<std::uint32_t>(grid.photonCapacity, m_queue);
 
         std::vector<uint32_t> vec(grid.totalCellCount);
-        m_queue.memcpy(grid.cellHeadIndexArray, vec.data(), sizeof(std::uint32_t) * grid.totalCellCount);
+        m_queue.memcpy(grid.cellHeadIndexArray, vec.data(), sizeof(std::uint32_t) * grid.totalCellCount).wait();
         //m_queue.fill(grid.cellHeadIndexArray, kInvalidIndex, grid.totalCellCount).wait();
+        Log::PA_INFO("Photon grid radius: {}", gatherRadiusWorld);
     }
 
 
@@ -125,7 +126,7 @@ namespace Pale {
 #ifdef NDEBUG
         const float k     = 20.0f;
 #else
-        const float k     = 5.0f;
+        const float k     = 20.0f;
 #endif
 
         const float r0    = sycl::sqrt((k * Adiff) / (N * float(M_PI)));
