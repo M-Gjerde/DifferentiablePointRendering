@@ -9,9 +9,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 
+
+#set(ACPP_TARGETS "omp.library-only" CACHE STRING "" FORCE)
+
 find_package(AdaptiveCpp REQUIRED)
 
 add_executable(${PROJECT_NAME})
+#target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
+target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp=libomp) # or -fno-openmp
+
+
 
 # Adding Vendor Libraries
 add_subdirectory(vendor/pugixml)
@@ -144,11 +151,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 # STB_Image
 include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
-
-
-#set(ACPP_TARGETS "omp.library-only" CACHE STRING "" FORCE)
-#target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
-target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp=libomp) # or -fno-openmp
 
 
 add_sycl_to_target(TARGET ${PROJECT_NAME})

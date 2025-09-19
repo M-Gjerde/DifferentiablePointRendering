@@ -9,19 +9,19 @@
 
 
 namespace Pale {
-    void launchRayGenAdjointKernel(RenderPackage &pkg) {
-        auto &queue = pkg.queue;
-        auto &sensor = pkg.sensor;
-        auto &settings = pkg.settings;
-        auto &adjoint = pkg.adjoint;
+    void launchRayGenAdjointKernel(RenderPackage& pkg) {
+        auto& queue = pkg.queue;
+        auto& sensor = pkg.sensor;
+        auto& settings = pkg.settings;
+        auto& adjoint = pkg.adjoint;
 
-        auto &intermediates = pkg.intermediates;
+        auto& intermediates = pkg.intermediates;
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
-        const uint32_t rayCount = imageWidth * imageHeight;
-
-        queue.submit([&](sycl::handler &commandGroupHandler) {
+        uint32_t rayCount = imageWidth * imageHeight;
+        //rayCount = 4;
+        queue.submit([&](sycl::handler& commandGroupHandler) {
             const uint64_t baseSeed = settings.randomSeed;
             const float invWidth = 1.f / static_cast<float>(imageWidth);
             const float invHeight = 1.f / static_cast<float>(imageHeight);
@@ -35,18 +35,23 @@ namespace Pale {
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
 
-                    const uint32_t px = pixelLinearIndex % imageWidth;
-                    const uint32_t py = sensor.height - 1 - pixelLinearIndex / imageWidth;
+                    uint32_t px = pixelLinearIndex % imageWidth;
+                    uint32_t py = pixelLinearIndex / imageWidth;
 
                     // RNG per pixel
                     const CameraGPU adjointCamera = sensor.camera;
                     const float jx = rng128.nextFloat() - 0.5f;
                     const float jy = rng128.nextFloat() - 0.5f;
 
-                    Ray cameraRay = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
-                                                                    static_cast<float>(py), jx, jy);
+                    Ray cameraRay = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px), static_cast<float>(py), jx, jy);
 
+                    //px = sensor.width / 2;
+                    //py = sensor.height / 3;
+                    //cameraRay = makePrimaryRayFromPixel(sensor.camera, (px), (py));
                     // Initial adjoint throughput = residual (linear RGB). Alpha ignored.
+                    //cameraRay.origin = float3(0, 1, 4);
+                    //cameraRay.direction = normalize(float3(0.05, -0.18, -1.0));
+
                     const uint32_t pixelIndex = pixelLinearIndex;
                     const float4 residualRgba = adjoint.framebuffer[pixelIndex]; // linear RGB adjoint source
 
@@ -67,32 +72,35 @@ namespace Pale {
                     rayState.pixelIndex = pixelIndex;
 
                     auto outputCounter = sycl::atomic_ref<uint32_t,
-                        sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>(*intermediates.countPrimary);
+                                                          sycl::memory_order::relaxed,
+                                                          sycl::memory_scope::device,
+                                                          sycl::access::address_space::global_space>(
+                        *intermediates.countPrimary);
+
 
                     const uint32_t outputSlot = outputCounter.fetch_add(1u);
                     intermediates.primaryRays[outputSlot] = rayState;
+
                 });
         });
         queue.wait();
     }
 
 
-    void launchAdjointKernel(RenderPackage &pkg, uint32_t activeRayCount) {
-        auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
-        auto &sensor = pkg.sensor;
-        auto &settings = pkg.settings;
-        auto &adjoint = pkg.adjoint;
+    void launchAdjointKernel(RenderPackage& pkg, uint32_t activeRayCount) {
+        auto& queue = pkg.queue;
+        auto& scene = pkg.scene;
+        auto& sensor = pkg.sensor;
+        auto& settings = pkg.settings;
+        auto& adjoint = pkg.adjoint;
 
-        auto *hitRecords = pkg.intermediates.hitRecords;
-        auto *raysIn = pkg.intermediates.primaryRays;
-        auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+        auto* hitRecords = pkg.intermediates.hitRecords;
+        auto* raysIn = pkg.intermediates.primaryRays;
+        auto& photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
 
         uint32_t imageWidth = sensor.width;
 
-        queue.submit([&](sycl::handler &cgh) {
+        queue.submit([&](sycl::handler& cgh) {
             uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<struct AjointShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
@@ -111,192 +119,177 @@ namespace Pale {
                         return;
                     }
 
-                    auto &instance = scene.instances[worldHit.instanceIndex];
+                    auto& instance = scene.instances[worldHit.instanceIndex];
                     GPUMaterial material;
                     switch (instance.geometryType) {
-                        case GeometryType::Mesh:
-                            material = scene.materials[instance.materialIndex]  ;
-                            break;
-                        case GeometryType::PointCloud:
-                            material.baseColor = scene.points[worldHit.primitiveIndex].color;
-                            break;
+                    case GeometryType::Mesh:
+                        material = scene.materials[instance.materialIndex];
+                        break;
+                    case GeometryType::PointCloud:
+                        material.baseColor = scene.points[worldHit.primitiveIndex].color;
+                        break;
                     }
 
                     float visibility = worldHit.transmissivity;
 
-                    // Blue type path
-                    float3 gradGeometricWrtPk = float3{0.0f};
-                    const float3 delta = ray.origin - worldHit.hitPositionW;
-                    const float  distanceR = length(delta);
-                    const float3 unitDirection = delta / distanceR;           // h = (y-x)/r
+                    auto surfel = scene.points[0];
+                    const float3 segmentDirection = worldHit.hitPositionW - ray.origin;
+                    float3 tangentU = normalize(surfel.tanU);
+                    float3 tangentV = normalize(surfel.tanV);
+                    float3 surfelNormal = normalize(cross(tangentU, tangentV)); // no flip
 
-                    const float3 normalNx = worldHit.geometricNormalW;                       // N_x
-                    const float3 normalNy = ray.normal;        // N_y
 
-                    const float a = dot(normalNx, unitDirection); // a = n_x · u
-                    const float b = dot(normalNy, unitDirection); // b = n_y · u
-
-                    // Geometric term: G(x,y) = -(a*b)/r^2
-                    const float invR2 = 1.0f / (distanceR * distanceR);
-                    float geometric = -(a * b) * invR2;
-
+                    float3 transportGradient(0.0f);
                     // Red type path
-                    float3 gradVisibilityWrtPk(0.0f);
                     if (instance.geometryType == GeometryType::Mesh) {
-                        if (worldHit.transmissivity >= 0.9999)
-                            return;
-                        // Calculate intersection derivative:
-                        // Visibility gradient
-                        auto &surfel = scene.points[0];
+                        const float denominator = dot(surfelNormal, segmentDirection);
+                        if (sycl::fabs(denominator) < kEps) return;
 
-                        float3 segmentDirection = worldHit.hitPositionW - ray.origin;
+                        const float3 pk = surfel.position;
+                        const float3 x = ray.origin;
+                        const float t = dot(surfelNormal, (pk - x)) / denominator;
+                        if (t < 0.0f || t > 1.0f) return;
 
-                        float3 pointNormal = normalize(cross(surfel.tanU, surfel.tanV));
-                        if (dot(pointNormal, rayState.ray.direction) < 0.0f)
-                            pointNormal = -pointNormal;
+                        const float3 surfelIntersectionPoint = x + t * segmentDirection;
+                        const float3 offsetR = surfelIntersectionPoint - pk;
 
-                        const float denom = dot(pointNormal, segmentDirection);
-                        if (sycl::fabs(denom) < kEps) return;
+                        // Local coordinates
+                        const float su = sycl::fmax(surfel.scale.x(), 1e-8f);
+                        const float sv = sycl::fmax(surfel.scale.y(), 1e-8f);
+                        const float invSu2 = 1.0f / (su * su);
+                        const float invSv2 = 1.0f / (sv * sv);
 
+                        const float u = dot(tangentU, offsetR);
+                        const float v = dot(tangentV, offsetR);
 
-                        // Intersection parameter and clamp to the segment if needed.
-                        const float t = dot(pointNormal, (surfel.position - ray.origin)) / denom;
-                        if (t < 0.f || t > 1.0) return;
-
-                        const float3 surfelIntersectionPoint = ray.origin + t * segmentDirection;
-                        const float3 offsetR = surfelIntersectionPoint - surfel.position;
-
-
-                        // Local coords
-                        float u = dot(surfel.tanU, offsetR);
-                        float v = dot(surfel.tanV, offsetR);
-
-                        // scale terms
-                        float su = surfel.scale.x();
-                        float sv = surfel.scale.y();
-                        float invSu2 = 1.0f / (su * su);
-                        float invSv2 = 1.0f / (sv * sv);
-
-                        // Quadratic form and Gaussian
-                        float quadraticForm = u * u * invSu2 + v * v * invSv2;
-                        float gaussianG = sycl::exp(-0.5f * quadraticForm);
+                        // Gaussian
+                        const float quadraticForm = u * u * invSu2 + v * v * invSv2;
+                        const float gaussianG = sycl::exp(-0.5f * quadraticForm);
 
                         // Jacobians
-                        // dp_dpk = (d n^T) / (n^T d)  (3x3)
+                        // dp_dpk = (d n^T)/(n^T d)
+                        const float invDenominator = 1.0f / denominator;
                         float dp_dpk[3][3] = {
                             {
-                                segmentDirection.x() * pointNormal.x() / denom,
-                                segmentDirection.x() * pointNormal.y() / denom,
-                                segmentDirection.x() * pointNormal.z() / denom
+                                segmentDirection.x() * surfelNormal.x() * invDenominator,
+                                segmentDirection.x() * surfelNormal.y() * invDenominator,
+                                segmentDirection.x() * surfelNormal.z() * invDenominator
                             },
                             {
-                                segmentDirection.y() * pointNormal.x() / denom,
-                                segmentDirection.y() * pointNormal.y() / denom,
-                                segmentDirection.y() * pointNormal.z() / denom
+                                segmentDirection.y() * surfelNormal.x() * invDenominator,
+                                segmentDirection.y() * surfelNormal.y() * invDenominator,
+                                segmentDirection.y() * surfelNormal.z() * invDenominator
                             },
                             {
-                                segmentDirection.z() * pointNormal.x() / denom,
-                                segmentDirection.z() * pointNormal.y() / denom,
-                                segmentDirection.z() * pointNormal.z() / denom
+                                segmentDirection.z() * surfelNormal.x() * invDenominator,
+                                segmentDirection.z() * surfelNormal.y() * invDenominator,
+                                segmentDirection.z() * surfelNormal.z() * invDenominator
                             }
                         };
 
-                        // dr_dpk = dp_dpk - I  (3x3)
+                        // dr_dpk = dp_dpk - I
                         float dr_dpk[3][3] = {
                             {dp_dpk[0][0] - 1.0f, dp_dpk[0][1], dp_dpk[0][2]},
                             {dp_dpk[1][0], dp_dpk[1][1] - 1.0f, dp_dpk[1][2]},
                             {dp_dpk[2][0], dp_dpk[2][1], dp_dpk[2][2] - 1.0f}
                         };
 
-                        // dploc_dpk = B * dr_dpk, where B rows are (tangentU^T) and (tangentV^T)
-                        // Row for u:
+                        // Rows of B * dr_dpk, with B = [tU^T; tV^T]
                         float dplocRowU[3] = {
-                            surfel.tanU.x() * dr_dpk[0][0] + surfel.tanU.y() * dr_dpk[1][0] + surfel.tanU.z() * dr_dpk[
-                                2][
-                                0],
-                            surfel.tanU.x() * dr_dpk[0][1] + surfel.tanU.y() * dr_dpk[1][1] + surfel.tanU.z() * dr_dpk[
-                                2][
-                                1],
-                            surfel.tanU.x() * dr_dpk[0][2] + surfel.tanU.y() * dr_dpk[1][2] + surfel.tanU.z() * dr_dpk[
-                                2][2]
+                            tangentU.x() * dr_dpk[0][0] + tangentU.y() * dr_dpk[1][0] + tangentU.z() * dr_dpk[2][0],
+                            tangentU.x() * dr_dpk[0][1] + tangentU.y() * dr_dpk[1][1] + tangentU.z() * dr_dpk[2][1],
+                            tangentU.x() * dr_dpk[0][2] + tangentU.y() * dr_dpk[1][2] + tangentU.z() * dr_dpk[2][2]
                         };
-                        // Row for v:
                         float dplocRowV[3] = {
-                            surfel.tanV.x() * dr_dpk[0][0] + surfel.tanV.y() * dr_dpk[1][0] + surfel.tanV.z() * dr_dpk[
-                                2][
-                                0],
-                            surfel.tanV.x() * dr_dpk[0][1] + surfel.tanV.y() * dr_dpk[1][1] + surfel.tanV.z() * dr_dpk[
-                                2][
-                                1],
-                            surfel.tanV.x() * dr_dpk[0][2] + surfel.tanV.y() * dr_dpk[1][2] + surfel.tanV.z() * dr_dpk[
-                                2][2]
+                            tangentV.x() * dr_dpk[0][0] + tangentV.y() * dr_dpk[1][0] + tangentV.z() * dr_dpk[2][0],
+                            tangentV.x() * dr_dpk[0][1] + tangentV.y() * dr_dpk[1][1] + tangentV.z() * dr_dpk[2][1],
+                            tangentV.x() * dr_dpk[0][2] + tangentV.y() * dr_dpk[1][2] + tangentV.z() * dr_dpk[2][2]
                         };
 
-                        // g_loc = SigmaInv * ploc = [u/su^2, v/sv^2]
-                        float gLocU = u * invSu2;
-                        float gLocV = v * invSv2;
+                        // gLoc = [u/su^2, v/sv^2]
+                        const float gLocU = u * invSu2;
+                        const float gLocV = v * invSv2;
 
-                        // grad = G * (g_loc @ dploc_dpk)  -> 3-vector
-                        gradVisibilityWrtPk = float3{
+                        // ∂G/∂pk = -G * ( [gLocU,gLocV] * ∂ploc/∂pk )
+                        // For V = 1 - G: ∂V/∂pk = +G * ( [gLocU,gLocV] * ∂ploc/∂pk )
+                        float3 gradVisibilityWrtPk = float3{
                             gaussianG * (gLocU * dplocRowU[0] + gLocV * dplocRowV[0]),
                             gaussianG * (gLocU * dplocRowU[1] + gLocV * dplocRowV[1]),
                             gaussianG * (gLocU * dplocRowU[2] + gLocV * dplocRowV[2])
                         };
 
-                        gradVisibilityWrtPk = gradVisibilityWrtPk * geometric;
+                        transportGradient = gradVisibilityWrtPk;
                     }
 
                     if (instance.geometryType == GeometryType::PointCloud) {
-                        // (I - h h^T)[ a Ny + b Nx ]
-                        const float3 directionalTerm = (-b) * normalNx + a * normalNy;
-                        const float  proj = dot(unitDirection, directionalTerm);
-                        const float3 projectedDirectionalTerm = directionalTerm - proj * unitDirection;
+                        float r = length(ray.origin - worldHit.hitPositionW);
+                        float r2 = r * r;
 
-                        // ∇_y G = (1/r^3)[ (I - h h^T)(a Ny + b Nx) + 2ab h ]
-                        const float invR3 = invR2 / distanceR;
-                        gradGeometricWrtPk = invR3 * (projectedDirectionalTerm + (2.0f * a * b) * unitDirection);
-                        gradGeometricWrtPk = gradGeometricWrtPk;
+                        if (dot(surfelNormal, -ray.direction) < 0)
+                            surfelNormal = -surfelNormal;
+
+                        float dot1 = dot(ray.normal, ray.direction);
+                        float dot2 = dot(surfelNormal, -ray.direction);
+
+                        float geometric = dot1 * dot2 / r2;
+
+                        // Blue type path
+                        const float3 d = worldHit.hitPositionW - ray.origin;
+                        // Parallell check:
+                        float nd = dot(surfelNormal, d);
+                        if (abs(nd) < kEps) {
+                            return;
+                        }
+                        // Hit position intersection parameter
+                        float t = dot(surfelNormal, surfel.position - ray.origin) / nd;
+
+                        float C = dot(ray.normal, ray.direction) * dot(surfelNormal, -ray.direction);
+                        float dnorm2 = dot(d, d);
+                        if (t == 0.0 || dnorm2 == 0.0f)
+                            return;
+
+                        float scale = -(2.0f * C) / (std::pow(t, 3) * dnorm2);
+                        float3 gradGeometricWrtPk = (scale / nd) * surfelNormal;
+
+
+                        transportGradient = gradGeometricWrtPk;
                     }
-
-                    // Combine product-rule terms
-                    const float3 gradientVisibilityTimesGeometric = gradVisibilityWrtPk; // (∂V/∂p_k) * G
-                    const float3 gradientGeometricTimesVisibility = gradGeometricWrtPk; // (∂G/∂p_k) * V
-                    const float3 transportGradient = gradVisibilityWrtPk;
 
                     // Material BRDF
                     const float3 transportTimesBRDF = transportGradient * material.baseColor;
 
+                    // Radiance L
                     float3 radianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap,
                                                                        settings.photonsPerLaunch);
                     const float3 gradTransportAndRadiance = transportTimesBRDF * radianceRGB;
 
-                    // Multiply by the adjoint scalar
+                    // Adjoint Scalar q
                     float3 q = rayState.pathThroughput;
                     float3 dcost_dpk = q * gradTransportAndRadiance;
 
-                    float3 &dst = adjoint.gradient_pk[0];
-                    float3 &gradCounter = adjoint.gradient_pk[1];
+                    float3& dst = adjoint.gradient_pk[0];
+                    float3& gradCounter = adjoint.gradient_pk[1];
                     const sycl::atomic_ref<float,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            xGrad(dst.x());
+                                           sycl::memory_order::relaxed,
+                                           sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>
+                        xGrad(dst.x());
                     const sycl::atomic_ref<float,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            yGrad(dst.y());
+                                           sycl::memory_order::relaxed,
+                                           sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>
+                        yGrad(dst.y());
                     const sycl::atomic_ref<float,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            zGrad(dst.z());
+                                           sycl::memory_order::relaxed,
+                                           sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>
+                        zGrad(dst.z());
 
                     const sycl::atomic_ref<float,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            gradCount(gradCounter.x());
+                                           sycl::memory_order::relaxed,
+                                           sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>
+                        gradCount(gradCounter.x());
 
                     gradCount.fetch_add(1.0f);
 
@@ -306,20 +299,25 @@ namespace Pale {
 
 
                     if (rayState.bounceIndex >= 0) {
-                        const float3 parameterAxis = {0.0f, 0.1f, 0.0f};
+                        const float3 parameterAxis = {0.0f, 1.0f, 0.00f};
                         const float dVdp_scalar = dot(dcost_dpk, parameterAxis);
 
                         // write into the pixel that launched this adjoint path
-                        float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex]; // make this buffer
-                        auto xGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(gradImageDst.x()).fetch_add(dVdp_scalar);
-                        auto yGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(gradImageDst.y()).fetch_add(dVdp_scalar);
-                        auto zGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(gradImageDst.z()).fetch_add(dVdp_scalar);
+                        float4& gradImageDst = sensor.framebuffer[rayState.pixelIndex]; // make this buffer
+                        const auto xGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                                                           sycl::memory_scope::device,
+                                                           sycl::access::address_space::global_space>(gradImageDst.x());
+                        const auto yGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                                                           sycl::memory_scope::device,
+                                                           sycl::access::address_space::global_space>(gradImageDst.y());
+                        const auto zGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                                                           sycl::memory_scope::device,
+                                                           sycl::access::address_space::global_space>(gradImageDst.z());
+
+
+                        xGradImage.fetch_add(dVdp_scalar);
+                        yGradImage.fetch_add(dVdp_scalar);
+                        zGradImage.fetch_add(dVdp_scalar);
                     }
                 });
         });

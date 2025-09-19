@@ -317,7 +317,7 @@ int main(int argc, char **argv) {
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
         const uint32_t W = sensor.width, H = sensor.height;
         float gamma = 2.2f;
-        float exposure = 20.0f;
+        float exposure = 2.5f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out.png";
         if (Pale::Utils::savePNGWithToneMap(
             filePath, rgba, W, H,
@@ -353,11 +353,9 @@ int main(int argc, char **argv) {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), adjointSensor);
         const uint32_t W = adjointSensor.width, H = adjointSensor.height;
-        float gamma = 2.2f;
-        float exposure = 0.0f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "adjoint_out.png";
         if (Pale::Utils::saveGradientSignPNG(
-            filePath, rgba, W, H, 0.99)) {
+            filePath, rgba, W, H, 1.00)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
         Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A}
@@ -369,5 +367,6 @@ int main(int argc, char **argv) {
     sycl::free(adjoint.framebuffer, deviceSelector.getQueue());
     sycl::free(adjoint.framebufferGrad, deviceSelector.getQueue());
     sycl::free(adjoint.gradient_pk, deviceSelector.getQueue());
+    deviceSelector.getQueue().wait();
     return 0;
 }

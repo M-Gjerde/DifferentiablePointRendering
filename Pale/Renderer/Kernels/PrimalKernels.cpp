@@ -94,7 +94,7 @@ namespace Pale {
                     if (pdfTotal <= 0.f || cosTheta <= 0.f) return;
 
                     // 4) initial throughput
-                    const sycl::float3 Le = light.emissionRgb; // radiance scale
+                    const sycl::float3 Le = light.emissionRgb* 1000000 ; // radiance scale
                     const float invPdf = 1.0f / pdfTotal;
                     sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / photonCount;
 
@@ -413,7 +413,7 @@ namespace Pale {
                                     0u, camera.height - 1);
 
                                 // FLIP Y
-                                const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
+                                const uint32_t idx = py * camera.width + px;
 
                                 float4 &dst = sensor.framebuffer[idx];
                                 const sycl::atomic_ref<float,
@@ -520,7 +520,7 @@ namespace Pale {
                                     static_cast<uint32_t>((ndc.y() * 0.5f + 0.5f) * camera.height),
                                     0u, camera.height - 1);
                                 // FLIP Y
-                                const uint32_t idx = (camera.height - 1u - py) * camera.width + px;
+                                const uint32_t idx = py * camera.width + px;
                                 float4 &dst = sensor.framebuffer[idx];
                                 const sycl::atomic_ref<float,
                                             sycl::memory_order::relaxed,

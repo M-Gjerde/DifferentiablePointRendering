@@ -9,6 +9,7 @@ module;
 #include <algorithm>
 #include <filesystem>
 #include <cmath>
+#include <cstring>
 #include <stb_image_write.h>
 
 
@@ -26,7 +27,8 @@ export namespace Pale::Utils {
         float exposureEV = 0.0f,
         float gammaEncode = 2.2f,
         bool normalizeHDR = false,
-        bool writeAlpha = false) {
+        bool writeAlpha = false,
+        bool flipY = true) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());
         }
@@ -86,10 +88,25 @@ export namespace Pale::Utils {
                 float alphaLinear = std::clamp(inputRGBA[i * 4 + 3], 0.0f, 1.0f);
                 rgba8[i * 4 + 3] = static_cast<std::uint8_t>(alphaLinear * 255.0f + 0.5f);
             }
+
+            const int bytesPerRow = static_cast<int>(imageWidth * 4);
+            const std::uint8_t* srcPtr = rgba8.data();
+
+            std::vector<std::uint8_t> rowOrdered;
+            if (flipY) {
+                rowOrdered.resize(rgba8.size());
+                for (std::uint32_t y = 0; y < imageHeight; ++y) {
+                    const std::uint32_t srcY = imageHeight - 1 - y;
+                    std::memcpy(rowOrdered.data() + y * bytesPerRow,
+                                srcPtr + srcY * bytesPerRow,
+                                bytesPerRow);
+                }
+                srcPtr = rowOrdered.data();
+            }
             return stbi_write_png(filePath.c_str(),
                                   static_cast<int>(imageWidth),
                                   static_cast<int>(imageHeight),
-                                  4, rgba8.data(),
+                                  4, srcPtr,
                                   static_cast<int>(imageWidth * 4)) != 0;
         } else {
             std::vector<std::uint8_t> rgb8(pixelCount * 3u);
@@ -98,11 +115,25 @@ export namespace Pale::Utils {
                 rgb8[i * 3 + 1] = encodeChannel(inputRGBA[i * 4 + 1]);
                 rgb8[i * 3 + 2] = encodeChannel(inputRGBA[i * 4 + 2]);
             }
+            const int bytesPerRow = static_cast<int>(imageWidth * 3);
+            const std::uint8_t* srcPtr = rgb8.data();
+
+            std::vector<std::uint8_t> rowOrdered;
+            if (flipY) {
+                rowOrdered.resize(rgb8.size());
+                for (std::uint32_t y = 0; y < imageHeight; ++y) {
+                    const std::uint32_t srcY = imageHeight - 1 - y;
+                    std::memcpy(rowOrdered.data() + y * bytesPerRow,
+                                srcPtr + srcY * bytesPerRow,
+                                bytesPerRow);
+                }
+                srcPtr = rowOrdered.data();
+            }
+
             return stbi_write_png(filePath.c_str(),
                                   static_cast<int>(imageWidth),
                                   static_cast<int>(imageHeight),
-                                  3, rgb8.data(),
-                                  static_cast<int>(imageWidth * 3)) != 0;
+                                  3, srcPtr, bytesPerRow) != 0;
         }
     }
 
@@ -113,7 +144,8 @@ export namespace Pale::Utils {
         const std::vector<float> &displaySpaceRGBA,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
-        bool writeAlpha = false) {
+        bool writeAlpha = false,
+        bool flipY = true) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());
         }
@@ -136,12 +168,25 @@ export namespace Pale::Utils {
                 rgba8[i * 4 + 2] = toUNorm8(displaySpaceRGBA[i * 4 + 2]);
                 rgba8[i * 4 + 3] = toUNorm8(displaySpaceRGBA[i * 4 + 3]);
             }
+            const int bytesPerRow = static_cast<int>(imageWidth * 4);
+            const std::uint8_t* srcPtr = rgba8.data();
+
+            std::vector<std::uint8_t> rowOrdered;
+            if (flipY) {
+                rowOrdered.resize(rgba8.size());
+                for (std::uint32_t y = 0; y < imageHeight; ++y) {
+                    const std::uint32_t srcY = imageHeight - 1 - y;
+                    std::memcpy(rowOrdered.data() + y * bytesPerRow,
+                                srcPtr + srcY * bytesPerRow,
+                                bytesPerRow);
+                }
+                srcPtr = rowOrdered.data();
+            }
+
             return stbi_write_png(filePath.c_str(),
                                   static_cast<int>(imageWidth),
                                   static_cast<int>(imageHeight),
-                                  /*components*/4,
-                                  rgba8.data(),
-                                  static_cast<int>(imageWidth * 4)) != 0;
+                                  4, srcPtr, bytesPerRow) != 0;
         } else {
             std::vector<std::uint8_t> rgb8(pixelCount * 3u);
             for (std::size_t i = 0; i < pixelCount; ++i) {
@@ -149,12 +194,26 @@ export namespace Pale::Utils {
                 rgb8[i * 3 + 1] = toUNorm8(displaySpaceRGBA[i * 4 + 1]);
                 rgb8[i * 3 + 2] = toUNorm8(displaySpaceRGBA[i * 4 + 2]);
             }
+
+            const int bytesPerRow = static_cast<int>(imageWidth * 3);
+            const std::uint8_t* srcPtr = rgb8.data();
+
+            std::vector<std::uint8_t> rowOrdered;
+            if (flipY) {
+                rowOrdered.resize(rgb8.size());
+                for (std::uint32_t y = 0; y < imageHeight; ++y) {
+                    const std::uint32_t srcY = imageHeight - 1 - y;
+                    std::memcpy(rowOrdered.data() + y * bytesPerRow,
+                                srcPtr + srcY * bytesPerRow,
+                                bytesPerRow);
+                }
+                srcPtr = rowOrdered.data();
+            }
+
             return stbi_write_png(filePath.c_str(),
                                   static_cast<int>(imageWidth),
                                   static_cast<int>(imageHeight),
-                                  /*components*/3,
-                                  rgb8.data(),
-                                  static_cast<int>(imageWidth * 3)) != 0;
+                                  3, srcPtr, bytesPerRow) != 0;
         }
     }
 
@@ -350,7 +409,8 @@ export namespace Pale::Utils {
         const std::vector<float> &inputRGBA,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
-        float absQuantile = 0.99f
+        float absQuantile = 0.99f,
+        bool flipY = true
 
     ) {
         if (!std::filesystem::exists(filePath.parent_path())) {
@@ -366,7 +426,7 @@ export namespace Pale::Utils {
         std::vector<float> finiteAbsScalars;
         finiteAbsScalars.reserve(pixelCount);
 
-        float numAdjointPasses = 32.0f;
+        float numAdjointPasses = 16.0f;
         for (std::size_t i = 0; i < pixelCount; ++i) {
             const float r = inputRGBA[i * 4 + 0] / numAdjointPasses; // Divide by m_settings.adjointSamplesPerPixel
             const float g = inputRGBA[i * 4 + 1] / numAdjointPasses; // Divide by m_settings.adjointSamplesPerPixel
@@ -424,11 +484,26 @@ export namespace Pale::Utils {
             rgb8[i * 3 + 2] = toByte(blueMapped);
         }
 
+
+        const int bytesPerRow = static_cast<int>(imageWidth * 3);
+        const std::uint8_t* srcPtr = rgb8.data();
+
+        std::vector<std::uint8_t> rowOrdered;
+        if (flipY) {
+            rowOrdered.resize(rgb8.size());
+            for (std::uint32_t y = 0; y < imageHeight; ++y) {
+                const std::uint32_t srcY = imageHeight - 1 - y;
+                std::memcpy(rowOrdered.data() + y * bytesPerRow,
+                            srcPtr + srcY * bytesPerRow,
+                            bytesPerRow);
+            }
+            srcPtr = rowOrdered.data();
+        }
+
         return stbi_write_png(filePath.c_str(),
                               static_cast<int>(imageWidth),
                               static_cast<int>(imageHeight),
-                              3, rgb8.data(),
-                              static_cast<int>(imageWidth * 3)) != 0;
+                              3, srcPtr, bytesPerRow) != 0;
     }
 
     inline bool saveGradientSignRGB(
@@ -436,7 +511,8 @@ export namespace Pale::Utils {
         const std::vector<float> &inputRGB, // 3 floats per pixel
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
-        float absQuantile = 0.99f // robust scale from abs-quantile in (0,1]; 1.0 = max-abs
+        float absQuantile = 0.99f,
+        bool flipY = true// robust scale from abs-quantile in (0,1]; 1.0 = max-abs
     ) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());
@@ -508,10 +584,24 @@ export namespace Pale::Utils {
             rgb8[i * 3 + 2] = toByte(blueMapped);
         }
 
+        const int bytesPerRow = static_cast<int>(imageWidth * 3);
+        const std::uint8_t* srcPtr = rgb8.data();
+
+        std::vector<std::uint8_t> rowOrdered;
+        if (flipY) {
+            rowOrdered.resize(rgb8.size());
+            for (std::uint32_t y = 0; y < imageHeight; ++y) {
+                const std::uint32_t srcY = imageHeight - 1 - y;
+                std::memcpy(rowOrdered.data() + y * bytesPerRow,
+                            srcPtr + srcY * bytesPerRow,
+                            bytesPerRow);
+            }
+            srcPtr = rowOrdered.data();
+        }
+
         return stbi_write_png(filePath.c_str(),
                               static_cast<int>(imageWidth),
                               static_cast<int>(imageHeight),
-                              3, rgb8.data(),
-                              static_cast<int>(imageWidth * 3)) != 0;
+                              3, srcPtr, bytesPerRow) != 0;
     }
 }

@@ -191,7 +191,7 @@ namespace Pale {
                     // point cloud
                     ok = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene, rng128);
                     worldHit->visitedSplatField |= localHit.hasVisibilityTest;
-                    worldHit->transmissivity = localHit.transmissivity;
+
                 }
 
                 if (ok) {
@@ -203,19 +203,22 @@ namespace Pale {
                     foundAnyHit = true;
                     worldHit->t = tWorld;
                     worldHit->hit = true;
+                    worldHit->transmissivity = localHit.transmissivity;
                     worldHit->primitiveIndex = localHit.primitiveIndex;
                     worldHit->instanceIndex = instanceIndex;
                     worldHit->hitPositionW = hitPointW;
+                    worldHit->visitedSplatField |= localHit.hasVisibilityTest;
                 }
 
-                if (worldHit->visitedSplatField) {
+                if (!ok && localHit.hasVisibilityTest) {
                                         const float3 hitPointW = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
                                                           transform);
                     const float tWorld = dot(hitPointW - rayWorld.origin, rayWorld.direction);
                     worldHit->t = tWorld;
-
-
+                    worldHit->transmissivity = localHit.transmissivity;
+                    worldHit->visitedSplatField |= localHit.hasVisibilityTest;
                 }
+
             }
         }
 
@@ -229,5 +232,4 @@ namespace Pale {
         intersectScene(rayIn, &worldHit, scene, rng128);
         return worldHit; // opaque geometry
     }
-
 }
