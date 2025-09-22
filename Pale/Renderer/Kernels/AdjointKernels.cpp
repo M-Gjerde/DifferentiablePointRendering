@@ -218,7 +218,7 @@ namespace Pale {
                             gaussianG * (gLocU * dplocRowU[2] + gLocV * dplocRowV[2])
                         };
 
-                        transportGradient = gradVisibilityWrtPk;
+                        //transportGradient = gradVisibilityWrtPk;
                     }
 
                     if (instance.geometryType == GeometryType::PointCloud) {
@@ -299,7 +299,7 @@ namespace Pale {
 
 
                     if (rayState.bounceIndex >= 0) {
-                        const float3 parameterAxis = {0.0f, 1.0f, 0.00f};
+                        const float3 parameterAxis = {0.0f, -1.0f, 0.00f};
                         const float dVdp_scalar = dot(dcost_dpk, parameterAxis);
 
                         // write into the pixel that launched this adjoint path

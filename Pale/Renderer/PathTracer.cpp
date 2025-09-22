@@ -32,7 +32,7 @@ namespace Pale {
 
         // cuda/rocm
         m_settings.photonsPerLaunch = 1e7; // 1e6
-        m_settings.maxBounces = 6;
+        m_settings.maxBounces = 8;
         m_settings.maxAdjointBounces = 8;
         m_settings.adjointSamplesPerPixel = 16;
 #endif
