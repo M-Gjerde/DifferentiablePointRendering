@@ -200,7 +200,7 @@ namespace Pale {
                         if (slot < m_intermediates.map.photonCapacity) {
                             DevicePhotonSurface entry;
                             entry.position = worldHit.hitPositionW;
-                            entry.power = rayState.pathThroughput;
+                            entry.power = rayState.pathThroughput * 1 / (1 - worldHit.transmissivity);
                             entry.incidentDir = -rayState.ray.direction;
                             entry.cosineIncident = sycl::fmax(0.f, dot(nW, entry.incidentDir));
                             m_intermediates.map.photons[slot] = entry;
@@ -599,7 +599,7 @@ namespace Pale {
                     // Atomic accumulate
                     const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code
                     float4 previous = sensor.framebuffer[fbIndex];
-                    float4 current  = float4(radianceRGB.x(), radianceRGB.y(), radianceRGB.z(), 1.0f) / totalSamplesPerPixel;
+                    float4 current  = float4(radianceRGB.x(), radianceRGB.y(), radianceRGB.z(), 1.0f) / samplesPerPixel;
                     sensor.framebuffer[fbIndex] = previous + current; // or write to a staging buffer
 
                 });

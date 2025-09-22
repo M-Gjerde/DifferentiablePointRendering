@@ -12,5 +12,7 @@ namespace Pale {
 
     void launchAdjointKernel(RenderPackage &pkg, uint32_t activeRayCount);
 
+    void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
+
 }
 

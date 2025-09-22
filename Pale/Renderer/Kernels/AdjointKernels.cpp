@@ -9,12 +9,12 @@
 
 
 namespace Pale {
-    void launchRayGenAdjointKernel(RenderPackage &pkg, int spp) {
-        auto &queue = pkg.queue;
-        auto &sensor = pkg.sensor;
-        auto &settings = pkg.settings;
-        auto &adjoint = pkg.adjoint;
-        auto &intermediates = pkg.intermediates;
+    void launchRayGenAdjointKernel(RenderPackage& pkg, int spp) {
+        auto& queue = pkg.queue;
+        auto& sensor = pkg.sensor;
+        auto& settings = pkg.settings;
+        auto& adjoint = pkg.adjoint;
+        auto& intermediates = pkg.intermediates;
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
@@ -23,7 +23,7 @@ namespace Pale {
 
         queue.memcpy(pkg.intermediates.countPrimary, &rayCount, sizeof(uint32_t)).wait();
 
-        queue.submit([&](sycl::handler &commandGroupHandler) {
+        queue.submit([&](sycl::handler& commandGroupHandler) {
             const uint64_t baseSeed = settings.randomSeed * spp;
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
@@ -93,37 +93,37 @@ namespace Pale {
         });
     }
 
-    void launchAdjointKernel(RenderPackage &pkg, uint32_t activeRayCount) {
-        auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
-        auto &sensor = pkg.sensor;
-        auto &settings = pkg.settings;
-        auto &adjoint = pkg.adjoint;
+    void launchAdjointKernel(RenderPackage& pkg, uint32_t activeRayCount) {
+        auto& queue = pkg.queue;
+        auto& scene = pkg.scene;
+        auto& sensor = pkg.sensor;
+        auto& settings = pkg.settings;
+        auto& adjoint = pkg.adjoint;
+        auto& photonMap = pkg.intermediates.map;
 
-        auto *hitRecords = pkg.intermediates.hitRecords;
-        auto *raysIn = pkg.intermediates.primaryRays;
-        auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+        auto* hitRecords = pkg.intermediates.hitRecords;
+        auto* raysIn = pkg.intermediates.primaryRays;
+        // activeRayCount == total rays in the current buffer (must be even)
+        const uint32_t pairCount = activeRayCount / 2u;
 
-        uint32_t imageSize = sensor.width * sensor.height;
-        queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = settings.randomSeed;
-            cgh.parallel_for<struct AjointShadeKernelTag>(
-                sycl::range<1>(activeRayCount),
-                // ReSharper disable once CppDFAUnusedValue
+        queue.submit([&](sycl::handler& cgh) {
+            const uint64_t baseSeed = settings.randomSeed;
+            cgh.parallel_for<struct AdjointShadeKernelTag>(
+                sycl::range<1>(pairCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
                     constexpr float kEps = 1e-4f;
 
-                    const RayState transmitRayState = raysIn[rayIndex];
-                    const Ray transmitRay = transmitRayState.ray;
-                    WorldHit transmitWorldHit = hitRecords[rayIndex];
 
-                    uint32_t scatterPairIndex = rayIndex + imageSize;
+                    const uint32_t scatterPairIndex = rayIndex + pairCount;
+
+                    const RayState transmitRayState = raysIn[rayIndex];
                     const RayState scatterRayState = raysIn[scatterPairIndex];
-                    const Ray scatterRay = scatterRayState.ray;
-                    WorldHit scatterWorldHit = hitRecords[scatterPairIndex];
+
+                    const WorldHit transmitWorldHit = hitRecords[rayIndex];
+                    const WorldHit scatterWorldHit = hitRecords[scatterPairIndex];
 
                     if (!transmitWorldHit.hit || !scatterWorldHit.hit) {
                         return;
@@ -131,6 +131,7 @@ namespace Pale {
                     GPUMaterial material;
                     float visibility = transmitWorldHit.transmissivity;
 
+                    const Ray transmitRay = transmitRayState.ray;
                     auto surfel = scene.points[0];
                     const float3 segmentDirection = transmitWorldHit.hitPositionW - transmitRay.origin;
                     float3 tangentU = normalize(surfel.tanU);
@@ -226,7 +227,8 @@ namespace Pale {
 
                     // Material BRDF
                     //const float3 transportTimesBRDF = transportGradient * material.baseColor;
-                    float3 deltaL = (bgBRDF - fgBRDF);
+                    float3 deltaL = (L_bg - L_fg);
+                    //float3 deltaL = (bgBRDF - fgBRDF);
                     float3 dL_dpk = transportGradient * deltaL;
 
                     const float3 gradTransportAndRadiance = dL_dpk;
@@ -235,29 +237,29 @@ namespace Pale {
                     float3 q = transmitRayState.pathThroughput;
                     float3 dcost_dpk = q * gradTransportAndRadiance;
 
-                    float3 &dst = adjoint.gradient_pk[0];
-                    float3 &gradCounter = adjoint.gradient_pk[1];
+                    float3& dst = adjoint.gradient_pk[0];
+                    float3& gradCounter = adjoint.gradient_pk[1];
                     const sycl::atomic_ref<float,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            xGrad(dst.x());
+                                           sycl::memory_order::relaxed,
+                                           sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>
+                        xGrad(dst.x());
                     const sycl::atomic_ref<float,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            yGrad(dst.y());
+                                           sycl::memory_order::relaxed,
+                                           sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>
+                        yGrad(dst.y());
                     const sycl::atomic_ref<float,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            zGrad(dst.z());
+                                           sycl::memory_order::relaxed,
+                                           sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>
+                        zGrad(dst.z());
 
                     const sycl::atomic_ref<float,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>
-                            gradCount(gradCounter.x());
+                                           sycl::memory_order::relaxed,
+                                           sycl::memory_scope::device,
+                                           sycl::access::address_space::global_space>
+                        gradCount(gradCounter.x());
 
                     gradCount.fetch_add(1.0f);
 
@@ -266,27 +268,94 @@ namespace Pale {
                     zGrad.fetch_add(dcost_dpk.z());
 
 
-                    if (transmitRayState.bounceIndex == 0) {
-                        const float3 parameterAxis = {0.0f, 0.01f, 0.00f};
+                    if (transmitRayState.bounceIndex >= 0) {
+                        const float3 parameterAxis = {0.0f, 1.0f, 0.0f};
                         const float dVdp_scalar = dot(dcost_dpk, parameterAxis);
 
                         // write into the pixel that launched this adjoint path
-                        float4 &gradImageDst = sensor.framebuffer[transmitRayState.pixelIndex]; // make this buffer
+                        float4& gradImageDst = sensor.framebuffer[transmitRayState.pixelIndex]; // make this buffer
                         const auto xGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(gradImageDst.x());
+                                                                 sycl::memory_scope::device,
+                                                                 sycl::access::address_space::global_space>(
+                            gradImageDst.x());
                         const auto yGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(gradImageDst.y());
+                                                                 sycl::memory_scope::device,
+                                                                 sycl::access::address_space::global_space>(
+                            gradImageDst.y());
                         const auto zGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(gradImageDst.z());
+                                                                 sycl::memory_scope::device,
+                                                                 sycl::access::address_space::global_space>(
+                            gradImageDst.z());
 
 
                         xGradImage.fetch_add(dVdp_scalar);
                         yGradImage.fetch_add(dVdp_scalar);
                         zGradImage.fetch_add(dVdp_scalar);
                     }
+                });
+        });
+        queue.wait();
+    }
+
+    void generateNextAdjointRays(RenderPackage& pkg, uint32_t activeRayCount) {
+        auto queue = pkg.queue;
+        auto sensor = pkg.sensor;
+        auto settings = pkg.settings;
+
+        auto* hitRecords = pkg.intermediates.hitRecords;
+        auto* raysIn = pkg.intermediates.primaryRays;
+        auto* raysOut = pkg.intermediates.extensionRaysA;
+        auto* countExtensionOut = pkg.intermediates.countExtensionOut;
+
+        const uint32_t pairCount = activeRayCount / 2u;
+
+        // You will output 2 rays per input pair
+        const uint32_t nextActiveRayCount = 2u * pairCount;
+        queue.memcpy(countExtensionOut, &nextActiveRayCount, sizeof(uint32_t)).wait();
+
+        queue.submit([&](sycl::handler& cgh) {
+            const uint64_t baseSeed = settings.randomSeed;
+            cgh.parallel_for<class GenerateNextAdjointRays>(
+                sycl::range<1>(pairCount),
+                [=](sycl::id<1> globalId) {
+                    const uint32_t rayIndex = globalId[0];
+                    constexpr float kEps = 5e-4f;
+                    auto rng = rng::Xorshift128(rng::makePerItemSeed1D(baseSeed, rayIndex));
+
+                    const RayState transmitRayState = raysIn[rayIndex];
+                    const WorldHit transmitWorldHit = hitRecords[rayIndex];
+                    if (!transmitWorldHit.hit) {
+                        RayState dummyRayState{};
+                        dummyRayState.ray.origin = 0.0f;
+                        dummyRayState.ray.direction = 0.0f;
+                        dummyRayState.pixelIndex = 0;
+                        const uint32_t outputBase = rayIndex;
+                        raysOut[outputBase] = dummyRayState;
+                        raysOut[outputBase + pairCount] = dummyRayState;
+                    }
+                    float3 newDirection;
+                    float cosinePDF;
+                    sampleCosineHemisphere(rng,
+                                           transmitWorldHit.geometricNormalW,
+                                           newDirection, cosinePDF);
+
+                    RayState nextTransmitState{};
+                    nextTransmitState.ray.origin = transmitWorldHit.hitPositionW +
+                        transmitWorldHit.geometricNormalW * kEps;
+                    nextTransmitState.ray.direction = newDirection;
+                    nextTransmitState.ray.normal = transmitWorldHit.geometricNormalW;
+                    nextTransmitState.bounceIndex = transmitRayState.bounceIndex + 1;
+                    nextTransmitState.pixelIndex = transmitRayState.pixelIndex;
+                    nextTransmitState.intersectMode = RayIntersectMode::Transmit;
+                    nextTransmitState.pathThroughput = transmitRayState.pathThroughput;
+
+                    RayState nextScatterState = nextTransmitState;
+                    nextScatterState.intersectMode = RayIntersectMode::Scatter;
+
+                    // pack: first half Transmit, second half Scatter
+                    const uint32_t outputBase = rayIndex;
+                    raysOut[outputBase] = nextTransmitState;
+                    raysOut[outputBase + pairCount] = nextScatterState;
                 });
         });
         queue.wait();
