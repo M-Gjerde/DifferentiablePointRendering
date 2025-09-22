@@ -131,7 +131,7 @@ namespace Pale {
 
             WorldHit worldHit{};
             RayState rayState = m_intermediates.primaryRays[rayIndex];
-            intersectScene(rayState.ray, &worldHit, m_scene, rng128);
+            intersectScene(rayState.ray, rayState.intersectMode, &worldHit, m_scene, rng128);
             if (!worldHit.hit) {
                 m_intermediates.hitRecords[rayIndex] = worldHit;
                 return;
@@ -278,14 +278,11 @@ namespace Pale {
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
                     constexpr float kEps = 5e-4f;
-
                     const WorldHit worldHit = hitRecords[rayIndex];
                     const RayState rayState = raysIn[rayIndex];
                     if (!worldHit.hit) {
                         return;
                     }
-
-
                     auto &instance = scene.instances[worldHit.instanceIndex];
                     GPUMaterial material;
                     switch (instance.geometryType) {
@@ -300,20 +297,16 @@ namespace Pale {
                     float3 newDirection;
                     // Lambertian BRDF
                     float3 brdf;
-
                     if (instance.geometryType == GeometryType::PointCloud) {
                         sampleUniformSphere(rng128, newDirection, cosinePDF);
                     } else {
                         sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
                     }
-
                     brdf = material.baseColor * (1.0f / M_PIf);
-
                     float3 shadingNormal = worldHit.geometricNormalW;
                     float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
                     float minPdf = 1e-6f;
                     cosinePDF = sycl::fmax(cosinePDF, minPdf);
-
                     // Sample next
                     RayState nextState{};
                     nextState.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
@@ -321,7 +314,6 @@ namespace Pale {
                     nextState.ray.normal = worldHit.geometricNormalW;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;
-
 
                     // Throughput update
                     float3 updatedThroughput = rayState.pathThroughput * (
@@ -345,7 +337,6 @@ namespace Pale {
                     }
                     */
                     nextState.pathThroughput = updatedThroughput;
-
                     // Enqueue survived ray
                     auto extensionCounter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
@@ -397,7 +388,7 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // If we have non-zero transmittance
                     float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
+                    auto transmittance = traceVisibility(contribRay, RayIntersectMode::Random, tMax, scene, rng128);
                     if (!transmittance.hit) {
                         // perspective projection
                         float4 clip = camera.proj * (camera.view * float4(rayState.ray.origin, 1.f));
@@ -505,7 +496,7 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // If we have non-zero transmittance
                     float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
+                    auto transmittance = traceVisibility(contribRay, RayIntersectMode::Random, tMax, scene, rng128);
                     if (transmittance.transmissivity > 0.0f) {
                         // perspective projection
                         float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
@@ -598,7 +589,7 @@ namespace Pale {
 
                         Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, float(px), float(py), jx, jy);
                         WorldHit worldHit{};
-                        intersectScene(primary, &worldHit, scene, rng128);
+                        intersectScene(primary, RayIntersectMode::Random, &worldHit, scene, rng128);
                         if (!worldHit.hit) continue; // miss → black (or add env if desired)
 
                         radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(

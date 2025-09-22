@@ -12,6 +12,7 @@
 #include "Renderer/Kernels/PrimalKernels.h"
 
 namespace Pale {
+
     // ---- Orchestrator -------------------------------------------------------
     void submitKernel(RenderPackage &pkg) {
         pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
@@ -62,13 +63,15 @@ namespace Pale {
 
             // Save photon map to disk:
             {
+                /*
                 ScopedTimer timer("dumpPhotonMapToPLY");
                 dumpPhotonMapToPLY(pkg.queue,
                                   pkg.intermediates.map.photons,
                                   photonMapCount,
                                   std::filesystem::path("Output/photon_map.ply"),
-                                  /*exposureScale=*/1.0f,
-                                  /*writeNormals=*/true);
+                                  1.0f,
+                                  true);
+                */
             }
 
             //launchCameraGatherKernel(pkg); // generate image from photon map
@@ -82,7 +85,7 @@ namespace Pale {
             for (int spp = 0; spp < samplesPerPixel; ++spp) {
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
                     ScopedTimer timer("launchRayGenAdjointKernel");
-                    launchRayGenAdjointKernel(pkg);
+                    launchRayGenAdjointKernel(pkg, spp);
                 }
 
                 uint32_t activeCount = 0;
@@ -96,10 +99,10 @@ namespace Pale {
                         launchIntersectKernel(pkg, activeCount);
                     } {
                         ScopedTimer timer("launchAdjointKernel");
-                        launchAdjointKernel(pkg, activeCount);
+                        launchAdjointKernel(pkg, activeCount / 2u);
                     } {
                         ScopedTimer timer("generateNextRays");
-                        generateNextRays(pkg, activeCount);
+                        generateNextRays(pkg, activeCount / 2u);
                     }
 
                     uint32_t nextCount = 0;

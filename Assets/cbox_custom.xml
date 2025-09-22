@@ -53,9 +53,10 @@
         <emitter type="area">
             <!--  <rgb name="radiance" value="600.387,400.9873,200.75357"/> -->
             <!--  <rgb name="radiance" value="18.387,13.9873,6.75357"/>-->
-            <rgb name="radiance" value="1, 0.65, 0.3"/>
+            <!-- <rgb name="radiance" value="1, 0.65, 0.3"/>-->
+            <rgb name="radiance" value="1, 1, 1"/>
         </emitter>
-        <ref id="red"/>
+        <ref id="gray"/>
     </shape>
 
 
@@ -94,7 +95,7 @@
             <rotate x="0" y="1" z="0" angle="90"/>
             <translate x="-1" y="1" z="0"/>
         </transform>
-        <ref id="red"/>
+        <ref id="gray"/>
     </shape>
 
     <shape type="obj" id="right_green">
@@ -103,7 +104,7 @@
             <rotate x="0" y="1" z="0" angle="-90"/>
             <translate x="1" y="1" z="0"/>
         </transform>
-        <ref id="green"/>
+        <ref id="gray"/>
     </shape>
 
 

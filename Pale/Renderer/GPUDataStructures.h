@@ -239,6 +239,8 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Camera = 0, Emitter = 1, Hybrid = 2, Adjoint = 3 };
 
+    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1, Scatter = 2};
+
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
         float3 origin; // 16
@@ -251,6 +253,7 @@ namespace Pale {
         float3 pathThroughput{};
         uint32_t bounceIndex{};
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
+        RayIntersectMode intersectMode = RayIntersectMode::Random;
     };
 
     struct alignas(16) LocalHit {

@@ -78,7 +78,7 @@ namespace Pale {
 
     // ── PathTracerMeshKernel.cpp ────────────────────────────────────────────────
     // Returns the closest hit inside one mesh’s BLAS (object space)
-    SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray &rayObject,
+    SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray &rayObject, RayIntersectMode rayIntersectMode,
                                                uint32_t blasRangeIndex,
                                                LocalHit &out, const GPUSceneBuffers &scene, rng::Xorshift128& rng128) {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
@@ -121,23 +121,37 @@ namespace Pale {
                 if (intersectSurfel(rayObject, surfel, rayEpsilon, 10.0f, tHit, contributionAtHit)) {
                     // Find intersection point // Still in local coords
                     const float3 hitPointLocal = rayObject.origin + tHit * rayObject.direction;
-
-                    // Generate a random number [0, 1] dependent on the position
                     float xi = rng128.nextFloat();
                     const float alphaAtHit = contributionAtHit * surfel.opacity;
-                    if (xi < alphaAtHit) {                 // accept with probability alphaAtHit
-                        bestAcceptedT = tHit;
-                        foundAccepted = true;
-                        out.primitiveIndex = pointIndex;
-                        out.t = tHit;
-                        out.transmissivity = 1 - alphaAtHit;
-                    } else {
-                        sawTransmissionOnThisBLAS = true;
-                        out.transmissivity = 1 - alphaAtHit;
-                        out.primitiveIndex = pointIndex;
-                        out.t = tHit;
-                    }
 
+                    if (rayIntersectMode == RayIntersectMode::Random) {
+                        if (xi < alphaAtHit) {                 // accept with probability alphaAtHit
+                            bestAcceptedT = tHit;
+                            foundAccepted = true;
+                            out.primitiveIndex = pointIndex;
+                            out.t = tHit;
+                            out.transmissivity = 1 - alphaAtHit;
+                        } else {
+                            sawTransmissionOnThisBLAS = true;
+                            out.transmissivity = 1 - alphaAtHit;
+                            out.primitiveIndex = pointIndex;
+                            out.t = tHit;
+                        }
+                    } else {
+                        if (rayIntersectMode == RayIntersectMode::Scatter) {                 // accept with probability alphaAtHit
+                            bestAcceptedT = tHit;
+                            foundAccepted = true;
+                            out.primitiveIndex = pointIndex;
+                            out.t = tHit;
+                            out.transmissivity = 1 - alphaAtHit;
+                        } else if (rayIntersectMode == RayIntersectMode::Transmit) {
+                            sawTransmissionOnThisBLAS = true;
+                            out.transmissivity = 1 - alphaAtHit;
+                            out.primitiveIndex = pointIndex;
+                            out.t = tHit;
+                        }
+                    }
+                    // Generate a random number [0, 1] dependent on the position
                 }
             }
         }
@@ -145,7 +159,7 @@ namespace Pale {
         return foundAccepted;
     }
 
-    SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld, WorldHit *worldHit, const GPUSceneBuffers &scene, rng::Xorshift128& rng128) {
+    SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld, RayIntersectMode intersectMode, WorldHit *worldHit, const GPUSceneBuffers &scene, rng::Xorshift128& rng128) {
         /* abort if scene is empty */
         const TLASNode *tlas = scene.tlasNodes;
         const InstanceRecord *instances = scene.instances;
@@ -189,7 +203,7 @@ namespace Pale {
                     ok = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene);
                 } else {
                     // point cloud
-                    ok = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene, rng128);
+                    ok = intersectBLASPointCloud(rayObject, intersectMode, instance.blasRangeIndex, localHit, scene, rng128);
                     worldHit->visitedSplatField |= localHit.hasVisibilityTest;
 
                 }
@@ -226,10 +240,10 @@ namespace Pale {
     }
 
 
-    static WorldHit traceVisibility(const Ray &rayIn, float tMax, const GPUSceneBuffers &scene,
+    static WorldHit traceVisibility(const Ray &rayIn, RayIntersectMode intersectMode, float tMax, const GPUSceneBuffers &scene,
                                     rng::Xorshift128 &rng128) {
         WorldHit worldHit{};
-        intersectScene(rayIn, &worldHit, scene, rng128);
+        intersectScene(rayIn,intersectMode, &worldHit, scene, rng128);
         return worldHit; // opaque geometry
     }
 }

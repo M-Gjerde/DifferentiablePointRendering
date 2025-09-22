@@ -19,21 +19,21 @@ namespace Pale {
 #ifdef NDEBUG
         // Release
         m_settings.photonsPerLaunch = 1e7; // 1e7
-        m_settings.maxBounces = 8;
-        m_settings.maxAdjointBounces = 8;
-        m_settings.adjointSamplesPerPixel = 8;
-
-#else
-        // omp
-        m_settings.photonsPerLaunch = 3e6; // 1e6
         m_settings.maxBounces = 4;
         m_settings.maxAdjointBounces = 4;
         m_settings.adjointSamplesPerPixel = 4;
 
+#else
+        // omp
+        m_settings.photonsPerLaunch = 2e6; // 1e6
+        m_settings.maxBounces = 4;
+        m_settings.maxAdjointBounces = 1;
+        m_settings.adjointSamplesPerPixel = 1;
+
         // cuda/rocm
         //m_settings.photonsPerLaunch = 1e7; // 1e6
         //m_settings.maxBounces = 8;
-        //m_settings.maxAdjointBounces = 8;
+        //m_settings.maxAdjointBounces = 1;
         //m_settings.adjointSamplesPerPixel = 16;
 #endif
     }
@@ -144,6 +144,11 @@ namespace Pale {
     void PathTracer::renderForward(SensorGPU &sensor) {
         ScopedTimer forwardTimer("Forward pass total", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
+
+        if (sensor.width * sensor.height * 2 > m_rayQueueCapacity) {
+            Log::PA_ERROR("Not enough rays. Required capacity is 2*width*height");
+            exit(1); // TODO graceful exit or something else
+        }
 
         RenderPackage renderPackage{
             .queue = m_queue,

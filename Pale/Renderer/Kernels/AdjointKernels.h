@@ -7,8 +7,8 @@
 
 
 namespace Pale {
-    void launchRayGenAdjointKernel(RenderPackage& pkg);
 
+    void launchRayGenAdjointKernel(RenderPackage & pkg, int spp);
 
     void launchAdjointKernel(RenderPackage &pkg, uint32_t activeRayCount);
 

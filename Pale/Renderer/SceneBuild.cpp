@@ -272,8 +272,8 @@ namespace Pale {
 
 
     inline AABB surfelObjectAabb(const Point& surfel,
-                                  float kStdDevs = 3.5f,
-                                  float sigmaNormal = 0.0f) // set >0 model thickness
+                                  float kStdDevs = 10.0f,
+                                  float sigmaNormal = 0.1f) // set >0 model thickness
     {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
