@@ -94,7 +94,7 @@ namespace Pale {
                     if (pdfTotal <= 0.f || cosTheta <= 0.f) return;
 
                     // 4) initial throughput
-                    const sycl::float3 Le = light.emissionRgb* 1000000 ; // radiance scale
+                    const sycl::float3 Le = light.emissionRgb * 1000000; // radiance scale
                     const float invPdf = 1.0f / pdfTotal;
                     sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / photonCount;
 
@@ -183,7 +183,6 @@ namespace Pale {
                     if (dot(nW, -rayState.ray.direction) < 0.0f)
                         nW = -nW;
                     worldHit.geometricNormalW = nW;
-
 
 
                     m_intermediates.hitRecords[rayIndex] = worldHit;
@@ -432,7 +431,7 @@ namespace Pale {
                                 float surfaceCos = sycl::fabs(dot(float3{0, -1, 0}, directionToPinhole));
                                 float cameraCos = sycl::fabs(dot(camera.forward, -directionToPinhole));
                                 float G_cam = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
-                                float3 color = throughput * G_cam ;
+                                float3 color = throughput * G_cam;
 
                                 r.fetch_add(color.x());
                                 g.fetch_add(color.y());
@@ -557,10 +556,11 @@ namespace Pale {
 
 
     // ---- Kernel: Camera gather (one thread per pixel) --------------------------
-    void launchCameraGatherKernel(RenderPackage &pkg) {
+    void launchCameraGatherKernel(RenderPackage &pkg, int spp, int totalSamplesPerPixel) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
-        auto &sensor = pkg.sensor;
+        auto &sensor = pkg.photonMapSensor;
+        auto &settings = pkg.settings;
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
 
         const std::uint32_t imageWidth = sensor.camera.width;
@@ -569,8 +569,9 @@ namespace Pale {
 
         // Clear framebuffer before calling this, outside.
         const float gatherRadius = photonMap.gatherRadiusWorld;
-        //const float normalization = 1.0f / (static_cast<float>(M_PI) * gatherRadius * gatherRadius);
         queue.submit([&](sycl::handler &cgh) {
+            uint64_t baseSeed = pkg.settings.randomSeed * spp;
+            float samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
             cgh.parallel_for<class CameraGatherKernel>(
                 sycl::range<1>(pixelCount),
                 [=](sycl::id<1> tid) {
@@ -579,45 +580,28 @@ namespace Pale {
                     const std::uint32_t py = pixelIndex / imageWidth;
 
                     // 1) Trace camera ray to first diffuse mesh hit
-                    rng::Xorshift128 rng128(rng::makePerItemSeed1D(pkg.settings.randomSeed, pixelIndex));
-                    int samplesPerPixel = 32;
+                    rng::Xorshift128 rng128(rng::makePerItemSeed1D(baseSeed, pixelIndex));
                     float3 radianceRGB(0.0f);
-                    for (uint32_t sampleIndex = 0; sampleIndex < samplesPerPixel; ++sampleIndex) {
-                        // subpixel jitter
-                        const float jx = rng128.nextFloat() - 0.5f;
-                        const float jy = rng128.nextFloat() - 0.5f;
+                    // subpixel jitter
+                    const float jx = rng128.nextFloat() - 0.5f;
+                    const float jy = rng128.nextFloat() - 0.5f;
 
-                        Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, float(px), float(py), jx, jy);
-                        WorldHit worldHit{};
-                        intersectScene(primary, RayIntersectMode::Random, &worldHit, scene, rng128);
-                        if (!worldHit.hit) continue; // miss → black (or add env if desired)
+                    Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px), static_cast<float>(py), jx, jy);
+                    WorldHit worldHit{};
+                    intersectScene(primary, RayIntersectMode::Random, &worldHit, scene, rng128);
 
-                        radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(
-                                          worldHit, scene, photonMap, pkg.settings.photonsPerLaunch);
-                    }
+                    if (!worldHit.hit)
+                        return; // miss → black (or add env if desired)
 
-                    radianceRGB = radianceRGB * (1.0f / static_cast<float>(samplesPerPixel));
+                    radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(
+                                      worldHit, scene, photonMap, settings.photonsPerLaunch);
+
                     // Atomic accumulate
                     const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code
-                    float4 &dst = sensor.framebuffer[fbIndex];
+                    float4 previous = sensor.framebuffer[fbIndex];
+                    float4 current  = float4(radianceRGB.x(), radianceRGB.y(), radianceRGB.z(), 1.0f) / totalSamplesPerPixel;
+                    sensor.framebuffer[fbIndex] = previous + current; // or write to a staging buffer
 
-                    const sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space> red(dst.x());
-                    const sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space> green(dst.y());
-                    const sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space> blue(dst.z());
-                    const sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space> alpha(dst.w());
-
-                    red.fetch_add(radianceRGB.x());
-                    green.fetch_add(radianceRGB.y());
-                    blue.fetch_add(radianceRGB.z());
-                    alpha.store(1.0f);
                 });
         }).wait();
     }

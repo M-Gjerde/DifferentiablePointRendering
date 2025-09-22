@@ -74,7 +74,14 @@ namespace Pale {
                 */
             }
 
-            //launchCameraGatherKernel(pkg); // generate image from photon map
+            {
+                ScopedTimer timer("launchCameraGatherKernel");
+                int cameraGatherSPP = 32;
+                for (int spp = 0; spp < cameraGatherSPP; ++spp) {
+                    launchCameraGatherKernel(pkg, spp, cameraGatherSPP); // generate image from photon map
+                }
+            }
+
         } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
             pkg.queue
                     .fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width)

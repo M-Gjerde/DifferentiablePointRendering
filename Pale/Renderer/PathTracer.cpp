@@ -31,8 +31,8 @@ namespace Pale {
         m_settings.adjointSamplesPerPixel = 1;
 
         // cuda/rocm
-        //m_settings.photonsPerLaunch = 1e7; // 1e6
-        //m_settings.maxBounces = 8;
+        //m_settings.photonsPerLaunch = 2e7; // 1e6
+        //m_settings.maxBounces = 4;
         //m_settings.maxAdjointBounces = 1;
         //m_settings.adjointSamplesPerPixel = 16;
 #endif
@@ -141,7 +141,7 @@ namespace Pale {
 
     }
 
-    void PathTracer::renderForward(SensorGPU &sensor) {
+    void PathTracer::renderForward(SensorGPU &sensor, SensorGPU &sensor2) {
         ScopedTimer forwardTimer("Forward pass total", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
@@ -155,7 +155,8 @@ namespace Pale {
             .settings = m_settings,
             .scene = m_scene,
             .intermediates = m_intermediates,
-            .sensor = sensor
+            .sensor = sensor,
+            .photonMapSensor = sensor2
         };
 
         submitKernel(renderPackage);

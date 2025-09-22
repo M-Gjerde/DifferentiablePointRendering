@@ -164,7 +164,7 @@ namespace Pale {
         float z() const { return v.z(); }
         float &z() { return v.z(); }
 
-        bool operator==(const float3 & float3) const {
+        bool operator==(const float3 &float3) const {
             return v.x() == float3.x() && v.y() == float3.y() && v.z() == float3.z();
         };
     };
@@ -240,10 +240,6 @@ namespace Pale {
         return {a.x() * inv, a.y() * inv, a.z() * inv};
     }
 
-    inline float4 operator/(float4 a, float s) {
-        float inv = 1.f / s;
-        return {a.x() * inv, a.y() * inv, a.z() * inv, a.w() * inv};
-    }
 
     inline float3 min(float3 a, float3 b) { return sycl::min(a.v, b.v); }
     inline float min(float a, float b) { return sycl::min(a, b); }
@@ -252,6 +248,22 @@ namespace Pale {
     inline float3 cross(float3 a, float3 b) { return sycl::cross(a.v, b.v); }
     inline float dot(float3 a, float3 b) { return sycl::dot(a.v, b.v); }
     inline float length(float3 a) { return sycl::length(a.v); }
+
+
+    inline float4 operator/(float4 a, float s) {
+        float inv = 1.f / s;
+        return {a.x() * inv, a.y() * inv, a.z() * inv, a.w() * inv};
+    }
+
+    inline float4 operator+(float4 a, float4 b) {
+        return {
+            a.x() + b.x(),
+            a.y() + b.y(),
+            a.z() + b.z(),
+            a.w() + b.w()
+        };
+    }
+
 
 
     /*

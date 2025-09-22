@@ -308,9 +308,11 @@ int main(int argc, char **argv) {
     // Register the scene with the Tracer
     tracer.setScene(gpu, buildProducts);
 
+    Pale::SensorGPU photonMapSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+
     // Render
     Pale::Log::PA_INFO("Forward Render Pass...");
-    tracer.renderForward(sensor); // films is span/array
+    tracer.renderForward(sensor, photonMapSensor); // films is span/array
 
     {
         // // Save each sensor image
@@ -327,6 +329,23 @@ int main(int argc, char **argv) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
 
+        Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
+    }
+
+    {
+        // // Save each sensor image
+        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), photonMapSensor);
+        const uint32_t W = photonMapSensor.width, H = photonMapSensor.height;
+        float gamma = 2.2f;
+        float exposure = 2.5f;
+        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out_photonmap.png";
+        if (Pale::Utils::savePNGWithToneMap(
+            filePath, rgba, W, H,
+            exposure,
+            gamma,
+            false)) {
+            Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
+        };
 
         Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
     }

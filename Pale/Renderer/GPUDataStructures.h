@@ -247,6 +247,7 @@ namespace Pale {
         float3 direction; // 32
         float3 normal;
     };
+    static_assert(std::is_trivially_copyable_v<Ray>);
 
     struct alignas(16) RayState {
         Ray ray{};
@@ -255,6 +256,7 @@ namespace Pale {
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
         RayIntersectMode intersectMode = RayIntersectMode::Random;
     };
+    static_assert(std::is_trivially_copyable_v<RayState>);
 
     struct alignas(16) LocalHit {
         float t = FLT_MAX; // world-space t
@@ -263,6 +265,7 @@ namespace Pale {
         uint32_t primitiveIndex = UINT32_MAX; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex = UINT32_MAX; // mesh/geometry id within scene
     };
+    static_assert(std::is_trivially_copyable_v<LocalHit>);
 
     struct alignas(16) WorldHit {
         bool hit = false;
@@ -274,6 +277,7 @@ namespace Pale {
         float3 geometricNormalW = float3(0.0f);; // optional: fill if you have it cheaply
         bool visitedSplatField = false;
     };
+    static_assert(std::is_trivially_copyable_v<WorldHit>);
 
     struct alignas(16) PathTracerSettings {
         uint32_t photonsPerLaunch = 1e5;
@@ -302,6 +306,7 @@ namespace Pale {
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
     };
+    static_assert(std::is_trivially_copyable_v<DevicePhotonSurface>);
 
     // ----------------- Full surface photon map handle (device) -------------------
     struct alignas(16) DeviceSurfacePhotonMapGrid {
@@ -323,6 +328,7 @@ namespace Pale {
         float gatherRadiusWorld = 0.0f;
         float kappa = 2.0f;
     };
+    static_assert(std::is_trivially_copyable_v<DeviceSurfacePhotonMapGrid>);
 
 
     struct alignas(16) RenderIntermediatesGPU {
@@ -343,6 +349,8 @@ namespace Pale {
         GPUSceneBuffers scene{};
         RenderIntermediatesGPU intermediates{};
         SensorGPU sensor{};
+        SensorGPU photonMapSensor{};
         AdjointGPU adjoint{};
     };
+
 }
