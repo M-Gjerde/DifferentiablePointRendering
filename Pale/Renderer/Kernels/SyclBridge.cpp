@@ -7,7 +7,7 @@
 
 #include "Renderer/GPUDataStructures.h"
 
-#include "Renderer/Kernels/IntersectionKernels.h"
+#include "Renderer/Kernels/Utils.h"
 #include "Renderer/Kernels/KernelHelpers.h"
 #include "Renderer/Kernels/PrimalKernels.h"
 
@@ -58,6 +58,17 @@ namespace Pale {
             } {
                 ScopedTimer timer("buildPhotonGridLinkedLists");
                 buildPhotonGridLinkedLists(pkg.queue, pkg.intermediates.map, photonMapCount);
+            }
+
+            // Save photon map to disk:
+            {
+                ScopedTimer timer("dumpPhotonMapToPLY");
+                dumpPhotonMapToPLY(pkg.queue,
+                                  pkg.intermediates.map.photons,
+                                  photonMapCount,
+                                  std::filesystem::path("Output/photon_map.ply"),
+                                  /*exposureScale=*/1.0f,
+                                  /*writeNormals=*/true);
             }
 
             //launchCameraGatherKernel(pkg); // generate image from photon map

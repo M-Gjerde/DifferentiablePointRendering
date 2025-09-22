@@ -25,16 +25,16 @@ namespace Pale {
 
 #else
         // omp
-        m_settings.photonsPerLaunch = 1e6; // 1e6
+        m_settings.photonsPerLaunch = 3e6; // 1e6
         m_settings.maxBounces = 4;
         m_settings.maxAdjointBounces = 4;
         m_settings.adjointSamplesPerPixel = 4;
 
         // cuda/rocm
-        m_settings.photonsPerLaunch = 1e7; // 1e6
-        m_settings.maxBounces = 8;
-        m_settings.maxAdjointBounces = 8;
-        m_settings.adjointSamplesPerPixel = 16;
+        //m_settings.photonsPerLaunch = 1e7; // 1e6
+        //m_settings.maxBounces = 8;
+        //m_settings.maxAdjointBounces = 8;
+        //m_settings.adjointSamplesPerPixel = 16;
 #endif
     }
 
