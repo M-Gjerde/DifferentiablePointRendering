@@ -68,7 +68,7 @@ namespace Pale {
                     };
 
                     // If you want unit weights instead, keep this line:
-                    initialAdjointWeight = float3(1.0f);
+                    initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
                     RayState rayState{};
                     rayState.ray = cameraRay;
@@ -229,13 +229,16 @@ namespace Pale {
                     //const float3 transportTimesBRDF = transportGradient * material.baseColor;
                     float3 deltaL = (L_bg - L_fg);
                     //float3 deltaL = (bgBRDF - fgBRDF);
-                    float3 dL_dpk = transportGradient * deltaL;
-
-                    const float3 gradTransportAndRadiance = dL_dpk;
-
+                    float3 dL_dpk_r = transportGradient * deltaL.x();
+                    float3 dL_dpk_g = transportGradient * deltaL.y();
+                    float3 dL_dpk_b = transportGradient * deltaL.z();
                     // Adjoint Scalar q
                     float3 q = transmitRayState.pathThroughput;
-                    float3 dcost_dpk = q * gradTransportAndRadiance;
+                    float3 dcost_dpk_r = dL_dpk_r * q.x();
+                    float3 dcost_dpk_g = dL_dpk_g * q.y();
+                    float3 dcost_dpk_b = dL_dpk_b * q.z();
+
+                    float gradMag = (length(dcost_dpk_r) + length(dcost_dpk_g) + length(dcost_dpk_b)) / 3.0f;
 
                     float3& dst = adjoint.gradient_pk[0];
                     float3& gradCounter = adjoint.gradient_pk[1];
@@ -263,14 +266,14 @@ namespace Pale {
 
                     gradCount.fetch_add(1.0f);
 
-                    xGrad.fetch_add(dcost_dpk.x());
-                    yGrad.fetch_add(dcost_dpk.y());
-                    zGrad.fetch_add(dcost_dpk.z());
+                    xGrad.fetch_add(gradMag);
+                    yGrad.fetch_add(gradMag);
+                    zGrad.fetch_add(gradMag);
 
 
                     if (transmitRayState.bounceIndex >= 0) {
-                        const float3 parameterAxis = {1.0f, 1.0f, 1.0f};
-                        const float dVdp_scalar = dot(dcost_dpk, parameterAxis);
+                        const float3 parameterAxis = {0.0f, 1.0f, 0.0f};
+                        const float dVdp_scalar = dot(dcost_dpk_g, parameterAxis);
 
                         // write into the pixel that launched this adjoint path
                         float4& gradImageDst = sensor.framebuffer[transmitRayState.pixelIndex]; // make this buffer
