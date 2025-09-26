@@ -128,7 +128,7 @@ namespace Pale {
                                                BuildProducts& outBuildProducts) {
         std::vector<Point> collectedPoints;
         std::vector<UUID> uniquePointCloudIds;
-        {
+        {    
             // de-dup assets
             std::unordered_set<UUID> seen;
             for (auto [e, pc] : scene->getAllEntitiesWith<PointCloudComponent>().each()) {

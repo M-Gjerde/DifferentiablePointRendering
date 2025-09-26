@@ -35,9 +35,9 @@ assets:
   - id: 6191028148284800261
     type: Material
     path: Materials/cbox/bsdf_gray_0.mat.yaml
-  - id: 1027348735684273460
-    type: Material
-    path: Materials/cbox/bsdf_white_0.mat.yaml
   - id: 2130818562016894621
     type: Material
     path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
+  - id: 1027348735684273460
+    type: Material
+    path: Materials/cbox/bsdf_white_0.mat.yaml

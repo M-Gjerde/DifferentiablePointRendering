@@ -10,6 +10,7 @@ module;
 #include <cmath>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <cstring>
+#include <filesystem>
 #include <glm/gtx/norm.hpp>
 #include <glm/gtx/compatibility.hpp>
 #include <glm/gtx/orthonormalize.hpp>
@@ -70,7 +71,7 @@ struct PLYPointLoader : IAssetLoader<PointAsset>
 
         std::ifstream inputFile(meta.path, std::ios::binary);
         if (!inputFile) {
-            Log::PA_ERROR("PLYPointLoader: cannot open file '{}'", meta.path.string());
+            Log::PA_ERROR("PLYPointLoader: cannot open file '{}'", std::filesystem::current_path().string() + meta.path.string());
             return {};
         }
 

@@ -269,7 +269,7 @@ namespace Pale {
 
 
                     if (transmitRayState.bounceIndex >= 0) {
-                        const float3 parameterAxis = {0.0f, 1.0f, 0.0f};
+                        const float3 parameterAxis = {1.0f, 0.0f, 1.0f};
                         const float dVdp_scalar = dot(dcost_dpk, parameterAxis);
 
                         // write into the pixel that launched this adjoint path
