@@ -133,7 +133,7 @@ namespace Pale {
 #ifdef NDEBUG
         const float k     = 20.0f;
 #else
-        const float k     = 1000.0f;
+        const float k     = 20.0f;
 #endif
 
         const float r0    = sycl::sqrt((k * Adiff) / (N * float(M_PI)));
