@@ -350,7 +350,7 @@ int main(int argc, char **argv) {
         Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
     }
 
-    if (pointCloudPath.filename() == "target.ply") {
+    if (pointCloudPath.filename() != "initial.ply") {
         Pale::Log::PA_INFO("TARGET RENDERED exiting...");
         return 0;
     }
