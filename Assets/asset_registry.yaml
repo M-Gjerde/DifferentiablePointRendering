@@ -1,4 +1,7 @@
 assets:
+  - id: 13930669167159129666
+    type: PointCloud
+    path: PointClouds/random.ply
   - id: 11668450334107268217
     type: Material
     path: Materials/cbox_custom/emissive_1.mat.yaml

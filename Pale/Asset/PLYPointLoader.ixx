@@ -226,9 +226,9 @@ struct PLYPointLoader : IAssetLoader<PointAsset>
             for (std::size_t i = 0; i < vertexCount; ++i) {
                 const std::size_t i3 = i * 3, i2 = i * 2;
 
-                glm::vec3 tangentU = glm::vec3(tuFloats[i3 + 0], tuFloats[i3 + 1], tuFloats[i3 + 2]);
-                glm::vec3 tangentV = glm::vec3(tvFloats[i3 + 0], tvFloats[i3 + 1], tvFloats[i3 + 2]);
-                ply_detail::orthonormalizeTangents(tangentU, tangentV);
+                glm::vec3 tangentU = glm::normalize(glm::vec3(tuFloats[i3 + 0], tuFloats[i3 + 1], tuFloats[i3 + 2]));
+                glm::vec3 tangentV = glm::normalize(glm::vec3(tvFloats[i3 + 0], tvFloats[i3 + 1], tvFloats[i3 + 2]));
+                //ply_detail::orthonormalizeTangents(tangentU, tangentV);
 
                 geometry.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
                 geometry.tanU[i]      = tangentU;
