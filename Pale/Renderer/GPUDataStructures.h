@@ -245,7 +245,6 @@ namespace Pale {
     struct alignas(16) Ray {
         float3 origin; // 16
         float3 direction; // 32
-        float3 normal;
     };
     static_assert(std::is_trivially_copyable_v<Ray>);
 
@@ -254,7 +253,6 @@ namespace Pale {
         float3 pathThroughput{};
         uint32_t bounceIndex{};
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
-        RayIntersectMode intersectMode = RayIntersectMode::Random;
     };
     static_assert(std::is_trivially_copyable_v<RayState>);
 
@@ -281,6 +279,7 @@ namespace Pale {
 
     struct alignas(16) PathTracerSettings {
         uint32_t photonsPerLaunch = 1e5;
+        uint32_t samplesPerRay = 16;
         uint64_t randomSeed = 42; // should be more than maxBounces
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 8;

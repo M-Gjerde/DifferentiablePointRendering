@@ -18,8 +18,11 @@ namespace Pale {
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
+        const uint32_t samplesPerRay = settings.samplesPerRay;
+
         const uint32_t raysPerSet = imageWidth * imageHeight;
-        const uint32_t rayCount = raysPerSet * 2u;
+
+        const uint32_t rayCount = raysPerSet * samplesPerRay; // total number of rays (With n-samples per ray)
 
         queue.memcpy(pkg.intermediates.countPrimary, &rayCount, sizeof(uint32_t)).wait();
 
@@ -27,7 +30,7 @@ namespace Pale {
             const uint64_t baseSeed = settings.randomSeed * spp;
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
-                sycl::range<1>(rayCount),
+                sycl::range<1>(raysPerSet),
                 [=](sycl::id<1> globalId) {
                     const uint32_t globalRayIndex = static_cast<uint32_t>(globalId[0]);
 
@@ -38,13 +41,15 @@ namespace Pale {
                     const uint32_t pixelY = pixelLinearIndexWithinImage / imageWidth;
 
                     // Decide set type
-                    const bool isScatterSet = (globalRayIndex >= raysPerSet);
-
                     // RNG per ray
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, globalRayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
+                    /*
                     const float jitterX = rng128.nextFloat() - 0.5f;
                     const float jitterY = rng128.nextFloat() - 0.5f;
+                    */
+                    const float jitterX = 0.0f;
+                    const float jitterY = 0.0f;
 
                     // Primary ray
                     Ray cameraRay = makePrimaryRayFromPixelJittered(
@@ -75,9 +80,6 @@ namespace Pale {
                     rayState.pathThroughput = initialAdjointWeight;
                     rayState.bounceIndex = 0;
                     rayState.pixelIndex = pixelIndex;
-                    rayState.intersectMode = isScatterSet
-                                                 ? RayIntersectMode::Scatter
-                                                 : RayIntersectMode::Transmit;
 
                     /*
                     auto outputCounter = sycl::atomic_ref<uint32_t,
@@ -86,9 +88,11 @@ namespace Pale {
                                                           sycl::access::address_space::global_space>(
                         *intermediates.countPrimary);
                     */
+                    for (int sample = 0; sample < samplesPerRay; sample++) {
+                        const uint32_t outputSlot = pixelIndex + samplesPerRay ;
+                        intermediates.primaryRays[outputSlot] = rayState;
+                    }
 
-                    const uint32_t outputSlot = pixelIndex + (isScatterSet ? raysPerSet : 0u);
-                    intermediates.primaryRays[outputSlot] = rayState;
                 });
         });
     }
@@ -104,35 +108,39 @@ namespace Pale {
         auto* hitRecords = pkg.intermediates.hitRecords;
         auto* raysIn = pkg.intermediates.primaryRays;
         // activeRayCount == total rays in the current buffer (must be even)
-        const uint32_t pairCount = activeRayCount / 2u;
+
+        const uint32_t samplesPerRay = settings.samplesPerRay;
+        const uint32_t totalRayCount = activeRayCount; // total number of rays (With n-samples per ray)
+        const uint32_t perPixelRayCount = activeRayCount / settings.samplesPerRay; // Number of rays per pixel
 
         queue.submit([&](sycl::handler& cgh) {
             const uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<struct AdjointShadeKernelTag>(
-                sycl::range<1>(pairCount),
+                sycl::range<1>(perPixelRayCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
                     constexpr float kEps = 1e-4f;
 
+                    for (int raySample = 0; raySample < samplesPerRay; raySample++) {
+                        uint32_t raySlot = rayIndex + raySample;
+                        const RayState rayState = raysIn[rayIndex];
+                        const WorldHit hit = hitRecords[rayIndex];
 
-                    const uint32_t scatterPairIndex = rayIndex + pairCount;
-
-                    const RayState transmitRayState = raysIn[rayIndex];
-                    const RayState scatterRayState = raysIn[scatterPairIndex];
-
-                    const WorldHit transmitWorldHit = hitRecords[rayIndex];
-                    const WorldHit scatterWorldHit = hitRecords[scatterPairIndex];
-
-                    if (!transmitWorldHit.hit || !scatterWorldHit.hit) {
-                        return;
+                        if (!hit.hit) {
+                            return;
+                        }
                     }
-                    GPUMaterial material;
-                    float visibility = transmitWorldHit.transmissivity;
 
-                    const Ray transmitRay = transmitRayState.ray;
+
+
+
+
+                    GPUMaterial material;
+
                     auto surfel = scene.points[0];
+                    const Ray transmitRay = transmitRayState.ray;
                     const float3 segmentDirection = transmitWorldHit.hitPositionW - transmitRay.origin;
                     float3 tangentU = normalize(surfel.tanU);
                     float3 tangentV = normalize(surfel.tanV);
@@ -346,14 +354,11 @@ namespace Pale {
                     nextTransmitState.ray.origin = transmitWorldHit.hitPositionW +
                         transmitWorldHit.geometricNormalW * kEps;
                     nextTransmitState.ray.direction = newDirection;
-                    nextTransmitState.ray.normal = transmitWorldHit.geometricNormalW;
                     nextTransmitState.bounceIndex = transmitRayState.bounceIndex + 1;
                     nextTransmitState.pixelIndex = transmitRayState.pixelIndex;
-                    nextTransmitState.intersectMode = RayIntersectMode::Transmit;
                     nextTransmitState.pathThroughput = transmitRayState.pathThroughput;
 
                     RayState nextScatterState = nextTransmitState;
-                    nextScatterState.intersectMode = RayIntersectMode::Scatter;
 
                     // pack: first half Transmit, second half Scatter
                     const uint32_t outputBase = rayIndex;

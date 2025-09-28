@@ -123,6 +123,7 @@ target_sources(${PROJECT_NAME}
         Pale/Renderer/SceneUpload.ixx
         Pale/Renderer/BVH.ixx
         Pale/Utils/ImageIO.ixx
+        Pale/Utils/StringFormatting.ixx
 )
 
 # Link your exe to the module wrapper (must come after add_executable)
