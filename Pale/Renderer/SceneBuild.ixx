@@ -280,8 +280,6 @@ export namespace Pale {
                                     const std::vector<Transform>& transforms,
                                     const BuildOptions& opts);
 
-        static void appendBLAS(BuildProducts& buildProducts, const BLASResult& blasResult, const MeshRange&);
-
         static void computePacking(BuildProducts& buildProducts);
         static float computeDiffuseSurfaceAreaWorld(const BuildProducts& buildProducts);
 

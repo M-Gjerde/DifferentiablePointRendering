@@ -27,16 +27,16 @@ namespace Pale {
 
 #else
         // omp
-        m_settings.photonsPerLaunch = 2e8; // 1e6
+        m_settings.photonsPerLaunch = 2e6; // 1e6
         m_settings.maxBounces = 4;
         m_settings.maxAdjointBounces = 1;
         m_settings.adjointSamplesPerPixel = 1;
-        m_settings.samplesPerRay = 4;
+        m_settings.samplesPerRay = 2;
         // cuda/rocm
-        m_settings.photonsPerLaunch = 2e6; // 1e6
-        m_settings.maxBounces = 4;
-        m_settings.maxAdjointBounces = 4;
-        m_settings.adjointSamplesPerPixel = 64;
+        m_settings.photonsPerLaunch = 4e6; // 1e6
+        m_settings.maxBounces = 8;
+        m_settings.maxAdjointBounces = 8;
+        m_settings.adjointSamplesPerPixel = 32;
         m_settings.samplesPerRay = 4;
 #endif
     }
@@ -179,7 +179,7 @@ namespace Pale {
 #ifdef NDEBUG
         const float k = 20.0f;
 #else
-        const float k = 50.0f;
+        const float k = 20.0f;
 #endif
 
         const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));

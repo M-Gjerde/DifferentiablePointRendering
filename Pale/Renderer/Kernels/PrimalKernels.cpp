@@ -131,7 +131,7 @@ namespace Pale {
 
             WorldHit worldHit{};
             RayState rayState = m_intermediates.primaryRays[rayIndex];
-            intersectScene(rayState.ray, &worldHit, m_scene, rng128);
+            intersectScene(rayState.ray, rayState.intersectMode, &worldHit, m_scene, rng128);
             if (!worldHit.hit) {
                 m_intermediates.hitRecords[rayIndex] = worldHit;
                 return;
@@ -593,7 +593,7 @@ namespace Pale {
                     Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
                                                                   static_cast<float>(py), jx, jy);
                     WorldHit worldHit{};
-                    intersectScene(primary, &worldHit, scene, rng128);
+                    intersectScene(primary, RayIntersectMode::Random, &worldHit, scene, rng128);
 
                     if (!worldHit.hit)
                         return; // miss → black (or add env if desired)

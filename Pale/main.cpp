@@ -289,7 +289,10 @@ int main(int argc, char **argv) {
     auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
     auto entityGaussian = scene->createEntity("Gaussian");
     entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
-
+    auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
+    //transform.setRotationEuler(glm::vec3(-90.0f, 0.0f, 0.0f));
+    //transform.setScale(glm::vec3(0.5f, 0.5f, 0.5f));
+    //transform.setPosition(glm::vec3(0.0f, 0.1f, 0.0f));
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device

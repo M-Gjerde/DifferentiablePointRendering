@@ -253,6 +253,7 @@ namespace Pale {
         float3 pathThroughput{};
         uint32_t bounceIndex{};
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
+        RayIntersectMode intersectMode = RayIntersectMode::Random;
     };
     static_assert(std::is_trivially_copyable_v<RayState>);
 

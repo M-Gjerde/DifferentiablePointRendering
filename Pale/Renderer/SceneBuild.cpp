@@ -272,7 +272,7 @@ namespace Pale {
 
 
     inline AABB surfelObjectAabb(const Point& surfel,
-                                  float kStdDevs = 10.0f,
+                                  float kStdDevs = 2.2f,
                                   float sigmaNormal = 0.1f) // set >0 model thickness
     {
         const float3 tangentU = normalize(surfel.tanU);
@@ -375,12 +375,6 @@ namespace Pale {
     }
 
 
-    // ---- splice into global pools, reorder tris, patch leaves, record range ----
-    void SceneBuild::appendBLAS(BuildProducts& buildProducts,
-                                const BLASResult& blasResult, const MeshRange& meshRange) {
-    }
-
-    static inline float get(const float3& v, int axis) { return axis == 0 ? v.x() : axis == 1 ? v.y() : v.z(); }
 
     SceneBuild::TLASResult
     SceneBuild::buildTLAS(const std::vector<InstanceRecord>& instances,
