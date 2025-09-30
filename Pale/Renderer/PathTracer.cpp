@@ -29,14 +29,16 @@ namespace Pale {
         // omp
         m_settings.photonsPerLaunch = 2e6; // 1e6
         m_settings.maxBounces = 4;
+        m_settings.numForwardPasses = 1;
         m_settings.maxAdjointBounces = 1;
         m_settings.adjointSamplesPerPixel = 1;
         m_settings.samplesPerRay = 2;
         // cuda/rocm
-        m_settings.photonsPerLaunch = 4e6; // 1e6
-        m_settings.maxBounces = 8;
+        m_settings.photonsPerLaunch = 1e6; // 1e6
+        m_settings.maxBounces = 4;
+        m_settings.numForwardPasses = 1;
         m_settings.maxAdjointBounces = 8;
-        m_settings.adjointSamplesPerPixel = 32;
+        m_settings.adjointSamplesPerPixel = 64;
         m_settings.samplesPerRay = 4;
 #endif
     }
@@ -75,13 +77,13 @@ namespace Pale {
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
 
         // --- photon map buffers ---
-        std::size_t sizePhotonsBytes = sizeof(DevicePhotonSurface) * m_rayQueueCapacity * m_settings.maxBounces;
+        std::size_t sizePhotonsBytes = sizeof(DevicePhotonSurface) * m_rayQueueCapacity * m_settings.maxBounces * m_settings.numForwardPasses;
         m_intermediates.map.photons = sycl::malloc_device<DevicePhotonSurface>(
             m_rayQueueCapacity * m_settings.maxBounces, m_queue);
         Log::PA_TRACE("Allocated photons: {}", Utils::formatBytes(sizePhotonsBytes));
 
         m_intermediates.map.photonCountDevicePtr = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.map.photonCapacity = m_rayQueueCapacity * m_settings.maxBounces;
+        m_intermediates.map.photonCapacity = m_rayQueueCapacity * m_settings.maxBounces * m_settings.numForwardPasses;
 
         // --- zero init ---
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
@@ -179,7 +181,7 @@ namespace Pale {
 #ifdef NDEBUG
         const float k = 20.0f;
 #else
-        const float k = 20.0f;
+        const float k = 200.0f;
 #endif
 
         const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));

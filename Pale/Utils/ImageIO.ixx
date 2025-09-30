@@ -409,9 +409,9 @@ export namespace Pale::Utils {
         const std::vector<float> &inputRGBA,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
+        float adjointSamplesPerPixel = 32.0f,
         float absQuantile = 0.99f,
         bool flipY = true
-
     ) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());
@@ -426,11 +426,10 @@ export namespace Pale::Utils {
         std::vector<float> finiteAbsScalars;
         finiteAbsScalars.reserve(pixelCount);
 
-        float numAdjointPasses = 16.0f;
         for (std::size_t i = 0; i < pixelCount; ++i) {
-            const float r = inputRGBA[i * 4 + 0] / numAdjointPasses; // Divide by m_settings.adjointSamplesPerPixel
-            const float g = inputRGBA[i * 4 + 1] / numAdjointPasses; // Divide by m_settings.adjointSamplesPerPixel
-            const float b = inputRGBA[i * 4 + 2] / numAdjointPasses; // Divide by m_settings.adjointSamplesPerPixel
+            const float r = inputRGBA[i * 4 + 0] / adjointSamplesPerPixel; // Divide by m_settings.adjointSamplesPerPixel
+            const float g = inputRGBA[i * 4 + 1] / adjointSamplesPerPixel; // Divide by m_settings.adjointSamplesPerPixel
+            const float b = inputRGBA[i * 4 + 2] / adjointSamplesPerPixel; // Divide by m_settings.adjointSamplesPerPixel
 
             float scalarValue = (r + g + b) / 3.0f;
             if (std::isfinite(scalarValue)) {

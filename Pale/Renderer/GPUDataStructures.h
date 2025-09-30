@@ -284,6 +284,7 @@ namespace Pale {
         uint64_t randomSeed = 42; // should be more than maxBounces
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 8;
+        uint32_t numForwardPasses = 2;
         uint32_t maxAdjointBounces = 8;
         uint32_t adjointSamplesPerPixel = 8;
         uint32_t russianRouletteStart = 3; // Which bounce to start RR

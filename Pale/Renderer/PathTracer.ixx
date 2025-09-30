@@ -23,6 +23,8 @@ export namespace Pale {
         void renderBackward(SensorGPU &sensor, AdjointGPU& adjoint);
         void reset();
 
+        PathTracerSettings& getSettings() { return m_settings; }
+
     private:
         void ensureCapacity(uint32_t requiredRayQueueCapacity);
         void allocateIntermediates(uint32_t newCapacity);

@@ -52,14 +52,18 @@
         </bsdf>
         <emitter type="area">
             <!--  <rgb name="radiance" value="600.387,400.9873,200.75357"/> -->
-            <!--  <rgb name="radiance" value="18.387,13.9873,6.75357"/>-->
-            <rgb name="radiance" value="1, 0.7, 0.5"/>
-        </emitter>
-        <ref id="red"/>
-    </shape>
+            <!--
+                        <rgb name="radiance" value="1.0, 1.0, 1.0"/>
+
+-->
+             <rgb name="radiance" value="800000, 600000, 390000"/>
+
+</emitter>
+<ref id="red"/>
+</shape>
 
 
-    <!-- Floor: y=0, normal +Y -->
+<!-- Floor: y=0, normal +Y -->
     <shape type="obj" id="floor">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">

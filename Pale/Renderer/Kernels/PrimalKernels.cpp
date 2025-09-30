@@ -23,6 +23,8 @@ namespace Pale {
 
 
         const uint32_t photonCount = settings.photonsPerLaunch;
+        const uint32_t forwardPasses = settings.numForwardPasses;
+        const uint32_t totalPhotons = photonCount * forwardPasses;
 
         queue.submit([&](sycl::handler& commandGroupHandler) {
             uint64_t baseSeed = settings.randomSeed;
@@ -94,9 +96,9 @@ namespace Pale {
                     if (pdfTotal <= 0.f || cosTheta <= 0.f) return;
 
                     // 4) initial throughput
-                    const sycl::float3 Le = light.emissionRgb * 1000000; // radiance scale
+                    const sycl::float3 Le = light.emissionRgb; // radiance scale
                     const float invPdf = 1.0f / pdfTotal;
-                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / photonCount;
+                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / (totalPhotons);
 
                     // write ray
                     RayState ray{};

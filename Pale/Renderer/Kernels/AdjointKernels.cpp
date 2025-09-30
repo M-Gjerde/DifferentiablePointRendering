@@ -21,9 +21,9 @@ namespace Pale {
         const uint32_t samplesPerRay = settings.samplesPerRay;
 
         const uint32_t raysPerSet = imageWidth * imageHeight;
-        const uint32_t totalRayCount = raysPerSet * samplesPerRay;
+        const uint32_t perPassRayCount = raysPerSet * samplesPerRay;
 
-        queue.memcpy(pkg.intermediates.countPrimary, &totalRayCount, sizeof(uint32_t)).wait();
+        queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t baseSeed = settings.randomSeed * static_cast<uint64_t>(spp);
@@ -53,40 +53,27 @@ namespace Pale {
                     const uint32_t baseOutputSlot = pixelIndex * samplesPerRay;
 
                     // --- Sample 0: forced Transmit (background path) ---
-                    {
-                        const float jitterX = 0.0f; // pixelRng.nextFloat() - 0.5f;
-                        const float jitterY = 0.0f; // pixelRng.nextFloat() - 0.5f;
+                    const float jitterX = pixelRng.nextFloat() - 0.5f;
+                    const float jitterY = pixelRng.nextFloat() - 0.5f;
 
-                        Ray primaryRay = makePrimaryRayFromPixelJittered(
-                            sensor.camera,
-                            static_cast<float>(pixelX),
-                            static_cast<float>(pixelY),
-                            jitterX, jitterY
-                        );
+                    Ray primaryRay = makePrimaryRayFromPixelJittered(
+                        sensor.camera,
+                        static_cast<float>(pixelX),
+                        static_cast<float>(pixelY),
+                        jitterX, jitterY
+                    );
 
-                        RayState rayState{};
-                        rayState.ray = primaryRay;
-                        rayState.pathThroughput = initialAdjointWeight;
-                        rayState.bounceIndex = 0;
-                        rayState.pixelIndex = pixelIndex;
-                        rayState.intersectMode = RayIntersectMode::Transmit; // ensure background evaluation
+                    RayState rayState{};
+                    rayState.ray = primaryRay;
+                    rayState.pathThroughput = initialAdjointWeight;
+                    rayState.bounceIndex = 0;
+                    rayState.pixelIndex = pixelIndex;
+                    rayState.intersectMode = RayIntersectMode::Transmit; // ensure background evaluation
 
-                        intermediates.primaryRays[baseOutputSlot] = rayState;
-                    }
+                    intermediates.primaryRays[baseOutputSlot] = rayState;
 
                     // --- Samples 1..N-1: Scatter (stochastic acceptance) ---
                     for (uint32_t sampleIndex = 1; sampleIndex < samplesPerRay; ++sampleIndex) {
-                        // Optional per-sample jitter for AA or stratification
-                        const float jitterX = 0.0f; // pixelRng.nextFloat() - 0.5f;
-                        const float jitterY = 0.0f; // pixelRng.nextFloat() - 0.5f;
-
-                        Ray primaryRay = makePrimaryRayFromPixelJittered(
-                            sensor.camera,
-                            static_cast<float>(pixelX),
-                            static_cast<float>(pixelY),
-                            jitterX, jitterY
-                        );
-
                         RayState rayState{};
                         rayState.ray = primaryRay;
                         rayState.pathThroughput = initialAdjointWeight;
@@ -115,7 +102,7 @@ namespace Pale {
         // activeRayCount == total rays in the current buffer (must be even)
 
         const uint32_t samplesPerRay = settings.samplesPerRay;
-        const uint32_t totalRayCount = activeRayCount; // total number of rays (With n-samples per ray)
+        const uint32_t perPassRayCount = activeRayCount; // total number of rays (With n-samples per ray)
         const uint32_t perPixelRayCount = activeRayCount / samplesPerRay; // Number of rays per pixel
         const uint32_t photonsPerLaunch = settings.photonsPerLaunch;
 
@@ -287,7 +274,6 @@ namespace Pale {
                     if (transmitRay.bounceIndex >= 0) {
                         const float3 parameterAxis = {1.0f, 0.0f, 0.0f};
                         float dVdp_scalar = dot(dcost_dpk, parameterAxis);
-
                         // write into the pixel that launched this adjoint path
                         float4 &gradImageDst = sensor.framebuffer[transmitRay.pixelIndex]; // make this buffer
                         const auto xGradImage = sycl::atomic_ref<float, sycl::memory_order::relaxed,
@@ -314,9 +300,10 @@ namespace Pale {
     }
 
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount) {
-        auto queue = pkg.queue;
-        auto sensor = pkg.sensor;
-        auto settings = pkg.settings;
+        auto &queue = pkg.queue;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto &scene = pkg.scene;
 
         auto *hitRecords = pkg.intermediates.hitRecords;
         auto *raysIn = pkg.intermediates.primaryRays;
@@ -324,7 +311,7 @@ namespace Pale {
         auto *countExtensionOut = pkg.intermediates.countExtensionOut;
 
         const uint32_t samplesPerRay = settings.samplesPerRay;
-        const uint32_t totalRayCount = activeRayCount; // total number of rays (With n-samples per ray)
+        const uint32_t perPassRayCount = activeRayCount; // total number of rays (With n-samples per ray)
         const uint32_t perPixelRayCount = activeRayCount / samplesPerRay; // Number of rays per pixel
         const uint32_t photonsPerLaunch = settings.photonsPerLaunch;
 
@@ -352,11 +339,16 @@ namespace Pale {
                         raysOut[baseOutputSlot] = dummyRayState;
                         return;
                     }
-                    float3 newDirection;
-                    float cosinePDF;
+                    float3 newDirection{0.0f};
+                    float cosinePDF = {0.0f};
                     sampleCosineHemisphere(rng,
                                            hit.geometricNormalW,
                                            newDirection, cosinePDF);
+                    GPUMaterial material = scene.materials[hit.instanceIndex];
+                    const float3 albedo = material.baseColor;
+                    const float cosTheta = sycl::fmax(0.0f, dot(hit.geometricNormalW, newDirection));
+                    const float3 throughput =
+                            rayState.pathThroughput * (albedo / M_PIf) * (cosTheta / cosinePDF);
 
                     RayState nextTransmitState{};
                     nextTransmitState.ray.origin = hit.hitPositionW +
@@ -364,7 +356,7 @@ namespace Pale {
                     nextTransmitState.ray.direction = newDirection;
                     nextTransmitState.bounceIndex = rayState.bounceIndex + 1;
                     nextTransmitState.pixelIndex = rayState.pixelIndex;
-                    nextTransmitState.pathThroughput = rayState.pathThroughput;
+                    nextTransmitState.pathThroughput = throughput;
                     nextTransmitState.intersectMode = rayState.intersectMode;
                     raysOut[baseOutputSlot] = nextTransmitState;
 
@@ -374,14 +366,11 @@ namespace Pale {
                         const uint32_t outputSlot = baseOutputSlot + sampleIndex;
 
                         RayState nextScatterState{};
-                        nextScatterState.ray.origin = hit.hitPositionW +
-                                                       hit.geometricNormalW * kEps;
-                        nextScatterState.ray.direction = newDirection;
-                        nextScatterState.bounceIndex = rayState.bounceIndex + 1;
-                        nextScatterState.pixelIndex = rayState.pixelIndex;
+                        nextScatterState.ray = nextTransmitState.ray;
+                        nextScatterState.bounceIndex = nextTransmitState.bounceIndex;
+                        nextScatterState.pixelIndex = nextTransmitState.pixelIndex;
                         nextScatterState.pathThroughput = rayState.pathThroughput;
                         nextScatterState.intersectMode = raysIn[outputSlot].intersectMode;
-
                         raysOut[outputSlot] = nextScatterState;
                     }
                 });
