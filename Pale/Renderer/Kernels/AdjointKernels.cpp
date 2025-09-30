@@ -271,7 +271,7 @@ namespace Pale {
                     atomGY.fetch_add(dcost_dpk.y());
                     atomGZ.fetch_add(dcost_dpk.z());
 
-                    if (transmitRay.bounceIndex >= 0) {
+                    if (transmitRay.bounceIndex >= 1) {
                         const float3 parameterAxis = {1.0f, 0.0f, 0.0f};
                         float dVdp_scalar = dot(dcost_dpk, parameterAxis);
                         // write into the pixel that launched this adjoint path

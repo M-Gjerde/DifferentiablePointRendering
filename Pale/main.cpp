@@ -377,7 +377,7 @@ int main(int argc, char **argv) {
         const uint32_t W = adjointSensor.width, H = adjointSensor.height;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "adjoint_out.png";
         if (Pale::Utils::saveGradientSignPNG(
-            filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 0.99)) {
+            filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 1.00)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
         Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A}
