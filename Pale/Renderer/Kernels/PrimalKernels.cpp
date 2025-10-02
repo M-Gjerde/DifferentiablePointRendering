@@ -582,7 +582,7 @@ namespace Pale {
         // Clear framebuffer before calling this, outside.
         const float gatherRadius = photonMap.gatherRadiusWorld;
         queue.submit([&](sycl::handler& cgh) {
-            uint64_t baseSeed = pkg.settings.randomSeed * spp;
+            uint64_t baseSeed = pkg.settings.randomSeed;
             float samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
             cgh.parallel_for<class CameraGatherKernel>(
                 sycl::range<1>(pixelCount),

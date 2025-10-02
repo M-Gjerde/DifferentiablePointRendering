@@ -85,9 +85,11 @@ namespace Pale {
                                   true);
                 */
             } {
-                ScopedTimer timer("launchCameraGatherKernel");
-                int cameraGatherSPP = 2;
+                ScopedTimer timer("launchCameraGatherKernel", spdlog::level::debug);
+                int cameraGatherSPP = pkg.settings.numForwardPasses;
+                std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
                 for (int spp = 0; spp < cameraGatherSPP; ++spp) {
+                    pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
                     launchCameraGatherKernel(pkg, spp, cameraGatherSPP); // generate image from photon map
                 }
             }

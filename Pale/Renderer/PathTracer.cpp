@@ -188,12 +188,7 @@ namespace Pale {
         const float Adiff = bp.diffuseSurfaceArea;
         const float N = static_cast<float>(requiredCapacity);
 
-#ifdef NDEBUG
         const float k = 20.0f;
-#else
-        const float k = 50.0f;
-#endif
-
         const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));
         configurePhotonGrid(sceneAabb, r0);
     }
