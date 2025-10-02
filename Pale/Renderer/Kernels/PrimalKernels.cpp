@@ -162,20 +162,23 @@ namespace Pale {
 
                     // APpend to photon map
                     if (m_settings.rayGenMode == RayGenMode::Emitter) {
-                        const sycl::atomic_ref<uint32_t,
-                                               sycl::memory_order::relaxed,
-                                               sycl::memory_scope::device,
-                                               sycl::access::address_space::global_space>
-                            counter(*m_intermediates.map.photonCountDevicePtr);
-                        const uint32_t slot = counter.fetch_add(1u);
-                        if (slot >= m_intermediates.map.photonCapacity) return; // drop safely
+                        auto &devicePtr = *m_intermediates.map.photonCountDevicePtr;
+                        sycl::atomic_ref<uint32_t,
+                            sycl::memory_order::acq_rel,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>
+                            photonCounter(devicePtr);
 
-                        DevicePhotonSurface entry;
-                        entry.position = worldHit.hitPositionW;
-                        entry.power = rayState.pathThroughput;
-                        entry.incidentDir = -rayState.ray.direction;
-                        entry.cosineIncident = std::fmax(0.f, dot(worldHit.geometricNormalW, entry.incidentDir));
-                        m_intermediates.map.photons[slot] = entry;
+                        const uint32_t reservedSlot = photonCounter.fetch_add(1u);
+                        if (reservedSlot >= m_intermediates.map.photonCapacity) return; // drop
+
+                        DevicePhotonSurface photonEntry{};
+                        photonEntry.position = worldHit.hitPositionW;
+                        photonEntry.power = rayState.pathThroughput;
+                        photonEntry.incidentDir = -rayState.ray.direction;
+                        photonEntry.cosineIncident = std::fmax(0.f, dot(worldHit.geometricNormalW, photonEntry.incidentDir));
+
+                        m_intermediates.map.photons[reservedSlot] = photonEntry;
                     }
                 }
                 break;
@@ -193,22 +196,23 @@ namespace Pale {
 
                     if (m_settings.rayGenMode == RayGenMode::Emitter) {
                         // APpend to photon map
-                        const sycl::atomic_ref<uint32_t,
-                                               sycl::memory_order::relaxed,
-                                               sycl::memory_scope::device,
-                                               sycl::access::address_space::global_space>
-                            counter(*m_intermediates.map.photonCountDevicePtr);
-                        const uint32_t slot = counter.fetch_add(1u);
-                        if (slot >= m_intermediates.map.photonCapacity) return; // drop safely
+                        auto &devicePtr = *m_intermediates.map.photonCountDevicePtr;
+                        sycl::atomic_ref<uint32_t,
+                            sycl::memory_order::acq_rel,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>
+                            photonCounter(devicePtr);
 
-                        if (slot < m_intermediates.map.photonCapacity) {
-                            DevicePhotonSurface entry;
-                            entry.position = worldHit.hitPositionW;
-                            entry.power = rayState.pathThroughput * 1 / (1 - worldHit.transmissivity);
-                            entry.incidentDir = -rayState.ray.direction;
-                            entry.cosineIncident = sycl::fmax(0.f, dot(nW, entry.incidentDir));
-                            m_intermediates.map.photons[slot] = entry;
-                        }
+                        const uint32_t reservedSlot = photonCounter.fetch_add(1u);
+                        if (reservedSlot >= m_intermediates.map.photonCapacity) return; // drop
+
+                        DevicePhotonSurface photonEntry{};
+                        photonEntry.position = worldHit.hitPositionW;
+                        photonEntry.power = rayState.pathThroughput;
+                        photonEntry.incidentDir = -rayState.ray.direction;
+                        photonEntry.cosineIncident = std::fmax(0.f, dot(worldHit.geometricNormalW, photonEntry.incidentDir));
+
+                        m_intermediates.map.photons[reservedSlot] = photonEntry;
                     }
                 }
                 break;
@@ -245,6 +249,8 @@ namespace Pale {
             h.parallel_for(sycl::range<1>(photonCount), [=](sycl::id<1> id) {
                 uint32_t i = id[0];
                 DevicePhotonSurface ph = g.photons[i];
+                if (ph.power == float3{0.0f})
+                    return;
                 sycl::int3 c = worldToCell(ph.position, g);
                 uint32_t cell = linearCellIndex(c, g.gridResolution);
 

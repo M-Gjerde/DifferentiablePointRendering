@@ -36,9 +36,9 @@ namespace Pale {
         // cuda/rocm
         m_settings.photonsPerLaunch = 1e6; // 1e6
         m_settings.maxBounces = 4;
-        m_settings.numForwardPasses = 1;
+        m_settings.numForwardPasses = 16;
         m_settings.maxAdjointBounces = 8;
-        m_settings.adjointSamplesPerPixel = 64;
+        m_settings.adjointSamplesPerPixel = 16;
         m_settings.samplesPerRay = 4;
 #endif
     }
@@ -52,7 +52,7 @@ namespace Pale {
             newCapacity <<= 1u;
 
         Log::PA_INFO("Required RayQueueCapacity {}M, Allocated {}M", std::round(requiredRayQueueCapacity / 1e6),
-                      std::round(newCapacity / 1e6));
+                     std::round(newCapacity / 1e6));
         allocateIntermediates(newCapacity);
     }
 
@@ -76,20 +76,32 @@ namespace Pale {
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
 
-        // --- photon map buffers ---
-        std::size_t sizePhotonsBytes = sizeof(DevicePhotonSurface) * m_rayQueueCapacity * m_settings.maxBounces * m_settings.numForwardPasses;
-        m_intermediates.map.photons = sycl::malloc_device<DevicePhotonSurface>(
-            m_rayQueueCapacity * m_settings.maxBounces, m_queue);
-        Log::PA_TRACE("Allocated photons: {}", Utils::formatBytes(sizePhotonsBytes));
+        constexpr std::size_t maxPhotonBytes = 2ull * 1024ull * 1024ull * 1024ull; // 2GB
+        std::size_t photonSize = sizeof(DevicePhotonSurface);
 
+        // desired photon count
+        std::size_t requestedPhotons = m_rayQueueCapacity * static_cast<uint64_t>(m_settings.maxBounces * m_settings.numForwardPasses);
+
+        // clamp to what fits
+        std::size_t maxPhotons = maxPhotonBytes / photonSize;
+        std::size_t finalPhotonCount = std::min(requestedPhotons, maxPhotons);
+
+        m_intermediates.map.photons = sycl::malloc_device<DevicePhotonSurface>(
+            finalPhotonCount, m_queue);
         m_intermediates.map.photonCountDevicePtr = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.map.photonCapacity = m_rayQueueCapacity * m_settings.maxBounces * m_settings.numForwardPasses;
+
+        m_intermediates.map.photonCapacity = static_cast<uint32_t>(finalPhotonCount);
+
+        Log::PA_INFO("Photon map size: {}M photons (~{})",
+                      finalPhotonCount / 1e6,
+                      Utils::formatBytes(finalPhotonCount * photonSize));
+
 
         // --- zero init ---
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.map.photons, 0, sizePhotonsBytes);
+        m_queue.memset(m_intermediates.map.photons, 0, sizeof(DevicePhotonSurface) * finalPhotonCount);
         m_queue.wait();
 
         // --- totals ---
@@ -99,9 +111,7 @@ namespace Pale {
             sizeHitRecordsBytes +
             sizeof(uint32_t) * 2; // countPrimary + countExtensionOut
 
-        std::size_t photonMapTotalBytes =
-            sizePhotonsBytes +
-            sizeof(uint32_t); // photonCountDevicePtr
+        std::size_t photonMapTotalBytes = sizeof(DevicePhotonSurface) * finalPhotonCount;
 
         Log::PA_INFO("Total intermediates memory: {}", Utils::formatBytes(intermediatesTotalBytes));
         Log::PA_INFO("Total photon map memory: {}", Utils::formatBytes(photonMapTotalBytes));
@@ -181,7 +191,7 @@ namespace Pale {
 #ifdef NDEBUG
         const float k = 20.0f;
 #else
-        const float k = 200.0f;
+        const float k = 50.0f;
 #endif
 
         const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));

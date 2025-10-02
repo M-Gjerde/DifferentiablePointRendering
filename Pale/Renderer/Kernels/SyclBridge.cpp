@@ -18,9 +18,11 @@ namespace Pale {
         pkg.queue.fill(pkg.photonMapSensor.framebuffer, sycl::float4{0, 0, 0, 0},
                        pkg.photonMapSensor.height * pkg.photonMapSensor.width).wait();
 
+        std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
+
         if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
             for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
-                pkg.settings.randomSeed = pkg.settings.randomSeed * (forwardPass + 1);
+                pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
 
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
                     ScopedTimer timer("launchRayGenEmitterKernel");
@@ -28,10 +30,13 @@ namespace Pale {
                 }
 
                 uint32_t activeCount = 0;
-                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait(); {
+                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
+                if (forwardPass == 0)
+                {
                     ScopedTimer timer("launchDirectContributionKernel");
                     launchDirectContributionKernel(pkg, activeCount);
-                } {
+                }
+                {
                     ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
 
                     for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
@@ -64,7 +69,8 @@ namespace Pale {
                 clearGridHeads(pkg.queue, pkg.intermediates.map);
             } {
                 ScopedTimer timer("buildPhotonGridLinkedLists");
-                buildPhotonGridLinkedLists(pkg.queue, pkg.intermediates.map, photonMapCount);
+                size_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity);
+                buildPhotonGridLinkedLists(pkg.queue, pkg.intermediates.map, photonCount);
             }
 
             // Save photon map to disk:
