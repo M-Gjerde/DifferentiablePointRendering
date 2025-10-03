@@ -11,7 +11,7 @@
         <float name="focus_distance" value="1000"/>
         <float name="fov" value="37.3077"/>
         <transform name="to_world">
-            <lookat origin="0,1,4" target="0,1,0" up="0,1,0"/>
+            <lookat origin="0,-4,1" target="0,0,1" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
@@ -39,76 +39,67 @@
         <rgb name="reflectance" value="0.570068,0.0430135,0.0443706"/>
     </bsdf>
 
-    <!-- Light: small rect near ceiling, facing down -->
-    <shape type="obj" id="light">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="1" y="0" z="0" angle="90"/>
-            <scale x="0.1" y="0.1" z="0.1"/>
-            <translate x="0" y="1.98" z="0"/>
-        </transform>
-        <bsdf type="diffuse">
-            <rgb name="reflectance" value="0,0,0"/>
-        </bsdf>
-        <emitter type="area">
-            <!--  <rgb name="radiance" value="600.387,400.9873,200.75357"/> -->
-            <!--
-                        <rgb name="radiance" value="1.0, 1.0, 1.0"/>
-
--->
-             <rgb name="radiance" value="800000, 600000, 390000"/>
-
-</emitter>
-<ref id="red"/>
-</shape>
 
 
-<!-- Floor: y=0, normal +Y -->
+    <!-- Floor: z=0, normal +Z (no rotation) -->
     <shape type="obj" id="floor">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
-            <rotate x="1" y="0" z="0" angle="-90"/>
             <translate x="0" y="0" z="0"/>
         </transform>
         <ref id="gray"/>
     </shape>
 
-
+    <!-- Ceiling: z=2, normal -Z -->
     <shape type="obj" id="ceiling">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
-            <rotate x="1" y="0" z="0" angle="90"/>
-            <translate x="0" y="2" z="0"/>
+            <rotate x="1" y="0" z="0" angle="180"/>
+            <translate x="0" y="0" z="2"/>
         </transform>
         <ref id="gray"/>
     </shape>
 
-
+    <!-- Back wall: y=2, normal -Y -->
     <shape type="obj" id="back">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
-            <translate x="0" y="1" z="-1"/>
+            <rotate x="1" y="0" z="0" angle="90"/>
+            <translate x="0" y="1" z="1"/>
         </transform>
         <ref id="gray"/>
     </shape>
 
+    <!-- Left wall: x=-1, normal +X -->
     <shape type="obj" id="left_red">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
             <rotate x="0" y="1" z="0" angle="90"/>
-            <translate x="-1" y="1" z="0"/>
+            <translate x="-1" y="0" z="1"/>
         </transform>
         <ref id="red"/>
     </shape>
 
+    <!-- Right wall: x=+1, normal -X -->
     <shape type="obj" id="right_green">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
             <rotate x="0" y="1" z="0" angle="-90"/>
-            <translate x="1" y="1" z="0"/>
+            <translate x="1" y="0" z="1"/>
         </transform>
         <ref id="green"/>
     </shape>
 
-
-</scene>
+    <!-- Ceiling light: small, facing -Z -->
+    <shape type="obj" id="light">
+        <string name="filename" value="meshes/rectangle.obj"/>
+        <transform name="to_world">
+            <rotate x="1" y="0" z="0" angle="0"/>
+            <scale x="0.1" y="0.1" z="0.1"/>
+            <translate x="0" y="0" z="1.98"/>
+        </transform>
+        <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
+        <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
+         <emitter type="area"><rgb name="radiance" value="800000,800000,800000"/></emitter>
+     </shape>
+ </scene>

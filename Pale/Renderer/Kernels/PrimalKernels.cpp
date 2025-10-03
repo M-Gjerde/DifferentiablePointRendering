@@ -80,7 +80,7 @@ namespace Pale {
                     // transform to world
                     const Transform xf = scene.transforms[light.transformIndex];
                     float3 sampledWorldPoint = toWorldPoint(xObj, xf);
-                    float3 lightNormal{0.0f, -1.0f, 0.0f};
+                    float3 lightNormal{0.0f, 0.0f, -1.0f};
 
                     // 2c) cosine-hemisphere direction about n
                     float cosTheta = 0;
@@ -310,8 +310,10 @@ namespace Pale {
                         sampleUniformSphere(rng128, newDirection, cosinePDF);
                     }
                     else {
-                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
                     }
+
+                    sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
+
                     brdf = material.baseColor * (1.0f / M_PIf);
                     float3 shadingNormal = worldHit.geometricNormalW;
                     float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));

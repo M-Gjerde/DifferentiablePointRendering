@@ -270,6 +270,7 @@ export namespace Pale {
                 geometry.colors.resize(vertexCount);
                 geometry.opacities.resize(vertexCount);
 
+                constexpr float shC0 = 0.28209479177387814f; // 1/(2*sqrt(pi))
                 for (std::size_t i = 0; i < vertexCount; ++i) {
                     const std::size_t i2 = i * 2;
                     const std::size_t i3 = i * 3;
@@ -279,10 +280,14 @@ export namespace Pale {
                     geometry.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
 
 
-                    glm::vec3 sh = glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]);
-                    float C0 = 0.28209479177387814;
-                    glm::vec3 rgb = sh * C0 + 0.5f;
-                    geometry.colors[i] = glm::clamp(rgb, 0.0f, 1.0f);
+                    glm::vec3 fdcRgb(colorFloats[i3 + 0],
+                                     colorFloats[i3 + 1],
+                                     colorFloats[i3 + 2]);
+
+                    glm::vec3 albedoLinear = shC0 * fdcRgb;              // no bias
+                    albedoLinear = glm::max(albedoLinear, glm::vec3(0)); // clamp negatives only
+
+                    geometry.colors[i] = albedoLinear; // keep in linear space
 
                     geometry.opacities[i] = sigmoid(opacityFloats[i]);
 
@@ -290,7 +295,7 @@ export namespace Pale {
                     const float qx = rotFloats[i4 + 1];
                     const float qy = rotFloats[i4 + 2];
                     const float qz = rotFloats[i4 + 3];
-                    glm::mat3 rotationMatrix = glm::mat3_cast(glm::normalize(glm::quat(qw, qx, qy, qz)));
+                    glm::mat3 rotationMatrix = glm::transpose(glm::mat3_cast(glm::normalize(glm::quat(qw, qx, qy, qz))));
 
                     // take first two columns
                     glm::vec3 tangentUCandidate(rotationMatrix[0][0], rotationMatrix[1][0], rotationMatrix[2][0]);

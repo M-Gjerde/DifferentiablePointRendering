@@ -379,38 +379,50 @@ namespace Pale {
     SYCL_EXTERNAL static bool intersectSurfel(const Ray &rayObject,
                                               const Point &surfel,
                                               float tMin, float tMax,
-                                              float &outTHit, float &contrib,
+                                              float &outTHit,
+                                              float &outAlphaAlongRay,
                                               float kSigmas = 3.0f) {
-        const float3 tangentU = normalize(surfel.tanU);
-        const float3 tangentV = normalize(surfel.tanV);
-        const float3 normalObject = normalize(cross(tangentU, tangentV));
+        // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
+        const float3 unitTangentU = normalize(surfel.tanU);
+        const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));
+        const float3 unitNormal = normalize(cross(unitTangentU, unitTangentV));
 
-        const float nDotD = dot(rayObject.direction, normalObject);
+        // 2) Ray-plane hit
+        const float nDotD = dot(unitNormal, rayObject.direction);
         if (sycl::fabs(nDotD) < 1e-6f) return false;
 
-        const float t = dot(surfel.position - rayObject.origin, normalObject) / nDotD;
-        if (t <= tMin || t >= tMax) return false;
+        const float tHit = dot(unitNormal, (surfel.position - rayObject.origin)) / nDotD;
+        if (tHit <= tMin || tHit >= tMax) return false;
 
-        const float3 hitPoint = rayObject.origin + t * rayObject.direction;
-        const float3 rel = hitPoint - surfel.position;
+        const float3 hitPointWorld = rayObject.origin + tHit * rayObject.direction;
+        const float3 offsetInPlane = hitPointWorld - surfel.position;
 
-        const float alpha = dot(rel, tangentU);
-        const float beta = dot(rel, tangentV);
+        // 3) Local coords
+        const float uCoord = dot(unitTangentU, offsetInPlane);
+        const float vCoord = dot(unitTangentV, offsetInPlane);
 
-        const float su = sycl::fmax(surfel.scale.x(), 1e-8f); // 1-σ in u
-        const float sv = sycl::fmax(surfel.scale.y(), 1e-8f); // 1-σ in v
+        const float scaleU = sycl::fmax(surfel.scale.x(), 1e-8f);
+        const float scaleV = sycl::fmax(surfel.scale.y(), 1e-8f);
+        const float uNorm = uCoord / scaleU;
+        const float vNorm = vCoord / scaleV;
+        const float r2 = uNorm * uNorm + vNorm * vNorm;
 
-        const float uHat = alpha / su;
-        const float vHat = beta / sv;
-        const float r2 = uHat * uHat + vHat * vHat;
-
-        // hard cutoff outside kσ
+        // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 > kSigmas * kSigmas) return false;
 
-        // decaying Gaussian weight
-        contrib = sycl::exp(-0.5f * r2);
+        // 4) 2D Gaussian surface density with proper normalizer
+        const float gaussianSurfaceDensity =
+                (1.0f / (2.0f * M_PIf * scaleU * scaleV)) * sycl::exp(-0.5f * r2);
 
-        outTHit = t;
+        // 5) Area → length Jacobian
+        const float jacobianAreaToLength = 1.0f / sycl::fmax(1e-6f, sycl::fabs(nDotD));
+
+        // 6) Along-ray acceptance probability α(ℓ)
+        float alphaAlongRay = surfel.opacity * gaussianSurfaceDensity * jacobianAreaToLength;
+        alphaAlongRay = sycl::clamp(alphaAlongRay, 0.0f, 1.0f);
+
+        outTHit = tHit;
+        outAlphaAlongRay = alphaAlongRay;
         return true;
     }
 
