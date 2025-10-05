@@ -120,7 +120,6 @@ SYCL_EXTERNAL static bool intersectBLASMesh(const Ray &rayObject,
 // Point-cloud BLAS with ordered Bernoulli thinning and depth grouping
 // -----------------------------------------------------------------------------
 SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray &rayObject,
-                                                  RayIntersectMode rayIntersectMode,
                                                   uint32_t blasRangeIndex,
                                                   LocalHit &localHitOut,
                                                   const GPUSceneBuffers &scene,
@@ -296,7 +295,6 @@ SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray &rayObject,
 // TLAS traversal with near-to-far ordering and multiplicative transmittance
 // -----------------------------------------------------------------------------
 SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld,
-                                         RayIntersectMode intersectMode,
                                          WorldHit *worldHitOut,
                                          const GPUSceneBuffers &scene,
                                          rng::Xorshift128& rng128)
@@ -354,7 +352,7 @@ SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld,
         if (instance.geometryType == GeometryType::Mesh) {
             acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene);
         } else {
-            acceptedHitInInstance = intersectBLASPointCloud(rayObject, intersectMode, instance.blasRangeIndex, localHit, scene, rng128);
+            acceptedHitInInstance = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene, rng128);
         }
 
         if (acceptedHitInInstance) {
@@ -399,13 +397,12 @@ SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld,
 // Visibility wrapper
 // -----------------------------------------------------------------------------
 SYCL_EXTERNAL static WorldHit traceVisibility(const Ray &rayIn,
-                                              RayIntersectMode intersectMode,
                                               float /*tMax*/, // not used here; early-exit is driven by BVH and bestTHit
                                               const GPUSceneBuffers &scene,
                                               rng::Xorshift128 &rng128)
 {
     WorldHit worldHit{};
-    intersectScene(rayIn, intersectMode, &worldHit, scene, rng128);
+    intersectScene(rayIn, &worldHit, scene, rng128);
     return worldHit;
 }
 

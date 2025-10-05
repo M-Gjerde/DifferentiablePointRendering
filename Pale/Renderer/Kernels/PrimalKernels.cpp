@@ -77,11 +77,25 @@ namespace Pale {
                     const float b0 = 1.f - b1 - b2;
                     const float3 xObj = p0 * b0 + p1 * b1 + p2 * b2;
 
-                    // transform to world
-                    const Transform xf = scene.transforms[light.transformIndex];
-                    float3 sampledWorldPoint = toWorldPoint(xObj, xf);
-                    float3 lightNormal{0.0f, 0.0f, -1.0f};
+                    // transform to world per-vertex, then interpolate
+                    const Transform xform = scene.transforms[light.transformIndex];
+                    const float3 worldP0 = toWorldPoint(p0, xform);
+                    const float3 worldP1 = toWorldPoint(p1, xform);
+                    const float3 worldP2 = toWorldPoint(p2, xform);
+                    const float3 sampledWorldPoint = worldP0 * b0 + worldP1 * b1 + worldP2 * b2;
 
+                    // world-space geometric normal and area
+                    const float3 worldEdge0 = worldP1 - worldP0;
+                    const float3 worldEdge1 = worldP2 - worldP0;
+                    float3 unnormalizedWorldNormal = float3{
+                        worldEdge0.y() * worldEdge1.z() - worldEdge0.z() * worldEdge1.y(),
+                        worldEdge0.z() * worldEdge1.x() - worldEdge0.x() * worldEdge1.z(),
+                        worldEdge0.x() * worldEdge1.y() - worldEdge0.y() * worldEdge1.x()
+                    };
+                    const float worldArea = 0.5f * sycl::sqrt(dot(unnormalizedWorldNormal, unnormalizedWorldNormal));
+                    if (worldArea <= 0.f) return;
+
+                    const float3 lightNormal = normalize(unnormalizedWorldNormal);
                     // 2c) cosine-hemisphere direction about n
                     float cosTheta = 0;
                     float3 sampledDirection;
@@ -133,7 +147,7 @@ namespace Pale {
 
             WorldHit worldHit{};
             RayState rayState = m_intermediates.primaryRays[rayIndex];
-            intersectScene(rayState.ray, rayState.intersectMode, &worldHit, m_scene, rng128);
+            intersectScene(rayState.ray, &worldHit, m_scene, rng128);
             if (!worldHit.hit) {
                 m_intermediates.hitRecords[rayIndex] = worldHit;
                 return;
@@ -398,7 +412,7 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // If we have non-zero transmittance
                     float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    auto transmittance = traceVisibility(contribRay, RayIntersectMode::Random, tMax, scene, rng128);
+                    auto transmittance = traceVisibility(contribRay, tMax, scene, rng128);
                     if (!transmittance.hit) {
                         // perspective projection
                         float4 clip = camera.proj * (camera.view * float4(rayState.ray.origin, 1.f));
@@ -506,7 +520,7 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // Visibility to camera
                     const float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    WorldHit vis = traceVisibility(contribRay, RayIntersectMode::Random, tMax, scene, rng128);
+                    WorldHit vis = traceVisibility(contribRay,  tMax, scene, rng128);
 
                     // Otherwise attenuate by transmittance through splats
                     const float transmittanceToCamera = sycl::clamp(vis.transmissivity, 0.0f, 1.0f);
@@ -518,7 +532,7 @@ namespace Pale {
                     float cameraCos = sycl::fmax(0.f, dot(camera.forward, -directionToPinhole)); // optional
                     float geometricToCamera = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
 
-                    float3 color = pathThroughput * brdf * geometricToCamera * transmittanceToCamera;
+                    float3 color = pathThroughput * brdf * geometricToCamera * transmittanceToCamera * 100000; // TODO just for debug visualization but this approach is broken in its current form.
 
                     // Accumulate
                     float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
@@ -580,13 +594,15 @@ namespace Pale {
                     Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
                                                                   static_cast<float>(py), jx, jy);
                     WorldHit worldHit{};
-                    intersectScene(primary, RayIntersectMode::Transmit, &worldHit, scene, rng128);
+                    intersectScene(primary, &worldHit, scene, rng128);
 
                     if (!worldHit.hit)
                         return; // miss → black (or add env if desired)
 
                     radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(
                                       worldHit, scene, photonMap, settings.photonsPerLaunch);
+
+                    radianceRGB = radianceRGB * worldHit.transmissivity;
 
                     // Atomic accumulate
                     const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code

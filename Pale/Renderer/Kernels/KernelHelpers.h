@@ -605,8 +605,6 @@ namespace Pale {
         const float inverseConeNormalization =
                 1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * M_PIf * localRadiusSquared);
 
-        const float inverseNumEmittedPhotons =
-                photonsEmittedThisPass > 0 ? (1.0f / static_cast<float>(photonsEmittedThisPass)) : 0.0f;
 
         const sycl::int3 centerCell = worldToCell(surfacePositionW, photonMap);
 
@@ -651,7 +649,7 @@ namespace Pale {
         }
 
         const float3 irradianceRGB =
-                weightedSumPhotonPowerRGB * (inverseConeNormalization * inverseNumEmittedPhotons);
+            weightedSumPhotonPowerRGB * inverseConeNormalization;
 
         const float3 lambertianBRDFRGB = diffuseAlbedoRGB * (1.0f / M_PIf);
         const float3 radianceFromIrradianceRGB = irradianceRGB * lambertianBRDFRGB;

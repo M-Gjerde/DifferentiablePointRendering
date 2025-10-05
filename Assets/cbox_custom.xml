@@ -94,12 +94,12 @@
     <shape type="obj" id="light">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
-            <rotate x="1" y="0" z="0" angle="0"/>
+            <rotate x="0" y="1" z="0" angle="165"/>
             <scale x="0.1" y="0.1" z="0.1"/>
-            <translate x="0" y="0" z="1.98"/>
+            <translate x="-0.6" y="0" z="1.2"/>
         </transform>
         <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
-         <emitter type="area"><rgb name="radiance" value="800000,800000,800000"/></emitter>
+         <emitter type="area"><rgb name="radiance" value="0.9,0.8,0.7"/></emitter>
      </shape>
  </scene>
