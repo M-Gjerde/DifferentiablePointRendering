@@ -380,8 +380,8 @@ namespace Pale {
                                               const Point &surfel,
                                               float tMin, float tMax,
                                               float &outTHit,
-                                              float &outAlphaAlongRay,
-                                              float kSigmas = 3.0f) {
+                                              float &outOpacity,
+                                              float kSigmas = 3.0f) { // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
         const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));
@@ -415,14 +415,9 @@ namespace Pale {
                 (1.0f / (2.0f * M_PIf * scaleU * scaleV)) * sycl::exp(-0.5f * r2);
 
         // 5) Area → length Jacobian
-        const float jacobianAreaToLength = 1.0f / sycl::fmax(1e-6f, sycl::fabs(nDotD));
-
-        // 6) Along-ray acceptance probability α(ℓ)
-        float alphaAlongRay = surfel.opacity * gaussianSurfaceDensity * jacobianAreaToLength;
-        alphaAlongRay = sycl::clamp(alphaAlongRay, 0.0f, 1.0f);
-
+        const float alpha_i = sycl::exp(-0.5f * r2);
         outTHit = tHit;
-        outAlphaAlongRay = alphaAlongRay;
+        outOpacity = alpha_i;
         return true;
     }
 

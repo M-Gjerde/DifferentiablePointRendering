@@ -355,7 +355,7 @@ int main(int argc, char **argv) {
 
     if (pointCloudPath.filename() != "initial.ply") {
         Pale::Log::PA_INFO("TARGET RENDERED exiting...");
-        //return 0;
+        return 0;
     }
 
     // 4) (Optional) load or compute residuals on host, upload pointer
