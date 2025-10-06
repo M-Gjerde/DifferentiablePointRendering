@@ -272,7 +272,7 @@ namespace Pale {
 
 
     inline AABB surfelObjectAabb(const Point& surfel,
-                                  float kStdDevs = 3.1f, // Should be similar to the same kSigmas as in intersect surfels
+                                  float kStdDevs = 2.2f, // Should be similar to the same kSigmas as in intersect surfels
                                   float sigmaNormal = 0.1f) // set >0 model thickness
     {
         const float3 tangentU = normalize(surfel.tanU);

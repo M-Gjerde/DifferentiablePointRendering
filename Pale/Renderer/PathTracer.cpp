@@ -28,18 +28,16 @@ namespace Pale {
 #else
         // omp
         m_settings.photonsPerLaunch = 1e6; // 1e6
+        m_settings.maxBounces = 3;
+        m_settings.numForwardPasses = 2;
+        m_settings.maxAdjointBounces = 4;
+        m_settings.adjointSamplesPerPixel = 4;
+        // cuda/rocm
+        m_settings.photonsPerLaunch = 1e6; // 1e6
         m_settings.maxBounces = 4;
         m_settings.numForwardPasses = 8;
-        m_settings.maxAdjointBounces = 1;
+        m_settings.maxAdjointBounces = 6;
         m_settings.adjointSamplesPerPixel = 64;
-        m_settings.samplesPerRay = 4;
-        // cuda/rocm
-        //m_settings.photonsPerLaunch = 1e6; // 1e6
-        //m_settings.maxBounces = 4;
-        //m_settings.numForwardPasses = 16;
-        //m_settings.maxAdjointBounces = 4;
-        //m_settings.adjointSamplesPerPixel = 256;
-        //m_settings.samplesPerRay = 4;
 #endif
     }
 
@@ -178,7 +176,7 @@ namespace Pale {
 
     void PathTracer::setScene(const GPUSceneBuffers& scene, SceneBuild::BuildProducts bp) {
         m_scene = scene;
-        uint32_t requiredCapacity = m_settings.photonsPerLaunch * m_settings.samplesPerRay;
+        uint32_t requiredCapacity = m_settings.photonsPerLaunch;
 
         ensureCapacity(requiredCapacity);
 
@@ -197,7 +195,7 @@ namespace Pale {
         ScopedTimer forwardTimer("Forward pass total", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
-        if (sensor.width * sensor.height * 2 > m_rayQueueCapacity) {
+        if (sensor.width * sensor.height > m_rayQueueCapacity) {
             Log::PA_ERROR("Not enough rays. Required capacity is 2*width*height");
             exit(1); // TODO graceful exit or something else
         }
@@ -221,7 +219,7 @@ namespace Pale {
             Log::PA_WARN("Adjoint image is not set but renderBackward is called");
             return;
         }
-        const uint32_t requiredRayCapacity = sensor.width * sensor.height * m_settings.samplesPerRay;
+        const uint32_t requiredRayCapacity = sensor.width * sensor.height;
 
         if (requiredRayCapacity > m_rayQueueCapacity) {
             Log::PA_ERROR("RayQueue Capacity not sufficient. Try reducing image size");

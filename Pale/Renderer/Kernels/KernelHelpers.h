@@ -381,7 +381,8 @@ namespace Pale {
                                               float tMin, float tMax,
                                               float &outTHit,
                                               float &outOpacity,
-                                              float kSigmas = 3.0f) { // Should match the same kSigmas as in BVH construction
+                                              float kSigmas = 2.2f) {
+        // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
         const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));
@@ -389,10 +390,12 @@ namespace Pale {
 
         // 2) Ray-plane hit
         const float nDotD = dot(unitNormal, rayObject.direction);
-        if (sycl::fabs(nDotD) < 1e-6f) return false;
+        if (sycl::fabs(nDotD) < 1e-6f)
+            return false;
 
         const float tHit = dot(unitNormal, (surfel.position - rayObject.origin)) / nDotD;
-        if (tHit <= tMin || tHit >= tMax) return false;
+        if (tHit <= tMin || tHit >= tMax)
+            return false;
 
         const float3 hitPointWorld = rayObject.origin + tHit * rayObject.direction;
         const float3 offsetInPlane = hitPointWorld - surfel.position;
@@ -408,17 +411,33 @@ namespace Pale {
         const float r2 = uNorm * uNorm + vNorm * vNorm;
 
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
-        if (r2 > kSigmas * kSigmas) return false;
-
-        // 4) 2D Gaussian surface density with proper normalizer
-        const float gaussianSurfaceDensity =
-                (1.0f / (2.0f * M_PIf * scaleU * scaleV)) * sycl::exp(-0.5f * r2);
+        if (r2 > kSigmas * kSigmas)
+            return false;
 
         // 5) Area → length Jacobian
         const float alpha_i = sycl::exp(-0.5f * r2);
         outTHit = tHit;
         outOpacity = alpha_i;
         return true;
+    }
+
+    SYCL_EXTERNAL inline float2 computeSurfelUVAtTHit(const Ray &rayObject,
+                                                      const Point &surfel,
+                                                      float tHit) {
+
+        const float3 unitTangentU = normalize(surfel.tanU);
+        const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));
+        const float3 unitNormal = normalize(cross(unitTangentU, unitTangentV));
+
+        // 2) Ray-plane hit
+        const float3 hitPointWorld = rayObject.origin + tHit * rayObject.direction;
+        const float3 offsetInPlane = hitPointWorld - surfel.position;
+
+        // 3) Local coords
+        const float uCoord = dot(unitTangentU, offsetInPlane);
+        const float vCoord = dot(unitTangentV, offsetInPlane);
+
+        return {uCoord, vCoord};
     }
 
 
@@ -649,11 +668,40 @@ namespace Pale {
         }
 
         const float3 irradianceRGB =
-            weightedSumPhotonPowerRGB * inverseConeNormalization;
+                weightedSumPhotonPowerRGB * inverseConeNormalization;
 
         const float3 lambertianBRDFRGB = diffuseAlbedoRGB * (1.0f / M_PIf);
         const float3 radianceFromIrradianceRGB = irradianceRGB * lambertianBRDFRGB;
 
         return radianceDirectRGB + radianceFromIrradianceRGB;
+    }
+
+    inline void atomicAddFloat4ToImage(float4 *dst, const float3 &v) {
+        for (int c = 0; c < 3; ++c) {
+            sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>
+                    a(reinterpret_cast<float *>(dst)[c]);
+            a.fetch_add(v[c]);
+        }
+        sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>
+                a(reinterpret_cast<float *>(dst)[3]);
+        a.store(1.0f);
+    }
+    inline void atomicAddFloatToImage(float4 *dst, const float &v) {
+        for (int c = 0; c < 3; ++c) {
+            sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>
+                    a(reinterpret_cast<float *>(dst)[c]);
+            a.fetch_add(v);
+        }
+        sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>
+                a(reinterpret_cast<float *>(dst)[3]);
+        a.store(1.0f);
     }
 }

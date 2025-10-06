@@ -102,6 +102,7 @@ namespace Pale {
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
             for (int spp = 0; spp < samplesPerPixel; ++spp) {
                 pkg.settings.randomSeed = pkg.settings.randomSeed * spp;
+                ScopedTimer forwardTimer("Traced adjoint pass", spdlog::level::debug);
 
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
                     ScopedTimer timer("launchRayGenAdjointKernel");
@@ -117,7 +118,7 @@ namespace Pale {
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                     pkg.queue.wait(); {
                         ScopedTimer timer("launchIntersectKernel");
-                        launchIntersectKernel(pkg, activeCount);
+                        //launchIntersectKernel(pkg, activeCount);
                     } {
                         ScopedTimer timer("launchAdjointKernel");
                         launchAdjointKernel(pkg, activeCount);

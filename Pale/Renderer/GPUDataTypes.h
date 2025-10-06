@@ -370,29 +370,9 @@ namespace Pale {
         bool empty() const { return sp == 0; }
     };
 
-    template<typename T, int MaxN = 256>
-    struct SmallStackBVH {
-        T data[MaxN];
-        int sp = 0;
-
-        bool push(T v) {
-            if (sp >= MaxN) return false;
-            data[sp++] = v;
-            return true;
-        }
-
-        T pop() {
-            if (sp <= 0) return T{};
-            return data[--sp];
-        }
-
-        bool empty() const { return sp == 0; }
-    };
-
     struct LeafRange {
         uint32_t node, first, count;
     };
-
 
     inline float4x4 glm2sycl(const glm::mat4 &m) {
         float4x4 out;
