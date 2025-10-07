@@ -381,7 +381,7 @@ namespace Pale {
                                               float tMin, float tMax,
                                               float &outTHit,
                                               float &outOpacity,
-                                              float kSigmas = 2.2f) {
+                                              float kSigmas = 2.1f) {
         // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);

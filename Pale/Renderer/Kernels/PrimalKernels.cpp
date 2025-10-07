@@ -604,6 +604,13 @@ namespace Pale {
 
                     radianceRGB = radianceRGB * worldHit.transmissivity;
 
+                    // Geometry term?
+                    float distanceToCamera = length(worldHit.hitPositionW - primary.origin);
+                    float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -primary.direction));
+                    float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, primary.direction)); // optional
+                    float geometricToCamera = (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
+                    //radianceRGB = radianceRGB * geometricToCamera;
+
                     // Atomic accumulate
                     const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code
                     float4 previous = sensor.framebuffer[fbIndex];
