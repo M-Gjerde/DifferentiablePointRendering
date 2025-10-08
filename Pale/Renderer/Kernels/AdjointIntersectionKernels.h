@@ -24,7 +24,6 @@ namespace Pale {
         const float3 inverseDirectionWorld = safeInvDir(rayWorld.direction);
 
         worldHitOut->t = FLT_MAX;
-        worldHitOut->visitedSplatField = false;
 
         SmallStack<256> traversalStack;
         traversalStack.push(0); // root
@@ -70,8 +69,11 @@ namespace Pale {
             if (instance.geometryType == GeometryType::Mesh) {
                 acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene);
             } else {
-                acceptedHitInInstance = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene,
+
+                /*
+                 *acceptedHitInInstance = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene,
                                                                 rng128);
+                */
                 *rayLocal = rayObject;
 
             }
@@ -97,16 +99,13 @@ namespace Pale {
                 worldHitOut->transmissivity = transmittanceProduct * (instance.geometryType == GeometryType::PointCloud
                                                                           ? localHit.transmissivity
                                                                           : 1.0f);
-                worldHitOut->visitedSplatField |= localHit.hasVisibilityTest;
                 // Stop traversal because we found the nearest accepted hit
                 continue;
             }
 
             // No accepted hit, but if this was a splat field we may have partial transmission through it
-            if (!acceptedHitInInstance && instance.geometryType == GeometryType::PointCloud && localHit.
-                hasVisibilityTest) {
+            if (!acceptedHitInInstance && instance.geometryType == GeometryType::PointCloud) {
                 transmittanceProduct *= localHit.transmissivity;
-                worldHitOut->visitedSplatField = true;
             }
         }
 
@@ -232,15 +231,15 @@ namespace Pale {
                 const uint32_t surfelIndex = node.leftFirst + l;
                 const Point &surfel = scene.points[surfelIndex];
 
-                float tHit = 0.0f, opacityGeom = 0.0f;
-                if (!intersectSurfel(rayObject, surfel, rayEpsilon, pruningTHit, tHit, opacityGeom))
-                    continue;
+                //float tHit = 0.0f, opacityGeom = 0.0f;
+                //if (!intersectSurfel(rayObject, surfel, rayEpsilon, pruningTHit, tHit, opacityGeom))
+                //    continue;
 
-                const float alphaAtHit = sycl::clamp(opacityGeom * surfel.opacity, 0.0f, 1.0f);
-
-                leafTHits.pushBack(tHit);
-                leafAlphas.pushBack(alphaAtHit);
-                leafIndices.pushBack(surfelIndex);
+                //const float alphaAtHit = sycl::clamp(opacityGeom * surfel.opacity, 0.0f, 1.0f);
+//
+                //leafTHits.pushBack(tHit);
+                //leafAlphas.pushBack(alphaAtHit);
+                //leafIndices.pushBack(surfelIndex);
             }
 
             BoundedVector<int, 32> order;

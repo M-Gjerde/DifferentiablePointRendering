@@ -148,4 +148,26 @@ namespace Pale {
             indexArray[j + 1] = indexToInsert;
         }
     }
+
+    SYCL_EXTERNAL inline void insertionSortByKeyTie(
+    float *keyArray, float *alphaArray, int *indexArray, int count, float epsilon)
+    {
+        for (int i = 0; i < count; ++i) {
+            float keyIns   = keyArray[i];
+            float alphaIns = alphaArray[i];
+            int   idxIns   = indexArray[i];
+            int j = i - 1;
+            for (; j >= 0; --j) {
+                float dk = keyArray[j] - keyIns;
+                bool greater = (dk > epsilon) || (sycl::fabs(dk) <= epsilon && alphaArray[j] < alphaIns);
+                if (!greater) break;
+                keyArray[j + 1]   = keyArray[j];
+                alphaArray[j + 1] = alphaArray[j];
+                indexArray[j + 1] = indexArray[j];
+            }
+            keyArray[j + 1]   = keyIns;
+            alphaArray[j + 1] = alphaIns;
+            indexArray[j + 1] = idxIns;
+        }
+    }
 } // namespace Pale

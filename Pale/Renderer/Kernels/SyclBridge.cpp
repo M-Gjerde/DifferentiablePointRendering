@@ -68,7 +68,7 @@ namespace Pale {
                 ScopedTimer timer("clearGridHeads");
                 clearGridHeads(pkg.queue, pkg.intermediates.map);
             } {
-                ScopedTimer timer("buildPhotonGridLinkedLists");
+                ScopedTimer timer("buildPhotonGridLinkedLists", spdlog::level::debug);
                 size_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity);
                 buildPhotonGridLinkedLists(pkg.queue, pkg.intermediates.map, photonCount);
             }
@@ -88,10 +88,9 @@ namespace Pale {
                 ScopedTimer timer("launchCameraGatherKernel", spdlog::level::debug);
                 int cameraGatherSPP = pkg.settings.numForwardPasses;
                 std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
-                for (int spp = 0; spp < cameraGatherSPP; ++spp) {
-                    pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
-                    launchCameraGatherKernel(pkg, spp, cameraGatherSPP); // generate image from photon map
-                }
+                pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
+                launchCameraGatherKernel(pkg, cameraGatherSPP); // generate image from photon map
+
             }
         } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
             pkg.queue

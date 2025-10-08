@@ -143,8 +143,7 @@ namespace Pale {
                     }
                     hitRecords[rayIndex] = worldHit;
 
-                    if (!worldHit.visitedSplatField)
-                        return;
+
                     // At this point I have a ray that intersects either a mesh or a surfel.
                     // I should attempt to propagate visibility gradients with the adjoint scalar field
                     auto &record = scene.instances[worldHit.instanceIndex];

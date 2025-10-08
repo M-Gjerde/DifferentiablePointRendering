@@ -253,32 +253,6 @@ namespace Pale {
     }
 
 
-    void clearGridHeads(sycl::queue &q, DeviceSurfacePhotonMapGrid &g) {
-        q.fill(g.cellHeadIndexArray, kInvalidIndex, g.totalCellCount).wait();
-    }
-
-    void buildPhotonGridLinkedLists(sycl::queue &q, DeviceSurfacePhotonMapGrid g, uint32_t photonCount) {
-        q.submit([&](sycl::handler &h) {
-            h.parallel_for(sycl::range<1>(photonCount), [=](sycl::id<1> id) {
-                uint32_t i = id[0];
-                DevicePhotonSurface ph = g.photons[i];
-                if (ph.power == float3{0.0f})
-                    return;
-                sycl::int3 c = worldToCell(ph.position, g);
-                uint32_t cell = linearCellIndex(c, g.gridResolution);
-
-                auto headRef = sycl::atomic_ref<uint32_t,
-                    sycl::memory_order::relaxed,
-                    sycl::memory_scope::device,
-                    sycl::access::address_space::global_space>(g.cellHeadIndexArray[cell]);
-
-                uint32_t oldHead = headRef.exchange(i);
-                g.photonNextIndexArray[i] = oldHead;
-            });
-        }).wait();
-    }
-
-
     void generateNextRays(RenderPackage &pkg, uint32_t activeRayCount) {
         auto queue = pkg.queue;
         auto scene = pkg.scene;
@@ -319,12 +293,14 @@ namespace Pale {
                     float3 newDirection;
                     // Lambertian BRDF
                     float3 brdf;
+
                     if (instance.geometryType == GeometryType::PointCloud) {
-                        sampleUniformSphere(rng128, newDirection, cosinePDF);
+                        //sampleUniformSphere(rng128, newDirection, cosinePDF);
+                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
                     } else {
+                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
                     }
 
-                    sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
 
                     brdf = material.baseColor * (1.0f / M_PIf);
                     float3 shadingNormal = worldHit.geometricNormalW;
@@ -342,7 +318,7 @@ namespace Pale {
                     float3 updatedThroughput = rayState.pathThroughput * (
                                                    brdf * cosTheta / sycl::fmax(cosinePDF, 1e-6f));
 
-                    /*
+
                     // Russian roulette
                     if (nextState.bounceIndex >= settings.russianRouletteStart) {
                         // Use luminance to avoid color bias; clamp to keep variance bounded
@@ -358,7 +334,7 @@ namespace Pale {
                         }
                         updatedThroughput = updatedThroughput * (1.0f / survivalProbability);
                     }
-                    */
+
                     nextState.pathThroughput = updatedThroughput;
                     // Enqueue survived ray
                     auto extensionCounter = sycl::atomic_ref<uint32_t,
@@ -371,6 +347,85 @@ namespace Pale {
                 });
         });
         queue.wait();
+    }
+
+
+    // ---- Kernel: Camera gather (one thread per pixel) --------------------------
+    void launchCameraGatherKernel(RenderPackage &pkg, int totalSamplesPerPixel) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &sensor = pkg.photonMapSensor;
+        auto &settings = pkg.settings;
+        auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+
+        const std::uint32_t imageWidth = sensor.camera.width;
+        const std::uint32_t imageHeight = sensor.camera.height;
+        const std::uint32_t pixelCount = imageWidth * imageHeight;
+
+        // Clear framebuffer before calling this, outside.
+        const float gatherRadius = photonMap.gatherRadiusWorld;
+        queue.submit([&](sycl::handler &cgh) {
+            uint64_t baseSeed = pkg.settings.randomSeed;
+            float samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
+            cgh.parallel_for<class CameraGatherKernel>(
+                sycl::range<1>(pixelCount),
+                [=](sycl::id<1> tid) {
+                    const std::uint32_t pixelIndex = tid[0];
+                    const std::uint32_t px = pixelIndex % imageWidth;
+                    const std::uint32_t py = pixelIndex / imageWidth;
+
+                    // 1) Trace camera ray to first diffuse mesh hit
+                    rng::Xorshift128 rng128(rng::makePerItemSeed1D(baseSeed, pixelIndex));
+                    float3 radianceRGB(0.0f);
+                    // subpixel jitter
+                    const float jx = rng128.nextFloat() - 0.5f;
+                    const float jy = rng128.nextFloat() - 0.5f;
+
+                    Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
+                                                                  static_cast<float>(py), jx, jy);
+                    WorldHit worldHit{};
+                    intersectScene(primary, &worldHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
+
+                    float3 Lsheet(0.0f);
+                    float tau = 1.0f;
+                    for (int i = 0; i < worldHit.splatEventCount; ++i) {
+                        const auto &splatEvent = worldHit.splatEvents[i];
+                        if (worldHit.hit && splatEvent.t >= worldHit.t)
+                            break;
+                        float3 L = estimateSurfelRadianceFromPhotonMap(splatEvent, scene, photonMap, settings.photonsPerLaunch);
+
+                        Lsheet = Lsheet + tau * splatEvent.alpha * L;
+                        tau *= (1.0f - splatEvent.alpha);
+                    }
+
+                    if (!worldHit.hit) {
+                        radianceRGB = radianceRGB + Lsheet;
+                        return;
+                    }
+
+                    radianceRGB = radianceRGB +Lsheet;
+
+                    radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(
+                                      worldHit, scene, photonMap, settings.photonsPerLaunch)* worldHit.transmissivity;
+
+                    radianceRGB = radianceRGB ;
+
+                    //radianceRGB = radianceRGB + worldHit.sheetRadianceAccum; // sheets before the first surface
+
+                    // Geometry term?
+                    float distanceToCamera = length(worldHit.hitPositionW - primary.origin);
+                    float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -primary.direction));
+                    float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, primary.direction)); // optional
+                    float geometricToCamera = (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
+                    //radianceRGB = radianceRGB * geometricToCamera;
+
+                    // Atomic accumulate
+                    const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code
+                    float4 previous = sensor.framebuffer[fbIndex];
+                    float4 current = float4(radianceRGB.x(), radianceRGB.y(), radianceRGB.z(), 1.0f) / samplesPerPixel;
+                    sensor.framebuffer[fbIndex] = previous + current; // or write to a staging buffer
+                });
+        }).wait();
     }
 
 
@@ -520,7 +575,7 @@ namespace Pale {
                     // Shoot contribution ray towards camera
                     // Visibility to camera
                     const float tMax = sycl::fmax(0.f, distanceToPinhole - kEps);
-                    WorldHit vis = traceVisibility(contribRay,  tMax, scene, rng128);
+                    WorldHit vis = traceVisibility(contribRay, tMax, scene, rng128);
 
                     // Otherwise attenuate by transmittance through splats
                     const float transmittanceToCamera = sycl::clamp(vis.transmissivity, 0.0f, 1.0f);
@@ -532,7 +587,8 @@ namespace Pale {
                     float cameraCos = sycl::fmax(0.f, dot(camera.forward, -directionToPinhole)); // optional
                     float geometricToCamera = (surfaceCos * cameraCos) / (distanceToPinhole * distanceToPinhole);
 
-                    float3 color = pathThroughput * brdf * geometricToCamera * transmittanceToCamera * 100000; // TODO just for debug visualization but this approach is broken in its current form.
+                    float3 color = pathThroughput * brdf * geometricToCamera * transmittanceToCamera * 100000;
+                    // TODO just for debug visualization but this approach is broken in its current form.
 
                     // Accumulate
                     float4 clip = camera.proj * (camera.view * float4(worldHit.hitPositionW, 1.f));
@@ -560,63 +616,28 @@ namespace Pale {
     }
 
 
-    // ---- Kernel: Camera gather (one thread per pixel) --------------------------
-    void launchCameraGatherKernel(RenderPackage &pkg, int spp, int totalSamplesPerPixel) {
-        auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
-        auto &sensor = pkg.photonMapSensor;
-        auto &settings = pkg.settings;
-        auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+    void clearGridHeads(sycl::queue &q, DeviceSurfacePhotonMapGrid &g) {
+        q.fill(g.cellHeadIndexArray, kInvalidIndex, g.totalCellCount).wait();
+    }
 
-        const std::uint32_t imageWidth = sensor.camera.width;
-        const std::uint32_t imageHeight = sensor.camera.height;
-        const std::uint32_t pixelCount = imageWidth * imageHeight;
+    void buildPhotonGridLinkedLists(sycl::queue &q, DeviceSurfacePhotonMapGrid g, uint32_t photonCount) {
+        q.submit([&](sycl::handler &h) {
+            h.parallel_for(sycl::range<1>(photonCount), [=](sycl::id<1> id) {
+                uint32_t i = id[0];
+                DevicePhotonSurface ph = g.photons[i];
+                if (ph.power == float3{0.0f})
+                    return;
+                sycl::int3 c = worldToCell(ph.position, g);
+                uint32_t cell = linearCellIndex(c, g.gridResolution);
 
-        // Clear framebuffer before calling this, outside.
-        const float gatherRadius = photonMap.gatherRadiusWorld;
-        queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = pkg.settings.randomSeed;
-            float samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
-            cgh.parallel_for<class CameraGatherKernel>(
-                sycl::range<1>(pixelCount),
-                [=](sycl::id<1> tid) {
-                    const std::uint32_t pixelIndex = tid[0];
-                    const std::uint32_t px = pixelIndex % imageWidth;
-                    const std::uint32_t py = pixelIndex / imageWidth;
+                auto headRef = sycl::atomic_ref<uint32_t,
+                    sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(g.cellHeadIndexArray[cell]);
 
-                    // 1) Trace camera ray to first diffuse mesh hit
-                    rng::Xorshift128 rng128(rng::makePerItemSeed1D(baseSeed, pixelIndex));
-                    float3 radianceRGB(0.0f);
-                    // subpixel jitter
-                    const float jx = rng128.nextFloat() - 0.5f;
-                    const float jy = rng128.nextFloat() - 0.5f;
-
-                    Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
-                                                                  static_cast<float>(py), jx, jy);
-                    WorldHit worldHit{};
-                    intersectScene(primary, &worldHit, scene, rng128);
-
-                    if (!worldHit.hit)
-                        return; // miss → black (or add env if desired)
-
-                    radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(
-                                      worldHit, scene, photonMap, settings.photonsPerLaunch);
-
-                    radianceRGB = radianceRGB * worldHit.transmissivity;
-
-                    // Geometry term?
-                    float distanceToCamera = length(worldHit.hitPositionW - primary.origin);
-                    float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -primary.direction));
-                    float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, primary.direction)); // optional
-                    float geometricToCamera = (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
-                    //radianceRGB = radianceRGB * geometricToCamera;
-
-                    // Atomic accumulate
-                    const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code
-                    float4 previous = sensor.framebuffer[fbIndex];
-                    float4 current = float4(radianceRGB.x(), radianceRGB.y(), radianceRGB.z(), 1.0f) / samplesPerPixel;
-                    sensor.framebuffer[fbIndex] = previous + current; // or write to a staging buffer
-                });
+                uint32_t oldHead = headRef.exchange(i);
+                g.photonNextIndexArray[i] = oldHead;
+            });
         }).wait();
     }
 } // Pale

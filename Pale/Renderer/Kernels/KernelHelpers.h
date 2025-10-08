@@ -2,6 +2,8 @@
 
 #include <sycl/sycl.hpp>
 #include <cstdint>
+
+#include "Renderer/GPUDataStructures.h"
 #include "Renderer/GPUDataTypes.h"
 
 namespace Pale::rng {
@@ -380,6 +382,7 @@ namespace Pale {
                                               const Point &surfel,
                                               float tMin, float tMax,
                                               float &outTHit,
+                                              float3 &outHitLocal,
                                               float &outOpacity,
                                               float kSigmas = 2.1f) {
         // Should match the same kSigmas as in BVH construction
@@ -397,8 +400,8 @@ namespace Pale {
         if (tHit <= tMin || tHit >= tMax)
             return false;
 
-        const float3 hitPointWorld = rayObject.origin + tHit * rayObject.direction;
-        const float3 offsetInPlane = hitPointWorld - surfel.position;
+        outHitLocal = rayObject.origin + tHit * rayObject.direction;
+        const float3 offsetInPlane = outHitLocal - surfel.position;
 
         // 3) Local coords
         const float uCoord = dot(unitTangentU, offsetInPlane);
@@ -612,6 +615,89 @@ namespace Pale {
 
         // 2) Photon gather
         const float3 surfacePositionW = worldHit.hitPositionW;
+
+        const float baseRadius = photonMap.gatherRadiusWorld;
+        const float localRadius = sycl::clamp(perHitRadiusScale,
+                                              1e-3f * baseRadius,
+                                              4.0f * baseRadius);
+        const float localRadiusSquared = localRadius * localRadius;
+
+        const float kappa = photonMap.kappa; // e.g. 2.0f
+        // Cone-kernel normalization on a disk of radius r: ∫_A w = (1 - 2/(3kappa)) π r^2
+        const float inverseConeNormalization =
+                1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * M_PIf * localRadiusSquared);
+
+
+        const sycl::int3 centerCell = worldToCell(surfacePositionW, photonMap);
+
+        float3 weightedSumPhotonPowerRGB{0.f, 0.f, 0.f};
+
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const sycl::int3 neighborCell{
+                        centerCell.x() + dx,
+                        centerCell.y() + dy,
+                        centerCell.z() + dz
+                    };
+                    if (!isInsideGrid(neighborCell, photonMap.gridResolution)) continue;
+
+                    const std::uint32_t cellIndex =
+                            linearCellIndex(neighborCell, photonMap.gridResolution);
+
+                    for (std::uint32_t photonIndex = photonMap.cellHeadIndexArray[cellIndex];
+                         photonIndex != kInvalidIndex;
+                         photonIndex = photonMap.photonNextIndexArray[photonIndex]) {
+                        const DevicePhotonSurface photon = photonMap.photons[photonIndex];
+
+                        const float3 displacement = photon.position - surfacePositionW;
+                        const float distanceSquared = dot(displacement, displacement);
+                        if (distanceSquared > localRadiusSquared) continue;
+
+                        const float distance = sycl::sqrt(distanceSquared);
+                        const float kernelWeight = sycl::fmax(0.f, 1.f - distance / (kappa * localRadius));
+
+                        // If photon.power already had cosine at store time, use as-is.
+                        // Otherwise multiply by photon.cosineIncident here if available.
+                        const float3 photonContributionRGB =
+                                photonsIncludeCosineAtStore
+                                    ? photon.power
+                                    : (photon.power * photon.cosineIncident);
+
+                        weightedSumPhotonPowerRGB = weightedSumPhotonPowerRGB + kernelWeight * photonContributionRGB;
+                    }
+                }
+            }
+        }
+
+        const float3 irradianceRGB =
+                weightedSumPhotonPowerRGB * inverseConeNormalization;
+
+        const float3 lambertianBRDFRGB = diffuseAlbedoRGB * (1.0f / M_PIf);
+        const float3 radianceFromIrradianceRGB = irradianceRGB * lambertianBRDFRGB;
+
+        return radianceDirectRGB + radianceFromIrradianceRGB;
+    }
+
+  inline float3 estimateSurfelRadianceFromPhotonMap(
+        const SplatEvent &event,
+        const GPUSceneBuffers &scene,
+        const DeviceSurfacePhotonMapGrid &photonMap,
+        std::uint32_t photonsEmittedThisPass,
+        float perHitRadiusScale = 1.0f, // tune 1–3
+        bool photonsIncludeCosineAtStore = false // set false if power excludes cos(θ)
+    ) {
+        // 1) Material and direct emissive term
+        float3 diffuseAlbedoRGB{0.f, 0.f, 0.f};
+        float3 radianceDirectRGB{0.f, 0.f, 0.f};
+
+        // Point-cloud splat surface
+        const Point splat = scene.points[event.primitiveIndex];
+        diffuseAlbedoRGB = splat.color; // Lambertian splat
+        // If you support emissive splats, add them here.
+
+        // 2) Photon gather
+        const float3 surfacePositionW = event.hitWorld;
 
         const float baseRadius = photonMap.gatherRadiusWorld;
         const float localRadius = sycl::clamp(perHitRadiusScale,

@@ -189,7 +189,7 @@ namespace Pale {
         char name[256];
     };
 
-    inline void copyName(char (&dst)[256], const std::string& src) {
+    inline void copyName(char (&dst)[256], const std::string &src) {
         std::snprintf(dst, sizeof(dst), "%s", src.c_str()); // always null-terminated
     }
 
@@ -219,6 +219,7 @@ namespace Pale {
         uint32_t lightCount{0};
         uint32_t emissiveTriangleCount{0};
     };
+
     static_assert(std::is_trivially_copyable_v<GPUSceneBuffers>);
     static_assert(sycl::is_device_copyable<GPUSceneBuffers>::value);
 
@@ -239,13 +240,14 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Camera = 0, Emitter = 1, Hybrid = 2, Adjoint = 3 };
 
-    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1, Scatter = 2};
+    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1, Scatter = 2 };
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
         float3 origin; // 16
         float3 direction; // 32
     };
+
     static_assert(std::is_trivially_copyable_v<Ray>);
 
     struct alignas(16) RayState {
@@ -254,28 +256,47 @@ namespace Pale {
         uint32_t bounceIndex{};
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
     };
+
     static_assert(std::is_trivially_copyable_v<RayState>);
+
+
+    constexpr int kMaxSplatEvents = 16;
+
+    struct SplatEvent {
+        float t = FLT_MAX; // local space t
+        float3 hitWorld = float3(0.0f); // World hit position
+        float alpha = 1.0f;
+        uint32_t primitiveIndex = UINT32_MAX; // primitiveIndex
+    };
 
     struct alignas(16) LocalHit {
         float t = FLT_MAX; // world-space t
         float transmissivity = FLT_MAX;
-        bool hasVisibilityTest = false;
         uint32_t primitiveIndex = UINT32_MAX; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex = UINT32_MAX; // mesh/geometry id within scene
+
+        SplatEvent splatEvents[kMaxSplatEvents];
+        int splatEventCount = 0;
     };
+
     static_assert(std::is_trivially_copyable_v<LocalHit>);
+
 
     struct alignas(16) WorldHit {
         bool hit = false;
         float t = FLT_MAX; // world-space t
-        float transmissivity = 1.0f; // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
+        float transmissivity = 1.0f;
+        // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t splatIndices[5] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
         uint32_t instanceIndex = UINT32_MAX;
         float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW = float3(0.0f);; // optional: fill if you have it cheaply
-        bool visitedSplatField = false;
+
+        SplatEvent splatEvents[kMaxSplatEvents];
+        int splatEventCount = 0;
     };
+
     static_assert(std::is_trivially_copyable_v<WorldHit>);
 
     struct alignas(16) PathTracerSettings {
@@ -286,8 +307,9 @@ namespace Pale {
         uint32_t numForwardPasses = 2;
         uint32_t maxAdjointBounces = 8;
         uint32_t adjointSamplesPerPixel = 8;
-        uint32_t russianRouletteStart = 3; // Which bounce to start RR
+        uint32_t russianRouletteStart = 2; // Which bounce to start RR
     };
+
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
     static_assert(sycl::is_device_copyable<PathTracerSettings>::value);
 
@@ -306,28 +328,30 @@ namespace Pale {
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
     };
+
     static_assert(std::is_trivially_copyable_v<DevicePhotonSurface>);
 
     // ----------------- Full surface photon map handle (device) -------------------
     struct alignas(16) DeviceSurfacePhotonMapGrid {
-        DevicePhotonSurface* photons;   // [photonCapacity]
+        DevicePhotonSurface *photons; // [photonCapacity]
         uint32_t *photonCountDevicePtr; // atomic append counter on device
         uint32_t photonCapacity; // total allocated slots
 
         // Grid params
         float3 gridOriginWorld;
-        float3 cellSizeWorld;               // set = gatherRadiusWorld
-        sycl::int3   gridResolution;              // Nx,Ny,Nz
+        float3 cellSizeWorld; // set = gatherRadiusWorld
+        sycl::int3 gridResolution; // Nx,Ny,Nz
         uint32_t totalCellCount;
 
         // Per-cell lists
-        uint32_t* cellHeadIndexArray;       // [totalCellCount], init to kInvalidIndex
-        uint32_t* photonNextIndexArray;     // [photonCapacity]
+        uint32_t *cellHeadIndexArray; // [totalCellCount], init to kInvalidIndex
+        uint32_t *photonNextIndexArray; // [photonCapacity]
 
         // For clarity
         float gatherRadiusWorld = 0.0f;
         float kappa = 2.0f;
     };
+
     static_assert(std::is_trivially_copyable_v<DeviceSurfacePhotonMapGrid>);
 
 
@@ -340,6 +364,7 @@ namespace Pale {
 
         DeviceSurfacePhotonMapGrid map;
     };
+
     static_assert(std::is_trivially_copyable_v<RenderIntermediatesGPU>);
     static_assert(sycl::is_device_copyable<RenderIntermediatesGPU>::value);
 
@@ -352,5 +377,4 @@ namespace Pale {
         SensorGPU photonMapSensor{};
         AdjointGPU adjoint{};
     };
-
 }
