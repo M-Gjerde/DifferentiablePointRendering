@@ -307,6 +307,7 @@ namespace Pale {
                     float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
                     float minPdf = 1e-6f;
                     cosinePDF = sycl::fmax(cosinePDF, minPdf);
+
                     // Sample next
                     RayState nextState{};
                     nextState.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
@@ -317,8 +318,7 @@ namespace Pale {
                     // Throughput update
                     float3 updatedThroughput = rayState.pathThroughput * (
                                                    brdf * cosTheta / sycl::fmax(cosinePDF, 1e-6f));
-
-
+                    /*
                     // Russian roulette
                     if (nextState.bounceIndex >= settings.russianRouletteStart) {
                         // Use luminance to avoid color bias; clamp to keep variance bounded
@@ -334,6 +334,7 @@ namespace Pale {
                         }
                         updatedThroughput = updatedThroughput * (1.0f / survivalProbability);
                     }
+                    */
 
                     nextState.pathThroughput = updatedThroughput;
                     // Enqueue survived ray
@@ -392,7 +393,8 @@ namespace Pale {
                         const auto &splatEvent = worldHit.splatEvents[i];
                         if (worldHit.hit && splatEvent.t >= worldHit.t)
                             break;
-                        float3 L = estimateSurfelRadianceFromPhotonMap(splatEvent, scene, photonMap, settings.photonsPerLaunch);
+                        float3 L = estimateSurfelRadianceFromPhotonMap(splatEvent, scene, photonMap,
+                                                                       settings.photonsPerLaunch);
 
                         Lsheet = Lsheet + tau * splatEvent.alpha * L;
                         tau *= (1.0f - splatEvent.alpha);
@@ -403,12 +405,12 @@ namespace Pale {
                         return;
                     }
 
-                    radianceRGB = radianceRGB +Lsheet;
+                    radianceRGB = radianceRGB + Lsheet;
 
                     radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(
-                                      worldHit, scene, photonMap, settings.photonsPerLaunch)* worldHit.transmissivity;
+                                      worldHit, scene, photonMap, settings.photonsPerLaunch) * worldHit.transmissivity;
 
-                    radianceRGB = radianceRGB ;
+                    radianceRGB = radianceRGB;
 
                     //radianceRGB = radianceRGB + worldHit.sheetRadianceAccum; // sheets before the first surface
 
