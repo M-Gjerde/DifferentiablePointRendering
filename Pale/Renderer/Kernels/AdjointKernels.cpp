@@ -104,67 +104,37 @@ namespace Pale {
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.randomSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
 
-                    WorldHit worldHit{};
+                    WorldHit worldHit = hitRecords[rayIndex];
                     RayState rayState = raysIn[rayIndex];
-                    Ray localRay;
-                    intersectSceneAdjoint(rayState.ray, &worldHit, scene, &localRay, rng128);
+
                     if (!worldHit.hit) {
-                        hitRecords[rayIndex] = worldHit;
                         return;
                     }
 
-                    auto &instance = scene.instances[worldHit.instanceIndex];
-                    switch (instance.geometryType) {
-                        case GeometryType::Mesh: {
-                            const Triangle &triangle = scene.triangles[worldHit.primitiveIndex];
-                            const Transform &objectWorldTransform = scene.transforms[instance.transformIndex];
+                    // calculate mesh transmit derivative
+                    {
+                        WorldHit transmitHit{};
+                       intersectScene(rayState.ray, &transmitHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
 
-                            const Vertex &vertex0 = scene.vertices[triangle.v0];
-                            const Vertex &vertex1 = scene.vertices[triangle.v1];
-                            const Vertex &vertex2 = scene.vertices[triangle.v2];
+                       float3 Lsheet(0.0f);
+                       float tau = 1.0f;
+                       for (int i = 0; i < transmitHit.splatEventCount; ++i) {
+                           const auto &splatEvent = transmitHit.splatEvents[i];
+                           if (transmitHit.hit && splatEvent.t >= transmitHit.t)
+                               break;
+                           float3 L = estimateSurfelRadianceFromPhotonMap(splatEvent, scene, photonMap,
+                                                                          settings.photonsPerLaunch);
 
-                            // Geometric normal in world space
-                            const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
-                            const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
-                            const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
-                            float3 geometricNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
-                            worldHit.geometricNormalW = geometricNormalW;
-                        }
-                        break;
-                        case GeometryType::PointCloud: {
-                            auto &surfel = scene.points[worldHit.primitiveIndex];
-                            // SURFACE: set geometric normal and record hit
-                            float3 nW = normalize(cross(surfel.tanU, surfel.tanV));
-                            if (dot(nW, -rayState.ray.direction) < 0.0f)
-                                nW = -nW;
-                            worldHit.geometricNormalW = nW;
-                        }
-                        break;
+                           // Diff w.r.t to transmission for each parameter
+
+                           Lsheet = Lsheet + tau * splatEvent.alpha * L;
+                           tau *= (1.0f - splatEvent.alpha);
+                       }
+
                     }
-                    hitRecords[rayIndex] = worldHit;
 
-
-                    // At this point I have a ray that intersects either a mesh or a surfel.
-                    // I should attempt to propagate visibility gradients with the adjoint scalar field
-                    auto &record = scene.instances[worldHit.instanceIndex];
-                    if (record.geometryType == GeometryType::PointCloud) {
-                        return;
-                    }
                     // For each point-cloud BLAS range on this TLAS leaf (or iterate all if simple)
                     float3 dTdpkAccum = float3{0, 0, 0};
-                    float transmittanceProduct = 1.0f;
-
-                    for (uint32_t r = 0; r < scene.blasNodeCount; ++r) {
-                        VisibilityGradResult rres =
-                                accumulateVisibilityAndGradientPointCloud(localRay, worldHit.t, r,
-                                                                          0, scene);
-                        transmittanceProduct *= rres.transmittance;
-                        dTdpkAccum = dTdpkAccum + rres.dTdPk; // already includes its local T
-                    }
-
-                    if (transmittanceProduct != 1.0f) {
-                        int debug = 1;
-                    }
 
                     // Weight for pure-visibility term in the adjoint inner product:
                     // w = L(y→x) * f_r * G for this segment.

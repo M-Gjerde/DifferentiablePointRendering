@@ -75,15 +75,13 @@ namespace Pale {
 
             // Save photon map to disk:
             {
-                /*
+
                 ScopedTimer timer("dumpPhotonMapToPLY");
                 dumpPhotonMapToPLY(pkg.queue,
                                   pkg.intermediates.map.photons,
                                   photonMapCount,
-                                  std::filesystem::path("Output/photon_map.ply"),
-                                  1.0f,
-                                  true);
-                */
+                                  std::filesystem::path("Output/photon_map.ply"));
+
             } {
                 ScopedTimer timer("launchCameraGatherKernel", spdlog::level::debug);
                 int cameraGatherSPP = pkg.settings.numForwardPasses;
@@ -117,7 +115,7 @@ namespace Pale {
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                     pkg.queue.wait(); {
                         ScopedTimer timer("launchIntersectKernel");
-                        //launchIntersectKernel(pkg, activeCount);
+                        launchIntersectKernel(pkg, activeCount);
                     } {
                         ScopedTimer timer("launchAdjointKernel");
                         launchAdjointKernel(pkg, activeCount);

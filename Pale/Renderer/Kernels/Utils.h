@@ -9,26 +9,63 @@
 
 #include "Renderer/GPUDataStructures.h"
 
-static uint8_t linearToSRGB8(float linear) {
-    float clamped = sycl::clamp(linear, 0.0f, 1.0f);
-    float srgb = (clamped <= 0.0031308f)
-                     ? (12.92f * clamped)
-                     : (1.055f * std::pow(clamped, 1.0f / 2.4f) - 0.055f);
-    int value = static_cast<int>(std::round(srgb * 255.0f));
-    return static_cast<uint8_t>(sycl::clamp(value, 0, 255));
+
+
+inline uint8_t linearToSRGB8(float linearValue) {
+    // Treat NaN/Inf and negatives as 0
+    if (!std::isfinite(linearValue) || linearValue <= 0.0f) return 0;
+
+    // Clamp to a sane display range [0, 1]
+    float clamped = linearValue < 1.0f ? linearValue : 1.0f;
+
+    // IEC 61966-2-1 sRGB OETF (piecewise)
+    float srgb;
+    if (clamped <= 0.0031308f) {
+        srgb = 12.92f * clamped;
+    } else {
+        srgb = 1.055f * std::pow(clamped, 1.0f / 2.4f) - 0.055f;
+    }
+
+    // Map [0,1] → [0,255] with rounding
+    int encoded = static_cast<int>(std::lround(srgb * 255.0f));
+    if (encoded < 0) encoded = 0;
+    if (encoded > 255) encoded = 255;
+    return static_cast<uint8_t>(encoded);
+}
+
+
+static float computeAutoExposureScale(const std::vector<Pale::DevicePhotonSurface>& photons,
+                                      float targetDisplayValue = 0.9f,
+                                      float percentile = 0.99f) {
+    std::vector<float> luminanceValues;
+    luminanceValues.reserve(photons.size());
+    for (const auto& ph : photons) {
+        float L = 0.2126f * ph.power.x() + 0.7152f * ph.power.y() + 0.0722f * ph.power.z();
+        if (std::isfinite(L) && L > 0.0f) luminanceValues.push_back(L);
+    }
+    if (luminanceValues.empty()) return 1.0f;
+    std::sort(luminanceValues.begin(), luminanceValues.end());
+    size_t index = static_cast<size_t>(std::floor(percentile * (luminanceValues.size() - 1)));
+    float Lp = luminanceValues[index];
+    if (Lp <= 0.0f) return 1.0f;
+    return targetDisplayValue / Lp;
 }
 
 static void dumpPhotonMapToPLY(sycl::queue &queue,
                                const Pale::DevicePhotonSurface *devicePhotonArray,
                                std::uint32_t devicePhotonCount,
                                const std::filesystem::path &outputFilePath,
-                               float exposureScale = 1.0f,
+                               float exposureScale = 0.0f,
                                bool writeNormals = true) {
     if (devicePhotonCount == 0) return;
 
     std::vector<Pale::DevicePhotonSurface> hostPhotons(devicePhotonCount);
     queue.memcpy(hostPhotons.data(), devicePhotonArray,
                  sizeof(Pale::DevicePhotonSurface) * devicePhotonCount).wait();
+
+    if (exposureScale <= 0.0f) {
+        exposureScale = computeAutoExposureScale(hostPhotons, 0.9f, 0.99f);
+    }
 
     std::ofstream outFile(outputFilePath, std::ios::binary);
     if (!outFile)
