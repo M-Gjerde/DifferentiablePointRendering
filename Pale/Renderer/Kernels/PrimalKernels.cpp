@@ -389,6 +389,7 @@ namespace Pale {
 
                     float3 Lsheet(0.0f);
                     float tau = 1.0f;
+
                     for (int i = 0; i < worldHit.splatEventCount; ++i) {
                         const auto &splatEvent = worldHit.splatEvents[i];
                         if (worldHit.hit && splatEvent.t >= worldHit.t)
@@ -399,6 +400,8 @@ namespace Pale {
                         Lsheet = Lsheet + tau * splatEvent.alpha * L;
                         tau *= (1.0f - splatEvent.alpha);
                     }
+
+
 
                     if (!worldHit.hit) {
                         radianceRGB = radianceRGB + Lsheet;
@@ -414,12 +417,14 @@ namespace Pale {
 
                     //radianceRGB = radianceRGB + worldHit.sheetRadianceAccum; // sheets before the first surface
 
+                    /*
                     // Geometry term?
                     float distanceToCamera = length(worldHit.hitPositionW - primary.origin);
                     float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -primary.direction));
                     float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, primary.direction)); // optional
                     float geometricToCamera = (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
                     //radianceRGB = radianceRGB * geometricToCamera;
+                    */
 
                     // Atomic accumulate
                     const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code

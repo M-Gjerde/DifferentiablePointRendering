@@ -138,15 +138,15 @@ namespace Pale {
 
         float cumulativeTransmittanceBefore = 1.0f;
 
-        SmallStack<32> traversalStack;
+        SmallStack<kMaxSplatEvents> traversalStack;
         traversalStack.push(0);
 
         float currentGroupDepthKey = -std::numeric_limits<float>::infinity();
-        BoundedVector<float, 32> groupDepthKeys;
-        BoundedVector<float, 32> groupLocalTs;
-        BoundedVector<float, 32> groupAlphas;
-        BoundedVector<uint32_t, 32> groupIndices;
-        BoundedVector<uint32_t, 32> splatEvents;
+        BoundedVector<float, kMaxSplatEvents> groupDepthKeys;
+        BoundedVector<float, kMaxSplatEvents> groupLocalTs;
+        BoundedVector<float, kMaxSplatEvents> groupAlphas;
+        BoundedVector<uint32_t, kMaxSplatEvents> groupIndices;
+        BoundedVector<uint32_t, kMaxSplatEvents> splatEvents;
 
         auto clearCurrentGroup = [&]() {
             groupDepthKeys.clear();
@@ -253,10 +253,10 @@ namespace Pale {
             }
 
             // Leaf: collect surfel events, sort by tHit
-            BoundedVector<float, 32> leafLocalTHits; // Should match the maxleafpoints in the BVH construction
-            BoundedVector<float, 32> leafAlphas;
-            BoundedVector<float, 32> leafDepthKeys;
-            BoundedVector<uint32_t, 32> leafIndices;
+            BoundedVector<float, kMaxSplatEvents> leafLocalTHits; // Should match the maxleafpoints in the BVH construction
+            BoundedVector<float, kMaxSplatEvents> leafAlphas;
+            BoundedVector<float, kMaxSplatEvents> leafDepthKeys;
+            BoundedVector<uint32_t, kMaxSplatEvents> leafIndices;
             leafLocalTHits.clear();
             leafAlphas.clear();
             leafIndices.clear();
@@ -284,8 +284,8 @@ namespace Pale {
 
             // Sort leaf events by t using insertionSortByKey (no STL)
             const int leafCount = leafLocalTHits.size();
-            BoundedVector<int, 32> order;
-            BoundedVector<float, 32> tempKeys;
+            BoundedVector<int, kMaxSplatEvents> order;
+            BoundedVector<float, kMaxSplatEvents> tempKeys;
             order.clear();
             tempKeys.clear();
             for (int i = 0; i < leafCount; ++i) {
