@@ -112,7 +112,7 @@ namespace Pale {
                     // 4) initial throughput
                     const sycl::float3 Le = light.emissionRgb; // radiance scale
                     const float invPdf = 1.0f / pdfTotal;
-                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / (totalPhotons);
+                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / photonCount;
 
                     // write ray
                     RayState ray{};
