@@ -15,10 +15,9 @@ set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 find_package(AdaptiveCpp REQUIRED)
 
 add_executable(${PROJECT_NAME})
-#target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
+
+target_compile_options(${PROJECT_NAME} PRIVATE -g -O0 -fno-inline -fno-omit-frame-pointer)
 target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp=libomp) # or -fno-openmp
-
-
 
 # Adding Vendor Libraries
 add_subdirectory(vendor/pugixml)

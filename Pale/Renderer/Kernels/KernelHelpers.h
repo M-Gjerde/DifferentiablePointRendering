@@ -790,4 +790,17 @@ namespace Pale {
                 a(reinterpret_cast<float *>(dst)[3]);
         a.store(1.0f);
     }
+
+    inline float2 phiInverse(float3 hitWorld, float3 surfelCenter, float3 tu, float3 tv, float su, float sv) {
+        float3 r = hitWorld - surfelCenter;
+        float2 uv;
+        uv[0] = dot(tu, r) / su;
+        uv[1] = dot(tv, r) / sv;
+        return uv;
+    }
+
+    inline float3 phiMapping(float3 surfelCenter, float3 tu, float3 tv, float su, float sv, float u, float v) {
+        return surfelCenter + su * tu * u + sv * tv * v;
+    }
+
 }

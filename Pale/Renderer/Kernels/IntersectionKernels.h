@@ -160,6 +160,14 @@ namespace Pale {
         auto scatterCurrentGroup = [&](rng::Xorshift128 &rng)-> bool {
             if (groupLocalTs.empty()) return false;
 
+            // 1) push this slice’s events into LocalHit (depth-sorted already)
+            for (size_t i = 0; i < groupLocalTs.size(); ++i) {
+                int index = localHitOut.splatEventCount++;
+                localHitOut.splatEvents[index].t = groupLocalTs[i];
+                localHitOut.splatEvents[index].alpha = groupAlphas[i];
+                localHitOut.splatEvents[index].primitiveIndex = groupIndices[i];
+            }
+
             // Composite acceptance at this depth
             float productOneMinusAlpha = 1.0f;
             for (size_t i = 0; i < groupAlphas.size(); ++i) productOneMinusAlpha *= (1.0f - groupAlphas[i]);
@@ -253,7 +261,8 @@ namespace Pale {
             }
 
             // Leaf: collect surfel events, sort by tHit
-            BoundedVector<float, kMaxSplatEvents> leafLocalTHits; // Should match the maxleafpoints in the BVH construction
+            BoundedVector<float, kMaxSplatEvents> leafLocalTHits;
+            // Should match the maxleafpoints in the BVH construction
             BoundedVector<float, kMaxSplatEvents> leafAlphas;
             BoundedVector<float, kMaxSplatEvents> leafDepthKeys;
             BoundedVector<uint32_t, kMaxSplatEvents> leafIndices;
@@ -297,26 +306,26 @@ namespace Pale {
             // Stream into running depth group
             for (int k = 0; k < leafCount; ++k) {
                 const int i = order[k];
-                const float depthKey        = leafDepthKeys[i];     // world-ray key
-                const float localTHit       = leafLocalTHits[i];    // object-space t
-                const float alphaAtHit      = leafAlphas[i];
-                const uint32_t surfelIndex  = leafIndices[i];
+                const float depthKey = leafDepthKeys[i]; // world-ray key
+                const float localTHit = leafLocalTHits[i]; // object-space t
+                const float alphaAtHit = leafAlphas[i];
+                const uint32_t surfelIndex = leafIndices[i];
 
                 if (groupDepthKeys.size() == 0 || sycl::fabs(depthKey - currentGroupDepthKey) <= sameDepthEpsilon) {
                     if (groupDepthKeys.size() == 0) currentGroupDepthKey = depthKey;
-                    (void)groupDepthKeys.pushBack(depthKey);
-                    (void)groupLocalTs.pushBack(localTHit);
-                    (void)groupAlphas.pushBack(alphaAtHit);
-                    (void)groupIndices.pushBack(surfelIndex);
+                    (void) groupDepthKeys.pushBack(depthKey);
+                    (void) groupLocalTs.pushBack(localTHit);
+                    (void) groupAlphas.pushBack(alphaAtHit);
+                    (void) groupIndices.pushBack(surfelIndex);
                 } else {
                     switch (rayIntersectMode) {
                         case RayIntersectMode::Transmit:
-                            transmitCurrentGroup(rng128);    // must write groupLocalTs[i] to out events
+                            transmitCurrentGroup(rng128); // must write groupLocalTs[i] to out events
                             break;
                         default:
                             if (scatterCurrentGroup(rng128)) {
                                 foundAcceptedScatter = true;
-                                bestAcceptedTHit = localHitOut.t;   // set from groupLocalTs in scatterCurrentGroup
+                                bestAcceptedTHit = localHitOut.t; // set from groupLocalTs in scatterCurrentGroup
                                 break;
                             }
                     }
@@ -328,10 +337,10 @@ namespace Pale {
                     groupAlphas.clear();
                     groupIndices.clear();
 
-                    (void)groupDepthKeys.pushBack(depthKey);
-                    (void)groupLocalTs.pushBack(localTHit);
-                    (void)groupAlphas.pushBack(alphaAtHit);
-                    (void)groupIndices.pushBack(surfelIndex);
+                    (void) groupDepthKeys.pushBack(depthKey);
+                    (void) groupLocalTs.pushBack(localTHit);
+                    (void) groupAlphas.pushBack(alphaAtHit);
+                    (void) groupIndices.pushBack(surfelIndex);
                 }
             }
             if (foundAcceptedScatter) break;
@@ -422,19 +431,17 @@ namespace Pale {
             } else {
                 acceptedHitInInstance = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene,
                                                                 rng128, transform, rayWorld, rayIntersectMode);
-                if (rayIntersectMode == RayIntersectMode::Transmit) {
-                    for (size_t i = 0; i < localHit.splatEventCount; ++i) {
-                        worldHitOut->splatEvents[i].alpha = localHit.splatEvents[i].alpha;
-                        worldHitOut->splatEvents[i].primitiveIndex = localHit.splatEvents[i].primitiveIndex;
-                        const float3 hitPointWorld = toWorldPoint(
-                            rayObject.origin + localHit.splatEvents[i].t * rayObject.direction,
-                            transform);
-                        const float tWorld = dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
-                        worldHitOut->splatEvents[i].hitWorld = hitPointWorld;
-                        worldHitOut->splatEvents[i].t = tWorld;
-                    }
-                    worldHitOut->splatEventCount = localHit.splatEventCount;
+                for (size_t i = 0; i < localHit.splatEventCount; ++i) {
+                    worldHitOut->splatEvents[i].alpha = localHit.splatEvents[i].alpha;
+                    worldHitOut->splatEvents[i].primitiveIndex = localHit.splatEvents[i].primitiveIndex;
+                    const float3 hitPointWorld = toWorldPoint(
+                        rayObject.origin + localHit.splatEvents[i].t * rayObject.direction,
+                        transform);
+                    const float tWorld = dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
+                    worldHitOut->splatEvents[i].hitWorld = hitPointWorld;
+                    worldHitOut->splatEvents[i].t = tWorld;
                 }
+                worldHitOut->splatEventCount = localHit.splatEventCount;
             }
 
             if (acceptedHitInInstance) {

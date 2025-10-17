@@ -21,10 +21,10 @@ namespace Pale {
         const uint32_t imageHeight = sensor.camera.height;
 
         uint32_t raysPerSet = imageWidth * imageHeight;
+
+        raysPerSet = 5;
+
         const uint32_t perPassRayCount = raysPerSet;
-
-        //raysPerSet = 1;
-
         queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
@@ -33,8 +33,7 @@ namespace Pale {
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
                 sycl::range<1>(raysPerSet),
                 [=](sycl::id<1> globalId) {
-                    const uint32_t globalRayIndex = static_cast<uint32_t>(globalId[0]);
-
+                    const auto globalRayIndex = static_cast<uint32_t>(globalId[0]);
                     // Map to pixel
                     const uint32_t pixelLinearIndexWithinImage = globalRayIndex; // 0..raysPerSet-1
                     const uint32_t pixelX = pixelLinearIndexWithinImage % imageWidth;
@@ -65,8 +64,9 @@ namespace Pale {
                         jitterX, jitterY
                     );
 
-                    //primaryRay.direction = normalize(float3{0.0, 1.0, -0.18});
-                    //primaryRay.origin = float3{0.0, -4.0, 1.0};
+                    primaryRay.direction = normalize(float3{-0.01, 1.0, 0.04});
+                    primaryRay.origin = float3{0.0, -4.0, 1.0};
+                    primaryRay.normal = normalize(float3{0.0, 1.0, 0.0});
 
                     RayState rayState{};
                     rayState.ray = primaryRay;
@@ -107,57 +107,74 @@ namespace Pale {
                     WorldHit worldHit = hitRecords[rayIndex];
                     RayState rayState = raysIn[rayIndex];
 
+                    printf("adjoint item %u, hit t: %f\n", rayIndex, worldHit.t);
+
+                    // rayIndex 2 is mesh
+                    // rayIndex 3 is surfel a
+                    // rayIndex 4 is surfel b
+
+                    // Mesh Scatters Ray index 2
+                    // 1. Implement transmission gradients for all pixels terminating at meshes (1 path length)
+                    // - Visualize with vertical movements of the splats.
+                    // 2. Implement inscattering from surfels with emission geometric term. This will give me radiance gradients.
+                    // - Visualize with different colors of the splats. Some darker some brighter than the mesh background.
+
+                    // Surfel Scatters A, Ray index 3
+                    // 1. Implement interior contributions, i.e. Geometric for surfels
+
+                    // Surfel scatters B, ray index 4:
+                    // 2. Add in-scattering to surfel events along side interior contribution. Use the attached points to propagate change to transmissivity.
+
+                    // Mesh background with in-scattering:
+                    if (rayIndex == 0) {
+                        Ray& ray = rayState.ray;
+                        float3 d = worldHit.hitPositionW - ray.origin;
+                        float r2 = dot(d, d);
+                        if (r2 <= 0.0)
+                            return;
+                        float r = sqrtf(r2);
+                        float3 w = d / r;
+
+                        // Background Radiance and Geometric:
+                        float cos_bg = dot(worldHit.geometricNormalW, -w);
+                        float cos_fg = dot(ray.normal, w);
+                        float G_bg = (cos_fg * cos_bg) / r2;
+
+                        float3 L_mesh = estimateRadianceFromPhotonMap(
+                                      worldHit, scene, photonMap, settings.photonsPerLaunch);
+
+                        float3 L_bg = L_mesh * G_bg;
+
+                        // alpha surfel
+                        auto surfel = scene.points[worldHit.splatEvents[0].primitiveIndex];
+                        float3 n = cross(surfel.tanU, surfel.tanV);
+                        float denom = dot(n, d);
+                        if (abs(denom) <= 1e-6)
+                            return;
+                        float t_param = dot(n, surfel.position - ray.origin) / denom;
+
+                        float3 p_hit = ray.origin + t_param * d;
+                        float2 uv = phiInverse(p_hit, surfel.position, surfel.tanU, surfel.tanV, surfel.scale.x(), surfel.scale.y());
+                        float u = uv[0];
+                        float v = uv[1];
+                        float alpha = expf(-0.5f * (u * u + v * v));
+
+                        float3 grad_u = ((dot(surfel.tanU, d) / denom) * n - surfel.tanU) / surfel.scale.x();
+                        float3 grad_v = ((dot(surfel.tanV, d) / denom) * n - surfel.tanV) / surfel.scale.y();
+                        float3 grad_alpha = -alpha * (u * grad_u + v * grad_v);
+
+
+                        int debug = 1;
+                    }
+
+
                     if (!worldHit.hit) {
                         return;
                     }
 
-                    // calculate mesh transmit derivative
-                    {
-                        WorldHit transmitHit{};
-                       intersectScene(rayState.ray, &transmitHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
-
-                       float3 Lsheet(0.0f);
-                       float tau = 1.0f;
-                       for (int i = 0; i < transmitHit.splatEventCount; ++i) {
-                           const auto &splatEvent = transmitHit.splatEvents[i];
-                           if (transmitHit.hit && splatEvent.t >= transmitHit.t)
-                               break;
-                           float3 L = estimateSurfelRadianceFromPhotonMap(splatEvent, scene, photonMap,
-                                                                          settings.photonsPerLaunch);
-
-                           // Diff w.r.t to transmission for each parameter
-
-                           Lsheet = Lsheet + tau * splatEvent.alpha * L;
-                           tau *= (1.0f - splatEvent.alpha);
-                       }
-
-                    }
-
-                    // For each point-cloud BLAS range on this TLAS leaf (or iterate all if simple)
-                    float3 dTdpkAccum = float3{0, 0, 0};
-
-                    // Weight for pure-visibility term in the adjoint inner product:
-                    // w = L(y→x) * f_r * G for this segment.
-                    // If you only need T’s derivative now, set w = 1 and plug the full weight later.
-
-                    float3 q = rayState.pathThroughput;
-                    float3 dcost_dpk_r = dTdpkAccum * q.x();
-                    float3 dcost_dpk_g = dTdpkAccum * q.y();
-                    float3 dcost_dpk_b = dTdpkAccum * q.z();
-
-                    //float gradMag = (length(dcost_dpk_r) + length(dcost_dpk_g) + length(dcost_dpk_b)) / 3.0f;
-                    const float w = (q.x() + q.y() + q.z()) / 3.0f; // q = ∂c/∂L per channel
-
-                    const float3 L_bg = estimateRadianceFromPhotonMap(worldHit, scene, photonMap, photonsPerLaunch) * scene.materials[worldHit.instanceIndex].baseColor;
-
-                    float3 dLseg_dpk = dTdpkAccum * L_bg;
-
-                    const float3 parameterAxis = {1.0f, 0.0f, 0.0f};
-                    float scalar = dot(dLseg_dpk, parameterAxis);
-
                     if (rayState.bounceIndex >= 0) {
                         float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
-                        atomicAddFloatToImage(&gradImageDst, scalar);
+                        atomicAddFloatToImage(&gradImageDst, 0);
                     }
                 });
         });
