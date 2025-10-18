@@ -126,6 +126,7 @@ namespace Pale {
                     // 2. Add in-scattering to surfel events along side interior contribution. Use the attached points to propagate change to transmissivity.
 
                     // Mesh background with in-scattering:
+                    float3 gradAccum(0.0f);
                     if (rayIndex == 0) {
                         Ray& ray = rayState.ray;
                         float3 d = worldHit.hitPositionW - ray.origin;
@@ -163,8 +164,48 @@ namespace Pale {
                         float3 grad_v = ((dot(surfel.tanV, d) / denom) * n - surfel.tanV) / surfel.scale.y();
                         float3 grad_alpha = -alpha * (u * grad_u + v * grad_v);
 
+                        // Volume geometric term
+                        // Receiver-only geometry and its gradient wrt hit point z = p_hit
+                        float3 z = p_hit;
+                        float3 rvec = z - ray.origin;
+                        float r2e  = dot(rvec, rvec);
+                        if (r2e <= 0.0f) return;
+                        float re = sqrtf(r2e);
 
-                        int debug = 1;
+                        // w points into the camera (same as Python w_x)
+                        float3 wcam = -rvec / re;
+                        float cosRecv = fmaxf(0.0f, dot(ray.normal, wcam));
+                        float Gv_A = cosRecv / r2e;
+
+                        // gradient wrt z; match Python exactly
+                        float3 gradGv_z = float3(0.0f);
+                        if (cosRecv > 0.0f) {
+
+                            float w_dot_n = dot(wcam, ray.normal);
+                            float3 Pw_n = ray.normal - wcam * w_dot_n;
+                            float inv_r3 = 1.0f / (re * re * re);
+                            float3 grad_cos = -Pw_n / re;
+                            float3 d_inv_r2 = (2.0f * wcam) * inv_r3;
+                            gradGv_z = grad_cos / r2e + cosRecv * d_inv_r2;
+                        }
+
+                        // Map ∇_z Gv to surfel-position parameter p_i using dz/dp_i = d n^T / (n·d)
+                        float dotD_grad = dot(d, gradGv_z);
+                        float3 gradGv_p = (dotD_grad / denom) * n;
+
+                            float3 S_a_L = estimateSurfelRadianceFromPhotonMap(worldHit.splatEvents[0], scene, photonMap,
+                                               settings.photonsPerLaunch);
+
+                            float3 S_A = S_a_L * Gv_A;
+
+                            // Scale by emitted radiance of surfel A to get dS_A/dp_i
+                            float3 gradSA = S_a_L * gradGv_p;
+
+                            // Combine with alpha term: dL/dp_i += (S_A - B_eff) * d alpha + alpha * d S_A
+                            // You already have: S_A, B_eff, alpha, grad_alpha
+                            gradAccum = (S_A - L_bg) * grad_alpha + alpha * gradSA;
+
+
                     }
 
 
