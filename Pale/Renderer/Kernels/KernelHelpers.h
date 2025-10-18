@@ -803,4 +803,16 @@ namespace Pale {
         return surfelCenter + su * tu * u + sv * tv * v;
     }
 
+    inline float computeLuminanceRec709(const float3& inputRgbLinear) {
+        const float redWeight   = 0.2126f;
+        const float greenWeight = 0.7152f;
+        const float blueWeight  = 0.0722f;
+        return redWeight * inputRgbLinear[0]
+             + greenWeight * inputRgbLinear[1]
+             + blueWeight * inputRgbLinear[2];
+    }
+
+    inline float luminance(const float3& rgb) {
+        return computeLuminanceRec709(rgb);
+    }
 }

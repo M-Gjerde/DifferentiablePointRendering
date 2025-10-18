@@ -22,7 +22,7 @@ namespace Pale {
 
         uint32_t raysPerSet = imageWidth * imageHeight;
 
-        raysPerSet = 5;
+        //raysPerSet = 5;
 
         const uint32_t perPassRayCount = raysPerSet;
         queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
@@ -64,8 +64,8 @@ namespace Pale {
                         jitterX, jitterY
                     );
 
-                    primaryRay.direction = normalize(float3{-0.01, 1.0, 0.04});
-                    primaryRay.origin = float3{0.0, -4.0, 1.0};
+                    //primaryRay.direction = normalize(float3{-0.01, 1.0, 0.04});
+                    //primaryRay.origin = float3{0.0, -4.0, 1.0};
                     primaryRay.normal = normalize(float3{0.0, 1.0, 0.0});
 
                     RayState rayState{};
@@ -107,7 +107,7 @@ namespace Pale {
                     WorldHit worldHit = hitRecords[rayIndex];
                     RayState rayState = raysIn[rayIndex];
 
-                    printf("adjoint item %u, hit t: %f\n", rayIndex, worldHit.t);
+                    //printf("adjoint item %u, hit t: %f SplatEvents: %u \n", rayIndex, worldHit.t, worldHit.splatEventCount);
 
                     // rayIndex 2 is mesh
                     // rayIndex 3 is surfel a
@@ -126,9 +126,11 @@ namespace Pale {
                     // 2. Add in-scattering to surfel events along side interior contribution. Use the attached points to propagate change to transmissivity.
 
                     // Mesh background with in-scattering:
-                    float3 gradAccum(0.0f);
-                    if (rayIndex == 0) {
-                        Ray& ray = rayState.ray;
+                    auto &instance = scene.instances[worldHit.instanceIndex];
+
+                    Ray &ray = rayState.ray;
+                    float3 grad_L(0.0f);
+                    if (worldHit.splatEventCount == 1 && instance.geometryType == GeometryType::Mesh) {
                         float3 d = worldHit.hitPositionW - ray.origin;
                         float r2 = dot(d, d);
                         if (r2 <= 0.0)
@@ -142,9 +144,7 @@ namespace Pale {
                         float G_bg = (cos_fg * cos_bg) / r2;
 
                         float3 L_mesh = estimateRadianceFromPhotonMap(
-                                      worldHit, scene, photonMap, settings.photonsPerLaunch);
-
-                        float3 L_bg = L_mesh * G_bg;
+                            worldHit, scene, photonMap, settings.photonsPerLaunch);
 
                         // alpha surfel
                         auto surfel = scene.points[worldHit.splatEvents[0].primitiveIndex];
@@ -155,7 +155,8 @@ namespace Pale {
                         float t_param = dot(n, surfel.position - ray.origin) / denom;
 
                         float3 p_hit = ray.origin + t_param * d;
-                        float2 uv = phiInverse(p_hit, surfel.position, surfel.tanU, surfel.tanV, surfel.scale.x(), surfel.scale.y());
+                        float2 uv = phiInverse(p_hit, surfel.position, surfel.tanU, surfel.tanV, surfel.scale.x(),
+                                               surfel.scale.y());
                         float u = uv[0];
                         float v = uv[1];
                         float alpha = expf(-0.5f * (u * u + v * v));
@@ -163,59 +164,88 @@ namespace Pale {
                         float3 grad_u = ((dot(surfel.tanU, d) / denom) * n - surfel.tanU) / surfel.scale.x();
                         float3 grad_v = ((dot(surfel.tanV, d) / denom) * n - surfel.tanV) / surfel.scale.y();
                         float3 grad_alpha = -alpha * (u * grad_u + v * grad_v);
+                        float3 dT_dc = -grad_alpha;
 
                         // Volume geometric term
                         // Receiver-only geometry and its gradient wrt hit point z = p_hit
                         float3 z = p_hit;
                         float3 rvec = z - ray.origin;
-                        float r2e  = dot(rvec, rvec);
+                        float r2e = dot(rvec, rvec);
                         if (r2e <= 0.0f) return;
                         float re = sqrtf(r2e);
 
                         // w points into the camera (same as Python w_x)
-                        float3 wcam = -rvec / re;
-                        float cosRecv = fmaxf(0.0f, dot(ray.normal, wcam));
-                        float Gv_A = cosRecv / r2e;
+                        float3 directionToHit = rvec / re;
+                        float cosineReceiver = fmaxf(0.0f, dot(ray.normal, directionToHit));
+                        float Gv = cosineReceiver / r2e;
 
-                        // gradient wrt z; match Python exactly
                         float3 gradGv_z = float3(0.0f);
-                        if (cosRecv > 0.0f) {
+                        if (cosineReceiver > 0.0f) {
+                            const float wDotN = dot(directionToHit, ray.normal);
+                            // (I - w w^T) n
+                            const float3 projectedNormal = ray.normal - directionToHit * wDotN;
 
-                            float w_dot_n = dot(wcam, ray.normal);
-                            float3 Pw_n = ray.normal - wcam * w_dot_n;
-                            float inv_r3 = 1.0f / (re * re * re);
-                            float3 grad_cos = -Pw_n / re;
-                            float3 d_inv_r2 = (2.0f * wcam) * inv_r3;
-                            gradGv_z = grad_cos / r2e + cosRecv * d_inv_r2;
+                            const float inverseR3 = 1.0f / (re * re * re);
+
+                            // d cos / dz = ((I - w w^T) n) / r
+                            const float3 gradCosine = projectedNormal / re;
+
+                            // d (1/r^2) / dz = -2 w / r^3
+                            const float3 dInvR2_dz = -2.0f * directionToHit * inverseR3;
+
+                            gradGv_z = gradCosine / r2e + cosineReceiver * dInvR2_dz;
                         }
-
                         // Map ∇_z Gv to surfel-position parameter p_i using dz/dp_i = d n^T / (n·d)
                         float dotD_grad = dot(d, gradGv_z);
                         float3 gradGv_p = (dotD_grad / denom) * n;
 
-                            float3 S_a_L = estimateSurfelRadianceFromPhotonMap(worldHit.splatEvents[0], scene, photonMap,
-                                               settings.photonsPerLaunch);
-
-                            float3 S_A = S_a_L * Gv_A;
-
-                            // Scale by emitted radiance of surfel A to get dS_A/dp_i
-                            float3 gradSA = S_a_L * gradGv_p;
-
-                            // Combine with alpha term: dL/dp_i += (S_A - B_eff) * d alpha + alpha * d S_A
-                            // You already have: S_A, B_eff, alpha, grad_alpha
-                            gradAccum = (S_A - L_bg) * grad_alpha + alpha * gradSA;
-
-
+                        float3 S_a_L = estimateSurfelRadianceFromPhotonMap(worldHit.splatEvents[0], scene, photonMap,
+                                                                           settings.photonsPerLaunch);
+                        float L_surfel = luminance(S_a_L);
+                        float L_bg = luminance(L_mesh);
+                        //Use Rec.709 (sRGB) luminance.
+                        float3 grad_L_bg = dT_dc * (L_bg * G_bg);
+                        float3 grad_L_surf = grad_alpha * (L_surfel * Gv) + (alpha * L_surfel) * gradGv_p;
+                        grad_L = grad_L_bg + grad_L_surf;
                     }
 
+                    if (worldHit.splatEventCount == 1 && instance.geometryType == GeometryType::PointCloud) {
+                        float3 &x = ray.origin;
+                        float3 &y = worldHit.hitPositionW;
+                        float3 rvec = y - x;
+                        float r2 = dot(rvec, rvec);
+                        if (r2 <= 0.0f) return;
+                        float r = sqrtf(r2);
+
+                        float3 u = (x- y) / r; // Into the camera
+                        float3 surfel_normal = worldHit.geometricNormalW;
+                        float a = dot(surfel_normal, u);
+                        float b = dot(ray.normal, -u);
+
+                        if (a <= 0.0f || b <= 0.0f) {
+                            return;
+                        }
+
+                        float3 grad_G = (-b * surfel_normal + a * ray.normal + 4.0f * a *b * u) / (r * r * r);
+
+                        float3 S_a_L = estimateSurfelRadianceFromPhotonMap(worldHit.splatEvents[0], scene, photonMap,
+                                                   settings.photonsPerLaunch);
+                        float L_surfel = luminance(S_a_L);
+
+                        grad_L = L_surfel * grad_G;
+
+                    }
 
                     if (!worldHit.hit) {
                         return;
                     }
 
                     if (rayState.bounceIndex >= 0) {
+                        const float3 parameterAxis = {0.0f, 0.0f, 1.00f};
+                        const float dVdp_scalar = dot(grad_L, parameterAxis);
+
                         float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
-                        atomicAddFloatToImage(&gradImageDst, 0);
+                        atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
                     }
                 });
         });

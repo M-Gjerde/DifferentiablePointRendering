@@ -289,7 +289,6 @@ namespace Pale {
         float transmissivity = 1.0f;
         // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
         uint32_t primitiveIndex = UINT32_MAX;
-        uint32_t splatIndices[5] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
         uint32_t instanceIndex = UINT32_MAX;
         float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW = float3(0.0f);; // optional: fill if you have it cheaply

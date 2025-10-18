@@ -196,7 +196,10 @@ namespace Pale {
                     localHitOut.primitiveIndex = groupIndices[i];
                     localHitOut.transmissivity = cumulativeTransmittanceBefore;
                     // transmittance before the accepted event
-
+                    // Dont count this as a splat event
+                    if (localHitOut.primitiveIndex == localHitOut.splatEvents[0].primitiveIndex) {
+                        //localHitOut.splatEventCount--;
+                    }
                     clearCurrentGroup();
                     return true; // accepted scatter at this depth
                 }
