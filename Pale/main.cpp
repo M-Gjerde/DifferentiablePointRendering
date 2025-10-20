@@ -5,6 +5,9 @@
 #include "Renderer/GPUDataStructures.h"
 #include <OpenImageDenoise/oidn.hpp>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include "glm/gtx/string_cast.hpp"
+
 import Pale.DeviceSelector;
 import Pale.Scene.Components;
 import Pale.SceneSerializer;
@@ -290,6 +293,11 @@ int main(int argc, char **argv) {
     auto entityGaussian = scene->createEntity("Gaussian");
     entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
     auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
+    if (pointCloudPath.filename() == "target.ply") {
+        transform.setPosition(glm::vec3(0.05f, 0.0f, 0.0f));
+        Pale::Log::PA_INFO("Pertubing the target point cloud: {}", glm::to_string(transform.getPosition()));
+    }
+
     //transform.setRotationEuler(glm::vec3(-90.0f, 0.0f, 0.0f));
     //transform.setScale(glm::vec3(0.5f, 0.5f, 0.5f));
     //transform.setPosition(glm::vec3(0.0f, 0.1f, 0.0f));

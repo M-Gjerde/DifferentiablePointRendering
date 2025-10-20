@@ -140,6 +140,7 @@ namespace Pale {
                                                              m_intermediates(intermediates), m_settings(settings) {
         }
 
+
         void operator()(sycl::id<1> globalId) const {
             const uint32_t rayIndex = globalId[0];
             const uint64_t perItemSeed = rng::makePerItemSeed1D(m_settings.randomSeed, rayIndex);
@@ -154,6 +155,7 @@ namespace Pale {
             }
 
             auto &instance = m_scene.instances[worldHit.instanceIndex];
+
             switch (instance.geometryType) {
                 case GeometryType::Mesh: {
                     const Triangle &triangle = m_scene.triangles[worldHit.primitiveIndex];
@@ -163,17 +165,15 @@ namespace Pale {
                     const Vertex &vertex1 = m_scene.vertices[triangle.v1];
                     const Vertex &vertex2 = m_scene.vertices[triangle.v2];
 
-                    // Geometric normal in world space
+                    // Canonical geometric normal (no face-forwarding)
                     const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
                     const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
                     const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
-                    float3 geometricNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
-                    worldHit.geometricNormalW = geometricNormalW;
+                    const float3 canonicalNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
+                    worldHit.geometricNormalW = canonicalNormalW;
 
-                    //std::string name = instance.name;
                     m_intermediates.hitRecords[rayIndex] = worldHit;
 
-                    // APpend to photon map
                     if (m_settings.rayGenMode == RayGenMode::Emitter) {
                         auto &devicePtr = *m_intermediates.map.photonCountDevicePtr;
                         sycl::atomic_ref<uint32_t,
@@ -183,32 +183,31 @@ namespace Pale {
                                 photonCounter(devicePtr);
 
                         const uint32_t reservedSlot = photonCounter.fetch_add(1u);
-                        if (reservedSlot >= m_intermediates.map.photonCapacity) return; // drop
+                        if (reservedSlot >= m_intermediates.map.photonCapacity) return;
 
                         DevicePhotonSurface photonEntry{};
                         photonEntry.position = worldHit.hitPositionW;
                         photonEntry.power = rayState.pathThroughput;
                         photonEntry.incidentDir = -rayState.ray.direction;
-                        photonEntry.cosineIncident = std::fmax(
-                            0.f, dot(worldHit.geometricNormalW, photonEntry.incidentDir));
+
+                        const float signedCosineIncident = dot(canonicalNormalW, photonEntry.incidentDir);
+                        photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
+                        photonEntry.sideSign = signNonZero(signedCosineIncident);
 
                         m_intermediates.map.photons[reservedSlot] = photonEntry;
                     }
                 }
                 break;
+
                 case GeometryType::PointCloud: {
-                    auto &surfel = m_scene.points[worldHit.primitiveIndex];
-                    // SURFACE: set geometric normal and record hit
-                    float3 nW = normalize(cross(surfel.tanU, surfel.tanV));
-                    if (dot(nW, -rayState.ray.direction) < 0.0f)
-                        nW = -nW;
-                    worldHit.geometricNormalW = nW;
+                    const auto &surfel = m_scene.points[worldHit.primitiveIndex];
 
-
+                    // Canonical surfel normal from tangents (no face-forwarding)
+                    const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                    worldHit.geometricNormalW = canonicalNormalW;
                     m_intermediates.hitRecords[rayIndex] = worldHit;
 
                     if (m_settings.rayGenMode == RayGenMode::Emitter) {
-                        // APpend to photon map
                         auto &devicePtr = *m_intermediates.map.photonCountDevicePtr;
                         sycl::atomic_ref<uint32_t,
                                     sycl::memory_order::acq_rel,
@@ -217,14 +216,17 @@ namespace Pale {
                                 photonCounter(devicePtr);
 
                         const uint32_t reservedSlot = photonCounter.fetch_add(1u);
-                        if (reservedSlot >= m_intermediates.map.photonCapacity) return; // drop
+                        if (reservedSlot >= m_intermediates.map.photonCapacity) return;
 
                         DevicePhotonSurface photonEntry{};
                         photonEntry.position = worldHit.hitPositionW;
                         photonEntry.power = rayState.pathThroughput;
                         photonEntry.incidentDir = -rayState.ray.direction;
-                        photonEntry.cosineIncident = std::fmax(
-                            0.f, dot(worldHit.geometricNormalW, photonEntry.incidentDir));
+
+                        const float signedCosineIncident = dot(canonicalNormalW, photonEntry.incidentDir);
+                        photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
+                        photonEntry.sideSign = signNonZero(signedCosineIncident);
+
                         m_intermediates.map.photons[reservedSlot] = photonEntry;
                     }
                 }
@@ -256,14 +258,12 @@ namespace Pale {
     void generateNextRays(RenderPackage &pkg, uint32_t activeRayCount) {
         auto queue = pkg.queue;
         auto scene = pkg.scene;
-        auto sensor = pkg.sensor;
         auto settings = pkg.settings;
 
         auto *hitRecords = pkg.intermediates.hitRecords;
         auto *raysIn = pkg.intermediates.primaryRays;
         auto *raysOut = pkg.intermediates.extensionRaysA;
         auto *countExtensionOut = pkg.intermediates.countExtensionOut;
-
 
         queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = settings.randomSeed;
@@ -273,76 +273,59 @@ namespace Pale {
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
-                    constexpr float kEps = 5e-4f;
+
+                    constexpr float surfaceEpsilon = 5e-4f;
+
                     const WorldHit worldHit = hitRecords[rayIndex];
                     const RayState rayState = raysIn[rayIndex];
-                    if (!worldHit.hit) {
-                        return;
-                    }
-                    auto &instance = scene.instances[worldHit.instanceIndex];
-                    GPUMaterial material;
-                    switch (instance.geometryType) {
-                        case GeometryType::Mesh:
-                            material = scene.materials[instance.materialIndex];
-                            break;
-                        case GeometryType::PointCloud:
-                            material.baseColor = scene.points[worldHit.primitiveIndex].color;
-                            break;
-                    }
-                    float cosinePDF = 0.0f;
-                    float3 newDirection;
-                    // Lambertian BRDF
-                    float3 brdf;
+                    if (!worldHit.hit) return;
 
-                    if (instance.geometryType == GeometryType::PointCloud) {
-                        //sampleUniformSphere(rng128, newDirection, cosinePDF);
-                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
+                    const InstanceRecord instance = scene.instances[worldHit.instanceIndex];
+
+                    // --- Canonical normal at the hit (no face-forwarding stored in hit) ---
+                    const float3 canonicalNormalW = worldHit.geometricNormalW;
+                    // --- Orient to the side we entered first (two-sided, side-correct sampling) ---
+                    // travelSideSign = sign(dot(n, -wo))
+                    const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
+                    const float3 shadingNormal = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
+                    // --- Cosine-hemisphere sampling over the *entered* side ---
+                    float cosinePdf = 0.0f;
+                    float3 sampledOutgoingDirection;
+                    // --- Material fetch (two-sided diffuse) ---
+                    GPUMaterial material{};
+                    if (instance.geometryType == GeometryType::Mesh) {
+                        material = scene.materials[instance.materialIndex];
+                        sampleCosineHemisphere(rng128, shadingNormal, sampledOutgoingDirection, cosinePdf);
                     } else {
-                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, newDirection, cosinePDF);
+                        // PointCloud
+                        material.baseColor = scene.points[worldHit.primitiveIndex].color;
+                        sampleUniformSphere(rng128, sampledOutgoingDirection, cosinePdf);
                     }
 
 
-                    brdf = material.baseColor * (1.0f / M_PIf);
-                    float3 shadingNormal = worldHit.geometricNormalW;
-                    float cosTheta = sycl::fmax(0.f, dot(newDirection, shadingNormal));
-                    float minPdf = 1e-6f;
-                    cosinePDF = sycl::fmax(cosinePDF, minPdf);
+                    cosinePdf = sycl::fmax(cosinePdf, 1e-6f);
 
-                    // Sample next
+                    // --- Diffuse BRDF and geometry term for MIS-free cosine sampling ---
+                    const float3 lambertBrdf = material.baseColor * (1.0f / M_PIf);
+                    const float cosTheta = sycl::fmax(0.f, dot(sampledOutgoingDirection, shadingNormal));
+
+                    // --- Spawn next ray with offset along *oriented* normal ---
                     RayState nextState{};
-                    nextState.ray.origin = worldHit.hitPositionW + worldHit.geometricNormalW * kEps;
-                    nextState.ray.direction = newDirection;
+                    nextState.ray.origin = worldHit.hitPositionW + shadingNormal * surfaceEpsilon;
+                    nextState.ray.direction = sampledOutgoingDirection;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;
 
-                    // Throughput update
-                    float3 updatedThroughput = rayState.pathThroughput * (
-                                                   brdf * cosTheta / sycl::fmax(cosinePDF, 1e-6f));
-                    /*
-                    // Russian roulette
-                    if (nextState.bounceIndex >= settings.russianRouletteStart) {
-                        // Use luminance to avoid color bias; clamp to keep variance bounded
-                        const float survivalProbabilityRaw =
-                                0.2126f * updatedThroughput.x() +
-                                0.7152f * updatedThroughput.y() +
-                                0.0722f * updatedThroughput.z();
-                        const float survivalProbability =
-                                sycl::clamp(survivalProbabilityRaw, 0.05f, 0.95f);
-
-                        if (rng128.nextFloat() > survivalProbability) {
-                            return; // kill path; do not enqueue
-                        }
-                        updatedThroughput = updatedThroughput * (1.0f / survivalProbability);
-                    }
-                    */
-
+                    // --- Throughput update (cosine/cosinePdf cancel ideally; keep robust form) ---
+                    const float3 updatedThroughput =
+                            rayState.pathThroughput * (lambertBrdf * (cosTheta / cosinePdf));
                     nextState.pathThroughput = updatedThroughput;
-                    // Enqueue survived ray
+
+                    // --- Enqueue ---
                     auto extensionCounter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
                         sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>(
-                        *countExtensionOut);
+                        sycl::access::address_space::global_space>(*countExtensionOut);
                     const uint32_t outIndex = extensionCounter.fetch_add(1);
                     raysOut[outIndex] = nextState;
                 });
@@ -382,10 +365,10 @@ namespace Pale {
                     const float jx = rng128.nextFloat() - 0.5f;
                     const float jy = rng128.nextFloat() - 0.5f;
 
-                    Ray primary = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
-                                                                  static_cast<float>(py), jx, jy);
+                    Ray ray = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
+                                                              static_cast<float>(py), jx, jy);
                     WorldHit worldHit{};
-                    intersectScene(primary, &worldHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
+                    intersectScene(ray, &worldHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
 
                     float3 Lsheet(0.0f);
                     float tau = 1.0f;
@@ -394,13 +377,11 @@ namespace Pale {
                         const auto &splatEvent = worldHit.splatEvents[i];
                         if (worldHit.hit && splatEvent.t >= worldHit.t)
                             break;
-                        float3 L = estimateSurfelRadianceFromPhotonMap(splatEvent, scene, photonMap,
-                                                                       settings.photonsPerLaunch);
+                        float3 L = estimateSurfelRadianceFromPhotonMap(splatEvent, ray.direction, scene, photonMap);
 
                         Lsheet = Lsheet + tau * splatEvent.alpha * L;
                         tau *= (1.0f - splatEvent.alpha);
                     }
-
 
 
                     if (!worldHit.hit) {
@@ -411,7 +392,7 @@ namespace Pale {
                     radianceRGB = radianceRGB + Lsheet;
 
                     radianceRGB = radianceRGB + estimateRadianceFromPhotonMap(
-                                      worldHit, scene, photonMap, settings.photonsPerLaunch) * worldHit.transmissivity;
+                                      worldHit, scene, photonMap) * worldHit.transmissivity;
 
                     radianceRGB = radianceRGB;
 

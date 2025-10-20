@@ -244,17 +244,17 @@ namespace Pale {
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
-        float3 origin; // 16
-        float3 direction; // 32
-        float3 normal;
+        float3 origin{0.0f}; // 16
+        float3 direction{0.0f}; // 32
+        float3 normal{0.0f};
     };
 
     static_assert(std::is_trivially_copyable_v<Ray>);
 
     struct alignas(16) RayState {
         Ray ray{};
-        float3 pathThroughput{};
-        uint32_t bounceIndex{};
+        float3 pathThroughput{0.0f};
+        uint32_t bounceIndex{0};
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
     };
 
@@ -327,6 +327,8 @@ namespace Pale {
         float3 incidentDir{0.0f};
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
+        int    sideSign;       // +1 or -1: hemisphere relative to canonical surfel normal
+
     };
 
     static_assert(std::is_trivially_copyable_v<DevicePhotonSurface>);

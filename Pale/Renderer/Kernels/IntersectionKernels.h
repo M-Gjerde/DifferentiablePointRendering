@@ -134,7 +134,7 @@ namespace Pale {
         bool foundAcceptedScatter = false;
         const float3 inverseDirection = safeInvDir(rayObject.direction);
         constexpr float rayEpsilon = 1e-4f;
-        constexpr float sameDepthEpsilon = 1e-5f;
+        constexpr float sameDepthEpsilon = 1e-3f;
 
         float cumulativeTransmittanceBefore = 1.0f;
 

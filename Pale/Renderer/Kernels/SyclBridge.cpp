@@ -76,13 +76,13 @@ namespace Pale {
             // Save photon map to disk:
             {
 
-                /*
+
                 ScopedTimer timer("dumpPhotonMapToPLY");
                 dumpPhotonMapToPLY(pkg.queue,
                                   pkg.intermediates.map.photons,
                                   photonMapCount,
                                   std::filesystem::path("Output/photon_map.ply"));
-                */
+
             } {
                 ScopedTimer timer("launchCameraGatherKernel", spdlog::level::debug);
                 int cameraGatherSPP = pkg.settings.numForwardPasses;

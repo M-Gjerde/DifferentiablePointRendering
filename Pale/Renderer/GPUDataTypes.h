@@ -330,11 +330,6 @@ namespace Pale {
                 r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
     }
 
-    /*------------- Matrix-vector overload that returns *float3* -----------*/
-    inline float3 operator*(float3x3 const &A, float3 const &v) {
-        sycl::vec<float, 3> r = operator*<3, 3>(A, static_cast<sycl::vec<float, 3>>(v));
-        return float3{r};
-    }
 
     /*------------- Transform a normal ------------------------------------*/
     inline float3 transformNormal(float3 const &n_obj, float4x4 const &obj2world) {
@@ -390,5 +385,96 @@ namespace Pale {
         return out;
     }
 
+    // --- Outer product for float3 (a * b^T) → 3×3 matrix ---
+    inline float3x3 outerProduct(const float3 &leftVector, const float3 &rightVector) {
+        float3x3 resultMatrix{};
+        const float ax = leftVector.x();
+        const float ay = leftVector.y();
+        const float az = leftVector.z();
+
+        const float bx = rightVector.x();
+        const float by = rightVector.y();
+        const float bz = rightVector.z();
+
+        // Row 0 = a_x * [b_x, b_y, b_z]
+        resultMatrix.row[0] = sycl::vec<float, 3>(ax * bx, ax * by, ax * bz);
+        // Row 1 = a_y * [b_x, b_y, b_z]
+        resultMatrix.row[1] = sycl::vec<float, 3>(ay * bx, ay * by, ay * bz);
+        // Row 2 = a_z * [b_x, b_y, b_z]
+        resultMatrix.row[2] = sycl::vec<float, 3>(az * bx, az * by, az * bz);
+
+        return resultMatrix;
+    }
+
+    // --- Matrix + and - ---
+template<size_t M, size_t N>
+inline Matrix<M, N> operator+(const Matrix<M, N> &leftMatrix,
+                              const Matrix<M, N> &rightMatrix) {
+    Matrix<M, N> resultMatrix{};
+    for (size_t rowIndex = 0; rowIndex < M; ++rowIndex)
+        for (size_t colIndex = 0; colIndex < N; ++colIndex)
+            resultMatrix.row[rowIndex][colIndex] =
+                leftMatrix.row[rowIndex][colIndex] + rightMatrix.row[rowIndex][colIndex];
+    return resultMatrix;
+}
+
+template<size_t M, size_t N>
+inline Matrix<M, N> operator-(const Matrix<M, N> &leftMatrix,
+                              const Matrix<M, N> &rightMatrix) {
+    Matrix<M, N> resultMatrix{};
+    for (size_t rowIndex = 0; rowIndex < M; ++rowIndex)
+        for (size_t colIndex = 0; colIndex < N; ++colIndex)
+            resultMatrix.row[rowIndex][colIndex] =
+                leftMatrix.row[rowIndex][colIndex] - rightMatrix.row[rowIndex][colIndex];
+    return resultMatrix;
+}
+
+// --- Scalar / Matrix (convenience) ---
+template<size_t M, size_t N>
+inline Matrix<M, N> operator/(const Matrix<M, N> &inputMatrix, float scalarValue) {
+    float inverseScalar = 1.0f / scalarValue;
+    return inputMatrix * inverseScalar;
+}
+
+// --- Identity matrices ---
+template<size_t N>
+inline Matrix<N, N> identityMatrix() {
+    Matrix<N, N> identity{};
+    for (size_t rowIndex = 0; rowIndex < N; ++rowIndex) {
+        for (size_t colIndex = 0; colIndex < N; ++colIndex)
+            identity.row[rowIndex][colIndex] = (rowIndex == colIndex) ? 1.0f : 0.0f;
+    }
+    return identity;
+}
+
+inline float3x3 identity3x3() { return identityMatrix<3>(); }
+
+    // --- Matrix × float3 → float3 (3×3 case) ---
+    inline float3 operator*(const float3x3 &leftMatrix, const float3 &rightVector) {
+        sycl::vec<float, 3> productResult =
+            operator*<3, 3>(leftMatrix, static_cast<sycl::vec<float, 3>>(rightVector));
+        return float3{productResult};
+    }
+
+    // --- Matrix × float4 → float4 (4×4 case) ---
+    inline float4 operator*(const float4x4 &leftMatrix, const float4 &rightVector) {
+        sycl::vec<float, 4> productResult =
+            operator*<4, 4>(leftMatrix, static_cast<sycl::vec<float, 4>>(rightVector));
+        return float4{productResult};
+    }
+
+    // --- float3 × Matrix → float3 (row-vector form, 3×3) ---
+    inline float3 operator*(const float3 &leftVector, const float3x3 &rightMatrix) {
+        sycl::vec<float, 3> productResult =
+            operator*<3, 3>(static_cast<sycl::vec<float, 3>>(leftVector), rightMatrix);
+        return float3{productResult};
+    }
+
+    // --- float4 × Matrix → float4 (row-vector form, 4×4) ---
+    inline float4 operator*(const float4 &leftVector, const float4x4 &rightMatrix) {
+        sycl::vec<float, 4> productResult =
+            operator*<4, 4>(static_cast<sycl::vec<float, 4>>(leftVector), rightMatrix);
+        return float4{productResult};
+    }
 
 }

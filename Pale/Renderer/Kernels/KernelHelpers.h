@@ -427,7 +427,6 @@ namespace Pale {
     SYCL_EXTERNAL inline float2 computeSurfelUVAtTHit(const Ray &rayObject,
                                                       const Point &surfel,
                                                       float tHit) {
-
         const float3 unitTangentU = normalize(surfel.tanU);
         const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));
         const float3 unitNormal = normalize(cross(unitTangentU, unitTangentV));
@@ -581,11 +580,13 @@ namespace Pale {
         return static_cast<std::uint32_t>(linear);
     }
 
+    inline int signNonZero(float x) { return (x >= 0.0f) ? 1 : -1; }
+
+
     inline float3 estimateRadianceFromPhotonMap(
         const WorldHit &worldHit,
         const GPUSceneBuffers &scene,
         const DeviceSurfacePhotonMapGrid &photonMap,
-        std::uint32_t photonsEmittedThisPass,
         float perHitRadiusScale = 1.0f, // tune 1–3
         bool photonsIncludeCosineAtStore = false // set false if power excludes cos(θ)
     ) {
@@ -679,88 +680,86 @@ namespace Pale {
         return radianceDirectRGB + radianceFromIrradianceRGB;
     }
 
-  inline float3 estimateSurfelRadianceFromPhotonMap(
+
+    inline float3 estimateSurfelRadianceFromPhotonMap(
         const SplatEvent &event,
+        const float3 &direction,
         const GPUSceneBuffers &scene,
-        const DeviceSurfacePhotonMapGrid &photonMap,
-        std::uint32_t photonsEmittedThisPass,
-        float perHitRadiusScale = 1.0f, // tune 1–3
-        bool photonsIncludeCosineAtStore = false // set false if power excludes cos(θ)
+        const DeviceSurfacePhotonMapGrid &photonMap
     ) {
-        // 1) Material and direct emissive term
-        float3 diffuseAlbedoRGB{0.f, 0.f, 0.f};
-        float3 radianceDirectRGB{0.f, 0.f, 0.f};
+        const float perHitRadiusScale = 1.0f;
+        const bool photonsIncludeCosineAtStore = false;
+        const float grazingEpsilon = 1e-6f;
+        // Material (two-sided Lambert by construction; irradiance already includes cos)
+        const Point surfelPoint = scene.points[event.primitiveIndex];
+        const float3 diffuseAlbedoRgb = surfelPoint.color;
 
-        // Point-cloud splat surface
-        const Point splat = scene.points[event.primitiveIndex];
-        diffuseAlbedoRGB = splat.color; // Lambertian splat
-        // If you support emissive splats, add them here.
+        // Canonical normal (no face-forwarding). Two-sided shading is fine.
+        const float3 canonicalNormalW = normalize(cross(surfelPoint.tanU, surfelPoint.tanV));
 
-        // 2) Photon gather
+        // Side we are *entering first* this segment: dot(n, -wo)
+        const int travelSideSign = signNonZero(dot(canonicalNormalW, -direction));
+
+        // Gather setup
         const float3 surfacePositionW = event.hitWorld;
-
         const float baseRadius = photonMap.gatherRadiusWorld;
-        const float localRadius = sycl::clamp(perHitRadiusScale,
-                                              1e-3f * baseRadius,
-                                              4.0f * baseRadius);
-        const float localRadiusSquared = localRadius * localRadius;
+        const float requestedRadius = sycl::fmax(1e-6f, perHitRadiusScale) * baseRadius;
+        const float localRadius = sycl::clamp(requestedRadius, 1e-3f * baseRadius, 4.0f * baseRadius);
+        const float localRadiusSq = localRadius * localRadius;
 
-        const float kappa = photonMap.kappa; // e.g. 2.0f
-        // Cone-kernel normalization on a disk of radius r: ∫_A w = (1 - 2/(3kappa)) π r^2
+        const float kappa = photonMap.kappa; // e.g. 2.0
         const float inverseConeNormalization =
-                1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * M_PIf * localRadiusSquared);
-
+                1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * M_PIf * localRadiusSq);
 
         const sycl::int3 centerCell = worldToCell(surfacePositionW, photonMap);
 
-        float3 weightedSumPhotonPowerRGB{0.f, 0.f, 0.f};
+        float3 weightedSumPhotonPowerRgb{0.f, 0.f, 0.f};
 
         for (int dz = -1; dz <= 1; ++dz) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
-                    const sycl::int3 neighborCell{
-                        centerCell.x() + dx,
-                        centerCell.y() + dy,
-                        centerCell.z() + dz
-                    };
+                    const sycl::int3 neighborCell{centerCell.x() + dx, centerCell.y() + dy, centerCell.z() + dz};
                     if (!isInsideGrid(neighborCell, photonMap.gridResolution)) continue;
 
-                    const std::uint32_t cellIndex =
-                            linearCellIndex(neighborCell, photonMap.gridResolution);
+                    const std::uint32_t cellIndex = linearCellIndex(neighborCell, photonMap.gridResolution);
 
                     for (std::uint32_t photonIndex = photonMap.cellHeadIndexArray[cellIndex];
                          photonIndex != kInvalidIndex;
                          photonIndex = photonMap.photonNextIndexArray[photonIndex]) {
                         const DevicePhotonSurface photon = photonMap.photons[photonIndex];
 
+                        // Hemisphere gate: accept only photons from the same side we enter first
+                        const float nDotWi = dot(canonicalNormalW, photon.incidentDir);
+                        if (sycl::fabs(nDotWi) < grazingEpsilon) continue; // ambiguous grazing
+                        if (photon.sideSign != travelSideSign) continue;
+
+                        // Distance + kernel
                         const float3 displacement = photon.position - surfacePositionW;
-                        const float distanceSquared = dot(displacement, displacement);
-                        if (distanceSquared > localRadiusSquared) continue;
+                        const float distSq = dot(displacement, displacement);
+                        if (distSq > localRadiusSq) continue;
 
-                        const float distance = sycl::sqrt(distanceSquared);
-                        const float kernelWeight = sycl::fmax(0.f, 1.f - distance / (kappa * localRadius));
+                        const float dist = sycl::sqrt(distSq);
+                        const float kernelWeight = sycl::fmax(0.f, 1.f - dist / (kappa * localRadius));
 
-                        // If photon.power already had cosine at store time, use as-is.
-                        // Otherwise multiply by photon.cosineIncident here if available.
-                        const float3 photonContributionRGB =
+                        const float3 photonContributionRgb =
                                 photonsIncludeCosineAtStore
                                     ? photon.power
                                     : (photon.power * photon.cosineIncident);
 
-                        weightedSumPhotonPowerRGB = weightedSumPhotonPowerRGB + kernelWeight * photonContributionRGB;
+                        weightedSumPhotonPowerRgb = weightedSumPhotonPowerRgb + kernelWeight * photonContributionRgb;
                     }
                 }
             }
         }
 
-        const float3 irradianceRGB =
-                weightedSumPhotonPowerRGB * inverseConeNormalization;
+        const float3 irradianceRgb = weightedSumPhotonPowerRgb * inverseConeNormalization;
 
-        const float3 lambertianBRDFRGB = diffuseAlbedoRGB * (1.0f / M_PIf);
-        const float3 radianceFromIrradianceRGB = irradianceRGB * lambertianBRDFRGB;
+        // Two-sided Lambert: no extra abs(cos) on outgoing; irradiance already integrated over cos.
+        const float3 lambertBrdfRgb = diffuseAlbedoRgb * (1.0f / M_PIf);
 
-        return radianceDirectRGB + radianceFromIrradianceRGB;
+        return irradianceRgb * lambertBrdfRgb;
     }
+
 
     inline void atomicAddFloat4ToImage(float4 *dst, const float3 &v) {
         for (int c = 0; c < 3; ++c) {
@@ -776,6 +775,7 @@ namespace Pale {
                 a(reinterpret_cast<float *>(dst)[3]);
         a.store(1.0f);
     }
+
     inline void atomicAddFloatToImage(float4 *dst, const float &v) {
         for (int c = 0; c < 3; ++c) {
             sycl::atomic_ref<float, sycl::memory_order::relaxed,
@@ -799,20 +799,37 @@ namespace Pale {
         return uv;
     }
 
+    inline float2 phiInverse(const float3 &hitWorld, const Point &surfel) {
+        float3 r = hitWorld - surfel.position;
+        float2 uv;
+        uv[0] = dot(surfel.tanU, r) / surfel.scale.x();
+        uv[1] = dot(surfel.tanV, r) / surfel.scale.y();
+        return uv;
+    }
+
     inline float3 phiMapping(float3 surfelCenter, float3 tu, float3 tv, float su, float sv, float u, float v) {
         return surfelCenter + su * tu * u + sv * tv * v;
     }
 
-    inline float computeLuminanceRec709(const float3& inputRgbLinear) {
-        const float redWeight   = 0.2126f;
+    inline float computeLuminanceRec709(const float3 &inputRgbLinear) {
+        const float redWeight = 0.2126f;
         const float greenWeight = 0.7152f;
-        const float blueWeight  = 0.0722f;
+        const float blueWeight = 0.0722f;
         return redWeight * inputRgbLinear[0]
-             + greenWeight * inputRgbLinear[1]
-             + blueWeight * inputRgbLinear[2];
+               + greenWeight * inputRgbLinear[1]
+               + blueWeight * inputRgbLinear[2];
     }
 
-    inline float luminance(const float3& rgb) {
+    inline float luminance(const float3 &rgb) {
         return computeLuminanceRec709(rgb);
+    }
+
+    inline float luminanceGrayscale(const float3 &inputRgbLinear) {
+        const float redWeight = 0.33f;
+        const float greenWeight = 0.33f;
+        const float blueWeight = 0.33f;
+        return redWeight * inputRgbLinear[0]
+               + greenWeight * inputRgbLinear[1]
+               + blueWeight * inputRgbLinear[2];
     }
 }
