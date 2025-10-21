@@ -69,8 +69,9 @@ namespace Pale {
                     );
                     primaryRay.normal = normalize(float3{0.0, 1.0, 0.0});
 
-                    //primaryRay.direction = normalize(float3{-0.127575308, 0.952122211, -0.277827293});
-                    //primaryRay.origin = float3{0.0, -4.0, 1.0};
+                    //primaryRay.direction = normalize(float3{-0.001, 0.982122211, 0.277827293});    // a
+                    primaryRay.direction = normalize(float3{-0.127575308, 0.952122211, -0.277827293}); // b
+                    primaryRay.origin = float3{0.0, -4.0, 1.0};
 
                     RayState rayState{};
 
@@ -166,6 +167,17 @@ namespace Pale {
                         // Background radiance (mesh emitter)
                         const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
                         const float backgroundRadianceY = luminanceGrayscale(backgroundRadianceRGB);
+
+                        float3 S_b_L = estimateSurfelRadianceFromPhotonMap(
+                        worldHit.splatEvents[0], ray.direction, scene, photonMap);
+                        float L_surfel = luminance(S_b_L);
+
+                        float3 S_b_L_rev = estimateSurfelRadianceFromPhotonMap(
+                        worldHit.splatEvents[0], -ray.direction, scene, photonMap);
+                        float L_surfel_rev = luminance(S_b_L_rev);
+
+                        printf("Background %f, Surfel: %f \n", backgroundRadianceY, L_surfel, L_surfel_rev);
+
 
                         // Surfel canonical normal and entered side
                         const auto surfel = scene.points[worldHit.splatEvents[0].primitiveIndex];
@@ -466,7 +478,8 @@ namespace Pale {
                         material = scene.materials[materialIndex];
                     }
 
-                    //newDirection = normalize(float3{0.05, -0.04, 1});
+                    //newDirection = normalize(float3{0.05, 0.04, -1}); // a
+                    newDirection = normalize(float3{0.05, -0.04, 1}); // b
 
                     const float cosTheta = sycl::fmax(0.0f, dot(shadingNormal, newDirection));
 

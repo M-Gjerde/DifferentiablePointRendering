@@ -83,6 +83,10 @@ namespace Pale {
         float specular{};
         float phongExp{}; // 16
         float3 emissive{};
+
+        bool isEmissive() const {
+            return emissive.x() > 0.0f || emissive.y() > 0.0f || emissive.z() > 0.0f;
+        }
     };
 
     CHECK_16(GPUMaterial);
@@ -238,9 +242,9 @@ namespace Pale {
 
     // ---- PODs ---------------------------------------------------------------
     // ---- Config -------------------------------------------------------------
-    enum class RayGenMode : uint32_t { Camera = 0, Emitter = 1, Hybrid = 2, Adjoint = 3 };
+    enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
-    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1, Scatter = 2 };
+    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1};
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -305,6 +309,7 @@ namespace Pale {
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 8;
         uint32_t numForwardPasses = 2;
+        uint32_t numGatherPasses = 8; // Which bounce to start RR
         uint32_t maxAdjointBounces = 8;
         uint32_t adjointSamplesPerPixel = 8;
         uint32_t russianRouletteStart = 2; // Which bounce to start RR

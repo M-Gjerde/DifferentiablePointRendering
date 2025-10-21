@@ -303,6 +303,24 @@ namespace Pale {
         return unitSampledDirectionW;
     }
 
+
+    inline float2 phiInverse(float3 hitWorld, float3 surfelCenter, float3 tu, float3 tv, float su, float sv) {
+        float3 r = hitWorld - surfelCenter;
+        float2 uv;
+        uv[0] = dot(tu, r) / su;
+        uv[1] = dot(tv, r) / sv;
+        return uv;
+    }
+
+    inline float2 phiInverse(const float3 &hitWorld, const Point &surfel) {
+        float3 r = hitWorld - surfel.position;
+        float2 uv;
+        uv[0] = dot(surfel.tanU, r) / surfel.scale.x();
+        uv[1] = dot(surfel.tanV, r) / surfel.scale.y();
+        return uv;
+    }
+
+
     SYCL_EXTERNAL inline void sampleUniformSphere(
         rng::Xorshift128 &randomNumberGenerator,
         float3 &outDirection,
@@ -384,7 +402,7 @@ namespace Pale {
                                               float &outTHit,
                                               float3 &outHitLocal,
                                               float &outOpacity,
-                                              float kSigmas = 2.1f) {
+                                              float kSigmas = 2.5f) {
         // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
@@ -403,15 +421,9 @@ namespace Pale {
         outHitLocal = rayObject.origin + tHit * rayObject.direction;
         const float3 offsetInPlane = outHitLocal - surfel.position;
 
-        // 3) Local coords
-        const float uCoord = dot(unitTangentU, offsetInPlane);
-        const float vCoord = dot(unitTangentV, offsetInPlane);
+        float2 uv = phiInverse(outHitLocal, surfel);
 
-        const float scaleU = sycl::fmax(surfel.scale.x(), 1e-8f);
-        const float scaleV = sycl::fmax(surfel.scale.y(), 1e-8f);
-        const float uNorm = uCoord / scaleU;
-        const float vNorm = vCoord / scaleV;
-        const float r2 = uNorm * uNorm + vNorm * vNorm;
+        const float r2 = uv[0] * uv[0] + uv[1] * uv[1];
 
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 > kSigmas * kSigmas)
@@ -789,22 +801,6 @@ namespace Pale {
                     sycl::access::address_space::global_space>
                 a(reinterpret_cast<float *>(dst)[3]);
         a.store(1.0f);
-    }
-
-    inline float2 phiInverse(float3 hitWorld, float3 surfelCenter, float3 tu, float3 tv, float su, float sv) {
-        float3 r = hitWorld - surfelCenter;
-        float2 uv;
-        uv[0] = dot(tu, r) / su;
-        uv[1] = dot(tv, r) / sv;
-        return uv;
-    }
-
-    inline float2 phiInverse(const float3 &hitWorld, const Point &surfel) {
-        float3 r = hitWorld - surfel.position;
-        float2 uv;
-        uv[0] = dot(surfel.tanU, r) / surfel.scale.x();
-        uv[1] = dot(surfel.tanV, r) / surfel.scale.y();
-        return uv;
     }
 
     inline float3 phiMapping(float3 surfelCenter, float3 tu, float3 tv, float su, float sv, float u, float v) {

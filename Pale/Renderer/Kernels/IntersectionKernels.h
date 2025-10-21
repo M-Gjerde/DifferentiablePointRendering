@@ -309,9 +309,9 @@ namespace Pale {
             // Stream into running depth group
             for (int k = 0; k < leafCount; ++k) {
                 const int i = order[k];
+                const float alphaAtHit = leafAlphas[k];
                 const float depthKey = leafDepthKeys[i]; // world-ray key
                 const float localTHit = leafLocalTHits[i]; // object-space t
-                const float alphaAtHit = leafAlphas[i];
                 const uint32_t surfelIndex = leafIndices[i];
 
                 if (groupDepthKeys.size() == 0 || sycl::fabs(depthKey - currentGroupDepthKey) <= sameDepthEpsilon) {

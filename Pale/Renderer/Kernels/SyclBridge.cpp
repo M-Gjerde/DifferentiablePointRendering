@@ -47,7 +47,7 @@ namespace Pale {
                             launchIntersectKernel(pkg, activeCount);
                         } {
                             ScopedTimer timer("launchContributionKernel");
-                            launchContributionKernel(pkg, activeCount);
+                            //launchContributionKernel(pkg, activeCount);
                         } {
                             ScopedTimer timer("generateNextRays");
                             generateNextRays(pkg, activeCount);
@@ -77,18 +77,23 @@ namespace Pale {
             {
 
 
+                /*
                 ScopedTimer timer("dumpPhotonMapToPLY");
                 dumpPhotonMapToPLY(pkg.queue,
                                   pkg.intermediates.map.photons,
                                   photonMapCount,
                                   std::filesystem::path("Output/photon_map.ply"));
+                */
 
             } {
                 ScopedTimer timer("launchCameraGatherKernel", spdlog::level::debug);
-                int cameraGatherSPP = pkg.settings.numForwardPasses;
-                std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
-                pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
-                launchCameraGatherKernel(pkg, cameraGatherSPP); // generate image from photon map
+                int cameraGatherSPP = pkg.settings.numGatherPasses;
+                for (int i = 0; i < cameraGatherSPP; i++) {
+                    std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
+                    pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
+                    launchCameraGatherKernel(pkg, cameraGatherSPP); // generate image from photon map
+                }
+
 
             }
         } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
