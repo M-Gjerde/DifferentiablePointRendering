@@ -11,7 +11,7 @@
         <float name="focus_distance" value="1000"/>
         <float name="fov" value="40.3077"/>
         <transform name="to_world">
-            <lookat origin="0,-4,2" target="0,0,1" up="0,0,1"/>
+            <lookat origin="0,-4,1" target="0,0,1" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
