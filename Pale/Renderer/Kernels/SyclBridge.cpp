@@ -34,7 +34,7 @@ namespace Pale {
                 if (forwardPass == 0)
                 {
                     ScopedTimer timer("launchDirectContributionKernel");
-                    launchDirectContributionKernel(pkg, activeCount);
+                    //launchDirectContributionKernel(pkg, activeCount);
                 }
                 {
                     ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);

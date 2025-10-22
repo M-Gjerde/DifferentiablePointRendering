@@ -16,7 +16,7 @@ import Pale.Log;
 import Pale.Render.BVH;
 
 namespace Pale {
-    PathTracer::PathTracer(sycl::queue q, const PathTracerSettings& settings) : m_queue(q), m_settings(settings) {
+    PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
 #ifdef NDEBUG
         // Release
         m_settings.photonsPerLaunch = 1e7; // 1e7
@@ -28,9 +28,9 @@ namespace Pale {
 #else
         //  cuda/rocm
         m_settings.photonsPerLaunch = 1e6; // 1e6
-        m_settings.maxBounces = 6;
-        m_settings.numForwardPasses = 6;
-        m_settings.numGatherPasses = 16;
+        m_settings.maxBounces = 4;
+        m_settings.numForwardPasses = 2;
+        m_settings.numGatherPasses = 2;
         m_settings.maxAdjointBounces = 1;
         m_settings.adjointSamplesPerPixel = 1;
         // omp
@@ -79,7 +79,8 @@ namespace Pale {
         std::size_t photonSize = sizeof(DevicePhotonSurface);
 
         // desired photon count
-        std::size_t requestedPhotons = m_rayQueueCapacity * static_cast<uint64_t>(m_settings.maxBounces * m_settings.numForwardPasses);
+        std::size_t requestedPhotons = m_rayQueueCapacity * static_cast<uint64_t>(
+                                           m_settings.maxBounces * m_settings.numForwardPasses);
 
         // clamp to what fits
         std::size_t maxPhotons = maxPhotonBytes / photonSize;
@@ -92,8 +93,8 @@ namespace Pale {
         m_intermediates.map.photonCapacity = static_cast<uint32_t>(finalPhotonCount);
 
         Log::PA_INFO("Photon map size: {}M photons (~{})",
-                      finalPhotonCount / 1e6,
-                      Utils::formatBytes(finalPhotonCount * photonSize));
+                     finalPhotonCount / 1e6,
+                     Utils::formatBytes(finalPhotonCount * photonSize));
 
 
         // --- zero init ---
@@ -105,10 +106,10 @@ namespace Pale {
 
         // --- totals ---
         std::size_t intermediatesTotalBytes =
-            sizePrimaryRaysBytes +
-            sizeExtensionRaysBytes +
-            sizeHitRecordsBytes +
-            sizeof(uint32_t) * 2; // countPrimary + countExtensionOut
+                sizePrimaryRaysBytes +
+                sizeExtensionRaysBytes +
+                sizeHitRecordsBytes +
+                sizeof(uint32_t) * 2; // countPrimary + countExtensionOut
 
         std::size_t photonMapTotalBytes = sizeof(DevicePhotonSurface) * finalPhotonCount;
 
@@ -129,10 +130,10 @@ namespace Pale {
         m_rayQueueCapacity = 0;
     }
 
-    void PathTracer::configurePhotonGrid(const AABB& sceneAabb, float gatherRadiusWorld) {
+    void PathTracer::configurePhotonGrid(const AABB &sceneAabb, float gatherRadiusWorld) {
         static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
-        auto& grid = m_intermediates.map;
+        auto &grid = m_intermediates.map;
         grid.gatherRadiusWorld = gatherRadiusWorld;
         grid.cellSizeWorld = float3{gatherRadiusWorld, gatherRadiusWorld, gatherRadiusWorld};
 
@@ -170,20 +171,22 @@ namespace Pale {
 
         // Optional: report grid-side total as part of photon map footprint
         std::size_t photonGridArraysTotalBytes =
-            sizeCellHeadIndexArrayBytes + sizePhotonNextIndexArrayBytes;
+                sizeCellHeadIndexArrayBytes + sizePhotonNextIndexArrayBytes;
         Log::PA_INFO("Photon grid arrays total: {}", Utils::formatBytes(photonGridArraysTotalBytes));
         Log::PA_INFO("Photon grid radius: {}", gatherRadiusWorld);
     }
 
-    void PathTracer::setScene(const GPUSceneBuffers& scene, SceneBuild::BuildProducts bp) {
+    void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
         m_scene = scene;
         uint32_t requiredCapacity = m_settings.photonsPerLaunch;
 
         ensureCapacity(requiredCapacity);
 
         auto topTLAS = bp.topLevelNodes.front();
-        AABB sceneAabb{.minP = topTLAS.aabbMin, topTLAS.aabbMax};
-        float diag = length(topTLAS.aabbMax - topTLAS.aabbMin);
+        AABB sceneAabb{
+            topTLAS.aabbMin,
+            topTLAS.aabbMax
+        };
         const float Adiff = bp.diffuseSurfaceArea;
         const float N = static_cast<float>(requiredCapacity);
 
@@ -192,7 +195,7 @@ namespace Pale {
         configurePhotonGrid(sceneAabb, r0);
     }
 
-    void PathTracer::renderForward(SensorGPU& sensor, SensorGPU& sensor2) {
+    void PathTracer::renderForward(SensorGPU &sensor, SensorGPU &sensor2) {
         ScopedTimer forwardTimer("Forward pass total", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
@@ -215,7 +218,7 @@ namespace Pale {
         m_queue.wait();
     }
 
-    void PathTracer::renderBackward(SensorGPU& sensor, AdjointGPU& adjoint) {
+    void PathTracer::renderBackward(SensorGPU &sensor, AdjointGPU &adjoint) {
         if (!adjoint.framebuffer) {
             Log::PA_WARN("Adjoint image is not set but renderBackward is called");
             return;

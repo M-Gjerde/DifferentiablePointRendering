@@ -227,7 +227,7 @@ namespace Pale {
 
                         const float signedCosineIncident = dot(canonicalNormalW, photonEntry.incidentDir);
                         photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
-                        photonEntry.sideSign = signNonZero(signedCosineIncident);
+                        photonEntry.sideSign = 1.0;
 
                         m_intermediates.map.photons[reservedSlot] = photonEntry;
                     }
@@ -303,6 +303,8 @@ namespace Pale {
                         // PointCloud
                         material.baseColor = scene.points[worldHit.primitiveIndex].color;
                         sampleUniformSphere(rng128, sampledOutgoingDirection, cosinePdf);
+                        //sampleCosineHemisphere(rng128, shadingNormal, sampledOutgoingDirection, cosinePdf);
+
                     }
 
 
@@ -371,13 +373,21 @@ namespace Pale {
 
                     Ray ray = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
                                                               static_cast<float>(py), jx, jy);
+
+                    //ray.direction = normalize(float3{-0.187575308, 0.962122211, -0.277827293}); // b
+                    //ray.origin = float3{0.0, -4.0, 1.0};
+
                     WorldHit worldHit{};
-
-                    if (px != 575 || (imageHeight - py) != 440) {
-                        int debug = 1;
-                    }
-
                     intersectScene(ray, &worldHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
+
+                    //if (pixelIndex  > 2) {
+                    //return;
+                    //}
+                    //ray.origin = worldHit.hitPositionW;
+                    //ray.direction = normalize(float3{0.35, 0.25, 1});
+                    //ray.normal = normalize(float3{0.0, 0.0, 1});
+                    //intersectScene(ray, &worldHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
+
 
                     float3 Lsheet(0.0f);
                     float tau = 1.0f;
@@ -390,7 +400,7 @@ namespace Pale {
                         float3 L = estimateSurfelRadianceFromPhotonMap(splatEvent, ray.direction, scene, photonMap);
 
                         float distanceToCamera = length(splatEvent.hitWorld - ray.origin);
-                        float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, ray.direction)); // optional
+                        float cameraCos = sycl::fmax(0.f, dot(ray.normal, ray.direction)); // optional
                         float volumeGeometric = (cameraCos) / (distanceToCamera * distanceToCamera);
 
                         const float3 diffuseAlbedo = scene.points[splatEvent.primitiveIndex].color;
@@ -402,10 +412,7 @@ namespace Pale {
 
                     }
 
-
-
                     radianceRGB = radianceRGB + Lsheet;
-
 
                     if (!worldHit.hit) {
                         radianceRGB = radianceRGB + Lsheet;
@@ -426,7 +433,7 @@ namespace Pale {
                         worldHit.geometricNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
                         float distanceToCamera = length(worldHit.hitPositionW - ray.origin);
                         float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -ray.direction));
-                        float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, ray.direction)); // optional
+                        float cameraCos = sycl::fmax(0.f, dot(ray.normal, ray.direction)); // optional
                         float geometricToCamera = (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
                         // If the mesh itself is emissive, add its emitted radiance (already radiance units)
                         const GPUMaterial& material = scene.materials[instance.materialIndex];
@@ -440,9 +447,9 @@ namespace Pale {
                             radianceRGB = radianceRGB + (emittedLe + reflectedL);
                         }
                         else {
-                            const float3 reflectedL = estimateRadianceFromPhotonMap(worldHit, scene, photonMap) *
-                                worldHit.transmissivity * lambertBrdf * geometricToCamera;
-                            radianceRGB = radianceRGB + reflectedL;
+                            const float3 L = estimateRadianceFromPhotonMap(worldHit, scene, photonMap) ;
+                            radianceRGB = radianceRGB + (L *
+                                worldHit.transmissivity * lambertBrdf * geometricToCamera);
                         }
                     }
 

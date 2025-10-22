@@ -138,7 +138,7 @@ namespace Pale {
 
         float cumulativeTransmittanceBefore = 1.0f;
 
-        SmallStack<kMaxSplatEvents> traversalStack;
+        SmallStack<kMaxSplatEvents * 2> traversalStack;
         traversalStack.push(0);
 
         float currentGroupDepthKey = -std::numeric_limits<float>::infinity();
@@ -275,6 +275,10 @@ namespace Pale {
             leafDepthKeys.clear();
 
             for (uint32_t local = 0; local < node.triCount; ++local) {
+                if (leafLocalTHits.size() - 1 >= kMaxSplatEvents) {
+                    continue;
+                }
+
                 const uint32_t surfelIndex = node.leftFirst + local;
                 const Point &surfel = scene.points[surfelIndex];
 
@@ -288,6 +292,7 @@ namespace Pale {
                 const float depthKey = dot(worldPoint - rayWorld.origin, rayWorld.direction);
 
                 const float alphaAtHit = sycl::clamp(opacity * surfel.opacity, 0.0f, 1.0f);
+
                 leafLocalTHits.pushBack(tHitLocal);
                 leafAlphas.pushBack(alphaAtHit);
                 leafIndices.pushBack(surfelIndex);

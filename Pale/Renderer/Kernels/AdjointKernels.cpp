@@ -67,7 +67,6 @@ namespace Pale {
                         static_cast<float>(pixelY),
                         jitterX, jitterY
                     );
-                    primaryRay.normal = normalize(float3{0.0, 1.0, 0.0});
 
                     //primaryRay.direction = normalize(float3{-0.001, 0.982122211, 0.277827293});    // a
                     primaryRay.direction = normalize(float3{-0.127575308, 0.952122211, -0.277827293}); // b
@@ -176,7 +175,7 @@ namespace Pale {
                         worldHit.splatEvents[0], -ray.direction, scene, photonMap);
                         float L_surfel_rev = luminance(S_b_L_rev);
 
-                        printf("Background %f, Surfel: %f \n", backgroundRadianceY, L_surfel, L_surfel_rev);
+                        //printf("Background %f, Surfel: %f \n", backgroundRadianceY, L_surfel, L_surfel_rev);
 
 
                         // Surfel canonical normal and entered side

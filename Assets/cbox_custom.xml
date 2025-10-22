@@ -100,7 +100,7 @@
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
             <rotate x="0" y="1" z="0" angle="180"/>
-            <scale x="0.1" y="0.1" z="0.1"/>
+            <scale x="0.15" y="0.15" z="0.15"/>
             <translate x="0" y="0.0" z="1.98"/>
         </transform>
         <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>

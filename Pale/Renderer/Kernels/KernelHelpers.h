@@ -402,7 +402,7 @@ namespace Pale {
                                               float &outTHit,
                                               float3 &outHitLocal,
                                               float &outOpacity,
-                                              float kSigmas = 2.5f) {
+                                              float kSigmas = 2.3f) {
         // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
@@ -540,7 +540,7 @@ namespace Pale {
         const float3 worldFar{worldFarH.x() * invW, worldFarH.y() * invW, worldFarH.z() * invW};
         const float4 camPosH = cam.invView * float4{0, 0, 0, 1};
         const float3 origin{camPosH.x(), camPosH.y(), camPosH.z()};
-        return Ray{origin, normalize(worldFar - origin)};
+        return Ray{origin, normalize(worldFar - origin), cam.forward};
     }
 
     // Photon map lookup helper.
@@ -710,7 +710,7 @@ namespace Pale {
         const float3 canonicalNormalW = normalize(cross(surfelPoint.tanU, surfelPoint.tanV));
 
         // Side we are *entering first* this segment: dot(n, -wo)
-        const int travelSideSign = signNonZero(dot(canonicalNormalW, -direction));
+        const int travelSideSign = 1; signNonZero(dot(canonicalNormalW, -direction));
 
         // Gather setup
         const float3 surfacePositionW = event.hitWorld;

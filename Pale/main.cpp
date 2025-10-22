@@ -294,7 +294,7 @@ int main(int argc, char **argv) {
     entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
     auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
     if (pointCloudPath.filename() == "target.ply") {
-        transform.setPosition(glm::vec3(0.05f, 0.0f, 0.0f));
+        transform.setPosition(glm::vec3(0.05f, 0.0f, 0.00f));
         Pale::Log::PA_INFO("Pertubing the target point cloud: {}", glm::to_string(transform.getPosition()));
     }
 
