@@ -146,14 +146,12 @@ namespace Pale {
         BoundedVector<float, kMaxSplatEvents> groupLocalTs;
         BoundedVector<float, kMaxSplatEvents> groupAlphas;
         BoundedVector<uint32_t, kMaxSplatEvents> groupIndices;
-        BoundedVector<uint32_t, kMaxSplatEvents> splatEvents;
 
         auto clearCurrentGroup = [&]() {
             groupDepthKeys.clear();
             groupLocalTs.clear();
             groupAlphas.clear();
             groupIndices.clear();
-            splatEvents.clear();
         };
 
         // Flushing a group: (ordered Bernoulli thinning) for a group of splats. In the equations this is a S_slice subset S of all the splats along a ray
@@ -162,6 +160,9 @@ namespace Pale {
 
             // 1) push this slice’s events into LocalHit (depth-sorted already)
             for (size_t i = 0; i < groupLocalTs.size(); ++i) {
+                if (localHitOut.splatEventCount >= kMaxSplatEvents - 1)
+                    continue;
+
                 int index = localHitOut.splatEventCount++;
                 localHitOut.splatEvents[index].t = groupLocalTs[i];
                 localHitOut.splatEvents[index].alpha = groupAlphas[i];
@@ -197,9 +198,7 @@ namespace Pale {
                     localHitOut.transmissivity = cumulativeTransmittanceBefore;
                     // transmittance before the accepted event
                     // Dont count this as a splat event
-                    if (localHitOut.primitiveIndex == localHitOut.splatEvents[0].primitiveIndex) {
-                        //localHitOut.splatEventCount--;
-                    }
+
                     clearCurrentGroup();
                     return true; // accepted scatter at this depth
                 }
@@ -219,7 +218,10 @@ namespace Pale {
 
             // 1) push this slice’s events into LocalHit (depth-sorted already)
             for (size_t i = 0; i < groupLocalTs.size(); ++i) {
+                if (localHitOut.splatEventCount >= kMaxSplatEvents - 1)
+                    continue;
                 int index = localHitOut.splatEventCount++;
+
                 localHitOut.splatEvents[index].t = groupLocalTs[i];
                 localHitOut.splatEvents[index].alpha = groupAlphas[i];
                 localHitOut.splatEvents[index].primitiveIndex = groupIndices[i];

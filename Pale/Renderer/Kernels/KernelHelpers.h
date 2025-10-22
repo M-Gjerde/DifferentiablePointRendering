@@ -402,7 +402,7 @@ namespace Pale {
                                               float &outTHit,
                                               float3 &outHitLocal,
                                               float &outOpacity,
-                                              float kSigmas = 2.3f) {
+                                              float kSigmas = 2.6f) {
         // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
@@ -697,7 +697,8 @@ namespace Pale {
         const SplatEvent &event,
         const float3 &direction,
         const GPUSceneBuffers &scene,
-        const DeviceSurfacePhotonMapGrid &photonMap
+        const DeviceSurfacePhotonMapGrid &photonMap,
+        bool readOneSidedRadiance = false
     ) {
         const float perHitRadiusScale = 1.0f;
         const bool photonsIncludeCosineAtStore = false;
@@ -710,7 +711,7 @@ namespace Pale {
         const float3 canonicalNormalW = normalize(cross(surfelPoint.tanU, surfelPoint.tanV));
 
         // Side we are *entering first* this segment: dot(n, -wo)
-        const int travelSideSign = 1; signNonZero(dot(canonicalNormalW, -direction));
+        const int travelSideSign = signNonZero(dot(canonicalNormalW, -direction));
 
         // Gather setup
         const float3 surfacePositionW = event.hitWorld;
@@ -743,7 +744,7 @@ namespace Pale {
                         // Hemisphere gate: accept only photons from the same side we enter first
                         const float nDotWi = dot(canonicalNormalW, photon.incidentDir);
                         if (sycl::fabs(nDotWi) < grazingEpsilon) continue; // ambiguous grazing
-                        if (photon.sideSign != travelSideSign) continue;
+                        if (photon.sideSign != travelSideSign && readOneSidedRadiance) continue;
 
                         // Distance + kernel
                         const float3 displacement = photon.position - surfacePositionW;
