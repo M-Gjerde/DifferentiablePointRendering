@@ -135,7 +135,7 @@ namespace Pale {
                     auto& instance = scene.instances[worldHit.instanceIndex];
 
                     Ray& ray = rayState.ray;
-                    float3 grad_L(0.0f);
+                    float3 d_cost_d_pos(0.0f);
                     if (worldHit.splatEventCount == 1 && instance.geometryType == GeometryType::Mesh) {
                         auto splatEvent = worldHit.splatEvents[0];
                         float3 x = ray.origin;
@@ -169,8 +169,8 @@ namespace Pale {
                         float su = surfel.scale.x();
                         float sv = surfel.scale.y();
 
-                        float3 du_dc = ((tu_d / denom) * surfelNormal - surfel.tanU) * su;
-                        float3 dv_dc = ((tv_d / denom) * surfelNormal - surfel.tanV) * sv;
+                        float3 du_dc = ((tu_d / denom) * surfelNormal - surfel.tanU) / su;
+                        float3 dv_dc = ((tv_d / denom) * surfelNormal - surfel.tanV) / sv;
 
                         float3 d_alpha_dc = -alpha * (uv[0] * du_dc + uv[1] * dv_dc);
                         float3 dtau_dc = -d_alpha_dc;
@@ -179,24 +179,76 @@ namespace Pale {
                         const float r2Background = dot(segmentVector, segmentVector);
                         if (r2Background <= 0.0f) return;
 
+                        /*
                         const float rBackground = sycl::sqrt(r2Background);
                         const float3 unitDirXY = segmentVector / rBackground;
                         const float cosineEmitBackground = dot(worldHit.geometricNormalW, -unitDirXY);
                         const float cosineReceiveBackground = dot(ray.normal, unitDirXY);
                         const float geometricBackground =
-                                (cosineEmitBackground * cosineReceiveBackground) / r2Background;
+                            (cosineEmitBackground * cosineReceiveBackground) / r2Background;
                         if (geometricBackground <= 0.0f) return;
+                        */
 
                         const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-                        const float backgroundRadianceY = luminanceGrayscale(backgroundRadianceRGB);
+                        const float L_mesh = luminanceGrayscale(backgroundRadianceRGB);
 
-                        grad_L = dtau_dc * backgroundRadianceRGB * geometricBackground;
+                        float3 S_a_L = estimateSurfelRadianceFromPhotonMap(
+                            worldHit.splatEvents[0], ray.direction, scene, photonMap);
+                        float L_surfel = luminance(S_a_L);
 
+                        float brdf = 1.0f; // placeholder
+                        // p(x, theta) = p(y, -phi) * d_tau * fs * V * G
+                        float3 p_adjoint = rayState.pathThroughput;
+                        d_cost_d_pos = p_adjoint * dtau_dc * L_mesh;
+                    }
+
+                    if (worldHit.splatEventCount == 1 && instance.geometryType == GeometryType::PointCloud) {
+                        auto splatEvent = worldHit.splatEvents[0];
+                        float3 x = ray.origin;
+                        float3 y = worldHit.hitPositionW;
+
+                        const auto surfel = scene.points[splatEvent.primitiveIndex];
+                        const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                        const int travelSideSign = (dot(canonicalNormalW, -rayState.ray.direction) >= 0.0f) ? 1 : -1;
+                        const float3 surfelNormal = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
+
+
+                        float denom = dot(surfelNormal, ray.direction);
+                        if (abs(denom) <= 1e-6)
+                            return;
+                        // Intersection on the segment:
+                        float tParam = dot(surfelNormal, (surfel.position - x)) / denom;
+                        if (abs(tParam) <= 0.0f)
+                            return;
+
+                        float3 hitPoint = x + tParam * ray.direction;
+
+                        float2 uv = phiInverse(hitPoint, surfel);
+                        float alpha = splatEvent.alpha;
+                        float tau = 1 - alpha;
+
+                        float tu_d = dot(surfel.tanU, ray.direction);
+                        float tv_d = dot(surfel.tanV, ray.direction);
+
+                        float su = surfel.scale.x();
+                        float sv = surfel.scale.y();
+
+                        float3 du_dc = ((tu_d / denom) * surfelNormal - surfel.tanU) / su;
+                        float3 dv_dc = ((tv_d / denom) * surfelNormal - surfel.tanV) / sv;
+
+                        float3 d_alpha_dc = -alpha * (uv[0] * du_dc + uv[1] * dv_dc);
+
+                        float3 S_a_L = estimateSurfelRadianceFromPhotonMap(
+                            worldHit.splatEvents[0], ray.direction, scene, photonMap, true);
+                        float L_surfel = luminanceGrayscale(S_a_L);
+
+                        float3 p_adjoint = rayState.pathThroughput;
+                        d_cost_d_pos = p_adjoint *  d_alpha_dc * L_surfel;
                     }
 
                     if (rayState.bounceIndex >= 0) {
                         const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
-                        const float dVdp_scalar = dot(grad_L, parameterAxis);
+                        const float dVdp_scalar = dot(d_cost_d_pos, parameterAxis);
 
                         float4& gradImageDst = sensor.framebuffer[rayState.pixelIndex];
                         atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
@@ -467,7 +519,6 @@ namespace Pale {
                         int debug = 1;
                     }
                     */
-
                 });
         });
         queue.wait();
@@ -499,16 +550,92 @@ namespace Pale {
                     const uint64_t seed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(seed);
 
-                    const RayState inState = raysIn[rayIndex];
-                    const WorldHit hit = hitRecords[rayIndex];
+                    const RayState rayState = raysIn[rayIndex];
+                    const WorldHit worldHit = hitRecords[rayIndex];
 
                     RayState outState{};
-                    if (!hit.hit) {
+                    if (!worldHit.hit) {
                         raysOut[rayIndex] = outState;
                         hitRecords[rayIndex] = WorldHit{};
                         return;
                     } // dead ray
 
+
+                    const InstanceRecord instance = scene.instances[worldHit.instanceIndex];
+                    const float3 canonicalNormalW = worldHit.geometricNormalW;
+                    const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
+                    const float3 enteredSideNormalW = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
+                    float3 sampledOutgoingDirectionW{};
+                    float3 throughputMultiplier = float3(1.0f);
+
+                    auto light = scene.lights[0];
+                    auto lightTransform = scene.transforms[light.transformIndex];
+                    float3 lightPosition = float3{lightTransform.objectToWorld.row[0].w(), lightTransform.objectToWorld.row[1].w(), lightTransform.objectToWorld.row[2].w()};
+                    const float3 toLight = lightPosition - worldHit.hitPositionW;
+                    const float distanceToLight = length(toLight);
+                    if (distanceToLight <= 1e-6f) return;
+                    const float3 lightDirection = toLight / distanceToLight;
+
+                    // If we hit instance was a mesh do ordinary BRDF stuff.
+                    if (instance.geometryType == GeometryType::Mesh) {
+                        float sampledPdf = 0.0f;
+                        const GPUMaterial material = scene.materials[instance.materialIndex];
+                        sampleCosineHemisphere(rng128, enteredSideNormalW, sampledOutgoingDirectionW, sampledPdf);
+                        sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
+                        const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
+                        const float3 lambertBrdf = material.baseColor * M_1_PIf;
+                        throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf) * worldHit.transmissivity;
+                    }
+                    // If our hit instance was a point cloud it means we hit a surfel
+                    // Now we do either BRDF or BTDF
+                    if (instance.geometryType == GeometryType::PointCloud) {
+                        // PointCloud
+                        GPUMaterial material{};
+                        material.baseColor = scene.points[worldHit.primitiveIndex].color;
+                        const float3 lambertBrdf = material.baseColor * M_1_PIf;
+
+                        const float interactionAlpha = worldHit.splatEvents[0].alpha; // α
+                        const float reflectWeight = 0.0f * interactionAlpha; // ρ_r = α/2
+                        const float transmitWeight = 0.5f * interactionAlpha; // ρ_t = α/2
+
+                        // event probabilities
+                        const float probReflect = reflectWeight / interactionAlpha; // a 50/50 if we reflect or transmit
+                        const bool chooseReflect = (rng128.nextFloat() < probReflect);
+                        if (chooseReflect) {
+                            float sampledPdf = 0.0f;
+                            // Diffuse reflect on entered side
+                            sampleCosineHemisphere(rng128, enteredSideNormalW, sampledOutgoingDirectionW, sampledPdf);
+                            sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
+                            const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
+                            throughputMultiplier =
+                                    material.baseColor * throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
+                        } else {
+                            float sampledPdf = 0.0f;
+                            // Diffuse transmit: cosine hemisphere on the opposite side
+                            const float3 oppositeSideNormalW = -enteredSideNormalW;
+                            sampleCosineHemisphere(rng128, oppositeSideNormalW, sampledOutgoingDirectionW, sampledPdf);
+                            sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
+                            const float cosTheta =
+                                    sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, oppositeSideNormalW));
+                            throughputMultiplier =
+                                    material.baseColor * throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
+                        }
+                    }
+
+                    sampledOutgoingDirectionW = lightDirection;
+                    throughputMultiplier = throughputMultiplier * 1 / (distanceToLight * distanceToLight);
+                    // Offset origin robustly
+                    constexpr float kEps = 1e-5f;
+                    outState.ray.origin = worldHit.hitPositionW + enteredSideNormalW * 1e-4f;
+                    outState.ray.direction = sampledOutgoingDirectionW;
+                    outState.bounceIndex = rayState.bounceIndex + 1;
+                    outState.pixelIndex = rayState.pixelIndex;
+                    outState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
+
+                    raysOut[rayIndex] = outState;
+
+
+                    /*
                     // --- Canonical normal at the hit (no face-forwarding stored in hit) ---
                     const float3 canonicalNormalW = hit.geometricNormalW;
                     // --- Orient to the side we entered first (two-sided, side-correct sampling) ---
@@ -525,6 +652,7 @@ namespace Pale {
                         // volumetric or your chosen surfel phase sampling
                         sampleCosineHemisphere(rng128, shadingNormal, newDirection, pdf);
                         material.baseColor = scene.points[hit.primitiveIndex].color;
+                        // TODO USE BRDF + BTDF
                     }
                     else {
                         // surface: cosine-weighted about the geometric normal
@@ -550,18 +678,9 @@ namespace Pale {
                         bsdfFactor = inState.pathThroughput * (material.baseColor / M_PIf) * (
                             cosTheta / sycl::fmax(pdf, 1e-8f));
                     }
+                    */
 
-                    // Offset origin robustly
-                    constexpr float kEps = 1e-5f;
 
-                    outState.ray.origin = hit.hitPositionW + shadingNormal * kEps;
-                    outState.ray.direction = newDirection;
-                    outState.ray.normal = shadingNormal;
-                    outState.bounceIndex = inState.bounceIndex + 1;
-                    outState.pixelIndex = inState.pixelIndex;
-                    outState.pathThroughput = bsdfFactor;
-
-                    raysOut[rayIndex] = outState;
                 });
         });
         queue.wait();

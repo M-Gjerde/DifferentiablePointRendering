@@ -250,7 +250,6 @@ namespace Pale {
     struct alignas(16) Ray {
         float3 origin{0.0f}; // 16
         float3 direction{0.0f}; // 32
-        float3 normal{0.0f};
     };
 
     static_assert(std::is_trivially_copyable_v<Ray>);

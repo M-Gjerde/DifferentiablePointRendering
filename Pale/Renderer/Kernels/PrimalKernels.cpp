@@ -423,7 +423,7 @@ namespace Pale {
                             worldHit.geometricNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
                             float distanceToCamera = length(worldHit.hitPositionW - ray.origin);
                             float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -ray.direction));
-                            float cameraCos = sycl::fmax(0.f, dot(ray.normal, ray.direction)); // optional
+                            float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, ray.direction)); // optional
                             float geometricToCamera = (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
                             // If the mesh itself is emissive, add its emitted radiance (already radiance units)
                             const GPUMaterial &material = scene.materials[instance.materialIndex];
