@@ -332,7 +332,8 @@ namespace Pale {
         float3 incidentDir{0.0f};
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
-        int    sideSign;       // +1 or -1: hemisphere relative to canonical surfel normal
+        int    sideSign{};       // +1 or -1: hemisphere relative to canonical surfel normal
+        uint32_t primitiveIndex = UINT32_MAX;
 
     };
 

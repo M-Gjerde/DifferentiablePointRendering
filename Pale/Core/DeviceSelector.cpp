@@ -16,7 +16,7 @@ namespace Pale {
             m_device = sycl::device(sycl::gpu_selector{});
         } catch (const sycl::exception& exception_object) {
             Log::PA_ERROR("Cannot select a GPU: {}", exception_object.what());
-            Log::PA_WARN("Falling back to CPU device");
+            Log::PA_WARN("Falling back to CPU device. Execution will be slow..");
             m_device = sycl::device(sycl::cpu_selector_v);
         }
 

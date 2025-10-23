@@ -228,31 +228,11 @@ namespace Pale {
                     const RayState rayState = raysIn[rayIndex];
                     if (!worldHit.hit) return;
 
-                    if (settings.rayGenMode == RayGenMode::Emitter) {
-                        auto &devicePtr = *intermediates.map.photonCountDevicePtr;
-                        sycl::atomic_ref<uint32_t,
-                                    sycl::memory_order::acq_rel,
-                                    sycl::memory_scope::device,
-                                    sycl::access::address_space::global_space>
-                                photonCounter(devicePtr);
-
-                        const uint32_t reservedSlot = photonCounter.fetch_add(1u);
-                        if (reservedSlot >= intermediates.map.photonCapacity) return;
-                        DevicePhotonSurface photonEntry{};
-                        photonEntry.position = worldHit.hitPositionW;
-                        photonEntry.power = rayState.pathThroughput;
-                        photonEntry.incidentDir = -rayState.ray.direction;
-                        const float signedCosineIncident = dot(worldHit.geometricNormalW, photonEntry.incidentDir);
-                        photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
-                        photonEntry.sideSign = signNonZero(signedCosineIncident);
-                        intermediates.map.photons[reservedSlot] = photonEntry;
-                    }
-
                     const InstanceRecord instance = scene.instances[worldHit.instanceIndex];
                     const float3 canonicalNormalW = worldHit.geometricNormalW;
                     const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
                     const float3 enteredSideNormalW = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
-                    float3 sampledOutgoingDirectionW;
+                    float3 sampledOutgoingDirectionW{};
                     float3 throughputMultiplier = float3(1.0f);
 
                     // If we hit instance was a mesh do ordinary BRDF stuff.
@@ -278,7 +258,7 @@ namespace Pale {
                         const float transmitWeight = 0.5f * interactionAlpha; // ρ_t = α/2
 
                         // event probabilities
-                        const float probReflect = 1.5f; // a 50/50 if we reflect or transmit
+                        const float probReflect = reflectWeight / interactionAlpha; // a 50/50 if we reflect or transmit
                         const bool chooseReflect = (rng128.nextFloat() < probReflect);
                         if (chooseReflect) {
                             float sampledPdf = 0.0f;
@@ -286,8 +266,8 @@ namespace Pale {
                             sampleCosineHemisphere(rng128, enteredSideNormalW, sampledOutgoingDirectionW, sampledPdf);
                             sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
-                            const float3 f_r = float3(reflectWeight * M_1_PIf); // f_r = ρ_r/π
-                            throughputMultiplier = material.baseColor * throughputMultiplier * lambertBrdf *  (cosTheta / sampledPdf);
+                            throughputMultiplier =
+                                    material.baseColor * throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
                         } else {
                             float sampledPdf = 0.0f;
                             // Diffuse transmit: cosine hemisphere on the opposite side
@@ -296,9 +276,32 @@ namespace Pale {
                             sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
                             const float cosTheta =
                                     sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, oppositeSideNormalW));
-                            const float3 f_t = float3(transmitWeight * M_1_PI); // f_t = ρ_t/π
-                            throughputMultiplier = material.baseColor * throughputMultiplier * lambertBrdf *  (cosTheta / sampledPdf);
+                            throughputMultiplier =
+                                    material.baseColor * throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
                         }
+                    }
+
+                    if (settings.rayGenMode == RayGenMode::Emitter) {
+                        auto &devicePtr = *intermediates.map.photonCountDevicePtr;
+                        sycl::atomic_ref<uint32_t,
+                                    sycl::memory_order::acq_rel,
+                                    sycl::memory_scope::device,
+                                    sycl::access::address_space::global_space>
+                                photonCounter(devicePtr);
+
+                        const uint32_t reservedSlot = photonCounter.fetch_add(1u);
+                        if (reservedSlot >= intermediates.map.photonCapacity) return;
+                        DevicePhotonSurface photonEntry{};
+                        photonEntry.position = worldHit.hitPositionW;
+                        photonEntry.power = rayState.pathThroughput;
+                        photonEntry.incidentDir = -rayState.ray.direction;
+                        const float signedCosineIncident = dot(worldHit.geometricNormalW, photonEntry.incidentDir);
+                        photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
+                        photonEntry.sideSign = signNonZero(signedCosineIncident);
+                        photonEntry.primitiveIndex = instance.geometryType == GeometryType::Mesh
+                                                         ? worldHit.instanceIndex
+                                                         : worldHit.primitiveIndex;
+                        intermediates.map.photons[reservedSlot] = photonEntry;
                     }
 
                     // --- Spawn next ray with offset along *oriented* normal ---
@@ -381,26 +384,23 @@ namespace Pale {
 
                         if (worldHit.hit && splatEvent.t >= worldHit.t)
                             break;
+                        auto& surfel = scene.points[splatEvent.primitiveIndex];
 
                         bool useOneSidedScatter = true;
-                        float3 L_forward = estimateSurfelRadianceFromPhotonMap(
+                        float3 Efront = estimateSurfelRadianceFromPhotonMap(
                             splatEvent, ray.direction, scene, photonMap,
                             useOneSidedScatter);
-                        float3 L_back = estimateSurfelRadianceFromPhotonMap(
+                        float3 Eback = estimateSurfelRadianceFromPhotonMap(
                             splatEvent, -ray.direction, scene, photonMap,
                             useOneSidedScatter);
 
-                        float distanceToCamera = length(splatEvent.hitWorld - ray.origin);
-                        float cameraCos = sycl::fmax(0.f, dot(ray.normal, ray.direction)); // optional
-                        float volumeGeometric = (cameraCos) / (distanceToCamera * distanceToCamera);
-
                         const float3 diffuseAlbedo = scene.points[splatEvent.primitiveIndex].color;
-                        const float3 lambertBrdf = diffuseAlbedo * (1.0f / M_PIf);
+                        const float3 lambertBrdf = diffuseAlbedo * M_1_PIf;
 
-                        float reflectanceWeight = 0.7;
-                        float transmissionWeight = 1.0;
-                        float3 L = (L_forward * reflectanceWeight) + (L_back * transmissionWeight);
-                        Lsheet = Lsheet + L * splatEvent.alpha * tau * volumeGeometric * lambertBrdf;
+                        float reflectanceWeight = splatEvent.alpha * 0.5f; // 50% chance of reflectance
+                        float transmissionWeight = splatEvent.alpha * 0.5f; // 50% chance of transmission
+                        float3 L = (Efront * reflectanceWeight) + (Eback * transmissionWeight);
+                        Lsheet = Lsheet + L * tau * lambertBrdf;
 
                         tau *= (1.0f - splatEvent.alpha);
                     }
@@ -432,13 +432,12 @@ namespace Pale {
                             if (material.isEmissive()) {
                                 // Optionally evaluate Le(x, wo) from your material; shown as baseColor for brevity
                                 const float3 emittedLe = material.emissive * tau * geometricToCamera;
-                                const float3 reflectedL = estimateRadianceFromPhotonMap(worldHit, scene, photonMap) *
-                                                          tau * lambertBrdf * geometricToCamera;
+                                const float3 reflectedL =
+                                        estimateRadianceFromPhotonMap(worldHit, scene, photonMap) * tau * lambertBrdf;
                                 radianceRGB = radianceRGB + (emittedLe + reflectedL);
                             } else {
                                 const float3 L = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-                                radianceRGB = radianceRGB + (L *
-                                                             tau * lambertBrdf * geometricToCamera);
+                                radianceRGB = radianceRGB + (L * tau * lambertBrdf);
                             }
                         }
                     }

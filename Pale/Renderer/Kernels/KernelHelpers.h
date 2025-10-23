@@ -662,6 +662,8 @@ namespace Pale {
                          photonIndex != kInvalidIndex;
                          photonIndex = photonMap.photonNextIndexArray[photonIndex]) {
                         const DevicePhotonSurface photon = photonMap.photons[photonIndex];
+                        if (photon.primitiveIndex != worldHit.instanceIndex)
+                            continue;
 
                         const float3 displacement = photon.position - surfacePositionW;
                         const float distanceSquared = dot(displacement, displacement);
@@ -740,7 +742,8 @@ namespace Pale {
                          photonIndex != kInvalidIndex;
                          photonIndex = photonMap.photonNextIndexArray[photonIndex]) {
                         const DevicePhotonSurface photon = photonMap.photons[photonIndex];
-
+                        if (photon.primitiveIndex != event.primitiveIndex)
+                            continue;
                         // Hemisphere gate: accept only photons from the same side we enter first
                         const float nDotWi = dot(canonicalNormalW, photon.incidentDir);
                         if (sycl::fabs(nDotWi) < grazingEpsilon) continue; // ambiguous grazing
