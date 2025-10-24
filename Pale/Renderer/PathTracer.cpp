@@ -27,12 +27,12 @@ namespace Pale {
 
 #else
         //  cuda/rocm
-        m_settings.photonsPerLaunch = 1e6; // 1e6
+        m_settings.photonsPerLaunch = 2e6; // 1e6
         m_settings.maxBounces = 4;
-        m_settings.numForwardPasses = 4;
-        m_settings.numGatherPasses = 4;
+        m_settings.numForwardPasses = 8;
+        m_settings.numGatherPasses = 8;
         m_settings.maxAdjointBounces = 2;
-        m_settings.adjointSamplesPerPixel = 16;
+        m_settings.adjointSamplesPerPixel = 256;
         // omp+
 
         //m_settings.photonsPerLaunch = 1e6; // 1e6
@@ -185,8 +185,8 @@ namespace Pale {
 
         auto topTLAS = bp.topLevelNodes.front();
         AABB sceneAabb{
-            topTLAS.aabbMin,
-            topTLAS.aabbMax
+            {-1, -1, 0},
+            {1, 1, 2},
         };
         const float Adiff = bp.diffuseSurfaceArea;
         const float N = static_cast<float>(requiredCapacity);

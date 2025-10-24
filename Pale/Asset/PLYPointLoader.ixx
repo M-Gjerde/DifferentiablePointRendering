@@ -276,6 +276,14 @@ export namespace Pale {
                     const std::size_t i3 = i * 3;
                     const std::size_t i4 = i * 4;
 
+                    const float scaleU = expSafe(scaleFloats[i2 + 0]);
+                    const float scaleV = expSafe(scaleFloats[i2 + 1]);
+
+                    //if (glm::length(geometry.scales[i]) >= 0.10f) {
+                    //    continue;
+                    //}
+
+                    geometry.scales[i] = glm::vec2(scaleU, scaleV);
 
                     geometry.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
 
@@ -315,14 +323,9 @@ export namespace Pale {
                     geometry.tanU[i] = tangentUCandidate;
                     geometry.tanV[i] = tangentVCandidate;
 
-                    const float scaleU = expSafe(scaleFloats[i2 + 0]);
-                    const float scaleV = expSafe(scaleFloats[i2 + 1]);
 
-                    geometry.scales[i] = glm::vec2(scaleU, scaleV);
-                    if (glm::length(geometry.scales[i]) >= 0.5f) {
-                        continue;
-                        //geometry.scales[i] = glm::vec2(0.05f);
-                    }
+
+
                 }
 
                 Log::PA_INFO(

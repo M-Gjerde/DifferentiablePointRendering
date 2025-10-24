@@ -300,7 +300,7 @@ int main(int argc, char **argv) {
 
     //transform.setRotationEuler(glm::vec3(-90.0f, 0.0f, 0.0f));
     //transform.setScale(glm::vec3(0.5f, 0.5f, 0.5f));
-    transform.setPosition(glm::vec3(0.0f, 0.0f, 0.0f));
+    //transform.setPosition(glm::vec3(0.001f, 0.0f, 0.0f));
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device

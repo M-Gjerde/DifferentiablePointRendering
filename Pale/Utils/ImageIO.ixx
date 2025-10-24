@@ -90,7 +90,7 @@ export namespace Pale::Utils {
             }
 
             const int bytesPerRow = static_cast<int>(imageWidth * 4);
-            const std::uint8_t* srcPtr = rgba8.data();
+            const std::uint8_t *srcPtr = rgba8.data();
 
             std::vector<std::uint8_t> rowOrdered;
             if (flipY) {
@@ -116,7 +116,7 @@ export namespace Pale::Utils {
                 rgb8[i * 3 + 2] = encodeChannel(inputRGBA[i * 4 + 2]);
             }
             const int bytesPerRow = static_cast<int>(imageWidth * 3);
-            const std::uint8_t* srcPtr = rgb8.data();
+            const std::uint8_t *srcPtr = rgb8.data();
 
             std::vector<std::uint8_t> rowOrdered;
             if (flipY) {
@@ -169,7 +169,7 @@ export namespace Pale::Utils {
                 rgba8[i * 4 + 3] = toUNorm8(displaySpaceRGBA[i * 4 + 3]);
             }
             const int bytesPerRow = static_cast<int>(imageWidth * 4);
-            const std::uint8_t* srcPtr = rgba8.data();
+            const std::uint8_t *srcPtr = rgba8.data();
 
             std::vector<std::uint8_t> rowOrdered;
             if (flipY) {
@@ -196,7 +196,7 @@ export namespace Pale::Utils {
             }
 
             const int bytesPerRow = static_cast<int>(imageWidth * 3);
-            const std::uint8_t* srcPtr = rgb8.data();
+            const std::uint8_t *srcPtr = rgb8.data();
 
             std::vector<std::uint8_t> rowOrdered;
             if (flipY) {
@@ -404,6 +404,32 @@ export namespace Pale::Utils {
     }
 
 
+    inline void sampleBlueBlackRed(float normalizedSigned, float &outR, float &outG, float &outB) {
+        // normalizedSigned in [-1, 1]; 0 -> black center
+        outR = normalizedSigned > 0.0f ? normalizedSigned : 0.0f;
+        outB = normalizedSigned < 0.0f ? -normalizedSigned : 0.0f;
+        outG = 0.0f;
+    }
+
+    inline void sampleSeismic(float normalizedSigned, float &outR, float &outG, float &outB) {
+        // normalizedSigned in [-1, 1]; 0 -> white center
+        normalizedSigned = std::clamp(normalizedSigned, -1.0f, 1.0f);
+        if (normalizedSigned <= 0.0f) {
+            // blue -> white
+            float t = normalizedSigned + 1.0f; // [-1,0] -> [0,1]
+            outR = t; // 0 -> 1
+            outG = t; // 0 -> 1
+            outB = 1.0f; // stays blue
+        } else {
+            // white -> red
+            float t = 1.0f - normalizedSigned; // [0,1] -> [1,0]
+            outR = 1.0f; // stays red
+            outG = t; // 1 -> 0
+            outB = t; // 1 -> 0
+        }
+    }
+
+
     inline bool saveGradientSignPNG(
         const std::filesystem::path &filePath,
         const std::vector<float> &inputRGBA,
@@ -411,7 +437,8 @@ export namespace Pale::Utils {
         std::uint32_t imageHeight,
         float adjointSamplesPerPixel = 32.0f,
         float absQuantile = 0.99f,
-        bool flipY = true
+        bool flipY = true,
+        bool useSeismic = false
     ) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());
@@ -427,9 +454,12 @@ export namespace Pale::Utils {
         finiteAbsScalars.reserve(pixelCount);
 
         for (std::size_t i = 0; i < pixelCount; ++i) {
-            const float r = inputRGBA[i * 4 + 0] / adjointSamplesPerPixel; // Divide by m_settings.adjointSamplesPerPixel
-            const float g = inputRGBA[i * 4 + 1] / adjointSamplesPerPixel; // Divide by m_settings.adjointSamplesPerPixel
-            const float b = inputRGBA[i * 4 + 2] / adjointSamplesPerPixel; // Divide by m_settings.adjointSamplesPerPixel
+            const float r = inputRGBA[i * 4 + 0] / adjointSamplesPerPixel;
+            // Divide by m_settings.adjointSamplesPerPixel
+            const float g = inputRGBA[i * 4 + 1] / adjointSamplesPerPixel;
+            // Divide by m_settings.adjointSamplesPerPixel
+            const float b = inputRGBA[i * 4 + 2] / adjointSamplesPerPixel;
+            // Divide by m_settings.adjointSamplesPerPixel
 
             float scalarValue = (r + g + b) / 3.0f;
             if (std::isfinite(scalarValue)) {
@@ -464,28 +494,29 @@ export namespace Pale::Utils {
 
         std::vector<std::uint8_t> rgb8(pixelCount * 3u);
         for (std::size_t i = 0; i < pixelCount; ++i) {
-            const float r = inputRGBA[i * 4 + 0];
-            const float g = inputRGBA[i * 4 + 1];
-            const float b = inputRGBA[i * 4 + 2];
+            const float rIn = inputRGBA[i * 4 + 0] / adjointSamplesPerPixel;
+            const float gIn = inputRGBA[i * 4 + 1] / adjointSamplesPerPixel;
+            const float bIn = inputRGBA[i * 4 + 2] / adjointSamplesPerPixel;
 
-            float scalarValue = (r + g + b) / 3.0f;
+            float scalarValue = (rIn + gIn + bIn) / 3.0f;
             if (!std::isfinite(scalarValue)) scalarValue = 0.0f;
 
-            float normalized = scalarValue * invScale;
-            normalized = std::clamp(normalized, -1.0f, 1.0f);
+            float normalizedSigned = std::clamp(scalarValue * invScale, -1.0f, 1.0f);
 
-            const float redMapped = normalized > 0.0f ? normalized : 0.0f;
-            const float blueMapped = normalized < 0.0f ? -normalized : 0.0f;
-            const float greenMapped = 0.0f;
+            float colR, colG, colB;
+            useSeismic
+                ? sampleSeismic(normalizedSigned, colR, colG, colB)
+                : sampleBlueBlackRed(normalizedSigned, colR, colG, colB);
 
-            rgb8[i * 3 + 0] = toByte(redMapped);
-            rgb8[i * 3 + 1] = toByte(greenMapped);
-            rgb8[i * 3 + 2] = toByte(blueMapped);
+
+            rgb8[i * 3 + 0] = toByte(colR);
+            rgb8[i * 3 + 1] = toByte(colG);
+            rgb8[i * 3 + 2] = toByte(colB);
         }
 
 
         const int bytesPerRow = static_cast<int>(imageWidth * 3);
-        const std::uint8_t* srcPtr = rgb8.data();
+        const std::uint8_t *srcPtr = rgb8.data();
 
         std::vector<std::uint8_t> rowOrdered;
         if (flipY) {
@@ -511,7 +542,7 @@ export namespace Pale::Utils {
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         float absQuantile = 0.99f,
-        bool flipY = true// robust scale from abs-quantile in (0,1]; 1.0 = max-abs
+        bool flipY = true // robust scale from abs-quantile in (0,1]; 1.0 = max-abs
     ) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());
@@ -584,7 +615,7 @@ export namespace Pale::Utils {
         }
 
         const int bytesPerRow = static_cast<int>(imageWidth * 3);
-        const std::uint8_t* srcPtr = rgb8.data();
+        const std::uint8_t *srcPtr = rgb8.data();
 
         std::vector<std::uint8_t> rowOrdered;
         if (flipY) {
