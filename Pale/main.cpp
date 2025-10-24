@@ -300,7 +300,7 @@ int main(int argc, char **argv) {
 
     //transform.setRotationEuler(glm::vec3(-90.0f, 0.0f, 0.0f));
     //transform.setScale(glm::vec3(0.5f, 0.5f, 0.5f));
-    //transform.setPosition(glm::vec3(0.0f, 0.1f, 0.0f));
+    transform.setPosition(glm::vec3(0.0f, 0.0f, 0.0f));
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device
@@ -361,10 +361,10 @@ int main(int argc, char **argv) {
         Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
     }
 
-    if (pointCloudPath.filename() != "initial.ply") {
-        Pale::Log::PA_INFO("TARGET RENDERED exiting...");
-        return 0;
-    }
+    //if (pointCloudPath.filename() != "initial.ply") {
+    //    Pale::Log::PA_INFO("TARGET RENDERED exiting...");
+    //    return 0;
+    //}
 
     // 4) (Optional) load or compute residuals on host, upload pointer
     auto adjoint = calculateAdjointImage("Output/target/out.pfm", deviceSelector.getQueue(), sensor, true);

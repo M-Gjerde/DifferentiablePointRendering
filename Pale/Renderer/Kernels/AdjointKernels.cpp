@@ -10,12 +10,12 @@
 
 
 namespace Pale {
-    void launchRayGenAdjointKernel(RenderPackage& pkg, int spp) {
-        auto& queue = pkg.queue;
-        auto& sensor = pkg.sensor;
-        auto& settings = pkg.settings;
-        auto& adjoint = pkg.adjoint;
-        auto& intermediates = pkg.intermediates;
+    void launchRayGenAdjointKernel(RenderPackage &pkg, int spp) {
+        auto &queue = pkg.queue;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto &adjoint = pkg.adjoint;
+        auto &intermediates = pkg.intermediates;
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
@@ -27,7 +27,7 @@ namespace Pale {
         const uint32_t perPassRayCount = raysPerSet;
         queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t baseSeed = settings.randomSeed * static_cast<uint64_t>(spp);
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
@@ -85,23 +85,23 @@ namespace Pale {
     }
 
 
-    void launchAdjointKernel(RenderPackage& pkg, uint32_t activeRayCount) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& sensor = pkg.sensor;
-        auto& settings = pkg.settings;
-        auto& adjoint = pkg.adjoint;
-        auto& photonMap = pkg.intermediates.map;
+    void launchAdjointKernel(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto &adjoint = pkg.adjoint;
+        auto &photonMap = pkg.intermediates.map;
 
-        auto* hitRecords = pkg.intermediates.hitRecords;
-        auto* raysIn = pkg.intermediates.primaryRays;
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
         // activeRayCount == total rays in the current buffer (must be even)
 
         const uint32_t perPassRayCount = activeRayCount; // total number of rays (With n-samples per ray)
         const uint32_t perPixelRayCount = activeRayCount; // Number of rays per pixel
         const uint32_t photonsPerLaunch = settings.photonsPerLaunch;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<struct AdjointShadeKernelTag>(
                 sycl::range<1>(perPixelRayCount),
                 [=](sycl::id<1> globalId) {
@@ -132,75 +132,96 @@ namespace Pale {
                     // Surfel scatters B, ray index 4:
                     // 2. Add in-scattering to surfel events along side interior contribution. Use the attached points to propagate change to transmissivity.
                     // Mesh background with in-scattering:
-                    auto& instance = scene.instances[worldHit.instanceIndex];
+                    auto &instance = scene.instances[worldHit.instanceIndex];
 
-                    Ray& ray = rayState.ray;
+                    Ray &ray = rayState.ray;
+                    float3 gradientCostWrtSurfelCenter(0.0f);
                     float3 d_cost_d_pos(0.0f);
-                    if (worldHit.splatEventCount == 1 && instance.geometryType == GeometryType::Mesh) {
-                        auto splatEvent = worldHit.splatEvents[0];
-                        float3 x = ray.origin;
-                        float3 y = worldHit.hitPositionW;
+                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
+                        const float3 x = ray.origin;
+                        const float3 y = worldHit.hitPositionW;
+                        const float3 segmentVector = y - x;
 
-                        const auto surfel = scene.points[splatEvent.primitiveIndex];
-                        const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                        const int travelSideSign = (dot(canonicalNormalW, -rayState.ray.direction) >= 0.0f) ? 1 : -1;
-                        const float3 surfelNormal = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
-
-                        float3 segmentVector = y - x;
-                        float denom = dot(surfelNormal, segmentVector);
-                        if (abs(denom) <= 1e-6) {
-                            return;
-                        }
-
-                        // Intersection on the segment:
-                        float tParam = dot(surfelNormal, (surfel.position - x)) / denom;
-                        if (tParam <= 0.0 || tParam >= 1.0f)
-                            return;
-
-                        float3 hitPoint = x + tParam * segmentVector;
-
-                        float2 uv = phiInverse(hitPoint, surfel);
-                        float alpha = splatEvent.alpha;
-                        float tau = 1 - alpha;
-
-                        float tu_d = dot(surfel.tanU, segmentVector);
-                        float tv_d = dot(surfel.tanV, segmentVector);
-
-                        float su = surfel.scale.x();
-                        float sv = surfel.scale.y();
-
-                        float3 du_dc = ((tu_d / denom) * surfelNormal - surfel.tanU) / su;
-                        float3 dv_dc = ((tv_d / denom) * surfelNormal - surfel.tanV) / sv;
-
-                        float3 d_alpha_dc = -alpha * (uv[0] * du_dc + uv[1] * dv_dc);
-                        float3 dtau_dc = -d_alpha_dc;
-
-                        // Geometric term:
                         const float r2Background = dot(segmentVector, segmentVector);
                         if (r2Background <= 0.0f) return;
 
-                        /*
-                        const float rBackground = sycl::sqrt(r2Background);
-                        const float3 unitDirXY = segmentVector / rBackground;
-                        const float cosineEmitBackground = dot(worldHit.geometricNormalW, -unitDirXY);
-                        const float cosineReceiveBackground = dot(ray.normal, unitDirXY);
-                        const float geometricBackground =
-                            (cosineEmitBackground * cosineReceiveBackground) / r2Background;
-                        if (geometricBackground <= 0.0f) return;
-                        */
-
                         const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-                        const float L_mesh = luminanceGrayscale(backgroundRadianceRGB);
+                        const float luminanceMesh = luminanceGrayscale(backgroundRadianceRGB);
 
-                        float3 S_a_L = estimateSurfelRadianceFromPhotonMap(
-                            worldHit.splatEvents[0], ray.direction, scene, photonMap);
-                        float L_surfel = luminance(S_a_L);
+                        // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
+                        struct LocalTerm {
+                            float alpha;
+                            float3 dAlphaDc;
+                        };
+                        constexpr float epsilon = 1e-6f;
+                        constexpr int maxSplatEvents = 64; // adjust if needed
+                        LocalTerm localTerms[maxSplatEvents];
+                        int validCount = 0;
 
-                        float brdf = 1.0f; // placeholder
-                        // p(x, theta) = p(y, -phi) * d_tau * fs * V * G
-                        float3 p_adjoint = rayState.pathThroughput;
-                        d_cost_d_pos = p_adjoint * dtau_dc * L_mesh;
+                        for (int ei = 0; ei < worldHit.splatEventCount && validCount < maxSplatEvents; ++ei) {
+                            const auto splatEvent = worldHit.splatEvents[ei];
+                            const auto surfel = scene.points[splatEvent.primitiveIndex];
+
+                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                            const int travelSideSign = (dot(canonicalNormalW, -ray.direction) >= 0.0f) ? 1 : -1;
+                            const float3 surfelNormal = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
+
+                            const float denom = dot(surfelNormal, segmentVector);
+                            if (fabs(denom) <= epsilon) continue;
+
+                            const float tParam = dot(surfelNormal, (surfel.position - x)) / denom;
+                            if (tParam <= 0.0f || tParam >= 1.0f) continue;
+
+                            const float3 hitPoint = x + tParam * segmentVector;
+                            const float2 uv = phiInverse(hitPoint, surfel); // your mapping to local coords
+
+                            // alpha_i: use event alpha, or recompute from Gaussian if preferred
+                            float alpha = splatEvent.alpha;
+                            // Optional exact Gaussian: alpha = sycl::clamp(exp(-0.5f * (uv.x()*uv.x() + uv.y()*uv.y())), 0.0f, 1.0f);
+
+                            const float tuDotD = dot(surfel.tanU, segmentVector);
+                            const float tvDotD = dot(surfel.tanV, segmentVector);
+
+                            const float su = surfel.scale.x();
+                            const float sv = surfel.scale.y();
+
+                            // d u / d c and d v / d c
+                            const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / sycl::fmax(
+                                                    su, epsilon);
+                            const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sycl::fmax(
+                                                    sv, epsilon);
+
+                            // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
+                            const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
+
+                            localTerms[validCount++] = LocalTerm{alpha, dAlphaDc};
+                        }
+
+                        if (validCount == 0) return;
+
+                        // τ = Π (1-α_i) with stable log-space accumulation
+                        float logTau = 0.0f;
+                        for (int i = 0; i < validCount; ++i) {
+                            const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
+                            logTau += sycl::log(oneMinusAlpha);
+                        }
+                        const float tauTotal = sycl::exp(logTau);
+
+                        // Σ_i [ - dα_i/dc / (1-α_i) ]
+                        float3 sumTerm(0.0f);
+                        for (int i = 0; i < validCount; ++i) {
+                            const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
+                            sumTerm = sumTerm + (-localTerms[i].dAlphaDc) / oneMinusAlpha;
+                        }
+
+                        const float3 pAdjoint = rayState.pathThroughput;
+                        // already includes fs, V, G, etc., for this segment
+                        gradientCostWrtSurfelCenter = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
+
+                        // Accumulate to your running gradient
+                        d_cost_d_pos = d_cost_d_pos + gradientCostWrtSurfelCenter;
                     }
+
 
                     if (worldHit.splatEventCount == 1 && instance.geometryType == GeometryType::PointCloud) {
                         auto splatEvent = worldHit.splatEvents[0];
@@ -225,7 +246,6 @@ namespace Pale {
 
                         float2 uv = phiInverse(hitPoint, surfel);
                         float alpha = splatEvent.alpha;
-                        float tau = 1 - alpha;
 
                         float tu_d = dot(surfel.tanU, ray.direction);
                         float tv_d = dot(surfel.tanV, ray.direction);
@@ -243,14 +263,14 @@ namespace Pale {
                         float L_surfel = luminanceGrayscale(S_a_L);
 
                         float3 p_adjoint = rayState.pathThroughput;
-                        d_cost_d_pos = p_adjoint *  d_alpha_dc * L_surfel;
+                        d_cost_d_pos = p_adjoint * d_alpha_dc * L_surfel;
                     }
 
                     if (rayState.bounceIndex >= 0) {
                         const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
                         const float dVdp_scalar = dot(d_cost_d_pos, parameterAxis);
 
-                        float4& gradImageDst = sensor.framebuffer[rayState.pixelIndex];
+                        float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
                         atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
                     }
                     /*
@@ -524,16 +544,16 @@ namespace Pale {
         queue.wait();
     }
 
-    void generateNextAdjointRays(RenderPackage& pkg, uint32_t activeRayCount) {
-        auto& queue = pkg.queue;
-        auto& sensor = pkg.sensor;
-        auto& settings = pkg.settings;
-        auto& scene = pkg.scene;
+    void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto &scene = pkg.scene;
 
-        auto* hitRecords = pkg.intermediates.hitRecords;
-        auto* raysIn = pkg.intermediates.primaryRays;
-        auto* raysOut = pkg.intermediates.extensionRaysA;
-        auto* countExtensionOut = pkg.intermediates.countExtensionOut;
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
+        auto *raysOut = pkg.intermediates.extensionRaysA;
+        auto *countExtensionOut = pkg.intermediates.countExtensionOut;
 
         const uint32_t perPassRayCount = activeRayCount; // total number of rays (With n-samples per ray)
         const uint32_t perPixelRayCount = activeRayCount; // Number of rays per pixel
@@ -541,7 +561,7 @@ namespace Pale {
 
         queue.memcpy(countExtensionOut, &activeRayCount, sizeof(uint32_t)).wait();
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             const uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<class GenerateNextAdjointRays>(
                 sycl::range<1>(perPixelRayCount),
@@ -570,7 +590,10 @@ namespace Pale {
 
                     auto light = scene.lights[0];
                     auto lightTransform = scene.transforms[light.transformIndex];
-                    float3 lightPosition = float3{lightTransform.objectToWorld.row[0].w(), lightTransform.objectToWorld.row[1].w(), lightTransform.objectToWorld.row[2].w()};
+                    float3 lightPosition = float3{
+                        lightTransform.objectToWorld.row[0].w(), lightTransform.objectToWorld.row[1].w(),
+                        lightTransform.objectToWorld.row[2].w()
+                    };
                     const float3 toLight = lightPosition - worldHit.hitPositionW;
                     const float distanceToLight = length(toLight);
                     if (distanceToLight <= 1e-6f) return;
@@ -679,8 +702,6 @@ namespace Pale {
                             cosTheta / sycl::fmax(pdf, 1e-8f));
                     }
                     */
-
-
                 });
         });
         queue.wait();
