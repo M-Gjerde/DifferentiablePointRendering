@@ -1,4 +1,34 @@
 assets:
+  - id: 3339555672218185918
+    type: Material
+    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
+  - id: 10528396817900629538
+    type: PointCloud
+    path: /home/magnus/2dgs/bunny_10k/point_cloud/iteration_30000/point_cloud.ply
+  - id: 5567360424603740832
+    type: Mesh
+    path: meshes/mesh_circle.obj
+  - id: 3935059640973440673
+    type: PointCloud
+    path: /home/magnus/2dgs/teapot_1k/point_cloud/iteration_30000/point_cloud.ply
+  - id: 9276227938270739776
+    type: Material
+    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
+  - id: 10656934336383424757
+    type: Material
+    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
+  - id: 12296492703738183934
+    type: PointCloud
+    path: PointClouds/target.ply
+  - id: 13159810095024651016
+    type: Mesh
+    path: meshes/rectangle.obj
+  - id: 7931122561975318726
+    type: PointCloud
+    path: /home/magnus/2dgs/bunny_1k/point_cloud/iteration_7000/point_cloud.ply
+  - id: 5168305768556563705
+    type: PointCloud
+    path: /home/magnus/2dgs/bronze_bull_10000pts/point_cloud/iteration_30000/point_cloud.ply
   - id: 1430651076161149809
     type: Material
     path: Materials/cbox/bsdf_red_0.mat.yaml
@@ -11,15 +41,15 @@ assets:
   - id: 13930669167159129666
     type: PointCloud
     path: PointClouds/random.ply
+  - id: 7220415238661001103
+    type: Material
+    path: Materials/cbox/bsdf_green_0.mat.yaml
   - id: 17373864238837670013
     type: PointCloud
     path: /home/magnus/2dgs/teapot_1k/point_cloud/iteration_7000/point_cloud.ply
   - id: 4166138362556840265
     type: PointCloud
     path: PointClouds/scene.ply
-  - id: 7220415238661001103
-    type: Material
-    path: Materials/cbox/bsdf_green_0.mat.yaml
   - id: 5377391263815739387
     type: Material
     path: Materials/cbox_custom/bsdf_white_0.mat.yaml
@@ -38,33 +68,3 @@ assets:
   - id: 16708915874494959050
     type: PointCloud
     path: PointClouds/initial.ply
-  - id: 5168305768556563705
-    type: PointCloud
-    path: /home/magnus/2dgs/bronze_bull_10000pts/point_cloud/iteration_30000/point_cloud.ply
-  - id: 7931122561975318726
-    type: PointCloud
-    path: /home/magnus/2dgs/bunny_1k/point_cloud/iteration_7000/point_cloud.ply
-  - id: 13159810095024651016
-    type: Mesh
-    path: meshes/rectangle.obj
-  - id: 12296492703738183934
-    type: PointCloud
-    path: PointClouds/target.ply
-  - id: 10656934336383424757
-    type: Material
-    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
-  - id: 9276227938270739776
-    type: Material
-    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
-  - id: 3935059640973440673
-    type: PointCloud
-    path: /home/magnus/2dgs/teapot_1k/point_cloud/iteration_30000/point_cloud.ply
-  - id: 5567360424603740832
-    type: Mesh
-    path: meshes/mesh_circle.obj
-  - id: 10528396817900629538
-    type: PointCloud
-    path: /home/magnus/2dgs/bunny_10k/point_cloud/iteration_30000/point_cloud.ply
-  - id: 3339555672218185918
-    type: Material
-    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
