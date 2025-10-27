@@ -396,6 +396,29 @@ namespace Pale {
         return true;
     }
 
+    // shapeParam in [-1, 1]:
+    //   -1 -> Manhattan (p=1, diamond)
+    //    0 -> Mahalanobis-like (p=2, circle/ellipse)
+    //   +1 -> Square-ish (p≈∞; we cap at pMax)
+    SYCL_EXTERNAL static inline float computeNormalizedLpRadius(
+        float du, float dv, float sU, float sV,
+        float shapeParam, float pMax = 32.0f) {
+        // Map shapeParam to p in [1, pMax] with p=2 at shapeParam=0
+        // Piecewise linear in p for control:
+        float targetP;
+        // (0,1] -> p in (2,pMax]
+        float t = shapeParam; // t in (0,1]
+        targetP = 2.0f + t * (pMax - 2.0f);
+
+        const float uNorm = sycl::fabs(du) / sycl::fmax(sU, 1e-8f);
+        const float vNorm = sycl::fabs(dv) / sycl::fmax(sV, 1e-8f);
+
+        // Lp "radius" without the final 1/p root; compare sumPow <= 1
+        const float sumPow = sycl::pow(uNorm, targetP) + sycl::pow(vNorm, targetP);
+        return sumPow; // <= 1 means inside footprint
+    }
+
+
     SYCL_EXTERNAL static bool intersectSurfel(const Ray &rayObject,
                                               const Point &surfel,
                                               float tMin, float tMax,
@@ -423,6 +446,29 @@ namespace Pale {
 
         float2 uv = phiInverse(outHitLocal, surfel);
 
+        const float sU = surfel.scale.x();
+        const float sV = surfel.scale.y();
+        const float3 r = outHitLocal - surfel.position;
+
+        /*
+        const float du = dot(surfel.tanU, r);
+        const float dv = dot(surfel.tanV, r);
+
+        const float shapeParam = surfel.position.x() > 0 ? 1.0f : 0.0f;
+        // choose at runtime
+        const float rhoP = computeNormalizedLpRadius(du, dv, sU, sV, surfel.shape, 32.0f);
+
+        if (rhoP >= 1.0f) return false;
+
+        // 5) Area → length Jacobian
+        // Gaussian parametrization
+        //const float alpha_i = sycl::exp(-0.5f * r2);
+        // Beta kernel
+        float b = surfel.beta;
+        const float beta = 4 * sycl::exp(b);
+        const float alpha_i = sycl::pow(1 - rhoP, beta);
+        */
+
         const float r2 = uv[0] * uv[0] + uv[1] * uv[1];
 
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
@@ -431,6 +477,7 @@ namespace Pale {
 
         // 5) Area → length Jacobian
         const float alpha_i = sycl::exp(-0.5f * r2);
+
         outTHit = tHit;
         outOpacity = alpha_i;
         return true;
@@ -645,13 +692,12 @@ namespace Pale {
         float3 weightedSumPhotonPowerRGB{0.f, 0.f, 0.f};
 
         const float3 cellSize = photonMap.cellSizeWorld; // store this
-        const int rx = sycl::min(int(sycl::ceil(localRadius / cellSize.x())), 1<<10);
-        const int ry = sycl::min(int(sycl::ceil(localRadius / cellSize.y())), 1<<10);
-        const int rz = sycl::min(int(sycl::ceil(localRadius / cellSize.z())), 1<<10);
-        for (int dz=-rz; dz<=rz; ++dz){
-            for (int dy=-ry; dy<=ry; ++dy){
-                for (int dx=-rx; dx<=rx; ++dx) {
-
+        const int rx = sycl::min(int(sycl::ceil(localRadius / cellSize.x())), 1 << 10);
+        const int ry = sycl::min(int(sycl::ceil(localRadius / cellSize.y())), 1 << 10);
+        const int rz = sycl::min(int(sycl::ceil(localRadius / cellSize.z())), 1 << 10);
+        for (int dz = -rz; dz <= rz; ++dz) {
+            for (int dy = -ry; dy <= ry; ++dy) {
+                for (int dx = -rx; dx <= rx; ++dx) {
                     const sycl::int3 neighborCell{
                         centerCell.x() + dx,
                         centerCell.y() + dy,
@@ -736,12 +782,12 @@ namespace Pale {
         float3 weightedSumPhotonPowerRgb{0.f, 0.f, 0.f};
 
         const float3 cellSize = photonMap.cellSizeWorld; // store this
-        const int rx = sycl::min(int(sycl::ceil(localRadius / cellSize.x())), 1<<10);
-        const int ry = sycl::min(int(sycl::ceil(localRadius / cellSize.y())), 1<<10);
-        const int rz = sycl::min(int(sycl::ceil(localRadius / cellSize.z())), 1<<10);
-        for (int dz=-rz; dz<=rz; ++dz){
-            for (int dy=-ry; dy<=ry; ++dy){
-                for (int dx=-rx; dx<=rx; ++dx) {
+        const int rx = sycl::min(int(sycl::ceil(localRadius / cellSize.x())), 1 << 10);
+        const int ry = sycl::min(int(sycl::ceil(localRadius / cellSize.y())), 1 << 10);
+        const int rz = sycl::min(int(sycl::ceil(localRadius / cellSize.z())), 1 << 10);
+        for (int dz = -rz; dz <= rz; ++dz) {
+            for (int dy = -ry; dy <= ry; ++dy) {
+                for (int dx = -rx; dx <= rx; ++dx) {
                     const sycl::int3 neighborCell{centerCell.x() + dx, centerCell.y() + dy, centerCell.z() + dz};
                     if (!isInsideGrid(neighborCell, photonMap.gridResolution)) continue;
 
@@ -753,10 +799,10 @@ namespace Pale {
                         const DevicePhotonSurface photon = photonMap.photons[photonIndex];
                         if (photon.primitiveIndex != event.primitiveIndex)
                             continue;
-                        // Hemisphere gate: accept only photons from the same side we enter first
-                        const float nDotWi = dot(canonicalNormalW, photon.incidentDir);
-                        if (sycl::fabs(nDotWi) < grazingEpsilon) continue; // ambiguous grazing
                         if (photon.sideSign != travelSideSign && readOneSidedRadiance) continue;
+                        // Hemisphere gate: accept only photons from the same side we enter first
+                        //const float nDotWi = dot(canonicalNormalW, photon.incidentDir);
+                        //if (sycl::fabs(nDotWi) < grazingEpsilon) continue; // ambiguous grazing
 
                         // Distance + kernel
                         const float3 displacement = photon.position - surfacePositionW;

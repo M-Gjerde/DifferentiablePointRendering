@@ -146,13 +146,13 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath,
     uint32_t targetWidth = 0, targetHeight = 0;
     if (!Pale::Utils::loadPFM_RGB(targetImagePath, targetRgb, targetWidth, targetHeight)) {
         Pale::Log::PA_ERROR("Failed to find target image at {}", targetImagePath.string());
-        return adjoint;
+        //return adjoint;
     };
 
     // 3) Validate dimensions
     if (predictedWidth != targetWidth || predictedHeight != targetHeight) {
         Pale::Log::PA_ERROR("setResiduals(): predicted and target image sizes differ");
-        return adjoint;
+        //return adjoint;
     }
     const uint32_t imageWidth = predictedWidth;
     const uint32_t imageHeight = predictedHeight;
@@ -178,23 +178,26 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath,
         else Pale::Log::PA_INFO("OIDN: targetRgb denoised");
     }
 
-
+    std::vector<float> residualRgb(pixelCount * 3u);
+    std::vector<float> lossImageRgb(pixelCount * 3u);
+    std::vector<Pale::float4> residualRgba(pixelCount);
+    /*
     // 5) Compute per-pixel residuals and adjoint (for 0.5 * L2)
     //     residual = predicted - target
     //     adjoint  = residual  (∂L/∂predicted)
-    std::vector<float> residualRgb(pixelCount * 3u);
-    std::vector<float> lossImageRgb(pixelCount * 3u);
+
+
     for (size_t k = 0; k < residualRgb.size(); ++k) {
 
         residualRgb[k] = predictedRgb[k] - targetRgb[k];
         lossImageRgb[k] = std::pow(predictedRgb[k] - targetRgb[k], 2);
     }
-    std::vector<Pale::float4> residualRgba(pixelCount);
     for (size_t i = 0; i < pixelCount; ++i) {
         const size_t k = i * 3u;
         residualRgba[i] = Pale::float4{residualRgb[k + 0], residualRgb[k + 1], residualRgb[k + 2], 0.0f};
     }
 
+    */
 
     // Optional: if you use mean squared error over N pixels, scale by 1/N
     // const float invPixelCount = 1.0f / static_cast<float>(pixelCount);
@@ -202,10 +205,10 @@ Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath,
 
     // 6) Save adjoint image to disk (PFM, RGB)
     const std::filesystem::path adjointPath = "Output/initial/residual.pfm";
-    Pale::Utils::savePFM(adjointPath, residualRgb, imageWidth, imageHeight);
+    //Pale::Utils::savePFM(adjointPath, residualRgb, imageWidth, imageHeight);
 
-    Pale::Utils::saveGradientSignRGB("Output/initial/residual.png", residualRgb, imageWidth, imageHeight);
-    Pale::Utils::saveGradientSignRGB("Output/initial/loss_image.png", lossImageRgb, imageWidth, imageHeight, true);
+    //Pale::Utils::saveGradientSignRGB("Output/initial/residual.png", residualRgb, imageWidth, imageHeight);
+    //Pale::Utils::saveGradientSignRGB("Output/initial/loss_image.png", lossImageRgb, imageWidth, imageHeight, true);
     // 6b) Also save each RGB component separately
     std::vector<float> residualR(pixelCount);
     std::vector<float> residualG(pixelCount);
@@ -294,13 +297,13 @@ int main(int argc, char **argv) {
     entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
     auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
     if (pointCloudPath.filename() == "target.ply") {
-        transform.setPosition(glm::vec3(0.05f, 0.0f, 0.00f));
+        transform.setPosition(glm::vec3(0.025f, 0.0f, 0.00f));
         Pale::Log::PA_INFO("Pertubing the target point cloud: {}", glm::to_string(transform.getPosition()));
     }
 
-    //transform.setRotationEuler(glm::vec3(-90.0f, 0.0f, 0.0f));
+    transform.setRotationEuler(glm::vec3(0.0f, 0.0f, 165.0f));
     //transform.setScale(glm::vec3(0.5f, 0.5f, 0.5f));
-    //transform.setPosition(glm::vec3(0.001f, 0.0f, 0.0f));
+    transform.setPosition(glm::vec3(0.005f, 0.0f, 0.2f));
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device
@@ -319,42 +322,21 @@ int main(int argc, char **argv) {
     // Register the scene with the Tracer
     tracer.setScene(gpu, buildProducts);
 
-    Pale::SensorGPU photonMapSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
-
     // Render
     Pale::Log::PA_INFO("Forward Render Pass...");
-    tracer.renderForward(sensor, photonMapSensor); // films is span/array
+    tracer.renderForward(sensor ); // films is span/array
 
     {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
         const uint32_t W = sensor.width, H = sensor.height;
-        float gamma = 1.8f;
-        float exposure = 2.5f;
-        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out.png";
-        if (Pale::Utils::savePNGWithToneMap(
-            filePath, rgba, W, H,
-            exposure,
-            gamma,
-            false)) {
-            Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-        };
-
-        Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
-    }
-
-    {
-        // // Save each sensor image
-        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), photonMapSensor);
-        const uint32_t W = photonMapSensor.width, H = photonMapSensor.height;
-        float gamma = 2.6f;
-        float exposure = 6.8f;
+        float gamma = 2.8f;
+        float exposure = 5.8f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out_photonmap.png";
         if (Pale::Utils::savePNGWithToneMap(
             filePath, rgba, W, H,
             exposure,
             gamma,
-            tracer.getSettings().numGatherPasses,
             false)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
@@ -368,7 +350,7 @@ int main(int argc, char **argv) {
     //}
 
     // 4) (Optional) load or compute residuals on host, upload pointer
-    auto adjoint = calculateAdjointImage("Output/target/out.pfm", deviceSelector.getQueue(), sensor, true);
+    auto adjoint = calculateAdjointImage("Output/target/out_photonmap.pfm", deviceSelector.getQueue(), sensor, true);
     Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
 
     Pale::Log::PA_INFO("Adjoint Render Pass...");

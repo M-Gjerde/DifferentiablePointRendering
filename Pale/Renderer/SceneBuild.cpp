@@ -153,6 +153,8 @@ namespace Pale {
                 gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
                 gpuPoint.color = pointGeometry.colors[i];
                 gpuPoint.opacity = pointGeometry.opacities[i];
+                gpuPoint.shape = pointGeometry.shapes[i];
+                gpuPoint.beta = pointGeometry.betas[i];
                 collectedPoints.push_back(gpuPoint);
             }
 

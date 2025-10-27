@@ -24,7 +24,7 @@ namespace Pale {
 
         const uint32_t photonCount = settings.photonsPerLaunch;
         const uint32_t forwardPasses = settings.numForwardPasses;
-        const uint32_t totalPhotons = photonCount * forwardPasses;
+        const float totalPhotons = photonCount * forwardPasses;
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             uint64_t baseSeed = settings.randomSeed;
@@ -113,7 +113,7 @@ namespace Pale {
                     // 4) initial throughput
                     const sycl::float3 Le = light.emissionRgb; // radiance scale
                     const float invPdf = 1.0f / pdfTotal;
-                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / photonCount;
+                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / totalPhotons;
 
                     // write ray
                     RayState ray{};
@@ -295,8 +295,7 @@ namespace Pale {
                         DevicePhotonSurface photonEntry{};
                         photonEntry.position = worldHit.hitPositionW;
                         photonEntry.power = rayState.pathThroughput;
-                        photonEntry.incidentDir = -rayState.ray.direction;
-                        const float signedCosineIncident = dot(worldHit.geometricNormalW, photonEntry.incidentDir);
+                        const float signedCosineIncident = dot(worldHit.geometricNormalW,  -rayState.ray.direction);
                         photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
                         photonEntry.sideSign = signNonZero(signedCosineIncident);
                         photonEntry.primitiveIndex = instance.geometryType == GeometryType::Mesh
@@ -319,11 +318,10 @@ namespace Pale {
                     //if (nextState.bounceIndex >= settings.russianRouletteStart) {
                     //    // Luminance-based continuation probability in [pMin, 1]
                     //    const float3 throughputRgb = nextState.pathThroughput;
-                    //    const float luminance = 0.2126f * throughputRgb.x() + 0.7152f * throughputRgb.y() + 0.0722f *
-                    //                            throughputRgb.z();
+                    //    const float luminance = luminanceGrayscale(throughputRgb);
                     //    const float pMin = 0.20f; // safety floor to avoid zero-probability bias
                     //    const float continuationProbability = sycl::clamp(luminance, pMin, 1.0f);
-//
+                    //
                     //    if (rng128.nextFloat() >= continuationProbability) {
                     //        return; // terminate path, do not enqueue
                     //    }
@@ -349,7 +347,7 @@ namespace Pale {
     void launchCameraGatherKernel(RenderPackage &pkg, int totalSamplesPerPixel) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
-        auto &sensor = pkg.photonMapSensor;
+        auto &sensor = pkg.sensor;
         auto &settings = pkg.settings;
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
 
@@ -361,7 +359,7 @@ namespace Pale {
         const float gatherRadius = photonMap.gatherRadiusWorld;
         queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = pkg.settings.randomSeed;
-            float samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
+            auto samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
             cgh.parallel_for<class CameraGatherKernel>(
                 sycl::range<1>(pixelCount),
                 [=](sycl::id<1> tid) {
@@ -427,25 +425,28 @@ namespace Pale {
                         const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
 
                         if (instance.geometryType == GeometryType::Mesh) {
-                            const Triangle &triangle = scene.triangles[worldHit.primitiveIndex];
-                            const Transform &objectWorldTransform = scene.transforms[instance.transformIndex];
-                            const Vertex &vertex0 = scene.vertices[triangle.v0];
-                            const Vertex &vertex1 = scene.vertices[triangle.v1];
-                            const Vertex &vertex2 = scene.vertices[triangle.v2];
-                            // Canonical geometric normal (no face-forwarding)
-                            const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
-                            const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
-                            const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
-                            worldHit.geometricNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
-                            float distanceToCamera = length(worldHit.hitPositionW - ray.origin);
-                            float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -ray.direction));
-                            float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, ray.direction)); // optional
-                            float geometricToCamera = (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
                             // If the mesh itself is emissive, add its emitted radiance (already radiance units)
                             const GPUMaterial &material = scene.materials[instance.materialIndex];
                             const float3 lambertBrdf = material.baseColor * (1.0f / M_PIf);
-
                             if (material.isEmissive()) {
+                                const Triangle &triangle = scene.triangles[worldHit.primitiveIndex];
+                                const Transform &objectWorldTransform = scene.transforms[instance.transformIndex];
+                                const Vertex &vertex0 = scene.vertices[triangle.v0];
+                                const Vertex &vertex1 = scene.vertices[triangle.v1];
+                                const Vertex &vertex2 = scene.vertices[triangle.v2];
+                                // Canonical geometric normal (no face-forwarding)
+                                const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
+                                const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
+                                const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
+
+                                worldHit.geometricNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
+                                float distanceToCamera = length(worldHit.hitPositionW - ray.origin);
+                                float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -ray.direction));
+                                float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, ray.direction));
+                                // optional
+                                float geometricToCamera =
+                                        (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
+
                                 // Optionally evaluate Le(x, wo) from your material; shown as baseColor for brevity
                                 const float3 emittedLe = material.emissive * tau * geometricToCamera;
                                 const float3 reflectedL =

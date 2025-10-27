@@ -144,7 +144,7 @@ export namespace Pale {
             const bool hasNormals3D = vertexProps.count("nx") && vertexProps.count("ny") && vertexProps.count("nz");
 
             // Request properties exactly once
-            std::shared_ptr<tinyply::PlyData> posData, tuData, tvData, scale2D, color2D, opacityData;
+            std::shared_ptr<tinyply::PlyData> posData, tuData, tvData, scale2D, color2D, opacityData, betaData, shapeData;
             std::shared_ptr<tinyply::PlyData> color3D, rot3D, normal3D;
 
             if (looksCustom) {
@@ -154,6 +154,8 @@ export namespace Pale {
                 scale2D = plyFile.request_properties_from_element("vertex", {"su", "sv"});
                 color2D = plyFile.request_properties_from_element("vertex", {"albedo_r", "albedo_g", "albedo_b"});
                 opacityData = plyFile.request_properties_from_element("vertex", {"opacity"});
+                betaData = plyFile.request_properties_from_element("vertex", {"beta"});
+                shapeData = plyFile.request_properties_from_element("vertex", {"shape"});
             } else {
                 // 2dgs
                 posData = plyFile.request_properties_from_element("vertex", {"x", "y", "z"});
@@ -200,7 +202,7 @@ export namespace Pale {
                       sameCount("opacity", opacityData)))
                     return {};
 
-                std::vector<float> posFloats, tuFloats, tvFloats, scaleFloats, colorFloats, opacityFloats;
+                std::vector<float> posFloats, tuFloats, tvFloats, scaleFloats, colorFloats, opacityFloats, betaFloats, shapeFloats;
                 bool ok = true;
                 ok &= ply_detail::copyScalarsToFloatVector(*posData, posFloats, 3);
                 ok &= ply_detail::copyScalarsToFloatVector(*tuData, tuFloats, 3);
@@ -208,6 +210,8 @@ export namespace Pale {
                 ok &= ply_detail::copyScalarsToFloatVector(*scale2D, scaleFloats, 2);
                 ok &= ply_detail::copyScalarsToFloatVector(*color2D, colorFloats, 3);
                 ok &= ply_detail::copyScalarsToFloatVector(*opacityData, opacityFloats, 1);
+                ok &= ply_detail::copyScalarsToFloatVector(*betaData, betaFloats, 1);
+                ok &= ply_detail::copyScalarsToFloatVector(*shapeData, shapeFloats, 1);
                 if (!ok) {
                     Log::PA_ERROR("PLYPointLoader: failed to unpack one or more 2DGS streams");
                     return {};
@@ -219,6 +223,8 @@ export namespace Pale {
                 geometry.scales.resize(vertexCount);
                 geometry.colors.resize(vertexCount);
                 geometry.opacities.resize(vertexCount);
+                geometry.betas.resize(vertexCount);
+                geometry.shapes.resize(vertexCount);
 
                 for (std::size_t i = 0; i < vertexCount; ++i) {
                     const std::size_t i3 = i * 3, i2 = i * 2;
@@ -236,6 +242,8 @@ export namespace Pale {
                     geometry.colors[i] = glm::clamp(
                         glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]), 0.0f, 1.0f);
                     geometry.opacities[i] = opacityFloats[i];
+                    geometry.betas[i] = betaFloats[i];
+                    geometry.shapes[i] = shapeFloats[i];
                 }
 
                 Log::PA_INFO("PLYPointLoader: loaded {} 2DGS splats", vertexCount);
@@ -269,6 +277,8 @@ export namespace Pale {
                 geometry.scales.resize(vertexCount);
                 geometry.colors.resize(vertexCount);
                 geometry.opacities.resize(vertexCount);
+                geometry.betas.resize(vertexCount);
+                geometry.shapes.resize(vertexCount);
 
                 constexpr float shC0 = 0.28209479177387814f; // 1/(2*sqrt(pi))
                 for (std::size_t i = 0; i < vertexCount; ++i) {

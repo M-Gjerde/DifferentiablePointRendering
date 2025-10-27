@@ -27,12 +27,13 @@ namespace Pale {
 
 #else
         //  cuda/rocm
-        m_settings.photonsPerLaunch = 5e5; // 1e6
-        m_settings.maxBounces = 8;
-        m_settings.numForwardPasses = 8;
-        m_settings.numGatherPasses = 4;
+        m_settings.photonsPerLaunch = 1e5; // 1e6
+        m_settings.maxBounces = 2;
+        m_settings.numGatherPasses = 2;
+        m_settings.numForwardPasses = 2;
+
         m_settings.maxAdjointBounces = 2;
-        m_settings.adjointSamplesPerPixel = 16;
+        m_settings.adjointSamplesPerPixel = 2;
         // omp+
 
         //m_settings.photonsPerLaunch = 1e6; // 1e6
@@ -57,7 +58,7 @@ namespace Pale {
         const float Adiff = bp.diffuseSurfaceArea;
         const float N = static_cast<float>(m_settings.photonsPerLaunch);
 
-        const float k = 10.0f;
+        const float k = 5.0f;
         const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));
         configurePhotonGrid(sceneAabb, r0);
     }
@@ -119,8 +120,7 @@ namespace Pale {
 
 
         // desired photon count
-        std::size_t requestedPhotons = m_rayQueueCapacity * static_cast<uint64_t>(
-                                           m_settings.maxBounces * m_settings.numForwardPasses);
+        std::size_t requestedPhotons = m_rayQueueCapacity * static_cast<uint64_t>(m_settings.numForwardPasses * m_settings.maxBounces);
 
 
         // clamp to what fits
@@ -217,7 +217,7 @@ namespace Pale {
     }
 
 
-    void PathTracer::renderForward(SensorGPU &sensor, SensorGPU &sensor2) {
+    void PathTracer::renderForward(SensorGPU &sensor) {
         ScopedTimer forwardTimer("Forward pass total", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
@@ -227,7 +227,6 @@ namespace Pale {
             .scene = m_scene,
             .intermediates = m_intermediates,
             .sensor = sensor,
-            .photonMapSensor = sensor2
         };
 
         submitKernel(renderPackage);

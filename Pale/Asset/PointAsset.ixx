@@ -19,6 +19,8 @@ export namespace Pale {
         std::vector<glm::vec2> scales{};
         std::vector<glm::vec3> colors{};
         std::vector<float>     opacities{};
+        std::vector<float>     betas{};
+        std::vector<float>     shapes{};
     };
 
 

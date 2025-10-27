@@ -93,12 +93,12 @@ static void dumpPhotonMapToPLY(sycl::queue &queue,
         // Normal from incident direction (pointing toward light)
         if (writeNormals) {
             // Use negative incidentDir as an outward shading normal guess
-            float nx = -ph.incidentDir.x();
-            float ny = -ph.incidentDir.y();
-            float nz = -ph.incidentDir.z();
-            outFile.write(reinterpret_cast<const char *>(&nx), sizeof(float));
-            outFile.write(reinterpret_cast<const char *>(&ny), sizeof(float));
-            outFile.write(reinterpret_cast<const char *>(&nz), sizeof(float));
+            //float nx = -ph.incidentDir.x();
+            //float ny = -ph.incidentDir.y();
+            //float nz = -ph.incidentDir.z();
+            //outFile.write(reinterpret_cast<const char *>(&nx), sizeof(float));
+            //outFile.write(reinterpret_cast<const char *>(&ny), sizeof(float));
+            //outFile.write(reinterpret_cast<const char *>(&nz), sizeof(float));
         }
 
         // Color from power → simple exposure then sRGB

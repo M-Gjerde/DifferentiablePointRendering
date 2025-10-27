@@ -138,7 +138,7 @@ namespace Pale {
 
         float cumulativeTransmittanceBefore = 1.0f;
 
-        SmallStack<kMaxSplatEvents * 2> traversalStack;
+        SmallStack<64> traversalStack;
         traversalStack.push(0);
 
         float currentGroupDepthKey = -std::numeric_limits<float>::infinity();
@@ -259,9 +259,9 @@ namespace Pale {
                 const bool hitRight = computeAabbEntry(rayObject, bvhNodes[rightIndex], inverseDirection,
                                                        bestAcceptedTHit, rightTEntry);
 
-                if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                else if (hitLeft) traversalStack.push(leftIndex);
-                else if (hitRight) traversalStack.push(rightIndex);
+                //if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                if (hitLeft) traversalStack.push(leftIndex);
+                if (hitRight) traversalStack.push(rightIndex);
                 continue;
             }
 
@@ -421,9 +421,9 @@ namespace Pale {
                 const bool hitRight = computeAabbEntry(rayWorld, tlasNodes[rightIndex], inverseDirectionWorld,
                                                        bestWorldTHit, rightTEntry);
 
-                if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                else if (hitLeft) traversalStack.push(leftIndex);
-                else if (hitRight) traversalStack.push(rightIndex);
+                //if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                if (hitLeft) traversalStack.push(leftIndex);
+                if (hitRight) traversalStack.push(rightIndex);
                 continue;
             }
 

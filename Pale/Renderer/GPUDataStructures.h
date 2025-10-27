@@ -40,6 +40,8 @@ namespace Pale {
         float2 scale{0.0f};
         float3 color{0.0f};
         float opacity{0.0f};
+        float beta{0.0f};
+        float shape{0.0f};
     };
 
     CHECK_16(Point);
@@ -327,8 +329,6 @@ namespace Pale {
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
 
-        // Incident direction at hit (from light toward hit)
-        float3 incidentDir{0.0f};
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
         int    sideSign{};       // +1 or -1: hemisphere relative to canonical surfel normal
@@ -381,7 +381,6 @@ namespace Pale {
         GPUSceneBuffers scene{};
         RenderIntermediatesGPU intermediates{};
         SensorGPU sensor{};
-        SensorGPU photonMapSensor{};
         AdjointGPU adjoint{};
     };
 }
