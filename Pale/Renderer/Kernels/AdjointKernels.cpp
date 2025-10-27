@@ -573,9 +573,9 @@ namespace Pale {
                     const RayState rayState = raysIn[rayIndex];
                     const WorldHit worldHit = hitRecords[rayIndex];
 
-                    RayState outState{};
+                    RayState nextState{};
                     if (!worldHit.hit) {
-                        raysOut[rayIndex] = outState;
+                        raysOut[rayIndex] = nextState;
                         hitRecords[rayIndex] = WorldHit{};
                         return;
                     } // dead ray
@@ -649,13 +649,29 @@ namespace Pale {
                     throughputMultiplier = throughputMultiplier * 1 / (distanceToLight * distanceToLight);
                     // Offset origin robustly
                     constexpr float kEps = 1e-5f;
-                    outState.ray.origin = worldHit.hitPositionW + enteredSideNormalW * 1e-4f;
-                    outState.ray.direction = sampledOutgoingDirectionW;
-                    outState.bounceIndex = rayState.bounceIndex + 1;
-                    outState.pixelIndex = rayState.pixelIndex;
-                    outState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
+                    nextState.ray.origin = worldHit.hitPositionW + enteredSideNormalW * 1e-4f;
+                    nextState.ray.direction = sampledOutgoingDirectionW;
+                    nextState.bounceIndex = rayState.bounceIndex + 1;
+                    nextState.pixelIndex = rayState.pixelIndex;
+                    nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
 
-                    raysOut[rayIndex] = outState;
+                    if (nextState.bounceIndex >= settings.russianRouletteStart) {
+                        // Luminance-based continuation probability in [pMin, 1]
+                        const float3 throughputRgb = nextState.pathThroughput;
+                        const float luminance = 0.2126f * throughputRgb.x() + 0.7152f * throughputRgb.y() + 0.0722f *
+                                                throughputRgb.z();
+                        const float pMin = 0.05f; // safety floor to avoid zero-probability bias
+                        const float continuationProbability = sycl::clamp(luminance, pMin, 1.0f);
+
+                        if (rng128.nextFloat() >= continuationProbability) {
+                            raysOut[rayIndex] = nextState;
+                            hitRecords[rayIndex] = WorldHit{};
+                            return; // terminate path, do not enqueue
+                        }
+                        nextState.pathThroughput = nextState.pathThroughput / continuationProbability; // unbiased
+                    }
+
+                    raysOut[rayIndex] = nextState;
 
 
                     /*

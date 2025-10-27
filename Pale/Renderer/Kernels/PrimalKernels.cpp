@@ -68,6 +68,8 @@ namespace Pale {
                                               nObjU.x() * nObjU.x() + nObjU.y() * nObjU.y() + nObjU.z() * nObjU.z());
                     if (triArea <= 0.f) return;
 
+                    const Transform xform = scene.transforms[light.transformIndex];
+
                     // 2b) sample uniform point on triangle (barycentric)
                     const float u1 = rng128.nextFloat();
                     const float u2 = rng128.nextFloat();
@@ -76,13 +78,12 @@ namespace Pale {
                     const float b2 = u2 * su1;
                     const float b0 = 1.f - b1 - b2;
                     const float3 xObj = p0 * b0 + p1 * b1 + p2 * b2;
+                    const float3 sampledWorldPoint = toWorldPoint(xObj, xform);
 
                     // transform to world per-vertex, then interpolate
-                    const Transform xform = scene.transforms[light.transformIndex];
                     const float3 worldP0 = toWorldPoint(p0, xform);
                     const float3 worldP1 = toWorldPoint(p1, xform);
                     const float3 worldP2 = toWorldPoint(p2, xform);
-                    const float3 sampledWorldPoint = worldP0 * b0 + worldP1 * b1 + worldP2 * b2;
 
                     // world-space geometric normal and area
                     const float3 worldEdge0 = worldP1 - worldP0;
@@ -313,6 +314,23 @@ namespace Pale {
                     nextState.pixelIndex = rayState.pixelIndex;
                     nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
 
+                    // --- Russian roulette termination (after computing nextState) ---
+
+                    //if (nextState.bounceIndex >= settings.russianRouletteStart) {
+                    //    // Luminance-based continuation probability in [pMin, 1]
+                    //    const float3 throughputRgb = nextState.pathThroughput;
+                    //    const float luminance = 0.2126f * throughputRgb.x() + 0.7152f * throughputRgb.y() + 0.0722f *
+                    //                            throughputRgb.z();
+                    //    const float pMin = 0.20f; // safety floor to avoid zero-probability bias
+                    //    const float continuationProbability = sycl::clamp(luminance, pMin, 1.0f);
+//
+                    //    if (rng128.nextFloat() >= continuationProbability) {
+                    //        return; // terminate path, do not enqueue
+                    //    }
+                    //    nextState.pathThroughput = nextState.pathThroughput / continuationProbability; // unbiased
+                    //}
+
+
                     // --- Enqueue ---
                     auto extensionCounter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
@@ -381,10 +399,8 @@ namespace Pale {
 
                     for (int i = 0; i < worldHit.splatEventCount; ++i) {
                         const auto &splatEvent = worldHit.splatEvents[i];
-
                         if (worldHit.hit && splatEvent.t >= worldHit.t)
                             break;
-                        auto& surfel = scene.points[splatEvent.primitiveIndex];
 
                         bool useOneSidedScatter = true;
                         float3 Efront = estimateSurfelRadianceFromPhotonMap(

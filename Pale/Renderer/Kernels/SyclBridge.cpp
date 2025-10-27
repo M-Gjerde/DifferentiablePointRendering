@@ -89,6 +89,7 @@ namespace Pale {
                 ScopedTimer timer("launchCameraGatherKernel", spdlog::level::debug);
                 int cameraGatherSPP = pkg.settings.numGatherPasses;
                 for (int i = 0; i < cameraGatherSPP; i++) {
+                    ScopedTimer timer("CameraGatherSample", spdlog::level::trace);
                     std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
                     pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
                     launchCameraGatherKernel(pkg, cameraGatherSPP); // generate image from photon map

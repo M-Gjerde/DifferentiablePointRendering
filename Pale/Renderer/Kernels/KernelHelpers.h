@@ -630,9 +630,8 @@ namespace Pale {
         const float3 surfacePositionW = worldHit.hitPositionW;
 
         const float baseRadius = photonMap.gatherRadiusWorld;
-        const float localRadius = sycl::clamp(perHitRadiusScale,
-                                              1e-3f * baseRadius,
-                                              4.0f * baseRadius);
+        const float requestedRadius = sycl::fmax(1e-6f, perHitRadiusScale) * baseRadius;
+        const float localRadius = sycl::clamp(requestedRadius, 1e-3f * baseRadius, 4.0f * baseRadius);
         const float localRadiusSquared = localRadius * localRadius;
 
         const float kappa = photonMap.kappa; // e.g. 2.0f
@@ -645,14 +644,20 @@ namespace Pale {
 
         float3 weightedSumPhotonPowerRGB{0.f, 0.f, 0.f};
 
-        for (int dz = -1; dz <= 1; ++dz) {
-            for (int dy = -1; dy <= 1; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
+        const float3 cellSize = photonMap.cellSizeWorld; // store this
+        const int rx = sycl::min(int(sycl::ceil(localRadius / cellSize.x())), 1<<10);
+        const int ry = sycl::min(int(sycl::ceil(localRadius / cellSize.y())), 1<<10);
+        const int rz = sycl::min(int(sycl::ceil(localRadius / cellSize.z())), 1<<10);
+        for (int dz=-rz; dz<=rz; ++dz){
+            for (int dy=-ry; dy<=ry; ++dy){
+                for (int dx=-rx; dx<=rx; ++dx) {
+
                     const sycl::int3 neighborCell{
                         centerCell.x() + dx,
                         centerCell.y() + dy,
                         centerCell.z() + dz
                     };
+
                     if (!isInsideGrid(neighborCell, photonMap.gridResolution)) continue;
 
                     const std::uint32_t cellIndex =
@@ -730,9 +735,13 @@ namespace Pale {
 
         float3 weightedSumPhotonPowerRgb{0.f, 0.f, 0.f};
 
-        for (int dz = -1; dz <= 1; ++dz) {
-            for (int dy = -1; dy <= 1; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
+        const float3 cellSize = photonMap.cellSizeWorld; // store this
+        const int rx = sycl::min(int(sycl::ceil(localRadius / cellSize.x())), 1<<10);
+        const int ry = sycl::min(int(sycl::ceil(localRadius / cellSize.y())), 1<<10);
+        const int rz = sycl::min(int(sycl::ceil(localRadius / cellSize.z())), 1<<10);
+        for (int dz=-rz; dz<=rz; ++dz){
+            for (int dy=-ry; dy<=ry; ++dy){
+                for (int dx=-rx; dx<=rx; ++dx) {
                     const sycl::int3 neighborCell{centerCell.x() + dx, centerCell.y() + dy, centerCell.z() + dz};
                     if (!isInsideGrid(neighborCell, photonMap.gridResolution)) continue;
 

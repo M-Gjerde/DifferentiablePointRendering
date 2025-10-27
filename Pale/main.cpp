@@ -347,13 +347,14 @@ int main(int argc, char **argv) {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), photonMapSensor);
         const uint32_t W = photonMapSensor.width, H = photonMapSensor.height;
-        float gamma = 2.4f;
-        float exposure = 4.0f;
+        float gamma = 2.6f;
+        float exposure = 6.8f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out_photonmap.png";
         if (Pale::Utils::savePNGWithToneMap(
             filePath, rgba, W, H,
             exposure,
             gamma,
+            tracer.getSettings().numGatherPasses,
             false)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };

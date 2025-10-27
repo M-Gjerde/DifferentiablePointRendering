@@ -264,7 +264,7 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<RayState>);
 
 
-    constexpr int kMaxSplatEvents = 80;
+    constexpr int kMaxSplatEvents = 16;
 
     struct SplatEvent {
         float t = FLT_MAX; // local space t
@@ -311,7 +311,7 @@ namespace Pale {
         uint32_t numGatherPasses = 8; // Which bounce to start RR
         uint32_t maxAdjointBounces = 8;
         uint32_t adjointSamplesPerPixel = 8;
-        uint32_t russianRouletteStart = 2; // Which bounce to start RR
+        uint32_t russianRouletteStart = 3; // Which bounce to start RR
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

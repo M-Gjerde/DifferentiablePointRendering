@@ -26,6 +26,7 @@ export namespace Pale::Utils {
         std::uint32_t imageHeight,
         float exposureEV = 0.0f,
         float gammaEncode = 2.2f,
+        int numGatherPasses = 1,
         bool normalizeHDR = false,
         bool writeAlpha = false,
         bool flipY = true) {
@@ -74,6 +75,7 @@ export namespace Pale::Utils {
             if (normalizeHDR) v = (v - rgbMin) * invRange;
             v = std::max(0.0f, v * exposureScale); // no negative light
             v = std::pow(v, invGamma); // gamma encode
+            v = v / static_cast<float>(numGatherPasses); // gamma encode
             v = std::clamp(v, 0.0f, 1.0f);
             return static_cast<std::uint8_t>(v * 255.0f + 0.5f);
         };

@@ -26,9 +26,11 @@ export namespace Pale {
         PathTracerSettings& getSettings() { return m_settings; }
 
     private:
-        void ensureCapacity(uint32_t requiredRayQueueCapacity);
+        void ensureRayCapacity(uint32_t requiredRayQueueCapacity);
         void allocateIntermediates(uint32_t newCapacity);
+        void allocatePhotonMap();
         void freeIntermediates();
+        void freePhotonMap();
         void configurePhotonGrid(const AABB& sceneAabb, float gatherRadiusWorld);
     private:
         sycl::queue m_queue;
