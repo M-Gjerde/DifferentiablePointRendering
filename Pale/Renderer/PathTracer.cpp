@@ -17,31 +17,16 @@ import Pale.Render.BVH;
 
 namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
-#ifdef NDEBUG
-        // Release
-        m_settings.photonsPerLaunch = 1e7; // 1e7
-        m_settings.maxBounces = 4;
-        m_settings.maxAdjointBounces = 4;
-        m_settings.adjointSamplesPerPixel = 4;
-        m_settings.samplesPerRay = 4;
 
-#else
         //  cuda/rocm
-        m_settings.photonsPerLaunch = 1e5; // 1e6
-        m_settings.maxBounces = 2;
-        m_settings.numGatherPasses = 2;
-        m_settings.numForwardPasses = 2;
+        m_settings.photonsPerLaunch = 1e6; // 1e6
+        m_settings.maxBounces = 8;
+        m_settings.numGatherPasses = 8;
+        m_settings.numForwardPasses = 8;
 
-        m_settings.maxAdjointBounces = 2;
-        m_settings.adjointSamplesPerPixel = 2;
-        // omp+
+        m_settings.maxAdjointBounces = 8;
+        m_settings.adjointSamplesPerPixel = 8;
 
-        //m_settings.photonsPerLaunch = 1e6; // 1e6
-        //m_settings.maxBounces = 4;
-        //m_settings.numForwardPasses = 1;
-        //m_settings.maxAdjointBounces = 2;
-        //m_settings.adjointSamplesPerPixel = 1;
-#endif
     }
 
     void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
@@ -234,11 +219,7 @@ namespace Pale {
         m_queue.wait();
     }
 
-    void PathTracer::renderBackward(SensorGPU &sensor, AdjointGPU &adjoint) {
-        if (!adjoint.framebuffer) {
-            Log::PA_WARN("Adjoint image is not set but renderBackward is called");
-            return;
-        }
+    void PathTracer::renderBackward(SensorGPU &sensor) {
 
         const uint32_t requiredRayCapacity = sensor.width * sensor.height;
         if (requiredRayCapacity > m_rayQueueCapacity) {
@@ -256,7 +237,6 @@ namespace Pale {
             .scene = m_scene,
             .intermediates = m_intermediates,
             .sensor = sensor,
-            .adjoint = adjoint
         };
 
         submitKernel(renderPackage);

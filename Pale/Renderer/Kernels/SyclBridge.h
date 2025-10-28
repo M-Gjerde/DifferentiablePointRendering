@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 
 #include "Renderer/GPUDataStructures.h"
+#include "Renderer/RenderPackage.h"
 
 
 namespace Pale {

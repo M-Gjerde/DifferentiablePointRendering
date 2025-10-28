@@ -6,7 +6,6 @@
 
 #include "IntersectionKernels.h"
 #include "Renderer/Kernels/KernelHelpers.h"
-#include "Renderer/Kernels/AdjointGradientKernels.h"
 
 
 namespace Pale {
@@ -14,7 +13,6 @@ namespace Pale {
         auto &queue = pkg.queue;
         auto &sensor = pkg.sensor;
         auto &settings = pkg.settings;
-        auto &adjoint = pkg.adjoint;
         auto &intermediates = pkg.intermediates;
 
         const uint32_t imageWidth = sensor.camera.width;
@@ -49,10 +47,10 @@ namespace Pale {
                     rng::Xorshift128 pixelRng(perPixelSeed);
 
                     // Adjoint source weight
-                    const float4 residualRgba = adjoint.framebuffer[pixelIndex];
-                    float3 initialAdjointWeight = {residualRgba.x(), residualRgba.y(), residualRgba.z()};
+                    //const float4 residualRgba = adjoint.framebuffer[pixelIndex];
+                    //float3 initialAdjointWeight = {residualRgba.x(), residualRgba.y(), residualRgba.z()};
                     // Or unit weights:
-                    initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
+                    float3 initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
                     // Base slot for this pixel’s N samples
                     const uint32_t baseOutputSlot = pixelIndex;
@@ -90,7 +88,6 @@ namespace Pale {
         auto &scene = pkg.scene;
         auto &sensor = pkg.sensor;
         auto &settings = pkg.settings;
-        auto &adjoint = pkg.adjoint;
         auto &photonMap = pkg.intermediates.map;
         auto *hitRecords = pkg.intermediates.hitRecords;
         auto *raysIn = pkg.intermediates.primaryRays;
