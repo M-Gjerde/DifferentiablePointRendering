@@ -418,14 +418,74 @@ namespace Pale {
         return sumPow; // <= 1 means inside footprint
     }
 
+    SYCL_EXTERNAL static float opacityGaussian(float u, float v, float kSigmas = 2.6f) {
+        const float r2 = u * u + v * v;
+
+        // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
+        if (r2 > kSigmas * kSigmas)
+            return 0.0f;
+
+        return sycl::exp(-0.5f * r2);
+
+    }
+
+
+    SYCL_EXTERNAL inline float logit(float x) { return sycl::log(x / (1.0f - x)); }
+
+
+
+    SYCL_EXTERNAL static float opacityBeta(float u, float v, const Point& surfel) {
+        float su = surfel.scale.x();
+        float sv = surfel.scale.y();
+        // map shapeControl → p in [1, pMax]
+        const float pMax = 32.0f;            // square-like; increase if needed
+        const float k    = 1.0f;             // blend sharpness
+        // anisotropic scaling to get rectangles (su, sv)
+        const float uu = fabs(u);
+        const float vv = fabs(v);
+
+        const float targetAtZero = 2.0f;                         // p(0) = 2  → circle
+        const float q = (targetAtZero - 1.0f) / (pMax - 1.0f);   // desired sigmoid value at t=0
+        const float b = logit(q);                                 // bias to hit p(0)=2
+        const float s = 1.0f / (1.0f + sycl::exp(-(k * surfel.shape + b)));
+
+        // L^p “radius”
+        const float p = 1.0f + (pMax - 1.0f) * s;               // t<0 diamond, t=0 circle, t>0 square-like
+        const float up = sycl::pow(uu, p);
+        const float vp = sycl::pow(vv, p);
+        const float r  = sycl::pow(up + vp, 1.0f / p);
+
+        if (r >= 1.0f) return 0.0f;
+
+        float exponent = 4.0f * std::exp(surfel.beta);
+        return sycl::pow(1.0f - r, exponent);
+        /*
+        const float du = dot(surfel.tanU, r);
+        const float dv = dot(surfel.tanV, r);
+
+        const float shapeParam = surfel.position.x() > 0 ? 1.0f : 0.0f;
+        // choose at runtime
+        const float rhoP = computeNormalizedLpRadius(du, dv, sU, sV, surfel.shape, 32.0f);
+
+        if (rhoP >= 1.0f) return false;
+
+        // 5) Area → length Jacobian
+        // Gaussian parametrization
+        //const float alpha_i = sycl::exp(-0.5f * r2);
+        // Beta kernel
+
+        */
+        // 5) Area → length Jacobian
+
+    }
+
 
     SYCL_EXTERNAL static bool intersectSurfel(const Ray &rayObject,
                                               const Point &surfel,
                                               float tMin, float tMax,
                                               float &outTHit,
                                               float3 &outHitLocal,
-                                              float &outOpacity,
-                                              float kSigmas = 2.6f) {
+                                              float &outOpacity) {
         // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
@@ -446,40 +506,11 @@ namespace Pale {
 
         float2 uv = phiInverse(outHitLocal, surfel);
 
-        const float sU = surfel.scale.x();
-        const float sV = surfel.scale.y();
-        const float3 r = outHitLocal - surfel.position;
 
-        /*
-        const float du = dot(surfel.tanU, r);
-        const float dv = dot(surfel.tanV, r);
-
-        const float shapeParam = surfel.position.x() > 0 ? 1.0f : 0.0f;
-        // choose at runtime
-        const float rhoP = computeNormalizedLpRadius(du, dv, sU, sV, surfel.shape, 32.0f);
-
-        if (rhoP >= 1.0f) return false;
-
-        // 5) Area → length Jacobian
-        // Gaussian parametrization
-        //const float alpha_i = sycl::exp(-0.5f * r2);
-        // Beta kernel
-        float b = surfel.beta;
-        const float beta = 4 * sycl::exp(b);
-        const float alpha_i = sycl::pow(1 - rhoP, beta);
-        */
-
-        const float r2 = uv[0] * uv[0] + uv[1] * uv[1];
-
-        // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
-        if (r2 > kSigmas * kSigmas)
-            return false;
-
-        // 5) Area → length Jacobian
-        const float alpha_i = sycl::exp(-0.5f * r2);
+        outOpacity = opacityGaussian(uv[0], uv[1]);
+        outOpacity = opacityBeta(uv[0], uv[1], surfel);
 
         outTHit = tHit;
-        outOpacity = alpha_i;
         return true;
     }
 

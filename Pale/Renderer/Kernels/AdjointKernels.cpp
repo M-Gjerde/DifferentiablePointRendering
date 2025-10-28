@@ -180,9 +180,7 @@ namespace Pale {
                                     const float3 hitPoint = x + tParam * segmentVector;
                                     const float2 uv = phiInverse(hitPoint, surfel); // your mapping to local coords
 
-                                    // alpha_i: use event alpha, or recompute from Gaussian if preferred
                                     float alpha = splatEvent.alpha;
-                                    // Optional exact Gaussian: alpha = sycl::clamp(exp(-0.5f * (uv.x()*uv.x() + uv.y()*uv.y())), 0.0f, 1.0f);
 
                                     const float tuDotD = dot(surfel.tanU, segmentVector);
                                     const float tvDotD = dot(surfel.tanV, segmentVector);
@@ -196,8 +194,49 @@ namespace Pale {
                                     const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sycl::fmax(
                                                             sv, epsilon);
 
-                                    // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
-                                    const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
+                                    // helpers
+                                    auto smoothAbs  = [](float x){ const float e=1e-12f; return sycl::sqrt(x*x + e); };
+                                    auto smoothSign = [](float x){ const float e=1e-12f; return x / sycl::sqrt(x*x + e); };
+                                    auto logit      = [](float x){ return sycl::log(x / (1.0f - x)); };
+
+                                    const float uu = uv.x();
+                                    const float vv = uv.y();
+
+                                    // --- shape → p mapping so p(0)=2
+                                    const float pMax = 32.0f;
+                                    const float kShape = 1.0f;
+                                    const float targetAtZero = 2.0f;
+                                    const float qShape = (targetAtZero - 1.0f) / (pMax - 1.0f);
+                                    const float bias = logit(qShape);
+                                    const float sShape = 1.0f / (1.0f + sycl::exp(-(kShape * surfel.shape + bias)));
+                                    const float p = 1.0f + (pMax - 1.0f) * sShape;
+
+                                    // --- L^p radius r
+                                    const float a = smoothAbs(uu);
+                                    const float b = smoothAbs(vv);
+                                    const float ap = sycl::pow(a, p);
+                                    const float bp = sycl::pow(b, p);
+                                    const float F  = ap + bp;
+                                    const float eps = 1e-12f;
+                                    const float r  = sycl::pow(sycl::fmax(F, eps), 1.0f / sycl::fmax(p, 1.0f + eps));
+                                    if (r >= 1.0f) continue; // outside support
+
+                                    // --- alpha = (1 - r)^beta
+                                    const float g = sycl::fmax(1.0f - r, eps);
+                                    const float beta = 4.0f * sycl::exp(surfel.beta);
+
+                                    // --- ∂r/∂u, ∂r/∂v  (includes shape via p)
+                                    const float rPow = sycl::pow(r, 1.0f - p);          // r^{1-p}
+                                    const float aPow = (a > 0.0f) ? sycl::pow(a, p-1.0f) : 0.0f;
+                                    const float bPow = (b > 0.0f) ? sycl::pow(b, p-1.0f) : 0.0f;
+                                    const float du = smoothSign(uu);                    // d|u|/du
+                                    const float dv = smoothSign(vv);                    // d|v|/dv
+                                    const float drdu = aPow * rPow * du;
+                                    const float drdv = bPow * rPow * dv;
+
+                                    // --- dα/dc = -(α β / g) * ( ∂r/∂u * du/dc + ∂r/∂v * dv/dc )
+                                    const float common = -alpha * beta / g;
+                                    const float3 dAlphaDc = common * (drdu * duDc + drdv * dvDc);
 
                                     localTerms[validCount++] = LocalTerm{alpha, dAlphaDc};
                                 }
@@ -226,7 +265,7 @@ namespace Pale {
                     }
 
 
-                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
+                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh && false) {
                         const float3 x = ray.origin;
                         const float3 y = worldHit.hitPositionW;
                         const float3 segmentVector = y - x;
@@ -307,7 +346,7 @@ namespace Pale {
                     }
 
 
-                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::PointCloud) {
+                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::PointCloud && false) {
                         for (auto &splatEvent: worldHit.splatEvents) {
                             if (splatEvent.primitiveIndex == UINT32_MAX)
                                 continue;
