@@ -157,10 +157,11 @@ namespace Pale {
                                 LocalTerm localTerms[maxSplatEvents];
                                 int validCount = 0;
 
-                                for (int ei = 0; ei < shadowWorldHit.splatEventCount && validCount < maxSplatEvents; ++
-                                     ei) {
+                                for (int ei = 0; ei < shadowWorldHit.splatEventCount && validCount < maxSplatEvents; ++ei) {
                                     const auto splatEvent = shadowWorldHit.splatEvents[ei];
                                     const auto surfel = scene.points[splatEvent.primitiveIndex];
+
+
 
                                     const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                                     const int travelSideSign = (dot(canonicalNormalW, -ray.direction) >= 0.0f) ? 1 : -1;
@@ -170,6 +171,9 @@ namespace Pale {
 
                                     const float denom = dot(surfelNormal, segmentVector);
                                     if (fabs(denom) <= epsilon) continue;
+
+                                    auto& transform = scene.transforms[splatEvent.instanceIndex];
+                                    float3 surfelPosition = transformPoint(transform.objectToWorld, surfel.position);
 
                                     const float tParam = dot(surfelNormal, (surfel.position - x)) / denom;
                                     if (tParam <= 0.0f || tParam >= 1.0f) continue;
@@ -190,7 +194,9 @@ namespace Pale {
                                                             su, epsilon);
                                     const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sycl::fmax(
                                                             sv, epsilon);
-
+                                    // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
+                                    const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
+                                    /*
                                     // helpers
                                     auto smoothAbs  = [](float x){ const float e=1e-12f; return sycl::sqrt(x*x + e); };
                                     auto smoothSign = [](float x){ const float e=1e-12f; return x / sycl::sqrt(x*x + e); };
@@ -234,6 +240,7 @@ namespace Pale {
                                     // --- dα/dc = -(α β / g) * ( ∂r/∂u * du/dc + ∂r/∂v * dv/dc )
                                     const float common = -alpha * beta / g;
                                     const float3 dAlphaDc = common * (drdu * duDc + drdv * dvDc);
+                                    */
 
                                     localTerms[validCount++] = LocalTerm{alpha, dAlphaDc};
                                 }
@@ -262,7 +269,7 @@ namespace Pale {
                     }
 
 
-                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh && false) {
+                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
                         const float3 x = ray.origin;
                         const float3 y = worldHit.hitPositionW;
                         const float3 segmentVector = y - x;
@@ -343,7 +350,7 @@ namespace Pale {
                     }
 
 
-                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::PointCloud && false) {
+                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::PointCloud) {
                         for (auto &splatEvent: worldHit.splatEvents) {
                             if (splatEvent.primitiveIndex == UINT32_MAX)
                                 continue;

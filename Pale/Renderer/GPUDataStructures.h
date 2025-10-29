@@ -261,6 +261,7 @@ namespace Pale {
         float3 hitWorld = float3(0.0f); // World hit position
         float alpha = 1.0f;
         uint32_t primitiveIndex = UINT32_MAX; // primitiveIndex
+        uint32_t instanceIndex = UINT32_MAX; // instance transform for entire point cloud
     };
 
     struct alignas(16) LocalHit {

@@ -450,6 +450,7 @@ namespace Pale {
                     const float tWorld = dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
                     worldHitOut->splatEvents[i].hitWorld = hitPointWorld;
                     worldHitOut->splatEvents[i].t = tWorld;
+                    worldHitOut->splatEvents[i].instanceIndex = instanceIndex;
                 }
                 worldHitOut->splatEventCount = localHit.splatEventCount;
             }

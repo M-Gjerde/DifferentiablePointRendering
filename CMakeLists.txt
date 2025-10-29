@@ -143,30 +143,14 @@ endforeach()
 ")
 
 # 2) pybind11 first (unchanged)
-add_subdirectory(vendor/pybind11)
-
+#add_subdirectory(vendor/pybind11)
 # -------- Executable (main only) --------
-
-
-# If main.cpp itself submits SYCL (unlikely), also decorate the exe:
-add_library(pale MODULE Pale/pale_bindings.cpp)
-add_sycl_to_target(TARGET pale)
-target_link_libraries(pale PUBLIC PaleLib pybind11::module -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
-set_target_properties(pale PROPERTIES
-        PREFIX ""                # produce pale.so
-        OUTPUT_NAME "pale"       # module filename 'pale'
-        DEBUG_POSTFIX ""         # avoid 'paled.so'
-)
-
-
-## 3) Build the Python module correctly
-#add_library(pale_bindings MODULE Pale/pale_bindings.cpp)
-## Consume PaleLib PUBLICly so its module PCMs and compile options flow in
-#target_link_libraries(pale_bindings PUBLIC PaleLib pybind11::module)
-## Match diagnostics/opts (optional)
-#target_compile_options(pale_bindings PRIVATE -g -O0 -fno-inline -fno-omit-frame-pointer)
-## Enable SYCL on the binding too so it links the same runtime
-#add_sycl_to_target(TARGET pale_bindings)
-## Python module name
-#set_target_properties(pale_bindings PROPERTIES PREFIX "" OUTPUT_NAME "pale_bindings")
-#
+## If main.cpp itself submits SYCL (unlikely), also decorate the exe:
+#add_library(pale MODULE Pale/pale_bindings.cpp)
+#add_sycl_to_target(TARGET pale)
+#target_link_libraries(pale PUBLIC PaleLib pybind11::module -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
+#set_target_properties(pale PROPERTIES
+#        PREFIX ""                # produce pale.so
+#        OUTPUT_NAME "pale"       # module filename 'pale'
+#        DEBUG_POSTFIX ""         # avoid 'paled.so'
+#)

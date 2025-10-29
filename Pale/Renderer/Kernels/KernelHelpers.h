@@ -363,75 +363,20 @@ namespace Pale {
         outPdf = max(0.f, dot(outDir, n)) / M_PIf; // cosθ/π
     }
 
-    SYCL_EXTERNAL static bool intersectNearestSurfel(const Ray &rayObject,
-                                                     const Point &surfel,
-                                                     float tMin,
-                                                     float tMax,
-                                                     float &outTHit) {
-        const float3 tangentU = normalize(surfel.tanU);
-        const float3 tangentV = normalize(surfel.tanV);
-        float3 normalObject = normalize(cross(tangentU, tangentV));
 
-        const float nDotD = dot(rayObject.direction, normalObject);
-        if (abs(nDotD) < 1e-6f) return false;
-
-        const float t = dot(surfel.position - rayObject.origin, normalObject) / nDotD;
-        if (t <= tMin || t >= tMax) return false;
-
-        const float3 hitPoint = rayObject.origin + t * rayObject.direction;
-        const float3 relative = hitPoint - surfel.position;
-
-        const float alpha = dot(relative, tangentU);
-        const float beta = dot(relative, tangentV);
-
-        const float su = fmax(surfel.scale.x(), 1e-8f);
-        const float sv = fmax(surfel.scale.y(), 1e-8f);
-        const float uHat = alpha / su;
-        const float vHat = beta / sv;
-        float exponent = -((uHat * uHat) + (vHat * vHat)) / 2.0f;
-        float G = std::exp(exponent);
-        if (G < 0.75f) return false; // clip to ellipse
-
-        outTHit = t;
-        return true;
-    }
-
-    // shapeParam in [-1, 1]:
-    //   -1 -> Manhattan (p=1, diamond)
-    //    0 -> Mahalanobis-like (p=2, circle/ellipse)
-    //   +1 -> Square-ish (p≈∞; we cap at pMax)
-    SYCL_EXTERNAL static inline float computeNormalizedLpRadius(
-        float du, float dv, float sU, float sV,
-        float shapeParam, float pMax = 32.0f) {
-        // Map shapeParam to p in [1, pMax] with p=2 at shapeParam=0
-        // Piecewise linear in p for control:
-        float targetP;
-        // (0,1] -> p in (2,pMax]
-        float t = shapeParam; // t in (0,1]
-        targetP = 2.0f + t * (pMax - 2.0f);
-
-        const float uNorm = sycl::fabs(du) / sycl::fmax(sU, 1e-8f);
-        const float vNorm = sycl::fabs(dv) / sycl::fmax(sV, 1e-8f);
-
-        // Lp "radius" without the final 1/p root; compare sumPow <= 1
-        const float sumPow = sycl::pow(uNorm, targetP) + sycl::pow(vNorm, targetP);
-        return sumPow; // <= 1 means inside footprint
-    }
-
-    SYCL_EXTERNAL static float opacityGaussian(float u, float v, float kSigmas = 2.6f) {
+    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float* outOpacity,float kSigmas = 2.6f) {
         const float r2 = u * u + v * v;
-
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 > kSigmas * kSigmas)
-            return 0.0f;
+            return false;
 
-        return sycl::exp(-0.5f * r2);
+        *outOpacity = sycl::exp(-0.5f * r2);
+        return true;
 
     }
 
 
     SYCL_EXTERNAL inline float logit(float x) { return sycl::log(x / (1.0f - x)); }
-
 
 
     SYCL_EXTERNAL static float opacityBeta(float u, float v, const Point& surfel) {
@@ -459,24 +404,6 @@ namespace Pale {
 
         float exponent = 4.0f * std::exp(surfel.beta);
         return sycl::pow(1.0f - r, exponent);
-        /*
-        const float du = dot(surfel.tanU, r);
-        const float dv = dot(surfel.tanV, r);
-
-        const float shapeParam = surfel.position.x() > 0 ? 1.0f : 0.0f;
-        // choose at runtime
-        const float rhoP = computeNormalizedLpRadius(du, dv, sU, sV, surfel.shape, 32.0f);
-
-        if (rhoP >= 1.0f) return false;
-
-        // 5) Area → length Jacobian
-        // Gaussian parametrization
-        //const float alpha_i = sycl::exp(-0.5f * r2);
-        // Beta kernel
-
-        */
-        // 5) Area → length Jacobian
-
     }
 
 
@@ -502,13 +429,12 @@ namespace Pale {
             return false;
 
         outHitLocal = rayObject.origin + tHit * rayObject.direction;
-        const float3 offsetInPlane = outHitLocal - surfel.position;
-
         float2 uv = phiInverse(outHitLocal, surfel);
 
+        if (!opacityGaussian(uv[0], uv[1], &outOpacity))
+            return false;
 
-        outOpacity = opacityGaussian(uv[0], uv[1]);
-        outOpacity = opacityBeta(uv[0], uv[1], surfel);
+        //outOpacity = opacityBeta(uv[0], uv[1], surfel);
 
         outTHit = tHit;
         return true;
