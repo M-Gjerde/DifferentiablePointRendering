@@ -5,6 +5,9 @@
 #pragma once
 
 #include "Renderer/GPUDataStructures.h"
+#include "Renderer/RenderPackage.h"
+
+
 namespace Pale {
     void launchRayGenEmitterKernel(RenderPackage& pkg);
 

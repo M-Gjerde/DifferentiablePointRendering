@@ -15,12 +15,14 @@ import Pale.Render.SceneBuild;
 
 export namespace Pale {
 
+
+
     class PathTracer {
     public:
         explicit PathTracer(sycl::queue q, const PathTracerSettings& settings = {});
         void setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp);
         void renderForward(SensorGPU& sensors);
-        void renderBackward(SensorGPU &sensor, AdjointGPU& adjoint);
+        void renderBackward(SensorGPU &sensor);
         void reset();
 
         PathTracerSettings& getSettings() { return m_settings; }

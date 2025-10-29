@@ -229,18 +229,6 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<GPUSceneBuffers>);
     static_assert(sycl::is_device_copyable<GPUSceneBuffers>::value);
 
-    struct SensorGPU {
-        CameraGPU camera; // camera parameters
-        float4 *framebuffer{nullptr}; // device pointer
-        uint32_t width{}, height{};
-    };
-
-    struct AdjointGPU {
-        float4 *framebuffer{nullptr}; // input adjoint image
-        float4 *framebufferGrad{nullptr}; // ouput gradient image
-        uint32_t width{}, height{};
-        float3 *gradient_pk{nullptr};
-    };
 
     // ---- PODs ---------------------------------------------------------------
     // ---- Config -------------------------------------------------------------
@@ -375,12 +363,5 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<RenderIntermediatesGPU>);
     static_assert(sycl::is_device_copyable<RenderIntermediatesGPU>::value);
 
-    struct RenderPackage {
-        sycl::queue queue;
-        PathTracerSettings settings{};
-        GPUSceneBuffers scene{};
-        RenderIntermediatesGPU intermediates{};
-        SensorGPU sensor{};
-        AdjointGPU adjoint{};
-    };
+
 }

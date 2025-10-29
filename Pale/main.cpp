@@ -2,11 +2,10 @@
 #include <memory>
 #include <filesystem>
 #include <entt/entt.hpp>
-#include "Renderer/GPUDataStructures.h"
-#include <OpenImageDenoise/oidn.hpp>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include "glm/gtx/string_cast.hpp"
+#include "Renderer/RenderPackage.h"
 
 import Pale.DeviceSelector;
 import Pale.Scene.Components;
@@ -95,170 +94,6 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 }
 
 
-inline bool denoiseRgbInPlaceOIDN(std::vector<float>& rgbInterleaved,
-                                  uint32_t imageWidth,
-                                  uint32_t imageHeight,
-                                  bool isHDR = false) {
-    if (rgbInterleaved.size() != static_cast<size_t>(imageWidth) * imageHeight * 3u) return false;
-
-    try {
-        oidn::DeviceRef device = oidn::newDevice(oidn::DeviceType::CPU);
-        device.commit();
-
-        oidn::FilterRef filter = device.newFilter("RT"); // generic ray-tracing filter
-        filter.setImage("color", rgbInterleaved.data(), oidn::Format::Float3,
-                        imageWidth, imageHeight, /*byteOffset=*/0, /*bytePixelStride=*/sizeof(float)*3);
-        filter.setImage("output", rgbInterleaved.data(), oidn::Format::Float3,
-                        imageWidth, imageHeight, 0, sizeof(float)*3);
-        filter.set("hdr", isHDR);    // true = no clamping, expects linear HDR
-        filter.commit();
-        filter.execute();
-
-        const char* errMessage = nullptr;
-        if (device.getError(errMessage) != oidn::Error::None) {
-            // log once, but return false to signal failure
-            // (replace with your logger if desired)
-            std::fprintf(stderr, "OIDN error: %s\n", errMessage ? errMessage : "(unknown)");
-            return false;
-        }
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-
-Pale::AdjointGPU calculateAdjointImage(std::filesystem::path targetImagePath,
-                                       sycl::queue queue,
-                                       Pale::SensorGPU& sensor,
-                                       bool useOIDNDenoiser = false)  {
-    // 1) Download current predicted image (RGBA, linear)
-    Pale::AdjointGPU adjoint;
-    std::vector<float> predictedRgba; // size = W*H*4
-    uint32_t predictedWidth = 0, predictedHeight = 0; {
-        predictedRgba = Pale::downloadSensorRGBA(queue, sensor);
-        predictedWidth = sensor.width;
-        predictedHeight = sensor.height;
-    }
-
-    // 2) Load target reference image (RGB, linear)
-    std::vector<float> targetRgb; // size = W*H*3
-    uint32_t targetWidth = 0, targetHeight = 0;
-    if (!Pale::Utils::loadPFM_RGB(targetImagePath, targetRgb, targetWidth, targetHeight)) {
-        Pale::Log::PA_ERROR("Failed to find target image at {}", targetImagePath.string());
-        //return adjoint;
-    };
-
-    // 3) Validate dimensions
-    if (predictedWidth != targetWidth || predictedHeight != targetHeight) {
-        Pale::Log::PA_ERROR("setResiduals(): predicted and target image sizes differ");
-        //return adjoint;
-    }
-    const uint32_t imageWidth = predictedWidth;
-    const uint32_t imageHeight = predictedHeight;
-    const size_t pixelCount = static_cast<size_t>(imageWidth) * imageHeight;
-
-    // 4) Extract predicted RGB from RGBA
-    std::vector<float> predictedRgb(pixelCount * 3u);
-    for (size_t i = 0, j = 0; i < pixelCount; ++i, j += 4) {
-        predictedRgb[i * 3 + 0] = predictedRgba[j + 0];
-        predictedRgb[i * 3 + 1] = predictedRgba[j + 1];
-        predictedRgb[i * 3 + 2] = predictedRgba[j + 2];
-    }
-
-    // 4b) Optional OIDN denoise in linear space, HDR mode
-    if (useOIDNDenoiser) {
-        bool ok = denoiseRgbInPlaceOIDN(predictedRgb, imageWidth, imageHeight);
-        if (!ok) Pale::Log::PA_WARN("OIDN: predictedRgb denoise failed; using raw predicted");
-        else Pale::Log::PA_INFO("OIDN: predictedRgb denoised");
-    }
-    if (useOIDNDenoiser) {
-        bool okT = denoiseRgbInPlaceOIDN(targetRgb, imageWidth, imageHeight);
-        if (!okT) Pale::Log::PA_WARN("OIDN: targetRgb denoise failed; using raw target");
-        else Pale::Log::PA_INFO("OIDN: targetRgb denoised");
-    }
-
-    std::vector<float> residualRgb(pixelCount * 3u);
-    std::vector<float> lossImageRgb(pixelCount * 3u);
-    std::vector<Pale::float4> residualRgba(pixelCount);
-    /*
-    // 5) Compute per-pixel residuals and adjoint (for 0.5 * L2)
-    //     residual = predicted - target
-    //     adjoint  = residual  (∂L/∂predicted)
-
-
-    for (size_t k = 0; k < residualRgb.size(); ++k) {
-
-        residualRgb[k] = predictedRgb[k] - targetRgb[k];
-        lossImageRgb[k] = std::pow(predictedRgb[k] - targetRgb[k], 2);
-    }
-    for (size_t i = 0; i < pixelCount; ++i) {
-        const size_t k = i * 3u;
-        residualRgba[i] = Pale::float4{residualRgb[k + 0], residualRgb[k + 1], residualRgb[k + 2], 0.0f};
-    }
-
-    */
-
-    // Optional: if you use mean squared error over N pixels, scale by 1/N
-    // const float invPixelCount = 1.0f / static_cast<float>(pixelCount);
-    // for (float& v : residualRgb) v *= invPixelCount;
-
-    // 6) Save adjoint image to disk (PFM, RGB)
-    const std::filesystem::path adjointPath = "Output/initial/residual.pfm";
-    //Pale::Utils::savePFM(adjointPath, residualRgb, imageWidth, imageHeight);
-
-    //Pale::Utils::saveGradientSignRGB("Output/initial/residual.png", residualRgb, imageWidth, imageHeight);
-    //Pale::Utils::saveGradientSignRGB("Output/initial/loss_image.png", lossImageRgb, imageWidth, imageHeight, true);
-    // 6b) Also save each RGB component separately
-    std::vector<float> residualR(pixelCount);
-    std::vector<float> residualG(pixelCount);
-    std::vector<float> residualB(pixelCount);
-
-    for (size_t i = 0; i < pixelCount; ++i) {
-        residualR[i] = residualRgb[i * 3 + 0];
-        residualG[i] = residualRgb[i * 3 + 1];
-        residualB[i] = residualRgb[i * 3 + 2];
-    }
-
-    /*
-    Pale::Utils::savePFM("Output/initial/adjoint_r.pfm", residualR, imageWidth, imageHeight);
-    Pale::Utils::savePFM("Output/initial/adjoint_g.pfm", residualG, imageWidth, imageHeight);
-    Pale::Utils::savePFM("Output/initial/adjoint_b.pfm", residualB, imageWidth, imageHeight);
-
-    // 7) (Optional) also save residual magnitude for debugging
-    {
-        std::vector<float> residualLuminance(pixelCount);
-        for (size_t i = 0; i < pixelCount; ++i) {
-            const float r = residualRgb[i * 3 + 0];
-            const float g = residualRgb[i * 3 + 1];
-            const float b = residualRgb[i * 3 + 2];
-            residualLuminance[i] = std::sqrt(r * r + g * g + b * b);
-        }
-        Pale::Utils::savePFM("Output/initial/adjoint_mag.pfm", residualLuminance, imageWidth, imageHeight,
-                             1,
-                             true);
-
-    }
-    */
-
-
-    auto *deviceResidualRgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-    auto *gradient_pk = sycl::malloc_device<Pale::float3>(10, queue);
-    queue.memcpy(deviceResidualRgba, residualRgba.data(), sizeof(Pale::float4) * pixelCount).wait();
-
-    std::vector<Pale::float3> gradient(10);
-    queue.memcpy(gradient_pk, gradient.data(), sizeof(Pale::float3) * 10).wait();
-    //queue.fill(gradient_pk, Pale::float3(0.0f), 10);
-
-    adjoint.framebuffer = deviceResidualRgba;
-    adjoint.width = imageWidth;
-    adjoint.height = imageHeight;
-    adjoint.gradient_pk = gradient_pk;
-
-
-    return adjoint;
-}
-
 int main(int argc, char **argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
@@ -315,16 +150,21 @@ int main(int argc, char **argv) {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue()); // scene only
 
+    Pale::PathTracer tracer(deviceSelector.getQueue());
+    tracer.setScene(gpu, buildProducts);
+    Pale::Log::PA_INFO("Forward Render Pass...");
+
     Pale::SensorGPU sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+
+    tracer.renderForward(sensor); // films is span/array
+
+
     // outputs derived from cameras
     // Start a Tracer
-    Pale::PathTracer tracer(deviceSelector.getQueue());
     // Register the scene with the Tracer
-    tracer.setScene(gpu, buildProducts);
 
     // Render
-    Pale::Log::PA_INFO("Forward Render Pass...");
-    tracer.renderForward(sensor ); // films is span/array
+
 
     {
         // // Save each sensor image
@@ -349,16 +189,17 @@ int main(int argc, char **argv) {
     //    return 0;
     //}
 
+
     // 4) (Optional) load or compute residuals on host, upload pointer
-    auto adjoint = calculateAdjointImage("Output/target/out_photonmap.pfm", deviceSelector.getQueue(), sensor, true);
+    //auto adjoint = calculateAdjointImage("Output/target/out_photonmap.pfm", deviceSelector.getQueue(), sensor, true);
     Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
 
     Pale::Log::PA_INFO("Adjoint Render Pass...");
-    tracer.renderBackward(adjointSensor, adjoint); // PRNG replay adjoint
+    tracer.renderBackward(adjointSensor); // PRNG replay adjoint
 
     std::vector<Pale::float3> gradients(10);
 
-    deviceSelector.getQueue().memcpy(gradients.data(), adjoint.gradient_pk, 10 * sizeof(Pale::float3)).wait();;
+    //deviceSelector.getQueue().memcpy(gradients.data(), adjoint.gradient_pk, 10 * sizeof(Pale::float3)).wait();;
 
     for (size_t instanceIndex = 0; instanceIndex < 1; ++instanceIndex)
         Pale::Log::PA_INFO("Point Gradient: x: {}, y: {}, z: {}, contributions: {}", gradients.at(instanceIndex).x(),
@@ -374,12 +215,9 @@ int main(int argc, char **argv) {
         Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A}
     }
 
+
     // Write Registry:
     assetManager.registry().save("asset_registry.yaml");
-
-    sycl::free(adjoint.framebuffer, deviceSelector.getQueue());
-    sycl::free(adjoint.framebufferGrad, deviceSelector.getQueue());
-    sycl::free(adjoint.gradient_pk, deviceSelector.getQueue());
     deviceSelector.getQueue().wait();
     return 0;
 }

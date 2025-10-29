@@ -1,82 +1,44 @@
-cmake_minimum_required(VERSION 4.0.0)
+cmake_minimum_required(VERSION 3.28)
 project(DifferentiablePointRendering
         VERSION 0.0.1
         DESCRIPTION "A PBDR Application"
-        LANGUAGES C CXX
-)
+        LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # PIC everywhere
+set(BUILD_SHARED_LIBS OFF)               # prefer static vendors we control
 
-#set(ACPP_TARGETS "omp.library-only" CACHE STRING "" FORCE)
 
 find_package(AdaptiveCpp REQUIRED)
 
-add_executable(${PROJECT_NAME})
-
-target_compile_options(${PROJECT_NAME} PRIVATE -g -O0 -fno-inline -fno-omit-frame-pointer)
-target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp=libomp) # or -fno-openmp
-
-# Adding Vendor Libraries
+# -------- Vendors --------
 add_subdirectory(vendor/pugixml)
-include_directories(vendor/pugixml/src)
-
-# --- Pugi module wrapper (module interface + link reqs)
-add_library(pugixml_iface INTERFACE)
-target_include_directories(pugixml_iface INTERFACE ${CMAKE_SOURCE_DIR}/vendor/pugixml/src)
-target_link_libraries(pugixml_iface INTERFACE pugixml)
-
-# Entt
 set(ENTT_DIR vendor/entt)
 add_subdirectory(${ENTT_DIR})
-
-## TinyPLY
 set(TINY_PLY_DIR vendor/tinyply)
 add_subdirectory(${TINY_PLY_DIR})
-include_directories("${TINY_PLY_DIR}/source")
-
-
-## SPD LOG
 include(FetchContent)
 set(SPDLOG_USE_STD_FORMAT ON)
-FetchContent_Declare(
-        spdlog
-        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/spdlog"
-        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/spdlog-build"
-)
+FetchContent_Declare(spdlog  SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/spdlog"  BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/spdlog-build")
+FetchContent_Declare(glm     SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/glm"     BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/glm-build")
+# assimp
+set(ASSIMP_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ZLIB        ON  CACHE BOOL "" FORCE)   # internal zlib
+FetchContent_Declare(assimp  SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/assimp"  BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/assimp-build")
+FetchContent_Declare(yaml_cpp SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/yaml-cpp" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/yaml-cpp-build")
+FetchContent_MakeAvailable(spdlog glm assimp yaml_cpp)
 
-## GLM
-FetchContent_Declare(
-        glm
-        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/glm"
-        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/glm-build"
-)
-## assimp
-FetchContent_Declare(
-        assimp
-        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/assimp"
-        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/assimp-build"
-)
-
-## yaml_cpp
-FetchContent_Declare(
-        yaml_cpp
-        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/yaml-cpp"
-        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/yaml-cpp-build"
-)
-
-# SOURCES
+# -------- Engine library (all sources + modules + kernels) --------
 set(KERNEL_SOURCES
         Pale/Renderer/Kernels/SyclBridge.cpp
         Pale/Renderer/Kernels/AdjointKernels.cpp
         Pale/Renderer/Kernels/PrimalKernels.cpp
 )
 
-
-target_sources(${PROJECT_NAME} PRIVATE
-        Pale/main.cpp
+set(ENGINE_SOURCES
         Pale/Core/DeviceSelector.cpp
         Pale/Core/ScopedTimer.cpp
         Pale/Core/UUID.cpp
@@ -90,9 +52,12 @@ target_sources(${PROJECT_NAME} PRIVATE
         ${KERNEL_SOURCES}
 )
 
-## Module files
-target_sources(${PROJECT_NAME}
-        PUBLIC FILE_SET CXX_MODULES FILES
+add_library(PaleLib ${ENGINE_SOURCES})
+
+# C++20 module interfaces belong to the library
+target_sources(PaleLib
+        PUBLIC
+        FILE_SET CXX_MODULES FILES
         Pale/Core/DeviceSelector.ixx
         Pale/Core/UUID.ixx
         Pale/Core/Log.ixx
@@ -125,13 +90,12 @@ target_sources(${PROJECT_NAME}
         Pale/Utils/StringFormatting.ixx
 )
 
-# Link your exe to the module wrapper (must come after add_executable)
-FetchContent_MakeAvailable(spdlog glm assimp yaml_cpp)
-
-find_package(OpenImageDenoise 2 REQUIRED HINTS /home/magnus/projects/oidn-2.3.3.x86_64.linux/lib/cmake/OpenImageDenoise-2.3.3 /home/magnus-desktop/libraries/oidn/lib/cmake/OpenImageDenoise-2.3.1)  # OIDN 2.x
-target_link_libraries(${PROJECT_NAME} PRIVATE OpenImageDenoise)
-
-target_link_libraries(${PROJECT_NAME}
+target_compile_features(PaleLib PUBLIC cxx_std_20)
+target_compile_options(PaleLib
+        PUBLIC      -fopenmp=libomp
+        PRIVATE     -g -O0 -fno-inline -fno-omit-frame-pointer
+)
+target_link_libraries(PaleLib
         PRIVATE
         pugixml
         EnTT::EnTT
@@ -142,37 +106,67 @@ target_link_libraries(${PROJECT_NAME}
         tinyply
 )
 
-# Link core directory
-include_directories(${PROJECT_NAME} PRIVATE Pale)
-
-# Link vendor directories
-target_include_directories(${PROJECT_NAME} PRIVATE
-        "vendor/yaml-cpp/include"
+target_include_directories(PaleLib
+        PUBLIC
+        ${CMAKE_SOURCE_DIR}/Pale
+        vendor/entt/src
+        vendor/glm
+        PRIVATE
+        vendor/yaml-cpp/include
+        vendor/stb_image
+        ${TINY_PLY_DIR}/source
 )
-# STB_Image
-include_directories(${PROJECT_NAME} PRIVATE vendor/stb_image)
 
+# Enable SYCL for the engine library (device code lives here)
+add_sycl_to_target(TARGET PaleLib)
 
+# -------- Executable (main only) --------
+add_executable(${PROJECT_NAME} Pale/main.cpp)
+target_compile_options(${PROJECT_NAME} PRIVATE -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
+target_link_libraries(${PROJECT_NAME} PRIVATE PaleLib)
+
+# If main.cpp itself submits SYCL (unlikely), also decorate the exe:
 add_sycl_to_target(TARGET ${PROJECT_NAME})
 
-# Cleanup old SYCL kernels in case a recompilation doesn't trigger a replacement
+# -------- Cleanup of old AdaptiveCpp caches --------
 set(ACPP_APP_BASE_DIR "$ENV{HOME}/.acpp/apps")
-# Script that cleans up old dirs
 set(CLEAN_SCRIPT "${CMAKE_BINARY_DIR}/cleanup.cmake")
 file(WRITE "${CLEAN_SCRIPT}" "
 file(GLOB PROJECT_DIRS \"${ACPP_APP_BASE_DIR}/${PROJECT_NAME}*\")
 foreach(DIR IN LISTS PROJECT_DIRS)
-if(IS_DIRECTORY \"\${DIR}\")
+  if(IS_DIRECTORY \"\${DIR}\")
     message(STATUS \"Found \${DIR}\")
     file(REMOVE_RECURSE \"\${DIR}\")
     message(STATUS \"Removed \${DIR}\")
-endif()
+  endif()
 endforeach()
 ")
-# Define a target that runs the script
-add_custom_target(clean_acpp ALL
-        COMMAND ${CMAKE_COMMAND} -P "${CLEAN_SCRIPT}"
-        COMMENT "Cleaning AdaptiveCpp app dirs"
+
+# 2) pybind11 first (unchanged)
+add_subdirectory(vendor/pybind11)
+
+# -------- Executable (main only) --------
+
+
+# If main.cpp itself submits SYCL (unlikely), also decorate the exe:
+add_library(pale MODULE Pale/pale_bindings.cpp)
+add_sycl_to_target(TARGET pale)
+target_link_libraries(pale PUBLIC PaleLib pybind11::module -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
+set_target_properties(pale PROPERTIES
+        PREFIX ""                # produce pale.so
+        OUTPUT_NAME "pale"       # module filename 'pale'
+        DEBUG_POSTFIX ""         # avoid 'paled.so'
 )
-# Ensure it runs before your executable
-add_dependencies(${PROJECT_NAME} clean_acpp)
+
+
+## 3) Build the Python module correctly
+#add_library(pale_bindings MODULE Pale/pale_bindings.cpp)
+## Consume PaleLib PUBLICly so its module PCMs and compile options flow in
+#target_link_libraries(pale_bindings PUBLIC PaleLib pybind11::module)
+## Match diagnostics/opts (optional)
+#target_compile_options(pale_bindings PRIVATE -g -O0 -fno-inline -fno-omit-frame-pointer)
+## Enable SYCL on the binding too so it links the same runtime
+#add_sycl_to_target(TARGET pale_bindings)
+## Python module name
+#set_target_properties(pale_bindings PROPERTIES PREFIX "" OUTPUT_NAME "pale_bindings")
+#

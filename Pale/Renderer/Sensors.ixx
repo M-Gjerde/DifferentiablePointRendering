@@ -4,6 +4,7 @@
 module;
 #include <sycl/sycl.hpp>
 #include <Renderer/GPUDataStructures.h>
+#include <Renderer/RenderPackage.h>
 
 export module Pale.Render.Sensors;
 
