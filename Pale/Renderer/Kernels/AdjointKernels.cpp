@@ -112,25 +112,39 @@ namespace Pale {
                     float3 gradientCostWrtSurfelCenter(0.0f);
                     Ray &ray = rayState.ray;
                     // SHADOW RAY
+                    bool useShadowRay = true;
+                    if (useShadowRay) {
+                        AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng128);
+                        if (!ls.valid) return;
+
+                        // Direction to the sampled emitter point
+                        const float3 toLightVector = ls.positionW - worldHit.hitPositionW;
+                        const float distanceToLight = length(toLightVector);
+                        if (distanceToLight <= 1e-6f) return;
+                        const float3 lightDirection = toLightVector / distanceToLight;
+
+                        // Cosines
+                        const float3 shadingNormalW = worldHit.geometricNormalW; // or your surfel normal
+                        const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
+                        const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
+                        if (cosThetaSurface == 0.0f || cosThetaLight == 0.0f) return;
+
+                        const float r2 = distanceToLight * distanceToLight;
+                        const float geometryTerm = (cosThetaSurface * cosThetaLight) / r2;
+                        // PDFs from the sampler
+                        const float pdfArea = ls.pdfArea; // area-domain, world area
+                        const float pdfLight = ls.pdfSelectLight; // 1 / lightCount
+
+                        // Unbiased NEE estimator (area sampling):
+                        const float invPdf = 1.0f / (pdfLight * pdfArea);
+                        const float3 neeContribution =
+                                rayState.pathThroughput * ls.emittedRadianceRGB * geometryTerm * invPdf;
 
 
-                    {
-                        auto light = scene.lights[0];
-                        auto lightTransform = scene.transforms[light.transformIndex];
-                        float3 lightPosition = float3{
-                            lightTransform.objectToWorld.row[0].w(), lightTransform.objectToWorld.row[1].w(),
-                            lightTransform.objectToWorld.row[2].w()
-                        };
-                        const float3 toLight = lightPosition - worldHit.hitPositionW;
-                        const float distanceToLight = length(toLight);
-                        if (distanceToLight <= 1e-6f)
-                            return;
-                        const float3 lightDirection = toLight / distanceToLight;
-                        float throughputMultiplier = 1.0f / (distanceToLight * distanceToLight);
                         Ray shadowRay{worldHit.hitPositionW, lightDirection};
                         RayState shadowRayState = rayState;
                         shadowRayState.ray = shadowRay;
-                        shadowRayState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
+                        shadowRayState.pathThroughput = neeContribution;
 
                         // BRDF
                         WorldHit shadowWorldHit{};
@@ -153,15 +167,13 @@ namespace Pale {
                                     float3 dAlphaDc;
                                 };
                                 constexpr float epsilon = 1e-6f;
-                                constexpr int maxSplatEvents = 16; // adjust if needed
-                                LocalTerm localTerms[maxSplatEvents];
+                                LocalTerm localTerms[kMaxSplatEvents];
                                 int validCount = 0;
 
-                                for (int ei = 0; ei < shadowWorldHit.splatEventCount && validCount < maxSplatEvents; ++ei) {
+                                for (int ei = 0; ei < shadowWorldHit.splatEventCount && validCount < kMaxSplatEvents; ++
+                                     ei) {
                                     const auto splatEvent = shadowWorldHit.splatEvents[ei];
                                     const auto surfel = scene.points[splatEvent.primitiveIndex];
-
-
 
                                     const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                                     const int travelSideSign = (dot(canonicalNormalW, -ray.direction) >= 0.0f) ? 1 : -1;
@@ -172,16 +184,13 @@ namespace Pale {
                                     const float denom = dot(surfelNormal, segmentVector);
                                     if (fabs(denom) <= epsilon) continue;
 
-                                    auto& transform = scene.transforms[splatEvent.instanceIndex];
-                                    float3 surfelPosition = transformPoint(transform.objectToWorld, surfel.position);
-
                                     const float tParam = dot(surfelNormal, (surfel.position - x)) / denom;
                                     if (tParam <= 0.0f || tParam >= 1.0f) continue;
 
                                     const float3 hitPoint = x + tParam * segmentVector;
                                     const float2 uv = phiInverse(hitPoint, surfel); // your mapping to local coords
 
-                                    float alpha = splatEvent.alpha;
+                                    const float alpha = sycl::exp(-0.5f * (uv.x() * uv.x() + uv.y() * uv.y()));
 
                                     const float tuDotD = dot(surfel.tanU, segmentVector);
                                     const float tvDotD = dot(surfel.tanV, segmentVector);
@@ -196,51 +205,7 @@ namespace Pale {
                                                             sv, epsilon);
                                     // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
                                     const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
-                                    /*
-                                    // helpers
-                                    auto smoothAbs  = [](float x){ const float e=1e-12f; return sycl::sqrt(x*x + e); };
-                                    auto smoothSign = [](float x){ const float e=1e-12f; return x / sycl::sqrt(x*x + e); };
-                                    auto logit      = [](float x){ return sycl::log(x / (1.0f - x)); };
 
-                                    const float uu = uv.x();
-                                    const float vv = uv.y();
-
-                                    // --- shape → p mapping so p(0)=2
-                                    const float pMax = 32.0f;
-                                    const float kShape = 1.0f;
-                                    const float targetAtZero = 2.0f;
-                                    const float qShape = (targetAtZero - 1.0f) / (pMax - 1.0f);
-                                    const float bias = logit(qShape);
-                                    const float sShape = 1.0f / (1.0f + sycl::exp(-(kShape * surfel.shape + bias)));
-                                    const float p = 1.0f + (pMax - 1.0f) * sShape;
-
-                                    // --- L^p radius r
-                                    const float a = smoothAbs(uu);
-                                    const float b = smoothAbs(vv);
-                                    const float ap = sycl::pow(a, p);
-                                    const float bp = sycl::pow(b, p);
-                                    const float F  = ap + bp;
-                                    const float eps = 1e-12f;
-                                    const float r  = sycl::pow(sycl::fmax(F, eps), 1.0f / sycl::fmax(p, 1.0f + eps));
-                                    if (r >= 1.0f) continue; // outside support
-
-                                    // --- alpha = (1 - r)^beta
-                                    const float g = sycl::fmax(1.0f - r, eps);
-                                    const float beta = 4.0f * sycl::exp(surfel.beta);
-
-                                    // --- ∂r/∂u, ∂r/∂v  (includes shape via p)
-                                    const float rPow = sycl::pow(r, 1.0f - p);          // r^{1-p}
-                                    const float aPow = (a > 0.0f) ? sycl::pow(a, p-1.0f) : 0.0f;
-                                    const float bPow = (b > 0.0f) ? sycl::pow(b, p-1.0f) : 0.0f;
-                                    const float du = smoothSign(uu);                    // d|u|/du
-                                    const float dv = smoothSign(vv);                    // d|v|/dv
-                                    const float drdu = aPow * rPow * du;
-                                    const float drdv = bPow * rPow * dv;
-
-                                    // --- dα/dc = -(α β / g) * ( ∂r/∂u * du/dc + ∂r/∂v * dv/dc )
-                                    const float common = -alpha * beta / g;
-                                    const float3 dAlphaDc = common * (drdu * duDc + drdv * dvDc);
-                                    */
 
                                     localTerms[validCount++] = LocalTerm{alpha, dAlphaDc};
                                 }
@@ -286,11 +251,10 @@ namespace Pale {
                             float3 dAlphaDc;
                         };
                         constexpr float epsilon = 1e-6f;
-                        constexpr int maxSplatEvents = 10; // adjust if needed
-                        LocalTerm localTerms[maxSplatEvents];
+                        LocalTerm localTerms[kMaxSplatEvents];
                         int validCount = 0;
 
-                        for (int ei = 0; ei < worldHit.splatEventCount && validCount < maxSplatEvents; ++ei) {
+                        for (int ei = 0; ei < worldHit.splatEventCount && validCount < kMaxSplatEvents; ++ei) {
                             const auto splatEvent = worldHit.splatEvents[ei];
                             const auto surfel = scene.points[splatEvent.primitiveIndex];
 

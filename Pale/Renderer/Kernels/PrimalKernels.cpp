@@ -38,96 +38,38 @@ namespace Pale {
 
                     if (scene.lightCount == 0) return;
 
-                    const float uL = rng128.nextFloat();
-                    uint32_t lightIndex = sycl::min((uint32_t) (uL * scene.lightCount), scene.lightCount - 1);
-                    const GPULightRecord light = scene.lights[lightIndex];
-                    const float pdfSelectLight = 1.0f / (float) scene.lightCount;
+                    AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng128);
+                    if (!ls.valid) return;
 
-                    // 2) pick a triangle uniformly from this light
-                    if (light.triangleCount == 0) return;
-                    const float uT = rng128.nextFloat();
-                    const uint32_t triangleRelativeIndex = sycl::min((uint32_t) (uT * light.triangleCount),
-                                                                     light.triangleCount - 1);
-                    const GPUEmissiveTriangle emissiveTri =
-                            scene.emissiveTriangles[light.triangleOffset + triangleRelativeIndex];
-
-                    const Triangle tri = scene.triangles[emissiveTri.globalTriangleIndex];
-                    const Vertex v0 = scene.vertices[tri.v0];
-                    const Vertex v1 = scene.vertices[tri.v1];
-                    const Vertex v2 = scene.vertices[tri.v2];
-
-                    // triangle area and geometric normal in object space
-                    const float3 p0 = v0.pos, p1 = v1.pos, p2 = v2.pos;
-                    const float3 e0 = p1 - p0, e1 = p2 - p0;
-                    const float3 nObjU = float3{
-                        e0.y() * e1.z() - e0.z() * e1.y(),
-                        e0.z() * e1.x() - e0.x() * e1.z(),
-                        e0.x() * e1.y() - e0.y() * e1.x()
-                    };
-                    const float triArea = 0.5f * sycl::sqrt(
-                                              nObjU.x() * nObjU.x() + nObjU.y() * nObjU.y() + nObjU.z() * nObjU.z());
-                    if (triArea <= 0.f) return;
-
-                    const Transform xform = scene.transforms[light.transformIndex];
-
-                    // 2b) sample uniform point on triangle (barycentric)
-                    const float u1 = rng128.nextFloat();
-                    const float u2 = rng128.nextFloat();
-                    const float su1 = sycl::sqrt(u1);
-                    const float b1 = 1.f - su1;
-                    const float b2 = u2 * su1;
-                    const float b0 = 1.f - b1 - b2;
-                    const float3 xObj = p0 * b0 + p1 * b1 + p2 * b2;
-                    const float3 sampledWorldPoint = toWorldPoint(xObj, xform);
-
-                    // transform to world per-vertex, then interpolate
-                    const float3 worldP0 = toWorldPoint(p0, xform);
-                    const float3 worldP1 = toWorldPoint(p1, xform);
-                    const float3 worldP2 = toWorldPoint(p2, xform);
-
-                    // world-space geometric normal and area
-                    const float3 worldEdge0 = worldP1 - worldP0;
-                    const float3 worldEdge1 = worldP2 - worldP0;
-                    float3 unnormalizedWorldNormal = float3{
-                        worldEdge0.y() * worldEdge1.z() - worldEdge0.z() * worldEdge1.y(),
-                        worldEdge0.z() * worldEdge1.x() - worldEdge0.x() * worldEdge1.z(),
-                        worldEdge0.x() * worldEdge1.y() - worldEdge0.y() * worldEdge1.x()
-                    };
-                    const float worldArea = 0.5f * sycl::sqrt(dot(unnormalizedWorldNormal, unnormalizedWorldNormal));
-                    if (worldArea <= 0.f) return;
-
-                    const float3 lightNormal = normalize(unnormalizedWorldNormal);
-                    // 2c) cosine-hemisphere direction about n
-                    float cosTheta = 0;
+                    // Cosine-hemisphere about emitter normal
+                    float cosTheta = 0.0f;
                     float3 sampledDirection;
-                    sampleCosineHemisphere(rng128, lightNormal, sampledDirection, cosTheta);
+                    sampleCosineHemisphere(rng128, ls.normalW, sampledDirection, cosTheta);
+                    if (cosTheta <= 0.0f) return;
 
-                    // 3) PDFs
-                    const float pdfTriangle = 1.0f / (float) light.triangleCount;
-                    const float pdfPointGivenTriangle = 1.0f / triArea; // area domain
-                    const float pdfArea = pdfTriangle * pdfPointGivenTriangle; // P_A(x)
-                    const float pdfDir = cosTheta > 0.f ? (cosTheta / 3.1415926535f) : 0.f; // cosine hemisphere
-                    const float pdfTotal = pdfSelectLight * pdfArea * pdfDir;
-                    if (pdfTotal <= 0.f || cosTheta <= 0.f) return;
+                    // PDFs
+                    const float pdfDir  = cosTheta * (1.0f / 3.1415926535f); // cosine hemisphere
+                    const float pdfPos  = ls.pdfArea;                        // area-domain, world area
+                    const float pdfLight= ls.pdfSelectLight;                 // light selection
+                    const float pdfTotal= pdfLight * pdfPos * pdfDir;
+                    if (pdfTotal <= 0.0f) return;
 
-                    // 4) initial throughput
-                    const sycl::float3 Le = light.emissionRgb; // radiance scale
+                    // Initial throughput (power-conserving)
+                    const float3 Le = ls.emittedRadianceRGB; // radiance
                     const float invPdf = 1.0f / pdfTotal;
-                    sycl::float3 initialThroughput = Le * (cosTheta * invPdf) / totalPhotons;
+                    const float3 initialThroughput = Le * (cosTheta * invPdf) / totalPhotons;
 
-                    // write ray
+                    // Write ray
                     RayState ray{};
-                    ray.ray.origin = sampledWorldPoint;
-                    ray.ray.direction = sampledDirection;
-                    ray.pathThroughput = initialThroughput;
-                    ray.bounceIndex = 0u;
+                    ray.ray.origin      = ls.positionW;
+                    ray.ray.direction   = sampledDirection;
+                    ray.pathThroughput  = initialThroughput;
+                    ray.bounceIndex     = 0u;
 
-                    // Write the same sample to memory n times.
                     auto counter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
                         sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>(
-                        *countPrimary);
+                        sycl::access::address_space::global_space>(*countPrimary);
                     const uint32_t slot = counter.fetch_add(1);
                     raysIn[slot] = ray;
                 });

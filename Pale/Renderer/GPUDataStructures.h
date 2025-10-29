@@ -182,6 +182,16 @@ namespace Pale {
         float totalArea; // sum of areas of this light’s tris
     };
 
+    struct AreaLightSample {
+        float3 positionW;
+        float3 normalW;            // unit
+        float3 emittedRadianceRGB; // GPULightRecord::emissionRgb
+        float  pdfSelectLight;     // 1 / lightCount
+        float  pdfArea;            // 1 / (triangleCount * triArea)
+        bool   valid;
+    };
+    CHECK_16(AreaLightSample);
+
     struct GPUEmissiveTriangle {
         uint32_t globalTriangleIndex; // index into your global triangle pool
     };
@@ -261,7 +271,6 @@ namespace Pale {
         float3 hitWorld = float3(0.0f); // World hit position
         float alpha = 1.0f;
         uint32_t primitiveIndex = UINT32_MAX; // primitiveIndex
-        uint32_t instanceIndex = UINT32_MAX; // instance transform for entire point cloud
     };
 
     struct alignas(16) LocalHit {
@@ -349,6 +358,8 @@ namespace Pale {
     };
 
     static_assert(std::is_trivially_copyable_v<DeviceSurfacePhotonMapGrid>);
+
+
 
 
     struct alignas(16) RenderIntermediatesGPU {

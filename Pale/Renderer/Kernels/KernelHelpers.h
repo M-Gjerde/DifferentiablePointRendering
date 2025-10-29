@@ -275,6 +275,79 @@ namespace Pale {
         bitangent = cross(unitNormal, tangent);
     }
 
+
+SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
+    const GPUSceneBuffers& scene,             // holds lights, triangles, vertices, transforms
+    rng::Xorshift128& rng128)
+{
+    AreaLightSample s{};
+    s.valid = false;
+
+    if (scene.lightCount == 0) return s;
+
+    // 1) pick a light uniformly
+    const float uL = rng128.nextFloat();
+    const uint32_t lightIndex = sycl::min((uint32_t)(uL * scene.lightCount), scene.lightCount - 1);
+    const GPULightRecord light = scene.lights[lightIndex];
+    s.pdfSelectLight = 1.0f / (float)scene.lightCount;
+
+    if (light.triangleCount == 0) return s;
+
+    // 2) pick a triangle uniformly within the light
+    const float uT = rng128.nextFloat();
+    const uint32_t triRel = sycl::min((uint32_t)(uT * light.triangleCount), light.triangleCount - 1);
+    const GPUEmissiveTriangle emTri = scene.emissiveTriangles[light.triangleOffset + triRel];
+
+    const Triangle tri = scene.triangles[emTri.globalTriangleIndex];
+    const Vertex v0 = scene.vertices[tri.v0];
+    const Vertex v1 = scene.vertices[tri.v1];
+    const Vertex v2 = scene.vertices[tri.v2];
+
+    // 3) triangle area and barycentric sample in object space
+    const float3 p0 = v0.pos, p1 = v1.pos, p2 = v2.pos;
+    const float3 e0 = p1 - p0, e1 = p2 - p0;
+    const float3 nObjU = float3{
+        e0.y()*e1.z()-e0.z()*e1.y(),
+        e0.z()*e1.x()-e0.x()*e1.z(),
+        e0.x()*e1.y()-e0.y()*e1.x()
+    };
+    const float triArea = 0.5f * sycl::sqrt(dot(nObjU, nObjU));
+    if (triArea <= 0.f) return s;
+
+    const float u1 = rng128.nextFloat();
+    const float u2 = rng128.nextFloat();
+    const float su1 = sycl::sqrt(u1);
+    const float b1 = 1.f - su1;
+    const float b2 = u2 * su1;
+    const float b0 = 1.f - b1 - b2;
+    const float3 xObj = p0 * b0 + p1 * b1 + p2 * b2;
+
+    // 4) transform to world and compute world normal via world vertices
+    const Transform xf = scene.transforms[light.transformIndex];
+    const float3 worldP0 = toWorldPoint(p0, xf);
+    const float3 worldP1 = toWorldPoint(p1, xf);
+    const float3 worldP2 = toWorldPoint(p2, xf);
+
+    const float3 worldE0 = worldP1 - worldP0;
+    const float3 worldE1 = worldP2 - worldP0;
+    float3 worldN = float3{
+        worldE0.y()*worldE1.z()-worldE0.z()*worldE1.y(),
+        worldE0.z()*worldE1.x()-worldE0.x()*worldE1.z(),
+        worldE0.x()*worldE1.y()-worldE0.y()*worldE1.x()
+    };
+    const float worldArea = 0.5f * sycl::sqrt(dot(worldN, worldN));
+    if (worldArea <= 0.f) return s;
+    worldN = normalize(worldN);
+
+    s.positionW          = toWorldPoint(xObj, xf);
+    s.normalW            = worldN;
+    s.emittedRadianceRGB = light.emissionRgb;
+    s.pdfArea            = (1.0f / (float)light.triangleCount) * (1.0f / triArea); // area-domain pdf
+    s.valid              = true;
+    return s;
+}
+
+
     SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3 &unitNormal, rng::Xorshift128 &rng, float &pdf) {
         // 1) Draw two uniform variates
         const float uniformSample1 = rng.nextFloat(); // in [0,1)
@@ -319,7 +392,6 @@ namespace Pale {
         uv[1] = dot(surfel.tanV, r) / surfel.scale.y();
         return uv;
     }
-
 
     SYCL_EXTERNAL inline void sampleUniformSphere(
         rng::Xorshift128 &randomNumberGenerator,

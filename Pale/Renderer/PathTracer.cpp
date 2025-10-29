@@ -20,12 +20,12 @@ namespace Pale {
 
         //  cuda/rocm
         m_settings.photonsPerLaunch = 1e6; // 1e6
-        m_settings.maxBounces = 2;
-        m_settings.numForwardPasses = 2;
-        m_settings.numGatherPasses = 2;
+        m_settings.maxBounces = 4;
+        m_settings.numForwardPasses = 4;
+        m_settings.numGatherPasses = 4;
 
         m_settings.maxAdjointBounces = 4;
-        m_settings.adjointSamplesPerPixel = 1;
+        m_settings.adjointSamplesPerPixel = 16;
 
     }
 
@@ -43,7 +43,7 @@ namespace Pale {
         const float Adiff = bp.diffuseSurfaceArea;
         const float N = static_cast<float>(m_settings.photonsPerLaunch);
 
-        const float k = 48.0f;
+        const float k = 5.0f;
         const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));
         configurePhotonGrid(sceneAabb, r0);
     }
