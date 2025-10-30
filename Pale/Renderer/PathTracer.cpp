@@ -24,7 +24,7 @@ namespace Pale {
         m_settings.numForwardPasses = 6;
         m_settings.numGatherPasses = 6;
 
-        m_settings.maxAdjointBounces = 4;
+        m_settings.maxAdjointBounces = 2;
         m_settings.adjointSamplesPerPixel = 16;
 
     }

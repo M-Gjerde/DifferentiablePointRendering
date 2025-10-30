@@ -4,7 +4,9 @@
 
 #include "Renderer/Kernels/AdjointKernels.h"
 
+#include "AdjointGradientKernels.h"
 #include "IntersectionKernels.h"
+#include "glm/gtc/constants.hpp"
 #include "Renderer/Kernels/KernelHelpers.h"
 
 
@@ -99,6 +101,7 @@ namespace Pale {
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.randomSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
+                    constexpr float epsilon = 1e-6f;
 
                     WorldHit worldHit = hitRecords[rayIndex];
                     RayState rayState = raysIn[rayIndex];
@@ -112,236 +115,107 @@ namespace Pale {
                     float3 gradientCostWrtSurfelCenter(0.0f);
                     Ray &ray = rayState.ray;
                     // SHADOW RAY
-                    bool useShadowRay = true;
-                    if (useShadowRay) {
-                        AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng128);
-                        if (!ls.valid) return;
 
-                        // Direction to the sampled emitter point
-                        const float3 toLightVector = ls.positionW - worldHit.hitPositionW;
-                        const float distanceToLight = length(toLightVector);
-                        if (distanceToLight <= 1e-6f) return;
-                        const float3 lightDirection = toLightVector / distanceToLight;
-
-                        // Cosines
-                        const float3 shadingNormalW = worldHit.geometricNormalW; // or your surfel normal
-                        const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
-                        const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
-                        if (cosThetaSurface == 0.0f || cosThetaLight == 0.0f) return;
-
-                        const float r2 = distanceToLight * distanceToLight;
-                        const float geometryTerm = (cosThetaSurface * cosThetaLight) / r2;
-                        // PDFs from the sampler
-                        const float pdfArea = ls.pdfArea; // area-domain, world area
-                        const float pdfLight = ls.pdfSelectLight; // 1 / lightCount
-
-                        // Unbiased NEE estimator (area sampling):
-                        const float invPdf = 1.0f / (pdfLight * pdfArea);
-                        const float3 neeContribution =
-                                rayState.pathThroughput * ls.emittedRadianceRGB * geometryTerm * invPdf;
+                    // Transmission gradients with shadow rays
+                    d_cost_d_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap, rng128);
 
 
-                        Ray shadowRay{worldHit.hitPositionW, lightDirection};
-                        RayState shadowRayState = rayState;
-                        shadowRayState.ray = shadowRay;
-                        shadowRayState.pathThroughput = neeContribution;
-
-                        // BRDF
-                        WorldHit shadowWorldHit{};
-                        intersectScene(shadowRayState.ray, &shadowWorldHit, scene, rng128, RayIntersectMode::Transmit);
-                        if (shadowWorldHit.hit) {
-                            auto &instance = scene.instances[shadowWorldHit.instanceIndex];
-                            Ray &ray = shadowRayState.ray;
-                            if (shadowWorldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
-                                const float3 x = ray.origin;
-                                const float3 y = shadowWorldHit.hitPositionW;
-                                const float3 segmentVector = y - x;
-
-                                const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(
-                                    shadowWorldHit, scene, photonMap);
-                                const float luminanceMesh = luminanceGrayscale(backgroundRadianceRGB);
-
-                                // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
-                                struct LocalTerm {
-                                    float alpha{};
-                                    float3 dAlphaDc;
-                                };
-                                constexpr float epsilon = 1e-6f;
-                                LocalTerm localTerms[kMaxSplatEvents];
-                                int validCount = 0;
-
-                                for (int ei = 0; ei < shadowWorldHit.splatEventCount && validCount < kMaxSplatEvents; ++
-                                     ei) {
-                                    const auto splatEvent = shadowWorldHit.splatEvents[ei];
-                                    const auto surfel = scene.points[splatEvent.primitiveIndex];
-
-                                    const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                                    const int travelSideSign = (dot(canonicalNormalW, -ray.direction) >= 0.0f) ? 1 : -1;
-                                    const float3 surfelNormal = (travelSideSign >= 0)
-                                                                    ? canonicalNormalW
-                                                                    : (-canonicalNormalW);
-
-                                    const float denom = dot(surfelNormal, segmentVector);
-                                    if (fabs(denom) <= epsilon) continue;
-
-                                    const float tParam = dot(surfelNormal, (surfel.position - x)) / denom;
-                                    if (tParam <= 0.0f || tParam >= 1.0f) continue;
-
-                                    const float3 hitPoint = x + tParam * segmentVector;
-                                    const float2 uv = phiInverse(hitPoint, surfel); // your mapping to local coords
-
-                                    const float alpha = sycl::exp(-0.5f * (uv.x() * uv.x() + uv.y() * uv.y()));
-
-                                    const float tuDotD = dot(surfel.tanU, segmentVector);
-                                    const float tvDotD = dot(surfel.tanV, segmentVector);
-
-                                    const float su = surfel.scale.x();
-                                    const float sv = surfel.scale.y();
-
-                                    // d u / d c and d v / d c
-                                    const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / sycl::fmax(
-                                                            su, epsilon);
-                                    const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sycl::fmax(
-                                                            sv, epsilon);
-                                    // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
-                                    const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
-
-
-                                    localTerms[validCount++] = LocalTerm{alpha, dAlphaDc};
-                                }
-                                if (validCount != 0) {
-                                    // τ = Π (1-α_i) with stable log-space accumulation
-                                    float logTau = 0.0f;
-                                    for (int i = 0; i < validCount; ++i) {
-                                        const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
-                                        logTau += sycl::log(oneMinusAlpha);
-                                    }
-                                    const float tauTotal = sycl::exp(logTau);
-                                    // Σ_i [ - dα_i/dc / (1-α_i) ]
-                                    float3 sumTerm(0.0f);
-                                    for (int i = 0; i < validCount; ++i) {
-                                        const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
-                                        sumTerm = sumTerm + (-localTerms[i].dAlphaDc) / oneMinusAlpha;
-                                    }
-                                    const float3 pAdjoint = shadowRayState.pathThroughput;
-                                    // already includes fs, V, G, etc., for this segment
-                                    gradientCostWrtSurfelCenter = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
-                                    // Accumulate to your running gradient
-                                    d_cost_d_pos = d_cost_d_pos + gradientCostWrtSurfelCenter;
-                                }
-                            }
-                        }
-                    }
-
-
-                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
-                        const float3 x = ray.origin;
-                        const float3 y = worldHit.hitPositionW;
-                        const float3 segmentVector = y - x;
-
-                        const float r2Background = dot(segmentVector, segmentVector);
-                        if (r2Background <= 0.0f) return;
-
-                        const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-                        const float luminanceMesh = luminanceGrayscale(backgroundRadianceRGB);
-
-                        // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
+                    if (instance.geometryType == GeometryType::PointCloud && worldHit.splatEventCount && false) {
                         struct LocalTerm {
-                            float alpha;
+                            float alpha{};
                             float3 dAlphaDc;
                         };
-                        constexpr float epsilon = 1e-6f;
-                        LocalTerm localTerms[kMaxSplatEvents];
-                        int validCount = 0;
-
-                        for (int ei = 0; ei < worldHit.splatEventCount && validCount < kMaxSplatEvents; ++ei) {
-                            const auto splatEvent = worldHit.splatEvents[ei];
-                            const auto surfel = scene.points[splatEvent.primitiveIndex];
-
-                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                            const int travelSideSign = (dot(canonicalNormalW, -ray.direction) >= 0.0f) ? 1 : -1;
-                            const float3 surfelNormal = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
-
-                            const float denom = dot(surfelNormal, segmentVector);
-                            if (fabs(denom) <= epsilon) continue;
-
-                            const float tParam = dot(surfelNormal, (surfel.position - x)) / denom;
-                            if (tParam <= 0.0f || tParam >= 1.0f) continue;
-
-                            const float3 hitPoint = x + tParam * segmentVector;
-                            const float2 uv = phiInverse(hitPoint, surfel); // your mapping to local coords
-
-                            // alpha_i: use event alpha, or recompute from Gaussian if preferred
-                            float alpha = splatEvent.alpha;
-                            // Optional exact Gaussian: alpha = sycl::clamp(exp(-0.5f * (uv.x()*uv.x() + uv.y()*uv.y())), 0.0f, 1.0f);
-
-                            const float tuDotD = dot(surfel.tanU, segmentVector);
-                            const float tvDotD = dot(surfel.tanV, segmentVector);
-
-                            const float su = surfel.scale.x();
-                            const float sv = surfel.scale.y();
-
-                            // d u / d c and d v / d c
-                            const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / sycl::fmax(
-                                                    su, epsilon);
-                            const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sycl::fmax(
-                                                    sv, epsilon);
-
-                            // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
-                            const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
-
-                            localTerms[validCount++] = LocalTerm{alpha, dAlphaDc};
+                        // 1) Build intervening splat list on (t_x, t_y), excluding terminal scatter surfel
+                        BoundedVector<LocalTerm, kMaxSplatEvents> intervening;
+                        intervening.clear();
+                        for (int ei = 0; ei < worldHit.splatEventCount - 1; ++ei) {
+                            const auto &evt = worldHit.splatEvents[ei];
+                            const auto surfel = scene.points[evt.primitiveIndex];
+                            const float3 dAlphaDc = gradTransmissionPosition(
+                                rayState.ray, evt, surfel, (worldHit.hitPositionW - ray.origin));
+                            intervening.pushBack({evt.alpha, dAlphaDc});
                         }
-                        if (validCount == 0) return;
-                        // τ = Π (1-α_i) with stable log-space accumulation
+
+                        // 2) τ and ∂τ/∂c from intervening set
+                        float tauTotal = 1.0f;
                         float logTau = 0.0f;
-                        for (int i = 0; i < validCount; ++i) {
-                            const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
+                        constexpr float epsilon = 1e-6f;
+                        for (int i = 0; i < intervening.size(); ++i) {
+                            const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
                             logTau += sycl::log(oneMinusAlpha);
                         }
-                        const float tauTotal = sycl::exp(logTau);
-                        // Σ_i [ - dα_i/dc / (1-α_i) ]
-                        float3 sumTerm(0.0f);
-                        for (int i = 0; i < validCount; ++i) {
-                            const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
-                            sumTerm = sumTerm + (-localTerms[i].dAlphaDc) / oneMinusAlpha;
+                        tauTotal = sycl::exp(logTau);
+
+                        float3 tauGrad{0.0f};
+                        for (int i = 0; i < intervening.size(); ++i) {
+                            const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
+                            tauGrad =tauGrad + (-intervening[i].dAlphaDc) / oneMinusAlpha;
                         }
-                        const float3 pAdjoint = rayState.pathThroughput;
-                        // already includes fs, V, G, etc., for this segment
-                        gradientCostWrtSurfelCenter = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
-                        // Accumulate to your running gradient
-                        d_cost_d_pos = d_cost_d_pos + gradientCostWrtSurfelCenter;
-                    }
+                        tauGrad = tauGrad * tauTotal;
 
+                        // 3) Terminal scatter at y: dα/dc with correct sign
+                        const auto &terminal = worldHit.splatEvents[worldHit.splatEventCount - 1];
+                        if (worldHit.primitiveIndex == terminal.primitiveIndex) {
+                            const auto surfel = scene.points[terminal.primitiveIndex];
 
-                    if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::PointCloud) {
-                        for (auto &splatEvent: worldHit.splatEvents) {
-                            if (splatEvent.primitiveIndex == UINT32_MAX)
-                                continue;
-                            float3 x = ray.origin;
-                            float3 y = splatEvent.hitWorld;
-                            const auto surfel = scene.points[splatEvent.primitiveIndex];
+                            // normals and frame
                             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                             const int travelSideSign =
                                     (dot(canonicalNormalW, -rayState.ray.direction) >= 0.0f) ? 1 : -1;
-                            const float3 surfelNormal = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
-                            float denom = dot(surfelNormal, ray.direction);
-                            if (abs(denom) <= 1e-6)
-                                return;
-                            float2 uv = phiInverse(y, surfel);
-                            float alpha = splatEvent.alpha;
-                            float tu_d = dot(surfel.tanU, ray.direction);
-                            float tv_d = dot(surfel.tanV, ray.direction);
-                            float su = surfel.scale.x();
-                            float sv = surfel.scale.y();
-                            float3 du_dc = ((tu_d / denom) * surfelNormal - surfel.tanU) / su;
-                            float3 dv_dc = ((tv_d / denom) * surfelNormal - surfel.tanV) / sv;
-                            float3 d_alpha_dc = -alpha * (uv[0] * du_dc + uv[1] * dv_dc);
-                            float3 S_a_L = estimateSurfelRadianceFromPhotonMap(
+                            const float3 surfelNormal = (travelSideSign == 1) ? canonicalNormalW : (-canonicalNormalW);
+
+                            const float denom = dot(surfelNormal, ray.direction);
+                            if (sycl::fabs(denom) <= 1e-6f) return;
+
+                            const float2 uv = phiInverse(terminal.hitWorld, surfel);
+                            const float alpha = terminal.alpha;
+
+                            const float tuDotD = dot(surfel.tanU, ray.direction);
+                            const float tvDotD = dot(surfel.tanV, ray.direction);
+                            const float su = surfel.scale.x();
+                            const float sv = surfel.scale.y();
+
+                            const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / su;
+                            const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sv;
+
+                            // Correct sign and sum
+                            const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
+
+                            const float3 fBsdf = (M_1_PIf) * alpha * surfel.color;
+                            const float3 dFBsdfDc = (M_1_PIf) * dAlphaDc * surfel.color;
+
+                            // 4) Geometry term with correct û and n_x
+                            const float3 xPos = ray.origin; // x
+                            const float3 yPos = worldHit.hitPositionW; // y or swap if your convention differs
+                            float3 segment = xPos - yPos; // x - y
+                            const float r = length(segment);
+                            if (r <= 1e-6f) return;
+                            const float3 uHat = segment / r;
+
+                            const float3 nY = surfelNormal; // normal at y or adjust per your x/y roles
+                            const float3 nX = ray.normal; // do not use ray.normal unless that is n_x
+
+                            const float a = dot(nY, uHat);
+                            const float b = dot(nX, -uHat);
+                            const float G = (a * b) / (r * r);
+
+                            // ∂G/∂y in world space
+                            const float3 dG_dy = (-b * nY + a * nX + 4.0f * a * b * uHat) / (r * r * r);
+
+                            // Map ∂y/∂Π via your reparametrization Jacobian if Π moves y
+                            //const float3x3 dY_dPi = jacobianPhiWrtParams(surfel /*, Π */);
+                            const float3 gradG = dG_dy;
+
+                            // 5) Final gradient assembly
+                            const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
                                 worldHit.splatEvents[0], ray.direction, scene, photonMap, true);
-                            float L_surfel = luminanceGrayscale(S_a_L);
-                            float3 p_adjoint = rayState.pathThroughput;
-                            d_cost_d_pos = p_adjoint * d_alpha_dc * L_surfel;
+                            const float L_surfel = luminanceGrayscale(surfelRadianceRGB);
+                            const float3 pAdjoint = rayState.pathThroughput;
+
+                            d_cost_d_pos = pAdjoint * L_surfel * dAlphaDc;
+                            //(dFBsdfDc * tauTotal * G
+                            // + tauGrad * fBsdf * G
+                            // + gradG * tauTotal * fBsdf);
                         }
                     }
 
@@ -449,6 +323,7 @@ namespace Pale {
                     constexpr float kEps = 1e-5f;
                     nextState.ray.origin = worldHit.hitPositionW + enteredSideNormalW * kEps;
                     nextState.ray.direction = sampledOutgoingDirectionW;
+                    nextState.ray.normal = worldHit.geometricNormalW;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;
                     nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;

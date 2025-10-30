@@ -444,6 +444,9 @@ namespace Pale {
                 for (size_t i = 0; i < localHit.splatEventCount; ++i) {
                     worldHitOut->splatEvents[i].alpha = localHit.splatEvents[i].alpha;
                     worldHitOut->splatEvents[i].primitiveIndex = localHit.splatEvents[i].primitiveIndex;
+                    if (worldHitOut->splatEvents[i].primitiveIndex == UINT32_MAX) {
+                        int debug = 1;
+                    }
                     const float3 hitPointWorld = toWorldPoint(
                         rayObject.origin + localHit.splatEvents[i].t * rayObject.direction,
                         transform);
