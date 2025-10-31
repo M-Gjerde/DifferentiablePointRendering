@@ -143,14 +143,44 @@ endforeach()
 ")
 
 # 2) pybind11 first (unchanged)
-#add_subdirectory(vendor/pybind11)
+add_subdirectory(vendor/pybind11)
 # -------- Executable (main only) --------
-## If main.cpp itself submits SYCL (unlikely), also decorate the exe:
-#add_library(pale MODULE Pale/pale_bindings.cpp)
-#add_sycl_to_target(TARGET pale)
-#target_link_libraries(pale PUBLIC PaleLib pybind11::module -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
-#set_target_properties(pale PROPERTIES
-#        PREFIX ""                # produce pale.so
-#        OUTPUT_NAME "pale"       # module filename 'pale'
-#        DEBUG_POSTFIX ""         # avoid 'paled.so'
-#)
+# If main.cpp itself submits SYCL (unlikely), also decorate the exe:
+add_library(pale MODULE Pale/pale_bindings.cpp)
+add_sycl_to_target(TARGET pale)
+target_link_libraries(pale PUBLIC PaleLib pybind11::module -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
+set_target_properties(pale PROPERTIES
+        PREFIX ""                # produce pale.so
+        OUTPUT_NAME "pale"       # module filename 'pale'
+        DEBUG_POSTFIX ""         # avoid 'paled.so'
+)
+
+include(GNUInstallDirs)
+# Use the current env's Python (important for conda)
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
+
+# Resolve site-packages for the active interpreter
+set(PYTHON_SITE "${Python3_SITEARCH}")
+if(NOT PYTHON_SITE)
+    set(PYTHON_SITE "${Python3_SITELIB}")
+endif()
+
+# Ensure consistent filename in Debug (no "d" postfix) and sane rpaths
+set_target_properties(pale PROPERTIES
+        DEBUG_POSTFIX ""                 # already set, keep it
+        INSTALL_RPATH_USE_LINK_PATH ON
+        BUILD_WITH_INSTALL_RPATH OFF
+)
+
+# Install rules for all build types; use --config to pick one
+install(TARGETS pale
+        CONFIGURATIONS Debug RelWithDebInfo Release MinSizeRel
+        LIBRARY DESTINATION "${PYTHON_SITE}"   # .so on Linux/macOS
+        RUNTIME DESTINATION "${PYTHON_SITE}"   # .pyd on Windows
+        ARCHIVE DESTINATION "${PYTHON_SITE}"   # import libs if any
+)
+
+# Optional: helper target to install the current config from IDEs
+add_custom_target(install_pale_debug
+        COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --config Debug
+        DEPENDS pale)

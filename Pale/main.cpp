@@ -135,7 +135,7 @@ int main(int argc, char **argv) {
 
     //transform.setRotationEuler(glm::vec3(0.0f, 0.0f, 165.0f));
     //transform.setScale(glm::vec3(0.5f, 0.5f, 0.5f));
-    transform.setPosition(glm::vec3(0.005f, 0.0f, 0.0f));
+    //transform.setPosition(glm::vec3(0.05f, 0.0f, 0.0f));
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device
@@ -209,12 +209,14 @@ int main(int argc, char **argv) {
             filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 1.0, true, true)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
+
+        Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A}
+
         filePath.replace_filename("adjoint_out_099_quantile.png");
         if (Pale::Utils::saveGradientSignPNG(
             filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 0.99, true, true)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
-        Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A}
     }
 
 

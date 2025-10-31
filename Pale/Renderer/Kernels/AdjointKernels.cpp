@@ -4,6 +4,8 @@
 
 #include "Renderer/Kernels/AdjointKernels.h"
 
+#include <complex>
+
 #include "AdjointGradientKernels.h"
 #include "IntersectionKernels.h"
 #include "glm/gtc/constants.hpp"
@@ -111,47 +113,53 @@ namespace Pale {
                     //printf("adjoint item %u, hit t: %f SplatEvents: %u \n", rayIndex, worldHit.t, worldHit.splatEventCount);
 
                     auto &instance = scene.instances[worldHit.instanceIndex];
-                    float3 d_cost_d_pos(0.0f);
+                    float3 d_grad_pos(0.0f);
                     float3 gradientCostWrtSurfelCenter(0.0f);
                     Ray &ray = rayState.ray;
                     // SHADOW RAY
 
                     // Transmission gradients with shadow rays
-                    d_cost_d_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap, rng128);
+                    if (instance.geometryType == GeometryType::Mesh) {
+                        //d_grad_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap, rng128) * 1e-4;
+                        float gradMag = length(d_grad_pos);
+                        int debug = 1;
+                    }
 
-
-                    if (instance.geometryType == GeometryType::PointCloud && worldHit.splatEventCount && false) {
+                    if (instance.geometryType == GeometryType::PointCloud) {
                         struct LocalTerm {
                             float alpha{};
                             float3 dAlphaDc;
                         };
                         // 1) Build intervening splat list on (t_x, t_y), excluding terminal scatter surfel
-                        BoundedVector<LocalTerm, kMaxSplatEvents> intervening;
-                        intervening.clear();
-                        for (int ei = 0; ei < worldHit.splatEventCount - 1; ++ei) {
-                            const auto &evt = worldHit.splatEvents[ei];
-                            const auto surfel = scene.points[evt.primitiveIndex];
-                            const float3 dAlphaDc = gradTransmissionPosition(
-                                rayState.ray, evt, surfel, (worldHit.hitPositionW - ray.origin));
-                            intervening.pushBack({evt.alpha, dAlphaDc});
-                        }
-
-                        // 2) τ and ∂τ/∂c from intervening set
-                        float tauTotal = 1.0f;
-                        float logTau = 0.0f;
-                        constexpr float epsilon = 1e-6f;
-                        for (int i = 0; i < intervening.size(); ++i) {
-                            const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
-                            logTau += sycl::log(oneMinusAlpha);
-                        }
-                        tauTotal = sycl::exp(logTau);
-
+                        // Do this however through a shadow ray
                         float3 tauGrad{0.0f};
-                        for (int i = 0; i < intervening.size(); ++i) {
-                            const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
-                            tauGrad =tauGrad + (-intervening[i].dAlphaDc) / oneMinusAlpha;
+                        float tauTotal = 1.0f;
+                        {
+                            BoundedVector<LocalTerm, kMaxSplatEvents> intervening;
+                            intervening.clear();
+                            for (int ei = 0; ei < worldHit.splatEventCount - 1; ++ei) {
+                                const auto &evt = worldHit.splatEvents[ei];
+                                const auto surfel = scene.points[evt.primitiveIndex];
+                                const float3 dAlphaDc = gradTransmissionPosition(
+                                    rayState.ray, evt, surfel, (worldHit.hitPositionW - ray.origin));
+                                intervening.pushBack({evt.alpha, dAlphaDc});
+                            }
+
+                            // 2) τ and ∂τ/∂c from intervening set
+                            float logTau = 0.0f;
+                            constexpr float epsilon = 1e-6f;
+                            for (int i = 0; i < intervening.size(); ++i) {
+                                const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
+                                logTau += sycl::log(oneMinusAlpha);
+                            }
+                            tauTotal = sycl::exp(logTau);
+
+                            for (int i = 0; i < intervening.size(); ++i) {
+                                const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
+                                tauGrad = tauGrad + (-intervening[i].dAlphaDc) / oneMinusAlpha;
+                            }
+                            tauGrad = tauGrad * tauTotal;
                         }
-                        tauGrad = tauGrad * tauTotal;
 
                         // 3) Terminal scatter at y: dα/dc with correct sign
                         const auto &terminal = worldHit.splatEvents[worldHit.splatEventCount - 1];
@@ -181,30 +189,26 @@ namespace Pale {
                             // Correct sign and sum
                             const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
 
-                            const float3 fBsdf = (M_1_PIf) * alpha * surfel.color;
-                            const float3 dFBsdfDc = (M_1_PIf) * dAlphaDc * surfel.color;
+                            float color = luminanceGrayscale(surfel.color);
+                            const float fBsdf = (M_1_PIf) * alpha * color;
+                            const float3 dFBsdfDc = (M_1_PIf) * dAlphaDc * color;
 
                             // 4) Geometry term with correct û and n_x
                             const float3 xPos = ray.origin; // x
                             const float3 yPos = worldHit.hitPositionW; // y or swap if your convention differs
-                            float3 segment = xPos - yPos; // x - y
+                            float3 segment = yPos - xPos;
                             const float r = length(segment);
                             if (r <= 1e-6f) return;
                             const float3 uHat = segment / r;
+                            float  a = sycl::fmax(0.0f, dot(surfelNormal, -uHat));              // n_y · (-û)
+                            float ss = su * sv;
 
-                            const float3 nY = surfelNormal; // normal at y or adjust per your x/y roles
-                            const float3 nX = ray.normal; // do not use ray.normal unless that is n_x
-
-                            const float a = dot(nY, uHat);
-                            const float b = dot(nX, -uHat);
-                            const float G = (a * b) / (r * r);
-
+                            float Jacobian = ss * a / (r * r);
                             // ∂G/∂y in world space
-                            const float3 dG_dy = (-b * nY + a * nX + 4.0f * a * b * uHat) / (r * r * r);
-
-                            // Map ∂y/∂Π via your reparametrization Jacobian if Π moves y
-                            //const float3x3 dY_dPi = jacobianPhiWrtParams(surfel /*, Π */);
-                            const float3 gradG = dG_dy;
+                            // projector: I - û û^T applied to n_y
+                            auto I = identity3x3();
+                            auto outer = outerProduct(uHat, uHat);
+                            float3 dJdx   = (su * sv) / (r * r * r) * ((I - outer) * surfelNormal + 2 * a * uHat) ;
 
                             // 5) Final gradient assembly
                             const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
@@ -212,17 +216,22 @@ namespace Pale {
                             const float L_surfel = luminanceGrayscale(surfelRadianceRGB);
                             const float3 pAdjoint = rayState.pathThroughput;
 
-                            d_cost_d_pos = pAdjoint * L_surfel * dAlphaDc;
+                            float3 brdf_grad = dFBsdfDc * tauTotal * Jacobian;
+                            float3 transmissivityGrad = tauGrad * fBsdf * Jacobian;
+                            float3 jacobianGrad = dJdx * tauTotal * fBsdf;
+                            d_grad_pos = pAdjoint * L_surfel * (brdf_grad + transmissivityGrad);
                             //(dFBsdfDc * tauTotal * G
                             // + tauGrad * fBsdf * G
                             // + gradG * tauTotal * fBsdf);
+                            float gradMag = length(d_grad_pos);
+                            int debug = 1;
                         }
                     }
 
 
                     if (rayState.bounceIndex >= 0) {
                         const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
-                        const float dVdp_scalar = dot(d_cost_d_pos, parameterAxis);
+                        const float dVdp_scalar = dot(d_grad_pos, parameterAxis);
 
                         float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
                         atomicAddFloatToImage(&gradImageDst, dVdp_scalar);

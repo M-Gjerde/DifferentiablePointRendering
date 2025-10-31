@@ -158,7 +158,7 @@ namespace Pale {
                                     1.0f - localTerms[i].alpha, epsilon);
                                 sumTerm = sumTerm + (-localTerms[i].dAlphaDc) / oneMinusAlpha;
                             }
-                            const float3 pAdjoint = shadowRayState.pathThroughput;
+                            const float pAdjoint = luminanceGrayscale(shadowRayState.pathThroughput);
                             // already includes fs, V, G, etc., for this segment
                             // Accumulate to your running gradient
                             d_cost_d_pos = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
@@ -208,7 +208,7 @@ namespace Pale {
                     const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
                     sumTerm = sumTerm + (-localTerms[i].dAlphaDc) / oneMinusAlpha;
                 }
-                const float3 pAdjoint = rayState.pathThroughput;
+                const float pAdjoint = luminanceGrayscale(rayState.pathThroughput);
                 // already includes fs, V, G, etc., for this segment
                 // Accumulate to your running gradient
                 d_cost_d_pos = d_cost_d_pos + pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
