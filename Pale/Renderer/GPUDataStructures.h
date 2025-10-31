@@ -304,14 +304,14 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<WorldHit>);
 
     struct alignas(16) PathTracerSettings {
-        uint32_t photonsPerLaunch = 1e5;
+        uint32_t photonsPerLaunch = 1e6;
         uint64_t randomSeed = 42; // should be more than maxBounces
         RayGenMode rayGenMode = RayGenMode::Emitter;
-        uint32_t maxBounces = 8;
-        uint32_t numForwardPasses = 2;
-        uint32_t numGatherPasses = 8; // Which bounce to start RR
-        uint32_t maxAdjointBounces = 8;
-        uint32_t adjointSamplesPerPixel = 8;
+        uint32_t maxBounces = 6;
+        uint32_t numForwardPasses = 6;
+        uint32_t numGatherPasses = 6; // Which bounce to start RR
+        uint32_t maxAdjointBounces = 6;
+        uint32_t adjointSamplesPerPixel = 6;
         uint32_t russianRouletteStart = 3; // Which bounce to start RR
     };
 
