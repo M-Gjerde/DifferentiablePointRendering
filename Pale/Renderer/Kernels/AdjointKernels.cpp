@@ -120,7 +120,7 @@ namespace Pale {
 
                     // Transmission gradients with shadow rays
                     if (instance.geometryType == GeometryType::Mesh) {
-                        //d_grad_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap, rng128) * 1e-4;
+                        d_grad_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap, rng128);
                         float gradMag = length(d_grad_pos);
                         int debug = 1;
                     }
@@ -193,22 +193,31 @@ namespace Pale {
                             const float fBsdf = (M_1_PIf) * alpha * color;
                             const float3 dFBsdfDc = (M_1_PIf) * dAlphaDc * color;
 
-                            // 4) Geometry term with correct û and n_x
-                            const float3 xPos = ray.origin; // x
-                            const float3 yPos = worldHit.hitPositionW; // y or swap if your convention differs
-                            float3 segment = yPos - xPos;
-                            const float r = length(segment);
+                            // geometry
+                            const float3 segmentVector = worldHit.hitPositionW - ray.origin;
+                            const float r = length(segmentVector);
                             if (r <= 1e-6f) return;
-                            const float3 uHat = segment / r;
-                            float  a = sycl::fmax(0.0f, dot(surfelNormal, -uHat));              // n_y · (-û)
-                            float ss = su * sv;
+                            const float3 u = segmentVector / r;
+                            const float a = sycl::fmax(0.0f, dot(surfelNormal, -u));
+                            const float b = sycl::fmax(0.0f, dot(ray.normal, u));
+                            const float geometryG = a * b / (r * r);
 
-                            float Jacobian = ss * a / (r * r);
-                            // ∂G/∂y in world space
-                            // projector: I - û û^T applied to n_y
-                            auto I = identity3x3();
-                            auto outer = outerProduct(uHat, uHat);
-                            float3 dJdx   = (su * sv) / (r * r * r) * ((I - outer) * surfelNormal + 2 * a * uHat) ;
+                            // dG/dc for pure translation of surfel (dy/dc = I, dn/dc = 0)
+                            const float3x3 I = identity3x3();
+                            const float3x3 P = I - outerProduct(u, u);
+
+                            const float invR3 = 1.0f / (r * r * r);
+
+                            // dG/dy (translation only)
+                            const float3 dGdc =
+                                invR3 * ( - b * (P * surfelNormal)
+                                          + a * (P * ray.normal)
+                                          - 2.0f * a * b * u );
+
+                            // use in gradient assembly
+                            float3 brdfGrad = dFBsdfDc * tauTotal * geometryG;
+                            float3 transmissivityGrad = tauGrad * fBsdf * geometryG;
+                            float3 geometryGrad = dGdc * tauTotal * fBsdf;
 
                             // 5) Final gradient assembly
                             const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
@@ -216,10 +225,9 @@ namespace Pale {
                             const float L_surfel = luminanceGrayscale(surfelRadianceRGB);
                             const float3 pAdjoint = rayState.pathThroughput;
 
-                            float3 brdf_grad = dFBsdfDc * tauTotal * Jacobian;
-                            float3 transmissivityGrad = tauGrad * fBsdf * Jacobian;
-                            float3 jacobianGrad = dJdx * tauTotal * fBsdf;
-                            d_grad_pos = pAdjoint * L_surfel * (brdf_grad + transmissivityGrad);
+                            //d_grad_pos = pAdjoint * L_surfel * (brdfGrad + transmissivityGrad + geometryGrad);
+                            d_grad_pos = pAdjoint * L_surfel * brdfGrad;
+
                             //(dFBsdfDc * tauTotal * G
                             // + tauGrad * fBsdf * G
                             // + gradG * tauTotal * fBsdf);
@@ -229,7 +237,7 @@ namespace Pale {
                     }
 
 
-                    if (rayState.bounceIndex >= 0) {
+                    if (rayState.bounceIndex == 0) {
                         const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
                         const float dVdp_scalar = dot(d_grad_pos, parameterAxis);
 

@@ -161,7 +161,7 @@ namespace Pale {
                             const float pAdjoint = luminanceGrayscale(shadowRayState.pathThroughput);
                             // already includes fs, V, G, etc., for this segment
                             // Accumulate to your running gradient
-                            d_cost_d_pos = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
+                            //d_cost_d_pos = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
                         }
                     }
                 }

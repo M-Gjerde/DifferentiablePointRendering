@@ -18,17 +18,15 @@ import Pale.Render.BVH;
 namespace Pale {
     PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
 
-        /*
+
         //  cuda/rocm
-        m_settings.photonsPerLaunch = 1e6; // 1e6
-        m_settings.maxBounces = 6;
-        m_settings.numForwardPasses = 6;
-        m_settings.numGatherPasses = 6;
+        m_settings.photonsPerLaunch = 1e5; // 1e6
+        m_settings.maxBounces = 4;
+        m_settings.numForwardPasses = 4;
+        m_settings.numGatherPasses = 4;
 
-        m_settings.maxAdjointBounces = 1;
-        m_settings.adjointSamplesPerPixel = 6;
-        */
-
+        m_settings.maxAdjointBounces = 4;
+        m_settings.adjointSamplesPerPixel = 4;
 
     }
 
