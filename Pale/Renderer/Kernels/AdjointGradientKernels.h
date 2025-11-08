@@ -75,7 +75,7 @@ namespace Pale {
 
     inline float3 transmissionGradients(const GPUSceneBuffers &scene, const WorldHit &worldHit,
                                         const RayState &rayState, const InstanceRecord &instance, const DeviceSurfacePhotonMapGrid& photonMap,
-                                        rng::Xorshift128 &rng128) {
+                                        rng::Xorshift128 &rng128, bool withShadowRays = true) {
         float3 d_cost_d_pos(0.0f);
         constexpr float epsilon = 1e-6f;
 
@@ -84,7 +84,7 @@ namespace Pale {
         // Direction to the sampled emitter point
         const float3 toLightVector = ls.positionW - worldHit.hitPositionW;
         const float distanceToLight = length(toLightVector);
-        if (distanceToLight > 1e-6f) {
+        if (distanceToLight > 1e-6f && withShadowRays) {
             const float3 lightDirection = toLightVector / distanceToLight;
             // Cosines
             const float3 shadingNormalW = worldHit.geometricNormalW; // or your surfel normal
@@ -161,12 +161,13 @@ namespace Pale {
                             const float pAdjoint = luminanceGrayscale(shadowRayState.pathThroughput);
                             // already includes fs, V, G, etc., for this segment
                             // Accumulate to your running gradient
-                            //d_cost_d_pos = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
+                            d_cost_d_pos = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
                         }
                     }
                 }
             }
         }
+
         if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
             const float3 x = rayState.ray.origin;
             const float3 y = worldHit.hitPositionW;
@@ -175,7 +176,7 @@ namespace Pale {
             const float r2Background = dot(segmentVector, segmentVector);
             const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(
                 worldHit, scene, photonMap);
-            const float luminanceMesh = luminanceGrayscale(backgroundRadianceRGB);
+            const float L = luminanceGrayscale(backgroundRadianceRGB);
 
             // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
             struct LocalTerm {
@@ -211,7 +212,8 @@ namespace Pale {
                 const float pAdjoint = luminanceGrayscale(rayState.pathThroughput);
                 // already includes fs, V, G, etc., for this segment
                 // Accumulate to your running gradient
-                d_cost_d_pos = d_cost_d_pos + pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
+                float3 adjointWithDiffTransport = pAdjoint * sumTerm * tauTotal;
+                d_cost_d_pos = d_cost_d_pos + adjointWithDiffTransport * L;
             }
         }
         return d_cost_d_pos;

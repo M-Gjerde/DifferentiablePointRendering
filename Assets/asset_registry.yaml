@@ -20,3 +20,6 @@ assets:
   - id: 12910154599735661858
     type: Mesh
     path: meshes/rectangle.obj
+  - id: 15169820930063520429
+    type: PointCloud
+    path: /home/magnus/2dgs/bunny_1k/point_cloud/iteration_30000/point_cloud.ply

@@ -26,8 +26,7 @@ namespace Pale {
         m_settings.numGatherPasses = 4;
 
         m_settings.maxAdjointBounces = 4;
-        m_settings.adjointSamplesPerPixel = 4;
-
+        m_settings.adjointSamplesPerPixel = 16;
     }
 
     void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {

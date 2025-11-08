@@ -120,7 +120,7 @@ namespace Pale {
 
                     // Transmission gradients with shadow rays
                     if (instance.geometryType == GeometryType::Mesh) {
-                        d_grad_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap, rng128);
+                        d_grad_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap, rng128, false);
                         float gradMag = length(d_grad_pos);
                         int debug = 1;
                     }
@@ -172,72 +172,58 @@ namespace Pale {
                                     (dot(canonicalNormalW, -rayState.ray.direction) >= 0.0f) ? 1 : -1;
                             const float3 surfelNormal = (travelSideSign == 1) ? canonicalNormalW : (-canonicalNormalW);
 
+                            // BSDF gradient (Scatter)
                             const float denom = dot(surfelNormal, ray.direction);
-                            if (sycl::fabs(denom) <= 1e-6f) return;
-
+                            if (sycl::fabs(denom) <= 1e-6f)
+                                return;
                             const float2 uv = phiInverse(terminal.hitWorld, surfel);
                             const float alpha = terminal.alpha;
-
                             const float tuDotD = dot(surfel.tanU, ray.direction);
                             const float tvDotD = dot(surfel.tanV, ray.direction);
                             const float su = surfel.scale.x();
                             const float sv = surfel.scale.y();
-
                             const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / su;
                             const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sv;
-
                             // Correct sign and sum
                             const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
-
                             float color = luminanceGrayscale(surfel.color);
+
                             const float fBsdf = (M_1_PIf) * alpha * color;
                             const float3 dFBsdfDc = (M_1_PIf) * dAlphaDc * color;
 
-                            // geometry
-                            const float3 segmentVector = worldHit.hitPositionW - ray.origin;
-                            const float r = length(segmentVector);
-                            if (r <= 1e-6f) return;
-                            const float3 u = segmentVector / r;
-                            const float a = sycl::fmax(0.0f, dot(surfelNormal, -u));
-                            const float b = sycl::fmax(0.0f, dot(ray.normal, u));
-                            const float geometryG = a * b / (r * r);
+                            // COSINE derivative
+                            const float3 d = worldHit.hitPositionW - ray.origin;
+                            const float p = length(d);
+                            if (p <= 1e-6f) return;
+                            const float3 psi = d / p;
+                            float cosine = fmax(0.0f, dot(surfelNormal, -psi));
 
                             // dG/dc for pure translation of surfel (dy/dc = I, dn/dc = 0)
                             const float3x3 I = identity3x3();
-                            const float3x3 P = I - outerProduct(u, u);
+                            const float3x3 P = I - outerProduct(psi, psi);
+                            float3 cosineGradPos = (ray.normal * P) / p ;
 
-                            const float invR3 = 1.0f / (r * r * r);
-
-                            // dG/dy (translation only)
-                            const float3 dGdc =
-                                invR3 * ( - b * (P * surfelNormal)
-                                          + a * (P * ray.normal)
-                                          - 2.0f * a * b * u );
+                            // Transmission gradient from direction change
 
                             // use in gradient assembly
-                            float3 brdfGrad = dFBsdfDc * tauTotal * geometryG;
-                            float3 transmissivityGrad = tauGrad * fBsdf * geometryG;
-                            float3 geometryGrad = dGdc * tauTotal * fBsdf;
+                            float3 brdfGrad = dFBsdfDc * tauTotal * cosine;
+                            float3 cosineGrad = cosineGradPos * tauTotal * fBsdf;
+                            float3 transmissionGrad = tauGrad * cosine * fBsdf;
 
                             // 5) Final gradient assembly
                             const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
-                                worldHit.splatEvents[0], ray.direction, scene, photonMap, true);
+                                worldHit.splatEvents[0], ray.direction, scene, photonMap, false);
                             const float L_surfel = luminanceGrayscale(surfelRadianceRGB);
                             const float3 pAdjoint = rayState.pathThroughput;
 
-                            //d_grad_pos = pAdjoint * L_surfel * (brdfGrad + transmissivityGrad + geometryGrad);
-                            d_grad_pos = pAdjoint * L_surfel * brdfGrad;
+                            d_grad_pos = pAdjoint * L_surfel * (cosineGrad + brdfGrad + transmissionGrad);
 
-                            //(dFBsdfDc * tauTotal * G
-                            // + tauGrad * fBsdf * G
-                            // + gradG * tauTotal * fBsdf);
-                            float gradMag = length(d_grad_pos);
-                            int debug = 1;
+                            //d_grad_pos = pAdjoint * L_surfel * brdfGrad;
                         }
                     }
 
 
-                    if (rayState.bounceIndex == 0) {
+                    if (rayState.bounceIndex >= 0) {
                         const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
                         const float dVdp_scalar = dot(d_grad_pos, parameterAxis);
 
@@ -280,7 +266,6 @@ namespace Pale {
                     if (!worldHit.hit) {
                         return;
                     } // dead ray
-
 
                     const InstanceRecord instance = scene.instances[worldHit.instanceIndex];
                     const float3 canonicalNormalW = worldHit.geometricNormalW;

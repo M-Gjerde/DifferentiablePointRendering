@@ -195,7 +195,6 @@ int main(int argc, char **argv) {
     tracer.renderBackward(adjointSensor); // PRNG replay adjoint
 
     std::vector<Pale::float3> gradients(10);
-
     //deviceSelector.getQueue().memcpy(gradients.data(), adjoint.gradient_pk, 10 * sizeof(Pale::float3)).wait();;
 
     for (size_t instanceIndex = 0; instanceIndex < 1; ++instanceIndex)
