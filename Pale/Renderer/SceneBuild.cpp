@@ -10,6 +10,9 @@ module;
 #include <unordered_map>
 #include <unordered_set>
 #include <glm/glm.hpp>
+
+#define GLM_ENABLE_EXPERIMENTAL
+#include "glm/gtx/string_cast.hpp"
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/Kernels/KernelHelpers.h"
 
@@ -17,6 +20,7 @@ module;
 module Pale.Render.SceneBuild;
 import Pale.Scene.Components;
 import Pale.Render.BVH;
+import Pale.Log;
 
 namespace Pale {
     // ==== Geometry collector ====
@@ -119,7 +123,9 @@ namespace Pale {
 
             outBuildProducts.instances.push_back(record);
 
-
+            // Print entity name and index
+            uint32_t instanceIndex = static_cast<uint32_t>(outBuildProducts.instances.size() - 1);
+            Log::PA_INFO("Instance [{}]: {}", instanceIndex, tagComponent.tag);
         }
     }
 
@@ -155,6 +161,11 @@ namespace Pale {
                 gpuPoint.opacity = pointGeometry.opacities[i];
                 gpuPoint.shape = pointGeometry.shapes[i];
                 gpuPoint.beta = pointGeometry.betas[i];
+
+                // Print entity name and index
+                uint32_t instanceIndex = i;
+                Log::PA_INFO("Point Instance color: [{}]: {}", instanceIndex, glm::to_string(pointGeometry.colors[i]));
+
                 collectedPoints.push_back(gpuPoint);
             }
 

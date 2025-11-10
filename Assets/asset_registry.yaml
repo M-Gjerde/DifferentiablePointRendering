@@ -1,25 +1,28 @@
 assets:
-  - id: 4612538618243997585
-    type: PointCloud
-    path: PointClouds/initial.ply
-  - id: 6240325194175082989
-    type: Material
-    path: Materials/cbox_custom/emissive_1.mat.yaml
-  - id: 14028987924834853701
-    type: Material
-    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
-  - id: 14807093961197520930
-    type: Material
-    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
-  - id: 15148895366641955479
-    type: Material
-    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
-  - id: 4880701897989635671
-    type: Material
-    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
-  - id: 12910154599735661858
-    type: Mesh
-    path: meshes/rectangle.obj
   - id: 15169820930063520429
     type: PointCloud
     path: /home/magnus/2dgs/bunny_1k/point_cloud/iteration_30000/point_cloud.ply
+  - id: 5397713733581886774
+    type: PointCloud
+    path: PointClouds/target.ply
+  - id: 12910154599735661858
+    type: Mesh
+    path: meshes/rectangle.obj
+  - id: 4880701897989635671
+    type: Material
+    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
+  - id: 15148895366641955479
+    type: Material
+    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
+  - id: 14807093961197520930
+    type: Material
+    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
+  - id: 14028987924834853701
+    type: Material
+    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
+  - id: 6240325194175082989
+    type: Material
+    path: Materials/cbox_custom/emissive_1.mat.yaml
+  - id: 4612538618243997585
+    type: PointCloud
+    path: PointClouds/initial.ply

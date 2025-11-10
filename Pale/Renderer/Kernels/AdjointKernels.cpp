@@ -4,6 +4,7 @@
 
 #include "Renderer/Kernels/AdjointKernels.h"
 
+#include <cmath>
 #include <complex>
 
 #include "AdjointGradientKernels.h"
@@ -25,6 +26,7 @@ namespace Pale {
         uint32_t raysPerSet = imageWidth * imageHeight;
 
         //raysPerSet = 1;
+        float raysTotal = raysPerSet * settings.adjointSamplesPerPixel;
 
         const uint32_t perPassRayCount = raysPerSet;
         queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
@@ -114,16 +116,142 @@ namespace Pale {
 
                     auto &instance = scene.instances[worldHit.instanceIndex];
                     float3 d_grad_pos(0.0f);
-                    float3 gradientCostWrtSurfelCenter(0.0f);
                     Ray &ray = rayState.ray;
                     // SHADOW RAY
 
                     // Transmission gradients with shadow rays
                     if (instance.geometryType == GeometryType::Mesh) {
-                        d_grad_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap, rng128, false);
-                        float gradMag = length(d_grad_pos);
-                        int debug = 1;
+                        d_grad_pos = transmissionGradients(scene, worldHit, rayState, instance, photonMap);
+                        //d_grad_pos =  d_grad_pos + shadowRays(scene, worldHit, rayState, photonMap, rng128);
                     }
+
+                    if (rayState.bounceIndex >= 0) {
+                        const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
+                        const float dVdp_scalar = dot(d_grad_pos, parameterAxis);
+
+                        float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
+                        atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                    }
+                });
+        });
+        queue.wait();
+    }
+
+    void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto &scene = pkg.scene;
+        auto &photonMap = pkg.intermediates.map;
+
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
+        auto *raysOut = pkg.intermediates.extensionRaysA;
+        auto *countExtensionOut = pkg.intermediates.countExtensionOut;
+
+        const uint32_t perPassRayCount = activeRayCount; // total number of rays (With n-samples per ray)
+        const uint32_t perPixelRayCount = activeRayCount; // Number of rays per pixel
+        const uint32_t photonsPerLaunch = settings.photonsPerLaunch;
+
+        queue.submit([&](sycl::handler &cgh) {
+            const uint64_t baseSeed = settings.randomSeed;
+            cgh.parallel_for<class GenerateNextAdjointRays>(
+                sycl::range<1>(perPixelRayCount),
+                [=](sycl::id<1> globalId) {
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t seed = rng::makePerItemSeed1D(baseSeed, rayIndex);
+                    rng::Xorshift128 rng128(seed);
+                    const RayState rayState = raysIn[rayIndex];
+                    const WorldHit worldHit = hitRecords[rayIndex];
+                    RayState nextState{};
+                    if (!worldHit.hit) {
+                        return;
+                    } // dead ray
+
+                    const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+                    const float3 canonicalNormalW = worldHit.geometricNormalW;
+                    const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
+                    const float3 enteredSideNormalW = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
+                    float3 sampledOutgoingDirectionW{};
+                    float3 throughputMultiplier = float3(1.0f);
+
+                    // If we hit instance was a mesh do ordinary BRDF stuff.
+                    if (instance.geometryType == GeometryType::Mesh) {
+                        float sampledPdf = 0.0f;
+                        const GPUMaterial material = scene.materials[instance.materialIndex];
+                        sampleCosineHemisphere(rng128, enteredSideNormalW, sampledOutgoingDirectionW, sampledPdf);
+                        sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
+                        const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
+                        const float3 lambertBrdf = material.baseColor * M_1_PIf;
+                        throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf) * worldHit.transmissivity;
+                    }
+                    // If our hit instance was a point cloud it means we hit a surfel
+                    // Now we do either BRDF or BTDF
+                    bool reflectedRay = false;
+                    if (instance.geometryType == GeometryType::PointCloud) {
+                        // PointCloud
+                        GPUMaterial material{};
+                        material.baseColor = scene.points[worldHit.primitiveIndex].color;
+                        const float3 lambertBrdf = material.baseColor * M_1_PIf;
+
+                        const float interactionAlpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha; // α
+                        const float reflectWeight = 0.5f * interactionAlpha; // ρ_r = α/2
+                        const float transmitWeight = 0.5f * interactionAlpha; // ρ_t = α/2
+
+                        // event probabilities
+                        const float probReflect = reflectWeight / interactionAlpha; // a 50/50 if we reflect or transmit
+                        reflectedRay = (rng128.nextFloat() < probReflect);
+                        if (reflectedRay) {
+                            float sampledPdf = 0.0f;
+                            // Diffuse reflect on entered side
+                            sampleCosineHemisphere(rng128, enteredSideNormalW, sampledOutgoingDirectionW, sampledPdf);
+                            sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
+                            const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
+                            throughputMultiplier =
+                                    throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
+                        } else {
+                            float sampledPdf = 0.0f;
+                            // Diffuse transmit: cosine hemisphere on the opposite side
+                            const float3 oppositeSideNormalW = -enteredSideNormalW;
+                            sampleCosineHemisphere(rng128, oppositeSideNormalW, sampledOutgoingDirectionW, sampledPdf);
+                            sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
+                            const float cosTheta =
+                                    sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, oppositeSideNormalW));
+                            throughputMultiplier =
+                                    throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
+                        }
+                    }
+
+
+                    // Offset origin robustly
+                    constexpr float kEps = 1e-5f;
+                    nextState.ray.origin = worldHit.hitPositionW + enteredSideNormalW * kEps;
+                    nextState.ray.direction = sampledOutgoingDirectionW;
+                    nextState.ray.normal = worldHit.geometricNormalW;
+                    nextState.bounceIndex = rayState.bounceIndex + 1;
+                    nextState.pixelIndex = rayState.pixelIndex;
+                    nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
+
+                    //if (nextState.bounceIndex >= settings.russianRouletteStart) {
+                    //    // Luminance-based continuation probability in [pMin, 1]
+                    //    const float3 throughputRgb = nextState.pathThroughput;
+                    //    const float luminance = 0.2126f * throughputRgb.x() + 0.7152f * throughputRgb.y() + 0.0722f *
+                    //                            throughputRgb.z();
+                    //    const float pMin = 0.10f; // safety floor to avoid zero-probability bias
+                    //    const float continuationProbability = sycl::clamp(luminance, pMin, 1.0f);
+                    //
+                    //    if (rng128.nextFloat() >= continuationProbability) {
+                    //        raysOut[rayIndex] = nextState;
+                    //        hitRecords[rayIndex] = WorldHit{};
+                    //        return; // terminate path, do not enqueue
+                    //    }
+                    //    nextState.pathThroughput = nextState.pathThroughput / continuationProbability; // unbiased
+                    //}
+
+                    // Calculate gradients after we decided on new paths
+
+                    float3 d_grad_pos(0.0f);
+                    const Ray &ray = rayState.ray;
 
                     if (instance.geometryType == GeometryType::PointCloud) {
                         struct LocalTerm {
@@ -133,8 +261,7 @@ namespace Pale {
                         // 1) Build intervening splat list on (t_x, t_y), excluding terminal scatter surfel
                         // Do this however through a shadow ray
                         float3 tauGrad{0.0f};
-                        float tauTotal = 1.0f;
-                        {
+                        float tauTotal = 1.0f; {
                             BoundedVector<LocalTerm, kMaxSplatEvents> intervening;
                             intervening.clear();
                             for (int ei = 0; ei < worldHit.splatEventCount - 1; ++ei) {
@@ -165,16 +292,11 @@ namespace Pale {
                         const auto &terminal = worldHit.splatEvents[worldHit.splatEventCount - 1];
                         if (worldHit.primitiveIndex == terminal.primitiveIndex) {
                             const auto surfel = scene.points[terminal.primitiveIndex];
-
-                            // normals and frame
                             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                            const int travelSideSign =
-                                    (dot(canonicalNormalW, -rayState.ray.direction) >= 0.0f) ? 1 : -1;
-                            const float3 surfelNormal = (travelSideSign == 1) ? canonicalNormalW : (-canonicalNormalW);
 
                             // BSDF gradient (Scatter)
-                            const float denom = dot(surfelNormal, ray.direction);
-                            if (sycl::fabs(denom) <= 1e-6f)
+                            const float denom = dot(canonicalNormalW, ray.direction);
+                            if (sycl::fabs(denom) <= 1e-4f)
                                 return;
                             const float2 uv = phiInverse(terminal.hitWorld, surfel);
                             const float alpha = terminal.alpha;
@@ -182,41 +304,42 @@ namespace Pale {
                             const float tvDotD = dot(surfel.tanV, ray.direction);
                             const float su = surfel.scale.x();
                             const float sv = surfel.scale.y();
-                            const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / su;
-                            const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sv;
+                            const float3 duDc = ((tuDotD / denom) * canonicalNormalW - surfel.tanU) / su;
+                            const float3 dvDc = ((tvDotD / denom) * canonicalNormalW - surfel.tanV) / sv;
                             // Correct sign and sum
                             const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
                             float color = luminanceGrayscale(surfel.color);
 
-                            const float fBsdf = (M_1_PIf) * alpha * color;
                             const float3 dFBsdfDc = (M_1_PIf) * dAlphaDc * color;
 
+                            const float3 fBsdf = (M_1_PIf) * alpha * surfel.color;
+                            float fBsdf_luminance = luminanceGrayscale(fBsdf);
+
                             // COSINE derivative
-                            const float3 d = worldHit.hitPositionW - ray.origin;
-                            const float p = length(d);
-                            if (p <= 1e-6f) return;
-                            const float3 psi = d / p;
-                            float cosine = fmax(0.0f, dot(surfelNormal, -psi));
+                            float cosineSigned = 0.0f;
+                            float3 gradCosineWrtPosition{0.0f};
+                            cosineAndGradientWrtPosition(ray.origin, terminal.hitWorld, canonicalNormalW,
+                                                         cosineSigned, gradCosineWrtPosition);
 
-                            // dG/dc for pure translation of surfel (dy/dc = I, dn/dc = 0)
-                            const float3x3 I = identity3x3();
-                            const float3x3 P = I - outerProduct(psi, psi);
-                            float3 cosineGradPos = (ray.normal * P) / p ;
-
-                            // Transmission gradient from direction change
-
-                            // use in gradient assembly
-                            float3 brdfGrad = dFBsdfDc * tauTotal * cosine;
-                            float3 cosineGrad = cosineGradPos * tauTotal * fBsdf;
-                            float3 transmissionGrad = tauGrad * cosine * fBsdf;
+                            const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
+                            float sign = travelSideSign;
+                            // Use side-aware cosines for the lobe you evaluate:
+                            float cosine = cosineSigned * sign;
+                            const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
+                                worldHit.splatEvents[worldHit.splatEventCount - 1],  ray.direction, scene, photonMap, true);
+                            float L_surfel = luminanceGrayscale(surfelRadianceRGB);
 
                             // 5) Final gradient assembly
-                            const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
-                                worldHit.splatEvents[0], ray.direction, scene, photonMap, false);
-                            const float L_surfel = luminanceGrayscale(surfelRadianceRGB);
                             const float3 pAdjoint = rayState.pathThroughput;
+                            // Transmission gradient from direction change
+                            // use in gradient assembly
+                            float3 brdfGrad = dFBsdfDc * tauTotal * cosine;
+                            float3 cosineGrad = gradCosineWrtPosition * tauTotal * fBsdf_luminance;
+                            float3 transmissionGrad = tauGrad * cosine * fBsdf_luminance;
 
-                            d_grad_pos = pAdjoint * L_surfel * (cosineGrad + brdfGrad + transmissionGrad);
+                            float3 grad = pAdjoint * L_surfel * (brdfGrad + transmissionGrad);
+
+                            d_grad_pos = d_grad_pos + grad;
 
                             //d_grad_pos = pAdjoint * L_surfel * brdfGrad;
                         }
@@ -230,121 +353,6 @@ namespace Pale {
                         float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
                         atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
                     }
-                });
-        });
-        queue.wait();
-    }
-
-    void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount) {
-        auto &queue = pkg.queue;
-        auto &sensor = pkg.sensor;
-        auto &settings = pkg.settings;
-        auto &scene = pkg.scene;
-
-        auto *hitRecords = pkg.intermediates.hitRecords;
-        auto *raysIn = pkg.intermediates.primaryRays;
-        auto *raysOut = pkg.intermediates.extensionRaysA;
-        auto *countExtensionOut = pkg.intermediates.countExtensionOut;
-
-        const uint32_t perPassRayCount = activeRayCount; // total number of rays (With n-samples per ray)
-        const uint32_t perPixelRayCount = activeRayCount; // Number of rays per pixel
-        const uint32_t photonsPerLaunch = settings.photonsPerLaunch;
-
-        queue.submit([&](sycl::handler &cgh) {
-            const uint64_t baseSeed = settings.randomSeed;
-            cgh.parallel_for<class GenerateNextAdjointRays>(
-                sycl::range<1>(perPixelRayCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t rayIndex = globalId[0];
-                    const uint64_t seed = rng::makePerItemSeed1D(baseSeed, rayIndex);
-                    rng::Xorshift128 rng128(seed);
-
-                    const RayState rayState = raysIn[rayIndex];
-                    const WorldHit worldHit = hitRecords[rayIndex];
-
-                    RayState nextState{};
-                    if (!worldHit.hit) {
-                        return;
-                    } // dead ray
-
-                    const InstanceRecord instance = scene.instances[worldHit.instanceIndex];
-                    const float3 canonicalNormalW = worldHit.geometricNormalW;
-                    const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
-                    const float3 enteredSideNormalW = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
-                    float3 sampledOutgoingDirectionW{};
-                    float3 throughputMultiplier = float3(1.0f);
-
-                    // If we hit instance was a mesh do ordinary BRDF stuff.
-                    if (instance.geometryType == GeometryType::Mesh) {
-                        float sampledPdf = 0.0f;
-                        const GPUMaterial material = scene.materials[instance.materialIndex];
-                        sampleCosineHemisphere(rng128, enteredSideNormalW, sampledOutgoingDirectionW, sampledPdf);
-                        sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
-                        const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
-                        const float3 lambertBrdf = material.baseColor * M_1_PIf;
-                        throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf) * worldHit.transmissivity;
-                    }
-                    // If our hit instance was a point cloud it means we hit a surfel
-                    // Now we do either BRDF or BTDF
-                    if (instance.geometryType == GeometryType::PointCloud) {
-                        // PointCloud
-                        GPUMaterial material{};
-                        material.baseColor = scene.points[worldHit.primitiveIndex].color;
-                        const float3 lambertBrdf = material.baseColor * M_1_PIf;
-
-                        const float interactionAlpha = worldHit.splatEvents[0].alpha; // α
-                        const float reflectWeight = 0.0f * interactionAlpha; // ρ_r = α/2
-                        const float transmitWeight = 0.5f * interactionAlpha; // ρ_t = α/2
-
-                        // event probabilities
-                        const float probReflect = reflectWeight / interactionAlpha; // a 50/50 if we reflect or transmit
-                        const bool chooseReflect = (rng128.nextFloat() < probReflect);
-                        if (chooseReflect) {
-                            float sampledPdf = 0.0f;
-                            // Diffuse reflect on entered side
-                            sampleCosineHemisphere(rng128, enteredSideNormalW, sampledOutgoingDirectionW, sampledPdf);
-                            sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
-                            const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
-                            throughputMultiplier =
-                                    material.baseColor * throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
-                        } else {
-                            float sampledPdf = 0.0f;
-                            // Diffuse transmit: cosine hemisphere on the opposite side
-                            const float3 oppositeSideNormalW = -enteredSideNormalW;
-                            sampleCosineHemisphere(rng128, oppositeSideNormalW, sampledOutgoingDirectionW, sampledPdf);
-                            sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
-                            const float cosTheta =
-                                    sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, oppositeSideNormalW));
-                            throughputMultiplier =
-                                    material.baseColor * throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
-                        }
-                    }
-
-
-                    // Offset origin robustly
-                    constexpr float kEps = 1e-5f;
-                    nextState.ray.origin = worldHit.hitPositionW + enteredSideNormalW * kEps;
-                    nextState.ray.direction = sampledOutgoingDirectionW;
-                    nextState.ray.normal = worldHit.geometricNormalW;
-                    nextState.bounceIndex = rayState.bounceIndex + 1;
-                    nextState.pixelIndex = rayState.pixelIndex;
-                    nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
-
-                    //if (nextState.bounceIndex >= settings.russianRouletteStart) {
-                    //    // Luminance-based continuation probability in [pMin, 1]
-                    //    const float3 throughputRgb = nextState.pathThroughput;
-                    //    const float luminance = 0.2126f * throughputRgb.x() + 0.7152f * throughputRgb.y() + 0.0722f *
-                    //                            throughputRgb.z();
-                    //    const float pMin = 0.10f; // safety floor to avoid zero-probability bias
-                    //    const float continuationProbability = sycl::clamp(luminance, pMin, 1.0f);
-                    //
-                    //    if (rng128.nextFloat() >= continuationProbability) {
-                    //        raysOut[rayIndex] = nextState;
-                    //        hitRecords[rayIndex] = WorldHit{};
-                    //        return; // terminate path, do not enqueue
-                    //    }
-                    //    nextState.pathThroughput = nextState.pathThroughput / continuationProbability; // unbiased
-                    //}
 
                     // compacted enqueue
                     sycl::atomic_ref<uint32_t,

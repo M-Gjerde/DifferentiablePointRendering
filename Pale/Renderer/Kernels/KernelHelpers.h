@@ -276,76 +276,75 @@ namespace Pale {
     }
 
 
-SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
-    const GPUSceneBuffers& scene,             // holds lights, triangles, vertices, transforms
-    rng::Xorshift128& rng128)
-{
-    AreaLightSample s{};
-    s.valid = false;
+    SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
+        const GPUSceneBuffers &scene, // holds lights, triangles, vertices, transforms
+        rng::Xorshift128 &rng128) {
+        AreaLightSample s{};
+        s.valid = false;
 
-    if (scene.lightCount == 0) return s;
+        if (scene.lightCount == 0) return s;
 
-    // 1) pick a light uniformly
-    const float uL = rng128.nextFloat();
-    const uint32_t lightIndex = sycl::min((uint32_t)(uL * scene.lightCount), scene.lightCount - 1);
-    const GPULightRecord light = scene.lights[lightIndex];
-    s.pdfSelectLight = 1.0f / (float)scene.lightCount;
+        // 1) pick a light uniformly
+        const float uL = rng128.nextFloat();
+        const uint32_t lightIndex = sycl::min((uint32_t) (uL * scene.lightCount), scene.lightCount - 1);
+        const GPULightRecord light = scene.lights[lightIndex];
+        s.pdfSelectLight = 1.0f / (float) scene.lightCount;
 
-    if (light.triangleCount == 0) return s;
+        if (light.triangleCount == 0) return s;
 
-    // 2) pick a triangle uniformly within the light
-    const float uT = rng128.nextFloat();
-    const uint32_t triRel = sycl::min((uint32_t)(uT * light.triangleCount), light.triangleCount - 1);
-    const GPUEmissiveTriangle emTri = scene.emissiveTriangles[light.triangleOffset + triRel];
+        // 2) pick a triangle uniformly within the light
+        const float uT = rng128.nextFloat();
+        const uint32_t triRel = sycl::min((uint32_t) (uT * light.triangleCount), light.triangleCount - 1);
+        const GPUEmissiveTriangle emTri = scene.emissiveTriangles[light.triangleOffset + triRel];
 
-    const Triangle tri = scene.triangles[emTri.globalTriangleIndex];
-    const Vertex v0 = scene.vertices[tri.v0];
-    const Vertex v1 = scene.vertices[tri.v1];
-    const Vertex v2 = scene.vertices[tri.v2];
+        const Triangle tri = scene.triangles[emTri.globalTriangleIndex];
+        const Vertex v0 = scene.vertices[tri.v0];
+        const Vertex v1 = scene.vertices[tri.v1];
+        const Vertex v2 = scene.vertices[tri.v2];
 
-    // 3) triangle area and barycentric sample in object space
-    const float3 p0 = v0.pos, p1 = v1.pos, p2 = v2.pos;
-    const float3 e0 = p1 - p0, e1 = p2 - p0;
-    const float3 nObjU = float3{
-        e0.y()*e1.z()-e0.z()*e1.y(),
-        e0.z()*e1.x()-e0.x()*e1.z(),
-        e0.x()*e1.y()-e0.y()*e1.x()
-    };
-    const float triArea = 0.5f * sycl::sqrt(dot(nObjU, nObjU));
-    if (triArea <= 0.f) return s;
+        // 3) triangle area and barycentric sample in object space
+        const float3 p0 = v0.pos, p1 = v1.pos, p2 = v2.pos;
+        const float3 e0 = p1 - p0, e1 = p2 - p0;
+        const float3 nObjU = float3{
+            e0.y() * e1.z() - e0.z() * e1.y(),
+            e0.z() * e1.x() - e0.x() * e1.z(),
+            e0.x() * e1.y() - e0.y() * e1.x()
+        };
+        const float triArea = 0.5f * sycl::sqrt(dot(nObjU, nObjU));
+        if (triArea <= 0.f) return s;
 
-    const float u1 = rng128.nextFloat();
-    const float u2 = rng128.nextFloat();
-    const float su1 = sycl::sqrt(u1);
-    const float b1 = 1.f - su1;
-    const float b2 = u2 * su1;
-    const float b0 = 1.f - b1 - b2;
-    const float3 xObj = p0 * b0 + p1 * b1 + p2 * b2;
+        const float u1 = rng128.nextFloat();
+        const float u2 = rng128.nextFloat();
+        const float su1 = sycl::sqrt(u1);
+        const float b1 = 1.f - su1;
+        const float b2 = u2 * su1;
+        const float b0 = 1.f - b1 - b2;
+        const float3 xObj = p0 * b0 + p1 * b1 + p2 * b2;
 
-    // 4) transform to world and compute world normal via world vertices
-    const Transform xf = scene.transforms[light.transformIndex];
-    const float3 worldP0 = toWorldPoint(p0, xf);
-    const float3 worldP1 = toWorldPoint(p1, xf);
-    const float3 worldP2 = toWorldPoint(p2, xf);
+        // 4) transform to world and compute world normal via world vertices
+        const Transform xf = scene.transforms[light.transformIndex];
+        const float3 worldP0 = toWorldPoint(p0, xf);
+        const float3 worldP1 = toWorldPoint(p1, xf);
+        const float3 worldP2 = toWorldPoint(p2, xf);
 
-    const float3 worldE0 = worldP1 - worldP0;
-    const float3 worldE1 = worldP2 - worldP0;
-    float3 worldN = float3{
-        worldE0.y()*worldE1.z()-worldE0.z()*worldE1.y(),
-        worldE0.z()*worldE1.x()-worldE0.x()*worldE1.z(),
-        worldE0.x()*worldE1.y()-worldE0.y()*worldE1.x()
-    };
-    const float worldArea = 0.5f * sycl::sqrt(dot(worldN, worldN));
-    if (worldArea <= 0.f) return s;
-    worldN = normalize(worldN);
+        const float3 worldE0 = worldP1 - worldP0;
+        const float3 worldE1 = worldP2 - worldP0;
+        float3 worldN = float3{
+            worldE0.y() * worldE1.z() - worldE0.z() * worldE1.y(),
+            worldE0.z() * worldE1.x() - worldE0.x() * worldE1.z(),
+            worldE0.x() * worldE1.y() - worldE0.y() * worldE1.x()
+        };
+        const float worldArea = 0.5f * sycl::sqrt(dot(worldN, worldN));
+        if (worldArea <= 0.f) return s;
+        worldN = normalize(worldN);
 
-    s.positionW          = toWorldPoint(xObj, xf);
-    s.normalW            = worldN;
-    s.emittedRadianceRGB = light.emissionRgb;
-    s.pdfArea            = (1.0f / (float)light.triangleCount) * (1.0f / triArea); // area-domain pdf
-    s.valid              = true;
-    return s;
-}
+        s.positionW = toWorldPoint(xObj, xf);
+        s.normalW = worldN;
+        s.emittedRadianceRGB = light.emissionRgb;
+        s.pdfArea = (1.0f / (float) light.triangleCount) * (1.0f / triArea); // area-domain pdf
+        s.valid = true;
+        return s;
+    }
 
 
     SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3 &unitNormal, rng::Xorshift128 &rng, float &pdf) {
@@ -436,7 +435,7 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
     }
 
 
-    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float* outOpacity,float kSigmas = 2.6f) {
+    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float *outOpacity, float kSigmas = 2.6f) {
         const float r2 = u * u + v * v;
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 > kSigmas * kSigmas)
@@ -444,33 +443,32 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
 
         *outOpacity = sycl::exp(-0.5f * r2);
         return true;
-
     }
 
 
     SYCL_EXTERNAL inline float logit(float x) { return sycl::log(x / (1.0f - x)); }
 
 
-    SYCL_EXTERNAL static float opacityBeta(float u, float v, const Point& surfel) {
+    SYCL_EXTERNAL static float opacityBeta(float u, float v, const Point &surfel) {
         float su = surfel.scale.x();
         float sv = surfel.scale.y();
         // map shapeControl → p in [1, pMax]
-        const float pMax = 32.0f;            // square-like; increase if needed
-        const float k    = 1.0f;             // blend sharpness
+        const float pMax = 32.0f; // square-like; increase if needed
+        const float k = 1.0f; // blend sharpness
         // anisotropic scaling to get rectangles (su, sv)
         const float uu = fabs(u);
         const float vv = fabs(v);
 
-        const float targetAtZero = 2.0f;                         // p(0) = 2  → circle
-        const float q = (targetAtZero - 1.0f) / (pMax - 1.0f);   // desired sigmoid value at t=0
-        const float b = logit(q);                                 // bias to hit p(0)=2
+        const float targetAtZero = 2.0f; // p(0) = 2  → circle
+        const float q = (targetAtZero - 1.0f) / (pMax - 1.0f); // desired sigmoid value at t=0
+        const float b = logit(q); // bias to hit p(0)=2
         const float s = 1.0f / (1.0f + sycl::exp(-(k * surfel.shape + b)));
 
         // L^p “radius”
-        const float p = 1.0f + (pMax - 1.0f) * s;               // t<0 diamond, t=0 circle, t>0 square-like
+        const float p = 1.0f + (pMax - 1.0f) * s; // t<0 diamond, t=0 circle, t>0 square-like
         const float up = sycl::pow(uu, p);
         const float vp = sycl::pow(vv, p);
-        const float r  = sycl::pow(up + vp, 1.0f / p);
+        const float r = sycl::pow(up + vp, 1.0f / p);
 
         if (r >= 1.0f) return 0.0f;
 
@@ -915,5 +913,34 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
         return redWeight * inputRgbLinear[0]
                + greenWeight * inputRgbLinear[1]
                + blueWeight * inputRgbLinear[2];
+    }
+
+    inline void breakAtMeshInstance(const WorldHit &worldHit) {
+        switch (worldHit.instanceIndex) {
+            case 0:
+                break;
+            case 1:
+                break;
+            case 2:
+                break;
+            case 5:
+                break;
+            default:
+                break;
+        }
+    }
+    inline void breakAtPointCloudInstance(const WorldHit &worldHit) {
+        switch (worldHit.primitiveIndex) {
+            case 0:
+                break;
+            case 1:
+                break;
+            case 2:
+                break;
+            case 7:
+                break;
+            default:
+                break;
+        }
     }
 }

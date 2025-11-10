@@ -202,10 +202,10 @@ namespace Pale {
         uint32_t materialIndex{0}; // mesh only; point cloud = kInvalidMaterialIndex
         uint32_t transformIndex{0}; // index into transforms
         uint32_t blasRangeIndex; // index into bottomLevelRanges of mesh or pointcloud
-        char name[256];
+        char name[16];
     };
 
-    inline void copyName(char (&dst)[256], const std::string &src) {
+    inline void copyName(char (&dst)[16], const std::string &src) {
         std::snprintf(dst, sizeof(dst), "%s", src.c_str()); // always null-terminated
     }
 
@@ -265,7 +265,7 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<RayState>);
 
 
-    constexpr int kMaxSplatEvents = 6;
+    constexpr int kMaxSplatEvents = 24;
 
     struct SplatEvent {
         float t = FLT_MAX; // local space t

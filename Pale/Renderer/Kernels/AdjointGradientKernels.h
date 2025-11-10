@@ -9,13 +9,11 @@ namespace Pale {
                                            const float3 &segmentVector) {
         constexpr float epsilon = 1e-6f;
 
-        const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-        const int travelSideSign = (dot(canonicalNormalW, -ray.direction) >= 0.0f) ? 1 : -1;
-        const float3 surfelNormal = (travelSideSign >= 0)
-                                        ? canonicalNormalW
-                                        : (-canonicalNormalW);
+        const float3 tangentU = surfel.tanU;
+        const float3 tangentV = surfel.tanV;
+        const float3 normalW  = normalize(cross(tangentU, tangentV)); // no flipping
 
-        const float denom = dot(surfelNormal, segmentVector);
+        const float denom = dot(normalW, segmentVector);
         if (fabs(denom) <= epsilon) return float3(0.0f);
 
         const float2 uv = phiInverse(splatEvent.hitWorld, surfel); // your mapping to local coords
@@ -29,9 +27,9 @@ namespace Pale {
         const float sv = surfel.scale.y();
 
         // d u / d c and d v / d c
-        const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / sycl::fmax(
+        const float3 duDc = ((tuDotD / denom) * normalW - surfel.tanU) / sycl::fmax(
                                 su, epsilon);
-        const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sycl::fmax(
+        const float3 dvDc = ((tvDotD / denom) * normalW - surfel.tanV) / sycl::fmax(
                                 sv, epsilon);
         // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
         const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
@@ -73,23 +71,25 @@ namespace Pale {
         return dAlphaDc;
     }
 
-    inline float3 transmissionGradients(const GPUSceneBuffers &scene, const WorldHit &worldHit,
-                                        const RayState &rayState, const InstanceRecord &instance, const DeviceSurfacePhotonMapGrid& photonMap,
-                                        rng::Xorshift128 &rng128, bool withShadowRays = true) {
-        float3 d_cost_d_pos(0.0f);
+    inline float3 shadowRays(const GPUSceneBuffers &scene, const WorldHit &worldHit,
+                             const RayState &rayState, const DeviceSurfacePhotonMapGrid &photonMap,
+                             rng::Xorshift128 &rng128) {
         constexpr float epsilon = 1e-6f;
+        float3 d_cost_d_pos(0.0f);
 
 
         AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng128);
         // Direction to the sampled emitter point
         const float3 toLightVector = ls.positionW - worldHit.hitPositionW;
         const float distanceToLight = length(toLightVector);
-        if (distanceToLight > 1e-6f && withShadowRays) {
+        if (distanceToLight > 1e-6f) {
             const float3 lightDirection = toLightVector / distanceToLight;
             // Cosines
             const float3 shadingNormalW = worldHit.geometricNormalW; // or your surfel normal
             const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
             const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
+
+
             if (cosThetaSurface != 0.0f && cosThetaLight != 0.0f) {
                 const float r2 = distanceToLight * distanceToLight;
                 const float geometryTerm = (cosThetaSurface * cosThetaLight) / r2;
@@ -110,18 +110,29 @@ namespace Pale {
                 WorldHit shadowWorldHit{};
                 intersectScene(shadowRayState.ray, &shadowWorldHit, scene, rng128,
                                RayIntersectMode::Transmit);
+
                 if (shadowWorldHit.hit) {
                     auto &instance = scene.instances[shadowWorldHit.instanceIndex];
                     Ray &ray = shadowRayState.ray;
-                    if (shadowWorldHit.splatEventCount > 0 && instance.geometryType ==
-                        GeometryType::Mesh) {
+                    if (shadowWorldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
                         const float3 x = ray.origin;
                         const float3 y = shadowWorldHit.hitPositionW;
                         const float3 segmentVector = y - x;
 
                         const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(
-                            shadowWorldHit, scene, photonMap);
+                            worldHit, scene, photonMap);
                         const float luminanceMesh = luminanceGrayscale(backgroundRadianceRGB);
+
+                        float3 brdf{1.0f};
+                        switch (instance.geometryType) {
+                            case GeometryType::Mesh:
+                                brdf = scene.materials[instance.materialIndex].baseColor * M_1_PIf;
+                                break;
+                            case GeometryType::PointCloud: {
+                                brdf = scene.points[worldHit.primitiveIndex].color * M_1_PIf;
+                            }
+                            break;
+                        }
 
                         // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
                         struct LocalTerm {
@@ -158,7 +169,7 @@ namespace Pale {
                                     1.0f - localTerms[i].alpha, epsilon);
                                 sumTerm = sumTerm + (-localTerms[i].dAlphaDc) / oneMinusAlpha;
                             }
-                            const float pAdjoint = luminanceGrayscale(shadowRayState.pathThroughput);
+                            const float pAdjoint = luminanceGrayscale(shadowRayState.pathThroughput * brdf);
                             // already includes fs, V, G, etc., for this segment
                             // Accumulate to your running gradient
                             d_cost_d_pos = pAdjoint * (tauTotal * luminanceMesh) * sumTerm;
@@ -167,15 +178,22 @@ namespace Pale {
                 }
             }
         }
+        return d_cost_d_pos;
+    }
+
+    inline float3 transmissionGradients(const GPUSceneBuffers &scene, const WorldHit &worldHit,
+                                        const RayState &rayState, const InstanceRecord &instance,
+                                        const DeviceSurfacePhotonMapGrid &photonMap) {
+        float3 d_cost_d_pos(0.0f);
 
         if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
             const float3 x = rayState.ray.origin;
             const float3 y = worldHit.hitPositionW;
             const float3 segmentVector = y - x;
 
-            const float r2Background = dot(segmentVector, segmentVector);
-            const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(
-                worldHit, scene, photonMap);
+            // Cost weighting: keep RGB if your loss is RGB; else reduce at end
+            const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap)
+                                                 * scene.materials[instance.materialIndex].baseColor * M_1_PIf;
             const float L = luminanceGrayscale(backgroundRadianceRGB);
 
             // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
@@ -217,5 +235,27 @@ namespace Pale {
             }
         }
         return d_cost_d_pos;
+    }
+
+    inline void cosineAndGradientWrtPosition(const float3 &rayOrigin,
+                                             const float3 &hitPositionWorld,
+                                             const float3 &surfelNormal,
+                                             float &cosineSigned,
+                                             float3 &gradCosineWrtPosition) {
+        const float3 displacementVector = hitPositionWorld - rayOrigin; // d
+        const float distanceMagnitude = length(displacementVector); // p
+        if (distanceMagnitude <= 1e-6f) {
+            cosineSigned = 0.0f;
+            gradCosineWrtPosition = float3{0.0f};
+            return;
+        }
+
+        const float3 unitPsi = displacementVector / distanceMagnitude; // ψ
+        const float3 incidentDirection = -unitPsi; // ω_i
+
+        cosineSigned = dot(surfelNormal, incidentDirection);
+
+        const float3x3 projector = identity3x3() - outerProduct(unitPsi, unitPsi);
+        gradCosineWrtPosition = -(projector * surfelNormal) / distanceMagnitude;
     }
 }
