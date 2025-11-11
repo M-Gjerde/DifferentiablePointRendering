@@ -115,6 +115,12 @@
             <rotate x="1" y="0" z="0" angle="-90"/>
             <scale x="0.15" y="0.15" z="0.15"/>
             <translate x="0.0" y="-2" z="1.5"/>
+
+            Side light
+             <rotate x="0" y="1" z="0" angle="135"/>
+            <scale x="0.1" y="0.1" z="0.1"/>
+            <translate x="-0.8" y="0.0" z="1.3"/>
+
             -->
     <shape type="obj" id="light">
         <string name="filename" value="meshes/rectangle.obj"/>

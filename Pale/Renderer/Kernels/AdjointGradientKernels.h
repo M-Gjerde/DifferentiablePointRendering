@@ -27,10 +27,8 @@ namespace Pale {
         const float sv = surfel.scale.y();
 
         // d u / d c and d v / d c
-        const float3 duDc = ((tuDotD / denom) * normalW - surfel.tanU) / sycl::fmax(
-                                su, epsilon);
-        const float3 dvDc = ((tvDotD / denom) * normalW - surfel.tanV) / sycl::fmax(
-                                sv, epsilon);
+        const float3 duDc = ((tuDotD / denom) * normalW - surfel.tanU) / su;
+        const float3 dvDc = ((tvDotD / denom) * normalW - surfel.tanV) / sv;
         // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
         const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
 
@@ -181,20 +179,19 @@ namespace Pale {
         return d_cost_d_pos;
     }
 
-    inline float3 transmissionGradients(const GPUSceneBuffers &scene, const WorldHit &worldHit,
+    inline float3 transmissionBackgroundGradient(const GPUSceneBuffers &scene, const WorldHit &worldHit,
                                         const RayState &rayState, const InstanceRecord &instance,
                                         const DeviceSurfacePhotonMapGrid &photonMap) {
         float3 d_cost_d_pos(0.0f);
 
-        if (worldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
+        if (worldHit.splatEventCount > 0) {
             const float3 x = rayState.ray.origin;
             const float3 y = worldHit.hitPositionW;
             const float3 segmentVector = y - x;
 
             // Cost weighting: keep RGB if your loss is RGB; else reduce at end
-            const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap)
-                                                 * scene.materials[instance.materialIndex].baseColor * M_1_PIf;
-            const float L = luminanceGrayscale(backgroundRadianceRGB);
+            const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
+            const float L = luminance(backgroundRadianceRGB);
 
             // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
             struct LocalTerm {
@@ -215,23 +212,24 @@ namespace Pale {
             }
             if (validCount != 0) {
                 // τ = Π (1-α_i) with stable log-space accumulation
-                float logTau = 0.0f;
+                float logTau = 0.f;
                 for (int i = 0; i < validCount; ++i) {
-                    const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
+                    const float oneMinusAlpha = sycl::fmax(1.f - localTerms[i].alpha, 1e-6f);
                     logTau += sycl::log(oneMinusAlpha);
                 }
-                const float tauTotal = sycl::exp(logTau);
+                const float tau = sycl::exp(logTau);
+
                 // Σ_i [ - dα_i/dc / (1-α_i) ]
-                float3 sumTerm(0.0f);
+                float3 sumTerm(0.f);
                 for (int i = 0; i < validCount; ++i) {
-                    const float oneMinusAlpha = sycl::fmax(1.0f - localTerms[i].alpha, epsilon);
-                    sumTerm = sumTerm + (-localTerms[i].dAlphaDc) / oneMinusAlpha;
+                    const float oneMinusAlpha = sycl::fmax(1.f - localTerms[i].alpha, 1e-6f);
+                    sumTerm += localTerms[i].dAlphaDc / oneMinusAlpha;
                 }
                 const float pAdjoint = luminanceGrayscale(rayState.pathThroughput);
                 // already includes fs, V, G, etc., for this segment
                 // Accumulate to your running gradient
-                float3 adjointWithDiffTransport = pAdjoint * sumTerm * tauTotal;
-                d_cost_d_pos = d_cost_d_pos + adjointWithDiffTransport * L;
+                const float3 tauGrad = -tau * sumTerm;
+                d_cost_d_pos = pAdjoint * tauGrad * L;
             }
         }
         return d_cost_d_pos;

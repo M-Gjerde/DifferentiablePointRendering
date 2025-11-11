@@ -167,6 +167,29 @@ namespace Pale {
         bool operator==(const float3 &float3) const {
             return v.x() == float3.x() && v.y() == float3.y() && v.z() == float3.z();
         };
+
+
+        float3 &operator-=(const float3 &rhs) noexcept {
+            v -= rhs.v;
+            return *this;
+        }
+
+
+        float3 &operator+=(const float3 &rhs) noexcept {
+            v += rhs.v;
+            return *this;
+        }
+
+        float3 &operator*=(const float3 &rhs) noexcept {
+            v *= rhs.v;
+            return *this;
+        }
+        float3 &operator*=(const float &rhs) noexcept {
+            v *= rhs;
+            return *this;
+        }
+
+
     };
 
     /* float4, same idea -------------------------------------------------------- */

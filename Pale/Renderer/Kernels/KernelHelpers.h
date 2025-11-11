@@ -449,7 +449,7 @@ namespace Pale {
     SYCL_EXTERNAL inline float logit(float x) { return sycl::log(x / (1.0f - x)); }
 
 
-    SYCL_EXTERNAL static float opacityBeta(float u, float v, const Point &surfel) {
+    SYCL_EXTERNAL static float opacityBeta(float u, float v, const Point &surfel, float *opacity) {
         float su = surfel.scale.x();
         float sv = surfel.scale.y();
         // map shapeControl → p in [1, pMax]
@@ -470,10 +470,11 @@ namespace Pale {
         const float vp = sycl::pow(vv, p);
         const float r = sycl::pow(up + vp, 1.0f / p);
 
-        if (r >= 1.0f) return 0.0f;
+        if (r >= 1.0f) return false;
 
         float exponent = 4.0f * std::exp(surfel.beta);
-        return sycl::pow(1.0f - r, exponent);
+        *opacity = sycl::pow(1.0f - r, exponent);
+        return true;
     }
 
 
@@ -504,7 +505,8 @@ namespace Pale {
         if (!opacityGaussian(uv[0], uv[1], &outOpacity))
             return false;
 
-        //outOpacity = opacityBeta(uv[0], uv[1], surfel);
+        //if (!opacityBeta(uv[0], uv[1], surfel, &outOpacity))
+        //    return false;
 
         outTHit = tHit;
         return true;
@@ -778,11 +780,10 @@ namespace Pale {
         const float3 &direction,
         const GPUSceneBuffers &scene,
         const DeviceSurfacePhotonMapGrid &photonMap,
-        bool readOneSidedRadiance = false
+        bool readOneSidedRadiance = false,
+        bool includeCosine = true
     ) {
         const float perHitRadiusScale = 1.0f;
-        const bool photonsIncludeCosineAtStore = false;
-        const float grazingEpsilon = 1e-6f;
         // Material (two-sided Lambert by construction; irradiance already includes cos)
         const Point surfelPoint = scene.points[event.primitiveIndex];
         const float3 diffuseAlbedoRgb = surfelPoint.color;
@@ -840,9 +841,9 @@ namespace Pale {
                         const float kernelWeight = sycl::fmax(0.f, 1.f - dist / (kappa * localRadius));
 
                         const float3 photonContributionRgb =
-                                photonsIncludeCosineAtStore
-                                    ? photon.power
-                                    : (photon.power * photon.cosineIncident);
+                                includeCosine
+                                    ? (photon.power * photon.cosineIncident)
+                                    : photon.power;
 
                         weightedSumPhotonPowerRgb = weightedSumPhotonPowerRgb + kernelWeight * photonContributionRgb;
                     }
@@ -929,6 +930,7 @@ namespace Pale {
                 break;
         }
     }
+
     inline void breakAtPointCloudInstance(const WorldHit &worldHit) {
         switch (worldHit.primitiveIndex) {
             case 0:

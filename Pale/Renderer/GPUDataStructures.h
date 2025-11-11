@@ -244,7 +244,7 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
-    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1};
+    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1, Scatter = 2};
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -265,7 +265,7 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<RayState>);
 
 
-    constexpr int kMaxSplatEvents = 24;
+    constexpr int kMaxSplatEvents = 48;
 
     struct SplatEvent {
         float t = FLT_MAX; // local space t

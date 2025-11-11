@@ -163,8 +163,8 @@ namespace Pale {
                 gpuPoint.beta = pointGeometry.betas[i];
 
                 // Print entity name and index
-                uint32_t instanceIndex = i;
-                Log::PA_INFO("Point Instance color: [{}]: {}", instanceIndex, glm::to_string(pointGeometry.colors[i]));
+                //uint32_t instanceIndex = i;
+                //Log::PA_INFO("Point Instance color: [{}]: {}", instanceIndex, glm::to_string(pointGeometry.colors[i]));
 
                 collectedPoints.push_back(gpuPoint);
             }

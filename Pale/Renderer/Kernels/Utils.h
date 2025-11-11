@@ -199,11 +199,9 @@ namespace Pale {
                 bool greater = (dk > epsilon) || (sycl::fabs(dk) <= epsilon && alphaArray[j] < alphaIns);
                 if (!greater) break;
                 keyArray[j + 1]   = keyArray[j];
-                alphaArray[j + 1] = alphaArray[j];
                 indexArray[j + 1] = indexArray[j];
             }
             keyArray[j + 1]   = keyIns;
-            alphaArray[j + 1] = alphaIns;
             indexArray[j + 1] = idxIns;
         }
     }

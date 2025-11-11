@@ -147,7 +147,16 @@ int main(int argc, char **argv) {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue()); // scene only
 
-    Pale::PathTracer tracer(deviceSelector.getQueue());
+    //  cuda/rocm
+    Pale::PathTracerSettings settings;
+    settings.photonsPerLaunch = 1e6; // 1e6
+    settings.maxBounces = 4;
+    settings.numForwardPasses = 4;
+    settings.numGatherPasses = 32;
+    settings.maxAdjointBounces = 2;
+    settings.adjointSamplesPerPixel = 16;
+
+    Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);
     Pale::Log::PA_INFO("Forward Render Pass...");
 

@@ -302,8 +302,9 @@ export namespace Pale {
                                      colorFloats[i3 + 1],
                                      colorFloats[i3 + 2]);
 
-                    glm::vec3 albedoLinear = shC0 * fdcRgb;              // no bias
+                    glm::vec3 albedoLinear = shC0 * fdcRgb;
                     albedoLinear = glm::max(albedoLinear, glm::vec3(0)); // clamp negatives only
+                    albedoLinear = glm::min(albedoLinear, glm::vec3(1)); // clamp {0, 1}
 
                     geometry.colors[i] = albedoLinear; // keep in linear space
 
@@ -332,9 +333,6 @@ export namespace Pale {
                     ply_detail::orthonormalizeTangents(tangentUCandidate, tangentVCandidate);
                     geometry.tanU[i] = tangentUCandidate;
                     geometry.tanV[i] = tangentVCandidate;
-
-
-
 
                 }
 

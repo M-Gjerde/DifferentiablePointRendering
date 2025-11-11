@@ -142,45 +142,65 @@ foreach(DIR IN LISTS PROJECT_DIRS)
 endforeach()
 ")
 
-## 2) pybind11 first (unchanged)
-#add_subdirectory(vendor/pybind11)
-## -------- Executable (main only) --------
-## If main.cpp itself submits SYCL (unlikely), also decorate the exe:
-#add_library(pale MODULE Pale/pale_bindings.cpp)
-#add_sycl_to_target(TARGET pale)
-#target_link_libraries(pale PUBLIC PaleLib pybind11::module -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
-#set_target_properties(pale PROPERTIES
-#        PREFIX ""                # produce pale.so
-#        OUTPUT_NAME "pale"       # module filename 'pale'
-#        DEBUG_POSTFIX ""         # avoid 'paled.so'
-#)
 
-#include(GNUInstallDirs)
-## Use the current env's Python (important for conda)
-#find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
+# ---------- Toggle ----------
+option(BUILD_PYBIND "Build the Python module (pybind11)" OFF)
 
-## Resolve site-packages for the active interpreter
-#set(PYTHON_SITE "${Python3_SITEARCH}")
-#if(NOT PYTHON_SITE)
-#    set(PYTHON_SITE "${Python3_SITELIB}")
-#endif()
+# ---------- ... your existing CMakeLists up to cleanup.cmake ----------
 
-## Ensure consistent filename in Debug (no "d" postfix) and sane rpaths
-#set_target_properties(pale PROPERTIES
-#        DEBUG_POSTFIX ""                 # already set, keep it
-#        INSTALL_RPATH_USE_LINK_PATH ON
-#        BUILD_WITH_INSTALL_RPATH OFF
-#)
+# ===== Optional pybind11 module =====
+if(BUILD_PYBIND)
+    message(STATUS "BUILD_PYBIND=ON: building Python module 'pale'")
 
-## Install rules for all build types; use --config to pick one
-#install(TARGETS pale
-#        CONFIGURATIONS Debug RelWithDebInfo Release MinSizeRel
-#        LIBRARY DESTINATION "${PYTHON_SITE}"   # .so on Linux/macOS
-#        RUNTIME DESTINATION "${PYTHON_SITE}"   # .pyd on Windows
-#        ARCHIVE DESTINATION "${PYTHON_SITE}"   # import libs if any
-#)
+    # pybind11: prefer vendored, else FetchContent
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/pybind11/CMakeLists.txt")
+        add_subdirectory("${CMAKE_SOURCE_DIR}/vendor/pybind11")
+    else()
+        include(FetchContent)
+        FetchContent_Declare(pybind11
+                GIT_REPOSITORY https://github.com/pybind/pybind11.git
+                GIT_TAG        v2.13.5
+        )
+        FetchContent_MakeAvailable(pybind11)
+    endif()
 
-## Optional: helper target to install the current config from IDEs
-#add_custom_target(install_pale_debug
-#        COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --config Debug
-#        DEPENDS pale)
+    # Use current Python (helps conda/venv)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
+
+    # Module target
+    add_library(pale MODULE Pale/pale_bindings.cpp)
+    target_link_libraries(pale PRIVATE PaleLib pybind11::module)
+    target_compile_features(pale PRIVATE cxx_std_20)
+    target_compile_options(pale PRIVATE -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
+
+    # If the bindings submit SYCL, decorate the module as well
+    add_sycl_to_target(TARGET pale)
+
+    # Produce 'pale.so' without 'lib' prefix or 'd' postfix
+    set_target_properties(pale PROPERTIES
+            PREFIX ""                # pale.so
+            OUTPUT_NAME "pale"
+            DEBUG_POSTFIX ""         # avoid paled.so
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN YES
+    )
+
+    # Install into the active interpreter's site-packages
+    set(PYTHON_SITE "${Python3_SITEARCH}")
+    if(NOT PYTHON_SITE)
+        set(PYTHON_SITE "${Python3_SITELIB}")
+    endif()
+
+    include(GNUInstallDirs)
+    install(TARGETS pale
+            LIBRARY DESTINATION "${PYTHON_SITE}"
+            RUNTIME DESTINATION "${PYTHON_SITE}"
+            ARCHIVE DESTINATION "${PYTHON_SITE}"
+    )
+
+    add_custom_target(install_pale_debug
+            COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --config Debug
+            DEPENDS pale)
+else()
+    message(STATUS "BUILD_PYBIND=OFF: skipping Python module")
+endif()

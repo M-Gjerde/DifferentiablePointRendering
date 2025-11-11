@@ -154,13 +154,12 @@ namespace Pale {
             groupIndices.clear();
         };
 
-        // Flushing a group: (ordered Bernoulli thinning) for a group of splats. In the equations this is a S_slice subset S of all the splats along a ray
         auto scatterCurrentGroup = [&](rng::Xorshift128 &rng)-> bool {
             if (groupLocalTs.empty()) return false;
 
             // 1) push this slice’s events into LocalHit (depth-sorted already)
             for (size_t i = 0; i < groupLocalTs.size(); ++i) {
-                if (localHitOut.splatEventCount >= kMaxSplatEvents - 1)
+                if (localHitOut.splatEventCount >= kMaxSplatEvents)
                     continue;
 
                 int index = localHitOut.splatEventCount++;
@@ -173,6 +172,7 @@ namespace Pale {
             float productOneMinusAlpha = 1.0f;
             for (size_t i = 0; i < groupAlphas.size(); ++i) productOneMinusAlpha *= (1.0f - groupAlphas[i]);
             float compositeAlpha = 1.0f - productOneMinusAlpha;
+                compositeAlpha = sycl::clamp(compositeAlpha, 0.0f, 1.0f);
 
             if (compositeAlpha <= 0.0f) {
                 // No effect
@@ -181,7 +181,7 @@ namespace Pale {
             }
 
             float uniformSample = rng.nextFloat();
-            if (uniformSample >= compositeAlpha) {
+            if (uniformSample >= compositeAlpha && rayIntersectMode != RayIntersectMode::Scatter) {
                 // Full transmission through this depth slice
                 cumulativeTransmittanceBefore *= (1.0f - compositeAlpha);
                 clearCurrentGroup();
@@ -259,9 +259,13 @@ namespace Pale {
                 const bool hitRight = computeAabbEntry(rayObject, bvhNodes[rightIndex], inverseDirection,
                                                        bestAcceptedTHit, rightTEntry);
 
-                //if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                if (hitLeft) traversalStack.push(leftIndex);
-                if (hitRight) traversalStack.push(rightIndex);
+                if (hitLeft && hitRight) {
+                    pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                } else if (hitLeft) {
+                    traversalStack.push(leftIndex);
+                } else if (hitRight) {
+                    traversalStack.push(rightIndex);
+                }
                 continue;
             }
 
@@ -277,9 +281,9 @@ namespace Pale {
             leafDepthKeys.clear();
 
             for (uint32_t local = 0; local < node.triCount; ++local) {
-                if (leafLocalTHits.size() - 1 >= kMaxSplatEvents) {
+                if (leafLocalTHits.size() >= kMaxSplatEvents)
                     continue;
-                }
+
 
                 const uint32_t surfelIndex = node.leftFirst + local;
                 const Point &surfel = scene.points[surfelIndex];
@@ -316,7 +320,7 @@ namespace Pale {
             // Stream into running depth group
             for (int k = 0; k < leafCount; ++k) {
                 const int i = order[k];
-                const float alphaAtHit = leafAlphas[k];
+                const float alphaAtHit = leafAlphas[i];
                 const float depthKey = leafDepthKeys[i]; // world-ray key
                 const float localTHit = leafLocalTHits[i]; // object-space t
                 const uint32_t surfelIndex = leafIndices[i];
@@ -421,9 +425,13 @@ namespace Pale {
                 const bool hitRight = computeAabbEntry(rayWorld, tlasNodes[rightIndex], inverseDirectionWorld,
                                                        bestWorldTHit, rightTEntry);
 
-                //if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                if (hitLeft) traversalStack.push(leftIndex);
-                if (hitRight) traversalStack.push(rightIndex);
+                if (hitLeft && hitRight) {
+                    pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                } else if (hitLeft) {
+                    traversalStack.push(leftIndex);
+                } else if (hitRight) {
+                    traversalStack.push(rightIndex);
+                }
                 continue;
             }
 
@@ -444,9 +452,7 @@ namespace Pale {
                 for (size_t i = 0; i < localHit.splatEventCount; ++i) {
                     worldHitOut->splatEvents[i].alpha = localHit.splatEvents[i].alpha;
                     worldHitOut->splatEvents[i].primitiveIndex = localHit.splatEvents[i].primitiveIndex;
-                    if (worldHitOut->splatEvents[i].primitiveIndex == UINT32_MAX) {
-                        int debug = 1;
-                    }
+
                     const float3 hitPointWorld = toWorldPoint(
                         rayObject.origin + localHit.splatEvents[i].t * rayObject.direction,
                         transform);

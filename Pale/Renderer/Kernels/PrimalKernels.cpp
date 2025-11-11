@@ -48,10 +48,10 @@ namespace Pale {
                     if (cosTheta <= 0.0f) return;
 
                     // PDFs
-                    const float pdfDir  = cosTheta * (1.0f / 3.1415926535f); // cosine hemisphere
-                    const float pdfPos  = ls.pdfArea;                        // area-domain, world area
-                    const float pdfLight= ls.pdfSelectLight;                 // light selection
-                    const float pdfTotal= pdfLight * pdfPos * pdfDir;
+                    const float pdfDir = cosTheta * (1.0f / 3.1415926535f); // cosine hemisphere
+                    const float pdfPos = ls.pdfArea; // area-domain, world area
+                    const float pdfLight = ls.pdfSelectLight; // light selection
+                    const float pdfTotal = pdfLight * pdfPos * pdfDir;
                     if (pdfTotal <= 0.0f) return;
 
                     // Initial throughput (power-conserving)
@@ -61,10 +61,10 @@ namespace Pale {
 
                     // Write ray
                     RayState ray{};
-                    ray.ray.origin      = ls.positionW;
-                    ray.ray.direction   = sampledDirection;
-                    ray.pathThroughput  = initialThroughput;
-                    ray.bounceIndex     = 0u;
+                    ray.ray.origin = ls.positionW;
+                    ray.ray.direction = sampledDirection;
+                    ray.pathThroughput = initialThroughput;
+                    ray.bounceIndex = 0u;
 
                     auto counter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
@@ -91,7 +91,7 @@ namespace Pale {
 
             WorldHit worldHit{};
             RayState rayState = m_intermediates.primaryRays[rayIndex];
-            intersectScene(rayState.ray, &worldHit, m_scene, rng128);
+            intersectScene(rayState.ray, &worldHit, m_scene, rng128, RayIntersectMode::Random);
             if (!worldHit.hit) {
                 m_intermediates.hitRecords[rayIndex] = worldHit;
                 return;
@@ -237,7 +237,7 @@ namespace Pale {
                         DevicePhotonSurface photonEntry{};
                         photonEntry.position = worldHit.hitPositionW;
                         photonEntry.power = rayState.pathThroughput;
-                        const float signedCosineIncident = dot(worldHit.geometricNormalW,  -rayState.ray.direction);
+                        const float signedCosineIncident = dot(worldHit.geometricNormalW, -rayState.ray.direction);
                         photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
                         photonEntry.sideSign = signNonZero(signedCosineIncident);
                         photonEntry.primitiveIndex = instance.geometryType == GeometryType::Mesh
@@ -323,7 +323,7 @@ namespace Pale {
                     //ray.origin = float3{0.0, -4.0, 1.0};
 
                     WorldHit worldHit{};
-                    intersectScene(ray, &worldHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
+                    intersectScene(ray, &worldHit, scene, rng128, RayIntersectMode::Random); // Force transmit
 
                     //if (pixelIndex  > 2) {
                     //return;
@@ -337,26 +337,26 @@ namespace Pale {
                     float3 Lsheet(0.0f);
                     float tau = 1.0f;
 
-                    for (int i = 0; i < worldHit.splatEventCount; ++i) {
+                    for (int i = 0; i < worldHit.splatEventCount - 1; ++i) {
                         const auto &splatEvent = worldHit.splatEvents[i];
                         if (worldHit.hit && splatEvent.t >= worldHit.t)
                             break;
 
-                        bool useOneSidedScatter = true;
-                        float3 Efront = estimateSurfelRadianceFromPhotonMap(
-                            splatEvent, ray.direction, scene, photonMap,
-                            useOneSidedScatter);
-                        float3 Eback = estimateSurfelRadianceFromPhotonMap(
-                            splatEvent, -ray.direction, scene, photonMap,
-                            useOneSidedScatter);
+                        //bool useOneSidedScatter = true;
+                        //float3 Efront = estimateSurfelRadianceFromPhotonMap(
+                        //    splatEvent, ray.direction, scene, photonMap,
+                        //    useOneSidedScatter);
+                        //float3 Eback = estimateSurfelRadianceFromPhotonMap(
+                        //    splatEvent, -ray.direction, scene, photonMap,
+                        //    useOneSidedScatter);
 
-                        const float3 diffuseAlbedo = scene.points[splatEvent.primitiveIndex].color;
-                        const float3 lambertBrdf = diffuseAlbedo * M_1_PIf;
-
-                        float reflectanceWeight = splatEvent.alpha * 0.5f; // 50% chance of reflectance
-                        float transmissionWeight = splatEvent.alpha * 0.5f; // 50% chance of transmission
-                        float3 L = (Efront * reflectanceWeight) + (Eback * transmissionWeight);
-                        Lsheet = Lsheet + L * tau * lambertBrdf;
+                        //const float3 diffuseAlbedo = scene.points[splatEvent.primitiveIndex].color;
+                        //const float3 lambertBrdf = diffuseAlbedo * M_1_PIf;
+                        //
+                        //float reflectanceWeight = splatEvent.alpha * 0.5f; // 50% chance of reflectance
+                        //float transmissionWeight = splatEvent.alpha * 0.5f; // 50% chance of transmission
+                        //float3 L = (Efront * reflectanceWeight) + (Eback * transmissionWeight);
+                        //Lsheet = Lsheet + L * tau * lambertBrdf;
 
                         tau *= (1.0f - splatEvent.alpha);
                     }
@@ -365,6 +365,26 @@ namespace Pale {
 
                     if (worldHit.hit) {
                         const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+
+                        if (instance.geometryType == GeometryType::PointCloud) {
+                            auto splatEvent = worldHit.splatEvents[worldHit.splatEventCount - 1];
+                            const float interactionAlpha = splatEvent.alpha; // α
+                            const float reflectWeight = 0.5f * interactionAlpha; // ρ_r = α/2
+                            const float transmitWeight = 0.5f * interactionAlpha; // ρ_t = α/2
+
+                            // event probabilities
+                            const float probReflect = reflectWeight / interactionAlpha;
+                            // a 50/50 if we reflect or transmit
+                            const bool chooseReflect = (rng128.nextFloat() < probReflect);
+
+                            float3 direction = chooseReflect ? ray.direction : -ray.direction;
+                            float3 L_surfel = estimateSurfelRadianceFromPhotonMap(
+                               splatEvent , direction, scene, photonMap,
+                                true);
+
+                            radianceRGB = L_surfel * tau;
+                        }
+
 
                         if (instance.geometryType == GeometryType::Mesh) {
                             // If the mesh itself is emissive, add its emitted radiance (already radiance units)
@@ -393,10 +413,10 @@ namespace Pale {
                                 const float3 emittedLe = material.emissive * tau * geometricToCamera;
                                 const float3 reflectedL =
                                         estimateRadianceFromPhotonMap(worldHit, scene, photonMap) * tau * lambertBrdf;
-                                radianceRGB = radianceRGB + (emittedLe + reflectedL);
+                                radianceRGB = (emittedLe + reflectedL);
                             } else {
                                 const float3 L = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-                                radianceRGB = radianceRGB + (L * tau * lambertBrdf);
+                                radianceRGB = (L * tau * lambertBrdf);
                             }
                         }
                     }
