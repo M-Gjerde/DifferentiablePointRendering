@@ -202,21 +202,21 @@ def render_with_translation(renderer, tx: float, ty: float, tz: float) -> np.nda
 def main():
     # --- settings ---
     renderer_settings = {
-        "photons": 4e6,
+        "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 10,
-        "gather_passes": 64,
+        "forward_passes": 8,
+        "gather_passes": 1024,
         "adjoint_bounces": 4,
         "adjoint_passes": 6,
     }
     # central differences over translation.x: (f(+e) - f(-e)) / (2e)
-    eps = 0.025
+    eps = 0.01
     axis = "x"  # "y" or "z"
 
     assets_root = Path(__file__).parent.parent / "Assets"
     scene_xml = "cbox_custom.xml"
 
-    scene = "flower"
+    scene = "initial"
     pointcloud_ply = scene + ".ply"
 
     print(assets_root)
@@ -245,7 +245,7 @@ def main():
     # np.save(output_dir / "central_diff_gradient_raw_rgb_float32.npy", grad_raw.astype(np.float32))
 
     # display-space gradient by finite differences
-    exposure_stops, gamma_val = 1, 1
+    exposure_stops, gamma_val = 1.8, 2.0
     disp_minus = tonemap_exposure_gamma(rgb_minus, exposure_stops, gamma_val)
     disp_plus = tonemap_exposure_gamma(rgb_plus, exposure_stops, gamma_val)
     grad_disp_fd = (disp_plus - disp_minus) / (2.0 * eps)

@@ -153,8 +153,8 @@ int main(int argc, char **argv) {
     settings.maxBounces = 4;
     settings.numForwardPasses = 4;
     settings.numGatherPasses = 32;
-    settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 16;
+    settings.maxAdjointBounces = 1;
+    settings.adjointSamplesPerPixel = 8;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);
@@ -176,8 +176,8 @@ int main(int argc, char **argv) {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
         const uint32_t W = sensor.width, H = sensor.height;
-        float gamma = 2.8f;
-        float exposure = 5.8f;
+        float gamma = 2.6f;
+        float exposure = 2.8f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out_photonmap.png";
         if (Pale::Utils::savePNGWithToneMap(
             filePath, rgba, W, H,
