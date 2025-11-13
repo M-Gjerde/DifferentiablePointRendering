@@ -202,10 +202,10 @@ def render_with_translation(renderer, tx: float, ty: float, tz: float) -> np.nda
 def main():
     # --- settings ---
     renderer_settings = {
-        "photons": 1e6,
+        "photons": 1e5,
         "bounces": 4,
-        "forward_passes": 8,
-        "gather_passes": 1024,
+        "forward_passes": 40,
+        "gather_passes": 16,
         "adjoint_bounces": 4,
         "adjoint_passes": 6,
     }
@@ -228,7 +228,7 @@ def main():
 
     # --- choose perturbation vector ---
     if axis == "x":
-        neg_vec, pos_vec = (0, 0.0, 0.0), (+eps, 0.0, 0.0)
+        neg_vec, pos_vec = (-eps, 0.0, 0.0), (+eps, 0.0, 0.0)
     elif axis == "y":
         neg_vec, pos_vec = (0.0, -eps, 0.0), (0.0, +eps, 0.0)
     elif axis == "z":

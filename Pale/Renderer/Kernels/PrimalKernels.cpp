@@ -395,22 +395,6 @@ namespace Pale {
                         if (worldHit.hit && splatEvent.t >= worldHit.t)
                             break;
 
-                        //bool useOneSidedScatter = true;
-                        //float3 Efront = estimateSurfelRadianceFromPhotonMap(
-                        //    splatEvent, ray.direction, scene, photonMap,
-                        //    useOneSidedScatter);
-                        //float3 Eback = estimateSurfelRadianceFromPhotonMap(
-                        //    splatEvent, -ray.direction, scene, photonMap,
-                        //    useOneSidedScatter);
-
-                        //const float3 diffuseAlbedo = scene.points[splatEvent.primitiveIndex].color;
-                        //const float3 lambertBrdf = diffuseAlbedo * M_1_PIf;
-                        //
-                        //float reflectanceWeight = splatEvent.alpha * 0.5f; // 50% chance of reflectance
-                        //float transmissionWeight = splatEvent.alpha * 0.5f; // 50% chance of transmission
-                        //float3 L = (Efront * reflectanceWeight) + (Eback * transmissionWeight);
-                        //Lsheet = Lsheet + L * tau * lambertBrdf;
-
                         tau *= (1.0f - splatEvent.alpha);
                     }
 
@@ -420,19 +404,25 @@ namespace Pale {
                         if (instance.geometryType == GeometryType::PointCloud) {
                             auto splatEvent = worldHit.splatEvents[worldHit.splatEventCount - 1];
 
-                            float3 L_surfel = estimateSurfelRadianceFromPhotonMap(
+                            bool useOneSidedScatter = true;
+                            float3 Efront = estimateSurfelRadianceFromPhotonMap(
                                 splatEvent, ray.direction, scene, photonMap,
-                                true);
+                                useOneSidedScatter);
+                            float3 Eback = estimateSurfelRadianceFromPhotonMap(
+                                splatEvent, -ray.direction, scene, photonMap,
+                                useOneSidedScatter);
 
-                            float cosine = std::abs(dot(ray.direction, -worldHit.geometricNormalW));
-                            radianceRGB = L_surfel * tau * cosine;
+                            float reflectanceWeight = splatEvent.alpha * 0.5f; // 50% chance of reflectance
+                            float transmissionWeight = splatEvent.alpha * 0.5f; // 50% chance of transmission
+                            float3 L = (Efront * reflectanceWeight) + (Eback * transmissionWeight);
+
+                            radianceRGB =  L * tau;
                         }
 
 
                         if (instance.geometryType == GeometryType::Mesh) {
                             // If the mesh itself is emissive, add its emitted radiance (already radiance units)
                             const GPUMaterial& material = scene.materials[instance.materialIndex];
-                            float cosine = dot(-ray.direction, worldHit.geometricNormalW);
 
                             if (material.isEmissive()) {
                                 float distanceToCamera = length(worldHit.hitPositionW - ray.origin);
@@ -445,12 +435,12 @@ namespace Pale {
                                 // Optionally evaluate Le(x, wo) from your material; shown as baseColor for brevity
                                 const float3 emittedLe = material.emissive * tau * geometricToCamera;
                                 const float3 reflectedL =
-                                    estimateRadianceFromPhotonMap(worldHit, scene, photonMap) * tau * cosine;
+                                    estimateRadianceFromPhotonMap(worldHit, scene, photonMap) * tau;
                                 radianceRGB = (emittedLe + reflectedL);
                             }
                             else {
                                 const float3 L = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-                                radianceRGB = (L * tau * cosine);
+                                radianceRGB = (L * tau);
                             }
                         }
                     }
