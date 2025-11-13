@@ -151,10 +151,10 @@ int main(int argc, char **argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e5; // 1e6
     settings.maxBounces = 4;
-    settings.numForwardPasses = 40;
+    settings.numForwardPasses = 20;
     settings.numGatherPasses = 16;
-    settings.maxAdjointBounces = 1;
-    settings.adjointSamplesPerPixel = 4;
+    settings.maxAdjointBounces = 2;
+    settings.adjointSamplesPerPixel = 1;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);

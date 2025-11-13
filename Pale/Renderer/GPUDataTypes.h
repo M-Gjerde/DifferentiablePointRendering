@@ -262,6 +262,10 @@ namespace Pale {
         float inv = 1.f / s;
         return {a.x() * inv, a.y() * inv, a.z() * inv};
     }
+    inline float3 operator/(float s, float3 a) {
+        float inv = 1.f / s;
+        return {a.x() * inv, a.y() * inv, a.z() * inv};
+    }
 
 
     inline float3 min(float3 a, float3 b) { return sycl::min(a.v, b.v); }

@@ -130,10 +130,6 @@ namespace Pale {
                     const bool isWatched = isWatchedPixel(pixelX, pixelY);
                     uint32_t recordBounceIndex = 0;
 
-                    if (rayState.bounceIndex != recordBounceIndex) {
-                        return;
-                    }
-
                     const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
 
                     {
@@ -179,7 +175,6 @@ namespace Pale {
 
                                 auto splatEvent = whTransmit.splatEvents[0];
                                 // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
-                                constexpr float epsilon = 1e-6f;
                                 int validCount = 0;
                                 const auto surfel = scene.points[splatEvent.primitiveIndex];
                                 const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
@@ -203,7 +198,6 @@ namespace Pale {
                                 const float pAdjoint = luminanceGrayscale(rayState.pathThroughput);
                                 float3 dTauDc = -dAlphaDc;
                                 // Accumulate to your running gradient
-                                float lumianceReachingCamera = L_bg * tau;
                                 d_grad_pos = pAdjoint * L_bg * dTauDc; // no extra *tau or /tau
 
 
@@ -220,7 +214,7 @@ namespace Pale {
                                 */
                             }
 
-                            //shadowRayGrad = shadowRays(scene, worldHit, rayState, photonMap, rng128) * 0.1;
+                            //shadowRayGrad = shadowRays(scene, whTransmit, rayState, photonMap, rng128) * 0.025;
                             //d_grad_pos += shadowRayGrad;
                             if (rayState.bounceIndex >= recordBounceIndex) {
                                 const float dVdp_scalar = dot(d_grad_pos, parameterAxis);
@@ -246,33 +240,9 @@ namespace Pale {
                                 };
                                 // 1) Build intervening splat list on (t_x, t_y), excluding terminal scatter surfel
                                 // Do this however through a shadow ray
-                                float3 tauGrad{0.0f};
                                 BoundedVector<LocalTerm, kMaxSplatEvents> intervening;
                                 intervening.clear();
                                 const Ray& ray = rayState.ray;
-                                for (int ei = 0; ei < whScatter.splatEventCount - 1; ++ei) {
-                                    const auto& evt = whScatter.splatEvents[ei];
-                                    const auto surfel = scene.points[evt.primitiveIndex];
-                                    const float3 dAlphaDc = gradTransmissionPosition(
-                                        rayState.ray, evt, surfel, (whScatter.hitPositionW - ray.origin));
-                                    intervening.pushBack({evt.alpha, dAlphaDc});
-                                }
-
-                                // 2) τ and ∂τ/∂c from intervening set
-                                float logTau = 0.0f;
-                                constexpr float epsilon = 1e-6f;
-                                for (int i = 0; i < intervening.size(); ++i) {
-                                    const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
-                                    logTau += sycl::log(oneMinusAlpha);
-                                }
-                                float tau = sycl::exp(logTau);
-
-                                for (int i = 0; i < intervening.size(); ++i) {
-                                    const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
-                                    tauGrad += (-intervening[i].dAlphaDc) / oneMinusAlpha;
-                                }
-                                tauGrad *= tau;
-
 
                                 // 3) Terminal scatter at z: dα/dc with correct sign
                                 const auto& terminal = whScatter.splatEvents[whScatter.splatEventCount - 1];
@@ -298,7 +268,7 @@ namespace Pale {
                                     const float3 albedoRgb = surfel.color;
 
                                     const float3 dFs_dC = (M_1_PIf) * (dAlphaDc * albedoRgb);
-                                    const float3 f_s_rgb = (M_1_PIf) * (alpha * albedoRgb);
+                                    float3 f_s_rgb = (M_1_PIf) * (alpha * albedoRgb);
 
                                     // Cosine and its gradient
                                     float cosineSigned = 0.0f;
@@ -311,23 +281,15 @@ namespace Pale {
                                     const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
                                         terminal, ray.direction, scene, photonMap,
                                         false, true, true);
-
-                                    const float3 surfelRadianceRGB_B = estimateSurfelRadianceFromPhotonMap(
-                                        terminal, -ray.direction, scene, photonMap,
-                                        true, true, true);
-
                                     float L_surfel = luminanceGrayscale(surfelRadianceRGB);
-                                    float L_surfel_B = luminanceGrayscale(surfelRadianceRGB_B);
-
                                     // 5) Final gradient assembly
-                                    const float3 pAdjoint = rayState.pathThroughput;
-                                    float p = luminanceGrayscale(pAdjoint);
+                                    float3 pAdjoint = rayState.pathThroughput;
+                                    float p = luminanceGrayscale(pAdjoint );
                                     // Transmission gradient from direction change
                                     // use in gradient assembly
                                     float3 brdfGrad = dFs_dC;
-                                    float3 cosineGrad = dCosineDc * f_s_rgb;
 
-                                    float3 grad = p * L_surfel * (brdfGrad);
+                                    float3 grad = p * L_surfel * dFs_dC;
                                     d_grad_pos = grad;
 
 
@@ -350,6 +312,7 @@ namespace Pale {
                                 atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
                             }
                         }
+
                     }
                 });
         });
@@ -452,134 +415,6 @@ namespace Pale {
                     nextState.pixelIndex = rayState.pixelIndex;
                     nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
 
-                    //if (nextState.bounceIndex >= settings.russianRouletteStart) {
-                    //    // Luminance-based continuation probability in [pMin, 1]
-                    //    const float3 throughputRgb = nextState.pathThroughput;
-                    //    const float luminance = 0.2126f * throughputRgb.x() + 0.7152f * throughputRgb.y() + 0.0722f *
-                    //                            throughputRgb.z();
-                    //    const float pMin = 0.10f; // safety floor to avoid zero-probability bias
-                    //    const float continuationProbability = sycl::clamp(luminance, pMin, 1.0f);
-                    //
-                    //    if (rng128.nextFloat() >= continuationProbability) {
-                    //        raysOut[rayIndex] = nextState;
-                    //        hitRecords[rayIndex] = WorldHit{};
-                    //        return; // terminate path, do not enqueue
-                    //    }
-                    //    nextState.pathThroughput = nextState.pathThroughput / continuationProbability; // unbiased
-                    //}
-
-                    // Transmission gradients on environment:
-
-                    /*
-                    float3 d_grad_pos(0.0f);
-                    const Ray &ray = rayState.ray;
-
-                    // Transmission gradients with shadow rays
-                    if (instance.geometryType == GeometryType::Mesh && worldHit.splatEventCount) {
-                        d_grad_pos += transmissionGradients(scene, worldHit, rayState, instance, photonMap);
-                        d_grad_pos += shadowRays(scene, worldHit, rayState, photonMap, rng128);
-                    }
-
-
-                    if (instance.geometryType == GeometryType::PointCloud) {
-                        struct LocalTerm {
-                            float alpha{};
-                            float3 dAlphaDc;
-                        };
-                        // 1) Build intervening splat list on (t_x, t_y), excluding terminal scatter surfel
-                        // Do this however through a shadow ray
-                        float3 tauGrad{0.0f};
-                        float tauTotal = 1.0f;
-                        BoundedVector<LocalTerm, kMaxSplatEvents> intervening;
-                        intervening.clear();
-                        for (int ei = 0; ei < worldHit.splatEventCount - 1; ++ei) {
-                            const auto &evt = worldHit.splatEvents[ei];
-                            const auto surfel = scene.points[evt.primitiveIndex];
-                            const float3 dAlphaDc = gradTransmissionPosition(
-                                rayState.ray, evt, surfel, (worldHit.hitPositionW - ray.origin));
-                            intervening.pushBack({evt.alpha, dAlphaDc});
-                        }
-
-                        // 2) τ and ∂τ/∂c from intervening set
-                        float logTau = 0.0f;
-                        constexpr float epsilon = 1e-6f;
-                        for (int i = 0; i < intervening.size(); ++i) {
-                            const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
-                            logTau += sycl::log(oneMinusAlpha);
-                        }
-                        tauTotal = sycl::exp(logTau);
-
-                        for (int i = 0; i < intervening.size(); ++i) {
-                            const float oneMinusAlpha = sycl::fmax(1.0f - intervening[i].alpha, epsilon);
-                            tauGrad = tauGrad + (-intervening[i].dAlphaDc) / oneMinusAlpha;
-                        }
-                        tauGrad = tauGrad * tauTotal;
-
-                        // 3) Terminal scatter at y: dα/dc with correct sign
-                        const auto &terminal = worldHit.splatEvents[worldHit.splatEventCount - 1];
-                        if (worldHit.primitiveIndex == terminal.primitiveIndex) {
-                            const auto surfel = scene.points[terminal.primitiveIndex];
-                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-
-                            // BSDF gradient (Scatter)
-                            const float denom = dot(canonicalNormalW, ray.direction);
-                            if (sycl::fabs(denom) <= 1e-4f)
-                                return;
-                            const float2 uv = phiInverse(terminal.hitWorld, surfel);
-                            const float alpha = terminal.alpha;
-                            const float tuDotD = dot(surfel.tanU, ray.direction);
-                            const float tvDotD = dot(surfel.tanV, ray.direction);
-                            const float su = surfel.scale.x();
-                            const float sv = surfel.scale.y();
-                            const float3 duDc = ((tuDotD / denom) * canonicalNormalW - surfel.tanU) / su;
-                            const float3 dvDc = ((tvDotD / denom) * canonicalNormalW - surfel.tanV) / sv;
-                            // Correct sign and sum
-                            const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
-                            float color = luminanceGrayscale(surfel.color);
-
-                            const float3 dFBsdfDc = (M_1_PIf) * dAlphaDc * color;
-
-                            const float3 fBsdf = (M_1_PIf) * alpha * surfel.color;
-                            float fBsdf_luminance = luminanceGrayscale(fBsdf);
-
-                            // COSINE derivative
-                            float cosineSigned = 0.0f;
-                            float3 gradCosineWrtPosition{0.0f};
-                            cosineAndGradientWrtPosition(ray.origin, terminal.hitWorld, canonicalNormalW,
-                                                         cosineSigned, gradCosineWrtPosition);
-
-                            const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
-                            float sign = travelSideSign;
-                            // Use side-aware cosines for the lobe you evaluate:
-                            float cosine = cosineSigned * sign;
-                            const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
-                                worldHit.splatEvents[worldHit.splatEventCount - 1], ray.direction, scene, photonMap,
-                                true);
-                            float L_surfel = luminanceGrayscale(surfelRadianceRGB);
-
-                            // 5) Final gradient assembly
-                            const float3 pAdjoint = rayState.pathThroughput;
-                            // Transmission gradient from direction change
-                            // use in gradient assembly
-                            float3 brdfGrad = dFBsdfDc * tauTotal * cosine;
-                            float3 cosineGrad = gradCosineWrtPosition * tauTotal * fBsdf_luminance;
-                            float3 transmissionGrad = tauGrad * cosine * fBsdf_luminance;
-
-                            float3 grad = pAdjoint * L_surfel * (brdfGrad + transmissionGrad);
-
-                            d_grad_pos += grad;
-                        }
-                    }
-
-
-                    if (rayState.bounceIndex >= 0) {
-                        const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
-                        const float dVdp_scalar = dot(d_grad_pos, parameterAxis);
-
-                        float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
-                        atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
-                    }
-                    */
 
                     // compacted enqueue
                     sycl::atomic_ref<uint32_t,

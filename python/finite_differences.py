@@ -204,8 +204,8 @@ def main():
     renderer_settings = {
         "photons": 1e5,
         "bounces": 4,
-        "forward_passes": 40,
-        "gather_passes": 16,
+        "forward_passes": 50,
+        "gather_passes": 64,
         "adjoint_bounces": 4,
         "adjoint_passes": 6,
     }
