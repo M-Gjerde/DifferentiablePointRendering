@@ -310,7 +310,7 @@ namespace Pale {
 
                                     const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
                                         terminal, ray.direction, scene, photonMap,
-                                        true, true, true);
+                                        false, true, true);
 
                                     const float3 surfelRadianceRGB_B = estimateSurfelRadianceFromPhotonMap(
                                         terminal, -ray.direction, scene, photonMap,
