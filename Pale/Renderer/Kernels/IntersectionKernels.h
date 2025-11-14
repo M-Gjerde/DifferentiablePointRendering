@@ -153,65 +153,114 @@ namespace Pale {
             groupAlphas.clear();
             groupIndices.clear();
         };
+        RayIntersectMode::Scatter;
+        RayIntersectMode::Random;
+        RayIntersectMode::Transmit;
 
-        auto scatterCurrentGroup = [&](rng::Xorshift128 &rng)-> bool {
+
+        auto scatterCurrentGroup = [&](rng::Xorshift128 &randomNumberGenerator) -> bool {
             if (groupLocalTs.empty()) return false;
 
-            // 1) push this slice’s events into LocalHit (depth-sorted already)
-            for (size_t i = 0; i < groupLocalTs.size(); ++i) {
+            // 1) Push this slice’s events into LocalHit (depth-sorted already)
+            for (size_t groupIndex = 0; groupIndex < groupLocalTs.size(); ++groupIndex) {
                 if (localHitOut.splatEventCount >= kMaxSplatEvents)
                     continue;
 
-                int index = localHitOut.splatEventCount++;
-                localHitOut.splatEvents[index].t = groupLocalTs[i];
-                localHitOut.splatEvents[index].alpha = groupAlphas[i];
-                localHitOut.splatEvents[index].primitiveIndex = groupIndices[i];
+                const int eventIndex = localHitOut.splatEventCount++;
+                localHitOut.splatEvents[eventIndex].t = groupLocalTs[groupIndex];
+                localHitOut.splatEvents[eventIndex].alpha = groupAlphas[groupIndex];
+                localHitOut.splatEvents[eventIndex].primitiveIndex = groupIndices[groupIndex];
             }
 
-            // Composite acceptance at this depth
+            // 2) Composite alpha at this depth slice
             float productOneMinusAlpha = 1.0f;
-            for (size_t i = 0; i < groupAlphas.size(); ++i) productOneMinusAlpha *= (1.0f - groupAlphas[i]);
+            for (size_t groupIndex = 0; groupIndex < groupAlphas.size(); ++groupIndex) {
+                productOneMinusAlpha *= (1.0f - groupAlphas[groupIndex]);
+            }
+
             float compositeAlpha = 1.0f - productOneMinusAlpha;
-                compositeAlpha = sycl::clamp(compositeAlpha, 0.0f, 1.0f);
+            compositeAlpha = sycl::clamp(compositeAlpha, 0.0f, 1.0f);
 
             if (compositeAlpha <= 0.0f) {
-                // No effect
+                // No opacity contribution at this slice
                 clearCurrentGroup();
                 return false;
             }
 
-            float uniformSample = rng.nextFloat();
-            if (uniformSample >= compositeAlpha && rayIntersectMode != RayIntersectMode::Scatter) {
-                // Full transmission through this depth slice
+            // 3) Handle mode-specific logic
+            bool mustScatter = false;
+            bool mustTransmit = false;
+
+            switch (rayIntersectMode) {
+                case RayIntersectMode::Transmit: {
+                    mustTransmit = true;
+                    break;
+                }
+                case RayIntersectMode::Random: {
+                    // Original behavior: stochastic choice between transmit and scatter
+                    const float uniformSample = randomNumberGenerator.nextFloat();
+                    if (uniformSample < compositeAlpha) {
+                        mustScatter = true;
+                    } else {
+                        mustTransmit = true;
+                    }
+                    break;
+                }
+                case RayIntersectMode::Scatter: {
+                    // Debug / forced-scatter mode: if there is any opacity in this slice,
+                    // we must scatter on exactly one event in this group.
+                    mustScatter = true;
+                    // NOTE: for strict unbiasedness you would usually compensate throughput
+                    // by dividing by compositeAlpha here.
+                    break;
+                }
+            }
+
+            if (mustTransmit) {
+                // Pure transmission through this slice
                 cumulativeTransmittanceBefore *= (1.0f - compositeAlpha);
                 clearCurrentGroup();
                 return false;
             }
 
-            // Scatter inside this group using sequential thinning (unbiased)
+            if (!mustScatter) {
+                // Defensive, but logically we should always be either scatter or transmit
+                clearCurrentGroup();
+                return false;
+            }
+
+            // 4) We are in a "scatter" mode (Random-accepted or forced Scatter):
+            //    pick exactly one event in this group using sequential thinning.
             float survivalInsideGroup = 1.0f;
-            for (size_t i = 0; i < groupAlphas.size(); ++i) {
-                float probabilityFirstHere = groupAlphas[i] * survivalInsideGroup / sycl::fmax(compositeAlpha, 1e-8f);
-                if (rng.nextFloat() < probabilityFirstHere) {
-                    localHitOut.t = groupLocalTs[i];
-                    localHitOut.primitiveIndex = groupIndices[i];
+            const float safeCompositeAlpha = sycl::fmax(compositeAlpha, 1e-8f);
+
+            for (size_t groupIndex = 0; groupIndex < groupAlphas.size(); ++groupIndex) {
+                const float eventAlpha = groupAlphas[groupIndex];
+                const float probabilityFirstHere =
+                        eventAlpha * survivalInsideGroup / safeCompositeAlpha;
+
+                if (randomNumberGenerator.nextFloat() < probabilityFirstHere) {
+                    localHitOut.t = groupLocalTs[groupIndex];
+                    localHitOut.primitiveIndex = groupIndices[groupIndex];
                     localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                    // transmittance before the accepted event
-                    // Dont count this as a splat event
+                    // Do not count this as a splat event, only as the main hit.
 
                     clearCurrentGroup();
                     return true; // accepted scatter at this depth
                 }
-                survivalInsideGroup *= (1.0f - groupAlphas[i]);
+
+                survivalInsideGroup *= (1.0f - eventAlpha);
             }
 
-            // Fallback: pick last
+            // 5) Fallback: numerics might occasionally skip everything; enforce one event
             localHitOut.t = groupLocalTs.back();
             localHitOut.primitiveIndex = groupIndices.back();
             localHitOut.transmissivity = cumulativeTransmittanceBefore;
+
             clearCurrentGroup();
             return true;
         };
+
 
         auto transmitCurrentGroup = [&](rng::Xorshift128 &rng)-> bool {
             if (groupLocalTs.empty()) return false;

@@ -154,81 +154,81 @@ public:
     }
 
 
-   // Replace your current render_backward with this:
-py::tuple render_backward(const py::array& targetRgb32f) {
-    // --- validate target ---
-    py::buffer_info info = targetRgb32f.request();
-    if (info.ndim != 3 || info.shape[2] != 3) {
-        throw std::runtime_error("target must be HxWx3 float32");
+    // Replace your current render_backward with this:
+    py::tuple render_backward(const py::array &targetRgb32f) {
+        // --- validate target ---
+        py::buffer_info info = targetRgb32f.request();
+        if (info.ndim != 3 || info.shape[2] != 3) {
+            throw std::runtime_error("target must be HxWx3 float32");
+        }
+        if (info.itemsize != sizeof(float)) {
+            throw std::runtime_error("target dtype must be float32");
+        }
+        const int64_t Ht = static_cast<int64_t>(info.shape[0]);
+        const int64_t Wt = static_cast<int64_t>(info.shape[1]);
+
+        auto q = deviceSelector->getQueue();
+
+        // --- GPU work without the GIL ---
+        py::gil_scoped_release release;
+
+        // Optional: upload target to device if your tracer expects it.
+        // Example (adjust to your API):
+        // pathTracer->setAdjointTarget(static_cast<float*>(info.ptr), Wt, Ht);
+
+        // Run adjoint
+        pathTracer->renderBackward(sensorAdjoint);
+
+        // Download gradients (Nx3)
+        std::vector<Pale::float3> gradHost(gradCount);
+        //q.memcpy(gradHost.data(), gradientPkBuffer, gradCount * sizeof(Pale::float3)).wait();
+
+        // Download adjoint framebuffer RGBA (HxWx4 float)
+        auto rgbaHost = Pale::downloadSensorRGBA(q, sensorAdjoint);
+        const uint32_t W = sensorAdjoint.width;
+        const uint32_t H = sensorAdjoint.height;
+
+        // --- back to Python world ---
+        py::gil_scoped_acquire acquire;
+
+        // Wrap gradients as (N,3) float32
+        auto gradOwner = new std::vector<Pale::float3>(std::move(gradHost));
+        std::vector<ssize_t> gshape{static_cast<ssize_t>(gradCount), 3};
+        std::vector<ssize_t> gstrides{static_cast<ssize_t>(sizeof(Pale::float3)), static_cast<ssize_t>(sizeof(float))};
+        py::array gradArray(
+            py::buffer_info(
+                gradOwner->data(), // ptr
+                sizeof(float), // itemsize
+                py::format_descriptor<float>::format(),
+                2, // ndim
+                gshape,
+                gstrides
+            ),
+            py::capsule(gradOwner, [](void *p) { delete static_cast<std::vector<Pale::float3> *>(p); })
+        );
+
+        // Wrap RGBA as (H,W,4) float32
+        auto imgOwner = new std::vector<float>(std::move(rgbaHost));
+        std::vector<ssize_t> ishape{static_cast<ssize_t>(H), static_cast<ssize_t>(W), 4};
+        std::vector<ssize_t> istrides{
+            static_cast<ssize_t>(W) * 4 * static_cast<ssize_t>(sizeof(float)),
+            static_cast<ssize_t>(4) * static_cast<ssize_t>(sizeof(float)),
+            static_cast<ssize_t>(sizeof(float))
+        };
+        py::array imgArray(
+            py::buffer_info(
+                imgOwner->data(),
+                sizeof(float),
+                py::format_descriptor<float>::format(),
+                3,
+                ishape,
+                istrides
+            ),
+            py::capsule(imgOwner, [](void *p) { delete static_cast<std::vector<float> *>(p); })
+        );
+
+        return py::make_tuple(gradArray, imgArray);
     }
-    if (info.itemsize != sizeof(float)) {
-        throw std::runtime_error("target dtype must be float32");
-    }
-    const int64_t Ht = static_cast<int64_t>(info.shape[0]);
-    const int64_t Wt = static_cast<int64_t>(info.shape[1]);
-
-    auto q = deviceSelector->getQueue();
-
-    // --- GPU work without the GIL ---
-    py::gil_scoped_release release;
-
-    // Optional: upload target to device if your tracer expects it.
-    // Example (adjust to your API):
-    // pathTracer->setAdjointTarget(static_cast<float*>(info.ptr), Wt, Ht);
-
-    // Run adjoint
-    pathTracer->renderBackward(sensorAdjoint);
-
-    // Download gradients (Nx3)
-    std::vector<Pale::float3> gradHost(gradCount);
-    //q.memcpy(gradHost.data(), gradientPkBuffer, gradCount * sizeof(Pale::float3)).wait();
-
-    // Download adjoint framebuffer RGBA (HxWx4 float)
-    auto rgbaHost = Pale::downloadSensorRGBA(q, sensorAdjoint);
-    const uint32_t W = sensorAdjoint.width;
-    const uint32_t H = sensorAdjoint.height;
-
-    // --- back to Python world ---
-    py::gil_scoped_acquire acquire;
-
-    // Wrap gradients as (N,3) float32
-    auto gradOwner = new std::vector<Pale::float3>(std::move(gradHost));
-    std::vector<ssize_t> gshape{ static_cast<ssize_t>(gradCount), 3 };
-    std::vector<ssize_t> gstrides{ static_cast<ssize_t>(sizeof(Pale::float3)), static_cast<ssize_t>(sizeof(float)) };
-    py::array gradArray(
-        py::buffer_info(
-            gradOwner->data(),                   // ptr
-            sizeof(float),                       // itemsize
-            py::format_descriptor<float>::format(),
-            2,                                   // ndim
-            gshape,
-            gstrides
-        ),
-        py::capsule(gradOwner, [](void* p){ delete static_cast<std::vector<Pale::float3>*>(p); })
-    );
-
-    // Wrap RGBA as (H,W,4) float32
-    auto imgOwner = new std::vector<float>(std::move(rgbaHost));
-    std::vector<ssize_t> ishape{ static_cast<ssize_t>(H), static_cast<ssize_t>(W), 4 };
-    std::vector<ssize_t> istrides{
-        static_cast<ssize_t>(W) * 4 * static_cast<ssize_t>(sizeof(float)),
-        static_cast<ssize_t>(4) * static_cast<ssize_t>(sizeof(float)),
-        static_cast<ssize_t>(sizeof(float))
-    };
-    py::array imgArray(
-        py::buffer_info(
-            imgOwner->data(),
-            sizeof(float),
-            py::format_descriptor<float>::format(),
-            3,
-            ishape,
-            istrides
-        ),
-        py::capsule(imgOwner, [](void* p){ delete static_cast<std::vector<float>*>(p); })
-    );
-
-    return py::make_tuple(gradArray, imgArray);
-}
 
     // Optional: set renderer settings from Python
     void set_adjoint_spp(float samplesPerPixel) {
@@ -241,54 +241,61 @@ py::tuple render_backward(const py::array& targetRgb32f) {
         return {static_cast<int>(sensorForward.width), static_cast<int>(sensorForward.height)};
     }
 
-    void set_gaussian_transform(py::tuple translation3, py::tuple rotationQuat4, py::tuple scale3) {
-        if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3) {
-            throw std::runtime_error("Expected translation(3), rotation_quat(4), scale(3)");
-        }
-        const glm::vec3 newTranslation{
-            py::cast<float>(translation3[0]),
-            py::cast<float>(translation3[1]),
-            py::cast<float>(translation3[2])
-        };
-        // quaternion as (x, y, z, w)
-        const glm::quat newRotation{
-            py::cast<float>(rotationQuat4[3]),
-            py::cast<float>(rotationQuat4[0]),
-            py::cast<float>(rotationQuat4[1]),
-            py::cast<float>(rotationQuat4[2])
-        };
-        const glm::vec3 newScale{
-            py::cast<float>(scale3[0]),
-            py::cast<float>(scale3[1]),
-            py::cast<float>(scale3[2])
-        };
-
-        // 1) mutate the CPU-side scene
-        bool found = false;
-        auto view = scene->getAllEntitiesWith<Pale::TransformComponent, Pale::TagComponent>();
-        for (auto [entityId, transformComponent, tagComponent]: view.each()) {
-            if (tagComponent.tag == std::string("Gaussian")) {
-                transformComponent.translation = newTranslation;
-                transformComponent.rotation = newRotation;
-                transformComponent.scale = newScale;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            throw std::runtime_error("Entity with tag 'Gaussian' not found");
-        }
-
-        // 2) push the change to GPU. Easiest safe path: rebuild + re-upload.
-        Pale::AssetAccessFromManager assetAccessor(*assetManager);
-        buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
-        sceneGpu = Pale::SceneUpload::upload(buildProducts, deviceSelector->getQueue());
-        sensorForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
-        sensorAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
-
-        // 3) rebind the scene in the path tracer if needed
-        pathTracer->setScene(sceneGpu, buildProducts);
+void set_gaussian_transform(py::tuple translation3,
+                            py::tuple rotationQuat4,
+                            py::tuple scale3,
+                            int index = -1) {
+    if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3) {
+        throw std::runtime_error("Expected translation(3), rotation_quat(4), scale(3)");
     }
+
+    const glm::vec3 newTranslation{
+        py::cast<float>(translation3[0]),
+        py::cast<float>(translation3[1]),
+        py::cast<float>(translation3[2])
+    };
+
+    // quaternion as (x, y, z, w)
+    const glm::quat newRotation{
+        py::cast<float>(rotationQuat4[3]),
+        py::cast<float>(rotationQuat4[0]),
+        py::cast<float>(rotationQuat4[1]),
+        py::cast<float>(rotationQuat4[2])
+    };
+
+    const glm::vec3 newScale{
+        py::cast<float>(scale3[0]),
+        py::cast<float>(scale3[1]),
+        py::cast<float>(scale3[2])
+    };
+
+    Pale::AssetAccessFromManager assetAccessor(*assetManager);
+    buildProducts = Pale::SceneBuild::build(
+        scene,
+        assetAccessor,
+        Pale::SceneBuild::BuildOptions()
+    );
+
+    // --- apply translation to either one point or all points ---
+    if (index < 0) {
+        // perturb all points
+        const sycl::float3 translationDelta = Pale::glm2sycl(newTranslation);
+        for (auto &point : buildProducts.points) {
+            point.position += translationDelta;
+        }
+    } else {
+        if (static_cast<std::size_t>(index) >= buildProducts.points.size()) {
+            throw std::out_of_range("set_gaussian_transform: index out of range");
+        }
+        buildProducts.points[index].position += Pale::glm2sycl(newTranslation);
+    }
+
+    sceneGpu = Pale::SceneUpload::upload(buildProducts, deviceSelector->getQueue());
+    sensorForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+    sensorAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+
+    pathTracer->setScene(sceneGpu, buildProducts);
+}
 
 private:
     std::unique_ptr<Pale::AssetManager> assetManager{};
@@ -329,5 +336,5 @@ PYBIND11_MODULE(pale, m) {
             .def("set_adjoint_spp", &PythonRenderer::set_adjoint_spp)
             .def("get_image_size", &PythonRenderer::get_image_size)
             .def("set_gaussian_transform", &PythonRenderer::set_gaussian_transform,
-                 py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"));
+                 py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"),          py::arg("index") = -1);
 }

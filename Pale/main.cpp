@@ -153,8 +153,8 @@ int main(int argc, char **argv) {
     settings.maxBounces = 4;
     settings.numForwardPasses = 20;
     settings.numGatherPasses = 16;
-    settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 1;
+    settings.maxAdjointBounces = 1;
+    settings.adjointSamplesPerPixel = 32;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);

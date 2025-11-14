@@ -1,6 +1,7 @@
 # main.py
 import time
 from pathlib import Path
+import argparse
 
 import numpy as np
 from PIL import Image
@@ -16,7 +17,8 @@ def save_rgb_float32_npy(img_f32: np.ndarray, out_path: Path) -> None:
 def tonemap_exposure_gamma(linear: np.ndarray, exposure_stops: float, gamma: float) -> np.ndarray:
     # T(x) = (1 - exp(-k x))^(1/gamma), k = 2**stops
     k = 2.0 ** exposure_stops
-    y = 1.0 - np.exp(-k * np.clip(linear, 0.0, None))
+    x = np.clip(linear, 0.0, None)
+    y = 1.0 - np.exp(-k * x)
     return np.power(np.clip(y, 0.0, 1.0), 1.0 / max(gamma, 1e-6))
 
 
@@ -174,7 +176,9 @@ def saveSignedLogCompress(signed_array: np.ndarray, out_png: Path,
     comp = np.zeros_like(s, dtype=np.float32)
     denom = np.log1p(scale / max(epsilon, 1e-12))
     denom = denom if denom > 0 else 1.0
-    comp[finite] = np.sign(s[finite]) * np.log1p(np.abs(s[finite]) / max(epsilon, 1e-12)) / denom
+    comp[finite] = np.sign(s[finite]) * np.log1p(
+        np.abs(s[finite]) / max(epsilon, 1e-12)
+    ) / denom
     comp = np.clip(comp, -1.0, 1.0)
 
     t = 0.5 * (comp + 1.0)
@@ -185,12 +189,13 @@ def saveSignedLogCompress(signed_array: np.ndarray, out_png: Path,
 
 
 # ---------- Render + central differences ----------
-def render_with_translation(renderer, tx: float, ty: float, tz: float) -> np.ndarray:
+def render_with_translation(renderer, tx: float, ty: float, tz: float, i: int) -> np.ndarray:
     """Apply TRS on 'Gaussian', render, return HxWx3 float32 linear RGB. Raw."""
     renderer.set_gaussian_transform(
         translation3=(tx, ty, tz),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),  # (x,y,z,w)
         scale3=(1.0, 1.0, 1.0),
+        index=i
     )
     rgb = renderer.render_forward()  # C++ ignores args; returns linear float32
     rgb = np.asarray(rgb, dtype=np.float32)
@@ -199,28 +204,30 @@ def render_with_translation(renderer, tx: float, ty: float, tz: float) -> np.nda
     return rgb
 
 
-def main():
+def main(args) -> None:
     # --- settings ---
     renderer_settings = {
         "photons": 1e5,
         "bounces": 4,
         "forward_passes": 50,
-        "gather_passes": 64,
+        "gather_passes": 16,
         "adjoint_bounces": 4,
         "adjoint_passes": 6,
     }
     # central differences over translation.x: (f(+e) - f(-e)) / (2e)
-    eps = 0.01
+    eps = args.eps
     axis = "x"  # "y" or "z"
 
     assets_root = Path(__file__).parent.parent / "Assets"
     scene_xml = "cbox_custom.xml"
 
-    scene = "initial"
-    pointcloud_ply = scene + ".ply"
+    pointcloud_ply = args.scene + ".ply"
 
-    print(assets_root)
-    output_dir = Path(__file__).parent / "Output" / scene
+    print("Assets root:", assets_root)
+    print("Scene:", args.scene)
+    print("Index:", args.index)
+
+    output_dir = Path(__file__).parent / "Output" / args.scene
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- init renderer ---
@@ -237,15 +244,15 @@ def main():
         raise ValueError("axis must be 'x', 'y', or 'z'")
 
     # --- render: minus and plus ---
-    rgb_minus = render_with_translation(renderer, *neg_vec)
-    rgb_plus = render_with_translation(renderer, *pos_vec)
+    rgb_minus = render_with_translation(renderer, *neg_vec, args.index)
+    rgb_plus = render_with_translation(renderer, *pos_vec,  args.index)
 
     # raw gradient
     grad_raw = (rgb_plus - rgb_minus) / (2.0 * eps)
     # np.save(output_dir / "central_diff_gradient_raw_rgb_float32.npy", grad_raw.astype(np.float32))
 
     # display-space gradient by finite differences
-    exposure_stops, gamma_val = 1.8, 2.0
+    exposure_stops, gamma_val = 2.8, 2.0
     disp_minus = tonemap_exposure_gamma(rgb_minus, exposure_stops, gamma_val)
     disp_plus = tonemap_exposure_gamma(rgb_plus, exposure_stops, gamma_val)
     grad_disp_fd = (disp_plus - disp_minus) / (2.0 * eps)
@@ -262,8 +269,8 @@ def main():
     save_rgb_preview_png(rgb_minus, output_dir / "initial.png", exposure_stops, gamma_val)
     save_rgb_preview_png(rgb_plus, output_dir / "target.png", exposure_stops, gamma_val)
 
-    # luminance projection
-    w = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    # luminance projection (equal weights)
+    w = np.array([1.0, 1.0, 1.0], dtype=np.float32) / 3.0
     luma_grad = np.tensordot(grad_disp_fd, w, 1)
 
     # legacy visualizers
@@ -317,5 +324,29 @@ def main():
     time.sleep(1)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Finite-difference gradient visualization for Pale renderer.")
+    parser.add_argument(
+        "--scene",
+        type=str,
+        default="initial",
+        help="Scene base name (PLY without extension). Default: 'initial'.",
+    )
+    parser.add_argument(
+        "--index",
+        type=int,
+        default=-1,
+        help="Gaussian index to perturb (>=0 for single, -1 for all). Default: -1.",
+    )
+    parser.add_argument(
+        "--eps",
+        type=float,
+        default=-0.01,
+        help="eps",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(args)

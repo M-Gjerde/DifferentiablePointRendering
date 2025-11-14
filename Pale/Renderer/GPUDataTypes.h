@@ -404,6 +404,13 @@ namespace Pale {
         return out;
     }
 
+    inline float3 glm2sycl(const glm::vec3 &m) {
+        float3 out;
+        for (int r = 0; r < 3; ++r)
+            out[r] = m[r];
+        return out;
+    }
+
     inline float3x3 glm2sycl(const glm::mat3 &m) {
         float3x3 out;
         for (int r = 0; r < 3; ++r)

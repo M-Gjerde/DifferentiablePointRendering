@@ -10,23 +10,23 @@
 #include "IntersectionKernels.h"
 
 namespace Pale {
-    void launchRayGenEmitterKernel(RenderPackage& pkg) {
+    void launchRayGenEmitterKernel(RenderPackage &pkg) {
         auto queue = pkg.queue;
         auto scene = pkg.scene;
         auto sensor = pkg.sensor;
         auto settings = pkg.settings;
 
-        auto* hitRecords = pkg.intermediates.hitRecords;
-        auto* raysIn = pkg.intermediates.primaryRays;
-        auto* raysOut = pkg.intermediates.extensionRaysA;
-        auto* countPrimary = pkg.intermediates.countPrimary;
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
+        auto *raysOut = pkg.intermediates.extensionRaysA;
+        auto *countPrimary = pkg.intermediates.countPrimary;
 
 
         const uint32_t photonCount = settings.photonsPerLaunch;
         const uint32_t forwardPasses = settings.numForwardPasses;
         const float totalPhotons = photonCount * forwardPasses;
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             uint64_t baseSeed = settings.randomSeed;
 
             commandGroupHandler.parallel_for<struct RayGenEmitterKernelTag>(
@@ -67,9 +67,9 @@ namespace Pale {
                     ray.bounceIndex = 0u;
 
                     auto counter = sycl::atomic_ref<uint32_t,
-                                                    sycl::memory_order::relaxed,
-                                                    sycl::memory_scope::device,
-                                                    sycl::access::address_space::global_space>(*countPrimary);
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(*countPrimary);
                     const uint32_t slot = counter.fetch_add(1);
                     raysIn[slot] = ray;
                 });
@@ -97,16 +97,15 @@ namespace Pale {
                 return;
             }
 
-            auto& instance = m_scene.instances[worldHit.instanceIndex];
+            auto &instance = m_scene.instances[worldHit.instanceIndex];
 
             switch (instance.geometryType) {
-            case GeometryType::Mesh:
-                {
-                    const Triangle& triangle = m_scene.triangles[worldHit.primitiveIndex];
-                    const Transform& objectWorldTransform = m_scene.transforms[instance.transformIndex];
-                    const Vertex& vertex0 = m_scene.vertices[triangle.v0];
-                    const Vertex& vertex1 = m_scene.vertices[triangle.v1];
-                    const Vertex& vertex2 = m_scene.vertices[triangle.v2];
+                case GeometryType::Mesh: {
+                    const Triangle &triangle = m_scene.triangles[worldHit.primitiveIndex];
+                    const Transform &objectWorldTransform = m_scene.transforms[instance.transformIndex];
+                    const Vertex &vertex0 = m_scene.vertices[triangle.v0];
+                    const Vertex &vertex1 = m_scene.vertices[triangle.v1];
+                    const Vertex &vertex2 = m_scene.vertices[triangle.v2];
                     // Canonical geometric normal (no face-forwarding)
                     const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
                     const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
@@ -117,9 +116,8 @@ namespace Pale {
                 }
                 break;
 
-            case GeometryType::PointCloud:
-                {
-                    const auto& surfel = m_scene.points[worldHit.primitiveIndex];
+                case GeometryType::PointCloud: {
+                    const auto &surfel = m_scene.points[worldHit.primitiveIndex];
                     // Canonical surfel normal from tangents (no face-forwarding)
                     const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                     worldHit.geometricNormalW = canonicalNormalW;
@@ -135,13 +133,13 @@ namespace Pale {
         PathTracerSettings m_settings{};
     };
 
-    void launchIntersectKernel(RenderPackage& pkg, uint32_t activeRayCount) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        auto& intermediates = pkg.intermediates;
+    void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             LaunchIntersectKernel kernel(scene, intermediates, settings);
             cgh.parallel_for<struct IntersectKernelTag>(
                 sycl::range<1>(activeRayCount), kernel);
@@ -150,18 +148,18 @@ namespace Pale {
     }
 
 
-    void generateNextRays(RenderPackage& pkg, uint32_t activeRayCount) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
+    void generateNextRays(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
 
-        auto& intermediates = pkg.intermediates;
-        auto* hitRecords = pkg.intermediates.hitRecords;
-        auto* raysIn = pkg.intermediates.primaryRays;
-        auto* raysOut = pkg.intermediates.extensionRaysA;
-        auto* countExtensionOut = pkg.intermediates.countExtensionOut;
+        auto &intermediates = pkg.intermediates;
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
+        auto *raysOut = pkg.intermediates.extensionRaysA;
+        auto *countExtensionOut = pkg.intermediates.countExtensionOut;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<class ShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
@@ -198,12 +196,11 @@ namespace Pale {
                             // NULL TRANSMIT: keep direction, no weight change
                             sampledOutgoingDirectionW = rayState.ray.direction;
                             // throughputMultiplier stays 1
-                        }
-                        else {
+                        } else {
                             // SURFACE EVENT
                             const float3 enteredSideNormalW = (signNonZero(
-                                                                  dot(worldHit.geometricNormalW,
-                                                                      -rayState.ray.direction)) >= 0)
+                                                                   dot(worldHit.geometricNormalW,
+                                                                       -rayState.ray.direction)) >= 0)
                                                                   ? worldHit.geometricNormalW
                                                                   : (-worldHit.geometricNormalW);
 
@@ -226,16 +223,16 @@ namespace Pale {
                     }
 
                     if (settings.rayGenMode == RayGenMode::Emitter) {
-                        auto& devicePtr = *intermediates.map.photonCountDevicePtr;
+                        auto &devicePtr = *intermediates.map.photonCountDevicePtr;
                         sycl::atomic_ref<uint32_t,
-                                         sycl::memory_order::acq_rel,
-                                         sycl::memory_scope::device,
-                                         sycl::access::address_space::global_space>
-                            photonCounter(devicePtr);
+                                    sycl::memory_order::acq_rel,
+                                    sycl::memory_scope::device,
+                                    sycl::access::address_space::global_space>
+                                photonCounter(devicePtr);
 
 
                         // Also deposit splatEvents
-                        for (const auto& event : worldHit.splatEvents) {
+                        for (const auto &event: worldHit.splatEvents) {
                             if (event.t >= worldHit.t)
                                 continue;
 
@@ -244,7 +241,7 @@ namespace Pale {
                                 DevicePhotonSurface photonEntry{};
                                 photonEntry.position = event.hitWorld;
                                 photonEntry.power = rayState.pathThroughput;
-                                const auto& surfel = scene.points[event.primitiveIndex];
+                                const auto &surfel = scene.points[event.primitiveIndex];
                                 const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
 
                                 const float signedCosineIncident = dot(canonicalNormalW, -rayState.ray.direction);
@@ -297,9 +294,9 @@ namespace Pale {
 
                     // --- Enqueue ---
                     auto extensionCounter = sycl::atomic_ref<uint32_t,
-                                                             sycl::memory_order::relaxed,
-                                                             sycl::memory_scope::device,
-                                                             sycl::access::address_space::global_space>(
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(
                         *countExtensionOut);
                     const uint32_t outIndex = extensionCounter.fetch_add(1);
                     raysOut[outIndex] = nextState;
@@ -310,12 +307,12 @@ namespace Pale {
 
 
     // ---- Kernel: Camera gather (one thread per pixel) --------------------------
-    void launchCameraGatherKernel(RenderPackage& pkg, int totalSamplesPerPixel) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& sensor = pkg.sensor;
-        auto& settings = pkg.settings;
-        auto& photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+    void launchCameraGatherKernel(RenderPackage &pkg, int totalSamplesPerPixel) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
 
         const std::uint32_t imageWidth = sensor.camera.width;
         const std::uint32_t imageHeight = sensor.camera.height;
@@ -323,7 +320,7 @@ namespace Pale {
 
         // Clear framebuffer before calling this, outside.
         const float gatherRadius = photonMap.gatherRadiusWorld;
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = pkg.settings.randomSeed;
             auto samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
             cgh.parallel_for<class CameraGatherKernel>(
@@ -352,16 +349,15 @@ namespace Pale {
                     if (!worldHit.hit) {
                         return;
                     }
-                    const InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
+                    const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
 
                     switch (instance.geometryType) {
-                    case GeometryType::Mesh:
-                        {
-                            const Triangle& triangle = scene.triangles[worldHit.primitiveIndex];
-                            const Transform& objectWorldTransform = scene.transforms[instance.transformIndex];
-                            const Vertex& vertex0 = scene.vertices[triangle.v0];
-                            const Vertex& vertex1 = scene.vertices[triangle.v1];
-                            const Vertex& vertex2 = scene.vertices[triangle.v2];
+                        case GeometryType::Mesh: {
+                            const Triangle &triangle = scene.triangles[worldHit.primitiveIndex];
+                            const Transform &objectWorldTransform = scene.transforms[instance.transformIndex];
+                            const Vertex &vertex0 = scene.vertices[triangle.v0];
+                            const Vertex &vertex1 = scene.vertices[triangle.v1];
+                            const Vertex &vertex2 = scene.vertices[triangle.v2];
                             // Canonical geometric normal (no face-forwarding)
                             const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
                             const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
@@ -369,9 +365,8 @@ namespace Pale {
                             worldHit.geometricNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
                         }
                         break;
-                    case GeometryType::PointCloud:
-                        {
-                            const auto& surfel = scene.points[worldHit.primitiveIndex];
+                        case GeometryType::PointCloud: {
+                            const auto &surfel = scene.points[worldHit.primitiveIndex];
                             // Canonical surfel normal from tangents (no face-forwarding)
                             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                             worldHit.geometricNormalW = canonicalNormalW;
@@ -387,42 +382,46 @@ namespace Pale {
                     //intersectScene(ray, &worldHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
 
 
-                    float3 Lsheet(0.0f);
                     float tau = 1.0f;
-
-                    for (int i = 0; i < worldHit.splatEventCount - 1; ++i) {
-                        const auto& splatEvent = worldHit.splatEvents[i];
-                        if (worldHit.hit && splatEvent.t >= worldHit.t)
-                            break;
-
-                        tau *= (1.0f - splatEvent.alpha);
-                    }
-
                     if (worldHit.hit) {
-                        const InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
+                        const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
 
-                        if (instance.geometryType == GeometryType::PointCloud) {
-                            auto splatEvent = worldHit.splatEvents[worldHit.splatEventCount - 1];
+                        for (int i = 0; i < worldHit.splatEventCount; ++i) {
+                            const auto &splatEvent = worldHit.splatEvents[i];
+                            if (worldHit.hit && splatEvent.t > worldHit.t)
+                                break; // do not composite beyond the mesh hit
 
+                            /*
+                            float3 L_surfel = estimateSurfelRadianceFromPhotonMap(
+                                splatEvent, ray.direction, scene, photonMap,
+                                false);
+
+                            radianceRGB += L_surfel * tau * splatEvent.alpha;
+
+                            const float oneMinusAlpha = 1.0f - splatEvent.alpha;
+
+                            tau *= oneMinusAlpha;
+                            */
                             bool useOneSidedScatter = true;
                             float3 Efront = estimateSurfelRadianceFromPhotonMap(
-                                splatEvent, ray.direction, scene, photonMap,
-                                useOneSidedScatter);
+                                splatEvent, ray.direction, scene, photonMap, useOneSidedScatter);
                             float3 Eback = estimateSurfelRadianceFromPhotonMap(
-                                splatEvent, -ray.direction, scene, photonMap,
-                                useOneSidedScatter);
+                                splatEvent, -ray.direction, scene, photonMap, useOneSidedScatter);
+                            // Local surfel shading (you can refine this)
+                            float3 L_splat = 0.5f * Efront + 0.5f * Eback;
+                            const float oneMinusAlpha = 1.0f - splatEvent.alpha;
+                            // Add this surfel's contribution
+                            radianceRGB += tau * L_splat * splatEvent.alpha;
+                            // Update transmittance for future events
+                            tau *= oneMinusAlpha;
 
-                            float reflectanceWeight = splatEvent.alpha * 0.5f; // 50% chance of reflectance
-                            float transmissionWeight = splatEvent.alpha * 0.5f; // 50% chance of transmission
-                            float3 L = (Efront * reflectanceWeight) + (Eback * transmissionWeight);
-
-                            radianceRGB =  L * tau;
+                            if (tau <= 1e-4f)
+                                break; // almost fully opaque, no need to continue
                         }
-
 
                         if (instance.geometryType == GeometryType::Mesh) {
                             // If the mesh itself is emissive, add its emitted radiance (already radiance units)
-                            const GPUMaterial& material = scene.materials[instance.materialIndex];
+                            const GPUMaterial &material = scene.materials[instance.materialIndex];
 
                             if (material.isEmissive()) {
                                 float distanceToCamera = length(worldHit.hitPositionW - ray.origin);
@@ -430,17 +429,16 @@ namespace Pale {
                                 float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, ray.direction));
                                 // optional
                                 float geometricToCamera =
-                                    (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
+                                        (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
 
                                 // Optionally evaluate Le(x, wo) from your material; shown as baseColor for brevity
                                 const float3 emittedLe = material.emissive * tau * geometricToCamera;
                                 const float3 reflectedL =
-                                    estimateRadianceFromPhotonMap(worldHit, scene, photonMap) * tau;
-                                radianceRGB = (emittedLe + reflectedL);
-                            }
-                            else {
+                                        estimateRadianceFromPhotonMap(worldHit, scene, photonMap) * tau;
+                                radianceRGB += (emittedLe + reflectedL);
+                            } else {
                                 const float3 L = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-                                radianceRGB = (L * tau);
+                                radianceRGB += (L * tau);
                             }
                         }
                     }
@@ -454,16 +452,16 @@ namespace Pale {
     }
 
 
-    void launchDirectContributionKernel(RenderPackage& pkg, uint32_t activeRayCount
+    void launchDirectContributionKernel(RenderPackage &pkg, uint32_t activeRayCount
 
     ) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& sensor = pkg.sensor;
-        auto& settings = pkg.settings;
-        auto* raysIn = pkg.intermediates.primaryRays;
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto *raysIn = pkg.intermediates.primaryRays;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<struct launchDirectShadeKernel>(
                 sycl::range<1>(activeRayCount),
@@ -479,7 +477,7 @@ namespace Pale {
                     float3 throughput = rayState.pathThroughput;
 
                     // Construct Ray towards camera
-                    auto& camera = sensor.camera;
+                    auto &camera = sensor.camera;
                     float3 toPinhole = camera.pos - rayState.ray.origin;
                     float distanceToPinhole = length(toPinhole);
                     float3 directionToPinhole = toPinhole / distanceToPinhole;
@@ -510,27 +508,27 @@ namespace Pale {
                                 // FLIP Y
                                 const uint32_t idx = py * camera.width + px;
 
-                                float4& dst = sensor.framebuffer[idx];
+                                float4 &dst = sensor.framebuffer[idx];
                                 const sycl::atomic_ref<float,
-                                                       sycl::memory_order::relaxed,
-                                                       sycl::memory_scope::device,
-                                                       sycl::access::address_space::global_space>
-                                    r(dst.x());
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        r(dst.x());
                                 const sycl::atomic_ref<float,
-                                                       sycl::memory_order::relaxed,
-                                                       sycl::memory_scope::device,
-                                                       sycl::access::address_space::global_space>
-                                    g(dst.y());
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        g(dst.y());
                                 const sycl::atomic_ref<float,
-                                                       sycl::memory_order::relaxed,
-                                                       sycl::memory_scope::device,
-                                                       sycl::access::address_space::global_space>
-                                    b(dst.z());
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        b(dst.z());
                                 const sycl::atomic_ref<float,
-                                                       sycl::memory_order::relaxed,
-                                                       sycl::memory_scope::device,
-                                                       sycl::access::address_space::global_space>
-                                    a(dst.w());
+                                            sycl::memory_order::relaxed,
+                                            sycl::memory_scope::device,
+                                            sycl::access::address_space::global_space>
+                                        a(dst.w());
 
                                 // Attenuation (Geometry term)
                                 float surfaceCos = sycl::fabs(dot(float3{0, -1, 0}, directionToPinhole));
@@ -551,15 +549,15 @@ namespace Pale {
         queue.wait();
     }
 
-    void launchContributionKernel(RenderPackage& pkg, uint32_t activeRayCount) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& sensor = pkg.sensor;
-        auto& settings = pkg.settings;
-        auto* hitRecords = pkg.intermediates.hitRecords;
-        auto* raysIn = pkg.intermediates.primaryRays;
+    void launchContributionKernel(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<class ShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
@@ -575,21 +573,20 @@ namespace Pale {
                         return;
                     }
                     float3 pathThroughput = rayState.pathThroughput;
-                    auto& instance = scene.instances[worldHit.instanceIndex];
+                    auto &instance = scene.instances[worldHit.instanceIndex];
                     GPUMaterial material;
                     switch (instance.geometryType) {
-                    case GeometryType::Mesh:
-                        material = scene.materials[instance.materialIndex];
-                        break;
-                    case GeometryType::PointCloud:
-                        {
+                        case GeometryType::Mesh:
+                            material = scene.materials[instance.materialIndex];
+                            break;
+                        case GeometryType::PointCloud: {
                             auto val = scene.points[worldHit.primitiveIndex];
                             material.baseColor = val.color;
                         }
                         break;
                     }
                     // Construct Ray towards camera
-                    auto& camera = sensor.camera;
+                    auto &camera = sensor.camera;
                     float3 toPinhole = camera.pos - worldHit.hitPositionW;
                     float distanceToPinhole = length(toPinhole);
                     float3 directionToPinhole = toPinhole / distanceToPinhole;
@@ -628,10 +625,10 @@ namespace Pale {
                                                     camera.height - 1);
                     const uint32_t idx = py * camera.width + px;
 
-                    float4& dst = sensor.framebuffer[idx];
+                    float4 &dst = sensor.framebuffer[idx];
                     const sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                                           sycl::access::address_space::global_space>
-                        r(dst.x()), g(dst.y()), b(dst.z()), a(dst.w());
+                                sycl::access::address_space::global_space>
+                            r(dst.x()), g(dst.y()), b(dst.z()), a(dst.w());
                     r.fetch_add(color.x());
                     g.fetch_add(color.y());
                     b.fetch_add(color.z());
@@ -642,12 +639,12 @@ namespace Pale {
     }
 
 
-    void clearGridHeads(sycl::queue& q, DeviceSurfacePhotonMapGrid& g) {
+    void clearGridHeads(sycl::queue &q, DeviceSurfacePhotonMapGrid &g) {
         q.fill(g.cellHeadIndexArray, kInvalidIndex, g.totalCellCount).wait();
     }
 
-    void buildPhotonGridLinkedLists(sycl::queue& q, DeviceSurfacePhotonMapGrid g, uint32_t photonCount) {
-        q.submit([&](sycl::handler& h) {
+    void buildPhotonGridLinkedLists(sycl::queue &q, DeviceSurfacePhotonMapGrid g, uint32_t photonCount) {
+        q.submit([&](sycl::handler &h) {
             h.parallel_for(sycl::range<1>(photonCount), [=](sycl::id<1> id) {
                 uint32_t i = id[0];
                 DevicePhotonSurface ph = g.photons[i];
@@ -657,9 +654,9 @@ namespace Pale {
                 uint32_t cell = linearCellIndex(c, g.gridResolution);
 
                 auto headRef = sycl::atomic_ref<uint32_t,
-                                                sycl::memory_order::relaxed,
-                                                sycl::memory_scope::device,
-                                                sycl::access::address_space::global_space>(g.cellHeadIndexArray[cell]);
+                    sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(g.cellHeadIndexArray[cell]);
 
                 uint32_t oldHead = headRef.exchange(i);
                 g.photonNextIndexArray[i] = oldHead;

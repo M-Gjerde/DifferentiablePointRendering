@@ -1,25 +1,22 @@
 assets:
-  - id: 6953432834768447097
-    type: PointCloud
-    path: PointClouds/teapot.ply
-  - id: 14447114286131012469
-    type: Material
-    path: Materials/cbox_custom/emissive_1.mat.yaml
-  - id: 3514270847297637298
-    type: Material
-    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
-  - id: 17424037955325695206
-    type: Material
-    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
-  - id: 16465642377226518601
-    type: Material
-    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
-  - id: 627579352274144239
-    type: Material
-    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
-  - id: 6789433682363067825
-    type: PointCloud
-    path: PointClouds/initial.ply
-  - id: 14847325154464926888
+  - id: 4299918505745982712
     type: Mesh
     path: meshes/rectangle.obj
+  - id: 13363503810865050357
+    type: PointCloud
+    path: PointClouds/teapot.ply
+  - id: 10130846790949843887
+    type: Material
+    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
+  - id: 15482889100290619045
+    type: Material
+    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
+  - id: 6712626000771966648
+    type: Material
+    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
+  - id: 5768578947506949822
+    type: Material
+    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
+  - id: 10944908609124601872
+    type: Material
+    path: Materials/cbox_custom/emissive_1.mat.yaml

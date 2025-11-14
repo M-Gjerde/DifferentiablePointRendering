@@ -101,8 +101,11 @@ namespace Pale {
                 pkg.settings.randomSeed = pkg.settings.randomSeed * spp;
                 ScopedTimer forwardTimer("Traced adjoint pass", spdlog::level::debug);
 
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
+                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+                {
                     ScopedTimer timer("launchRayGenAdjointKernel");
+                    std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
+                    pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
                     launchRayGenAdjointKernel(pkg, spp);
                 }
 
