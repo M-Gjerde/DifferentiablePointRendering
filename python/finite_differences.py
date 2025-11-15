@@ -187,13 +187,35 @@ def saveSignedLogCompress(signed_array: np.ndarray, out_png: Path,
     Image.fromarray(rgb).save(out_png)
     return scale
 
+def degrees_to_quaternion(deg: float, axis: str):
+    """Quaternion (x, y, z, w) for rotation of `deg` degrees around axis {'x','y','z'}."""
+    rad = np.deg2rad(deg)
+    half = rad * 0.5
+    sin_h = np.sin(half)
+    cos_h = np.cos(half)
+
+    axis = axis.lower()
+    if axis == "x":
+        return (sin_h, 0.0, 0.0, cos_h)
+    elif axis == "y":
+        return (0.0, sin_h, 0.0, cos_h)
+    elif axis == "z":
+        return (0.0, 0.0, sin_h, cos_h)
+    else:
+        raise ValueError("axis must be 'x', 'y', or 'z'")
+
+
 
 # ---------- Render + central differences ----------
-def render_with_translation(renderer, tx: float, ty: float, tz: float, i: int) -> np.ndarray:
-    """Apply TRS on 'Gaussian', render, return HxWx3 float32 linear RGB. Raw."""
+def render_with_translation(renderer,
+                            tx: float,
+                            ty: float,
+                            tz: float,
+                            i: int) -> np.ndarray:
+    """Apply TRS with translation on 'Gaussian', render, return HxWx3 float32 linear RGB. Raw."""
     renderer.set_gaussian_transform(
         translation3=(tx, ty, tz),
-        rotation_quat4=(0.0, 0.0, 0.0, 1.0),  # (x,y,z,w)
+        rotation_quat4=(0.0, 0.0, 0.0, 1.0),  # (x, y, z, w)
         scale3=(1.0, 1.0, 1.0),
         index=i
     )
@@ -202,6 +224,44 @@ def render_with_translation(renderer, tx: float, ty: float, tz: float, i: int) -
     # C++ tonemapper (which flipped Y) is disabled, so flip here
     rgb = np.flipud(rgb)
     return rgb
+
+
+def render_with_rotation(renderer,
+                         degrees: float,
+                         axis: str,
+                         i: int) -> np.ndarray:
+    """Apply TRS with a rotation specified by (degrees, axis)."""
+    qx, qy, qz, qw = degrees_to_quaternion(degrees, axis)
+
+    renderer.set_gaussian_transform(
+        translation3=(0.0, 0.0, 0.0),
+        rotation_quat4=(qx, qy, qz, qw),
+        scale3=(1.0, 1.0, 1.0),
+        index=i
+    )
+
+    rgb = np.asarray(renderer.render_forward(), dtype=np.float32)
+    return np.flipud(rgb)
+
+
+
+def render_with_scale(renderer,
+                      sx: float,
+                      sy: float,
+                      sz: float,
+                      i: int) -> np.ndarray:
+    """Apply TRS with scale on 'Gaussian', render, return HxWx3 float32 linear RGB. Raw."""
+    renderer.set_gaussian_transform(
+        translation3=(0.0, 0.0, 0.0),
+        rotation_quat4=(0.0, 0.0, 0.0, 1.0),
+        scale3=(sx, sy, sz),
+        index=i
+    )
+    rgb = renderer.render_forward()
+    rgb = np.asarray(rgb, dtype=np.float32)
+    rgb = np.flipud(rgb)
+    return rgb
+
 
 
 def main(args) -> None:
@@ -214,18 +274,19 @@ def main(args) -> None:
         "adjoint_bounces": 4,
         "adjoint_passes": 6,
     }
-    # central differences over translation.x: (f(+e) - f(-e)) / (2e)
-    eps = args.eps
-    axis = "x"  # "y" or "z"
+
+    # use positive epsilon for central differences
+    eps = abs(args.eps)
+    axis = args.axis  # could also be an argparse argument if needed
 
     assets_root = Path(__file__).parent.parent / "Assets"
     scene_xml = "cbox_custom.xml"
-
     pointcloud_ply = args.scene + ".ply"
 
     print("Assets root:", assets_root)
     print("Scene:", args.scene)
     print("Index:", args.index)
+    print("Parameter:", args.param)
 
     output_dir = Path(__file__).parent / "Output" / args.scene
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -233,45 +294,69 @@ def main(args) -> None:
     # --- init renderer ---
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
 
-    # --- choose perturbation vector ---
-    if axis == "x":
-        neg_vec, pos_vec = (-eps, 0.0, 0.0), (+eps, 0.0, 0.0)
-    elif axis == "y":
-        neg_vec, pos_vec = (0.0, -eps, 0.0), (0.0, +eps, 0.0)
-    elif axis == "z":
-        neg_vec, pos_vec = (0.0, 0.0, -eps), (0.0, 0.0, +eps)
-    else:
-        raise ValueError("axis must be 'x', 'y', or 'z'")
+    # --- render: minus and plus depending on parameter type ---
+    if args.param == "translation":
+        # central differences over translation component: (f(+e) - f(-e)) / (2e)
+        if axis == "x":
+            negative_vector, positive_vector = (-eps, 0.0, 0.0), (+eps, 0.0, 0.0)
+        elif axis == "y":
+            negative_vector, positive_vector = (0.0, -eps, 0.0), (0.0, +eps, 0.0)
+        elif axis == "z":
+            negative_vector, positive_vector = (0.0, 0.0, -eps), (0.0, 0.0, +eps)
+        else:
+            raise ValueError("axis must be 'x', 'y', or 'z'")
 
-    # --- render: minus and plus ---
-    rgb_minus = render_with_translation(renderer, *neg_vec, args.index)
-    rgb_plus = render_with_translation(renderer, *pos_vec,  args.index)
+        rgb_minus = render_with_translation(renderer, *negative_vector, args.index)
+        rgb_plus = render_with_translation(renderer, *positive_vector, args.index)
+
+    elif args.param == "rotation":
+        # central differences over rotation angle (in degrees) around given axis
+        # parameter = rotation angle; we perturb by ±eps degrees
+        rgb_minus = render_with_rotation(renderer, -eps, axis, args.index)
+        rgb_plus = render_with_rotation(renderer, +eps, axis, args.index)
+
+    elif args.param == "scale":
+        # central differences over scale along one axis; base scale = 1
+        if axis == "x":
+            negative_scale = (1.0 - eps, 1.0, 1.0)
+            positive_scale = (1.0 + eps, 1.0, 1.0)
+        elif axis == "y":
+            negative_scale = (1.0, 1.0 - eps, 1.0)
+            positive_scale = (1.0, 1.0 + eps, 1.0)
+        elif axis == "z":
+            negative_scale = (1.0, 1.0, 1.0 - eps)
+            positive_scale = (1.0, 1.0, 1.0 + eps)
+        else:
+            raise ValueError("axis must be 'x', 'y', or 'z'")
+
+        rgb_minus = render_with_scale(renderer, *negative_scale, args.index)
+        rgb_plus = render_with_scale(renderer, *positive_scale, args.index)
+
+    else:
+        raise ValueError("param must be 'translation', 'rotation', or 'scale'")
 
     # raw gradient
     grad_raw = (rgb_plus - rgb_minus) / (2.0 * eps)
-    # np.save(output_dir / "central_diff_gradient_raw_rgb_float32.npy", grad_raw.astype(np.float32))
 
     # display-space gradient by finite differences
     exposure_stops, gamma_val = 2.8, 2.0
     disp_minus = tonemap_exposure_gamma(rgb_minus, exposure_stops, gamma_val)
     disp_plus = tonemap_exposure_gamma(rgb_plus, exposure_stops, gamma_val)
     grad_disp_fd = (disp_plus - disp_minus) / (2.0 * eps)
-    # np.save(output_dir / "central_diff_gradient_display_fd_rgb_float32.npy", grad_disp_fd.astype(np.float32))
 
     # display-space gradient via chain rule (predict from raw)
     dTdx_minus = d_tonemap_dx(rgb_minus, exposure_stops, gamma_val)
     dTdx_plus = d_tonemap_dx(rgb_plus, exposure_stops, gamma_val)
     dTdx_mid = 0.5 * (dTdx_minus + dTdx_plus)
     grad_disp_chain = dTdx_mid * grad_raw
-    # np.save(output_dir / "central_diff_gradient_display_chain_rgb_float32.npy", grad_disp_chain.astype(np.float32))
 
     # previews
     save_rgb_preview_png(rgb_minus, output_dir / "initial.png", exposure_stops, gamma_val)
     save_rgb_preview_png(rgb_plus, output_dir / "target.png", exposure_stops, gamma_val)
 
     # luminance projection (equal weights)
-    w = np.array([1.0, 1.0, 1.0], dtype=np.float32) / 3.0
-    luma_grad = np.tensordot(grad_disp_fd, w, 1)
+    weights_luminance = np.array([1.0, 1.0, 1.0], dtype=np.float32) / 3.0
+    luma_grad = np.tensordot(grad_disp_fd, weights_luminance, 1)
 
     # legacy visualizers
     save_color_luma_seismic_white(luma_grad, output_dir / "grad_disp_fd_luma_white.png")
@@ -291,21 +376,21 @@ def main(args) -> None:
 
     # direct percentiles for comparison with your previous function
     def save_seismic_signed(scalar: np.ndarray, out_png: Path, abs_quantile: float = 1.0) -> None:
-        s = np.asarray(scalar, dtype=np.float32)
-        finite = np.isfinite(s)
-        if not np.any(finite):
-            Image.fromarray(np.zeros((*s.shape, 3), dtype=np.uint8)).save(out_png)
+        scalar_array = np.asarray(scalar, dtype=np.float32)
+        finite_mask = np.isfinite(scalar_array)
+        if not np.any(finite_mask):
+            Image.fromarray(np.zeros((*scalar_array.shape, 3), dtype=np.uint8)).save(out_png)
             return
-        mags = np.abs(s[finite])
+        magnitudes = np.abs(scalar_array[finite_mask])
         q = np.clip(abs_quantile, 0.0, 1.0)
-        scale = (np.quantile(mags, q) if q < 1.0 else mags.max())
-        if not (np.isfinite(scale) and scale > 0.0):
-            scale = 1.0
-        norm = np.clip(s / scale, -1.0, 1.0)
-        t = 0.5 * (norm + 1.0)
+        scale_value = (np.quantile(magnitudes, q) if q < 1.0 else magnitudes.max())
+        if not (np.isfinite(scale_value) and scale_value > 0.0):
+            scale_value = 1.0
+        normalized = np.clip(scalar_array / scale_value, -1.0, 1.0)
+        t = 0.5 * (normalized + 1.0)
         rgba = cm.get_cmap("seismic")(t)
         rgb = (rgba[..., :3] * 255.0 + 0.5).astype(np.uint8)
-        rgb[~finite] = (255, 255, 255)
+        rgb[~finite_mask] = (255, 255, 255)
         Image.fromarray(rgb).save(out_png)
 
     # seismic, full range and 0.99 percentile for continuity with old outputs
@@ -325,7 +410,9 @@ def main(args) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Finite-difference gradient visualization for Pale renderer.")
+    parser = argparse.ArgumentParser(
+        description="Finite-difference gradient visualization for Pale renderer."
+    )
     parser.add_argument(
         "--scene",
         type=str,
@@ -341,8 +428,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--eps",
         type=float,
-        default=-0.01,
-        help="eps",
+        default=0.01,
+        help="Finite-difference step size for the chosen parameter (translation units, degrees, or scale).",
+    )
+    parser.add_argument(
+        "--param",
+        type=str,
+        choices=["translation", "rotation", "scale"],
+        default="translation",
+        help="Which parameter to finite-difference: 'translation', 'rotation', or 'scale'.",
+    )
+    parser.add_argument(
+        "--axis",
+        type=str,
+        choices=["x", "y", "z"],
+        default="axis of choice",
+        help="Which axis to finite-difference: 'translation', 'rotation', or 'scale'.",
     )
     return parser.parse_args()
 

@@ -121,7 +121,7 @@ namespace Pale {
                         launchIntersectKernel(pkg, activeCount);
                     } {
                         ScopedTimer timer("launchAdjointKernel");
-                        launchAdjointKernel(pkg, activeCount);
+                        bounce == 0 ? launchAdjointKernel(pkg, activeCount) : launchAdjointKernel2(pkg, activeCount);
                     } {
                         ScopedTimer timer("generateNextRays");
                         generateNextAdjointRays(pkg, activeCount);

@@ -1,22 +1,22 @@
 assets:
-  - id: 4299918505745982712
-    type: Mesh
-    path: meshes/rectangle.obj
-  - id: 13363503810865050357
-    type: PointCloud
-    path: PointClouds/teapot.ply
-  - id: 10130846790949843887
-    type: Material
-    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
-  - id: 15482889100290619045
-    type: Material
-    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
-  - id: 6712626000771966648
-    type: Material
-    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
-  - id: 5768578947506949822
-    type: Material
-    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
-  - id: 10944908609124601872
+  - id: 10684226483232516422
     type: Material
     path: Materials/cbox_custom/emissive_1.mat.yaml
+  - id: 11284158260735325421
+    type: PointCloud
+    path: PointClouds/initial.ply
+  - id: 9848152434049144944
+    type: Material
+    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
+  - id: 7190804370290899450
+    type: Material
+    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
+  - id: 16368163428953380691
+    type: Material
+    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
+  - id: 482189363629564353
+    type: Material
+    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
+  - id: 3048738304272769293
+    type: Mesh
+    path: meshes/rectangle.obj

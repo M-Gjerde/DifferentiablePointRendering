@@ -256,17 +256,16 @@ void set_gaussian_transform(py::tuple translation3,
     };
 
     // quaternion as (x, y, z, w)
-    const glm::quat newRotation{
-        py::cast<float>(rotationQuat4[3]),
-        py::cast<float>(rotationQuat4[0]),
-        py::cast<float>(rotationQuat4[1]),
-        py::cast<float>(rotationQuat4[2])
-    };
+        const glm::quat rotationDelta{
+            py::cast<float>(rotationQuat4[3]), // w
+            py::cast<float>(rotationQuat4[0]), // x
+            py::cast<float>(rotationQuat4[1]), // y
+            py::cast<float>(rotationQuat4[2])  // z
+        };
 
-    const glm::vec3 newScale{
+    const glm::vec2 newScale{
         py::cast<float>(scale3[0]),
         py::cast<float>(scale3[1]),
-        py::cast<float>(scale3[2])
     };
 
     Pale::AssetAccessFromManager assetAccessor(*assetManager);
@@ -282,6 +281,21 @@ void set_gaussian_transform(py::tuple translation3,
         const sycl::float3 translationDelta = Pale::glm2sycl(newTranslation);
         for (auto &point : buildProducts.points) {
             point.position += translationDelta;
+
+            // 3) scale vector on the Gaussian (if you store it per point)
+            const sycl::float2 scaleDelta = Pale::glm2sycl(newScale);
+
+            // 2) orientation: rotate tanU / tanV by the rotation delta
+            glm::vec3 tanUGlm = Pale::sycl2glm(point.tanU);
+            glm::vec3 tanVGlm = Pale::sycl2glm(point.tanV);
+            tanUGlm = rotationDelta * tanUGlm;
+            tanVGlm = rotationDelta * tanVGlm;
+            point.tanU = Pale::glm2sycl(tanUGlm);
+            point.tanV = Pale::glm2sycl(tanVGlm);
+
+
+            point.scale *= scaleDelta; // component-wise
+
         }
     } else {
         if (static_cast<std::size_t>(index) >= buildProducts.points.size()) {

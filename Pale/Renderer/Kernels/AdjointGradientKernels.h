@@ -5,8 +5,8 @@
 
 
 namespace Pale {
-    inline float3 gradTransmissionPosition(const Ray& ray, const SplatEvent& splatEvent, const Point& surfel,
-                                           const float3& segmentVector) {
+    inline float3 gradTransmissionPosition(const Ray &ray, const SplatEvent &splatEvent, const Point &surfel,
+                                           const float3 &segmentVector) {
         constexpr float epsilon = 1e-6f;
 
         const float3 tangentU = surfel.tanU;
@@ -35,8 +35,8 @@ namespace Pale {
         return dAlphaDc;
     }
 
-    inline float3 gradTransmissionProduct(const Ray& ray, const SplatEvent& splatEvent, const Point& surfel,
-                                          const float3& segmentVector) {
+    inline float3 gradTransmissionProduct(const Ray &ray, const SplatEvent &splatEvent, const Point &surfel,
+                                          const float3 &segmentVector) {
         constexpr float epsilon = 1e-6f;
 
         const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
@@ -60,30 +60,30 @@ namespace Pale {
 
         // d u / d c and d v / d c
         const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / sycl::fmax(
-            su, epsilon);
+                                su, epsilon);
         const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sycl::fmax(
-            sv, epsilon);
+                                sv, epsilon);
         // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
         const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
 
         return dAlphaDc;
     }
 
-    inline float3 shadowRays(const GPUSceneBuffers& scene, const WorldHit& worldHit,
-                             const RayState& rayState, const DeviceSurfacePhotonMapGrid& photonMap,
-                             rng::Xorshift128& rng128) {
+    inline float3 shadowRays(const GPUSceneBuffers &scene,
+                             const RayState &rayState, const DeviceSurfacePhotonMapGrid &photonMap,
+                             rng::Xorshift128 &rng128) {
         constexpr float epsilon = 1e-6f;
-        float3 d_cost_d_pos(0.0f);
+        float3 d_grad_pos(0.0f);
 
 
         AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng128);
         // Direction to the sampled emitter point
-        const float3 toLightVector = ls.positionW - worldHit.hitPositionW;
+        const float3 toLightVector = ls.positionW - rayState.ray.origin;
         const float distanceToLight = length(toLightVector);
         if (distanceToLight > 1e-6f) {
             const float3 lightDirection = toLightVector / distanceToLight;
             // Cosines
-            const float3 shadingNormalW = worldHit.geometricNormalW; // or your surfel normal
+            const float3 shadingNormalW = rayState.ray.normal; // or your surfel normal
             const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
             const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
 
@@ -97,9 +97,9 @@ namespace Pale {
                 // Unbiased NEE estimator (area sampling):
                 const float invPdf = 1.0f / (pdfLight * pdfArea);
                 const float3 neeContribution =
-                    rayState.pathThroughput * geometryTerm * invPdf;
+                        rayState.pathThroughput * geometryTerm * invPdf;
 
-                Ray shadowRay{worldHit.hitPositionW, lightDirection};
+                Ray shadowRay{rayState.ray.origin, lightDirection};
                 RayState shadowRayState = rayState;
                 shadowRayState.ray = shadowRay;
                 shadowRayState.pathThroughput = neeContribution;
@@ -110,67 +110,111 @@ namespace Pale {
                                RayIntersectMode::Transmit);
 
                 if (shadowWorldHit.hit) {
-                    auto& instance = scene.instances[shadowWorldHit.instanceIndex];
-                    Ray& ray = shadowRayState.ray;
-                    if (shadowWorldHit.splatEventCount > 0 && instance.geometryType == GeometryType::Mesh) {
+                    if (shadowWorldHit.splatEventCount > 0) {
+                        const Ray &ray = shadowRayState.ray;
                         const float3 x = ray.origin;
                         const float3 y = shadowWorldHit.hitPositionW;
-                        const float3 segmentVector = y - x;
 
+                        // Cost weighting: keep RGB if your loss is RGB; else reduce at end
                         const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(
                             shadowWorldHit, scene, photonMap);
-                        const float L = luminanceGrayscale(backgroundRadianceRGB);
+                        const float L_bg = luminance(backgroundRadianceRGB);
 
-                        // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
+                        // Collect all alpha_i and d(alpha_i)/dPi for this segment
                         struct LocalTerm {
-                            float alpha;
+                            float alpha{};
                             float3 dAlphaDc;
                         };
-                        constexpr float epsilon = 1e-6f;
+
                         LocalTerm localTerms[kMaxSplatEvents];
                         int validCount = 0;
 
-                        for (int ei = 0; ei < shadowWorldHit.splatEventCount && validCount < kMaxSplatEvents; ++ei) {
-                            const auto splatEvent = shadowWorldHit.splatEvents[ei];
-                            const auto surfel = scene.points[splatEvent.primitiveIndex];
-                            // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
+                        float tau = 1.0f; // full product over all (1 - alpha_i)
+
+                        for (size_t eventIdx = 0; eventIdx < shadowWorldHit.splatEventCount; ++eventIdx) {
+                            if (validCount >= kMaxSplatEvents)
+                                break; // safety, or assert
+
+                            const auto &splatEvent = shadowWorldHit.splatEvents[eventIdx];
+
+                            const Point &surfel = scene.points[splatEvent.primitiveIndex];
+
+                            const float3 canonicalNormalW =
+                                    normalize(cross(surfel.tanU, surfel.tanV));
+
+                            const float denom = dot(canonicalNormalW, ray.direction);
+                            if (sycl::fabs(denom) <= 1e-4f) {
+                                // Grazing / parallel; skip this surfel for the transmission gradient
+                                continue;
+                            }
+
+                            const float2 uv = phiInverse(splatEvent.hitWorld, surfel);
+                            const float alpha = splatEvent.alpha;
+
+                            // Optional: guard against extreme alpha for numerical stability
+                            const float clampedAlpha = sycl::clamp(alpha, 0.0f, 1.0f - 1e-6f);
+
+                            const float tuDotD = dot(surfel.tanU, ray.direction);
+                            const float tvDotD = dot(surfel.tanV, ray.direction);
+                            const float su = surfel.scale.x();
+                            const float sv = surfel.scale.y();
+
+                            // Reuse the coordinate gradients from your BRDF derivation
+                            const float3 duDc =
+                                    ((tuDotD / denom) * canonicalNormalW - surfel.tanU) / su;
+                            const float3 dvDc =
+                                    ((tvDotD / denom) * canonicalNormalW - surfel.tanV) / sv;
+
+                            // d(alpha_i)/dPi = - alpha_i (u_i du/dPi + v_i dv/dPi)
                             const float3 dAlphaDc =
-                                gradTransmissionPosition(rayState.ray, splatEvent, surfel, segmentVector);
-                            localTerms[validCount++] = LocalTerm{splatEvent.alpha, dAlphaDc};
+                                    -clampedAlpha * (uv.x() * duDc + uv.y() * dvDc);
+
+                            const float oneMinusAlpha = 1.0f - clampedAlpha;
+                            if (oneMinusAlpha <= 1e-6f) {
+                                // Fully opaque; transmission beyond this is negligible
+                                // We still record the term (optional), but tau will go ~0.
+                                continue;
+                            }
+
+                            // Store local term
+                            localTerms[validCount].alpha = clampedAlpha;
+                            localTerms[validCount].dAlphaDc = dAlphaDc;
+                            ++validCount;
+
+                            // Update the global transmission product
+                            tau *= oneMinusAlpha;
                         }
+
                         if (validCount != 0) {
-                            // τ = Π (1-α_i) with stable log-space accumulation
-                            float logTau = 0.f;
-                            for (int i = 0; i < validCount; ++i) {
-                                const float oneMinusAlpha = sycl::fmax(1.f - localTerms[i].alpha, 1e-6f);
-                                logTau += sycl::log(oneMinusAlpha);
-                            }
-                            const float tau = sycl::exp(logTau);
+                            // Compute d(tau)/dPi using:
+                            // d tau / dPi = sum_i [ - (tau / (1 - alpha_i)) * d alpha_i / dPi ]
+                            float3 dTauDc(0.0f);
 
-                            // Σ_i [ - dα_i/dc / (1-α_i) ]
-                            float3 sumTerm(0.f);
                             for (int i = 0; i < validCount; ++i) {
-                                const float oneMinusAlpha = sycl::fmax(1.f - localTerms[i].alpha, 1e-6f);
-                                sumTerm += localTerms[i].dAlphaDc / oneMinusAlpha;
-                            }
-                            float cosine = dot(shadowWorldHit.geometricNormalW, -rayState.ray.direction);
+                                const float alpha_i = localTerms[i].alpha;
+                                const float3 dAlphaDc_i = localTerms[i].dAlphaDc;
+                                const float oneMinusAlpha_i = 1.0f - alpha_i;
 
-                            const float pAdjoint = luminanceGrayscale(rayState.pathThroughput) * tau;
-                            // already includes fs, V, G, etc., for this segment
-                            // Accumulate to your running gradient
-                            const float3 tauGrad = -tau * sumTerm;
-                            d_cost_d_pos = pAdjoint * tauGrad * L;
+                                const float weight = -tau / oneMinusAlpha_i;
+                                dTauDc += weight * dAlphaDc_i;
+                            }
+
+                            float3 pAdjoint = shadowRayState.pathThroughput;
+                            float p = luminanceGrayscale(pAdjoint);
+
+                            // Accumulate into the running gradient (do not overwrite)
+                            d_grad_pos += p * (L_bg) * dTauDc;
                         }
                     }
                 }
             }
         }
-        return d_cost_d_pos;
+        return d_grad_pos;
     }
 
-    inline float3 transmissionBackgroundGradient(const GPUSceneBuffers& scene, const WorldHit& worldHit,
-                                                 const RayState& rayState, const InstanceRecord& instance,
-                                                 const DeviceSurfacePhotonMapGrid& photonMap) {
+    inline float3 transmissionBackgroundGradient(const GPUSceneBuffers &scene, const WorldHit &worldHit,
+                                                 const RayState &rayState, const InstanceRecord &instance,
+                                                 const DeviceSurfacePhotonMapGrid &photonMap) {
         float3 d_cost_d_pos(0.0f);
 
         // Transmission
@@ -197,7 +241,7 @@ namespace Pale {
                 const auto surfel = scene.points[splatEvent.primitiveIndex];
                 // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
                 const float3 dAlphaDc =
-                    gradTransmissionPosition(rayState.ray, splatEvent, surfel, segmentVector);
+                        gradTransmissionPosition(rayState.ray, splatEvent, surfel, segmentVector);
                 localTerms[validCount++] = LocalTerm{splatEvent.alpha, dAlphaDc};
             }
             if (validCount != 0) {
@@ -227,11 +271,11 @@ namespace Pale {
         return d_cost_d_pos;
     }
 
-    inline void cosineAndGradientWrtPosition(const float3& rayOrigin,
-                                             const float3& hitPositionWorld,
-                                             const float3& surfelNormal,
-                                             float& cosineSigned,
-                                             float3& gradCosineWrtPosition) {
+    inline void cosineAndGradientWrtPosition(const float3 &rayOrigin,
+                                             const float3 &hitPositionWorld,
+                                             const float3 &surfelNormal,
+                                             float &cosineSigned,
+                                             float3 &gradCosineWrtPosition) {
         const float3 displacementVector = hitPositionWorld - rayOrigin; // d
         const float distanceMagnitude = length(displacementVector); // p
         if (distanceMagnitude <= 1e-6f) {
