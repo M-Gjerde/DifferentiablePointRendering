@@ -147,7 +147,6 @@ namespace Pale {
                     }
 
                     if (hitInstance.geometryType == GeometryType::PointCloud) {
-
                         struct LocalTerm {
                             float alpha{};
                             float3 dAlphaDc;
@@ -212,7 +211,6 @@ namespace Pale {
 
                             const float3 dFs_dC = (M_1_PIf) * (dAlphaDc * colorLum);
                             float3 f_s_rgb = (M_1_PIf) * (alpha * albedoRgb);
-
 
 
                             // Cosine and its gradient
@@ -296,7 +294,6 @@ namespace Pale {
                     uint32_t targetSurfel = 0;
                     bool onlySingleSurfel = false;
 
-                    const float3 parameterAxis = {0.0f, 1.0f, 0.00f};
                     float3 shadowRayGrad(0.0f);
                     //intersectScene(rayState.ray, &worldHit, scene, rng128, RayIntersectMode::Scatter);
                     //
@@ -494,45 +491,89 @@ namespace Pale {
                         const Ray &ray = rayState.ray;
 
                         // 3) Terminal scatter at z: dα/dc with correct sign
-                        const auto &terminal = whTransmit.splatEvents[whTransmit.splatEventCount - 1];
+                        const SplatEvent &terminal = whTransmit.splatEvents[whTransmit.splatEventCount - 1];
                         if (whTransmit.primitiveIndex == terminal.primitiveIndex) {
                             const auto surfel = scene.points[terminal.primitiveIndex];
-                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                            const float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
+                            const float3 rayDirection = ray.direction;
+                            const float3 hitWorld = terminal.hitWorld;
 
-
-                            // BSDF gradient (Scatter)
-                            const float denom = dot(canonicalNormalW, ray.direction);
-                            if (sycl::fabs(denom) <= 1e-4f)
-                                return;
-                            const float2 uv = phiInverse(terminal.hitWorld, surfel);
+                            const float2 uv = phiInverse(hitWorld, surfel);
                             const float u = uv.x();
                             const float v = uv.y();
                             const float alpha = terminal.alpha;
-                            const float tuDotD = dot(surfel.tanU, ray.direction);
-                            const float tvDotD = dot(surfel.tanV, ray.direction);
+
                             const float su = surfel.scale.x();
                             const float sv = surfel.scale.y();
-                            const float3 duDPk = ((tuDotD / denom) * canonicalNormalW - surfel.tanU * (surfel.tanU * u)) / su;
-                            const float3 dvDPk = ((tvDotD / denom) * canonicalNormalW - surfel.tanV) / sv;
-
-                            // Correct sign and sum
-                            const float3 dAlphaDc = -alpha * (u * duDPk + v * dvDPk);
 
                             const float3 albedoRgb = surfel.color;
-                            float colorLum = luminanceGrayscale(albedoRgb);
+                            const float colorLuminance = luminanceGrayscale(albedoRgb);
 
-                            const float3 dFs_dC = (M_1_PIf) * (dAlphaDc * colorLum);
-                            float3 f_s_rgb = (M_1_PIf) * (alpha * albedoRgb);
+                            // ---- dα/d(position) ----
+                            const float3 dAlphaDPosition =
+                                    computeDAlphaDPosition(
+                                        surfel.tanU,
+                                        surfel.tanV,
+                                        canonicalNormalWorld,
+                                        rayDirection,
+                                        u, v,
+                                        alpha,
+                                        su, sv
+                                    );
 
-                            /*
+                            float3 dUdTu, dVdTu, dUdTv, dVdTv;
+                            computeFullDuDvWrtTangents(
+                                ray.origin,
+                                ray.direction,
+                                surfel.position,
+                                terminal.hitWorld,
+                                surfel.tanU,
+                                surfel.tanV,
+                                su, sv,
+                                dUdTu, dVdTu, dUdTv, dVdTv
+                            );
+
+                            // Full α derivatives
+                            float3 dAlphaDtU = -alpha * (u * dUdTu + v * dVdTu);
+                            float3 dAlphaDtV = -alpha * (u * dUdTv + v * dVdTv);
+
+                            // BSDF (assuming luminance cost)
+                            float3 dFsDtU = (M_1_PIf) * (dAlphaDtU * colorLuminance);
+                            float3 dFsDtV = (M_1_PIf) * (dAlphaDtV * colorLuminance);
+
+                            // Mapping to world coordinates:
+                            const float3 parameterAxis = {0.0f, 0.0f, 1.00f};
+
+                            float dBsdf_world = dot(
+                                dFsDtU, cross(parameterAxis, surfel.tanU)) + dot(
+                                            dFsDtV, cross(parameterAxis, surfel.tanV));
+
+
+                            float dBsdf_world_deg = dBsdf_world * 180 * M_1_PIf;
+
+                            // ---- dα/d(scale) (s_u, s_v) ----
+                            const float3 dAlphaDScale =
+                                    computeDAlphaDScale(
+                                        u, v,
+                                        alpha,
+                                        su, sv
+                                    );
+
+
+                            // Example: BSDF gradients for each parameter group
+                            const float3 dFsDPosition = (M_1_PIf) * (dAlphaDPosition * colorLuminance);
+                            const float3 dFsDScaleKernel = (M_1_PIf) * (dAlphaDScale * colorLuminance);
+
+                            const float3 f_s_rgb = (M_1_PIf) * (alpha * albedoRgb);
+
+
+
                             // Cosine and its gradient
                             float cosineSigned = 0.0f;
                             float3 dCosineDc = {0, 0, 0};
-                            cosineAndGradientWrtPosition(ray.origin, terminal.hitWorld, canonicalNormalW,
+                            cosineAndGradientWrtPosition(ray.origin, terminal.hitWorld, canonicalNormalWorld,
                                                          cosineSigned, dCosineDc);
-                            const int travelSideSign = signNonZero(dot(canonicalNormalW, -ray.direction));
-                            const float cosTheta = cosineSigned * float(travelSideSign);
-                            */
+
 
                             const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
                                 terminal, ray.direction, scene, photonMap,
@@ -544,24 +585,42 @@ namespace Pale {
                             // Transmission gradient from direction change
                             // use in gradient assembly
 
+                            float3 dJacobianDScale = {L_surfel / su, L_surfel / sv, 0};
+
+                            float3 dFsDScale = {
+                                dFsDScaleKernel.x() * L_surfel / alpha + dJacobianDScale.x(),
+                                dFsDScaleKernel.y() * L_surfel / alpha + dJacobianDScale.y(), 0
+                            };
+
                             float brdfLuminance = luminanceGrayscale(f_s_rgb);
 
-                            float3 brdfGrad = dFs_dC * tauTotal * 1 / alpha;
+                            const float3 brdfGrad_ScaleJacobian = {
+                                tauTotal * brdfLuminance / su,
+                                tauTotal * brdfLuminance / sv,
+                                0.0f
+                            };
+                            float3 brdfGrad_ScaleKernel = dFsDScaleKernel * (tauTotal / alpha);
+                            const float3 brdfGrad_Scale =
+                                    brdfGrad_ScaleKernel // from α (kernel)
+                                    + brdfGrad_ScaleJacobian; // from area Jacobian
+
+                            float3 brdfGrad_Position = dFsDPosition * tauTotal * 1 / alpha;
+                            //float3 brdfGrad_Rotation = dBsdf_world * tauTotal * 1 / alpha;
                             float3 transmissionGrad = tauGrad * brdfLuminance;
 
-                            float3 grad = p * L_surfel * (brdfGrad + transmissionGrad);
+                            float3 grad = p * L_surfel * (brdfGrad_Position + transmissionGrad);
                             d_grad_pos += grad;
 
-                            const float3 rotationDisplacement =
-                              u *  surfel.tanU
-                            + v *  surfel.tanV;
-
-                            float dVdLambda = dot(d_grad_pos, rotationDisplacement);
+                            /*
+                                                        const float3 rotationDisplacement =
+                                                          u *  surfel.tanU
+                                                        + v *  surfel.tanV;
+                            */
 
                             if (rayState.bounceIndex >= recordBounceIndex) {
-                                const float dVdp_scalar = dot(d_grad_pos, parameterAxis);
+                                const float dVdp_scalar = dot(grad, parameterAxis);
                                 float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
-                                atomicAddFloatToImage(&gradImageDst, dVdLambda);
+                                atomicAddFloatToImage(&gradImageDst, dBsdf_world_deg);
                             }
                             /*
                             if (isWatched) {
@@ -576,8 +635,6 @@ namespace Pale {
                             */
                         }
                     }
-
-
                 });
         });
         queue.wait();

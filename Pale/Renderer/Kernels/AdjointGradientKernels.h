@@ -292,4 +292,174 @@ namespace Pale {
         const float3x3 projector = identity3x3() - outerProduct(unitPsi, unitPsi);
         gradCosineWrtPosition = -(projector * surfelNormal) / distanceMagnitude;
     }
+
+    // Assuming float3, float2, dot(), cross(), etc. are defined as in your codebase.
+
+    // ----------------- Position gradient (translation of surfel center) -----------------
+    inline float3 computeDAlphaDPosition(
+        const float3 &tangentUWorld,
+        const float3 &tangentVWorld,
+        const float3 &canonicalNormalWorld,
+        const float3 &rayDirection,
+        float u, float v,
+        float alpha,
+        float su, float sv) {
+        const float denom = dot(canonicalNormalWorld, rayDirection);
+        if (sycl::fabs(denom) <= 1e-4f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float tuDotD = dot(tangentUWorld, rayDirection);
+        const float tvDotD = dot(tangentVWorld, rayDirection);
+
+        // du/dp_k and dv/dp_k (3x1 each), from your analytic expression
+        const float3 duDPk = ((tuDotD / denom) * canonicalNormalWorld - tangentUWorld) / su;
+        const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
+
+        // dα/dc_pos = -α (u du/dc + v dv/dc)
+        const float3 dAlphaDPosition = -alpha * (u * duDPk + v * dvDPk);
+        return dAlphaDPosition;
+    }
+
+    // ----------------- Rotation gradient (small rotation vector ω, shading-frame style) -----------------
+    // Interpretation: we rotate the local frame (tangentU, tangentV, normal) around the surfel center,
+    // while keeping the hit point fixed in world space. This is a "frame rotation" gradient.
+    inline float3 computeDAlphaDRotation(
+        const float3 &tangentUWorld,
+        const float3 &tangentVWorld,
+        const float3 &surfelCenterWorld,
+        const float3 &hitWorld,
+        float u, float v,
+        float alpha,
+        float su, float sv) {
+        const float3 offsetFromCenter = hitWorld - surfelCenterWorld;
+
+        // ∂u/∂ω = (t_u × (z - p_k)) / s_u
+        const float3 duDOmega = cross(tangentUWorld, offsetFromCenter) / su;
+
+        // ∂v/∂ω = (t_v × (z - p_k)) / s_v
+        const float3 dvDOmega = cross(tangentVWorld, offsetFromCenter) / sv;
+
+        // dα/dω = -α (u ∂u/∂ω + v ∂v/∂ω)
+        const float3 dAlphaDRotation = -alpha * (u * duDOmega + v * dvDOmega);
+        return dAlphaDRotation;
+    }
+
+    inline float3 computeGradRayParameterWrtTU(
+        const float3 &rayOriginWorld, // x
+        const float3 &rayDirectionWorld, // d
+        const float3 &surfelCenterWorld, // p_k
+        const float3 &tangentUWorld, // t_u
+        const float3 &tangentVWorld) {
+        // t_v
+
+        float3 normalWorld = cross(tangentUWorld, tangentVWorld);
+        const int travelSideSign = signNonZero(dot(normalWorld, -rayDirectionWorld));
+        //normalWorld = normalWorld * float(travelSideSign);
+
+        const float3 centerMinusOrigin = surfelCenterWorld - rayOriginWorld;
+
+        const float nd = dot(normalWorld, rayDirectionWorld);
+        const float np = dot(normalWorld, centerMinusOrigin);
+
+        const float epsilon = 1e-6f;
+        if (sycl::fabs(nd) < epsilon) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float3 crossTvWithPkMinusX = cross(tangentVWorld, centerMinusOrigin);
+        const float3 crossTvWithD = cross(tangentVWorld, rayDirectionWorld);
+
+        const float3 firstTerm = crossTvWithPkMinusX / nd;
+        const float scale = np / (nd * nd);
+        const float3 secondTerm = scale * crossTvWithD;
+
+        return firstTerm - secondTerm; // ∇_{t_u} r_t
+    }
+
+    inline float3 computeGradRayParameterWrtTV(
+        const float3 &rayOriginWorld, // x
+        const float3 &rayDirectionWorld, // d
+        const float3 &surfelCenterWorld, // p_k
+        const float3 &tangentUWorld, // t_u
+        const float3 &tangentVWorld) {
+        // t_v
+
+        const float3 centerMinusOrigin = surfelCenterWorld - rayOriginWorld;
+
+        float3 normalWorld = cross(tangentUWorld, tangentVWorld);
+        const int travelSideSign = signNonZero(dot(normalWorld, -rayDirectionWorld));
+        //normalWorld = normalWorld * float(travelSideSign);
+
+
+        const float nd = dot(normalWorld, rayDirectionWorld);
+        const float np = dot(normalWorld, centerMinusOrigin);
+
+        const float epsilon = 1e-6f;
+        if (sycl::fabs(nd) < epsilon) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float3 crossTuWithPkMinusX = cross(tangentUWorld, centerMinusOrigin);
+        const float3 crossTuWithD = cross(tangentUWorld, rayDirectionWorld);
+
+        const float3 firstTerm = crossTuWithPkMinusX / nd;
+        const float scale = np / (nd * nd);
+        const float3 secondTerm = scale * crossTuWithD;
+
+        return firstTerm - secondTerm; // ∇_{t_v} r_t
+    }
+
+    inline void computeFullDuDvWrtTangents(
+        const float3 &rayOriginWorld,
+        const float3 &rayDirectionWorld,
+        const float3 &surfelCenterWorld,
+        const float3 &hitWorld,
+        const float3 &tangentUWorld,
+        const float3 &tangentVWorld,
+        float su, float sv,
+        // outputs
+        float3 &dUdTu, float3 &dVdTu,
+        float3 &dUdTv, float3 &dVdTv) {
+
+        const float3 offsetFromCenter = hitWorld - surfelCenterWorld; // z - p_k
+
+        const float3 gradRt_tu = computeGradRayParameterWrtTU(
+            rayOriginWorld, rayDirectionWorld,
+            surfelCenterWorld, tangentUWorld, tangentVWorld
+        );
+        const float3 gradRt_tv = computeGradRayParameterWrtTV(
+            rayOriginWorld, rayDirectionWorld,
+            surfelCenterWorld, tangentUWorld, tangentVWorld
+        );
+
+        // TODO enforcing a front/back-symmetric derivative with this -fabs trick gives FD agreement.
+        // Might not be a problem but is noted in case issues with rotation appear.
+        const float tuDotD = (dot(tangentUWorld, rayDirectionWorld));
+        const float tvDotD = (dot(tangentVWorld, rayDirectionWorld));
+
+        // Π = t_u
+        dUdTu = (offsetFromCenter + tuDotD * gradRt_tu) / su;
+        dVdTu = (tvDotD * gradRt_tu) / sv;
+
+        // Π = t_v
+        dVdTv = (offsetFromCenter + tvDotD * gradRt_tv) / sv;
+        dUdTv = (tuDotD * gradRt_tv) / su;
+    }
+
+
+    // ----------------- Scale gradient (s_u, s_v) -----------------
+    // Here we treat the plane geometry as fixed, scales only affect the local map Φ(u,v).
+    // u = (t_u · (z - p_k)) / s_u  ⇒ ∂u/∂s_u = -u / s_u,  similarly for v, s_v.
+    inline float3 computeDAlphaDScale(
+        float u, float v,
+        float alpha,
+        float su, float sv) {
+        const float dAlphaDSu = alpha * (u * u) / sycl::max(su, 1e-6f);
+
+        const float dAlphaDSv = alpha * (v * v) / sycl::max(sv, 1e-6f);
+
+        // If you later add anisotropic / z-scale, you can extend this.
+        return float3{dAlphaDSu, dAlphaDSv, 0.0f};
+    }
 }

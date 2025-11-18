@@ -72,6 +72,44 @@ namespace Pale::ply_detail {
         return (len2 > 0.f) ? n / std::sqrt(len2) : glm::vec3(0.f, 0.f, 1.f);
     }
 
+    inline void canonicalizeFrame(
+    glm::vec3 &tangentU,
+    glm::vec3 &tangentV,
+    const glm::vec3 &referenceDirection = glm::vec3(0.0f, 0.0f, 1.0f))
+    {
+        const float epsilon = 1e-6f;
+
+        // 1. Normalize tu
+        tangentU = glm::normalize(tangentU);
+
+        // 2. Gram–Schmidt orthogonalize tv to tu
+        glm::vec3 tvProj = glm::dot(tangentV, tangentU) * tangentU;
+        glm::vec3 tvOrtho = tangentV - tvProj;
+
+        if (glm::dot(tvOrtho, tvOrtho) < epsilon) {
+            // Degenerate tv: choose an arbitrary orthogonal vector
+            tvOrtho = glm::abs(tangentU.y) < 0.9f
+                    ? glm::vec3(0, 1, 0)
+                    : glm::vec3(1, 0, 0);
+
+            // Orthogonalize again
+            tvOrtho = tvOrtho - glm::dot(tvOrtho, tangentU) * tangentU;
+        }
+
+        tangentV = glm::normalize(tvOrtho);
+
+        // 3. Compute right-handed normal
+        glm::vec3 normal = glm::normalize(glm::cross(tangentU, tangentV));
+
+        // 4. Enforce consistent orientation (optional but recommended)
+        //    Flip tv such that normal "agrees" with some reference direction.
+        if (glm::dot(normal, referenceDirection) < 0.0f) {
+            tangentV = -tangentV;
+            normal   = -normal;
+        }
+    }
+
+
     inline std::unordered_set<std::string>
     collectVertexPropertyNames(const tinyply::PlyFile &plyFile) {
         std::unordered_set<std::string> names;
@@ -229,15 +267,26 @@ export namespace Pale {
                 for (std::size_t i = 0; i < vertexCount; ++i) {
                     const std::size_t i3 = i * 3, i2 = i * 2;
 
-                    glm::vec3 tangentU =
-                            glm::normalize(glm::vec3(tuFloats[i3 + 0], tuFloats[i3 + 1], tuFloats[i3 + 2]));
-                    glm::vec3 tangentV =
-                            glm::normalize(glm::vec3(tvFloats[i3 + 0], tvFloats[i3 + 1], tvFloats[i3 + 2]));
-                    //ply_detail::orthonormalizeTangents(tangentU, tangentV);
+                    glm::vec3 tangentU(
+                        tuFloats[i3 + 0],
+                        tuFloats[i3 + 1],
+                        tuFloats[i3 + 2]
+                    );
 
-                    geometry.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
+                    glm::vec3 tangentV(
+                        tvFloats[i3 + 0],
+                        tvFloats[i3 + 1],
+                        tvFloats[i3 + 2]
+                    );
+
+                    // Fix orthonormality, right-handedness, and orientation
+                    ply_detail::canonicalizeFrame(tangentU, tangentV, glm::vec3(0,0,1));
+
                     geometry.tanU[i] = tangentU;
                     geometry.tanV[i] = tangentV;
+
+                    geometry.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
+
                     geometry.scales[i] = glm::vec2(scaleFloats[i2 + 0], scaleFloats[i2 + 1]);
                     geometry.colors[i] = glm::clamp(
                         glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]), 0.0f, 1.0f);

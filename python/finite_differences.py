@@ -37,6 +37,7 @@ def save_rgb_preview_png(img_f32: np.ndarray, out_path: Path,
                          exposure_stops: float = 5.8, gamma: float = 2.2) -> None:
     mapped = tonemap_exposure_gamma(img_f32, exposure_stops, gamma)
     img_u8 = (np.clip(mapped, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+    print("Saving RGB preview to: {}".format(out_path.absolute()))
     Image.fromarray(img_u8.astype(np.uint8)).save(out_path)
 
 
@@ -288,7 +289,7 @@ def main(args) -> None:
     print("Index:", args.index)
     print("Parameter:", args.param)
 
-    output_dir = Path(__file__).parent / "Output" / args.scene
+    output_dir = Path(__file__).parent / "Output" / args.scene if args.output == "" else Path(__file__).parent / Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- init renderer ---
@@ -444,6 +445,12 @@ def parse_args() -> argparse.Namespace:
         choices=["x", "y", "z"],
         default="axis of choice",
         help="Which axis to finite-difference: 'translation', 'rotation', or 'scale'.",
+    )
+
+    parser.add_argument(
+        "--output",
+        type=str,
+        help="Where to output files",
     )
     return parser.parse_args()
 
