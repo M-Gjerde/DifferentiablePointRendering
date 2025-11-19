@@ -34,6 +34,7 @@ import imageio.v3 as iio
 
 import pale  # custom renderer bindings
 from trimesh.permutate import noise
+from typing import Sequence
 
 
 # --------------------------------------------------------------------------------------
@@ -72,8 +73,10 @@ class OptimizationConfig:
     output_dir: Path
 
     iterations: int = 10
-    learning_rate: float = 1e-2
-    optimizer_type: str = "adam"  # "adam" or "sgd"
+    learning_rate: float = 1e-2          # base LR (for convenience / default)
+    learning_rate_position: float = 1e-2 # LR for positions
+    learning_rate_tangent: float = 1e-2  # LR for tangents
+    optimizer_type: str = "adam"         # "adam" or "sgd"
     log_interval: int = 1
     save_interval: int = 5
 
@@ -104,21 +107,91 @@ def fetch_initial_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
         out[key] = np.asarray(value, dtype=np.float32, order="C")
     return out
 
-
-def apply_positions(renderer: pale.Renderer, positions: np.ndarray) -> None:
+def orthonormalize_tangents_inplace(
+    tangent_u: torch.Tensor,
+    tangent_v: torch.Tensor,
+) -> dict[str, float]:
     """
-    Push updated positions into the renderer.
+    In-place Gram–Schmidt on (tangent_u, tangent_v) rows, enforcing:
 
-    Uses set_point_parameters with only the 'position' key; other parameters
-    remain unchanged on the C++ side.
+        |tangent_u| = |tangent_v| = 1
+        tangent_u ⟂ tangent_v
+        n = tangent_u × tangent_v  (right-handed frame)
+
+    Returns some diagnostics.
     """
-    positions_np = np.asarray(positions, dtype=np.float32, order="C")
-    if positions_np.ndim != 2 or positions_np.shape[1] != 3:
+    with torch.no_grad():
+        # 1) normalize tangent_u
+        tu = tangent_u.data
+        tv = tangent_v.data
+
+        tu_norm = tu.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        tu_unit = tu / tu_norm
+
+        # 2) make tangent_v orthogonal to tangent_u
+        tv_proj = (tv * tu_unit).sum(dim=1, keepdim=True) * tu_unit
+        tv_orth = tv - tv_proj
+
+        tv_norm = tv_orth.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        tv_unit = tv_orth / tv_norm
+
+        # write back
+        tangent_u.data.copy_(tu_unit)
+        tangent_v.data.copy_(tv_unit)
+
+        # 3) diagnostics
+        dot_uv = (tangent_u * tangent_v).sum(dim=1)
+        norm_u = tangent_u.norm(dim=1)
+        norm_v = tangent_v.norm(dim=1)
+        cross = torch.cross(tangent_u, tangent_v, dim=1)
+        cross_norm = cross.norm(dim=1)
+
+        stats = {
+            "max_dev_norm_u": float((norm_u - 1.0).abs().max().item()),
+            "max_dev_norm_v": float((norm_v - 1.0).abs().max().item()),
+            "max_abs_dot_uv": float(dot_uv.abs().max().item()),
+            "min_cross_norm": float(cross_norm.min().item()),
+        }
+        return stats
+
+
+def apply_point_parameters(
+    renderer: pale.Renderer,
+    positions: torch.Tensor,
+    tangent_u: torch.Tensor,
+    tangent_v: torch.Tensor,
+) -> None:
+    """
+    Push updated positions, tangent_u, and tangent_v into the renderer.
+
+    Expects tensors of shape (N,3) on any device.
+    """
+    positions_np = np.asarray(
+        positions.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
+    tangent_u_np = np.asarray(
+        tangent_u.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
+    tangent_v_np = np.asarray(
+        tangent_v.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
+
+    if positions_np.shape != tangent_u_np.shape or positions_np.shape != tangent_v_np.shape:
         raise RuntimeError(
-            f"Expected positions of shape (N,3), got {positions_np.shape}"
+            f"Shape mismatch between position {positions_np.shape}, "
+            f"tangent_u {tangent_u_np.shape}, tangent_v {tangent_v_np.shape}"
         )
 
-    renderer.set_point_parameters({"position": positions_np})
+    # Optional: sanity check dtypes
+    # print("dtypes:", positions_np.dtype, tangent_u_np.dtype, tangent_v_np.dtype)
+
+    renderer.set_point_parameters(
+        {
+            "position": positions_np,
+            "tangent_u": tangent_u_np,
+            "tangent_v": tangent_v_np,
+        }
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -264,13 +337,14 @@ def compute_l2_loss_and_grad(
 
 
 def create_optimizer(
-    parameter: torch.nn.Parameter,
+    parameters: Sequence[torch.nn.Parameter],
     config: OptimizationConfig,
 ) -> torch.optim.Optimizer:
-    if config.optimizer_type.lower() == "sgd":
-        return torch.optim.SGD([parameter], lr=config.learning_rate, momentum=0.8)
-    elif config.optimizer_type.lower() == "adam":
-        return torch.optim.Adam([parameter], lr=config.learning_rate)
+    opt_type = config.optimizer_type.lower()
+    if opt_type == "sgd":
+        return torch.optim.SGD(parameters, lr=config.learning_rate, momentum=0.8)
+    elif opt_type == "adam":
+        return torch.optim.Adam(parameters, lr=config.learning_rate)
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -293,38 +367,68 @@ def run_optimization(
 
     # --- Fetch initial parameters from renderer (dict of arrays) ---
     initial_params = fetch_initial_parameters(renderer)
-    initial_positions_np = initial_params["position"]  # (N,3)
+    initial_positions_np = initial_params["position"]    # (N,3)
+    initial_tangent_u_np = initial_params["tangent_u"]   # (N,3)
+    initial_tangent_v_np = initial_params["tangent_v"]   # (N,3)
+
     num_points = initial_positions_np.shape[0]
     print(f"Fetched {num_points} initial points from renderer.")
     gt_position0 = initial_positions_np[0].copy()
-    # Add small Gaussian noise to the first position only
-    noise_sigma = 0.09 # try 0.005–0.05 depending on scene scale
 
+    rng = np.random.default_rng(12)
+
+    # Add small Gaussian noise to positions (you can leave tangents as-is)
+    noise_sigma_translation = 0.08
     noisy_positions_np = initial_positions_np.copy()
-
-    rng = np.random.default_rng(666)
     noisy_positions_np += rng.normal(
         loc=0.0,
-        scale=noise_sigma,
-        size=noisy_positions_np.shape  # (N,3)
+        scale=noise_sigma_translation,
+        size=noisy_positions_np.shape,
     )
-
-    #noisy_positions_np[0] += (0.05, 0, 0)
-
     initial_positions_np = noisy_positions_np.astype(np.float32)
-    print("Initial positions perturbed by Gaussian noise on point 0:", noise_sigma)
+    print("Initial positions perturbed by Gaussian noise on point 0:", noise_sigma_translation)
 
+    # Tangent noise (much smaller recommended)
+    noise_sigma_tan = 0.05
+    initial_tangent_u_np = initial_tangent_u_np.copy()
+    initial_tangent_v_np = initial_tangent_v_np.copy()
 
-    # --- Wrap parameters in torch (currently only positions are optimized) ---
+    initial_tangent_u_np += rng.normal(
+        0.0,
+        noise_sigma_tan,
+        initial_tangent_u_np.shape,
+    )
+    initial_tangent_v_np += rng.normal(
+        0.0,
+        noise_sigma_tan,
+        initial_tangent_v_np.shape,
+    )
+    # Re-normalize tangent vectors
+    # (each one defines a direction in world space)
+    def normalize_rows(arr: np.ndarray) -> np.ndarray:
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms = np.clip(norms, 1e-8, None)
+        return arr / norms
+
+    initial_tangent_u_np = normalize_rows(initial_tangent_u_np).astype(np.float32)
+    initial_tangent_v_np = normalize_rows(initial_tangent_v_np).astype(np.float32)
+
     device = torch.device(config.device)
+
+    # Parameters: positions, tangent_u, tangent_v
     positions = torch.nn.Parameter(
         torch.tensor(initial_positions_np, device=device, dtype=torch.float32)
     )
+    tangent_u = torch.nn.Parameter(
+        torch.tensor(initial_tangent_u_np, device=device, dtype=torch.float32)
+    )
+    tangent_v = torch.nn.Parameter(
+        torch.tensor(initial_tangent_v_np, device=device, dtype=torch.float32)
+    )
 
-    optimizer = create_optimizer(positions, config)
-
+    optimizer = create_optimizer([positions, tangent_u, tangent_v], config)
     # --- Initial snapshot render ---
-    apply_positions(renderer, positions.detach().cpu().numpy())
+    apply_point_parameters(renderer, positions, tangent_u, tangent_v)
     initial_rgb = renderer.render_forward()
     initial_rgb_np = np.asarray(initial_rgb, dtype=np.float32, order="C")
     initial_loss, loss_grad_image = compute_l2_loss_and_grad(
@@ -359,7 +463,7 @@ def run_optimization(
     # --- Optimization loop ---
     for iteration in range(1, config.iterations + 1):
         # 1) Push current positions into renderer
-        apply_positions(renderer, positions.detach().cpu().numpy())
+        apply_point_parameters(renderer, positions, tangent_u, tangent_v)
 
         # 2) Forward render (for logging)
         current_rgb = renderer.render_forward()
@@ -372,43 +476,62 @@ def run_optimization(
             return_loss_image=True,
         )
 
-        # 4) Backward pass: renderer computes dC/d(position)
+        # 4) Backward pass: renderer computes dC/d(position), dC/d(tangent_u), dC/d(tangent_v)
         gradients, grad_img = renderer.render_backward(loss_grad_image)
-        grad_scale = 1
-        grad_position_np = np.asarray(gradients["position"] * grad_scale, dtype=np.float32, order="C")
+        grad_scale = 1.0
+
+        grad_position_np = np.asarray(
+            gradients["position"] * grad_scale, dtype=np.float32, order="C"
+        )
+        grad_tangent_u_np = np.asarray(
+            gradients["tangent_u"] * grad_scale, dtype=np.float32, order="C"
+        )
+        grad_tangent_v_np = np.asarray(
+            gradients["tangent_v"] * grad_scale, dtype=np.float32, order="C"
+        )
 
         if grad_position_np.shape != initial_positions_np.shape:
             raise RuntimeError(
-                f"Gradient shape mismatch: expected {initial_positions_np.shape}, "
+                f"Gradient shape mismatch for position: expected {initial_positions_np.shape}, "
                 f"got {grad_position_np.shape}"
+            )
+        if grad_tangent_u_np.shape != initial_tangent_u_np.shape:
+            raise RuntimeError(
+                f"Gradient shape mismatch for tangent_u: expected {initial_tangent_u_np.shape}, "
+                f"got {grad_tangent_u_np.shape}"
+            )
+        if grad_tangent_v_np.shape != initial_tangent_v_np.shape:
+            raise RuntimeError(
+                f"Gradient shape mismatch for tangent_v: expected {initial_tangent_v_np.shape}, "
+                f"got {grad_tangent_v_np.shape}"
             )
 
         # 5) Set torch gradients and step optimizer
         optimizer.zero_grad(set_to_none=True)
-        positions.grad = torch.tensor(grad_position_np).to(
-            device=device,
-            dtype=torch.float32,
-        )
+        positions.grad = torch.tensor(grad_position_np).to(device=device, dtype=torch.float32)
+        tangent_u.grad = torch.tensor(grad_tangent_u_np).to(device=device, dtype=torch.float32)
+        tangent_v.grad = torch.tensor(grad_tangent_v_np).to(device=device, dtype=torch.float32)
         optimizer.step()
 
-        # --- Parameter loss (MSE) for point 0 ---
-        current_positions_np = positions.detach().cpu().numpy()
-        current_positions_np = np.asarray(current_positions_np, dtype=np.float32, order="C")
-        param_mse0 = float(
-            np.mean((current_positions_np[0] - gt_position0) ** 2)
-        )
+        # 5b) Re-orthonormalize tangents and collect diagnostics
+        ortho_stats = orthonormalize_tangents_inplace(tangent_u, tangent_v)
 
         # --- Logging ---
         if iteration % config.log_interval == 0 or iteration == 1:
             grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
+            grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
+            grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
             print(
                 f"[Iter {iteration:04d}/{config.iterations}] "
                 f"Loss = {loss_value:.6e}, "
-                f"mean |grad_position| = {grad_norm:.6e}, "
-                f"param MSE[0] = {param_mse0:.6e}"
-                f"param (x, y, z) = ({current_positions_np[0][0]:.2f}, {current_positions_np[0][1]:.2f}, {current_positions_np[0][2]:.2f})"
+                f"mean |translation| = {grad_norm:.3e}, "
+                f"mean |tan_u| = {grad_tanu:.3e}, "
+                f"mean |tan_v| = {grad_tanv:.3e}, "
+                f"ortho: max_dev_norm_u={ortho_stats['max_dev_norm_u']:.2e}, "
+                f"max_dev_norm_v={ortho_stats['max_dev_norm_v']:.2e}, "
+                f"max_abs_dot_uv={ortho_stats['max_abs_dot_uv']:.2e}, "
+                f"min_cross_norm={ortho_stats['min_cross_norm']:.2e}"
             )
-
 
         # --- Periodic saving ---
         if iteration % config.save_interval == 0 or iteration == config.iterations:
@@ -444,7 +567,7 @@ def run_optimization(
 
 
     # --- Final summary ---
-    apply_positions(renderer, positions.detach().cpu().numpy())
+    apply_point_parameters(renderer, positions, tangent_u, tangent_v)
     final_rgb = renderer.render_forward()
     final_rgb_np = np.asarray(final_rgb, dtype=np.float32, order="C")
     final_loss = compute_l2_loss(final_rgb_np, target_rgb)
@@ -504,14 +627,6 @@ def parse_args() -> OptimizationConfig:
         help="Number of optimization iterations.",
     )
     parser.add_argument(
-        "--lr",
-        "--learning-rate",
-        dest="learning_rate",
-        type=float,
-        default=1e-2,
-        help="Learning rate for the optimizer.",
-    )
-    parser.add_argument(
         "--optimizer",
         type=str,
         default="sgd",
@@ -537,7 +652,37 @@ def parse_args() -> OptimizationConfig:
         help="Torch device for parameters (e.g. 'cpu' or 'cuda').",
     )
 
+    parser.add_argument(
+        "--lr",
+        "--learning-rate",
+        dest="learning_rate",
+        type=float,
+        default=0.5,
+        help="Base learning rate (used if --lr-pos / --lr-tan are not given).",
+    )
+    parser.add_argument(
+        "--lr-pos",
+        dest="learning_rate_position",
+        type=float,
+        default=0.5,
+        help="Learning rate for positions.",
+    )
+    parser.add_argument(
+        "--lr-tan",
+        dest="learning_rate_tangent",
+        type=float,
+        default=1.0,
+        help="Learning rate for tangents (tangent_u, tangent_v).",
+    )
+
+    # ... optimizer, log-interval, save-interval, device ...
+
     args = parser.parse_args()
+
+    # If group-specific LRs are not provided, fall back to base LR
+    lr_base = args.learning_rate
+    lr_pos = args.learning_rate_position if args.learning_rate_position is not None else lr_base
+    lr_tan = args.learning_rate_tangent if args.learning_rate_tangent is not None else lr_base
 
     return OptimizationConfig(
         assets_root=args.assets_root,
@@ -546,12 +691,15 @@ def parse_args() -> OptimizationConfig:
         target_image_path=args.target_image,
         output_dir=args.output_dir,
         iterations=args.iterations,
-        learning_rate=args.learning_rate,
+        learning_rate=lr_base,
+        learning_rate_position=lr_pos,
+        learning_rate_tangent=lr_tan,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         device=args.device,
     )
+
 
 
 def main() -> None:
