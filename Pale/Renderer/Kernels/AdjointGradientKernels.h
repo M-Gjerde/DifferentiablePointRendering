@@ -5,6 +5,24 @@
 
 
 namespace Pale {
+
+    using AtomicFloat = sycl::atomic_ref<
+    float,
+    sycl::memory_order::relaxed,
+    sycl::memory_scope::device,
+    sycl::access::address_space::global_space>;
+
+    inline void atomicAddFloat(float &destination, float valueToAdd) {
+        AtomicFloat(destination).fetch_add(valueToAdd);
+    }
+
+    inline void atomicAddFloat3(float3 &destination, const float3 &valueToAdd) {
+        atomicAddFloat(destination.x(), valueToAdd.x());
+        atomicAddFloat(destination.y(), valueToAdd.y());
+        atomicAddFloat(destination.z(), valueToAdd.z());
+    }
+
+
     inline float3 gradTransmissionPosition(const Ray &ray, const SplatEvent &splatEvent, const Point &surfel,
                                            const float3 &segmentVector) {
         constexpr float epsilon = 1e-6f;

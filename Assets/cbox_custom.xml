@@ -17,8 +17,8 @@
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="1000"/>
-            <integer name="height" value="1000"/>
+            <integer name="width" value="500"/>
+            <integer name="height" value="500"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>
             <string name="component_format" value="float32"/>

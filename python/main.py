@@ -268,7 +268,7 @@ def create_optimizer(
     config: OptimizationConfig,
 ) -> torch.optim.Optimizer:
     if config.optimizer_type.lower() == "sgd":
-        return torch.optim.SGD([parameter], lr=config.learning_rate, momentum=0.9)
+        return torch.optim.SGD([parameter], lr=config.learning_rate, momentum=0.8)
     elif config.optimizer_type.lower() == "adam":
         return torch.optim.Adam([parameter], lr=config.learning_rate)
     else:
@@ -298,14 +298,15 @@ def run_optimization(
     print(f"Fetched {num_points} initial points from renderer.")
     gt_position0 = initial_positions_np[0].copy()
     # Add small Gaussian noise to the first position only
-    noise_sigma = 0.05 # try 0.005–0.05 depending on scene scale
-    rng = np.random.default_rng(42)
+    noise_sigma = 0.09 # try 0.005–0.05 depending on scene scale
 
     noisy_positions_np = initial_positions_np.copy()
+
+    rng = np.random.default_rng(666)
     noisy_positions_np += rng.normal(
         loc=0.0,
         scale=noise_sigma,
-        size=(3,),
+        size=noisy_positions_np.shape  # (N,3)
     )
 
     #noisy_positions_np[0] += (0.05, 0, 0)
@@ -373,7 +374,7 @@ def run_optimization(
 
         # 4) Backward pass: renderer computes dC/d(position)
         gradients, grad_img = renderer.render_backward(loss_grad_image)
-        grad_scale = 1e3
+        grad_scale = 1
         grad_position_np = np.asarray(gradients["position"] * grad_scale, dtype=np.float32, order="C")
 
         if grad_position_np.shape != initial_positions_np.shape:

@@ -56,7 +56,7 @@ namespace Pale {
                     const float4 residualRgba = sensor.framebuffer[pixelIndex];
                     float3 initialAdjointWeight = {residualRgba.x(), residualRgba.y(), residualRgba.z()};
                     // Or unit weights:
-                    initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
+                    //initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
                     // Base slot for this pixel’s N samples
                     const uint32_t baseOutputSlot = pixelIndex;
@@ -611,20 +611,24 @@ namespace Pale {
                             float3 grad_C_Scale = p * L_surfel * (brdfGrad_Scale);
 
 
-                            gradients.gradPosition[terminal.primitiveIndex].x() = grad_C_pos.x();
-                            gradients.gradPosition[terminal.primitiveIndex].y() = grad_C_pos.y();
-                            gradients.gradPosition[terminal.primitiveIndex].z() = grad_C_pos.z();
+                            const uint32_t primitiveIndex = terminal.primitiveIndex;
 
-                            gradients.gradTanU[terminal.primitiveIndex].x() = grad_C_tanU.x();
-                            gradients.gradTanU[terminal.primitiveIndex].y() = grad_C_tanU.y();
-                            gradients.gradTanU[terminal.primitiveIndex].z() = grad_C_tanU.z();
+                            // Position
+                            float3 gradPosValue{grad_C_pos.x(), grad_C_pos.y(), grad_C_pos.z()};
+                            atomicAddFloat3(gradients.gradPosition[primitiveIndex], gradPosValue);
 
-                            gradients.gradTanV[terminal.primitiveIndex].x() = grad_C_tanV.x();
-                            gradients.gradTanV[terminal.primitiveIndex].y() = grad_C_tanV.y();
-                            gradients.gradTanV[terminal.primitiveIndex].z() = grad_C_tanV.z();
+                            // Tangent U
+                            float3 gradTanUValue{grad_C_tanU.x(), grad_C_tanU.y(), grad_C_tanU.z()};
+                            atomicAddFloat3(gradients.gradTanU[primitiveIndex], gradTanUValue);
 
-                            gradients.gradScale[terminal.primitiveIndex].x() = grad_C_Scale.x();
-                            gradients.gradScale[terminal.primitiveIndex].y() = grad_C_Scale.y();
+                            // Tangent V
+                            float3 gradTanVValue{grad_C_tanV.x(), grad_C_tanV.y(), grad_C_tanV.z()};
+                            atomicAddFloat3(gradients.gradTanV[primitiveIndex], gradTanVValue);
+
+                            // Scale (only x,y)
+                            atomicAddFloat(gradients.gradScale[primitiveIndex].x(), grad_C_Scale.x());
+                            atomicAddFloat(gradients.gradScale[primitiveIndex].y(), grad_C_Scale.y());
+
 
                             if (rayState.bounceIndex >= recordBounceIndex) {
                                 const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
