@@ -253,7 +253,6 @@ def render_with_scale(renderer,
     )
     rgb = renderer.render_forward()
     rgb = np.asarray(rgb, dtype=np.float32)
-    rgb = np.flipud(rgb)
     return rgb
 
 
@@ -289,7 +288,7 @@ def main(args) -> None:
 
     eps_translation = 0.01  # or 0.005
     eps_rotation_deg = 0.75  # degrees
-    eps_scale = 0.01
+    eps_scale = 0.05
 
 
     # --- render: minus and plus depending on parameter type ---

@@ -593,7 +593,8 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument(
         "--assets-root",
         type=Path,
-        required=True,
+        required=False,
+        default="../Assets",
         help="Path to the Assets directory used by the renderer.",
     )
     parser.add_argument(
@@ -611,7 +612,8 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument(
         "--target-image",
         type=Path,
-        required=True,
+        required=False,
+        default="./Output/target/out_photonmap.png",
         help="Path to target RGB image (PNG, JPG, EXR, etc.).",
     )
     parser.add_argument(

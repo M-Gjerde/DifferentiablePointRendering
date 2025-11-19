@@ -56,7 +56,7 @@ namespace Pale {
                     const float4 residualRgba = sensor.framebuffer[pixelIndex];
                     float3 initialAdjointWeight = {residualRgba.x(), residualRgba.y(), residualRgba.z()};
                     // Or unit weights:
-                    //initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
+                    initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
                     // Base slot for this pixel’s N samples
                     const uint32_t baseOutputSlot = pixelIndex;
@@ -566,7 +566,8 @@ namespace Pale {
                             // Example: BSDF gradients for each parameter group
                             const float3 dFsDPosition = (M_1_PIf) * (dAlphaDPosition * colorLuminance);
                             const float3 dFsDScaleKernel = (M_1_PIf) * (dAlphaDScale * colorLuminance);
-
+                            const float dFsDsu = dFsDScaleKernel.x();
+                            const float dFsDsv = dFsDScaleKernel.y();
                             const float3 f_s_rgb = (M_1_PIf) * (alpha * albedoRgb);
 
 
@@ -586,29 +587,33 @@ namespace Pale {
                             float3 pAdjoint = rayState.pathThroughput;
                             float p = luminanceGrayscale(pAdjoint);
                             // Transmission gradient from direction change
-
                             float brdfLuminance = luminanceGrayscale(f_s_rgb);
 
                             const float3 brdfGrad_ScaleJacobian = {
-                                tauTotal * brdfLuminance / su,
-                                tauTotal * brdfLuminance / sv,
+                                tauTotal * brdfLuminance * su,
+                                tauTotal * brdfLuminance * sv,
                                 0.0f
                             };
-                            float3 brdfGrad_ScaleKernel = dFsDScaleKernel * (tauTotal / alpha);
+                            float3 brdfGrad_ScaleKernel = dFsDScaleKernel * (tauTotal / alpha) * su * sv;
                             const float3 brdfGrad_Scale =
                                     brdfGrad_ScaleKernel // from α (kernel)
                                     + brdfGrad_ScaleJacobian; // from area Jacobian
-                            float3 transmissionGrad = tauGrad * brdfLuminance;
 
+
+                            float gradsu = (dFsDsu * (tauTotal / alpha)) * su * sv + sv * brdfLuminance;
+                            float gradsv = (dFsDsv * (tauTotal / alpha)) * su * sv + su * brdfLuminance;
 
                             float3 brdfGrad_Position = dFsDPosition * tauTotal * 1 / alpha;
                             float3 brdfGrad_TanU = dFsDtU * tauTotal * 1 / alpha;
                             float3 brdfGrad_TanV = dFsDtV * tauTotal * 1 / alpha;
+                            float brdfGrad_scaleU = gradsu * tauTotal;
+                            float brdfGrad_scaleV = gradsv * tauTotal;
 
                             float3 grad_C_pos = p * L_surfel * (brdfGrad_Position);
                             float3 grad_C_tanU = p * L_surfel * (brdfGrad_TanU);
                             float3 grad_C_tanV = p * L_surfel * (brdfGrad_TanV);
-                            float3 grad_C_Scale = p * L_surfel * (brdfGrad_Scale);
+                            float grad_C_ScaleU = p * L_surfel * brdfGrad_scaleU;
+                            float grad_C_ScaleV = p * L_surfel * brdfGrad_scaleV;
 
 
                             const uint32_t primitiveIndex = terminal.primitiveIndex;
@@ -626,14 +631,14 @@ namespace Pale {
                             atomicAddFloat3(gradients.gradTanV[primitiveIndex], gradTanVValue);
 
                             // Scale (only x,y)
-                            atomicAddFloat(gradients.gradScale[primitiveIndex].x(), grad_C_Scale.x());
-                            atomicAddFloat(gradients.gradScale[primitiveIndex].y(), grad_C_Scale.y());
+                            atomicAddFloat(gradients.gradScale[primitiveIndex].x(), grad_C_ScaleU);
+                            atomicAddFloat(gradients.gradScale[primitiveIndex].y(), grad_C_ScaleV);
 
 
                             if (rayState.bounceIndex >= recordBounceIndex) {
                                 const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
                                 float4 &gradImageDst = gradients.framebuffer[rayState.pixelIndex];
-                                atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                                atomicAddFloatToImage(&gradImageDst, grad_C_ScaleV);
                             }
                             /*
                             if (isWatched) {

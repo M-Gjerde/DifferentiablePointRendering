@@ -50,11 +50,11 @@ export namespace Pale {
 
         queue.wait();
 
-        queue.fill(out.gradPosition, float3{0}, numPoints).wait();
-        queue.fill(out.gradTanU, float3{0}, numPoints).wait();
-        queue.fill(out.gradTanV, float3{0}, numPoints).wait();
-        queue.fill(out.gradScale, float2{0}, numPoints).wait();
-        queue.fill(out.framebuffer, float4{0}, pixelCount).wait();
+        //queue.fill(out.gradPosition, float3{0}, numPoints).wait();
+        //queue.fill(out.gradTanU, float3{0}, numPoints).wait();
+        //queue.fill(out.gradTanV, float3{0}, numPoints).wait();
+        //queue.fill(out.gradScale, float2{0}, numPoints).wait();
+        //queue.fill(out.framebuffer, float4{0}, pixelCount).wait();
 
         out.numPoints = numPoints;
         queue.wait();

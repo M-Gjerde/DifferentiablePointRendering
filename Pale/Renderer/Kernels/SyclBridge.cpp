@@ -13,17 +13,18 @@
 
 namespace Pale {
     // ---- Orchestrator -------------------------------------------------------
-    void submitKernel(RenderPackage &pkg) {
-
+    void submitKernel(RenderPackage& pkg) {
         std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
 
         if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
-            pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
+            pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0},
+                           pkg.sensor.height * pkg.sensor.width).wait();
 
             for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
                 pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
 
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
+                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+                {
                     ScopedTimer timer("launchRayGenEmitterKernel");
                     launchRayGenEmitterKernel(pkg);
                 }
@@ -58,10 +59,12 @@ namespace Pale {
                 }
             }
             uint32_t photonMapCount = 0;
-            pkg.queue.memcpy(&photonMapCount, pkg.intermediates.map.photonCountDevicePtr, sizeof(uint32_t)).wait(); {
+            pkg.queue.memcpy(&photonMapCount, pkg.intermediates.map.photonCountDevicePtr, sizeof(uint32_t)).wait();
+            {
                 ScopedTimer timer("clearGridHeads");
                 clearGridHeads(pkg.queue, pkg.intermediates.map);
-            } {
+            }
+            {
                 ScopedTimer timer("buildPhotonGridLinkedLists", spdlog::level::debug);
                 size_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity);
                 buildPhotonGridLinkedLists(pkg.queue, pkg.intermediates.map, photonCount);
@@ -69,8 +72,6 @@ namespace Pale {
 
             // Save photon map to disk:
             {
-
-
                 /*
                 ScopedTimer timer("dumpPhotonMapToPLY");
                 dumpPhotonMapToPLY(pkg.queue,
@@ -78,8 +79,8 @@ namespace Pale {
                                   photonMapCount,
                                   std::filesystem::path("Output/photon_map.ply"));
                 */
-
-            } {
+            }
+            {
                 ScopedTimer timer("launchCameraGatherKernel", spdlog::level::debug);
                 int cameraGatherSPP = pkg.settings.numGatherPasses;
                 for (int i = 0; i < cameraGatherSPP; i++) {
@@ -88,20 +89,20 @@ namespace Pale {
                     pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
                     launchCameraGatherKernel(pkg, cameraGatherSPP); // generate image from photon map
                 }
-
-
             }
-        } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
+        }
+        else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
             /*
             pkg.queue
                     .fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width)
                     .wait();
             */
             pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
-            pkg.queue.fill(pkg.gradients.gradPosition, float3{0, 0, 0},  pkg.gradients.numPoints).wait();
-            pkg.queue.fill(pkg.gradients.gradTanU, float3{0, 0, 0},      pkg.gradients.numPoints).wait();
-            pkg.queue.fill(pkg.gradients.gradTanV, float3{0, 0, 0},      pkg.gradients.numPoints).wait();
-            pkg.queue.fill(pkg.gradients.gradScale, float2{0, 0},              pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradPosition, float3{0, 0, 0}, pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradTanU, float3{0, 0, 0}, pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradTanV, float3{0, 0, 0}, pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradScale, float2{0, 0}, pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.framebuffer, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
 
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
             for (int spp = 0; spp < samplesPerPixel; ++spp) {
@@ -123,13 +124,16 @@ namespace Pale {
                     pkg.settings.randomSeed = pkg.settings.randomSeed + bounce;
                     pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                    pkg.queue.wait(); {
+                    pkg.queue.wait();
+                    {
                         ScopedTimer timer("launchIntersectKernel");
                         launchIntersectKernel(pkg, activeCount);
-                    } {
+                    }
+                    {
                         ScopedTimer timer("launchAdjointKernel");
                         bounce == 0 ? launchAdjointKernel(pkg, activeCount) : launchAdjointKernel2(pkg, activeCount);
-                    } {
+                    }
+                    {
                         ScopedTimer timer("generateNextRays");
                         generateNextAdjointRays(pkg, activeCount);
                     }
