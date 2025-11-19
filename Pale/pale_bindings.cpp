@@ -25,8 +25,6 @@ import Pale.Render.PathTracer;
 import Pale.Render.Sensors;
 import Pale.Scene;
 
-#include <filesystem>
-#include <memory>
 
 namespace py = pybind11;
 
@@ -60,7 +58,13 @@ public:
                    const py::dict &settingsDict // <-- accept dict
     ) {
         std::filesystem::current_path(assetRootDir);
-        Pale::Log::init();
+        int level = 2;
+        if (!settingsDict.is_none()) {
+            // use integer types consistent with your struct
+            level =(get_i(settingsDict, "logging", 2));
+        }
+
+        Pale::Log::init(level);
 
         assetManager = std::make_unique<Pale::AssetManager>(256);
         assetManager->enableHotReload(true);
@@ -89,10 +93,11 @@ public:
         Pale::AssetAccessFromManager assetAccessor(*assetManager);
 
         buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
-        sceneGpu = Pale::SceneUpload::upload(buildProducts, deviceSelector->getQueue());
+        sceneGpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector->getQueue());
 
         sensorForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
         sensorAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+        gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts);
 
         Pale::PathTracerSettings settings{}; // defaults from engine
 
@@ -122,35 +127,74 @@ public:
         if (deviceSelector) deviceSelector->getQueue().wait();
     }
 
-    // Forward render -> returns HxWx3 float32 NumPy
+    // C++ equivalent of Python tonemap_exposure_gamma()
+    static inline float tonemap_exposure_gamma_scalar(float x,
+                                                      float exposureStops,
+                                                      float gamma)
+    {
+        const float k = std::pow(2.0f, exposureStops);
+
+        // clamp to [0, +inf)
+        const float xc = x < 0.0f ? 0.0f : x;
+
+        const float y = 1.0f - std::exp(-k * xc);
+
+        const float invGamma = 1.0f / std::max(gamma, 1e-6f);
+        return std::pow(std::clamp(y, 0.0f, 1.0f), invGamma);
+    }
+
+
     py::array_t<float> render_forward() {
-        py::gil_scoped_release release; // long GPU section
+        py::gil_scoped_release release;
 
         pathTracer->renderForward(sensorForward);
 
         auto rgbaHost = Pale::downloadSensorRGBA(deviceSelector->getQueue(), sensorForward);
-        const uint32_t imageWidth = sensorForward.width;
-        const uint32_t imageHeight = sensorForward.height;
+        const uint32_t W = sensorForward.width;
+        const uint32_t H = sensorForward.height;
 
-        // Tone-map to linear RGB in [0,1] as float32 HxWx3
-        std::vector<float> rgb(imageWidth * imageHeight * 3u);
-        //Pale::Utils::toneMapInPlace(rgbaHost, imageWidth, imageHeight, exposure, gamma, flipY);
-        for (size_t i = 0, j = 0; i < rgbaHost.size(); i += 4, j += 3) {
-            rgb[j + 0] = rgbaHost[i + 0];
-            rgb[j + 1] = rgbaHost[i + 1];
-            rgb[j + 2] = rgbaHost[i + 2];
+        const float exposureStops = 2.0f; // TODO: expose to Python if desired
+        const float gamma = 2.8f;         // TODO: expose to Python if desired
+
+        std::vector<float> rgb(H * W * 3);
+
+        // fill + tonemap + flip-y
+        // flip-y means: row y in output = row (H-1-y) in input
+        for (uint32_t y = 0; y < H; ++y) {
+
+            for (uint32_t x = 0; x < W; ++x) {
+                const size_t srcIndex = 4 * (y * W + x);             // RGBA source
+                const size_t dstIndex = 3 * (y * W + x);      // RGB dest
+
+                float r = rgbaHost[srcIndex + 0];
+                float g = rgbaHost[srcIndex + 1];
+                float b = rgbaHost[srcIndex + 2];
+
+                // tone-map per channel
+                r = tonemap_exposure_gamma_scalar(r, exposureStops, gamma);
+                g = tonemap_exposure_gamma_scalar(g, exposureStops, gamma);
+                b = tonemap_exposure_gamma_scalar(b, exposureStops, gamma);
+
+                rgb[dstIndex + 0] = r;
+                rgb[dstIndex + 1] = g;
+                rgb[dstIndex + 2] = b;
+            }
         }
 
+        // wrap NumPy buffer
         py::gil_scoped_acquire acquire;
-        std::vector<ssize_t> shape{static_cast<ssize_t>(imageHeight), static_cast<ssize_t>(imageWidth), 3};
-        std::vector<ssize_t> strides{
-            static_cast<ssize_t>(imageWidth * 3 * sizeof(float)),
-            static_cast<ssize_t>(3 * sizeof(float)),
-            static_cast<ssize_t>(sizeof(float))
+        std::vector<ssize_t> shape { (ssize_t)H, (ssize_t)W, 3 };
+        std::vector<ssize_t> strides {
+            (ssize_t)(W * 3 * sizeof(float)),
+            (ssize_t)(3 * sizeof(float)),
+            (ssize_t)(sizeof(float))
         };
-        return py::array_t<float>(shape, strides, rgb.data(),
-                                  py::capsule(new std::vector<float>(std::move(rgb)),
-                                              [](void *p) { delete static_cast<std::vector<float> *>(p); }));
+
+        return py::array_t<float>(
+            shape, strides, rgb.data(),
+            py::capsule(new std::vector<float>(std::move(rgb)),
+                [](void *p){ delete static_cast<std::vector<float>*>(p); })
+        );
     }
 
 
@@ -164,70 +208,352 @@ public:
         if (info.itemsize != sizeof(float)) {
             throw std::runtime_error("target dtype must be float32");
         }
-        const int64_t Ht = static_cast<int64_t>(info.shape[0]);
-        const int64_t Wt = static_cast<int64_t>(info.shape[1]);
+        const int64_t H = static_cast<int64_t>(info.shape[0]);
+        const int64_t W = static_cast<int64_t>(info.shape[1]);
+        auto *rgbPtr = static_cast<const float*>(info.ptr);
 
         auto q = deviceSelector->getQueue();
 
         // --- GPU work without the GIL ---
         py::gil_scoped_release release;
+        // ------------------------------------------------------------
+        // 1. Convert HxWx3 → HxWx4 into std::vector<float>
+        // ------------------------------------------------------------
+        std::vector<float> rgbaTarget;
+        rgbaTarget.resize(H * W * 4);
 
-        // Optional: upload target to device if your tracer expects it.
-        // Example (adjust to your API):
-        // pathTracer->setAdjointTarget(static_cast<float*>(info.ptr), Wt, Ht);
+        for (int64_t y = 0; y < H; ++y) {
+            for (int64_t x = 0; x < W; ++x) {
+                size_t idx3 = (y * W + x) * 3;
+                size_t idx4 = (y * W + x) * 4;
 
-        // Run adjoint
-        pathTracer->renderBackward(sensorAdjoint);
+                rgbaTarget[idx4 + 0] = rgbPtr[idx3 + 0];
+                rgbaTarget[idx4 + 1] = rgbPtr[idx3 + 1];
+                rgbaTarget[idx4 + 2] = rgbPtr[idx3 + 2];
+                rgbaTarget[idx4 + 3] = 1.0f;        // alpha channel
+            }
+        }
 
-        // Download gradients (Nx3)
-        std::vector<Pale::float3> gradHost(gradCount);
-        //q.memcpy(gradHost.data(), gradientPkBuffer, gradCount * sizeof(Pale::float3)).wait();
+        // ------------------------------------------------------------
+        // 2. Upload to the GPU adjoint sensor target buffer
+        // ------------------------------------------------------------
+        uploadSensorRGBA(q, sensorAdjoint, rgbaTarget);
+
+        pathTracer->renderBackward(sensorAdjoint, gradients);
+
+        const std::size_t pointCount = gradients.numPoints;
+
+        // --- Download all gradient arrays from GPU to host ---
+
+        std::vector<Pale::float3> gradPositionHost(pointCount);
+        std::vector<Pale::float3> gradTangentUHost(pointCount);
+        std::vector<Pale::float3> gradTangentVHost(pointCount);
+        std::vector<Pale::float2> gradScaleHost(pointCount);
+        std::vector<Pale::float3> gradColorHost(pointCount);
+        std::vector<float> gradOpacityHost(pointCount);
+        std::vector<float> gradBetaHost(pointCount);
+        std::vector<float> gradShapeHost(pointCount);
+
+        sycl::queue syclQueue = deviceSelector->getQueue();
+        if (pointCount > 0) {
+            // Only memcpy if the device pointers are non-null
+            if (gradients.gradPosition) {
+                syclQueue.memcpy(
+                    gradPositionHost.data(),
+                    gradients.gradPosition,
+                    pointCount * sizeof(Pale::float3));
+            }
+            if (gradients.gradTanU) {
+                syclQueue.memcpy(
+                    gradTangentUHost.data(),
+                    gradients.gradTanU,
+                    pointCount * sizeof(Pale::float3));
+            }
+            if (gradients.gradTanV) {
+                syclQueue.memcpy(
+                    gradTangentVHost.data(),
+                    gradients.gradTanV,
+                    pointCount * sizeof(Pale::float3));
+            }
+            if (gradients.gradScale) {
+                syclQueue.memcpy(
+                    gradScaleHost.data(),
+                    gradients.gradScale,
+                    pointCount * sizeof(Pale::float2));
+            }
+            if (gradients.gradColor) {
+                syclQueue.memcpy(
+                    gradColorHost.data(),
+                    gradients.gradColor,
+                    pointCount * sizeof(Pale::float3));
+            }
+            if (gradients.gradOpacity) {
+                syclQueue.memcpy(
+                    gradOpacityHost.data(),
+                    gradients.gradOpacity,
+                    pointCount * sizeof(float));
+            }
+            if (gradients.gradBeta) {
+                syclQueue.memcpy(
+                    gradBetaHost.data(),
+                    gradients.gradBeta,
+                    pointCount * sizeof(float));
+            }
+            if (gradients.gradShape) {
+                syclQueue.memcpy(
+                    gradShapeHost.data(),
+                    gradients.gradShape,
+                    pointCount * sizeof(float));
+            }
+
+            syclQueue.wait_and_throw();
+        }
 
         // Download adjoint framebuffer RGBA (HxWx4 float)
-        auto rgbaHost = Pale::downloadSensorRGBA(q, sensorAdjoint);
-        const uint32_t W = sensorAdjoint.width;
-        const uint32_t H = sensorAdjoint.height;
+        auto rgbaHost = Pale::downloadSensorRGBA(syclQueue, sensorAdjoint);
+        const std::uint32_t imageWidth = sensorAdjoint.width;
+        const std::uint32_t imageHeight = sensorAdjoint.height;
 
         // --- back to Python world ---
-        py::gil_scoped_acquire acquire;
+        py::gil_scoped_acquire gilAcquire;
 
-        // Wrap gradients as (N,3) float32
-        auto gradOwner = new std::vector<Pale::float3>(std::move(gradHost));
-        std::vector<ssize_t> gshape{static_cast<ssize_t>(gradCount), 3};
-        std::vector<ssize_t> gstrides{static_cast<ssize_t>(sizeof(Pale::float3)), static_cast<ssize_t>(sizeof(float))};
-        py::array gradArray(
-            py::buffer_info(
-                gradOwner->data(), // ptr
-                sizeof(float), // itemsize
-                py::format_descriptor<float>::format(),
-                2, // ndim
-                gshape,
-                gstrides
-            ),
-            py::capsule(gradOwner, [](void *p) { delete static_cast<std::vector<Pale::float3> *>(p); })
-        );
+        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector,
+                                  std::size_t count) -> py::array {
+            auto *owner = new std::vector<Pale::float3>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(count),
+                3
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(float))
+            };
 
-        // Wrap RGBA as (H,W,4) float32
-        auto imgOwner = new std::vector<float>(std::move(rgbaHost));
-        std::vector<ssize_t> ishape{static_cast<ssize_t>(H), static_cast<ssize_t>(W), 4};
-        std::vector<ssize_t> istrides{
-            static_cast<ssize_t>(W) * 4 * static_cast<ssize_t>(sizeof(float)),
-            static_cast<ssize_t>(4) * static_cast<ssize_t>(sizeof(float)),
+            return py::array(
+                py::buffer_info(
+                    owner->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    shape,
+                    strides
+                ),
+                py::capsule(owner, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                })
+            );
+        };
+
+        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector,
+                                  std::size_t count) -> py::array {
+            auto *owner = new std::vector<Pale::float2>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(count),
+                2
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(Pale::float2)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    owner->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    shape,
+                    strides
+                ),
+                py::capsule(owner, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float2> *>(pointer);
+                })
+            );
+        };
+
+        auto makeFloat1Array = [](std::vector<float> &hostVector,
+                                  std::size_t count) -> py::array {
+            auto *owner = new std::vector<float>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(count)
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    owner->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    1,
+                    shape,
+                    strides
+                ),
+                py::capsule(owner, [](void *pointer) {
+                    delete static_cast<std::vector<float> *>(pointer);
+                })
+            );
+        };
+
+        // Wrap gradients in a Python dict
+        py::dict gradientDictionary;
+        gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
+        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
+        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+        gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
+        gradientDictionary["color"] = makeFloat3Array(gradColorHost, pointCount);
+        gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
+        gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
+        gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+
+        // Wrap RGBA buffer as (H, W, 4) float32 NumPy array
+        auto *rgbaOwner = new std::vector<float>(std::move(rgbaHost));
+        std::vector<ssize_t> rgbaShape{
+            static_cast<ssize_t>(imageHeight),
+            static_cast<ssize_t>(imageWidth),
+            4
+        };
+        std::vector<ssize_t> rgbaStrides{
+            static_cast<ssize_t>(imageWidth * 4 * sizeof(float)),
+            static_cast<ssize_t>(4 * sizeof(float)),
             static_cast<ssize_t>(sizeof(float))
         };
-        py::array imgArray(
+
+        py::array rgbaArray(
             py::buffer_info(
-                imgOwner->data(),
+                rgbaOwner->data(),
                 sizeof(float),
                 py::format_descriptor<float>::format(),
                 3,
-                ishape,
-                istrides
+                rgbaShape,
+                rgbaStrides
             ),
-            py::capsule(imgOwner, [](void *p) { delete static_cast<std::vector<float> *>(p); })
+            py::capsule(rgbaOwner, [](void *pointer) {
+                delete static_cast<std::vector<float> *>(pointer);
+            })
         );
 
-        return py::make_tuple(gradArray, imgArray);
+        // Return (gradients, adjoint_image)
+        return py::make_tuple(gradientDictionary, rgbaArray);
+    }
+
+    py::dict get_point_parameters() {
+        const std::size_t pointCount = buildProducts.points.size();
+
+        // Host copies of all parameters
+        std::vector<Pale::float3> positionHost(pointCount);
+        std::vector<Pale::float3> tangentUHost(pointCount);
+        std::vector<Pale::float3> tangentVHost(pointCount);
+        std::vector<Pale::float2> scaleHost(pointCount);
+        std::vector<Pale::float3> colorHost(pointCount);
+        std::vector<float> opacityHost(pointCount);
+        std::vector<float> betaHost(pointCount);
+        std::vector<float> shapeHost(pointCount);
+
+        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+            const auto &point = buildProducts.points[pointIndex];
+            positionHost[pointIndex] = point.position;
+            tangentUHost[pointIndex] = point.tanU;
+            tangentVHost[pointIndex] = point.tanV;
+            scaleHost[pointIndex] = point.scale;
+            colorHost[pointIndex] = point.color;
+            opacityHost[pointIndex] = point.opacity;
+            betaHost[pointIndex] = point.beta;
+            shapeHost[pointIndex] = point.shape;
+        }
+
+        // Reuse the same makers as in render_backward (or define them once)
+        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector,
+                                  std::size_t count) -> py::array {
+            auto *owner = new std::vector<Pale::float3>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(count),
+                3
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    owner->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    shape,
+                    strides
+                ),
+                py::capsule(owner, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                })
+            );
+        };
+
+        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector,
+                                  std::size_t count) -> py::array {
+            auto *owner = new std::vector<Pale::float2>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(count),
+                2
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(Pale::float2)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    owner->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    shape,
+                    strides
+                ),
+                py::capsule(owner, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float2> *>(pointer);
+                })
+            );
+        };
+
+        auto makeFloat1Array = [](std::vector<float> &hostVector,
+                                  std::size_t count) -> py::array {
+            auto *owner = new std::vector<float>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(count)
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    owner->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    1,
+                    shape,
+                    strides
+                ),
+                py::capsule(owner, [](void *pointer) {
+                    delete static_cast<std::vector<float> *>(pointer);
+                })
+            );
+        };
+
+        py::dict parameterDictionary;
+        parameterDictionary["position"] = makeFloat3Array(positionHost, pointCount);
+        parameterDictionary["tangent_u"] = makeFloat3Array(tangentUHost, pointCount);
+        parameterDictionary["tangent_v"] = makeFloat3Array(tangentVHost, pointCount);
+        parameterDictionary["scale"] = makeFloat2Array(scaleHost, pointCount);
+        parameterDictionary["color"] = makeFloat3Array(colorHost, pointCount);
+        parameterDictionary["opacity"] = makeFloat1Array(opacityHost, pointCount);
+        parameterDictionary["beta"] = makeFloat1Array(betaHost, pointCount);
+        parameterDictionary["shape"] = makeFloat1Array(shapeHost, pointCount);
+
+        return parameterDictionary;
     }
 
     // Optional: set renderer settings from Python
@@ -241,75 +567,181 @@ public:
         return {static_cast<int>(sensorForward.width), static_cast<int>(sensorForward.height)};
     }
 
-void set_gaussian_transform(py::tuple translation3,
-                            py::tuple rotationQuat4,
-                            py::tuple scale3,
-                            int index = -1) {
-    if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3) {
-        throw std::runtime_error("Expected translation(3), rotation_quat(4), scale(3)");
+public:
+    void set_point_parameters(const py::dict &parameterDictionary) {
+        const std::size_t pointCount = buildProducts.points.size();
+        if (pointCount == 0) {
+            return;
+        }
+
+        auto assignFloat3FieldFromArray =
+            [&](const char *key, Pale::float3 Pale::Point::*memberPointer) {
+                if (!parameterDictionary.contains(key)) {
+                    return; // skip if not provided
+                }
+                py::array arrayObject = parameterDictionary[key].cast<py::array>();
+
+                py::buffer_info bufferInfo = arrayObject.request();
+                if (bufferInfo.ndim != 2 ||
+                    bufferInfo.shape[0] != static_cast<ssize_t>(pointCount) ||
+                    bufferInfo.shape[1] != 3) {
+                    throw std::runtime_error(
+                        std::string("Expected '") + key + "' to have shape (N,3)");
+                    }
+                if (bufferInfo.itemsize != sizeof(float)) {
+                    throw std::runtime_error(
+                        std::string("Expected '") + key + "' to be float32");
+                }
+
+                auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
+                for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+                    const std::size_t baseIndex = pointIndex * 3;
+                    Pale::float3 value;
+                    value.x() = dataPointer[baseIndex + 0];
+                    value.y() = dataPointer[baseIndex + 1];
+                    value.z() = dataPointer[baseIndex + 2];
+                    buildProducts.points[pointIndex].*memberPointer = value;
+                }
+        };
+
+        auto assignFloat2FieldFromArray = [&](const char *key,
+                                              auto memberPointer) {
+            if (!parameterDictionary.contains(key)) {
+                return;
+            }
+            py::array arrayObject = parameterDictionary[key].cast<py::array>();
+
+            py::buffer_info bufferInfo = arrayObject.request();
+            if (bufferInfo.ndim != 2 || bufferInfo.shape[0] != static_cast<ssize_t>(pointCount) ||
+                bufferInfo.shape[1] != 2) {
+                throw std::runtime_error(std::string("Expected '") + key +
+                                         "' to have shape (N,2)");
+            }
+            if (bufferInfo.itemsize != sizeof(float)) {
+                throw std::runtime_error(std::string("Expected '") + key +
+                                         "' to be float32");
+            }
+
+            auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
+            for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+                const std::size_t baseIndex = pointIndex * 2;
+                Pale::float2 value;
+                value.x() = dataPointer[baseIndex + 0];
+                value.y() = dataPointer[baseIndex + 1];
+                buildProducts.points[pointIndex].*memberPointer = value;
+            }
+        };
+
+        auto assignFloat1FieldFromArray = [&](const char *key,
+                                              auto memberPointer) {
+            if (!parameterDictionary.contains(key)) {
+                return;
+            }
+            py::array arrayObject = parameterDictionary[key].cast<py::array>();
+
+            py::buffer_info bufferInfo = arrayObject.request();
+            if (bufferInfo.ndim != 1 || bufferInfo.shape[0] != static_cast<ssize_t>(pointCount)) {
+                throw std::runtime_error(std::string("Expected '") + key +
+                                         "' to have shape (N,)");
+            }
+            if (bufferInfo.itemsize != sizeof(float)) {
+                throw std::runtime_error(std::string("Expected '") + key +
+                                         "' to be float32");
+            }
+
+            auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
+            for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+                buildProducts.points[pointIndex].*memberPointer = dataPointer[pointIndex];
+            }
+        };
+
+        // Assign provided fields; any missing keys are left unchanged.
+        assignFloat3FieldFromArray("position", &Pale::Point::position);
+        assignFloat3FieldFromArray("tangent_u", &Pale::Point::tanU);
+        assignFloat3FieldFromArray("tangent_v", &Pale::Point::tanV);
+        assignFloat2FieldFromArray("scale", &Pale::Point::scale); // note: float2
+        assignFloat3FieldFromArray("color", &Pale::Point::color);
+        assignFloat1FieldFromArray("opacity", &Pale::Point::opacity);
+        assignFloat1FieldFromArray("beta", &Pale::Point::beta);
+        assignFloat1FieldFromArray("shape", &Pale::Point::shape);
+
+        // Push updated CPU-side buildProducts to GPU
+        reuploadSceneGpu();
     }
 
-    const glm::vec3 newTranslation{
-        py::cast<float>(translation3[0]),
-        py::cast<float>(translation3[1]),
-        py::cast<float>(translation3[2])
-    };
+    void reuploadSceneGpu() {
+        Pale::SceneUpload::upload(buildProducts,  sceneGpu, deviceSelector->getQueue());
+        pathTracer->setScene(sceneGpu, buildProducts);
+    }
 
-    // quaternion as (x, y, z, w)
+    void set_gaussian_transform(py::tuple translation3,
+                                py::tuple rotationQuat4,
+                                py::tuple scale3,
+                                int index = -1) {
+        if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3) {
+            throw std::runtime_error("Expected translation(3), rotation_quat(4), scale(3)");
+        }
+
+        const glm::vec3 newTranslation{
+            py::cast<float>(translation3[0]),
+            py::cast<float>(translation3[1]),
+            py::cast<float>(translation3[2])
+        };
+
+        // quaternion as (x, y, z, w)
         const glm::quat rotationDelta{
             py::cast<float>(rotationQuat4[3]), // w
             py::cast<float>(rotationQuat4[0]), // x
             py::cast<float>(rotationQuat4[1]), // y
-            py::cast<float>(rotationQuat4[2])  // z
+            py::cast<float>(rotationQuat4[2]) // z
         };
 
-    const glm::vec2 newScale{
-        py::cast<float>(scale3[0]),
-        py::cast<float>(scale3[1]),
-    };
+        const glm::vec2 newScale{
+            py::cast<float>(scale3[0]),
+            py::cast<float>(scale3[1]),
+        };
 
-    Pale::AssetAccessFromManager assetAccessor(*assetManager);
-    buildProducts = Pale::SceneBuild::build(
-        scene,
-        assetAccessor,
-        Pale::SceneBuild::BuildOptions()
-    );
+        Pale::AssetAccessFromManager assetAccessor(*assetManager);
+        buildProducts = Pale::SceneBuild::build(
+            scene,
+            assetAccessor,
+            Pale::SceneBuild::BuildOptions()
+        );
 
-    // --- apply translation to either one point or all points ---
-    if (index < 0) {
-        // perturb all points
-        const sycl::float3 translationDelta = Pale::glm2sycl(newTranslation);
-        for (auto &point : buildProducts.points) {
-            point.position += translationDelta;
+        // --- apply translation to either one point or all points ---
+        if (index < 0) {
+            // perturb all points
+            const sycl::float3 translationDelta = Pale::glm2sycl(newTranslation);
+            for (auto &point: buildProducts.points) {
+                point.position += translationDelta;
 
-            // 3) scale vector on the Gaussian (if you store it per point)
-            const sycl::float2 scaleDelta = Pale::glm2sycl(newScale);
+                // 3) scale vector on the Gaussian (if you store it per point)
+                const sycl::float2 scaleDelta = Pale::glm2sycl(newScale);
 
-            // 2) orientation: rotate tanU / tanV by the rotation delta
-            glm::vec3 tanUGlm = Pale::sycl2glm(point.tanU);
-            glm::vec3 tanVGlm = Pale::sycl2glm(point.tanV);
-            tanUGlm = rotationDelta * tanUGlm;
-            tanVGlm = rotationDelta * tanVGlm;
-            point.tanU = Pale::glm2sycl(tanUGlm);
-            point.tanV = Pale::glm2sycl(tanVGlm);
+                // 2) orientation: rotate tanU / tanV by the rotation delta
+                glm::vec3 tanUGlm = Pale::sycl2glm(point.tanU);
+                glm::vec3 tanVGlm = Pale::sycl2glm(point.tanV);
+                tanUGlm = rotationDelta * tanUGlm;
+                tanVGlm = rotationDelta * tanVGlm;
+                point.tanU = Pale::glm2sycl(tanUGlm);
+                point.tanV = Pale::glm2sycl(tanVGlm);
 
 
-            point.scale *= scaleDelta; // component-wise
-
+                point.scale *= scaleDelta; // component-wise
+            }
+        } else {
+            if (static_cast<std::size_t>(index) >= buildProducts.points.size()) {
+                throw std::out_of_range("set_gaussian_transform: index out of range");
+            }
+            buildProducts.points[index].position += Pale::glm2sycl(newTranslation);
         }
-    } else {
-        if (static_cast<std::size_t>(index) >= buildProducts.points.size()) {
-            throw std::out_of_range("set_gaussian_transform: index out of range");
-        }
-        buildProducts.points[index].position += Pale::glm2sycl(newTranslation);
+
+        Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
+        sensorForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+        sensorAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+
+        pathTracer->setScene(sceneGpu, buildProducts);
     }
-
-    sceneGpu = Pale::SceneUpload::upload(buildProducts, deviceSelector->getQueue());
-    sensorForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
-    sensorAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
-
-    pathTracer->setScene(sceneGpu, buildProducts);
-}
 
 private:
     std::unique_ptr<Pale::AssetManager> assetManager{};
@@ -322,6 +754,7 @@ private:
 
     Pale::SceneBuild::BuildProducts buildProducts{};
     Pale::GPUSceneBuffers sceneGpu{};
+    Pale::PointGradients gradients{};
     // Adjoint buffers
     bool adjointBuffersAllocated{false};
     float *adjointFramebuffer{nullptr};
@@ -350,5 +783,7 @@ PYBIND11_MODULE(pale, m) {
             .def("set_adjoint_spp", &PythonRenderer::set_adjoint_spp)
             .def("get_image_size", &PythonRenderer::get_image_size)
             .def("set_gaussian_transform", &PythonRenderer::set_gaussian_transform,
-                 py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"),          py::arg("index") = -1);
+                 py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"), py::arg("index") = -1).def(
+                "get_point_parameters", &PythonRenderer::get_point_parameters)
+            .def("set_point_parameters", &PythonRenderer::set_point_parameters);
 }

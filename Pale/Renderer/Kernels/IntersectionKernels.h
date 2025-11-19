@@ -153,10 +153,6 @@ namespace Pale {
             groupAlphas.clear();
             groupIndices.clear();
         };
-        RayIntersectMode::Scatter;
-        RayIntersectMode::Random;
-        RayIntersectMode::Transmit;
-
 
         auto scatterCurrentGroup = [&](rng::Xorshift128 &randomNumberGenerator) -> bool {
             if (groupLocalTs.empty()) return false;

@@ -14,11 +14,12 @@
 namespace Pale {
     // ---- Orchestrator -------------------------------------------------------
     void submitKernel(RenderPackage &pkg) {
-        pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
 
         std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
 
         if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
+            pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width).wait();
+
             for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
                 pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
 
@@ -91,10 +92,16 @@ namespace Pale {
 
             }
         } else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
+            /*
             pkg.queue
                     .fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0}, pkg.sensor.height * pkg.sensor.width)
                     .wait();
+            */
             pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+            pkg.queue.fill(pkg.gradients.gradPosition, float3{0, 0, 0},  pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradTanU, float3{0, 0, 0},      pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradTanV, float3{0, 0, 0},      pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradScale, float2{0, 0},              pkg.gradients.numPoints).wait();
 
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
             for (int spp = 0; spp < samplesPerPixel; ++spp) {

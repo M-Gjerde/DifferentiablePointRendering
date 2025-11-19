@@ -11,18 +11,16 @@ export module Pale.Render.Sensors;
 import Pale.Render.SceneBuild;
 
 export namespace Pale {
-
-
     SensorGPU
-    makeSensorsForScene(sycl::queue queue, const SceneBuild::BuildProducts& buildProducts) {
+    makeSensorsForScene(sycl::queue queue, const SceneBuild::BuildProducts &buildProducts) {
         SensorGPU out{};
         if (buildProducts.cameraCount() == 0) {
             return out;
         }
 
-        const auto& cam = buildProducts.cameras().front();
+        const auto &cam = buildProducts.cameras().front();
         const size_t pixelCount = static_cast<size_t>(cam.width) * static_cast<size_t>(cam.height);
-        float4* dev = reinterpret_cast<float4*>(sycl::malloc_device(pixelCount * sizeof(float4), queue));
+        float4 *dev = reinterpret_cast<float4 *>(sycl::malloc_device(pixelCount * sizeof(float4), queue));
 
         queue.wait();
 
@@ -35,13 +33,35 @@ export namespace Pale {
         return out;
     }
 
+    PointGradients
+    makeGradientsForScene(sycl::queue queue, const SceneBuild::BuildProducts &buildProducts) {
+        PointGradients out{};
+
+
+        uint32_t numPoints = buildProducts.points.size();
+        out.gradPosition = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
+        out.gradTanU = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
+        out.gradTanV = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
+        out.gradScale = static_cast<float2 *>(sycl::malloc_device(numPoints * sizeof(float2), queue));
+
+        queue.wait();
+
+        queue.fill(out.gradPosition, float3{0, 0, 0}, numPoints).wait();
+        queue.fill(out.gradTanU, float3{0, 0, 0}, numPoints).wait();
+        queue.fill(out.gradTanV, float3{0, 0, 0}, numPoints).wait();
+        queue.fill(out.gradScale, float2{0, 0}, numPoints).wait();
+
+        out.numPoints = numPoints;
+        queue.wait();
+        return out;
+    }
+
     inline std::vector<float>
-    downloadSensorRGBA(sycl::queue queue, const SensorGPU& sensorGpu)
-    {
+    downloadSensorRGBA(sycl::queue queue, const SensorGPU &sensorGpu) {
         // Total number of float elements = width * height * 4 (RGBA channels)
         const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
-                                     * static_cast<size_t>(sensorGpu.height)
-                                     * 4u;
+                                       * static_cast<size_t>(sensorGpu.height)
+                                       * 4u;
         std::vector<float> hostSideFramebuffer(totalFloatCount);
 
 
@@ -49,9 +69,23 @@ export namespace Pale {
         queue.wait();
         // Copy device framebuffer → host buffer
         queue.memcpy(
-            hostSideFramebuffer.data(),       // destination
-            sensorGpu.framebuffer,            // source (device pointer)
-            totalFloatCount * sizeof(float)   // size in bytes
+            hostSideFramebuffer.data(), // destination
+            sensorGpu.framebuffer, // source (device pointer)
+            totalFloatCount * sizeof(float) // size in bytes
+        ).wait();
+
+        return hostSideFramebuffer;
+    }
+
+    inline std::vector<float>
+    uploadSensorRGBA(sycl::queue queue, const SensorGPU &sensorGpu, std::vector<float> hostSideFramebuffer) {
+        // Allocate host-side buffer
+        queue.wait();
+        // Copy device framebuffer → host buffer
+        queue.memcpy(
+            sensorGpu.framebuffer, // destination
+            hostSideFramebuffer.data(), // source (device pointer)
+            hostSideFramebuffer.size() * sizeof(float) // size in bytes
         ).wait();
 
         return hostSideFramebuffer;

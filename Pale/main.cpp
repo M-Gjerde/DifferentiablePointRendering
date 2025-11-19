@@ -145,16 +145,16 @@ int main(int argc, char **argv) {
 
     auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
     // Upload Scene to GPU
-    auto gpu = Pale::SceneUpload::upload(buildProducts, deviceSelector.getQueue()); // scene only
+    auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e5; // 1e6
+    settings.photonsPerLaunch = 1e4; // 1e6
     settings.maxBounces = 4;
     settings.numForwardPasses = 20;
-    settings.numGatherPasses = 16;
+    settings.numGatherPasses = 8;
     settings.maxAdjointBounces = 1;
-    settings.adjointSamplesPerPixel = 16;
+    settings.adjointSamplesPerPixel = 8;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);
@@ -199,16 +199,13 @@ int main(int argc, char **argv) {
     // 4) (Optional) load or compute residuals on host, upload pointer
     //auto adjoint = calculateAdjointImage("Output/target/out_photonmap.pfm", deviceSelector.getQueue(), sensor, true);
     Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+    Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts);
 
     Pale::Log::PA_INFO("Adjoint Render Pass...");
-    tracer.renderBackward(adjointSensor); // PRNG replay adjoint
+    tracer.renderBackward(adjointSensor, gradients); // PRNG replay adjoint
 
-    std::vector<Pale::float3> gradients(10);
-    //deviceSelector.getQueue().memcpy(gradients.data(), adjoint.gradient_pk, 10 * sizeof(Pale::float3)).wait();;
 
-    for (size_t instanceIndex = 0; instanceIndex < 1; ++instanceIndex)
-        Pale::Log::PA_INFO("Point Gradient: x: {}, y: {}, z: {}, contributions: {}", gradients.at(instanceIndex).x(),
-                           gradients.at(instanceIndex).y(), gradients.at(instanceIndex).z(), gradients.at(1).x()); {
+        {
         // // Save each sensor image
         auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), adjointSensor);
         const uint32_t W = adjointSensor.width, H = adjointSensor.height;

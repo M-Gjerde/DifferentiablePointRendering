@@ -206,6 +206,20 @@ def degrees_to_quaternion(deg: float, axis: str):
         raise ValueError("axis must be 'x', 'y', or 'z'")
 
 
+def render_with_trs(renderer,
+                    translation3,
+                    rotation_quat4,
+                    scale3,
+                    i: int) -> np.ndarray:
+    """Apply a full TRS (translation, rotation, scale) and render."""
+    renderer.set_gaussian_transform(
+        translation3=translation3,
+        rotation_quat4=rotation_quat4,  # (x, y, z, w)
+        scale3=scale3,
+        index=i
+    )
+    rgb = np.asarray(renderer.render_forward(), dtype=np.float32)
+    return rgb
 
 # ---------- Render + central differences ----------
 def render_with_translation(renderer,
@@ -223,7 +237,6 @@ def render_with_translation(renderer,
     rgb = renderer.render_forward()  # C++ ignores args; returns linear float32
     rgb = np.asarray(rgb, dtype=np.float32)
     # C++ tonemapper (which flipped Y) is disabled, so flip here
-    rgb = np.flipud(rgb)
     return rgb
 
 
@@ -242,7 +255,7 @@ def render_with_rotation(renderer,
     )
 
     rgb = np.asarray(renderer.render_forward(), dtype=np.float32)
-    return np.flipud(rgb)
+    return rgb
 
 
 
@@ -277,7 +290,6 @@ def main(args) -> None:
     }
 
     # use positive epsilon for central differences
-    eps = abs(args.eps)
     axis = args.axis  # could also be an argparse argument if needed
 
     assets_root = Path(__file__).parent.parent / "Assets"
@@ -295,15 +307,20 @@ def main(args) -> None:
     # --- init renderer ---
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
 
+    eps_translation = 0.01  # or 0.005
+    eps_rotation_deg = 0.75  # degrees
+    eps_scale = 0.01
+
+
     # --- render: minus and plus depending on parameter type ---
     if args.param == "translation":
         # central differences over translation component: (f(+e) - f(-e)) / (2e)
         if axis == "x":
-            negative_vector, positive_vector = (-eps, 0.0, 0.0), (+eps, 0.0, 0.0)
+            negative_vector, positive_vector = (-eps_translation, 0.0, 0.0), (+eps_translation, 0.0, 0.0)
         elif axis == "y":
-            negative_vector, positive_vector = (0.0, -eps, 0.0), (0.0, +eps, 0.0)
+            negative_vector, positive_vector = (0.0, -eps_translation, 0.0), (0.0, +eps_translation, 0.0)
         elif axis == "z":
-            negative_vector, positive_vector = (0.0, 0.0, -eps), (0.0, 0.0, +eps)
+            negative_vector, positive_vector = (0.0, 0.0, -eps_translation), (0.0, 0.0, +eps_translation)
         else:
             raise ValueError("axis must be 'x', 'y', or 'z'")
 
@@ -313,37 +330,78 @@ def main(args) -> None:
     elif args.param == "rotation":
         # central differences over rotation angle (in degrees) around given axis
         # parameter = rotation angle; we perturb by ±eps degrees
-        rgb_minus = render_with_rotation(renderer, -eps, axis, args.index)
-        rgb_plus = render_with_rotation(renderer, +eps, axis, args.index)
+        rgb_minus = render_with_rotation(renderer, -eps_rotation_deg, axis, args.index)
+        rgb_plus = render_with_rotation(renderer, +eps_rotation_deg, axis, args.index)
 
     elif args.param == "scale":
         # central differences over scale along one axis; base scale = 1
         if axis == "x":
-            negative_scale = (1.0 - eps, 1.0, 1.0)
-            positive_scale = (1.0 + eps, 1.0, 1.0)
+            negative_scale = (1.0 - eps_scale, 1.0, 1.0)
+            positive_scale = (1.0 + eps_scale, 1.0, 1.0)
         elif axis == "y":
-            negative_scale = (1.0, 1.0 - eps, 1.0)
-            positive_scale = (1.0, 1.0 + eps, 1.0)
+            negative_scale = (1.0, 1.0 - eps_scale, 1.0)
+            positive_scale = (1.0, 1.0 + eps_scale, 1.0)
         elif axis == "z":
-            negative_scale = (1.0, 1.0, 1.0 - eps)
-            positive_scale = (1.0, 1.0, 1.0 + eps)
+            negative_scale = (1.0, 1.0, 1.0 - eps_scale)
+            positive_scale = (1.0, 1.0, 1.0 + eps_scale)
         else:
             raise ValueError("axis must be 'x', 'y', or 'z'")
 
         rgb_minus = render_with_scale(renderer, *negative_scale, args.index)
         rgb_plus = render_with_scale(renderer, *positive_scale, args.index)
+    elif args.param == "translation_rotation":
+        # One scalar parameter π moves you simultaneously in translation and rotation.
+        # Here we use:
+        #   translation = π * e_axis
+        #   rotation angle (degrees) = π
+        #
+        # Finite differences: f(π + eps) - f(π - eps)
+        # with base π = 0, so:
+        #   minus: translation = -eps * e_axis, angle = -eps
+        #   plus:  translation = +eps * e_axis, angle = +eps
+
+        axis = args.axis.lower()
+        if axis == "x":
+            t_dir = (1.0, 0.0, 0.0)
+        elif axis == "y":
+            t_dir = (0.0, 1.0, 0.0)
+        elif axis == "z":
+            t_dir = (0.0, 0.0, 1.0)
+        else:
+            raise ValueError("axis must be 'x', 'y', or 'z'")
+
+        # translation for ±eps
+        negative_translation = tuple(-eps_translation * c for c in t_dir)
+        positive_translation = tuple(+eps_translation * c for c in t_dir)
+
+        # rotation for ±eps degrees around same axis
+        qx_minus, qy_minus, qz_minus, qw_minus = degrees_to_quaternion(-eps_rotation_deg, axis)
+        qx_plus,  qy_plus,  qz_plus,  qw_plus  = degrees_to_quaternion(+eps_rotation_deg, axis)
+
+        rgb_minus = render_with_trs(
+            renderer,
+            translation3=negative_translation,
+            rotation_quat4=(qx_minus, qy_minus, qz_minus, qw_minus),
+            scale3=(1.0, 1.0, 1.0),
+            i=args.index,
+        )
+        rgb_plus = render_with_trs(
+            renderer,
+            translation3=positive_translation,
+            rotation_quat4=(qx_plus, qy_plus, qz_plus, qw_plus),
+            scale3=(1.0, 1.0, 1.0),
+            i=args.index,
+        )
 
     else:
         raise ValueError("param must be 'translation', 'rotation', or 'scale'")
 
     # raw gradient
-    grad_raw = (rgb_plus - rgb_minus) / (2.0 * eps)
+    grad_raw = (rgb_plus - rgb_minus) / (2.0 * eps_translation)
 
     # display-space gradient by finite differences
     exposure_stops, gamma_val = 2.8, 2.0
-    disp_minus = tonemap_exposure_gamma(rgb_minus, exposure_stops, gamma_val)
-    disp_plus = tonemap_exposure_gamma(rgb_plus, exposure_stops, gamma_val)
-    grad_disp_fd = (disp_plus - disp_minus) / (2.0 * eps)
+    grad_disp_fd = (rgb_plus - rgb_minus) / (2.0 * eps_translation)
 
     # display-space gradient via chain rule (predict from raw)
     dTdx_minus = d_tonemap_dx(rgb_minus, exposure_stops, gamma_val)
@@ -426,18 +484,16 @@ def parse_args() -> argparse.Namespace:
         default=-1,
         help="Gaussian index to perturb (>=0 for single, -1 for all). Default: -1.",
     )
-    parser.add_argument(
-        "--eps",
-        type=float,
-        default=0.01,
-        help="Finite-difference step size for the chosen parameter (translation units, degrees, or scale).",
-    )
+
     parser.add_argument(
         "--param",
         type=str,
-        choices=["translation", "rotation", "scale"],
+        choices=["translation", "rotation", "scale", "translation_rotation"],
         default="translation",
-        help="Which parameter to finite-difference: 'translation', 'rotation', or 'scale'.",
+        help=(
+            "Which parameter to finite-difference: "
+            "'translation', 'rotation', 'scale', or 'translation_rotation'."
+        ),
     )
     parser.add_argument(
         "--axis",

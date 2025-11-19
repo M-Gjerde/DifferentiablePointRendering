@@ -22,7 +22,7 @@ export namespace Pale {
         explicit PathTracer(sycl::queue q, const PathTracerSettings& settings = {});
         void setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp);
         void renderForward(SensorGPU& sensors);
-        void renderBackward(SensorGPU &sensor);
+        void renderBackward(SensorGPU &sensor, PointGradients &gradients);
         void reset();
 
         PathTracerSettings& getSettings() { return m_settings; }

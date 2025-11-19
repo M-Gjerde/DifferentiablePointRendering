@@ -24,18 +24,21 @@ namespace Pale {
         m_scene = scene;
         uint32_t requiredCapacity = m_settings.photonsPerLaunch;
         ensureRayCapacity(requiredCapacity);
-        allocatePhotonMap();
 
-        auto topTLAS = bp.topLevelNodes.front();
-        AABB sceneAabb{
-                {-1, -1, 0},
-                {1, 1, 2},
-            };
-        const float Adiff = bp.diffuseSurfaceArea;
-        const float N = static_cast<float>(m_settings.photonsPerLaunch);
-        const float k = 10.0f;
-        const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));
-        configurePhotonGrid(sceneAabb, r0);
+        if (!m_intermediates.map.photons) {
+            allocatePhotonMap();
+
+            auto topTLAS = bp.topLevelNodes.front();
+            AABB sceneAabb{
+                    {-1, -1, 0},
+                    {1, 1, 2},
+                };
+            const float Adiff = bp.diffuseSurfaceArea;
+            const float N = static_cast<float>(m_settings.photonsPerLaunch);
+            const float k = 10.0f;
+            const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));
+            configurePhotonGrid(sceneAabb, r0);
+        }
     }
 
     // Call this before first render, or inside submitKernel() after computing capacity.
@@ -209,7 +212,7 @@ namespace Pale {
         m_queue.wait();
     }
 
-    void PathTracer::renderBackward(SensorGPU &sensor) {
+    void PathTracer::renderBackward(SensorGPU &sensor, PointGradients &gradients) {
 
         const uint32_t requiredRayCapacity = sensor.width * sensor.height;
         if (requiredRayCapacity > m_rayQueueCapacity) {
@@ -227,6 +230,7 @@ namespace Pale {
             .scene = m_scene,
             .intermediates = m_intermediates,
             .sensor = sensor,
+            .gradients = gradients
         };
 
         submitKernel(renderPackage);

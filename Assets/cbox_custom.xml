@@ -17,8 +17,8 @@
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="1000"/>
-            <integer name="height" value="1000"/>
+            <integer name="width" value="500"/>
+            <integer name="height" value="500"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>
             <string name="component_format" value="float32"/>
@@ -97,7 +97,7 @@
             <rotate x="0" y="1" z="0" angle="90"/>
             <translate x="-1" y="0" z="1"/>
         </transform>
-        <ref id="red"/>
+        <ref id="gray"/>
     </shape>
 
     <!-- Right wall: x=+1, normal -X -->
@@ -107,7 +107,7 @@
             <rotate x="0" y="1" z="0" angle="-90"/>
             <translate x="1" y="0" z="1"/>
         </transform>
-        <ref id="green"/>
+        <ref id="gray"/>
     </shape>
 
     <!-- Ceiling light: small, facing -Z

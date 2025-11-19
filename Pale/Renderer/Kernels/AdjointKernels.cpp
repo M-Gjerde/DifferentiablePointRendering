@@ -41,7 +41,7 @@ namespace Pale {
                     // Map to pixel
                     const uint32_t pixelLinearIndexWithinImage = globalRayIndex; // 0..raysPerSet-1
                     uint32_t pixelX = pixelLinearIndexWithinImage % imageWidth;
-                    uint32_t pixelY = pixelLinearIndexWithinImage / imageWidth;
+                    uint32_t pixelY = imageHeight - 1 - pixelLinearIndexWithinImage / imageWidth;
 
                     //pixelX = 301;
                     //pixelY = imageHeight - 1 - 932;
@@ -53,10 +53,10 @@ namespace Pale {
                     rng::Xorshift128 pixelRng(perPixelSeed);
 
                     // Adjoint source weight
-                    //const float4 residualRgba = adjoint.framebuffer[pixelIndex];
-                    //float3 initialAdjointWeight = {residualRgba.x(), residualRgba.y(), residualRgba.z()};
+                    const float4 residualRgba = sensor.framebuffer[pixelIndex];
+                    float3 initialAdjointWeight = {residualRgba.x(), residualRgba.y(), residualRgba.z()};
                     // Or unit weights:
-                    float3 initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
+                    //float3 initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
                     // Base slot for this pixel’s N samples
                     const uint32_t baseOutputSlot = pixelIndex;
@@ -271,6 +271,7 @@ namespace Pale {
         auto &sensor = pkg.sensor;
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
+        auto &gradients = pkg.gradients;
         auto &photonMap = pkg.intermediates.map;
         auto *raysIn = pkg.intermediates.primaryRays;
 
@@ -319,7 +320,6 @@ namespace Pale {
 
 
                     // Transmission gradients with shadow rays
-                    float3 d_grad_pos(0.0f);
 
                     if (meshInstance.geometryType == GeometryType::Mesh) {
                         // Transmission
@@ -414,9 +414,10 @@ namespace Pale {
 
                                 float3 pAdjoint = rayState.pathThroughput;
                                 float p = luminanceGrayscale(pAdjoint);
+                                float3 grad_C_pos(0.0f);
 
                                 // Accumulate into the running gradient (do not overwrite)
-                                d_grad_pos += p * (L_bg) * dTauDc;
+                                grad_C_pos += p * (L_bg) * dTauDc;
                             }
                         }
                     }
@@ -492,7 +493,9 @@ namespace Pale {
 
                         // 3) Terminal scatter at z: dα/dc with correct sign
                         const SplatEvent &terminal = whTransmit.splatEvents[whTransmit.splatEventCount - 1];
-                        if (whTransmit.primitiveIndex == terminal.primitiveIndex) {
+
+
+                        if (whTransmit.primitiveIndex == terminal.primitiveIndex && terminal.primitiveIndex == 0) {
                             const auto surfel = scene.points[terminal.primitiveIndex];
                             const float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
                             const float3 rayDirection = ray.direction;
@@ -542,14 +545,14 @@ namespace Pale {
                             float3 dFsDtV = (M_1_PIf) * (dAlphaDtV * colorLuminance);
 
                             // Mapping to world coordinates:
-                            const float3 parameterAxis = {0.0f, 0.0f, 1.00f};
+                            const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
 
                             float dBsdf_world = dot(
                                 dFsDtU, cross(parameterAxis, surfel.tanU)) + dot(
                                             dFsDtV, cross(parameterAxis, surfel.tanV));
 
 
-                            float dBsdf_world_deg = dBsdf_world * 180 * M_1_PIf;
+                            float dBsdf_world_deg = dBsdf_world;
 
                             // ---- dα/d(scale) (s_u, s_v) ----
                             const float3 dAlphaDScale =
@@ -583,14 +586,6 @@ namespace Pale {
                             float3 pAdjoint = rayState.pathThroughput;
                             float p = luminanceGrayscale(pAdjoint);
                             // Transmission gradient from direction change
-                            // use in gradient assembly
-
-                            float3 dJacobianDScale = {L_surfel / su, L_surfel / sv, 0};
-
-                            float3 dFsDScale = {
-                                dFsDScaleKernel.x() * L_surfel / alpha + dJacobianDScale.x(),
-                                dFsDScaleKernel.y() * L_surfel / alpha + dJacobianDScale.y(), 0
-                            };
 
                             float brdfLuminance = luminanceGrayscale(f_s_rgb);
 
@@ -603,24 +598,38 @@ namespace Pale {
                             const float3 brdfGrad_Scale =
                                     brdfGrad_ScaleKernel // from α (kernel)
                                     + brdfGrad_ScaleJacobian; // from area Jacobian
-
-                            float3 brdfGrad_Position = dFsDPosition * tauTotal * 1 / alpha;
-                            //float3 brdfGrad_Rotation = dBsdf_world * tauTotal * 1 / alpha;
                             float3 transmissionGrad = tauGrad * brdfLuminance;
 
-                            float3 grad = p * L_surfel * (brdfGrad_Position + transmissionGrad);
-                            d_grad_pos += grad;
 
-                            /*
-                                                        const float3 rotationDisplacement =
-                                                          u *  surfel.tanU
-                                                        + v *  surfel.tanV;
-                            */
+                            float3 brdfGrad_Position = dFsDPosition * tauTotal * 1 / alpha;
+                            float3 brdfGrad_TanU = dFsDtU * tauTotal * 1 / alpha;
+                            float3 brdfGrad_TanV = dFsDtV * tauTotal * 1 / alpha;
+
+                            float3 grad_C_pos = p * L_surfel * (brdfGrad_Position);
+                            float3 grad_C_tanU = p * L_surfel * (brdfGrad_TanU);
+                            float3 grad_C_tanV = p * L_surfel * (brdfGrad_TanV);
+                            float3 grad_C_Scale = p * L_surfel * (brdfGrad_Scale);
+
+
+                            gradients.gradPosition[terminal.primitiveIndex].x() = grad_C_pos.x();
+                            gradients.gradPosition[terminal.primitiveIndex].y() = grad_C_pos.y();
+                            gradients.gradPosition[terminal.primitiveIndex].z() = grad_C_pos.z();
+
+                            gradients.gradTanU[terminal.primitiveIndex].x() = grad_C_tanU.x();
+                            gradients.gradTanU[terminal.primitiveIndex].y() = grad_C_tanU.y();
+                            gradients.gradTanU[terminal.primitiveIndex].z() = grad_C_tanU.z();
+
+                            gradients.gradTanV[terminal.primitiveIndex].x() = grad_C_tanV.x();
+                            gradients.gradTanV[terminal.primitiveIndex].y() = grad_C_tanV.y();
+                            gradients.gradTanV[terminal.primitiveIndex].z() = grad_C_tanV.z();
+
+                            gradients.gradScale[terminal.primitiveIndex].x() = grad_C_Scale.x();
+                            gradients.gradScale[terminal.primitiveIndex].y() = grad_C_Scale.y();
 
                             if (rayState.bounceIndex >= recordBounceIndex) {
-                                const float dVdp_scalar = dot(grad, parameterAxis);
+                                const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
                                 float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
-                                atomicAddFloatToImage(&gradImageDst, dBsdf_world_deg);
+                                atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
                             }
                             /*
                             if (isWatched) {

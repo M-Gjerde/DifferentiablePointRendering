@@ -28,7 +28,7 @@ export namespace Pale::Utils {
         float gammaEncode = 2.2f,
         bool normalizeHDR = false,
         bool writeAlpha = false,
-        bool flipY = true) {
+        bool flipY = false) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());
         }
@@ -145,7 +145,7 @@ export namespace Pale::Utils {
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         bool writeAlpha = false,
-        bool flipY = true) {
+        bool flipY = false) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());
         }
@@ -223,7 +223,7 @@ export namespace Pale::Utils {
                                    std::uint32_t imageWidth,
                                    std::uint32_t imageHeight,
                                    std::uint32_t channels, // 1 or 3
-                                   bool flipY = true) {
+                                   bool flipY = false) {
         if (!floatData || imageWidth == 0 || imageHeight == 0) return false;
         if (channels != 1 && channels != 3) return false;
 
@@ -255,7 +255,7 @@ export namespace Pale::Utils {
                         const std::vector<float> &linearFloatDataRGBAorRGB,
                         std::uint32_t imageWidth,
                         std::uint32_t imageHeight,
-                        bool flipY = true,
+                        bool flipY = false,
                         bool writeAlphaAsPf = false,
                         std::filesystem::path alphaFilePath = {}) {
         if (imageWidth == 0 || imageHeight == 0) return false;
@@ -333,7 +333,7 @@ export namespace Pale::Utils {
                             std::vector<float> &outPixelsRGB,
                             std::uint32_t &outWidth,
                             std::uint32_t &outHeight,
-                            bool flipY = true) {
+                            bool flipY = false) {
         outPixelsRGB.clear();
         outWidth = 0;
         outHeight = 0;
@@ -437,7 +437,7 @@ export namespace Pale::Utils {
         std::uint32_t imageHeight,
         float adjointSamplesPerPixel = 32.0f,
         float absQuantile = 0.99f,
-        bool flipY = true,
+        bool flipY = false,
         bool useSeismic = true
     ) {
         if (!std::filesystem::exists(filePath.parent_path())) {
@@ -542,7 +542,7 @@ export namespace Pale::Utils {
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
         float absQuantile = 0.99f,
-        bool flipY = true // robust scale from abs-quantile in (0,1]; 1.0 = max-abs
+        bool flipY = false // robust scale from abs-quantile in (0,1]; 1.0 = max-abs
     ) {
         if (!std::filesystem::exists(filePath.parent_path())) {
             std::filesystem::create_directories(filePath.parent_path());

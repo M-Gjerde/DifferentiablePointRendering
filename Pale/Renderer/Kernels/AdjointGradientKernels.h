@@ -352,28 +352,19 @@ namespace Pale {
         const float3 &tangentUWorld, // t_u
         const float3 &tangentVWorld) {
         // t_v
-
         float3 normalWorld = cross(tangentUWorld, tangentVWorld);
-        const int travelSideSign = signNonZero(dot(normalWorld, -rayDirectionWorld));
-        //normalWorld = normalWorld * float(travelSideSign);
-
         const float3 centerMinusOrigin = surfelCenterWorld - rayOriginWorld;
-
         const float nd = dot(normalWorld, rayDirectionWorld);
         const float np = dot(normalWorld, centerMinusOrigin);
-
         const float epsilon = 1e-6f;
         if (sycl::fabs(nd) < epsilon) {
             return float3{0.0f, 0.0f, 0.0f};
         }
-
         const float3 crossTvWithPkMinusX = cross(tangentVWorld, centerMinusOrigin);
         const float3 crossTvWithD = cross(tangentVWorld, rayDirectionWorld);
-
         const float3 firstTerm = crossTvWithPkMinusX / nd;
         const float scale = np / (nd * nd);
         const float3 secondTerm = scale * crossTvWithD;
-
         return firstTerm - secondTerm; // ∇_{t_u} r_t
     }
 
@@ -384,30 +375,20 @@ namespace Pale {
         const float3 &tangentUWorld, // t_u
         const float3 &tangentVWorld) {
         // t_v
-
         const float3 centerMinusOrigin = surfelCenterWorld - rayOriginWorld;
-
         float3 normalWorld = cross(tangentUWorld, tangentVWorld);
-        const int travelSideSign = signNonZero(dot(normalWorld, -rayDirectionWorld));
-        //normalWorld = normalWorld * float(travelSideSign);
-
-
         const float nd = dot(normalWorld, rayDirectionWorld);
         const float np = dot(normalWorld, centerMinusOrigin);
-
         const float epsilon = 1e-6f;
         if (sycl::fabs(nd) < epsilon) {
             return float3{0.0f, 0.0f, 0.0f};
         }
-
         const float3 crossTuWithPkMinusX = cross(tangentUWorld, centerMinusOrigin);
-        const float3 crossTuWithD = cross(tangentUWorld, rayDirectionWorld);
-
+        const float3 crossTuWithD =        cross(tangentUWorld, rayDirectionWorld);
         const float3 firstTerm = crossTuWithPkMinusX / nd;
         const float scale = np / (nd * nd);
         const float3 secondTerm = scale * crossTuWithD;
-
-        return firstTerm - secondTerm; // ∇_{t_v} r_t
+        return -firstTerm + secondTerm; // ∇_{t_v} r_t
     }
 
     inline void computeFullDuDvWrtTangents(
