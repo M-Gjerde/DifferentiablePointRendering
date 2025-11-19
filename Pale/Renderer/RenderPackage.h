@@ -35,6 +35,10 @@ namespace Pale {
         float  *gradBeta = nullptr;
         float  *gradShape = nullptr;
         size_t numPoints{0};
+
+        // debug
+        float4 *framebuffer{nullptr}; // gradient image
+
     };
 
     struct AdjointGPU {

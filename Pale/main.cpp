@@ -151,8 +151,8 @@ int main(int argc, char **argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e4; // 1e6
     settings.maxBounces = 4;
-    settings.numForwardPasses = 20;
-    settings.numGatherPasses = 8;
+    settings.numForwardPasses = 40;
+    settings.numGatherPasses = 16;
     settings.maxAdjointBounces = 1;
     settings.adjointSamplesPerPixel = 8;
 
@@ -207,11 +207,11 @@ int main(int argc, char **argv) {
 
         {
         // // Save each sensor image
-        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), adjointSensor);
+        auto rgba = Pale::downloadDebugGradientImage(deviceSelector.getQueue(), adjointSensor, gradients);
         const uint32_t W = adjointSensor.width, H = adjointSensor.height;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "adjoint_out.png";
         if (Pale::Utils::saveGradientSignPNG(
-            filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 1.0, true, true)) {
+            filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 1.0, false, true)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
 
@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
 
         filePath.replace_filename("adjoint_out_099_quantile.png");
         if (Pale::Utils::saveGradientSignPNG(
-            filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 0.99, true, true)) {
+            filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 0.99, false, true)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
         };
     }

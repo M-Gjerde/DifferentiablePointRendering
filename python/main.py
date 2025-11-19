@@ -44,8 +44,8 @@ from trimesh.permutate import noise
 class RendererSettingsConfig:
     photons: float = 1e4
     bounces: int = 4
-    forward_passes: int = 20
-    gather_passes: int = 8
+    forward_passes: int = 40
+    gather_passes: int = 16
     adjoint_bounces: int = 1
     adjoint_passes: int = 8
     logging: int = 4 # Spdlog enums
@@ -268,7 +268,7 @@ def create_optimizer(
     config: OptimizationConfig,
 ) -> torch.optim.Optimizer:
     if config.optimizer_type.lower() == "sgd":
-        return torch.optim.SGD([parameter], lr=config.learning_rate, momentum=0.7)
+        return torch.optim.SGD([parameter], lr=config.learning_rate, momentum=0.9)
     elif config.optimizer_type.lower() == "adam":
         return torch.optim.Adam([parameter], lr=config.learning_rate)
     else:
@@ -296,17 +296,19 @@ def run_optimization(
     initial_positions_np = initial_params["position"]  # (N,3)
     num_points = initial_positions_np.shape[0]
     print(f"Fetched {num_points} initial points from renderer.")
-
+    gt_position0 = initial_positions_np[0].copy()
     # Add small Gaussian noise to the first position only
-    noise_sigma = 0.05  # try 0.005–0.05 depending on scene scale
+    noise_sigma = 0.05 # try 0.005–0.05 depending on scene scale
     rng = np.random.default_rng(42)
 
     noisy_positions_np = initial_positions_np.copy()
-    noisy_positions_np[0] += rng.normal(
+    noisy_positions_np += rng.normal(
         loc=0.0,
         scale=noise_sigma,
         size=(3,),
     )
+
+    #noisy_positions_np[0] += (0.05, 0, 0)
 
     initial_positions_np = noisy_positions_np.astype(np.float32)
     print("Initial positions perturbed by Gaussian noise on point 0:", noise_sigma)
@@ -330,18 +332,28 @@ def run_optimization(
     )
     print(f"Initial loss (L2): {initial_loss:.6e}")
 
-    ## --- Clear output directory (remove files but keep folders) ---
-    #if config.output_dir.exists():
-    #    for item in config.output_dir.iterdir():
-    #        if item.is_file():
-    #            item.unlink()
-    #        elif item.is_dir():
-    #            shutil.rmtree(item)
-    #else:
-    #    config.output_dir.mkdir(parents=True, exist_ok=True)
+    # --- Clear output directory (remove files but keep folders) ---
+    if config.output_dir.exists():
+        for item in config.output_dir.iterdir():
+            if item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                for item2 in item.iterdir():
+                    if item2.is_file():
+                        item2.unlink()
+
+    else:
+        config.output_dir.mkdir(parents=True, exist_ok=True)
 
     save_render(config.output_dir / "render_initial.png", initial_rgb_np)
+    save_render(config.output_dir / "render_target.png", target_rgb)
     save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
+
+    # Initial parameter MSE for point 0
+    initial_param_mse0 = float(
+        np.mean((initial_positions_np[0] - gt_position0) ** 2)
+    )
+    print(f"Initial position MSE (point 0): {initial_param_mse0:.6e}")
 
     # --- Optimization loop ---
     for iteration in range(1, config.iterations + 1):
@@ -361,7 +373,8 @@ def run_optimization(
 
         # 4) Backward pass: renderer computes dC/d(position)
         gradients, grad_img = renderer.render_backward(loss_grad_image)
-        grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
+        grad_scale = 1e3
+        grad_position_np = np.asarray(gradients["position"] * grad_scale, dtype=np.float32, order="C")
 
         if grad_position_np.shape != initial_positions_np.shape:
             raise RuntimeError(
@@ -377,21 +390,24 @@ def run_optimization(
         )
         optimizer.step()
 
+        # --- Parameter loss (MSE) for point 0 ---
+        current_positions_np = positions.detach().cpu().numpy()
+        current_positions_np = np.asarray(current_positions_np, dtype=np.float32, order="C")
+        param_mse0 = float(
+            np.mean((current_positions_np[0] - gt_position0) ** 2)
+        )
+
         # --- Logging ---
         if iteration % config.log_interval == 0 or iteration == 1:
             grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
             print(
                 f"[Iter {iteration:04d}/{config.iterations}] "
                 f"Loss = {loss_value:.6e}, "
-                f"mean |grad_position| = {grad_norm:.6e}"
+                f"mean |grad_position| = {grad_norm:.6e}, "
+                f"param MSE[0] = {param_mse0:.6e}"
+                f"param (x, y, z) = ({current_positions_np[0][0]:.2f}, {current_positions_np[0][1]:.2f}, {current_positions_np[0][2]:.2f})"
             )
-            # ----------------------------------------
-            # Print first 3 surfel gradients (position)
-            # ----------------------------------------
-            #n_show = min(3, num_points)
-            #for i in range(n_show):
-            #    gx, gy, gz = grad_position_np[i]
-            #    print(f"    grad_position[{i}] = ({gx:.6e}, {gy:.6e}, {gz:.6e})")
+
 
         # --- Periodic saving ---
         if iteration % config.save_interval == 0 or iteration == config.iterations:

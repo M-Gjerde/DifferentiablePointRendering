@@ -14,29 +14,9 @@ def save_rgb_float32_npy(img_f32: np.ndarray, out_path: Path) -> None:
     np.save(out_path, img_f32.astype(np.float32))
 
 
-def tonemap_exposure_gamma(linear: np.ndarray, exposure_stops: float, gamma: float) -> np.ndarray:
-    # T(x) = (1 - exp(-k x))^(1/gamma), k = 2**stops
-    k = 2.0 ** exposure_stops
-    x = np.clip(linear, 0.0, None)
-    y = 1.0 - np.exp(-k * x)
-    return np.power(np.clip(y, 0.0, 1.0), 1.0 / max(gamma, 1e-6))
-
-
-def d_tonemap_dx(linear: np.ndarray, exposure_stops: float, gamma: float) -> np.ndarray:
-    # dT/dx = (1/gamma) * (1 - exp(-k x))^(1/gamma - 1) * exp(-k x) * k
-    k = 2.0 ** exposure_stops
-    x = np.clip(linear, 0.0, None)
-    e = np.exp(-k * x)
-    y = 1.0 - e
-    inv_gamma = 1.0 / max(gamma, 1e-6)
-    y_pow = np.power(np.clip(y, 1e-20, 1.0), inv_gamma - 1.0)
-    return inv_gamma * y_pow * e * k
-
-
 def save_rgb_preview_png(img_f32: np.ndarray, out_path: Path,
-                         exposure_stops: float = 5.8, gamma: float = 2.2) -> None:
-    mapped = tonemap_exposure_gamma(img_f32, exposure_stops, gamma)
-    img_u8 = (np.clip(mapped, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+                         exposure_stops: float = 0, gamma: float = 1) -> None:
+    img_u8 = (np.clip(img_f32, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
     print("Saving RGB preview to: {}".format(out_path.absolute()))
     Image.fromarray(img_u8.astype(np.uint8)).save(out_path)
 
@@ -281,7 +261,7 @@ def render_with_scale(renderer,
 def main(args) -> None:
     # --- settings ---
     renderer_settings = {
-        "photons": 1e5,
+        "photons": 1e4,
         "bounces": 4,
         "forward_passes": 50,
         "gather_passes": 16,
@@ -400,18 +380,15 @@ def main(args) -> None:
     grad_raw = (rgb_plus - rgb_minus) / (2.0 * eps_translation)
 
     # display-space gradient by finite differences
-    exposure_stops, gamma_val = 2.8, 2.0
     grad_disp_fd = (rgb_plus - rgb_minus) / (2.0 * eps_translation)
 
     # display-space gradient via chain rule (predict from raw)
-    dTdx_minus = d_tonemap_dx(rgb_minus, exposure_stops, gamma_val)
-    dTdx_plus = d_tonemap_dx(rgb_plus, exposure_stops, gamma_val)
-    dTdx_mid = 0.5 * (dTdx_minus + dTdx_plus)
+    dTdx_mid = 0.5 * (rgb_minus + rgb_plus)
     grad_disp_chain = dTdx_mid * grad_raw
 
     # previews
-    save_rgb_preview_png(rgb_minus, output_dir / "initial.png", exposure_stops, gamma_val)
-    save_rgb_preview_png(rgb_plus, output_dir / "target.png", exposure_stops, gamma_val)
+    save_rgb_preview_png(rgb_minus, output_dir / "initial.png")
+    save_rgb_preview_png(rgb_plus, output_dir / "target.png")
 
     # luminance projection (equal weights)
     weights_luminance = np.array([1.0, 1.0, 1.0], dtype=np.float32) / 3.0

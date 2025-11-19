@@ -56,7 +56,7 @@ namespace Pale {
                     const float4 residualRgba = sensor.framebuffer[pixelIndex];
                     float3 initialAdjointWeight = {residualRgba.x(), residualRgba.y(), residualRgba.z()};
                     // Or unit weights:
-                    //float3 initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
+                    initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
                     // Base slot for this pixel’s N samples
                     const uint32_t baseOutputSlot = pixelIndex;
@@ -495,7 +495,7 @@ namespace Pale {
                         const SplatEvent &terminal = whTransmit.splatEvents[whTransmit.splatEventCount - 1];
 
 
-                        if (whTransmit.primitiveIndex == terminal.primitiveIndex && terminal.primitiveIndex == 0) {
+                        if (whTransmit.primitiveIndex == terminal.primitiveIndex) {
                             const auto surfel = scene.points[terminal.primitiveIndex];
                             const float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
                             const float3 rayDirection = ray.direction;
@@ -628,7 +628,7 @@ namespace Pale {
 
                             if (rayState.bounceIndex >= recordBounceIndex) {
                                 const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
-                                float4 &gradImageDst = sensor.framebuffer[rayState.pixelIndex];
+                                float4 &gradImageDst = gradients.framebuffer[rayState.pixelIndex];
                                 atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
                             }
                             /*

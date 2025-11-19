@@ -44,12 +44,17 @@ export namespace Pale {
         out.gradTanV = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
         out.gradScale = static_cast<float2 *>(sycl::malloc_device(numPoints * sizeof(float2), queue));
 
+        const auto &cam = buildProducts.cameras().front();
+        const size_t pixelCount = static_cast<size_t>(cam.width) * static_cast<size_t>(cam.height);
+        out.framebuffer = reinterpret_cast<float4 *>(sycl::malloc_device(pixelCount * sizeof(float4), queue));
+
         queue.wait();
 
-        queue.fill(out.gradPosition, float3{0, 0, 0}, numPoints).wait();
-        queue.fill(out.gradTanU, float3{0, 0, 0}, numPoints).wait();
-        queue.fill(out.gradTanV, float3{0, 0, 0}, numPoints).wait();
-        queue.fill(out.gradScale, float2{0, 0}, numPoints).wait();
+        queue.fill(out.gradPosition, float3{0}, numPoints).wait();
+        queue.fill(out.gradTanU, float3{0}, numPoints).wait();
+        queue.fill(out.gradTanV, float3{0}, numPoints).wait();
+        queue.fill(out.gradScale, float2{0}, numPoints).wait();
+        queue.fill(out.framebuffer, float4{0}, pixelCount).wait();
 
         out.numPoints = numPoints;
         queue.wait();
@@ -71,6 +76,27 @@ export namespace Pale {
         queue.memcpy(
             hostSideFramebuffer.data(), // destination
             sensorGpu.framebuffer, // source (device pointer)
+            totalFloatCount * sizeof(float) // size in bytes
+        ).wait();
+
+        return hostSideFramebuffer;
+    }
+
+    inline std::vector<float>
+    downloadDebugGradientImage(sycl::queue queue, const SensorGPU &sensorGpu, PointGradients& gradients) {
+        // Total number of float elements = width * height * 4 (RGBA channels)
+        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
+                                       * static_cast<size_t>(sensorGpu.height)
+                                       * 4u;
+        std::vector<float> hostSideFramebuffer(totalFloatCount);
+
+
+        // Allocate host-side buffer
+        queue.wait();
+        // Copy device framebuffer → host buffer
+        queue.memcpy(
+            hostSideFramebuffer.data(), // destination
+            gradients.framebuffer, // source (device pointer)
             totalFloatCount * sizeof(float) // size in bytes
         ).wait();
 

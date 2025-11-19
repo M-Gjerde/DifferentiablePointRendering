@@ -25,7 +25,8 @@ namespace Pale {
         uint32_t requiredCapacity = m_settings.photonsPerLaunch;
         ensureRayCapacity(requiredCapacity);
 
-        if (!m_intermediates.map.photons) {
+        if (!m_intermediates.map.photons)
+            {
             allocatePhotonMap();
 
             auto topTLAS = bp.topLevelNodes.front();
@@ -118,7 +119,7 @@ namespace Pale {
 
 
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.map.photons, 0, sizeof(DevicePhotonSurface) * finalPhotonCount);
+        m_queue.memset(m_intermediates.map.photons, 0, sizeof(DevicePhotonSurface) * m_intermediates.map.photonCapacity);
         m_queue.wait();
 
         std::size_t photonMapTotalBytes = sizeof(DevicePhotonSurface) * finalPhotonCount;
@@ -206,6 +207,10 @@ namespace Pale {
             .intermediates = m_intermediates,
             .sensor = sensor,
         };
+
+        m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.map.photons, 0, sizeof(DevicePhotonSurface) * m_intermediates.map.photonCapacity);
+        m_queue.wait();
 
         submitKernel(renderPackage);
 
