@@ -458,4 +458,8 @@ namespace Pale {
         // If you later add anisotropic / z-scale, you can extend this.
         return float3{dAlphaDSu, dAlphaDSv, 0.0f};
     }
+
+    static void calculateProjectionGradients() {
+
+    }
 }
