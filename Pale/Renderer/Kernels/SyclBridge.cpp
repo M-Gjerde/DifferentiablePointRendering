@@ -102,6 +102,8 @@ namespace Pale {
             pkg.queue.fill(pkg.gradients.gradTanU, float3{0, 0, 0}, pkg.gradients.numPoints).wait();
             pkg.queue.fill(pkg.gradients.gradTanV, float3{0, 0, 0}, pkg.gradients.numPoints).wait();
             pkg.queue.fill(pkg.gradients.gradScale, float2{0, 0}, pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradColor, float3{0}, pkg.gradients.numPoints).wait();
+            pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints).wait();
             pkg.queue.fill(pkg.gradients.framebuffer, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
 
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
@@ -131,7 +133,12 @@ namespace Pale {
                     }
                     {
                         ScopedTimer timer("launchAdjointKernel");
-                        bounce == 0 ? launchAdjointKernel(pkg, activeCount) : launchAdjointKernel2(pkg, activeCount);
+                        if (bounce == 0) {
+                            launchAdjointKernel(pkg, activeCount);
+                        }
+                        else {
+                            launchAdjointKernel2(pkg, activeCount);
+                        }
                     }
                     {
                         ScopedTimer timer("generateNextRays");

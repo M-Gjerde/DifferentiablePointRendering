@@ -289,6 +289,7 @@ def main(args) -> None:
     eps_translation = 0.01  # or 0.005
     eps_rotation_deg = 0.75  # degrees
     eps_scale = 0.05
+    eps_color = 0.1
 
 
     # --- render: minus and plus depending on parameter type ---

@@ -43,13 +43,13 @@ from typing import Sequence
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 5e3
+    photons: float = 1e4
     bounces: int = 4
-    forward_passes: int = 50
-    gather_passes: int = 8
-    adjoint_bounces: int = 1
-    adjoint_passes: int = 8
-    logging: int = 4 # Spdlog enums
+    forward_passes: int = 30
+    gather_passes: int = 16
+    adjoint_bounces: int = 2
+    adjoint_passes: int = 16
+    logging: int = 4  # Spdlog enums
 
     def as_dict(self) -> Dict[str, float | int]:
         return {
@@ -73,11 +73,12 @@ class OptimizationConfig:
     output_dir: Path
 
     iterations: int = 10
-    learning_rate: float = 1e-2          # base LR (for convenience / default)
-    learning_rate_position: float = 1e-2 # LR for positions
+    learning_rate: float = 1e-2  # base LR (for convenience / default)
+    learning_rate_position: float = 1e-2  # LR for positions
     learning_rate_tangent: float = 1e-2  # LR for tangents
-    learning_rate_scale: float = 1e-2    # LR for scales
-    optimizer_type: str = "adam"         # "adam" or "sgd"
+    learning_rate_scale: float = 1e-2  # LR for scales
+    learning_rate_color: float = 1e-2  # LR for scales
+    optimizer_type: str = "adam"  # "adam" or "sgd"
     log_interval: int = 1
     save_interval: int = 5
 
@@ -108,9 +109,10 @@ def fetch_initial_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
         out[key] = np.asarray(value, dtype=np.float32, order="C")
     return out
 
+
 def orthonormalize_tangents_inplace(
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
 ) -> dict[str, float]:
     """
     In-place Gram–Schmidt on (tangent_u, tangent_v) rows, enforcing:
@@ -157,7 +159,7 @@ def orthonormalize_tangents_inplace(
 
 
 def verify_scales_inplace(
-    scales: torch.Tensor,
+        scales: torch.Tensor,
 ) -> dict[str, float]:
     """
     In-place verification/clamping of scale values.
@@ -184,18 +186,50 @@ def verify_scales_inplace(
         return {
             "before_min": before_min,
             "before_max": before_max,
-            "after_min":  after_min,
-            "after_max":  after_max,
+            "after_min": after_min,
+            "after_max": after_max,
+        }
+
+def verify_colors_inplace(
+        colors: torch.Tensor,
+) -> dict[str, float]:
+    """
+    In-place verification/clamping of scale values.
+
+    Enforces:
+        0.001 <= s_u, s_v <= 0.1
+
+    Returns diagnostics about how much correction was applied.
+    """
+    with torch.no_grad():
+        # Direct reference to underlying storage
+        s = colors.data
+
+        before_min = float(s.min().item())
+        before_max = float(s.max().item())
+
+        # Clamp in-place
+        s_clamped = torch.clamp(s, min=0.0, max=1.0)
+        s.copy_(s_clamped)
+
+        after_min = float(s.min().item())
+        after_max = float(s.max().item())
+
+        return {
+            "before_min": before_min,
+            "before_max": before_max,
+            "after_min": after_min,
+            "after_max": after_max,
         }
 
 
-
 def apply_point_parameters(
-    renderer: pale.Renderer,
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
+        renderer: pale.Renderer,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        colors: torch.Tensor,
 ) -> None:
     """
     Push updated positions, tangent_u, and tangent_v into the renderer.
@@ -214,6 +248,9 @@ def apply_point_parameters(
     scales_np = np.asarray(
         scales.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
+    colors_np = np.asarray(
+        colors.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
 
     if positions_np.shape != tangent_u_np.shape or positions_np.shape != tangent_v_np.shape:
         raise RuntimeError(
@@ -230,6 +267,7 @@ def apply_point_parameters(
             "tangent_u": tangent_u_np,
             "tangent_v": tangent_v_np,
             "scale": scales_np,
+            "color": colors_np,
         }
     )
 
@@ -240,11 +278,11 @@ def apply_point_parameters(
 
 
 def save_gradient_sign_png_py(
-    file_path: Path,
-    rgba32f: np.ndarray,            # (H,W,4) float32
-    adjoint_spp: float = 32.0,
-    abs_quantile: float = 0.99,
-    flip_y: bool = True,
+        file_path: Path,
+        rgba32f: np.ndarray,  # (H,W,4) float32
+        adjoint_spp: float = 32.0,
+        abs_quantile: float = 0.99,
+        flip_y: bool = True,
 ) -> bool:
     file_path.parent.mkdir(parents=True, exist_ok=True)
     img = np.asarray(rgba32f, dtype=np.float32, order="C")
@@ -269,16 +307,15 @@ def save_gradient_sign_png_py(
 
     # 3) map [-1,1] -> [0,1], apply matplotlib seismic
     cmap = matplotlib.colormaps["seismic"]
-    t = 0.5 * (norm + 1.0)                    # [0,1]
-    rgba = cmap(t, bytes=True)                # uint8 RGBA
-    out = rgba[..., :3]                       # drop alpha
+    t = 0.5 * (norm + 1.0)  # [0,1]
+    rgba = cmap(t, bytes=True)  # uint8 RGBA
+    out = rgba[..., :3]  # drop alpha
 
     # 4) flip and save
     if flip_y:
         out = np.flipud(out)
     iio.imwrite(str(file_path), out)
     return True
-
 
 
 def load_target_image(path: Path) -> np.ndarray:
@@ -321,13 +358,14 @@ def save_render(path: Path, rgb: np.ndarray) -> None:
     img_u8 = (img * 255.0).clip(0, 255).astype(np.uint8)
     iio.imwrite(path.as_posix(), img_u8)
 
+
 # --------------------------------------------------------------------------------------
 # Loss and optimization loop
 # --------------------------------------------------------------------------------------
 
 def compute_l2_loss(
-    rendered: np.ndarray,
-    target: np.ndarray,
+        rendered: np.ndarray,
+        target: np.ndarray,
 ) -> float:
     """
     Simple L2 loss between rendered and target RGB images.
@@ -343,9 +381,9 @@ def compute_l2_loss(
 
 
 def compute_l2_loss_and_grad(
-    rendered: np.ndarray,
-    target: np.ndarray,
-    return_loss_image: bool = False,
+        rendered: np.ndarray,
+        target: np.ndarray,
+        return_loss_image: bool = False,
 ) -> tuple[float, np.ndarray] | tuple[float, np.ndarray, np.ndarray]:
     """
     L2 loss and gradient w.r.t. rendered image.
@@ -362,9 +400,9 @@ def compute_l2_loss_and_grad(
             f"Shape mismatch: rendered {rendered.shape}, target {target.shape}"
         )
 
-    diff = rendered - target                     # (H,W,3)
-    loss_image = diff * diff                     # (H,W,3)
-    loss = float(np.mean(loss_image))            # scalar
+    diff = rendered - target  # (H,W,3)
+    loss_image = diff * diff  # (H,W,3)
+    loss = float(np.mean(loss_image))  # scalar
 
     num_elements = diff.size
     grad_image = (2.0 / float(num_elements)) * diff
@@ -375,13 +413,13 @@ def compute_l2_loss_and_grad(
     return loss, grad_image
 
 
-
 def create_optimizer(
-    config: OptimizationConfig,
-    positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
-    scales: torch.nn.Parameter,
+        config: OptimizationConfig,
+        positions: torch.nn.Parameter,
+        tangent_u: torch.nn.Parameter,
+        tangent_v: torch.nn.Parameter,
+        scales: torch.nn.Parameter,
+        colors: torch.nn.Parameter,
 ) -> torch.optim.Optimizer:
     """
     Create an optimizer with per-parameter learning rates.
@@ -393,6 +431,7 @@ def create_optimizer(
     lr_pos = config.learning_rate_position or config.learning_rate
     lr_tan = config.learning_rate_tangent or config.learning_rate
     lr_scale = config.learning_rate_scale or config.learning_rate
+    lr_color = config.learning_rate_color or config.learning_rate
 
     param_groups = [
         {
@@ -407,6 +446,10 @@ def create_optimizer(
             "params": [scales],
             "lr": lr_scale,
         },
+        {
+            "params": [colors],
+            "lr": lr_color,
+        }
     ]
 
     if opt_type == "sgd":
@@ -417,10 +460,9 @@ def create_optimizer(
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
 
-
 def run_optimization(
-    config: OptimizationConfig,
-    renderer_settings: RendererSettingsConfig,
+        config: OptimizationConfig,
+        renderer_settings: RendererSettingsConfig,
 ) -> None:
     # --- Initialize renderer ---
     renderer = pale.Renderer(
@@ -436,10 +478,11 @@ def run_optimization(
 
     # --- Fetch initial parameters from renderer (dict of arrays) ---
     initial_params = fetch_initial_parameters(renderer)
-    initial_positions_np = initial_params["position"]    # (N,3)
-    initial_tangent_u_np = initial_params["tangent_u"]   # (N,3)
-    initial_tangent_v_np = initial_params["tangent_v"]   # (N,3)
-    initial_scale_np = initial_params["scale"]   # (N,2)
+    initial_positions_np = initial_params["position"]  # (N,3)
+    initial_tangent_u_np = initial_params["tangent_u"]  # (N,3)
+    initial_tangent_v_np = initial_params["tangent_v"]  # (N,3)
+    initial_scale_np = initial_params["scale"]  # (N,2)
+    initial_color_np = initial_params["color"]  # (N,2)
 
     num_points = initial_positions_np.shape[0]
     print(f"Fetched {num_points} initial points from renderer.")
@@ -448,7 +491,7 @@ def run_optimization(
     rng = np.random.default_rng(12)
 
     # Add small Gaussian noise to positions (you can leave tangents as-is)
-    noise_sigma_translation = 0.1
+    noise_sigma_translation = 0.03
     noisy_positions_np = initial_positions_np.copy()
     noisy_positions_np += rng.normal(
         loc=0.0,
@@ -459,7 +502,7 @@ def run_optimization(
     print("Initial positions perturbed by Gaussian noise on point 0:", noise_sigma_translation)
 
     # Tangent noise (much smaller recommended)
-    noise_sigma_tan = 0.1
+    noise_sigma_tan = 0.03
     initial_tangent_u_np = initial_tangent_u_np.copy()
     initial_tangent_v_np = initial_tangent_v_np.copy()
 
@@ -473,6 +516,7 @@ def run_optimization(
         noise_sigma_tan,
         initial_tangent_v_np.shape,
     )
+
     # Re-normalize tangent vectors
     # (each one defines a direction in world space)
     def normalize_rows(arr: np.ndarray) -> np.ndarray:
@@ -485,14 +529,20 @@ def run_optimization(
 
     noise_sigma_scale = 0.04
     noisy_scale_np = initial_scale_np.copy()
-
     noisy_scale_np += rng.normal(
         0.0,
         noise_sigma_scale,
         initial_scale_np.shape,
     )
-
     initial_scale_np = noisy_scale_np.astype(np.float32)
+
+    noise_sigma_color = 0.1
+    rng = np.random.default_rng()
+    color_np = initial_color_np.copy()
+    # One grayscale noise value per point
+    gray_noise = rng.normal(0.0, noise_sigma_color, size=(initial_color_np.shape[0], 1))
+    # Broadcast to RGB
+    color_np += gray_noise
 
     device = torch.device(config.device)
 
@@ -506,9 +556,11 @@ def run_optimization(
     tangent_v = torch.nn.Parameter(
         torch.tensor(initial_tangent_v_np, device=device, dtype=torch.float32)
     )
-
     scales = torch.nn.Parameter(
         torch.tensor(initial_scale_np, device=device, dtype=torch.float32)
+    )
+    colors = torch.nn.Parameter(
+        torch.tensor(initial_color_np, device=device, dtype=torch.float32)
     )
 
     optimizer = create_optimizer(
@@ -517,9 +569,15 @@ def run_optimization(
         tangent_u,
         tangent_v,
         scales,
+        colors,
     )
     # --- Initial snapshot render ---
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales)
+    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors)
+    ortho_stats = orthonormalize_tangents_inplace(tangent_u, tangent_v)
+    verify_scales_inplace(scales)
+    verify_colors_inplace(colors)
+
+
     initial_rgb = renderer.render_forward()
     initial_rgb_np = np.asarray(initial_rgb, dtype=np.float32, order="C")
     initial_loss, loss_grad_image = compute_l2_loss_and_grad(
@@ -556,7 +614,7 @@ def run_optimization(
     try:
         for iteration in range(1, config.iterations + 1):
             # 1) Push current positions into renderer
-            apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales)
+            apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors)
 
             # 2) Forward render (for logging)
             current_rgb = renderer.render_forward()
@@ -571,19 +629,21 @@ def run_optimization(
 
             # 4) Backward pass: renderer computes dC/d(position), dC/d(tangent_u), dC/d(tangent_v)
             gradients, grad_img = renderer.render_backward(loss_grad_image)
-            grad_scale = 1.0
 
             grad_position_np = np.asarray(
-                gradients["position"] * grad_scale, dtype=np.float32, order="C"
+                gradients["position"], dtype=np.float32, order="C"
             )
             grad_tangent_u_np = np.asarray(
-                gradients["tangent_u"] * grad_scale, dtype=np.float32, order="C"
+                gradients["tangent_u"], dtype=np.float32, order="C"
             )
             grad_tangent_v_np = np.asarray(
-                gradients["tangent_v"] * grad_scale, dtype=np.float32, order="C"
+                gradients["tangent_v"], dtype=np.float32, order="C"
             )
             grad_scales_v_np = np.asarray(
-                gradients["scale"] * grad_scale, dtype=np.float32, order="C"
+                gradients["scale"], dtype=np.float32, order="C"
+            )
+            grad_colors_v_np = np.asarray(
+                gradients["color"], dtype=np.float32, order="C"
             )
 
             if grad_position_np.shape != initial_positions_np.shape:
@@ -607,12 +667,14 @@ def run_optimization(
             positions.grad = torch.tensor(grad_position_np).to(device=device, dtype=torch.float32)
             tangent_u.grad = torch.tensor(grad_tangent_u_np).to(device=device, dtype=torch.float32)
             tangent_v.grad = torch.tensor(grad_tangent_v_np).to(device=device, dtype=torch.float32)
-            scales.grad =    torch.tensor(grad_scales_v_np).to(device=device, dtype=torch.float32)
+            scales.grad = torch.tensor(grad_scales_v_np).to(device=device, dtype=torch.float32)
+            colors.grad = torch.tensor(grad_colors_v_np).to(device=device, dtype=torch.float32)
             optimizer.step()
 
             # 5b) Re-orthonormalize tangents and collect diagnostics
             ortho_stats = orthonormalize_tangents_inplace(tangent_u, tangent_v)
             verify_scales_inplace(scales)
+            verify_colors_inplace(colors)
 
             # --- Logging ---
             if iteration % config.log_interval == 0 or iteration == 1:
@@ -620,29 +682,31 @@ def run_optimization(
                 grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
                 grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
                 grad_scale = float(np.linalg.norm(grad_scales_v_np) / max(num_points, 1))
+                grad_color = float(np.linalg.norm(grad_colors_v_np) / max(num_points, 1))
                 print(
                     f"[Iter {iteration:04d}/{config.iterations}] "
                     f"Loss = {loss_value:.6e}, "
-                    f"mean |translation| = {grad_norm:.3e}, "
-                    f"mean |tan_u| = {grad_tanu:.3e}, "
-                    f"mean |tan_v| = {grad_tanv:.3e}, "
-                    f"mean |scale| = {grad_scale:.3e}, "
-                    #f"ortho: max_dev_norm_u={ortho_stats['max_dev_norm_u']:.2e}, "
-                    #f"max_dev_norm_v={ortho_stats['max_dev_norm_v']:.2e}, "
-                    #f"max_abs_dot_uv={ortho_stats['max_abs_dot_uv']:.2e}, "
-                    #f"min_cross_norm={ortho_stats['min_cross_norm']:.2e}"
+                    f"|translation| = {grad_norm:.3e}, "
+                    f"|tan_u| = {grad_tanu:.3e}, "
+                    f"|tan_v| = {grad_tanv:.3e}, "
+                    f"|scale| = {grad_scale:.3e}, "
+                    f"|color| = {grad_color:.3e}, "
+                    # f"ortho: max_dev_norm_u={ortho_stats['max_dev_norm_u']:.2e}, "
+                    # f"max_dev_norm_v={ortho_stats['max_dev_norm_v']:.2e}, "
+                    # f"max_abs_dot_uv={ortho_stats['max_abs_dot_uv']:.2e}, "
+                    # f"min_cross_norm={ortho_stats['min_cross_norm']:.2e}"
                 )
 
             # --- Periodic saving ---
             if iteration % config.save_interval == 0 or iteration == config.iterations:
-                #apply_positions(renderer, positions.detach().cpu().numpy())
-                #snapshot_rgb = renderer.render_forward()
+                # apply_positions(renderer, positions.detach().cpu().numpy())
+                # snapshot_rgb = renderer.render_forward()
                 snapshot_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
 
                 render_path = config.output_dir / "render" / f"render_iter_{iteration:04d}.png"
-                #pos_path = config.output_dir / f"positions_iter_{iteration:04d}.npy"
+                # pos_path = config.output_dir / f"positions_iter_{iteration:04d}.npy"
                 save_render(render_path, snapshot_rgb_np)
-                #save_positions_numpy(pos_path, positions.detach().cpu().numpy())
+                # save_positions_numpy(pos_path, positions.detach().cpu().numpy())
                 img = np.asarray(grad_img, dtype=np.float32, order="C")  # (H,W,4)
                 img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -670,9 +734,8 @@ def run_optimization(
             "Stopping optimization loop and saving current result..."
         )
 
-
     # --- Final summary ---
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales)
+    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors)
     final_rgb = renderer.render_forward()
     final_rgb_np = np.asarray(final_rgb, dtype=np.float32, order="C")
     final_loss = compute_l2_loss(final_rgb_np, target_rgb)
@@ -765,48 +828,56 @@ def parse_args() -> OptimizationConfig:
         dest="learning_rate",
         type=float,
         default=1.0,
-        help="Base learning rate (used if --lr-pos / --lr-tan / --lr-scale are not given).",
+        help="Base learning rate before per-parameter multipliers.",
+    )
+    parser.add_argument(
+        "--lr-multiplier",
+        "--learning-rate-multiplier",
+        dest="learning_rate_multiplier",
+        type=float,
+        default=1.0,
+        help="Global multiplier applied to all per-parameter learning rates.",
     )
     parser.add_argument(
         "--lr-pos",
         dest="learning_rate_position",
         type=float,
-        default=1.0,
-        help="Learning rate for positions (defaults to base LR if omitted).",
+        default=None,  # derive from base LR if not set
+        help="Learning rate for positions (defaults to ~0.1 * base LR if omitted).",
     )
     parser.add_argument(
         "--lr-tan",
         dest="learning_rate_tangent",
         type=float,
-        default=0.5,
-        help="Learning rate for tangents (tangent_u, tangent_v; defaults to base LR if omitted).",
+        default=None,  # derive from base LR if not set
+        help="Learning rate for tangents (defaults to ~0.2 * base LR if omitted).",
     )
     parser.add_argument(
         "--lr-scale",
         dest="learning_rate_scale",
         type=float,
-        default=0.1,
-        help="Learning rate for scales (u, v; defaults to base LR if omitted).",
+        default=None,  # derive from base LR if not set
+        help="Learning rate for scales (defaults to ~0.2 * base LR if omitted).",
     )
-
+    parser.add_argument(
+        "--lr-color",
+        dest="learning_rate_color",
+        type=float,
+        default=None,  # derive from base LR if not set
+        help="Learning rate for colors (defaults to ~0.5 * base LR if omitted).",
+    )
 
     # ... optimizer, log-interval, save-interval, device ...
 
     args = parser.parse_args()
 
     lr_base = args.learning_rate
+    base_lr = args.learning_rate * args.learning_rate_multiplier
 
-    lr_pos = args.learning_rate_position
-    if lr_pos is None:
-        lr_pos = lr_base
-
-    lr_tan = args.learning_rate_tangent
-    if lr_tan is None:
-        lr_tan = lr_base
-
-    lr_scale = args.learning_rate_scale
-    if lr_scale is None:
-        lr_scale = lr_base
+    lr_pos = args.learning_rate_position or (0.1 * base_lr)
+    lr_tan = args.learning_rate_tangent or (0.2 * base_lr)
+    lr_scale = args.learning_rate_scale or (0.2 * base_lr)
+    lr_color = args.learning_rate_color or (0.5 * base_lr)
 
     return OptimizationConfig(
         assets_root=args.assets_root,
@@ -819,12 +890,12 @@ def parse_args() -> OptimizationConfig:
         learning_rate_position=lr_pos,
         learning_rate_tangent=lr_tan,
         learning_rate_scale=lr_scale,
+        learning_rate_color=lr_color,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         device=args.device,
     )
-
 
 
 def main() -> None:
@@ -833,17 +904,18 @@ def main() -> None:
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Starting optimization with configuration:")
-    print(f"  assets_root   : {config.assets_root}")
-    print(f"  scene_xml     : {config.scene_xml}")
-    print(f"  pointcloud    : {config.pointcloud_ply}")
-    print(f"  target_image  : {config.target_image_path}")
-    print(f"  iterations    : {config.iterations}")
-    print(f"  learning_rate_pos : {config.learning_rate_position}")
-    print(f"  learning_rate_tan : {config.learning_rate_tangent}")
-    print(f"  learning_rate_scale : {config.learning_rate_scale}")
-    print(f"  optimizer     : {config.optimizer_type}")
-    print(f"  output_dir    : {config.output_dir}")
-    print(f"  device        : {config.device}")
+    print(f"  assets_root          : {config.assets_root}")
+    print(f"  scene_xml            : {config.scene_xml}")
+    print(f"  pointcloud           : {config.pointcloud_ply}")
+    print(f"  target_image         : {config.target_image_path}")
+    print(f"  iterations           : {config.iterations}")
+    print(f"  lr_position          : {config.learning_rate_position}")
+    print(f"  lr_tangent           : {config.learning_rate_tangent}")
+    print(f"  lr_scale             : {config.learning_rate_scale}")
+    print(f"  lr_color             : {config.learning_rate_color}")
+    print(f"  optimizer            : {config.optimizer_type}")
+    print(f"  output_dir           : {config.output_dir}")
+    print(f"  device               : {config.device}")
 
     run_optimization(config, renderer_settings)
 

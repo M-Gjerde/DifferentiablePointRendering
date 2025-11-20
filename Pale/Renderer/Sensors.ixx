@@ -46,6 +46,8 @@ export namespace Pale {
         out.gradTanU = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
         out.gradTanV = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
         out.gradScale = static_cast<float2 *>(sycl::malloc_device(numPoints * sizeof(float2), queue));
+        out.gradColor = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
+        out.gradOpacity = static_cast<float *>(sycl::malloc_device(numPoints * sizeof(float), queue));
 
         const auto &cam = buildProducts.cameras().front();
         const size_t pixelCount = static_cast<size_t>(cam.width) * static_cast<size_t>(cam.height);
