@@ -711,6 +711,15 @@ namespace Pale {
                         }
                     }
 
+
+                    float3 grad = shadowRays(scene, rayState, photonMap, rng128);
+                    if (rayState.bounceIndex >= recordBounceIndex) {
+                        const float dVdp_scalar = dot(grad, parameterAxis);
+                        float4 &gradImageDst = gradients.framebuffer[rayState.pixelIndex];
+                        atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                    }
+
+
                     uint32_t numSurfelsOnRay = whTransmit.splatEventCount;
 
                     for (size_t scatterRay = 0; scatterRay < numSurfelsOnRay; ++scatterRay) {
