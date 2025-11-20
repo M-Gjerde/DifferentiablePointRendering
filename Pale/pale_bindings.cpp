@@ -680,6 +680,8 @@ public:
     void set_gaussian_transform(py::tuple translation3,
                                 py::tuple rotationQuat4,
                                 py::tuple scale3,
+                                py::tuple color3,
+                                float opacity,
                                 int index = -1) {
         if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3) {
             throw std::runtime_error("Expected translation(3), rotation_quat(4), scale(3)");
@@ -689,6 +691,11 @@ public:
             py::cast<float>(translation3[0]),
             py::cast<float>(translation3[1]),
             py::cast<float>(translation3[2])
+        };
+        const glm::vec3 newColor{
+            py::cast<float>(color3[0]),
+            py::cast<float>(color3[1]),
+            py::cast<float>(color3[2])
         };
 
         // quaternion as (x, y, z, w)
@@ -729,7 +736,8 @@ public:
                 point.tanU = Pale::glm2sycl(tanUGlm);
                 point.tanV = Pale::glm2sycl(tanVGlm);
 
-
+                point.color += Pale::glm2sycl(newColor);
+                point.opacity += opacity;
                 point.scale *= scaleDelta; // component-wise
             }
         } else {
@@ -786,7 +794,7 @@ PYBIND11_MODULE(pale, m) {
             .def("set_adjoint_spp", &PythonRenderer::set_adjoint_spp)
             .def("get_image_size", &PythonRenderer::get_image_size)
             .def("set_gaussian_transform", &PythonRenderer::set_gaussian_transform,
-                 py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"), py::arg("index") = -1).def(
+                 py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"), py::arg("color3"), py::arg("opacity"), py::arg("index") = -1).def(
                 "get_point_parameters", &PythonRenderer::get_point_parameters)
             .def("set_point_parameters", &PythonRenderer::set_point_parameters);
 }

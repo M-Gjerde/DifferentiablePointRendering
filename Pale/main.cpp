@@ -153,7 +153,7 @@ int main(int argc, char **argv) {
     settings.maxBounces = 4;
     settings.numForwardPasses = 50;
     settings.numGatherPasses = 8;
-    settings.maxAdjointBounces = 2;
+    settings.maxAdjointBounces = 1;
     settings.adjointSamplesPerPixel = 12;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
