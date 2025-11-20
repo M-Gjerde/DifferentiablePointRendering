@@ -314,13 +314,12 @@ namespace Pale {
     // Assuming float3, float2, dot(), cross(), etc. are defined as in your codebase.
 
     // ----------------- Position gradient (translation of surfel center) -----------------
-    inline float3 computeDAlphaDPosition(
+    inline float3 computeDuvDPosition(
         const float3 &tangentUWorld,
         const float3 &tangentVWorld,
         const float3 &canonicalNormalWorld,
         const float3 &rayDirection,
         float u, float v,
-        float alpha,
         float su, float sv) {
         const float denom = dot(canonicalNormalWorld, rayDirection);
         if (sycl::fabs(denom) <= 1e-4f) {
@@ -335,7 +334,7 @@ namespace Pale {
         const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
 
         // dα/dc_pos = -α (u du/dc + v dv/dc)
-        const float3 dAlphaDPosition = -alpha * (u * duDPk + v * dvDPk);
+        const float3 dAlphaDPosition = -(u * duDPk + v * dvDPk);
         return dAlphaDPosition;
     }
 
@@ -450,14 +449,12 @@ namespace Pale {
     // ----------------- Scale gradient (s_u, s_v) -----------------
     // Here we treat the plane geometry as fixed, scales only affect the local map Φ(u,v).
     // u = (t_u · (z - p_k)) / s_u  ⇒ ∂u/∂s_u = -u / s_u,  similarly for v, s_v.
-    inline float3 computeDAlphaDScale(
+    inline float3 computeDuvDScale(
         float u, float v,
-        float alpha,
         float su, float sv) {
-        const float dAlphaDSu = alpha * (u * u) / sycl::max(su, 1e-6f);
 
-        const float dAlphaDSv = alpha * (v * v) / sycl::max(sv, 1e-6f);
-
+        const float dAlphaDSu = -u / su;
+        const float dAlphaDSv = -v / sv;
         // If you later add anisotropic / z-scale, you can extend this.
         return float3{dAlphaDSu, dAlphaDSv, 0.0f};
     }

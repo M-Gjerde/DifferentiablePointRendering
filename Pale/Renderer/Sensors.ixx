@@ -12,7 +12,7 @@ import Pale.Render.SceneBuild;
 
 export namespace Pale {
     SensorGPU
-    makeSensorsForScene(sycl::queue queue, const SceneBuild::BuildProducts &buildProducts) {
+    makeSensorsForScene(sycl::queue queue, const SceneBuild::BuildProducts &buildProducts, bool initializeData = false) {
         SensorGPU out{};
         if (buildProducts.cameraCount() == 0) {
             return out;
@@ -25,6 +25,9 @@ export namespace Pale {
         queue.wait();
 
         //queue.fill(dev, float4{0, 0, 0, 0}, pixelCount).wait();
+
+        if (initializeData)
+            queue.memset(dev, 1e6f, pixelCount * sizeof(float4)).wait();
 
         out.camera = cam;
         out.framebuffer = dev;

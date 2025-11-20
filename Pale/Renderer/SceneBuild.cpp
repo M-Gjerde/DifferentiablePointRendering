@@ -23,6 +23,43 @@ import Pale.Render.BVH;
 import Pale.Log;
 
 namespace Pale {
+    SceneBuild::BuildProducts SceneBuild::build(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
+        const BuildOptions &buildOptions) {
+
+            BuildProducts buildProducts;
+
+            collectGeometry(scene, assetAccess, buildProducts);
+            collectInstances(scene,
+                             assetAccess,
+                             buildProducts.meshIndexById,
+                             buildProducts);
+            collectPointCloudGeometry(scene, assetAccess, buildProducts);
+            collectPointCloudInstances(scene, buildProducts);
+            collectLights(scene, assetAccess, buildProducts);
+            collectCameras(scene, buildProducts);
+
+            buildBottomLevelBVHs(buildProducts, buildOptions);
+            buildTopLevelBVH(buildProducts, buildOptions);
+
+            buildProducts.diffuseSurfaceArea = computeDiffuseSurfaceAreaWorld(buildProducts);
+
+            return buildProducts;
+
+    }
+
+    void SceneBuild::rebuildBVHs(BuildProducts& buildProducts,
+                                 const BuildOptions& buildOptions) {
+        // Clear all BVH-related state
+        buildProducts.bottomLevelNodes.clear();
+        buildProducts.bottomLevelRanges.clear();
+        buildProducts.topLevelNodes.clear();
+
+        // Note: we do NOT touch vertices/triangles/points/instances/etc.
+        buildBottomLevelBVHs(buildProducts, buildOptions);
+        buildTopLevelBVH(buildProducts, buildOptions);
+
+        buildProducts.diffuseSurfaceArea = computeDiffuseSurfaceAreaWorld(buildProducts);
+    }
     // ==== Geometry collector ====
     void SceneBuild::collectGeometry(const std::shared_ptr<Scene>& scene,
                                      IAssetAccess& assetAccess,
@@ -475,11 +512,137 @@ namespace Pale {
         return R;
     }
 
+void SceneBuild::buildBottomLevelBVHs(BuildProducts& buildProducts,
+                                      const BuildOptions& buildOptions) {
+    const std::size_t meshCount = buildProducts.meshRanges.size();
+    const std::size_t pointCloudCount = buildProducts.pointCloudRanges.size();
 
-    void SceneBuild::computePacking(BuildProducts& buildProducts) {
+    std::vector<uint32_t> meshRangeToBlasRange(meshCount, UINT32_MAX);
+    std::vector<uint32_t> pointRangeToBlasRange(pointCloudCount, UINT32_MAX);
+
+    // Mesh BLAS
+    for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+        const MeshRange& meshRange = buildProducts.meshRanges[meshIndex];
+
+        BLASResult blasResult = buildMeshBLAS(
+            meshIndex,
+            meshRange,
+            buildProducts.triangles,
+            buildProducts.vertices,
+            buildOptions
+        );
+
+        const uint32_t globalTriStart = meshRange.firstTri;
+
+        // Reorder triangles into BVH order
+        std::vector<Triangle> reorderedTriangles;
+        reorderedTriangles.reserve(blasResult.localTriangles.size());
+
+        for (uint32_t localTriangleIndex : blasResult.triPermutation) {
+            Triangle triangle = blasResult.localTriangles[localTriangleIndex];
+            // Convert vertex indices back to global space
+            triangle.v0 += meshRange.firstVert;
+            triangle.v1 += meshRange.firstVert;
+            triangle.v2 += meshRange.firstVert;
+            reorderedTriangles.push_back(triangle);
+        }
+
+        std::copy(reorderedTriangles.begin(), reorderedTriangles.end(),
+                  buildProducts.triangles.begin() + globalTriStart);
+
+        const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
+
+        // Patch leaf node triangle indices into global space
+        for (BVHNode& node : blasResult.nodes) {
+            if (node.isLeaf()) {
+                node.leftFirst += globalTriStart;
+            }
+        }
+
+        // Append nodes and record BLAS range
+        buildProducts.bottomLevelNodes.insert(buildProducts.bottomLevelNodes.end(),
+                                              blasResult.nodes.begin(),
+                                              blasResult.nodes.end());
+
+        const uint32_t nodeCount = static_cast<uint32_t>(blasResult.nodes.size());
+        const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
+
+        buildProducts.bottomLevelRanges.push_back({ firstNode, nodeCount });
+        meshRangeToBlasRange[meshIndex] = blasRangeIndex;
     }
 
-    float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts &buildProducts) {
+    // Point cloud BLAS
+    for (uint32_t pointCloudIndex = 0; pointCloudIndex < pointCloudCount; ++pointCloudIndex) {
+        const PointCloudRange& pointCloudRange = buildProducts.pointCloudRanges[pointCloudIndex];
+
+        BLASResult blasResult = buildPointCloudBLAS(
+            pointCloudIndex,
+            pointCloudRange,
+            buildProducts.points,
+            buildOptions
+        );
+
+        const uint32_t globalPointStart = pointCloudRange.firstPoint;
+
+        // Reorder points into BVH order
+        std::vector<Point> reorderedPoints;
+        reorderedPoints.reserve(blasResult.localPoints.size());
+        for (uint32_t localPointIndex : blasResult.pointPermutation) {
+            reorderedPoints.push_back(blasResult.localPoints[localPointIndex]);
+        }
+
+        std::copy(reorderedPoints.begin(), reorderedPoints.end(),
+                  buildProducts.points.begin() + globalPointStart);
+
+        const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
+
+        // Patch leaf node ranges from local to global indices
+        for (BVHNode& node : blasResult.nodes) {
+            if (node.isLeaf()) {
+                node.leftFirst += globalPointStart;
+            }
+        }
+
+        // Append nodes and record BLAS range
+        buildProducts.bottomLevelNodes.insert(buildProducts.bottomLevelNodes.end(),
+                                              blasResult.nodes.begin(),
+                                              blasResult.nodes.end());
+
+        const uint32_t nodeCount = static_cast<uint32_t>(blasResult.nodes.size());
+        const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
+
+        buildProducts.bottomLevelRanges.push_back({ firstNode, nodeCount });
+        pointRangeToBlasRange[pointCloudIndex] = blasRangeIndex;
+    }
+
+    // Map instances to BLAS ranges
+    for (InstanceRecord& instanceRecord : buildProducts.instances) {
+        if (instanceRecord.geometryType == GeometryType::Mesh) {
+            instanceRecord.blasRangeIndex = meshRangeToBlasRange[instanceRecord.geometryIndex];
+        } else {
+            instanceRecord.blasRangeIndex = pointRangeToBlasRange[instanceRecord.geometryIndex];
+        }
+    }
+}
+
+    void SceneBuild::buildTopLevelBVH(BuildProducts& buildProducts,
+                                      const BuildOptions& buildOptions) {
+        TLASResult tlasResult = buildTLAS(
+            buildProducts.instances,
+            buildProducts.bottomLevelRanges,
+            buildProducts.bottomLevelNodes,
+            buildProducts.transforms,
+            buildOptions
+        );
+
+        buildProducts.topLevelNodes = std::move(tlasResult.nodes);
+
+        // Optional debug:
+        // write_tlas_dot(buildProducts.topLevelNodes, "tlas.dot");
+        // write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
+    }
+
+float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts &buildProducts) {
         float totalDiffuseArea = 0.0f;
 
         for (const InstanceRecord& instanceRecord : buildProducts.instances) {

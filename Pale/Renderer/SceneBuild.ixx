@@ -106,6 +106,17 @@ export namespace Pale {
             }
         }
 
+        // Existing top-level builder (now a thin wrapper)
+        static BuildProducts build(const std::shared_ptr<Scene>& scene,
+                                   IAssetAccess& assetAccess,
+                                   const BuildOptions& buildOptions);
+
+        // New: only (re)build BLAS/TLAS on existing BuildProducts
+        static void rebuildBVHs(BuildProducts& buildProducts,
+                                const BuildOptions& buildOptions);
+
+
+        /*
         static BuildProducts build(const std::shared_ptr<Scene>& scene, IAssetAccess& assetAccess,
                                    const BuildOptions& buildOptions) {
             BuildProducts buildProducts;
@@ -117,8 +128,8 @@ export namespace Pale {
             collectPointCloudGeometry(scene, assetAccess, buildProducts);
             collectPointCloudInstances(scene, buildProducts);
             collectLights(scene, assetAccess, buildProducts);
-
             collectCameras(scene, buildProducts);
+
 
             std::vector<uint32_t> meshRangeToBlasRange(buildProducts.meshRanges.size(), UINT32_MAX);
             for (uint32_t meshIndex = 0; meshIndex < buildProducts.meshRanges.size(); ++meshIndex) {
@@ -219,15 +230,15 @@ export namespace Pale {
                                               buildProducts.transforms,
                                               buildOptions);
             buildProducts.topLevelNodes = std::move(tlasResult.nodes);
-            write_tlas_dot(buildProducts.topLevelNodes, "tlas.dot");
-            write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
+            //write_tlas_dot(buildProducts.topLevelNodes, "tlas.dot");
+            //write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
             // finalize permutation and packing metadata
-            computePacking(buildProducts);
 
             buildProducts.diffuseSurfaceArea = computeDiffuseSurfaceAreaWorld(buildProducts);
 
             return buildProducts;
         };
+        */
 
     private:
         static void collectGeometry(const std::shared_ptr<Scene>& scene,
@@ -280,7 +291,13 @@ export namespace Pale {
                                     const std::vector<Transform>& transforms,
                                     const BuildOptions& opts);
 
-        static void computePacking(BuildProducts& buildProducts);
+        // New: high-level BVH phases
+        static void buildBottomLevelBVHs(BuildProducts& buildProducts,
+                                         const BuildOptions& buildOptions);
+
+        static void buildTopLevelBVH(BuildProducts& buildProducts,
+                                     const BuildOptions& buildOptions);
+
         static float computeDiffuseSurfaceAreaWorld(const BuildProducts& buildProducts);
 
     };

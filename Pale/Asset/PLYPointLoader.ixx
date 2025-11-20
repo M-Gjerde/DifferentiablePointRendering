@@ -331,6 +331,7 @@ export namespace Pale {
 
                 constexpr float shC0 = 0.28209479177387814f; // 1/(2*sqrt(pi))
                 for (std::size_t i = 0; i < vertexCount; ++i) {
+
                     const std::size_t i2 = i * 2;
                     const std::size_t i3 = i * 3;
                     const std::size_t i4 = i * 4;
@@ -351,7 +352,7 @@ export namespace Pale {
                                      colorFloats[i3 + 1],
                                      colorFloats[i3 + 2]);
 
-                    glm::vec3 albedoLinear = shC0 * fdcRgb;
+                    glm::vec3 albedoLinear = shC0 * fdcRgb + 0.5f;
                     albedoLinear = glm::max(albedoLinear, glm::vec3(0)); // clamp negatives only
                     albedoLinear = glm::min(albedoLinear, glm::vec3(1)); // clamp {0, 1}
 

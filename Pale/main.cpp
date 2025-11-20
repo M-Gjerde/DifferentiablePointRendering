@@ -149,12 +149,12 @@ int main(int argc, char **argv) {
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e4; // 1e6
+    settings.photonsPerLaunch = 5e3; // 1e6
     settings.maxBounces = 4;
-    settings.numForwardPasses = 40;
-    settings.numGatherPasses = 16;
+    settings.numForwardPasses = 50;
+    settings.numGatherPasses = 8;
     settings.maxAdjointBounces = 1;
-    settings.adjointSamplesPerPixel = 8;
+    settings.adjointSamplesPerPixel = 12;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);
@@ -198,7 +198,7 @@ int main(int argc, char **argv) {
 
     // 4) (Optional) load or compute residuals on host, upload pointer
     //auto adjoint = calculateAdjointImage("Output/target/out_photonmap.pfm", deviceSelector.getQueue(), sensor, true);
-    Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+    Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true);
     Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts);
 
     Pale::Log::PA_INFO("Adjoint Render Pass...");

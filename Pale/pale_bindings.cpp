@@ -670,7 +670,10 @@ public:
     }
 
     void reuploadSceneGpu() {
+
+        Pale::SceneBuild::rebuildBVHs(buildProducts, Pale::SceneBuild::BuildOptions());
         Pale::SceneUpload::upload(buildProducts,  sceneGpu, deviceSelector->getQueue());
+
         pathTracer->setScene(sceneGpu, buildProducts);
     }
 

@@ -126,7 +126,8 @@ namespace Pale {
                                                       rng::Xorshift128 &rng128,
                                                       const Transform &transform,
                                                       const Ray &rayWorld,
-                                                      RayIntersectMode rayIntersectMode = RayIntersectMode::Random) {
+                                                      RayIntersectMode rayIntersectMode,
+                                                      uint32_t scatterOnPrimitiveIndex) {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
@@ -183,7 +184,22 @@ namespace Pale {
                 return false;
             }
 
-            // 3) Handle mode-specific logic
+            // 3) Forced-scatter debug: check if this slice contains the target surfel
+            const bool forceScatterOnSpecificSurfel =
+                (rayIntersectMode == RayIntersectMode::Scatter) &&
+                (scatterOnPrimitiveIndex != UINT32_MAX);
+
+            int forcedGroupIndex = -1;
+            if (forceScatterOnSpecificSurfel) {
+                for (size_t groupIndex = 0; groupIndex < groupIndices.size(); ++groupIndex) {
+                    if (groupIndices[groupIndex] == scatterOnPrimitiveIndex) {
+                        forcedGroupIndex = static_cast<int>(groupIndex);
+                        break;
+                    }
+                }
+            }
+
+            // 4) Handle mode-specific logic
             bool mustScatter = false;
             bool mustTransmit = false;
 
@@ -203,11 +219,21 @@ namespace Pale {
                     break;
                 }
                 case RayIntersectMode::Scatter: {
-                    // Debug / forced-scatter mode: if there is any opacity in this slice,
-                    // we must scatter on exactly one event in this group.
-                    mustScatter = true;
-                    // NOTE: for strict unbiasedness you would usually compensate throughput
-                    // by dividing by compositeAlpha here.
+                    if (forceScatterOnSpecificSurfel) {
+                        if (forcedGroupIndex >= 0) {
+                            // This slice contains the requested surfel: we must scatter on it
+                            mustScatter = true;
+                            mustTransmit = false;
+                        } else {
+                            // This slice does *not* contain the requested surfel: pure transmit
+                            mustScatter = false;
+                            mustTransmit = true;
+                        }
+                    } else {
+                        // Debug / forced-scatter mode without a specific primitive:
+                        // if there is any opacity in this slice, we must scatter on one event.
+                        mustScatter = true;
+                    }
                     break;
                 }
             }
@@ -225,8 +251,19 @@ namespace Pale {
                 return false;
             }
 
-            // 4) We are in a "scatter" mode (Random-accepted or forced Scatter):
-            //    pick exactly one event in this group using sequential thinning.
+            // 5) We are in a "scatter" mode
+            if (forceScatterOnSpecificSurfel && forcedGroupIndex >= 0) {
+                // Deterministic scatter on the requested surfel
+                localHitOut.t = groupLocalTs[forcedGroupIndex];
+                localHitOut.primitiveIndex = groupIndices[forcedGroupIndex];
+                localHitOut.transmissivity = cumulativeTransmittanceBefore;
+                // Do not count this as an extra splat event; it is the main hit.
+
+                clearCurrentGroup();
+                return true;
+            }
+
+            // 6) Default scatter behavior: pick one event in this group via sequential thinning
             float survivalInsideGroup = 1.0f;
             const float safeCompositeAlpha = sycl::fmax(compositeAlpha, 1e-8f);
 
@@ -248,7 +285,7 @@ namespace Pale {
                 survivalInsideGroup *= (1.0f - eventAlpha);
             }
 
-            // 5) Fallback: numerics might occasionally skip everything; enforce one event
+            // 7) Fallback: numerics might occasionally skip everything; enforce one event
             localHitOut.t = groupLocalTs.back();
             localHitOut.primitiveIndex = groupIndices.back();
             localHitOut.transmissivity = cumulativeTransmittanceBefore;
@@ -256,6 +293,7 @@ namespace Pale {
             clearCurrentGroup();
             return true;
         };
+
 
 
         auto transmitCurrentGroup = [&](rng::Xorshift128 &rng)-> bool {
@@ -433,7 +471,8 @@ namespace Pale {
                                              WorldHit *worldHitOut,
                                              const GPUSceneBuffers &scene,
                                              rng::Xorshift128 &rng128,
-                                             RayIntersectMode rayIntersectMode = RayIntersectMode::Random) {
+                                             RayIntersectMode rayIntersectMode = RayIntersectMode::Random,
+                                             uint32_t scatterOnPrimitiveIndex = UINT32_MAX) {
         const TLASNode *tlasNodes = scene.tlasNodes;
         const InstanceRecord *instanceRecords = scene.instances;
         const Transform *transforms = scene.transforms;
@@ -493,7 +532,7 @@ namespace Pale {
                 acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene);
             } else {
                 acceptedHitInInstance = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene,
-                                                                rng128, transform, rayWorld, rayIntersectMode);
+                                                                rng128, transform, rayWorld, rayIntersectMode, scatterOnPrimitiveIndex);
                 for (size_t i = 0; i < localHit.splatEventCount; ++i) {
                     worldHitOut->splatEvents[i].alpha = localHit.splatEvents[i].alpha;
                     worldHitOut->splatEvents[i].primitiveIndex = localHit.splatEvents[i].primitiveIndex;

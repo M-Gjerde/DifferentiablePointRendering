@@ -43,10 +43,10 @@ from typing import Sequence
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e4
+    photons: float = 5e3
     bounces: int = 4
-    forward_passes: int = 40
-    gather_passes: int = 16
+    forward_passes: int = 50
+    gather_passes: int = 8
     adjoint_bounces: int = 1
     adjoint_passes: int = 8
     logging: int = 4 # Spdlog enums
@@ -76,6 +76,7 @@ class OptimizationConfig:
     learning_rate: float = 1e-2          # base LR (for convenience / default)
     learning_rate_position: float = 1e-2 # LR for positions
     learning_rate_tangent: float = 1e-2  # LR for tangents
+    learning_rate_scale: float = 1e-2    # LR for scales
     optimizer_type: str = "adam"         # "adam" or "sgd"
     log_interval: int = 1
     save_interval: int = 5
@@ -155,11 +156,46 @@ def orthonormalize_tangents_inplace(
         return stats
 
 
+def verify_scales_inplace(
+    scales: torch.Tensor,
+) -> dict[str, float]:
+    """
+    In-place verification/clamping of scale values.
+
+    Enforces:
+        0.001 <= s_u, s_v <= 0.1
+
+    Returns diagnostics about how much correction was applied.
+    """
+    with torch.no_grad():
+        # Direct reference to underlying storage
+        s = scales.data
+
+        before_min = float(s.min().item())
+        before_max = float(s.max().item())
+
+        # Clamp in-place
+        s_clamped = torch.clamp(s, min=0.001, max=1.0)
+        s.copy_(s_clamped)
+
+        after_min = float(s.min().item())
+        after_max = float(s.max().item())
+
+        return {
+            "before_min": before_min,
+            "before_max": before_max,
+            "after_min":  after_min,
+            "after_max":  after_max,
+        }
+
+
+
 def apply_point_parameters(
     renderer: pale.Renderer,
     positions: torch.Tensor,
     tangent_u: torch.Tensor,
     tangent_v: torch.Tensor,
+    scales: torch.Tensor,
 ) -> None:
     """
     Push updated positions, tangent_u, and tangent_v into the renderer.
@@ -174,6 +210,9 @@ def apply_point_parameters(
     )
     tangent_v_np = np.asarray(
         tangent_v.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
+    scales_np = np.asarray(
+        scales.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
 
     if positions_np.shape != tangent_u_np.shape or positions_np.shape != tangent_v_np.shape:
@@ -190,6 +229,7 @@ def apply_point_parameters(
             "position": positions_np,
             "tangent_u": tangent_u_np,
             "tangent_v": tangent_v_np,
+            "scale": scales_np,
         }
     )
 
@@ -337,16 +377,45 @@ def compute_l2_loss_and_grad(
 
 
 def create_optimizer(
-    parameters: Sequence[torch.nn.Parameter],
     config: OptimizationConfig,
+    positions: torch.nn.Parameter,
+    tangent_u: torch.nn.Parameter,
+    tangent_v: torch.nn.Parameter,
+    scales: torch.nn.Parameter,
 ) -> torch.optim.Optimizer:
+    """
+    Create an optimizer with per-parameter learning rates.
+
+    Falls back to config.learning_rate if a specific LR is not set.
+    """
     opt_type = config.optimizer_type.lower()
+
+    lr_pos = config.learning_rate_position or config.learning_rate
+    lr_tan = config.learning_rate_tangent or config.learning_rate
+    lr_scale = config.learning_rate_scale or config.learning_rate
+
+    param_groups = [
+        {
+            "params": [positions],
+            "lr": lr_pos,
+        },
+        {
+            "params": [tangent_u, tangent_v],
+            "lr": lr_tan,
+        },
+        {
+            "params": [scales],
+            "lr": lr_scale,
+        },
+    ]
+
     if opt_type == "sgd":
-        return torch.optim.SGD(parameters, lr=config.learning_rate, momentum=0.8)
+        return torch.optim.SGD(param_groups, momentum=0.8)
     elif opt_type == "adam":
-        return torch.optim.Adam(parameters, lr=config.learning_rate)
+        return torch.optim.Adam(param_groups)
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
+
 
 
 def run_optimization(
@@ -370,6 +439,7 @@ def run_optimization(
     initial_positions_np = initial_params["position"]    # (N,3)
     initial_tangent_u_np = initial_params["tangent_u"]   # (N,3)
     initial_tangent_v_np = initial_params["tangent_v"]   # (N,3)
+    initial_scale_np = initial_params["scale"]   # (N,2)
 
     num_points = initial_positions_np.shape[0]
     print(f"Fetched {num_points} initial points from renderer.")
@@ -378,7 +448,7 @@ def run_optimization(
     rng = np.random.default_rng(12)
 
     # Add small Gaussian noise to positions (you can leave tangents as-is)
-    noise_sigma_translation = 0.08
+    noise_sigma_translation = 0.1
     noisy_positions_np = initial_positions_np.copy()
     noisy_positions_np += rng.normal(
         loc=0.0,
@@ -389,7 +459,7 @@ def run_optimization(
     print("Initial positions perturbed by Gaussian noise on point 0:", noise_sigma_translation)
 
     # Tangent noise (much smaller recommended)
-    noise_sigma_tan = 0.05
+    noise_sigma_tan = 0.1
     initial_tangent_u_np = initial_tangent_u_np.copy()
     initial_tangent_v_np = initial_tangent_v_np.copy()
 
@@ -413,6 +483,17 @@ def run_optimization(
     initial_tangent_u_np = normalize_rows(initial_tangent_u_np).astype(np.float32)
     initial_tangent_v_np = normalize_rows(initial_tangent_v_np).astype(np.float32)
 
+    noise_sigma_scale = 0.04
+    noisy_scale_np = initial_scale_np.copy()
+
+    noisy_scale_np += rng.normal(
+        0.0,
+        noise_sigma_scale,
+        initial_scale_np.shape,
+    )
+
+    initial_scale_np = noisy_scale_np.astype(np.float32)
+
     device = torch.device(config.device)
 
     # Parameters: positions, tangent_u, tangent_v
@@ -426,9 +507,19 @@ def run_optimization(
         torch.tensor(initial_tangent_v_np, device=device, dtype=torch.float32)
     )
 
-    optimizer = create_optimizer([positions, tangent_u, tangent_v], config)
+    scales = torch.nn.Parameter(
+        torch.tensor(initial_scale_np, device=device, dtype=torch.float32)
+    )
+
+    optimizer = create_optimizer(
+        config,
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+    )
     # --- Initial snapshot render ---
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v)
+    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales)
     initial_rgb = renderer.render_forward()
     initial_rgb_np = np.asarray(initial_rgb, dtype=np.float32, order="C")
     initial_loss, loss_grad_image = compute_l2_loss_and_grad(
@@ -460,114 +551,128 @@ def run_optimization(
     )
     print(f"Initial position MSE (point 0): {initial_param_mse0:.6e}")
 
+    iteration = 0
     # --- Optimization loop ---
-    for iteration in range(1, config.iterations + 1):
-        # 1) Push current positions into renderer
-        apply_point_parameters(renderer, positions, tangent_u, tangent_v)
+    try:
+        for iteration in range(1, config.iterations + 1):
+            # 1) Push current positions into renderer
+            apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales)
 
-        # 2) Forward render (for logging)
-        current_rgb = renderer.render_forward()
-        current_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
+            # 2) Forward render (for logging)
+            current_rgb = renderer.render_forward()
+            current_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
 
-        # 3) Compute loss + dC/dI (adjoint image)
-        loss_value, loss_grad_image, loss_image = compute_l2_loss_and_grad(
-            current_rgb_np,
-            target_rgb,
-            return_loss_image=True,
+            # 3) Compute loss + dC/dI (adjoint image)
+            loss_value, loss_grad_image, loss_image = compute_l2_loss_and_grad(
+                current_rgb_np,
+                target_rgb,
+                return_loss_image=True,
+            )
+
+            # 4) Backward pass: renderer computes dC/d(position), dC/d(tangent_u), dC/d(tangent_v)
+            gradients, grad_img = renderer.render_backward(loss_grad_image)
+            grad_scale = 1.0
+
+            grad_position_np = np.asarray(
+                gradients["position"] * grad_scale, dtype=np.float32, order="C"
+            )
+            grad_tangent_u_np = np.asarray(
+                gradients["tangent_u"] * grad_scale, dtype=np.float32, order="C"
+            )
+            grad_tangent_v_np = np.asarray(
+                gradients["tangent_v"] * grad_scale, dtype=np.float32, order="C"
+            )
+            grad_scales_v_np = np.asarray(
+                gradients["scale"] * grad_scale, dtype=np.float32, order="C"
+            )
+
+            if grad_position_np.shape != initial_positions_np.shape:
+                raise RuntimeError(
+                    f"Gradient shape mismatch for position: expected {initial_positions_np.shape}, "
+                    f"got {grad_position_np.shape}"
+                )
+            if grad_tangent_u_np.shape != initial_tangent_u_np.shape:
+                raise RuntimeError(
+                    f"Gradient shape mismatch for tangent_u: expected {initial_tangent_u_np.shape}, "
+                    f"got {grad_tangent_u_np.shape}"
+                )
+            if grad_tangent_v_np.shape != initial_tangent_v_np.shape:
+                raise RuntimeError(
+                    f"Gradient shape mismatch for tangent_v: expected {initial_tangent_v_np.shape}, "
+                    f"got {grad_tangent_v_np.shape}"
+                )
+
+            # 5) Set torch gradients and step optimizer
+            optimizer.zero_grad(set_to_none=True)
+            positions.grad = torch.tensor(grad_position_np).to(device=device, dtype=torch.float32)
+            tangent_u.grad = torch.tensor(grad_tangent_u_np).to(device=device, dtype=torch.float32)
+            tangent_v.grad = torch.tensor(grad_tangent_v_np).to(device=device, dtype=torch.float32)
+            scales.grad =    torch.tensor(grad_scales_v_np).to(device=device, dtype=torch.float32)
+            optimizer.step()
+
+            # 5b) Re-orthonormalize tangents and collect diagnostics
+            ortho_stats = orthonormalize_tangents_inplace(tangent_u, tangent_v)
+            verify_scales_inplace(scales)
+
+            # --- Logging ---
+            if iteration % config.log_interval == 0 or iteration == 1:
+                grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
+                grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
+                grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
+                grad_scale = float(np.linalg.norm(grad_scales_v_np) / max(num_points, 1))
+                print(
+                    f"[Iter {iteration:04d}/{config.iterations}] "
+                    f"Loss = {loss_value:.6e}, "
+                    f"mean |translation| = {grad_norm:.3e}, "
+                    f"mean |tan_u| = {grad_tanu:.3e}, "
+                    f"mean |tan_v| = {grad_tanv:.3e}, "
+                    f"mean |scale| = {grad_scale:.3e}, "
+                    #f"ortho: max_dev_norm_u={ortho_stats['max_dev_norm_u']:.2e}, "
+                    #f"max_dev_norm_v={ortho_stats['max_dev_norm_v']:.2e}, "
+                    #f"max_abs_dot_uv={ortho_stats['max_abs_dot_uv']:.2e}, "
+                    #f"min_cross_norm={ortho_stats['min_cross_norm']:.2e}"
+                )
+
+            # --- Periodic saving ---
+            if iteration % config.save_interval == 0 or iteration == config.iterations:
+                #apply_positions(renderer, positions.detach().cpu().numpy())
+                #snapshot_rgb = renderer.render_forward()
+                snapshot_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
+
+                render_path = config.output_dir / "render" / f"render_iter_{iteration:04d}.png"
+                #pos_path = config.output_dir / f"positions_iter_{iteration:04d}.npy"
+                save_render(render_path, snapshot_rgb_np)
+                #save_positions_numpy(pos_path, positions.detach().cpu().numpy())
+                img = np.asarray(grad_img, dtype=np.float32, order="C")  # (H,W,4)
+                img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+
+                render_grad = config.output_dir / "grad" / f"render_iter_grad_{iteration:04d}.png"
+                render_grad_quantile = config.output_dir / "grad" / f"render_iter_grad_099_{iteration:04d}.png"
+                save_gradient_sign_png_py(
+                    render_grad_quantile,
+                    img,
+                    adjoint_spp=8,
+                    abs_quantile=0.999,
+                    flip_y=False,
+                )
+
+                # Save visualization (tonemap + robust scaling)
+                loss_image_vis = np.clip(loss_image / np.percentile(loss_image, 99.0), 0.0, 1.0)
+                loss_image_u8 = (loss_image_vis * 255).astype(np.uint8)
+                os.makedirs(config.output_dir / "loss", exist_ok=True)
+                iio.imwrite(
+                    (config.output_dir / "loss" / f"loss_image_iter_{iteration:04d}.png").as_posix(),
+                    loss_image_u8,
+                )
+    except KeyboardInterrupt:
+        print(
+            f"\nCtrl+C detected at iteration {iteration:04d}. "
+            "Stopping optimization loop and saving current result..."
         )
-
-        # 4) Backward pass: renderer computes dC/d(position), dC/d(tangent_u), dC/d(tangent_v)
-        gradients, grad_img = renderer.render_backward(loss_grad_image)
-        grad_scale = 1.0
-
-        grad_position_np = np.asarray(
-            gradients["position"] * grad_scale, dtype=np.float32, order="C"
-        )
-        grad_tangent_u_np = np.asarray(
-            gradients["tangent_u"] * grad_scale, dtype=np.float32, order="C"
-        )
-        grad_tangent_v_np = np.asarray(
-            gradients["tangent_v"] * grad_scale, dtype=np.float32, order="C"
-        )
-
-        if grad_position_np.shape != initial_positions_np.shape:
-            raise RuntimeError(
-                f"Gradient shape mismatch for position: expected {initial_positions_np.shape}, "
-                f"got {grad_position_np.shape}"
-            )
-        if grad_tangent_u_np.shape != initial_tangent_u_np.shape:
-            raise RuntimeError(
-                f"Gradient shape mismatch for tangent_u: expected {initial_tangent_u_np.shape}, "
-                f"got {grad_tangent_u_np.shape}"
-            )
-        if grad_tangent_v_np.shape != initial_tangent_v_np.shape:
-            raise RuntimeError(
-                f"Gradient shape mismatch for tangent_v: expected {initial_tangent_v_np.shape}, "
-                f"got {grad_tangent_v_np.shape}"
-            )
-
-        # 5) Set torch gradients and step optimizer
-        optimizer.zero_grad(set_to_none=True)
-        positions.grad = torch.tensor(grad_position_np).to(device=device, dtype=torch.float32)
-        tangent_u.grad = torch.tensor(grad_tangent_u_np).to(device=device, dtype=torch.float32)
-        tangent_v.grad = torch.tensor(grad_tangent_v_np).to(device=device, dtype=torch.float32)
-        optimizer.step()
-
-        # 5b) Re-orthonormalize tangents and collect diagnostics
-        ortho_stats = orthonormalize_tangents_inplace(tangent_u, tangent_v)
-
-        # --- Logging ---
-        if iteration % config.log_interval == 0 or iteration == 1:
-            grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
-            grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
-            grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
-            print(
-                f"[Iter {iteration:04d}/{config.iterations}] "
-                f"Loss = {loss_value:.6e}, "
-                f"mean |translation| = {grad_norm:.3e}, "
-                f"mean |tan_u| = {grad_tanu:.3e}, "
-                f"mean |tan_v| = {grad_tanv:.3e}, "
-                f"ortho: max_dev_norm_u={ortho_stats['max_dev_norm_u']:.2e}, "
-                f"max_dev_norm_v={ortho_stats['max_dev_norm_v']:.2e}, "
-                f"max_abs_dot_uv={ortho_stats['max_abs_dot_uv']:.2e}, "
-                f"min_cross_norm={ortho_stats['min_cross_norm']:.2e}"
-            )
-
-        # --- Periodic saving ---
-        if iteration % config.save_interval == 0 or iteration == config.iterations:
-            #apply_positions(renderer, positions.detach().cpu().numpy())
-            #snapshot_rgb = renderer.render_forward()
-            snapshot_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
-
-            render_path = config.output_dir / "render" / f"render_iter_{iteration:04d}.png"
-            #pos_path = config.output_dir / f"positions_iter_{iteration:04d}.npy"
-            save_render(render_path, snapshot_rgb_np)
-            #save_positions_numpy(pos_path, positions.detach().cpu().numpy())
-            img = np.asarray(grad_img, dtype=np.float32, order="C")  # (H,W,4)
-            img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
-
-            render_grad = config.output_dir / "grad" / f"render_iter_grad_{iteration:04d}.png"
-            render_grad_quantile = config.output_dir / "grad" / f"render_iter_grad_099_{iteration:04d}.png"
-            save_gradient_sign_png_py(
-                render_grad_quantile,
-                img,
-                adjoint_spp=8,
-                abs_quantile=0.999,
-                flip_y=False,
-            )
-
-            # Save visualization (tonemap + robust scaling)
-            loss_image_vis = np.clip(loss_image / np.percentile(loss_image, 99.0), 0.0, 1.0)
-            loss_image_u8 = (loss_image_vis * 255).astype(np.uint8)
-            os.makedirs(config.output_dir / "loss", exist_ok=True)
-            iio.imwrite(
-                (config.output_dir / "loss" / f"loss_image_iter_{iteration:04d}.png").as_posix(),
-                loss_image_u8,
-            )
 
 
     # --- Final summary ---
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v)
+    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales)
     final_rgb = renderer.render_forward()
     final_rgb_np = np.asarray(final_rgb, dtype=np.float32, order="C")
     final_loss = compute_l2_loss(final_rgb_np, target_rgb)
@@ -659,32 +764,49 @@ def parse_args() -> OptimizationConfig:
         "--learning-rate",
         dest="learning_rate",
         type=float,
-        default=0.5,
-        help="Base learning rate (used if --lr-pos / --lr-tan are not given).",
+        default=1.0,
+        help="Base learning rate (used if --lr-pos / --lr-tan / --lr-scale are not given).",
     )
     parser.add_argument(
         "--lr-pos",
         dest="learning_rate_position",
         type=float,
-        default=0.5,
-        help="Learning rate for positions.",
+        default=1.0,
+        help="Learning rate for positions (defaults to base LR if omitted).",
     )
     parser.add_argument(
         "--lr-tan",
         dest="learning_rate_tangent",
         type=float,
-        default=1.0,
-        help="Learning rate for tangents (tangent_u, tangent_v).",
+        default=0.5,
+        help="Learning rate for tangents (tangent_u, tangent_v; defaults to base LR if omitted).",
     )
+    parser.add_argument(
+        "--lr-scale",
+        dest="learning_rate_scale",
+        type=float,
+        default=0.1,
+        help="Learning rate for scales (u, v; defaults to base LR if omitted).",
+    )
+
 
     # ... optimizer, log-interval, save-interval, device ...
 
     args = parser.parse_args()
 
-    # If group-specific LRs are not provided, fall back to base LR
     lr_base = args.learning_rate
-    lr_pos = args.learning_rate_position if args.learning_rate_position is not None else lr_base
-    lr_tan = args.learning_rate_tangent if args.learning_rate_tangent is not None else lr_base
+
+    lr_pos = args.learning_rate_position
+    if lr_pos is None:
+        lr_pos = lr_base
+
+    lr_tan = args.learning_rate_tangent
+    if lr_tan is None:
+        lr_tan = lr_base
+
+    lr_scale = args.learning_rate_scale
+    if lr_scale is None:
+        lr_scale = lr_base
 
     return OptimizationConfig(
         assets_root=args.assets_root,
@@ -696,6 +818,7 @@ def parse_args() -> OptimizationConfig:
         learning_rate=lr_base,
         learning_rate_position=lr_pos,
         learning_rate_tangent=lr_tan,
+        learning_rate_scale=lr_scale,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
@@ -715,7 +838,9 @@ def main() -> None:
     print(f"  pointcloud    : {config.pointcloud_ply}")
     print(f"  target_image  : {config.target_image_path}")
     print(f"  iterations    : {config.iterations}")
-    print(f"  learning_rate : {config.learning_rate}")
+    print(f"  learning_rate_pos : {config.learning_rate_position}")
+    print(f"  learning_rate_tan : {config.learning_rate_tangent}")
+    print(f"  learning_rate_scale : {config.learning_rate_scale}")
     print(f"  optimizer     : {config.optimizer_type}")
     print(f"  output_dir    : {config.output_dir}")
     print(f"  device        : {config.device}")
