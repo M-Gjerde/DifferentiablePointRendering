@@ -13,13 +13,14 @@
 #include "Renderer/Kernels/KernelHelpers.h"
 #include "Renderer/Kernels/PrimalKernels.h"
 
+import Pale.Log;
+
 namespace Pale {
     // ---- Orchestrator -------------------------------------------------------
     void submitKernel(RenderPackage& pkg) {
         std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
 
         if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
-
             pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0},
                            pkg.sensor.height * pkg.sensor.width).wait();
 
@@ -96,7 +97,6 @@ namespace Pale {
             // Post processing:
             // Gamma, exposure and rgb8 conversion
             launchPostProcessKernel(pkg);
-
         }
         else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
             /*
@@ -161,6 +161,32 @@ namespace Pale {
                     pkg.queue.wait();
                 }
             }
+
+
+            /*
+            {
+                Point point;
+                float3 grad;
+
+                pkg.queue.memcpy(&point, &pkg.scene.points[2], sizeof(Point));
+                pkg.queue.memcpy(&grad, &pkg.gradients.gradPosition[2], sizeof(float3));
+                pkg.queue.wait();
+
+                Log::PA_WARN("Pos: ({},{},{}) | grad: ({},{},{})", point.position.x(), point.position.y(),
+                             point.position.z(), grad.x(), grad.y(), grad.z());
+            }
+            {
+                Point point;
+                float3 grad;
+
+                pkg.queue.memcpy(&point, &pkg.scene.points[pkg.scene.pointCount - 1], sizeof(Point));
+                pkg.queue.memcpy(&grad, &pkg.gradients.gradPosition[pkg.scene.pointCount - 1], sizeof(float3));
+                pkg.queue.wait();
+
+                Log::PA_WARN("Pos: ({},{},{}) | grad: ({},{},{})", point.position.x(), point.position.y(),
+                             point.position.z(), grad.x(), grad.y(), grad.z());
+            }
+            */
         }
     }
 }

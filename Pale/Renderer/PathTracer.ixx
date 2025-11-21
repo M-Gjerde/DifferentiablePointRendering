@@ -36,7 +36,7 @@ export namespace Pale {
         void configurePhotonGrid(const AABB& sceneAabb, float gatherRadiusWorld);
     private:
         sycl::queue m_queue;
-        GPUSceneBuffers m_scene{};
+        GPUSceneBuffers m_sceneGPU{};
         RenderIntermediatesGPU m_intermediates{};
         PathTracerSettings m_settings{};
         uint64_t m_rayQueueCapacity = 0;

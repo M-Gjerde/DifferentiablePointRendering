@@ -21,7 +21,7 @@ namespace Pale {
     }
 
     void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
-        m_scene = scene;
+        m_sceneGPU = scene;
         uint32_t requiredCapacity = m_settings.photonsPerLaunch;
         ensureRayCapacity(requiredCapacity);
 
@@ -203,7 +203,7 @@ namespace Pale {
         RenderPackage renderPackage{
             .queue = m_queue,
             .settings = m_settings,
-            .scene = m_scene,
+            .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .sensor = sensor,
         };
@@ -233,7 +233,7 @@ namespace Pale {
         RenderPackage renderPackage{
             .queue = m_queue,
             .settings = m_settings,
-            .scene = m_scene,
+            .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .sensor = sensor,
             .gradients = gradients
@@ -242,6 +242,8 @@ namespace Pale {
         submitKernel(renderPackage);
 
         m_queue.wait();
+
+
     }
 
     void PathTracer::reset() {

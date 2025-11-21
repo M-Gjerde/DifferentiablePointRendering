@@ -42,6 +42,8 @@ namespace Pale {
         float opacity{0.0f};
         float beta{0.0f};
         float shape{0.0f};
+
+        uint64_t pointId{0};
     };
 
     CHECK_16(Point);
