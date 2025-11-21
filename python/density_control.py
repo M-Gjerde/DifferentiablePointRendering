@@ -54,23 +54,31 @@ def densify_and_prune_points(
                 False,
             )
 
-        # ------------------------------------------------------------------
-        # 1) Compute per-point gradient metric
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 1) Gradient metrics
+        # --------------------------------------------------------------
         grad_position_norm = np.linalg.norm(grad_position_np, axis=1)
         grad_scale_norm = np.linalg.norm(grad_scales_np, axis=1)
 
-        grad_scale_weight = 0.1  # position dominates
+        grad_scale_weight = 0.1
         combined_gradient_metric = (
-            grad_position_norm + grad_scale_weight * grad_scale_norm
+                grad_position_norm + grad_scale_weight * grad_scale_norm
         )
 
         # --------------------------------------------------------------
-        # 2) Densification: fixed gradient threshold
+        # 2) Densification rule
         # --------------------------------------------------------------
-        fixed_grad_threshold = 3e-3  # ← tune this value
+        fixed_grad_threshold = 3e-6
 
-        densify_indices = np.where(combined_gradient_metric > fixed_grad_threshold)[0]
+        # Area-based trigger
+        gaussian_area = scales_np[:, 0] * scales_np[:, 1]
+        area_threshold = 0.05 * 0.05
+
+        big_mask = gaussian_area > area_threshold
+        grad_mask = combined_gradient_metric > fixed_grad_threshold
+
+        densify_candidates = big_mask
+        densify_indices = np.where(densify_candidates)[0]
 
         new_positions_list = [positions_np]
         new_tangent_u_list = [tangent_u_np]
@@ -79,7 +87,7 @@ def densify_and_prune_points(
         new_colors_list = [colors_np]
 
         # Parameters for splitting
-        scale_shrink_factor = 0.3
+        scale_shrink_factor = 0.2
         rng = np.random.default_rng()
 
         for index in densify_indices:
@@ -90,8 +98,8 @@ def densify_and_prune_points(
             parent_color = colors_np[index]
 
             # Random offset inside ellipsoidal footprint in tangent plane
-            random_u = rng.uniform(-0.5, 0.5) * 2
-            random_v = rng.uniform(-0.5, 0.5) * 2
+            random_u = rng.uniform(-0.5, 0.5) * 3
+            random_v = rng.uniform(-0.5, 0.5) * 3
             offset_vector = (
                 random_u * parent_scale[0] * parent_tangent_u
                 + random_v * parent_scale[1] * parent_tangent_v

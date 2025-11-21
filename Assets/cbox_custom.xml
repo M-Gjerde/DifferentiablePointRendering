@@ -17,8 +17,8 @@
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="500"/>
-            <integer name="height" value="500"/>
+            <integer name="width" value="300"/>
+            <integer name="height" value="300"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>
             <string name="component_format" value="float32"/>
@@ -46,7 +46,7 @@
     </bsdf>
 
 
-
+    <!-- Floor:
     <shape type="obj" id="bunny">
         <string name="filename" value="meshes/bun_zipper_res3.ply"/>
         <transform name="to_world">
@@ -55,6 +55,8 @@
         </transform>
         <ref id="light_gray"/>
     </shape>
+-->
+
 
     <!-- Floor: z=0, normal +Z (no rotation) -->
     <shape type="obj" id="floor">
@@ -121,9 +123,9 @@
     <shape type="obj" id="light">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
-            <rotate x="0" y="1" z="0" angle="160"/>
+            <rotate x="0" y="1" z="0" angle="180"/>
             <scale x="0.05" y="0.05" z="0.05"/>
-            <translate x="-0.4" y="-0.3" z="1.8"/>
+            <translate x="0.0" y="-0.5" z="1.8"/>
         </transform>
         <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->

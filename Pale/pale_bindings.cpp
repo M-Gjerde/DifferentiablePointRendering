@@ -116,6 +116,18 @@ public:
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
 
+        // Print summary
+        Pale::Log::PA_WARN("=== Renderer Settings ===");
+        Pale::Log::PA_WARN("  Photons per launch        : {}", settings.photonsPerLaunch);
+        Pale::Log::PA_WARN("  Max bounces               : {}", settings.maxBounces);
+        Pale::Log::PA_WARN("  Forward passes            : {}", settings.numForwardPasses);
+        Pale::Log::PA_WARN("  Gather passes             : {}", settings.numGatherPasses);
+        Pale::Log::PA_WARN("  Adjoint bounces           : {}", settings.maxAdjointBounces);
+        Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
+        Pale::Log::PA_WARN("  Camera Tonemapping : Exposure: {}, Gamma: {}", sensorForward.exposureCorrection,
+                           sensorForward.gammaCorrection);
+        Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
+
         pathTracer = std::make_unique<Pale::PathTracer>(deviceSelector->getQueue(), settings);
         pathTracer->setScene(sceneGpu, buildProducts);
     }
@@ -125,21 +137,6 @@ public:
             assetManager->registry().save("asset_registry.yaml");
         }
         if (deviceSelector) deviceSelector->getQueue().wait();
-    }
-
-    // C++ equivalent of Python tonemap_exposure_gamma()
-    static inline float tonemap_exposure_gamma_scalar(float x,
-                                                      float exposureStops,
-                                                      float gamma) {
-        const float k = std::pow(2.0f, exposureStops);
-
-        // clamp to [0, +inf)
-        const float xc = x < 0.0f ? 0.0f : x;
-
-        const float y = 1.0f - std::exp(-k * xc);
-
-        const float invGamma = 1.0f / std::max(gamma, 1e-6f);
-        return std::pow(std::clamp(y, 0.0f, 1.0f), invGamma);
     }
 
 
@@ -654,7 +651,7 @@ public:
 
             auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
             for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-                buildProducts.points[pointIndex].*memberPointer = dataPointer[pointIndex];
+                buildProducts.points[pointIndex].*memberPointer = 1.0f;
             }
         };
 
@@ -667,7 +664,7 @@ public:
         assignFloat1FieldFromArray("opacity", &Pale::Point::opacity);
 
         // 5) Rebuild BVH + GPU buffers if requested
-        if (rebuild) {
+        if (true) {
             // Keep pointCloudRanges coherent with the updated points array.
             // For now we assume a single dynamic point cloud.
             if (!buildProducts.pointCloudRanges.empty()) {
@@ -682,14 +679,16 @@ public:
             }
 
             Pale::Log::PA_INFO("Rebuilding BVH and reallocating after topology change");
-            Pale::SceneBuild::rebuildBVHs(buildProducts, Pale::SceneBuild::BuildOptions());
+            Pale::AssetAccessFromManager assetAccessor(*assetManager);
+
+            Pale::SceneBuild::rebuildBVHs(scene, assetAccessor, buildProducts, Pale::SceneBuild::BuildOptions());
             Pale::SceneUpload::allocateOrReallocate(buildProducts, sceneGpu, deviceSelector->getQueue());
 
             // Recreate gradients to match new point count and resolution
-            Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
-            gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts);
-            Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
-            pathTracer->setScene(sceneGpu, buildProducts);
+            if (rebuild) {
+                Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
+                gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts);
+            }
         }
         reuploadSceneGpu();
     }

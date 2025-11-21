@@ -47,8 +47,18 @@ namespace Pale {
 
     }
 
-    void SceneBuild::rebuildBVHs(BuildProducts& buildProducts,
+    void SceneBuild::rebuildBVHs(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess, BuildProducts& buildProducts,
                                  const BuildOptions& buildOptions) {
+
+        buildProducts.instances = {};
+
+        collectInstances(scene,
+                 assetAccess,
+                 buildProducts.meshIndexById,
+                 buildProducts);
+
+        collectPointCloudInstances(scene, buildProducts);
+
         // Clear all BVH-related state
         buildProducts.bottomLevelNodes.clear();
         buildProducts.bottomLevelRanges.clear();
@@ -131,6 +141,9 @@ namespace Pale {
             }
             else {
                 const auto materialAsset = assetAccess.getMaterial(materialComponent.materialID);
+                if (!materialAsset) {
+                    throw std::runtime_error("Material does not exist");
+                }
                 GPUMaterial gpuMaterial{};
                 gpuMaterial.baseColor = materialAsset->baseColor;
                 gpuMaterial.specular = materialAsset->metallic;

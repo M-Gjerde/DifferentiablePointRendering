@@ -305,151 +305,233 @@ namespace Pale {
         queue.wait();
     }
 
+// ---- Kernel: Camera gather (one thread per pixel) --------------------------
+void launchCameraGatherKernel(RenderPackage &pkg, int totalSamplesPerPixel) {
+    auto &queue = pkg.queue;
+    auto &scene = pkg.scene;
+    auto &sensor = pkg.sensor;
+    auto &settings = pkg.settings;
+    auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
 
-    // ---- Kernel: Camera gather (one thread per pixel) --------------------------
-    void launchCameraGatherKernel(RenderPackage &pkg, int totalSamplesPerPixel) {
-        auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
-        auto &sensor = pkg.sensor;
-        auto &settings = pkg.settings;
-        auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+    const std::uint32_t imageWidth  = sensor.camera.width;
+    const std::uint32_t imageHeight = sensor.camera.height;
+    const std::uint32_t pixelCount  = imageWidth * imageHeight;
 
-        const std::uint32_t imageWidth = sensor.camera.width;
-        const std::uint32_t imageHeight = sensor.camera.height;
-        const std::uint32_t pixelCount = imageWidth * imageHeight;
+    // Clear framebuffer before calling this, outside.
+    queue.submit([&](sycl::handler &cgh) {
+        uint64_t baseSeed = pkg.settings.randomSeed;
+        auto samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
 
-        // Clear framebuffer before calling this, outside.
-        const float gatherRadius = photonMap.gatherRadiusWorld;
-        queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = pkg.settings.randomSeed;
-            auto samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
-            cgh.parallel_for<class CameraGatherKernel>(
-                sycl::range<1>(pixelCount),
-                [=](sycl::id<1> tid) {
-                    const std::uint32_t pixelIndex = tid[0];
-                    const std::uint32_t px = pixelIndex % imageWidth;
-                    const std::uint32_t py = pixelIndex / imageWidth;
+        cgh.parallel_for<class CameraGatherKernel>(
+            sycl::range<1>(pixelCount),
+            [=](sycl::id<1> tid) {
+                const std::uint32_t pixelIndex = tid[0];
+                const std::uint32_t pixelX = pixelIndex % imageWidth;
+                const std::uint32_t pixelY = pixelIndex / imageWidth;
 
-                    // 1) Trace camera ray to first diffuse mesh hit
-                    rng::Xorshift128 rng128(rng::makePerItemSeed1D(baseSeed, pixelIndex));
-                    float3 radianceRGB(0.0f);
-                    // subpixel jitter
-                    const float jx = rng128.nextFloat() - 0.5f;
-                    const float jy = rng128.nextFloat() - 0.5f;
+                rng::Xorshift128 randomNumberGenerator(
+                    rng::makePerItemSeed1D(baseSeed, pixelIndex));
 
-                    Ray ray = makePrimaryRayFromPixelJittered(sensor.camera, static_cast<float>(px),
-                                                              static_cast<float>(py), jx, jy);
+                float3 accumulatedRadianceRGB(0.0f);
 
-                    //ray.direction = normalize(float3{-0.187575308, 0.962122211, -0.277827293}); // b
-                    //ray.origin = float3{0.0, -4.0, 1.0};
+                // Subpixel jitter
+                const float jitterX = randomNumberGenerator.nextFloat() - 0.5f;
+                const float jitterY = randomNumberGenerator.nextFloat() - 0.5f;
 
-                    WorldHit worldHit{};
-                    intersectScene(ray, &worldHit, scene, rng128, RayIntersectMode::Random);
+                Ray primaryRay = makePrimaryRayFromPixelJittered(
+                    sensor.camera,
+                    static_cast<float>(pixelX),
+                    static_cast<float>(pixelY),
+                    jitterX,
+                    jitterY);
 
-                    if (!worldHit.hit) {
-                        return;
-                    }
-                    const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+                // -----------------------------------------------------------------
+                // 1) Transmit ray: collect all splat events + terminal mesh hit
+                // -----------------------------------------------------------------
+                WorldHit transmitWorldHit{};
+                intersectScene(primaryRay,
+                               &transmitWorldHit,
+                               scene,
+                               randomNumberGenerator,
+                               RayIntersectMode::Transmit);
 
-                    switch (instance.geometryType) {
-                        case GeometryType::Mesh: {
-                            const Triangle &triangle = scene.triangles[worldHit.primitiveIndex];
-                            const Transform &objectWorldTransform = scene.transforms[instance.transformIndex];
-                            const Vertex &vertex0 = scene.vertices[triangle.v0];
-                            const Vertex &vertex1 = scene.vertices[triangle.v1];
-                            const Vertex &vertex2 = scene.vertices[triangle.v2];
-                            // Canonical geometric normal (no face-forwarding)
-                            const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
-                            const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
-                            const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
-                            worldHit.geometricNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
-                        }
+                if (!transmitWorldHit.hit) {
+                    // No geometry / environment handled elsewhere
+                    return;
+                }
+
+                // Compute geometric normal for terminal hit
+                const InstanceRecord &terminalInstance =
+                    scene.instances[transmitWorldHit.instanceIndex];
+
+                switch (terminalInstance.geometryType) {
+                    case GeometryType::Mesh: {
+                        const Triangle &triangle =
+                            scene.triangles[transmitWorldHit.primitiveIndex];
+                        const Transform &objectToWorldTransform =
+                            scene.transforms[terminalInstance.transformIndex];
+
+                        const Vertex &vertex0 = scene.vertices[triangle.v0];
+                        const Vertex &vertex1 = scene.vertices[triangle.v1];
+                        const Vertex &vertex2 = scene.vertices[triangle.v2];
+
+                        const float3 worldP0 =
+                            toWorldPoint(vertex0.pos, objectToWorldTransform);
+                        const float3 worldP1 =
+                            toWorldPoint(vertex1.pos, objectToWorldTransform);
+                        const float3 worldP2 =
+                            toWorldPoint(vertex2.pos, objectToWorldTransform);
+
+                        transmitWorldHit.geometricNormalW =
+                            normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
                         break;
-                        case GeometryType::PointCloud: {
-                            const auto &surfel = scene.points[worldHit.primitiveIndex];
-                            // Canonical surfel normal from tangents (no face-forwarding)
-                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                            worldHit.geometricNormalW = canonicalNormalW;
-                        }
+                    }
+                    case GeometryType::PointCloud: {
+                        const Point &surfel =
+                            scene.points[transmitWorldHit.primitiveIndex];
+                        const float3 canonicalNormalWorld =
+                            normalize(cross(surfel.tanU, surfel.tanV));
+                        transmitWorldHit.geometricNormalW = canonicalNormalWorld;
                         break;
                     }
-                    //if (pixelIndex  > 2) {
-                    //return;
-                    //}
-                    //ray.origin = worldHit.hitPositionW;
-                    //ray.direction = normalize(float3{0.35, 0.25, 1});
-                    //ray.normal = normalize(float3{0.0, 0.0, 1});
-                    //intersectScene(ray, &worldHit, scene, rng128, RayIntersectMode::Transmit); // Force transmit
+                }
 
+                // -----------------------------------------------------------------
+                // 2) For each surfel along the transmit segment, fire a scatter ray
+                //    and shade that surfel from the photon map.
+                // -----------------------------------------------------------------
+                float transmittanceTau = 1.0f;
+                const std::uint32_t numberOfSurfelsOnRay =
+                    static_cast<std::uint32_t>(transmitWorldHit.splatEventCount);
 
-                    float tau = 1.0f;
-                    if (worldHit.hit) {
-                        const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+                for (std::uint32_t surfelEventIndex = 0;
+                     surfelEventIndex < numberOfSurfelsOnRay;
+                     ++surfelEventIndex) {
 
-                        for (int i = 0; i < worldHit.splatEventCount; ++i) {
-                            const auto &splatEvent = worldHit.splatEvents[i];
-                            if (worldHit.hit && splatEvent.t > worldHit.t)
-                                break; // do not composite beyond the mesh hit
+                    const SplatEvent &transmitSplatEvent =
+                        transmitWorldHit.splatEvents[surfelEventIndex];
 
-                            /*
-                            float3 L_surfel = estimateSurfelRadianceFromPhotonMap(
-                                splatEvent, ray.direction, scene, photonMap,
-                                false);
+                    const std::uint32_t scatterOnPrimitiveIndex =
+                        transmitSplatEvent.primitiveIndex;
 
-                            radianceRGB += L_surfel * tau * splatEvent.alpha;
+                    // Fire a scatter ray that treats this surfel as the scatter event
+                    WorldHit scatterWorldHit{};
+                    intersectScene(primaryRay,
+                                   &scatterWorldHit,
+                                   scene,
+                                   randomNumberGenerator,
+                                   RayIntersectMode::Scatter,
+                                   scatterOnPrimitiveIndex);
 
-                            const float oneMinusAlpha = 1.0f - splatEvent.alpha;
-
-                            tau *= oneMinusAlpha;
-                            */
-                            bool useOneSidedScatter = true;
-                            float3 Efront = estimateSurfelRadianceFromPhotonMap(
-                                splatEvent, ray.direction, scene, photonMap, useOneSidedScatter);
-                            float3 Eback = estimateSurfelRadianceFromPhotonMap(
-                                splatEvent, -ray.direction, scene, photonMap, useOneSidedScatter);
-                            // Local surfel shading (you can refine this)
-                            float3 L_splat = 0.5f * Efront + 0.5f * Eback;
-                            const float oneMinusAlpha = 1.0f - splatEvent.alpha;
-                            // Add this surfel's contribution
-                            radianceRGB += tau * L_splat * splatEvent.alpha;
-                            // Update transmittance for future events
-                            tau *= oneMinusAlpha;
-
-                            if (tau <= 1e-4f)
-                                break; // almost fully opaque, no need to continue
-                        }
-
-                        if (instance.geometryType == GeometryType::Mesh) {
-                            // If the mesh itself is emissive, add its emitted radiance (already radiance units)
-                            const GPUMaterial &material = scene.materials[instance.materialIndex];
-
-                            if (material.isEmissive()) {
-                                float distanceToCamera = length(worldHit.hitPositionW - ray.origin);
-                                float surfaceCos = sycl::fmax(0.f, dot(worldHit.geometricNormalW, -ray.direction));
-                                float cameraCos = sycl::fmax(0.f, dot(sensor.camera.forward, ray.direction));
-                                // optional
-                                float geometricToCamera =
-                                        (surfaceCos * cameraCos) / (distanceToCamera * distanceToCamera);
-
-                                // Optionally evaluate Le(x, wo) from your material; shown as baseColor for brevity
-                                const float3 emittedLe = material.emissive * tau * geometricToCamera;
-                                const float3 reflectedL =
-                                        estimateRadianceFromPhotonMap(worldHit, scene, photonMap) * tau;
-                                radianceRGB += (emittedLe + reflectedL);
-                            } else {
-                                const float3 L = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-                                radianceRGB += (L * tau);
-                            }
-                        }
+                    if (!scatterWorldHit.hit) {
+                        // Should not normally happen; skip this event
+                        continue;
                     }
-                    // Atomic accumulate
-                    const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code
-                    float4 previous = sensor.framebuffer[fbIndex];
-                    float4 current = float4(radianceRGB.x(), radianceRGB.y(), radianceRGB.z(), 1.0f) / samplesPerPixel;
-                    sensor.framebuffer[fbIndex] = previous + current; // or write to a staging buffer
-                });
-        }).wait();
-    }
+
+                    // The scatter call should have a terminal splat event for the surfel
+                    if (scatterWorldHit.splatEventCount == 0) {
+                        continue;
+                    }
+
+                    const std::uint32_t terminalEventIndex =
+                        static_cast<std::uint32_t>(scatterWorldHit.splatEventCount - 1);
+                    const SplatEvent &terminalSplatEvent =
+                        scatterWorldHit.splatEvents[terminalEventIndex];
+
+                    // Optional safety: ensure we are scattering on the same primitive
+                    if (terminalSplatEvent.primitiveIndex != scatterOnPrimitiveIndex) {
+                        // Inconsistent record; skip to be safe
+                        continue;
+                    }
+
+                    // Shade surfel from photon map (front/back)
+                    const bool useOneSidedScatter = true;
+                    float3 surfelRadianceFront =
+                        estimateSurfelRadianceFromPhotonMap(
+                            terminalSplatEvent,
+                            primaryRay.direction,
+                            scene,
+                            photonMap,
+                            useOneSidedScatter);
+
+                    float3 surfelRadianceBack =
+                        estimateSurfelRadianceFromPhotonMap(
+                            terminalSplatEvent,
+                            -primaryRay.direction,
+                            scene,
+                            photonMap,
+                            useOneSidedScatter);
+
+                    float3 surfelShadedRadiance =
+                        0.5f * surfelRadianceFront + 0.5f * surfelRadianceBack;
+
+                    const float surfelAlpha = terminalSplatEvent.alpha;
+                    const float oneMinusAlpha = 1.0f - surfelAlpha;
+
+                    accumulatedRadianceRGB +=
+                        transmittanceTau * surfelShadedRadiance * surfelAlpha;
+
+                    transmittanceTau *= oneMinusAlpha;
+                    if (transmittanceTau <= 1e-4f) {
+                        // Almost fully opaque, no need to continue
+                        break;
+                    }
+                }
+
+                // -----------------------------------------------------------------
+                // 3) Shade terminal mesh (if any) with remaining transmittance
+                // -----------------------------------------------------------------
+                if (transmittanceTau > 1e-4f &&
+                    terminalInstance.geometryType == GeometryType::Mesh) {
+
+                    const GPUMaterial &material =
+                        scene.materials[terminalInstance.materialIndex];
+
+                    if (material.isEmissive()) {
+                        const float distanceToCamera =
+                            length(transmitWorldHit.hitPositionW - primaryRay.origin);
+                        const float surfaceCosine =
+                            sycl::fmax(0.f, dot(transmitWorldHit.geometricNormalW,
+                                                 -primaryRay.direction));
+                        const float cameraCosine =
+                            sycl::fmax(0.f, dot(sensor.camera.forward,
+                                                primaryRay.direction));
+
+                        const float geometricToCamera =
+                            (surfaceCosine * cameraCosine) /
+                            (distanceToCamera * distanceToCamera + 1e-8f);
+
+                        const float3 emittedRadiance =
+                            material.emissive * transmittanceTau * geometricToCamera;
+
+                        const float3 reflectedRadiance =
+                            estimateRadianceFromPhotonMap(
+                                transmitWorldHit, scene, photonMap) * transmittanceTau;
+
+                        accumulatedRadianceRGB += (emittedRadiance + reflectedRadiance);
+                    } else {
+                        const float3 meshRadiance =
+                            estimateRadianceFromPhotonMap(
+                                transmitWorldHit, scene, photonMap) * transmittanceTau;
+                        accumulatedRadianceRGB += meshRadiance;
+                    }
+                }
+                // -----------------------------------------------------------------
+                // 4) Atomic accumulate into framebuffer
+                // -----------------------------------------------------------------
+                const std::uint32_t framebufferIndex =
+                    pixelY * imageWidth + pixelX;
+                float4 previousValue = sensor.framebuffer[framebufferIndex];
+                float4 currentValue =
+                    float4(accumulatedRadianceRGB.x(),
+                           accumulatedRadianceRGB.y(),
+                           accumulatedRadianceRGB.z(),
+                           1.0f) / samplesPerPixel;
+
+                sensor.framebuffer[framebufferIndex] = previousValue + currentValue;
+            });
+    }).wait();
+}
 
 
     void launchDirectContributionKernel(RenderPackage &pkg, uint32_t activeRayCount

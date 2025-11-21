@@ -356,7 +356,7 @@ export namespace Pale {
                     albedoLinear = glm::max(albedoLinear, glm::vec3(0)); // clamp negatives only
                     albedoLinear = glm::min(albedoLinear, glm::vec3(1)); // clamp {0, 1}
 
-                    geometry.colors[i] = albedoLinear; // keep in linear space
+                    geometry.colors[i] = glm::vec3(0.8f); // keep in linear space
 
                     geometry.opacities[i] = sigmoid(opacityFloats[i]);
 

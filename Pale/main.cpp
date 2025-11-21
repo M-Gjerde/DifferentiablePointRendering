@@ -114,7 +114,7 @@ Pale::AssetAccessFromManager assetAccessor,
     }
 
     Pale::Log::PA_INFO("applyPointTopologyChange: rebuilding BVHs and reallocating GPU buffers");
-    Pale::SceneBuild::rebuildBVHs(buildProducts, Pale::SceneBuild::BuildOptions());
+    //Pale::SceneBuild::rebuildBVHs(buildProducts, Pale::SceneBuild::BuildOptions());
     Pale::SceneUpload::allocateOrReallocate(buildProducts, sceneGpu, queue);
 
     Pale::freeGradientsForScene(queue, gradients);
@@ -159,6 +159,30 @@ int main(int argc, char **argv) {
     entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
     auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
 
+    bool renderBunny = true;
+    if (renderBunny) {
+        Pale::Entity bunnyEntity = scene->createEntity("Bunny");
+        // 1) Transform
+        auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
+        bunnyTransformComponent.setPosition(glm::vec3(0.3f, 0.0f, 0.3f));
+        bunnyTransformComponent.setRotationQuaternion(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        bunnyTransformComponent.setScale(glm::vec3(1.0f));
+
+        // 2) Mesh
+        Pale::AssetHandle bunnyMeshAssetHandle =
+            assetIndexer.importPath("meshes/bun_zipper_res3.ply", Pale::AssetType::Mesh);
+
+        auto &bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
+        bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
+
+        // 3) Material
+        Pale::AssetHandle bunnyMaterialAssetHandle =
+            assetIndexer.importPath("Materials/cbox_custom/bsdf_light_gray_0.mat.yaml", Pale::AssetType::Material);
+
+        auto &bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
+        bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
+
+    }
 
     //transform.setRotationEuler(glm::vec3(0.0f, 0.0f, 165.0f));
     //transform.setScale(glm::vec3(0.5f, 0.5f, 0.5f));
@@ -176,12 +200,12 @@ int main(int argc, char **argv) {
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e4; // 1e6
+    settings.photonsPerLaunch = 1e5; // 1e6
     settings.maxBounces = 4;
-    settings.numForwardPasses = 30;
-    settings.numGatherPasses = 16;
+    settings.numForwardPasses = 6;
+    settings.numGatherPasses = 2;
     settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 12;
+    settings.adjointSamplesPerPixel = 4;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);
@@ -189,6 +213,8 @@ int main(int argc, char **argv) {
 
     Pale::SensorGPU sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
 
+    sensor.gammaCorrection = 2.2f;
+    sensor.exposureCorrection = 2.0f;
     tracer.renderForward(sensor); // films is span/array
 
 

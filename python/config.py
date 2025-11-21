@@ -8,12 +8,12 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e4
+    photons: float = 1e5
     bounces: int = 4
-    forward_passes: int = 15
-    gather_passes: int = 8
+    forward_passes: int = 6
+    gather_passes: int = 2
     adjoint_bounces: int = 2
-    adjoint_passes: int = 8
+    adjoint_passes: int = 2
     logging: int = 3  # Spdlog enums
 
     def as_dict(self) -> Dict[str, float | int]:
@@ -168,9 +168,9 @@ def parse_args() -> OptimizationConfig:
     base_lr = args.learning_rate * args.learning_rate_multiplier
 
     lr_pos = args.learning_rate_position or (0.1 * base_lr)
-    lr_tan = args.learning_rate_tangent or (0.2 * base_lr)
-    lr_scale = args.learning_rate_scale or (0.2 * base_lr)
-    lr_color = args.learning_rate_color or (0.85 * base_lr)
+    lr_tan = args.learning_rate_tangent or (0.3 * base_lr)
+    lr_scale = args.learning_rate_scale or (0.1 * base_lr)
+    lr_color = args.learning_rate_color or (1.5 * base_lr)
 
     return OptimizationConfig(
         assets_root=args.assets_root,

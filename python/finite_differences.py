@@ -14,12 +14,45 @@ def save_rgb_float32_npy(img_f32: np.ndarray, out_path: Path) -> None:
     np.save(out_path, img_f32.astype(np.float32))
 
 
-def save_rgb_preview_png(img_f32: np.ndarray, out_path: Path,
-                         exposure_stops: float = 0, gamma: float = 1) -> None:
-    img_u8 = (np.clip(img_f32, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-    print("Saving RGB preview to: {}".format(out_path.absolute()))
-    Image.fromarray(img_u8.astype(np.uint8)).save(out_path)
 
+def save_rgb_preview_png(
+    img_f32: np.ndarray,
+    out_path: Path,
+    exposure_stops: float = 0.0,
+    gamma: float = 1.0,
+) -> None:
+    """
+    Save a linear RGB float32 image as an 8-bit PNG.
+
+    img_f32:      HxWx3, linear RGB, usually HDR (0..+inf)
+    exposure_stops: photographic EV; +1 doubles brightness
+    gamma:        gamma for encoding (e.g. 2.2 for sRGB)
+    """
+    # Ensure float32 array
+    img = np.asarray(img_f32, dtype=np.float32)
+
+    # Apply exposure in EV: L' = L * 2^EV
+    if exposure_stops != 0.0:
+        img = img * (2.0 ** exposure_stops)
+
+    # Clamp to non-negative before gamma
+    img = np.clip(img, 0.0, None)
+
+    # Gamma encode (linear -> display)
+    if gamma != 1.0:
+        inv_gamma = 1.0 / gamma
+        img = np.power(img, inv_gamma, where=(img > 0.0), out=img)
+
+    # Final clamp to [0,1], same as C++ encodeChannel
+    img = np.clip(img, 0.0, 1.0)
+
+    # Quantize to 0–255 with rounding
+    img_u8 = (img * 255.0 + 0.5).astype(np.uint8)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Saving RGB preview to: {out_path.absolute()}")
+    Image.fromarray(img_u8, mode="RGB").save(out_path)
 
 def save_color_luma_seismic_black(scalar: np.ndarray, out_png: Path) -> None:
     """Blue→Black→Red diverging map for signed scalars with zero at black."""
@@ -212,6 +245,8 @@ def render_with_translation(renderer,
         translation3=(tx, ty, tz),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),  # (x, y, z, w)
         scale3=(1.0, 1.0, 1.0),
+        color3=(0.0, 0.0, 0.0),
+        opacity=0.0,
         index=i
     )
     rgb = renderer.render_forward()  # C++ ignores args; returns linear float32
@@ -231,6 +266,7 @@ def render_with_rotation(renderer,
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(qx, qy, qz, qw),
         scale3=(1.0, 1.0, 1.0),
+        opacity = 1,
         index=i
     )
 
@@ -249,6 +285,7 @@ def render_with_scale(renderer,
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(sx, sy, sz),
+        opacity=1,
         index=i
     )
     rgb = renderer.render_forward()
@@ -260,12 +297,13 @@ def render_with_scale(renderer,
 def main(args) -> None:
     # --- settings ---
     renderer_settings = {
-        "photons": 1e4,
+        "photons": 1e5,
         "bounces": 4,
-        "forward_passes": 50,
-        "gather_passes": 16,
+        "forward_passes": 40,
+        "gather_passes": 32,
         "adjoint_bounces": 4,
         "adjoint_passes": 6,
+        "logging": 2
     }
 
     # use positive epsilon for central differences

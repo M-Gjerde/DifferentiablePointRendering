@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +28,8 @@ from render_hooks import (
     verify_colors_inplace,
 )
 from debug_init_utils import add_debug_noise_to_initial_parameters
+
+from repulsion import compute_elliptical_repulsion_loss
 
 
 def clear_output_dir(output_dir: Path) -> None:
@@ -133,10 +136,10 @@ def run_optimization(
     save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
 
     iteration = 0
-    densification_interval = 5
+    densification_interval = 20
     try:
         for iteration in range(1, config.iterations + 1):
-            rebuild_and_reupload = False
+            iteration_start = time.perf_counter()
 
             # 1) Forward
             current_rgb = renderer.render_forward()
@@ -168,11 +171,38 @@ def run_optimization(
 
             # 4) Apply gradients to current parameters
             optimizer.zero_grad(set_to_none=True)
-            positions.grad = torch.tensor(grad_position_np, device=device, dtype=torch.float32)
-            tangent_u.grad = torch.tensor(grad_tangent_u_np, device=device, dtype=torch.float32)
-            tangent_v.grad = torch.tensor(grad_tangent_v_np, device=device, dtype=torch.float32)
-            scales.grad = torch.tensor(grad_scales_np, device=device, dtype=torch.float32)
-            colors.grad = torch.tensor(grad_colors_np, device=device, dtype=torch.float32)
+            # Renderer gradients (from your custom adjoint)
+            positions.grad = torch.tensor(
+                grad_position_np, device=device, dtype=torch.float32
+            )
+            tangent_u.grad = torch.tensor(
+                grad_tangent_u_np, device=device, dtype=torch.float32
+            )
+            tangent_v.grad = torch.tensor(
+                grad_tangent_v_np, device=device, dtype=torch.float32
+            )
+            scales.grad = torch.tensor(
+                grad_scales_np, device=device, dtype=torch.float32
+            )
+            colors.grad = torch.tensor(
+                grad_colors_np, device=device, dtype=torch.float32
+            )
+
+            # --- Elliptical repulsion term (on positions only) ---------------
+            repulsion_loss = compute_elliptical_repulsion_loss(
+                positions=positions,
+                tangent_u=tangent_u,
+                tangent_v=tangent_v,
+                scales=scales,
+                radius_factor=2.0,  # ~ footprint size in uv; tune
+                repulsion_weight=1e-2,  # strength; tune
+            )
+
+            # This will ADD to positions.grad (since we already set it),
+            # but won't touch tangent/scales/colors because we detach them.
+            if repulsion_loss.item() != 0.0:
+                repulsion_loss.backward()
+
             optimizer.step()
 
             # 5) Reparameterization
@@ -181,7 +211,7 @@ def run_optimization(
             verify_colors_inplace(colors)
 
             # 6) Densification / pruning AFTER step
-            perform_density_update = (iteration >= 10 and iteration % densification_interval == 0)
+            perform_density_update = (iteration >= 5 and iteration % densification_interval == 1)
 
             if perform_density_update:
                 (
@@ -208,8 +238,6 @@ def run_optimization(
             else:
                 did_change_topology = False
 
-            rebuild_and_reupload = did_change_topology or iteration % 5 == 0
-
             # 7) Upload updated parameters (and rebuild if topology changed)
             apply_point_parameters(
                 renderer,
@@ -218,27 +246,8 @@ def run_optimization(
                 tangent_v,
                 scales,
                 colors,
-                rebuild_and_reupload,
+                did_change_topology,
             )
-
-            num_points = positions.shape[0]
-
-            if iteration % config.log_interval == 0 or iteration == 1:
-                grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
-                grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
-                grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
-                grad_scale = float(np.linalg.norm(grad_scales_np) / max(num_points, 1))
-                grad_color = float(np.linalg.norm(grad_colors_np) / max(num_points, 1))
-                print(
-                    f"[Iter {iteration:04d}/{config.iterations}] "
-                    f"Loss = {loss_value:.6e}, "
-                    f"|translation| = {grad_norm:.3e}, "
-                    f"|tan_u| = {grad_tanu:.3e}, "
-                    f"|tan_v| = {grad_tanv:.3e}, "
-                    f"|scale| = {grad_scale:.3e}, "
-                    f"|color| = {grad_color:.3e}"
-                    f"|Points| = {num_points}, "
-                )
 
             if iteration % config.save_interval == 0 or iteration == config.iterations:
                 snapshot_rgb_np = current_rgb_np
@@ -260,6 +269,28 @@ def run_optimization(
                 )
 
                 save_loss_image(config.output_dir, loss_image, iteration)
+
+            num_points = positions.shape[0]
+            iteration_end = time.perf_counter()
+            iteration_time = iteration_end - iteration_start
+
+            if iteration % config.log_interval == 0 or iteration == 1:
+                grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
+                grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
+                grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
+                grad_scale = float(np.linalg.norm(grad_scales_np) / max(num_points, 1))
+                grad_color = float(np.linalg.norm(grad_colors_np) / max(num_points, 1))
+                print(
+                    f"[Iter {iteration:04d}/{config.iterations}] "
+                    f"Loss = {loss_value:.6e}, "
+                    f"|translation| = {grad_norm:.3e}, "
+                    f"|tan_u| = {grad_tanu:.3e}, "
+                    f"|tan_v| = {grad_tanv:.3e}, "
+                    f"|scale| = {grad_scale:.3e}, "
+                    f"|color| = {grad_color:.3e}, "
+                    f"|Points| = {num_points}, "
+                    f"Time = {iteration_time:.3f} s"
+                )
 
     except KeyboardInterrupt:
         print(

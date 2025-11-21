@@ -71,7 +71,7 @@ export namespace Pale {
 
         struct BuildOptions {
             uint32_t bvhMaxLeafTriangles = 4;
-            uint32_t bvhMaxLeafPoints = 16;
+            uint32_t bvhMaxLeafPoints = 4;
         };
 
 
@@ -109,7 +109,7 @@ export namespace Pale {
                                    const BuildOptions& buildOptions);
 
         // New: only (re)build BLAS/TLAS on existing BuildProducts
-        static void rebuildBVHs(BuildProducts &buildProducts,
+        static void rebuildBVHs(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess, BuildProducts &buildProducts,
                                  const BuildOptions &buildOptions);
 
 
