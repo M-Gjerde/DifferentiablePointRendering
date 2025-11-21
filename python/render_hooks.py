@@ -8,7 +8,7 @@ import torch
 import pale  # custom renderer bindings
 
 
-def fetch_initial_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
+def fetch_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
     """
     Fetch all point parameters from the renderer as a dict of NumPy arrays.
 
@@ -166,7 +166,7 @@ def apply_point_parameters(
     if shouldRebuild:
         pass
 
-    renderer.set_point_parameters(
+    renderer.apply_point_optimization(
         {
             "position": positions_np,
             "tangent_u": tangent_u_np,
@@ -175,6 +175,21 @@ def apply_point_parameters(
             "color": colors_np,
             "opacity": opacities
         }
-        ,
-        rebuild=shouldRebuild
     )
+
+
+def apply_new_points(renderer: pale.Renderer, new_points: dict[str, np.ndarray]) -> None:
+    """
+    new_points dict has keys: position, tangent_u, tangent_v, scale, color.
+    This function is responsible for telling the renderer to append these
+    to its point cloud asset and rebuild its BVH/GPU buffers.
+    """
+    renderer.add_points(new_points)  # C++ binding you implement
+
+def rebuild_bvh(renderer: pale.Renderer) -> None:
+    """
+    new_points dict has keys: position, tangent_u, tangent_v, scale, color.
+    This function is responsible for telling the renderer to append these
+    to its point cloud asset and rebuild its BVH/GPU buffers.
+    """
+    renderer.rebuild_bvh()  # C++ binding you implement

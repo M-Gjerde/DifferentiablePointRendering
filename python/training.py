@@ -19,13 +19,15 @@ from io_utils import (
 )
 from losses import compute_l2_loss, compute_l2_loss_and_grad
 from optimizers import create_optimizer
-from density_control import densify_and_prune_points
+from density_control import densify_points
 from render_hooks import (
-    fetch_initial_parameters,
+    fetch_parameters,
     apply_point_parameters,
     orthonormalize_tangents_inplace,
     verify_scales_inplace,
     verify_colors_inplace,
+    apply_new_points,
+    rebuild_bvh
 )
 from debug_init_utils import add_debug_noise_to_initial_parameters
 
@@ -62,7 +64,7 @@ def run_optimization(
     print(f"Loaded target image: {config.target_image_path} with shape {target_rgb.shape}")
 
     # --- Fetch initial parameters from renderer ---
-    initial_params = fetch_initial_parameters(renderer)
+    initial_params = fetch_parameters(renderer)
     initial_positions_np = initial_params["position"]
     initial_tangent_u_np = initial_params["tangent_u"]
     initial_tangent_v_np = initial_params["tangent_v"]
@@ -73,20 +75,17 @@ def run_optimization(
     print(f"Fetched {num_points} initial points from renderer.")
 
     # --- Debug noise injection (can be removed later) ---
-    #(
-    #    initial_positions_np,
-    #    initial_tangent_u_np,
-    #    initial_tangent_v_np,
-    #    initial_scale_np,
-    #    initial_color_np,
-    #) = add_debug_noise_to_initial_parameters(
-    #    initial_positions_np,
-    #    initial_tangent_u_np,
-    #    initial_tangent_v_np,
-    #    initial_scale_np,
-    #    initial_color_np,
-    #)
-   # print("Initial parameters perturbed by debug Gaussian noise.")
+    # (initial_positions_np,
+    #   initial_tangent_u_np,
+    #   initial_tangent_v_np,
+    #   initial_scale_np,
+    #   initial_color_np,) = add_debug_noise_to_initial_parameters(
+    #   initial_positions_np,
+    #   initial_tangent_u_np,
+    #   initial_tangent_v_np,
+    #   initial_scale_np,
+    #   initial_color_np,)
+    # print("Initial parameters perturbed by debug Gaussian noise.")
 
     device = torch.device(config.device)
 
@@ -136,7 +135,8 @@ def run_optimization(
     save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
 
     iteration = 0
-    densification_interval = 20
+    densification_interval = 50
+    rebuild_bvh_interval = 5
     try:
         for iteration in range(1, config.iterations + 1):
             iteration_start = time.perf_counter()
@@ -188,19 +188,19 @@ def run_optimization(
                 grad_colors_np, device=device, dtype=torch.float32
             )
 
-            # --- Elliptical repulsion term (on positions only) ---------------
+            ## --- Elliptical repulsion term (on positions only) ---------------
             repulsion_loss = compute_elliptical_repulsion_loss(
                 positions=positions,
                 tangent_u=tangent_u,
                 tangent_v=tangent_v,
                 scales=scales,
-                radius_factor=2.0,  # ~ footprint size in uv; tune
-                repulsion_weight=1e-2,  # strength; tune
+                radius_factor=3.0,  # ~ footprint size in uv; tune
+                repulsion_weight=5e-1,  # strength; tune
             )
 
             # This will ADD to positions.grad (since we already set it),
             # but won't touch tangent/scales/colors because we detach them.
-            if repulsion_loss.item() != 0.0:
+            if torch.isfinite(repulsion_loss) and repulsion_loss.detach().item() != 0.0:
                 repulsion_loss.backward()
 
             optimizer.step()
@@ -210,35 +210,7 @@ def run_optimization(
             verify_scales_inplace(scales)
             verify_colors_inplace(colors)
 
-            # 6) Densification / pruning AFTER step
-            perform_density_update = (iteration >= 5 and iteration % densification_interval == 1)
-
-            if perform_density_update:
-                (
-                    positions,
-                    tangent_u,
-                    tangent_v,
-                    scales,
-                    colors,
-                    optimizer,
-                    num_points,
-                    did_change_topology,
-                ) = densify_and_prune_points(
-                    positions=positions,
-                    tangent_u=tangent_u,
-                    tangent_v=tangent_v,
-                    scales=scales,
-                    colors=colors,
-                    grad_position_np=grad_position_np,
-                    grad_scales_np=grad_scales_np,
-                    optimizer=optimizer,
-                    config=config,
-                    device=device,
-                )
-            else:
-                did_change_topology = False
-
-            # 7) Upload updated parameters (and rebuild if topology changed)
+            # 6) Upload updated parameters (and rebuild if topology changed)
             apply_point_parameters(
                 renderer,
                 positions,
@@ -246,8 +218,59 @@ def run_optimization(
                 tangent_v,
                 scales,
                 colors,
-                did_change_topology,
             )
+
+            if iteration % rebuild_bvh_interval == 0:
+                rebuild_bvh(renderer)
+
+            # 7) Densification AFTER step, at interval
+            perform_density_update = (iteration % densification_interval == 1)
+            if perform_density_update:
+                densification_result = densify_points(
+                    positions,
+                    tangent_u,
+                    tangent_v,
+                    scales,
+                    colors,
+                )
+            else:
+                densification_result = None
+
+            if densification_result is not None:
+                apply_new_points(renderer, densification_result)
+
+                # Re-fetch parameters from renderer to get canonical ordering
+                updated_parameters = fetch_parameters(renderer)
+                new_positions_np = updated_parameters["position"]
+                new_tangent_u_np = updated_parameters["tangent_u"]
+                new_tangent_v_np = updated_parameters["tangent_v"]
+                new_scale_np = updated_parameters["scale"]
+                new_color_np = updated_parameters["color"]
+
+                positions = torch.nn.Parameter(
+                    torch.tensor(new_positions_np, device=device, dtype=torch.float32)
+                )
+                tangent_u = torch.nn.Parameter(
+                    torch.tensor(new_tangent_u_np, device=device, dtype=torch.float32)
+                )
+                tangent_v = torch.nn.Parameter(
+                    torch.tensor(new_tangent_v_np, device=device, dtype=torch.float32)
+                )
+                scales = torch.nn.Parameter(
+                    torch.tensor(new_scale_np, device=device, dtype=torch.float32)
+                )
+                colors = torch.nn.Parameter(
+                    torch.tensor(new_color_np, device=device, dtype=torch.float32)
+                )
+
+                optimizer = create_optimizer(
+                    config,
+                    positions,
+                    tangent_u,
+                    tangent_v,
+                    scales,
+                    colors,
+                )
 
             if iteration % config.save_interval == 0 or iteration == config.iterations:
                 snapshot_rgb_np = current_rgb_np

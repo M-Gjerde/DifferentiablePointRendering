@@ -10,7 +10,7 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e5
     bounces: int = 4
-    forward_passes: int = 6
+    forward_passes: int = 10
     gather_passes: int = 2
     adjoint_bounces: int = 2
     adjoint_passes: int = 2
@@ -167,10 +167,10 @@ def parse_args() -> OptimizationConfig:
     lr_base = args.learning_rate
     base_lr = args.learning_rate * args.learning_rate_multiplier
 
-    lr_pos = args.learning_rate_position or (0.1 * base_lr)
-    lr_tan = args.learning_rate_tangent or (0.3 * base_lr)
-    lr_scale = args.learning_rate_scale or (0.1 * base_lr)
-    lr_color = args.learning_rate_color or (1.5 * base_lr)
+    lr_pos = args.learning_rate_position or (0.5 * base_lr)
+    lr_tan = args.learning_rate_tangent or  (0.1 * base_lr)
+    lr_scale = args.learning_rate_scale or  (0.1 * base_lr)
+    lr_color = args.learning_rate_color or  (0.1 * base_lr)
 
     return OptimizationConfig(
         assets_root=args.assets_root,

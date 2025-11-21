@@ -21,14 +21,14 @@ import Pale.Render.Sensors;
 import Pale.Scene;
 
 
-static std::string assetPathOrId(const Pale::AssetRegistry &reg, const Pale::AssetHandle &id) {
+static std::string assetPathOrId(const Pale::AssetRegistry& reg, const Pale::AssetHandle& id) {
     if (auto m = reg.meta(id)) return m->path.string();
     return std::string(id); // fallback if it's not in the registry
 }
 
-static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
-                            Pale::AssetManager &am) {
-    auto &reg = am.registry();
+static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
+                            Pale::AssetManager& am) {
+    auto& reg = am.registry();
 
     Pale::Log::PA_INFO("===== Scene Summary =====");
     size_t entityCount = 0;
@@ -36,11 +36,11 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
     size_t emissiveCount = 0;
 
     auto view = scene->getAllEntitiesWith<Pale::IDComponent>();
-    for (entt::entity entity: view) {
+    for (entt::entity entity : view) {
         Pale::Entity e(entity, scene.get());
         ++entityCount;
 
-        const char *name = e.getName().c_str();
+        const char* name = e.getName().c_str();
         bool hasMesh = e.hasComponent<Pale::MeshComponent>();
         bool hasMat = e.hasComponent<Pale::MaterialComponent>();
         bool hasEm = e.hasComponent<Pale::AreaLightComponent>();
@@ -49,14 +49,15 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 
         // Mesh
         if (hasMesh) {
-            auto &mc = e.getComponent<Pale::MeshComponent>();
+            auto& mc = e.getComponent<Pale::MeshComponent>();
             ++meshCount;
             std::string meshLabel = assetPathOrId(reg, mc.meshID);
 
             size_t submeshCount = 0;
             if (auto mesh = am.get<Pale::Mesh>(mc.meshID)) {
                 submeshCount = mesh->submeshes.size();
-            } else {
+            }
+            else {
                 Pale::Log::PA_WARN("  Mesh: {} (FAILED to load)", meshLabel);
             }
 
@@ -65,7 +66,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 
         // Material
         if (hasMat) {
-            auto &matc = e.getComponent<Pale::MaterialComponent>();
+            auto& matc = e.getComponent<Pale::MaterialComponent>();
             std::string matLabel = assetPathOrId(reg, matc.materialID);
 
             if (auto mat = am.get<Pale::Material>(matc.materialID)) {
@@ -75,7 +76,8 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
                     mat->baseColor.x, mat->baseColor.y, mat->baseColor.z,
                     mat->roughness, mat->metallic
                 );
-            } else {
+            }
+            else {
                 Pale::Log::PA_INFO("  Material: {}  (pending load)", matLabel);
             }
         }
@@ -83,7 +85,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
         // Emissive
         if (hasEm) {
             ++emissiveCount;
-            auto &em = e.getComponent<Pale::AreaLightComponent>();
+            auto& em = e.getComponent<Pale::AreaLightComponent>();
             Pale::Log::PA_INFO("  Emissive radiance=({:.3f},{:.3f},{:.3f})",
                                em.radiance.x, em.radiance.y, em.radiance.z);
         }
@@ -94,34 +96,106 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 }
 
 
-inline void applyPointTopologyChange(
-std::shared_ptr<Pale::Scene> scene,
-Pale::AssetAccessFromManager assetAccessor,
-    Pale::SceneBuild::BuildProducts &buildProducts,
-    Pale::GPUSceneBuffers &sceneGpu,
-    Pale::PointGradients &gradients,
-    sycl::queue queue)
-{
-    // Assume single dynamic point cloud for now
-    if (!buildProducts.pointCloudRanges.empty()) {
-        auto &range = buildProducts.pointCloudRanges[0];
-        range.pointCount = static_cast<uint32_t>(buildProducts.points.size());
+static void debugDensifyPointAsset(
+    Pale::AssetManager& assetManager,
+    const Pale::AssetHandle& pointCloudAssetHandle,
+    uint32_t numberOfDebugCopies) {
+    auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(pointCloudAssetHandle);
+    if (!pointAssetSharedPtr) {
+        Pale::Log::PA_ERROR("debugDensifyPointAsset: failed to get PointAsset for handle {}",
+                            std::string(pointCloudAssetHandle));
+        return;
+    }
+
+    Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+    if (pointAsset.points.empty()) {
+        Pale::Log::PA_WARN("debugDensifyPointAsset: PointAsset has no PointGeometry blocks");
+        return;
+    }
+
+    Pale::PointGeometry& pointGeometry = pointAsset.points.front();
+    const std::size_t originalPointCount = pointGeometry.positions.size();
+
+    if (originalPointCount == 0) {
+        Pale::Log::PA_WARN("debugDensifyPointAsset: original point count is zero, nothing to duplicate");
+        return;
+    }
+
+    Pale::Log::PA_INFO(
+        "debugDensifyPointAsset: original point count = {}, creating {} debug copies",
+        originalPointCount,
+        numberOfDebugCopies
+    );
+
+    // Reserve space for all attribute arrays
+    const std::size_t newTotalPointCount = originalPointCount + numberOfDebugCopies;
+    auto reserveAttribute = [newTotalPointCount](auto& vectorAttribute) {
+        vectorAttribute.reserve(newTotalPointCount);
+    };
+
+    reserveAttribute(pointGeometry.positions);
+    reserveAttribute(pointGeometry.tanU);
+    reserveAttribute(pointGeometry.tanV);
+    reserveAttribute(pointGeometry.scales);
+    reserveAttribute(pointGeometry.colors);
+    reserveAttribute(pointGeometry.opacities);
+    reserveAttribute(pointGeometry.shapes);
+    reserveAttribute(pointGeometry.betas);
+
+    // Base point to duplicate
+    const std::size_t baseIndex = 0; // duplicate first point for simplicity
+    const glm::vec3 basePosition = pointGeometry.positions[baseIndex];
+    const glm::vec3 baseTanU = pointGeometry.tanU[baseIndex];
+    const glm::vec3 baseTanV = pointGeometry.tanV[baseIndex];
+    const glm::vec2 baseScale = pointGeometry.scales[baseIndex];
+    const glm::vec3 baseColor = pointGeometry.colors[baseIndex];
+    const float baseOpacity = pointGeometry.opacities[baseIndex];
+    const float baseShape = pointGeometry.shapes[baseIndex];
+    const float baseBeta = pointGeometry.betas[baseIndex];
+
+
+    std::mt19937_64 rng;
+
+    for (uint32_t debugCopyIndex = 0; debugCopyIndex < numberOfDebugCopies; ++debugCopyIndex) {
+        glm::vec3 debugPosition = basePosition;
+
+        std::uniform_real_distribution<float> unif(-0.66, 0.66);
+        std::uniform_real_distribution<float> unif2(0, 1);
+
+        debugPosition.x += unif(rng);
+        debugPosition.y += unif(rng);
+        debugPosition.z += unif(rng);
+
+        glm::vec3 debugColor = baseColor;
+        debugColor.x = unif2(rng);
+        debugColor.y = unif2(rng);
+        debugColor.z = unif2(rng);
+
+        glm::vec2 debugScale = baseScale * (1.0f + 0.05f * static_cast<float>(debugCopyIndex));
+
+        pointGeometry.positions.push_back(debugPosition);
+        pointGeometry.tanU.push_back(baseTanU);
+        pointGeometry.tanV.push_back(baseTanV);
+        pointGeometry.scales.push_back(debugScale);
+        pointGeometry.colors.push_back(debugColor);
+        pointGeometry.opacities.push_back(baseOpacity);
+        pointGeometry.shapes.push_back(baseShape);
+        pointGeometry.betas.push_back(baseBeta);
+
         Pale::Log::PA_INFO(
-            "applyPointTopologyChange: updated pointCloudRanges[0] to firstPoint = {}, pointCount = {}",
-            range.firstPoint,
-            range.pointCount
+            "debugDensifyPointAsset: created debug point {} at position=({}, {}, {}), color=({}, {}, {})",
+            originalPointCount + debugCopyIndex,
+            debugPosition.x, debugPosition.y, debugPosition.z,
+            debugColor.x, debugColor.y, debugColor.z
         );
     }
 
-    Pale::Log::PA_INFO("applyPointTopologyChange: rebuilding BVHs and reallocating GPU buffers");
-    //Pale::SceneBuild::rebuildBVHs(buildProducts, Pale::SceneBuild::BuildOptions());
-    Pale::SceneUpload::allocateOrReallocate(buildProducts, sceneGpu, queue);
-
-    Pale::freeGradientsForScene(queue, gradients);
-    gradients = Pale::makeGradientsForScene(queue, buildProducts);
+    Pale::Log::PA_INFO("debugDensifyPointAsset: new point count = {}",
+                       pointGeometry.positions.size());
 }
 
-int main(int argc, char **argv) {
+
+int main(int argc, char** argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
@@ -150,7 +224,8 @@ int main(int argc, char **argv) {
     std::filesystem::path pointCloudPath;
     if (argc > 1) {
         pointCloudPath = argv[1];
-    } else {
+    }
+    else {
         pointCloudPath = "initial.ply"; // default
     }
 
@@ -163,30 +238,26 @@ int main(int argc, char **argv) {
     if (renderBunny) {
         Pale::Entity bunnyEntity = scene->createEntity("Bunny");
         // 1) Transform
-        auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.3f, 0.0f, 0.3f));
-        bunnyTransformComponent.setRotationQuaternion(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-        bunnyTransformComponent.setScale(glm::vec3(1.0f));
+        auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
+        bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.0f, 0.8f));
+        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, -25.0f, 45.0f));
+        bunnyTransformComponent.setScale(glm::vec3(0.45f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-            assetIndexer.importPath("meshes/bun_zipper_res3.ply", Pale::AssetType::Mesh);
+            assetIndexer.importPath("meshes/Torus.ply", Pale::AssetType::Mesh);
 
-        auto &bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
+        auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
 
         // 3) Material
         Pale::AssetHandle bunnyMaterialAssetHandle =
             assetIndexer.importPath("Materials/cbox_custom/bsdf_light_gray_0.mat.yaml", Pale::AssetType::Material);
 
-        auto &bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
+        auto& bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
-
     }
 
-    //transform.setRotationEuler(glm::vec3(0.0f, 0.0f, 165.0f));
-    //transform.setScale(glm::vec3(0.5f, 0.5f, 0.5f));
-    //transform.setPosition(glm::vec3(0.05f, 0.0f, 0.0f));
     logSceneSummary(scene, assetManager);
 
     //FInd Sycl Device
@@ -202,7 +273,7 @@ int main(int argc, char **argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e5; // 1e6
     settings.maxBounces = 4;
-    settings.numForwardPasses = 6;
+    settings.numForwardPasses = 10;
     settings.numGatherPasses = 2;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 4;
@@ -217,6 +288,37 @@ int main(int argc, char **argv) {
     sensor.exposureCorrection = 2.0f;
     tracer.renderForward(sensor); // films is span/array
 
+    {
+        // // Save each sensor image
+        std::vector<uint8_t> rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+        const uint32_t W = sensor.width, H = sensor.height;
+        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") /
+            "out_photonmap.png";
+        Pale::Utils::savePNG(filePath, rgba, W, H);
+    }
+
+    // -------------------------------------------------------
+    // DEBUG: modify topology via asset, then rebuild scene
+    // -------------------------------------------------------
+
+    const uint32_t numberOfDebugCopies = 10;
+    debugDensifyPointAsset(assetManager, assetHandle, numberOfDebugCopies);
+
+    buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
+    Pale::SceneUpload::uploadOrReallocate(buildProducts, gpu, deviceSelector.getQueue()); // scene only
+    tracer.setScene(gpu, buildProducts);
+
+    // Forward render with new topology
+    tracer.renderForward(sensor);
+
+    {
+        // // Save each sensor image
+        std::vector<float> rgb = Pale::downloadSensorLDR(deviceSelector.getQueue(), sensor);
+        const uint32_t W = sensor.width, H = sensor.height;
+        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") /
+            "out_photonmap_ldr_modified.png";
+        Pale::Utils::savePNGWith3Channel(filePath, rgb, W, H);
+    }
 
     // outputs derived from cameras
     // Start a Tracer
@@ -224,99 +326,6 @@ int main(int argc, char **argv) {
 
     // Render
     Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts);
-    /*
-    // --- DEBUG: modify point topology and rebuild BVH exactly like Python path ---
-if (!buildProducts.pointCloudRanges.empty()) {
-    auto &pointCloudRange = buildProducts.pointCloudRanges[0];
-
-    Pale::Log::PA_INFO("DEBUG: before change, pointCloudRanges[0] : firstPoint={}, pointCount={}",
-                       pointCloudRange.firstPoint, pointCloudRange.pointCount);
-
-    if (pointCloudRange.pointCount >= 1) {
-        const uint32_t originalPointCount = pointCloudRange.pointCount;
-        constexpr uint32_t numberOfDebugCopies = 100; // add extra points
-
-        buildProducts.points.front().scale *= 0.3f;
-        // Resize the global point array to hold the new copies
-        const uint32_t newTotalPointCount = originalPointCount + numberOfDebugCopies;
-        buildProducts.points.resize(newTotalPointCount);
-
-        // Base point to duplicate
-        const Pale::Point basePoint = buildProducts.points[pointCloudRange.firstPoint];
-
-        for (uint32_t debugCopyIndex = 0; debugCopyIndex < numberOfDebugCopies; ++debugCopyIndex) {
-            const uint32_t newPointIndex = originalPointCount + debugCopyIndex;
-            Pale::Point &newPoint = buildProducts.points[newPointIndex];
-
-            // Start from the base point
-            newPoint = basePoint;
-
-            // Simple deterministic perturbation: small grid around base position
-            const float offsetScale = 0.2f; // tweak as desired
-            const float offsetX = -0.3 + offsetScale * static_cast<float>(debugCopyIndex);
-            const float offsetY = offsetScale * static_cast<float>(debugCopyIndex % 2 ? 1 : -1);
-            const float offsetZ = 0.0f;
-
-            newPoint.position.x() += offsetX;
-            newPoint.position.y() += offsetY;
-            newPoint.position.z() += offsetZ;
-
-            // Optional: slightly vary color and scale so you can see them visually
-            newPoint.color.x() = sycl::clamp(basePoint.color.x() + 0.1f * debugCopyIndex, 0.0f, 1.0f);
-            newPoint.color.y() = sycl::clamp(basePoint.color.y() - 0.05f * debugCopyIndex, 0.0f, 1.0f);
-            newPoint.color.z() = basePoint.color.z();
-
-            newPoint.scale.x() *= (1.0f + 0.05f * debugCopyIndex);
-            newPoint.scale.y() *= (1.0f + 0.05f * debugCopyIndex);
-
-            Pale::Log::PA_INFO(
-                "DEBUG: created debug point {} at position=({}, {}, {}), color=({}, {}, {})",
-                newPointIndex,
-                newPoint.position.x(), newPoint.position.y(), newPoint.position.z(),
-                newPoint.color.x(), newPoint.color.y(), newPoint.color.z()
-            );
-        }
-
-        // Update the point cloud range’s logical pointCount to match
-        pointCloudRange.pointCount = newTotalPointCount;
-
-        Pale::Log::PA_INFO("DEBUG: resized buildProducts.points to {}, pointCloudRange.pointCount={}",
-                           buildProducts.points.size(), pointCloudRange.pointCount);
-    }
-
-
-        // Now apply the same pipeline as Python
-        applyPointTopologyChange(scene, assetAccessor, buildProducts, gpu, gradients, deviceSelector.getQueue());
-
-        // Make sure tracer sees the updated scene
-        Pale::SceneUpload::upload(buildProducts, gpu, deviceSelector.getQueue());
-        tracer.setScene(gpu, buildProducts);
-    }
-    */
-
-    //tracer.renderForward(sensor); // films is span/array
-
-    {
-        // // Save each sensor image
-        std::vector<uint8_t> rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-        const uint32_t W = sensor.width, H = sensor.height;
-        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out_photonmap.png";
-        Pale::Utils::savePNG(filePath, rgba, W, H);
-
-        //Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
-    }
-    {
-        // // Save each sensor image
-        std::vector<float> rgb = Pale::downloadSensorLDR(deviceSelector.getQueue(), sensor);
-        const uint32_t W = sensor.width, H = sensor.height;
-        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out_photonmap_ldr.png";
-        Pale::Utils::savePNGWith3Channel(filePath, rgb, W, H);
-    }
-
-    //if (pointCloudPath.filename() != "initial.ply") {
-    //    Pale::Log::PA_INFO("TARGET RENDERED exiting...");
-    //    return 0;
-    //}
 
 
     // 4) (Optional) load or compute residuals on host, upload pointer
@@ -327,7 +336,7 @@ if (!buildProducts.pointCloudRanges.empty()) {
     tracer.renderBackward(adjointSensor, gradients); // PRNG replay adjoint
 
 
-        {
+    {
         // // Save each sensor image
         auto rgba = Pale::downloadDebugGradientImage(deviceSelector.getQueue(), adjointSensor, gradients);
         const uint32_t W = adjointSensor.width, H = adjointSensor.height;
