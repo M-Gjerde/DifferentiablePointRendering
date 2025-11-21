@@ -212,6 +212,7 @@ namespace Pale {
         m_queue.memset(m_intermediates.map.photons, 0, sizeof(DevicePhotonSurface) * m_intermediates.map.photonCapacity);
         m_queue.wait();
 
+        Log::PA_INFO("Rendering {} point(s)", renderPackage.scene.pointCount);
         submitKernel(renderPackage);
 
         m_queue.wait();

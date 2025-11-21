@@ -9,10 +9,12 @@ module;
 export module Pale.Render.Sensors;
 
 import Pale.Render.SceneBuild;
+import Pale.Log;
 
 export namespace Pale {
     SensorGPU
-    makeSensorsForScene(sycl::queue queue, const SceneBuild::BuildProducts &buildProducts, bool initializeData = false) {
+    makeSensorsForScene(sycl::queue queue, const SceneBuild::BuildProducts &buildProducts,
+                        bool initializeData = false) {
         SensorGPU out{};
         if (buildProducts.cameraCount() == 0) {
             return out;
@@ -21,7 +23,8 @@ export namespace Pale {
         const auto &cam = buildProducts.cameras().front();
         const size_t pixelCount = static_cast<size_t>(cam.width) * static_cast<size_t>(cam.height);
         float4 *dev = reinterpret_cast<float4 *>(sycl::malloc_device(pixelCount * sizeof(float4), queue));
-        sycl::uchar4 *dev2 = reinterpret_cast<sycl::uchar4 *>(sycl::malloc_device(pixelCount * sizeof(sycl::uchar4), queue));
+        sycl::uchar4 *dev2 = reinterpret_cast<sycl::uchar4 *>(sycl::malloc_device(
+            pixelCount * sizeof(sycl::uchar4), queue));
 
         float *dev3 = reinterpret_cast<float *>(sycl::malloc_device(pixelCount * sizeof(float) * 3, queue));
 
@@ -44,34 +47,92 @@ export namespace Pale {
         return out;
     }
 
+
     PointGradients
-    makeGradientsForScene(sycl::queue queue, const SceneBuild::BuildProducts &buildProducts) {
+    makeGradientsForScene(sycl::queue queue,
+                          const SceneBuild::BuildProducts &buildProducts) {
         PointGradients out{};
 
+        const uint32_t numPoints =
+                static_cast<uint32_t>(buildProducts.points.size());
 
-        uint32_t numPoints = buildProducts.points.size();
-        out.gradPosition = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
-        out.gradTanU = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
-        out.gradTanV = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
-        out.gradScale = static_cast<float2 *>(sycl::malloc_device(numPoints * sizeof(float2), queue));
-        out.gradColor = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
-        out.gradOpacity = static_cast<float *>(sycl::malloc_device(numPoints * sizeof(float), queue));
+        if (buildProducts.cameraCount() == 0) {
+            Pale::Log::PA_WARN(
+                "makeGradientsForScene: no cameras in buildProducts; "
+                "gradient framebuffer will not be allocated."
+            );
+        }
 
-        const auto &cam = buildProducts.cameras().front();
-        const size_t pixelCount = static_cast<size_t>(cam.width) * static_cast<size_t>(cam.height);
-        out.framebuffer = reinterpret_cast<float4 *>(sycl::malloc_device(pixelCount * sizeof(float4), queue));
-
-        queue.wait();
-
-        //queue.fill(out.gradPosition, float3{0}, numPoints).wait();
-        //queue.fill(out.gradTanU, float3{0}, numPoints).wait();
-        //queue.fill(out.gradTanV, float3{0}, numPoints).wait();
-        //queue.fill(out.gradScale, float2{0}, numPoints).wait();
-        //queue.fill(out.framebuffer, float4{0}, pixelCount).wait();
+        Pale::Log::PA_INFO(
+            "makeGradientsForScene: allocating gradients for {} points",
+            numPoints
+        );
 
         out.numPoints = numPoints;
+
+        if (numPoints > 0) {
+            out.gradPosition =
+                    static_cast<float3 *>(
+                        sycl::malloc_device(numPoints * sizeof(float3), queue));
+            out.gradTanU =
+                    static_cast<float3 *>(
+                        sycl::malloc_device(numPoints * sizeof(float3), queue));
+            out.gradTanV =
+                    static_cast<float3 *>(
+                        sycl::malloc_device(numPoints * sizeof(float3), queue));
+            out.gradScale =
+                    static_cast<float2 *>(
+                        sycl::malloc_device(numPoints * sizeof(float2), queue));
+            out.gradColor =
+                    static_cast<float3 *>(
+                        sycl::malloc_device(numPoints * sizeof(float3), queue));
+            out.gradOpacity =
+                    static_cast<float *>(
+                        sycl::malloc_device(numPoints * sizeof(float), queue));
+            out.gradBeta =
+                    static_cast<float *>(
+                        sycl::malloc_device(numPoints * sizeof(float), queue));
+            out.gradShape =
+                    static_cast<float *>(
+                        sycl::malloc_device(numPoints * sizeof(float), queue));
+        }
+
+        // Allocate adjoint framebuffer (same resolution as first camera)
+        if (buildProducts.cameraCount() > 0) {
+            const auto &cam = buildProducts.cameras().front();
+            const size_t pixelCount =
+                    static_cast<size_t>(cam.width) *
+                    static_cast<size_t>(cam.height);
+
+            Pale::Log::PA_INFO(
+                "makeGradientsForScene: allocating adjoint framebuffer for {}x{} ({} pixels)",
+                cam.width, cam.height, pixelCount
+            );
+
+            out.framebuffer =
+                    reinterpret_cast<float4 *>(
+                        sycl::malloc_device(pixelCount * sizeof(float4), queue));
+        } else {
+            out.framebuffer = nullptr;
+        }
+
         queue.wait();
         return out;
+    }
+
+    inline void freeGradientsForScene(sycl::queue queue, PointGradients &g)
+    {
+        if (g.gradPosition)  { sycl::free(g.gradPosition, queue);  g.gradPosition  = nullptr; }
+        if (g.gradTanU)      { sycl::free(g.gradTanU,     queue);  g.gradTanU      = nullptr; }
+        if (g.gradTanV)      { sycl::free(g.gradTanV,     queue);  g.gradTanV      = nullptr; }
+        if (g.gradScale)     { sycl::free(g.gradScale,    queue);  g.gradScale     = nullptr; }
+        if (g.gradColor)     { sycl::free(g.gradColor,    queue);  g.gradColor     = nullptr; }
+        if (g.gradOpacity)   { sycl::free(g.gradOpacity,  queue);  g.gradOpacity   = nullptr; }
+        if (g.gradBeta)      { sycl::free(g.gradBeta,     queue);  g.gradBeta      = nullptr; }
+        if (g.gradShape)     { sycl::free(g.gradShape,    queue);  g.gradShape     = nullptr; }
+        if (g.framebuffer)   { sycl::free(g.framebuffer,  queue);  g.framebuffer   = nullptr; }
+
+        g.numPoints = 0;
     }
 
     inline std::vector<float>
@@ -94,6 +155,7 @@ export namespace Pale {
 
         return hostSideFramebuffer;
     }
+
     inline std::vector<float>
     downloadSensorLDR(sycl::queue queue, const SensorGPU &sensorGpu) {
         // Total number of float elements = width * height * 3 (RGB channels)
@@ -137,7 +199,7 @@ export namespace Pale {
     }
 
     inline std::vector<float>
-    downloadDebugGradientImage(sycl::queue queue, const SensorGPU &sensorGpu, PointGradients& gradients) {
+    downloadDebugGradientImage(sycl::queue queue, const SensorGPU &sensorGpu, PointGradients &gradients) {
         // Total number of float elements = width * height * 4 (RGBA channels)
         const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
                                        * static_cast<size_t>(sensorGpu.height)

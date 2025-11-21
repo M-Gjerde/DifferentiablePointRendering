@@ -30,8 +30,8 @@ def fetch_initial_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
 
 
 def orthonormalize_tangents_inplace(
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
 ) -> dict[str, float]:
     """
     In-place Gram–Schmidt on (tangent_u, tangent_v) rows, enforcing:
@@ -125,12 +125,13 @@ def verify_colors_inplace(colors: torch.Tensor) -> dict[str, float]:
 
 
 def apply_point_parameters(
-    renderer: pale.Renderer,
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    colors: torch.Tensor,
+        renderer: pale.Renderer,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        colors: torch.Tensor,
+        shouldRebuild: bool = False
 ) -> None:
     """
     Push updated positions, tangent_u, tangent_v, scales, and colors into the renderer.
@@ -154,11 +155,16 @@ def apply_point_parameters(
         colors.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
 
+    opacities = np.ones((positions_np.shape[0],), dtype=np.float32)
+
     if positions_np.shape != tangent_u_np.shape or positions_np.shape != tangent_v_np.shape:
         raise RuntimeError(
             f"Shape mismatch between position {positions_np.shape}, "
             f"tangent_u {tangent_u_np.shape}, tangent_v {tangent_v_np.shape}"
         )
+
+    if shouldRebuild:
+        pass
 
     renderer.set_point_parameters(
         {
@@ -167,5 +173,8 @@ def apply_point_parameters(
             "tangent_v": tangent_v_np,
             "scale": scales_np,
             "color": colors_np,
+            "opacity": opacities
         }
+        ,
+        rebuild=shouldRebuild
     )

@@ -94,6 +94,33 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 }
 
 
+inline void applyPointTopologyChange(
+std::shared_ptr<Pale::Scene> scene,
+Pale::AssetAccessFromManager assetAccessor,
+    Pale::SceneBuild::BuildProducts &buildProducts,
+    Pale::GPUSceneBuffers &sceneGpu,
+    Pale::PointGradients &gradients,
+    sycl::queue queue)
+{
+    // Assume single dynamic point cloud for now
+    if (!buildProducts.pointCloudRanges.empty()) {
+        auto &range = buildProducts.pointCloudRanges[0];
+        range.pointCount = static_cast<uint32_t>(buildProducts.points.size());
+        Pale::Log::PA_INFO(
+            "applyPointTopologyChange: updated pointCloudRanges[0] to firstPoint = {}, pointCount = {}",
+            range.firstPoint,
+            range.pointCount
+        );
+    }
+
+    Pale::Log::PA_INFO("applyPointTopologyChange: rebuilding BVHs and reallocating GPU buffers");
+    Pale::SceneBuild::rebuildBVHs(buildProducts, Pale::SceneBuild::BuildOptions());
+    Pale::SceneUpload::allocateOrReallocate(buildProducts, sceneGpu, queue);
+
+    Pale::freeGradientsForScene(queue, gradients);
+    gradients = Pale::makeGradientsForScene(queue, buildProducts);
+}
+
 int main(int argc, char **argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
@@ -170,7 +197,78 @@ int main(int argc, char **argv) {
     // Register the scene with the Tracer
 
     // Render
+    Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts);
+    /*
+    // --- DEBUG: modify point topology and rebuild BVH exactly like Python path ---
+if (!buildProducts.pointCloudRanges.empty()) {
+    auto &pointCloudRange = buildProducts.pointCloudRanges[0];
 
+    Pale::Log::PA_INFO("DEBUG: before change, pointCloudRanges[0] : firstPoint={}, pointCount={}",
+                       pointCloudRange.firstPoint, pointCloudRange.pointCount);
+
+    if (pointCloudRange.pointCount >= 1) {
+        const uint32_t originalPointCount = pointCloudRange.pointCount;
+        constexpr uint32_t numberOfDebugCopies = 100; // add extra points
+
+        buildProducts.points.front().scale *= 0.3f;
+        // Resize the global point array to hold the new copies
+        const uint32_t newTotalPointCount = originalPointCount + numberOfDebugCopies;
+        buildProducts.points.resize(newTotalPointCount);
+
+        // Base point to duplicate
+        const Pale::Point basePoint = buildProducts.points[pointCloudRange.firstPoint];
+
+        for (uint32_t debugCopyIndex = 0; debugCopyIndex < numberOfDebugCopies; ++debugCopyIndex) {
+            const uint32_t newPointIndex = originalPointCount + debugCopyIndex;
+            Pale::Point &newPoint = buildProducts.points[newPointIndex];
+
+            // Start from the base point
+            newPoint = basePoint;
+
+            // Simple deterministic perturbation: small grid around base position
+            const float offsetScale = 0.2f; // tweak as desired
+            const float offsetX = -0.3 + offsetScale * static_cast<float>(debugCopyIndex);
+            const float offsetY = offsetScale * static_cast<float>(debugCopyIndex % 2 ? 1 : -1);
+            const float offsetZ = 0.0f;
+
+            newPoint.position.x() += offsetX;
+            newPoint.position.y() += offsetY;
+            newPoint.position.z() += offsetZ;
+
+            // Optional: slightly vary color and scale so you can see them visually
+            newPoint.color.x() = sycl::clamp(basePoint.color.x() + 0.1f * debugCopyIndex, 0.0f, 1.0f);
+            newPoint.color.y() = sycl::clamp(basePoint.color.y() - 0.05f * debugCopyIndex, 0.0f, 1.0f);
+            newPoint.color.z() = basePoint.color.z();
+
+            newPoint.scale.x() *= (1.0f + 0.05f * debugCopyIndex);
+            newPoint.scale.y() *= (1.0f + 0.05f * debugCopyIndex);
+
+            Pale::Log::PA_INFO(
+                "DEBUG: created debug point {} at position=({}, {}, {}), color=({}, {}, {})",
+                newPointIndex,
+                newPoint.position.x(), newPoint.position.y(), newPoint.position.z(),
+                newPoint.color.x(), newPoint.color.y(), newPoint.color.z()
+            );
+        }
+
+        // Update the point cloud range’s logical pointCount to match
+        pointCloudRange.pointCount = newTotalPointCount;
+
+        Pale::Log::PA_INFO("DEBUG: resized buildProducts.points to {}, pointCloudRange.pointCount={}",
+                           buildProducts.points.size(), pointCloudRange.pointCount);
+    }
+
+
+        // Now apply the same pipeline as Python
+        applyPointTopologyChange(scene, assetAccessor, buildProducts, gpu, gradients, deviceSelector.getQueue());
+
+        // Make sure tracer sees the updated scene
+        Pale::SceneUpload::upload(buildProducts, gpu, deviceSelector.getQueue());
+        tracer.setScene(gpu, buildProducts);
+    }
+    */
+
+    //tracer.renderForward(sensor); // films is span/array
 
     {
         // // Save each sensor image
@@ -198,7 +296,6 @@ int main(int argc, char **argv) {
     // 4) (Optional) load or compute residuals on host, upload pointer
     //auto adjoint = calculateAdjointImage("Output/target/out_photonmap.pfm", deviceSelector.getQueue(), sensor, true);
     Pale::SensorGPU adjointSensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true);
-    Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts);
 
     Pale::Log::PA_INFO("Adjoint Render Pass...");
     tracer.renderBackward(adjointSensor, gradients); // PRNG replay adjoint

@@ -44,7 +44,6 @@ export namespace Pale {
             std::vector<BVHNode> bottomLevelNodes; // concatenated BLAS nodes
             std::vector<BLASRange> bottomLevelRanges; // [offset,count] per mesh
             std::vector<TLASNode> topLevelNodes; // single TLAS
-            std::vector<uint32_t> trianglePermutation; // maps old->new tri order
 
             std::vector<Vertex> vertices;
             std::vector<Triangle> triangles;
@@ -71,10 +70,8 @@ export namespace Pale {
         };
 
         struct BuildOptions {
-            uint32_t bvhMaxLeafTriangles{4};
-            uint32_t bvhMaxLeafPoints{32};
-            uint32_t sahBinCount{32};
-            uint32_t tlasMaxLeafInstances{1};
+            uint32_t bvhMaxLeafTriangles = 4;
+            uint32_t bvhMaxLeafPoints = 16;
         };
 
 
@@ -112,8 +109,8 @@ export namespace Pale {
                                    const BuildOptions& buildOptions);
 
         // New: only (re)build BLAS/TLAS on existing BuildProducts
-        static void rebuildBVHs(BuildProducts& buildProducts,
-                                const BuildOptions& buildOptions);
+        static void rebuildBVHs(BuildProducts &buildProducts,
+                                 const BuildOptions &buildOptions);
 
 
         /*

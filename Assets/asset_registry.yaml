@@ -1,25 +1,31 @@
 assets:
-  - id: 14714899773288072617
-    type: Material
-    path: Materials/cbox_custom/emissive_1.mat.yaml
-  - id: 408465940348756152
-    type: Material
-    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
-  - id: 2156315150317550346
-    type: Material
-    path: Materials/cbox_custom/bsdf_black_0.mat.yaml
-  - id: 6594539735152438299
-    type: Material
-    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
-  - id: 14080094894394422981
-    type: Material
-    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
-  - id: 4356373320324812271
-    type: PointCloud
-    path: PointClouds/initial.ply
-  - id: 10649280734483741874
-    type: Material
-    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
-  - id: 6373696593490218542
+  - id: 8753766576030563826
     type: Mesh
     path: meshes/rectangle.obj
+  - id: 552621814175738115
+    type: Material
+    path: Materials/cbox_custom/emissive_1.mat.yaml
+  - id: 2132589295909843592
+    type: Material
+    path: Materials/cbox_custom/bsdf_red_0.mat.yaml
+  - id: 1857675452676289679
+    type: Material
+    path: Materials/cbox_custom/bsdf_green_0.mat.yaml
+  - id: 10753149046380861052
+    type: PointCloud
+    path: PointClouds/initial.ply
+  - id: 2050023413547078213
+    type: Material
+    path: Materials/cbox_custom/bsdf_white_1.mat.yaml
+  - id: 11397034386046934267
+    type: Material
+    path: Materials/cbox_custom/bsdf_black_0.mat.yaml
+  - id: 5753811185964855802
+    type: Material
+    path: Materials/cbox_custom/bsdf_light_gray_0.mat.yaml
+  - id: 3508000443596405571
+    type: Material
+    path: Materials/cbox_custom/bsdf_gray_0.mat.yaml
+  - id: 17444880640026199294
+    type: Mesh
+    path: meshes/bun_zipper_res3.ply

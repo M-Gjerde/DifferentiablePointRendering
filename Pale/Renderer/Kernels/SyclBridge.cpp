@@ -19,6 +19,7 @@ namespace Pale {
         std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
 
         if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
+
             pkg.queue.fill(pkg.sensor.framebuffer, sycl::float4{0, 0, 0, 0},
                            pkg.sensor.height * pkg.sensor.width).wait();
 

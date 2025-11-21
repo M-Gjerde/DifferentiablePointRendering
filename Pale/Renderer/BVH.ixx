@@ -50,7 +50,7 @@ export namespace Pale {
                                const std::vector<float3>& localCentroids, // same size as localAabbs
                                std::vector<BVHNode>& outNodes,
                                std::vector<uint32_t>& outNewOrder,
-                               uint32_t maxLeafSize = 16)
+                               uint32_t maxLeafSize)
     {
         const auto primitiveCount = static_cast<uint32_t>(localAabbs.size());
         outNodes.clear();

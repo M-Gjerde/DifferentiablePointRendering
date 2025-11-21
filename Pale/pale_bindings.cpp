@@ -61,7 +61,7 @@ public:
         int level = 2;
         if (!settingsDict.is_none()) {
             // use integer types consistent with your struct
-            level =(get_i(settingsDict, "logging", 2));
+            level = (get_i(settingsDict, "logging", 2));
         }
 
         Pale::Log::init(level);
@@ -130,8 +130,7 @@ public:
     // C++ equivalent of Python tonemap_exposure_gamma()
     static inline float tonemap_exposure_gamma_scalar(float x,
                                                       float exposureStops,
-                                                      float gamma)
-    {
+                                                      float gamma) {
         const float k = std::pow(2.0f, exposureStops);
 
         // clamp to [0, +inf)
@@ -155,17 +154,17 @@ public:
 
         // wrap NumPy buffer
         py::gil_scoped_acquire acquire;
-        std::vector<ssize_t> shape { (ssize_t)H, (ssize_t)W, 3 };
-        std::vector<ssize_t> strides {
-            (ssize_t)(W * 3 * sizeof(float)),
-            (ssize_t)(3 * sizeof(float)),
-            (ssize_t)(sizeof(float))
+        std::vector<ssize_t> shape{(ssize_t) H, (ssize_t) W, 3};
+        std::vector<ssize_t> strides{
+            (ssize_t) (W * 3 * sizeof(float)),
+            (ssize_t) (3 * sizeof(float)),
+            (ssize_t) (sizeof(float))
         };
 
         return py::array_t<float>(
             shape, strides, rgbHost.data(),
             py::capsule(new std::vector<float>(std::move(rgbHost)),
-                [](void *p){ delete static_cast<std::vector<float>*>(p); })
+                        [](void *p) { delete static_cast<std::vector<float> *>(p); })
         );
     }
 
@@ -182,7 +181,7 @@ public:
         }
         const int64_t H = static_cast<int64_t>(info.shape[0]);
         const int64_t W = static_cast<int64_t>(info.shape[1]);
-        auto *rgbPtr = static_cast<const float*>(info.ptr);
+        auto *rgbPtr = static_cast<const float *>(info.ptr);
 
         auto q = deviceSelector->getQueue();
 
@@ -202,7 +201,7 @@ public:
                 rgbaTarget[idx4 + 0] = rgbPtr[idx3 + 0];
                 rgbaTarget[idx4 + 1] = rgbPtr[idx3 + 1];
                 rgbaTarget[idx4 + 2] = rgbPtr[idx3 + 2];
-                rgbaTarget[idx4 + 3] = 1.0f;        // alpha channel
+                rgbaTarget[idx4 + 3] = 1.0f; // alpha channel
             }
         }
 
@@ -539,52 +538,83 @@ public:
         return {static_cast<int>(sensorForward.width), static_cast<int>(sensorForward.height)};
     }
 
-public:
-    void set_point_parameters(const py::dict &parameterDictionary) {
-        const std::size_t pointCount = buildProducts.points.size();
-        if (pointCount == 0) {
+    void set_point_parameters(const py::dict &parameterDictionary, bool rebuild) {
+        if (!parameterDictionary.contains("position")) {
+            // nothing to do if we do not get positions/point count
             return;
         }
 
+        // 1) Inspect incoming 'position' to determine desired point count
+        py::array positionArray = parameterDictionary["position"].cast<py::array>();
+        py::buffer_info positionInfo = positionArray.request();
+
+        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) {
+            throw std::runtime_error("Expected 'position' to have shape (N,3)");
+        }
+
+        std::size_t incomingPointCount =
+                static_cast<std::size_t>(positionInfo.shape[0]);
+
+        std::size_t currentPointCount = buildProducts.points.size();
+
+        if (incomingPointCount == 0) {
+            // Nothing to render; you can decide whether to clear points or ignore.
+            return;
+        }
+
+        // 2) If counts differ, resize buildProducts.points to match Python
+        if (incomingPointCount != currentPointCount) {
+            Pale::Log::PA_INFO(
+                "set_point_parameters: resizing buildProducts.points from {} to {}",
+                currentPointCount,
+                incomingPointCount
+            );
+            buildProducts.points.resize(incomingPointCount);
+        }
+
+        const std::size_t pointCount = buildProducts.points.size();
+
+        // 3) Helpers now use the updated pointCount
         auto assignFloat3FieldFromArray =
-            [&](const char *key, Pale::float3 Pale::Point::*memberPointer) {
-                if (!parameterDictionary.contains(key)) {
-                    return; // skip if not provided
-                }
-                py::array arrayObject = parameterDictionary[key].cast<py::array>();
+                [&](const char *key, Pale::float3 Pale::Point::*memberPointer) {
+            if (!parameterDictionary.contains(key)) {
+                throw std::runtime_error("New points does not contain key");
+            }
+            py::array arrayObject = parameterDictionary[key].cast<py::array>();
 
-                py::buffer_info bufferInfo = arrayObject.request();
-                if (bufferInfo.ndim != 2 ||
-                    bufferInfo.shape[0] != static_cast<ssize_t>(pointCount) ||
-                    bufferInfo.shape[1] != 3) {
-                    throw std::runtime_error(
-                        std::string("Expected '") + key + "' to have shape (N,3)");
-                    }
-                if (bufferInfo.itemsize != sizeof(float)) {
-                    throw std::runtime_error(
-                        std::string("Expected '") + key + "' to be float32");
-                }
+            py::buffer_info bufferInfo = arrayObject.request();
+            if (bufferInfo.ndim != 2 ||
+                bufferInfo.shape[0] != static_cast<ssize_t>(pointCount) ||
+                bufferInfo.shape[1] != 3) {
+                throw std::runtime_error(
+                    std::string("Expected '") + key + "' to have shape (N,3)");
+            }
+            if (bufferInfo.itemsize != sizeof(float)) {
+                throw std::runtime_error(
+                    std::string("Expected '") + key + "' to be float32");
+            }
 
-                auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
-                for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-                    const std::size_t baseIndex = pointIndex * 3;
-                    Pale::float3 value;
-                    value.x() = dataPointer[baseIndex + 0];
-                    value.y() = dataPointer[baseIndex + 1];
-                    value.z() = dataPointer[baseIndex + 2];
-                    buildProducts.points[pointIndex].*memberPointer = value;
-                }
+            auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
+            for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+                const std::size_t baseIndex = pointIndex * 3;
+                Pale::float3 value;
+                value.x() = dataPointer[baseIndex + 0];
+                value.y() = dataPointer[baseIndex + 1];
+                value.z() = dataPointer[baseIndex + 2];
+                buildProducts.points[pointIndex].*memberPointer = value;
+            }
         };
 
         auto assignFloat2FieldFromArray = [&](const char *key,
                                               auto memberPointer) {
             if (!parameterDictionary.contains(key)) {
-                return;
+                throw std::runtime_error("New points does not contain key");
             }
             py::array arrayObject = parameterDictionary[key].cast<py::array>();
 
             py::buffer_info bufferInfo = arrayObject.request();
-            if (bufferInfo.ndim != 2 || bufferInfo.shape[0] != static_cast<ssize_t>(pointCount) ||
+            if (bufferInfo.ndim != 2 ||
+                bufferInfo.shape[0] != static_cast<ssize_t>(pointCount) ||
                 bufferInfo.shape[1] != 2) {
                 throw std::runtime_error(std::string("Expected '") + key +
                                          "' to have shape (N,2)");
@@ -607,12 +637,13 @@ public:
         auto assignFloat1FieldFromArray = [&](const char *key,
                                               auto memberPointer) {
             if (!parameterDictionary.contains(key)) {
-                return;
+                throw std::runtime_error("New points does not contain key");
             }
             py::array arrayObject = parameterDictionary[key].cast<py::array>();
 
             py::buffer_info bufferInfo = arrayObject.request();
-            if (bufferInfo.ndim != 1 || bufferInfo.shape[0] != static_cast<ssize_t>(pointCount)) {
+            if (bufferInfo.ndim != 1 ||
+                bufferInfo.shape[0] != static_cast<ssize_t>(pointCount)) {
                 throw std::runtime_error(std::string("Expected '") + key +
                                          "' to have shape (N,)");
             }
@@ -627,25 +658,44 @@ public:
             }
         };
 
-        // Assign provided fields; any missing keys are left unchanged.
+        // 4) Assign provided fields
         assignFloat3FieldFromArray("position", &Pale::Point::position);
         assignFloat3FieldFromArray("tangent_u", &Pale::Point::tanU);
         assignFloat3FieldFromArray("tangent_v", &Pale::Point::tanV);
-        assignFloat2FieldFromArray("scale", &Pale::Point::scale); // note: float2
+        assignFloat2FieldFromArray("scale", &Pale::Point::scale);
         assignFloat3FieldFromArray("color", &Pale::Point::color);
         assignFloat1FieldFromArray("opacity", &Pale::Point::opacity);
-        assignFloat1FieldFromArray("beta", &Pale::Point::beta);
-        assignFloat1FieldFromArray("shape", &Pale::Point::shape);
 
-        // Push updated CPU-side buildProducts to GPU
+        // 5) Rebuild BVH + GPU buffers if requested
+        if (rebuild) {
+            // Keep pointCloudRanges coherent with the updated points array.
+            // For now we assume a single dynamic point cloud.
+            if (!buildProducts.pointCloudRanges.empty()) {
+                auto &range = buildProducts.pointCloudRanges[0];
+
+                range.pointCount = static_cast<uint32_t>(buildProducts.points.size());
+                Pale::Log::PA_INFO(
+                    "set_point_parameters: updated pointCloudRanges[0] to firstPoint = {}, pointCount = {}",
+                    range.firstPoint,
+                    range.pointCount
+                );
+            }
+
+            Pale::Log::PA_INFO("Rebuilding BVH and reallocating after topology change");
+            Pale::SceneBuild::rebuildBVHs(buildProducts, Pale::SceneBuild::BuildOptions());
+            Pale::SceneUpload::allocateOrReallocate(buildProducts, sceneGpu, deviceSelector->getQueue());
+
+            // Recreate gradients to match new point count and resolution
+            Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
+            gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts);
+            Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
+            pathTracer->setScene(sceneGpu, buildProducts);
+        }
         reuploadSceneGpu();
     }
 
     void reuploadSceneGpu() {
-
-        Pale::SceneBuild::rebuildBVHs(buildProducts, Pale::SceneBuild::BuildOptions());
-        Pale::SceneUpload::upload(buildProducts,  sceneGpu, deviceSelector->getQueue());
-
+        Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
         pathTracer->setScene(sceneGpu, buildProducts);
     }
 
@@ -765,7 +815,9 @@ PYBIND11_MODULE(pale, m) {
             .def("set_adjoint_spp", &PythonRenderer::set_adjoint_spp)
             .def("get_image_size", &PythonRenderer::get_image_size)
             .def("set_gaussian_transform", &PythonRenderer::set_gaussian_transform,
-                 py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"), py::arg("color3"), py::arg("opacity"), py::arg("index") = -1).def(
+                 py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"), py::arg("color3"),
+                 py::arg("opacity"), py::arg("index") = -1).def(
                 "get_point_parameters", &PythonRenderer::get_point_parameters)
-            .def("set_point_parameters", &PythonRenderer::set_point_parameters);
+            .def("set_point_parameters", &PythonRenderer::set_point_parameters, py::arg("parameters"),
+                 py::arg("rebuild"));
 }
