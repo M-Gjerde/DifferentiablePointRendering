@@ -174,20 +174,19 @@ int main(int argc, char **argv) {
 
     {
         // // Save each sensor image
-        auto rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+        std::vector<uint8_t> rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
         const uint32_t W = sensor.width, H = sensor.height;
-        float gamma = 2.8f;
-        float exposure = 2.0f;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out_photonmap.png";
-        if (Pale::Utils::savePNGWithToneMap(
-            filePath, rgba, W, H,
-            exposure,
-            gamma,
-            false)) {
-            Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-        };
+        Pale::Utils::savePNG(filePath, rgba, W, H);
 
-        Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
+        //Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A
+    }
+    {
+        // // Save each sensor image
+        std::vector<float> rgb = Pale::downloadSensorLDR(deviceSelector.getQueue(), sensor);
+        const uint32_t W = sensor.width, H = sensor.height;
+        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "out_photonmap_ldr.png";
+        Pale::Utils::savePNGWith3Channel(filePath, rgb, W, H);
     }
 
     //if (pointCloudPath.filename() != "initial.ply") {

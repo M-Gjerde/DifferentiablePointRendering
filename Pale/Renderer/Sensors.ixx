@@ -21,16 +21,24 @@ export namespace Pale {
         const auto &cam = buildProducts.cameras().front();
         const size_t pixelCount = static_cast<size_t>(cam.width) * static_cast<size_t>(cam.height);
         float4 *dev = reinterpret_cast<float4 *>(sycl::malloc_device(pixelCount * sizeof(float4), queue));
+        sycl::uchar4 *dev2 = reinterpret_cast<sycl::uchar4 *>(sycl::malloc_device(pixelCount * sizeof(sycl::uchar4), queue));
+
+        float *dev3 = reinterpret_cast<float *>(sycl::malloc_device(pixelCount * sizeof(float) * 3, queue));
 
         queue.wait();
 
         //queue.fill(dev, float4{0, 0, 0, 0}, pixelCount).wait();
 
-        if (initializeData)
+        if (initializeData) {
             queue.memset(dev, 1e6f, pixelCount * sizeof(float4)).wait();
+            queue.memset(dev2, 0.0f, pixelCount * sizeof(sycl::uchar4)).wait();
+            queue.memset(dev3, 0, pixelCount * 3u * sizeof(float)).wait();
+        }
 
         out.camera = cam;
         out.framebuffer = dev;
+        out.outputFramebuffer = dev2;
+        out.ldrFramebuffer = dev3;
         out.width = cam.width;
         out.height = cam.height;
         return out;
@@ -67,7 +75,7 @@ export namespace Pale {
     }
 
     inline std::vector<float>
-    downloadSensorRGBA(sycl::queue queue, const SensorGPU &sensorGpu) {
+    downloadSensorRGBARaw(sycl::queue queue, const SensorGPU &sensorGpu) {
         // Total number of float elements = width * height * 4 (RGBA channels)
         const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
                                        * static_cast<size_t>(sensorGpu.height)
@@ -82,6 +90,47 @@ export namespace Pale {
             hostSideFramebuffer.data(), // destination
             sensorGpu.framebuffer, // source (device pointer)
             totalFloatCount * sizeof(float) // size in bytes
+        ).wait();
+
+        return hostSideFramebuffer;
+    }
+    inline std::vector<float>
+    downloadSensorLDR(sycl::queue queue, const SensorGPU &sensorGpu) {
+        // Total number of float elements = width * height * 3 (RGB channels)
+        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
+                                       * static_cast<size_t>(sensorGpu.height)
+                                       * 3u;
+        std::vector<float> hostSideFramebuffer(totalFloatCount);
+
+
+        // Allocate host-side buffer
+        queue.wait();
+        // Copy device framebuffer → host buffer
+        queue.memcpy(
+            hostSideFramebuffer.data(), // destination
+            sensorGpu.ldrFramebuffer, // source (device pointer)
+            totalFloatCount * sizeof(float) // size in bytes
+        ).wait();
+
+        return hostSideFramebuffer;
+    }
+
+    inline std::vector<uint8_t>
+    downloadSensorRGBA(sycl::queue queue, const SensorGPU &sensorGpu) {
+        // Total number of float elements = width * height * 4 (RGBA channels)
+        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
+                                       * static_cast<size_t>(sensorGpu.height)
+                                       * 4u;
+        std::vector<uint8_t> hostSideFramebuffer(totalFloatCount);
+
+
+        // Allocate host-side buffer
+        queue.wait();
+        // Copy device framebuffer → host buffer
+        queue.memcpy(
+            hostSideFramebuffer.data(), // destination
+            sensorGpu.outputFramebuffer, // source (device pointer)
+            totalFloatCount * sizeof(uint8_t) // size in bytes
         ).wait();
 
         return hostSideFramebuffer;

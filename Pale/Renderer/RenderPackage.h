@@ -6,23 +6,14 @@ namespace Pale {
 
     struct SensorGPU {
         CameraGPU camera; // camera parameters
-        float4 *framebuffer{nullptr}; // device pointer
+        float4 *framebuffer = nullptr; // device pointer
         uint32_t width{}, height{};
-    };
 
-
-    /*
-    struct alignas(16) Point {
-    float3 position{0.0f};
-    float3 tanU{0.0f};
-    float3 tanV{0.0f};
-    float2 scale{0.0f};
-    float3 color{0.0f};
-    float opacity{0.0f};
-    float beta{0.0f};
-    float shape{0.0f};
+        float gammaCorrection = 2.2f;
+        float exposureCorrection = 2.5f;
+        float* ldrFramebuffer = nullptr;
+        sycl::uchar4* outputFramebuffer = nullptr;
     };
-    */
 
     // GPU Struct
     struct PointGradients {
@@ -37,15 +28,15 @@ namespace Pale {
         size_t numPoints{0};
 
         // debug
-        float4 *framebuffer{nullptr}; // gradient image
+        float4 *framebuffer = nullptr; // gradient image
 
     };
 
     struct AdjointGPU {
-        float4 *framebuffer{nullptr}; // input adjoint image
-        float4 *framebufferGrad{nullptr}; // ouput gradient image
+        float4 *framebuffer = nullptr; // input adjoint image
+        float4 *framebufferGrad = nullptr; // ouput gradient image
         uint32_t width{}, height{};
-        float3 *gradient_pk{nullptr};
+        float3 *gradient_pk = nullptr;
     };
 
 

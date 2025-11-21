@@ -443,7 +443,7 @@ namespace Pale {
                         }
                     }
                     // Atomic accumulate
-                    const std::uint32_t fbIndex = (imageHeight - 1 - py) * imageWidth + px; // flip Y like your code
+                    const std::uint32_t fbIndex = py * imageWidth + px; // flip Y like your code
                     float4 previous = sensor.framebuffer[fbIndex];
                     float4 current = float4(radianceRGB.x(), radianceRGB.y(), radianceRGB.z(), 1.0f) / samplesPerPixel;
                     sensor.framebuffer[fbIndex] = previous + current; // or write to a staging buffer

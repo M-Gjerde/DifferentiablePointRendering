@@ -41,13 +41,12 @@ namespace Pale {
                     // Map to pixel
                     const uint32_t pixelLinearIndexWithinImage = globalRayIndex; // 0..raysPerSet-1
                     uint32_t pixelX = pixelLinearIndexWithinImage % imageWidth;
-                    uint32_t pixelY = imageHeight - 1 - pixelLinearIndexWithinImage / imageWidth;
-
-                    //pixelX = 301;
-                    //pixelY = imageHeight - 1 - 932;
+                    uint32_t pixelY = pixelLinearIndexWithinImage / imageWidth;
 
 
-                    const uint32_t pixelIndex = pixelLinearIndexWithinImage;
+                    uint32_t index = flippedYLinearIndex(pixelLinearIndexWithinImage, sensor.width, sensor.height);
+
+                    const uint32_t pixelIndex = index;
                     // RNG for this pixel
                     const uint64_t perPixelSeed = rng::makePerItemSeed1D(baseSeed, pixelLinearIndexWithinImage);
                     rng::Xorshift128 pixelRng(perPixelSeed);
@@ -306,7 +305,7 @@ namespace Pale {
                                     if (rayState.bounceIndex >= recordBounceIndex) {
                                         const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
                                         float4& gradImageDst = gradients.framebuffer[rayState.pixelIndex];
-                                        //atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                                        atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
                                     }
 
                                     /*

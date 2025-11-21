@@ -1,6 +1,8 @@
 // SyclWarmup.cpp (no imports of your modules)
 #include <sycl/sycl.hpp>
 #include "Renderer/Kernels/SyclBridge.h"
+
+#include "PostprocessKernel.h"
 #include "Renderer/Kernels/AdjointKernels.h"
 
 #include "Core/ScopedTimer.h"
@@ -90,6 +92,10 @@ namespace Pale {
                     launchCameraGatherKernel(pkg, cameraGatherSPP); // generate image from photon map
                 }
             }
+            // Post processing:
+            // Gamma, exposure and rgb8 conversion
+            launchPostProcessKernel(pkg);
+
         }
         else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
             /*

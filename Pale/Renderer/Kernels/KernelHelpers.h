@@ -949,4 +949,20 @@ namespace Pale {
             break;
         }
     }
+
+    inline uint32_t flippedYLinearIndex(uint32_t linearIndex, uint32_t W, uint32_t H) {
+        // Map to pixel (linear index; X/Y only needed if you want them)
+        // ------------------------------------------------------------
+        // 1. Recover pixel coordinates (unflipped)
+        // ------------------------------------------------------------
+        const uint32_t pixelX = linearIndex % W;
+        const uint32_t pixelY = linearIndex / W;
+
+        // ------------------------------------------------------------
+        // 2. Compute flipped Y coordinate for LDR output
+        // ------------------------------------------------------------
+        const uint32_t flippedY = (H - 1u) - pixelY;
+        const uint32_t flippedLinearIndex = flippedY * W + pixelX;
+        return flippedLinearIndex;
+    }
 }

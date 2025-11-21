@@ -16,6 +16,18 @@ module;
 export module Pale.Utils.ImageIO;
 
 export namespace Pale::Utils {
+    inline bool savePNG(
+        const std::filesystem::path &filePath,
+        const std::vector<uint8_t> &inputRGBA,
+        std::uint32_t imageWidth,
+        std::uint32_t imageHeight) {
+
+        return  stbi_write_png(filePath.c_str(),
+                       static_cast<int>(imageWidth),
+                       static_cast<int>(imageHeight),
+                       4, inputRGBA.data(), imageWidth * 4);
+    }
+
     // exposureEV:   photographic EV; 0 keeps values, +1 doubles brightness
     // gammaEncode:  typical 2.2 for sRGB-like output
     // normalizeHDR: if true, first map global RGB min..max to [0,1]
@@ -135,6 +147,48 @@ export namespace Pale::Utils {
                                   static_cast<int>(imageHeight),
                                   3, srcPtr, bytesPerRow) != 0;
         }
+    }
+    // exposureEV:   photographic EV; 0 keeps values, +1 doubles brightness
+    // gammaEncode:  typical 2.2 for sRGB-like output
+    // normalizeHDR: if true, first map global RGB min..max to [0,1]
+    inline bool savePNGWith3Channel(
+        const std::filesystem::path &filePath,
+        const std::vector<float> &inputRGB,
+        std::uint32_t imageWidth,
+        std::uint32_t imageHeight) {
+        if (!std::filesystem::exists(filePath.parent_path())) {
+            std::filesystem::create_directories(filePath.parent_path());
+        }
+        if (imageWidth == 0 || imageHeight == 0) return false;
+        const std::size_t pixelCount = std::size_t(imageWidth) * imageHeight;
+        const std::size_t expected = pixelCount * 3u;
+        if (inputRGB.size() < expected) return false;
+
+
+        auto encodeChannel = [](float linearValue) -> std::uint8_t {
+            // Clamp to [0,1] for safety
+            float v = std::clamp(linearValue, 0.0f, 1.0f);
+            float scaled = v * 255.0f + 0.5f; // round to nearest
+            if (scaled < 0.0f)   scaled = 0.0f;
+            if (scaled > 255.0f) scaled = 255.0f;
+            return static_cast<std::uint8_t>(scaled);
+        };
+
+        std::vector<std::uint8_t> rgb8(pixelCount * 3u);
+        for (std::size_t i = 0; i < pixelCount; ++i) {
+            rgb8[i * 3 + 0] = encodeChannel(inputRGB[i * 3 + 0]);
+            rgb8[i * 3 + 1] = encodeChannel(inputRGB[i * 3 + 1]);
+            rgb8[i * 3 + 2] = encodeChannel(inputRGB[i * 3 + 2]);
+        }
+        const int bytesPerRow = static_cast<int>(imageWidth * 3);
+        const std::uint8_t *srcPtr = rgb8.data();
+
+        std::vector<std::uint8_t> rowOrdered;
+
+        return stbi_write_png(filePath.c_str(),
+                              static_cast<int>(imageWidth),
+                              static_cast<int>(imageHeight),
+                              3, srcPtr, bytesPerRow) != 0;
     }
 
     // PNG saver: expects display-space (already tone-mapped + gamma-encoded) RGBA in [0,1]
@@ -633,5 +687,6 @@ export namespace Pale::Utils {
                               static_cast<int>(imageWidth),
                               static_cast<int>(imageHeight),
                               3, srcPtr, bytesPerRow) != 0;
+
     }
 }

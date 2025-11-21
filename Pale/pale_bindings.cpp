@@ -149,37 +149,9 @@ public:
 
         pathTracer->renderForward(sensorForward);
 
-        auto rgbaHost = Pale::downloadSensorRGBA(deviceSelector->getQueue(), sensorForward);
+        std::vector<float> rgbHost = Pale::downloadSensorLDR(deviceSelector->getQueue(), sensorForward);
         const uint32_t W = sensorForward.width;
         const uint32_t H = sensorForward.height;
-
-        const float exposureStops = 2.0f; // TODO: expose to Python if desired
-        const float gamma = 2.8f;         // TODO: expose to Python if desired
-
-        std::vector<float> rgb(H * W * 3);
-
-        // fill + tonemap + flip-y
-        // flip-y means: row y in output = row (H-1-y) in input
-        for (uint32_t y = 0; y < H; ++y) {
-
-            for (uint32_t x = 0; x < W; ++x) {
-                const size_t srcIndex = 4 * (y * W + x);             // RGBA source
-                const size_t dstIndex = 3 * (y * W + x);      // RGB dest
-
-                float r = rgbaHost[srcIndex + 0];
-                float g = rgbaHost[srcIndex + 1];
-                float b = rgbaHost[srcIndex + 2];
-
-                // tone-map per channel
-                r = tonemap_exposure_gamma_scalar(r, exposureStops, gamma);
-                g = tonemap_exposure_gamma_scalar(g, exposureStops, gamma);
-                b = tonemap_exposure_gamma_scalar(b, exposureStops, gamma);
-
-                rgb[dstIndex + 0] = r;
-                rgb[dstIndex + 1] = g;
-                rgb[dstIndex + 2] = b;
-            }
-        }
 
         // wrap NumPy buffer
         py::gil_scoped_acquire acquire;
@@ -191,8 +163,8 @@ public:
         };
 
         return py::array_t<float>(
-            shape, strides, rgb.data(),
-            py::capsule(new std::vector<float>(std::move(rgb)),
+            shape, strides, rgbHost.data(),
+            py::capsule(new std::vector<float>(std::move(rgbHost)),
                 [](void *p){ delete static_cast<std::vector<float>*>(p); })
         );
     }
@@ -310,7 +282,7 @@ public:
         }
 
         // Download adjoint framebuffer RGBA (HxWx4 float)
-        auto rgbaHost = Pale::downloadSensorRGBA(syclQueue, sensorAdjoint);
+        auto rgbaHost = Pale::downloadSensorRGBARaw(syclQueue, sensorAdjoint);
         const std::uint32_t imageWidth = sensorAdjoint.width;
         const std::uint32_t imageHeight = sensorAdjoint.height;
 
