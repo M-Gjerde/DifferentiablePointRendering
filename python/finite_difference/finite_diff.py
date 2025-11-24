@@ -292,24 +292,21 @@ def render_with_scale(renderer,
     rgb = np.asarray(rgb, dtype=np.float32)
     return rgb
 
-
-
 def main(args) -> None:
     # --- settings ---
     renderer_settings = {
         "photons": 1e5,
         "bounces": 4,
         "forward_passes": 40,
-        "gather_passes": 32,
+        "gather_passes": 4,
         "adjoint_bounces": 4,
         "adjoint_passes": 6,
         "logging": 2
     }
 
-    # use positive epsilon for central differences
-    axis = args.axis  # could also be an argparse argument if needed
+    axis = args.axis  # x, y, or z
 
-    assets_root = Path(__file__).parent.parent / "Assets"
+    assets_root = Path(__file__).parent.parent.parent / "Assets"
     scene_xml = "cbox_custom.xml"
     pointcloud_ply = args.scene + ".ply"
 
@@ -318,21 +315,36 @@ def main(args) -> None:
     print("Index:", args.index)
     print("Parameter:", args.param)
 
-    output_dir = Path(__file__).parent / "Output" / args.scene if args.output == "" else Path(__file__).parent / Path(args.output)
+    output_dir = (
+        Path(__file__).parent / "Output" / args.scene
+        if args.output == "" or args.output is None
+        else Path(__file__).parent / Path(args.output)
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- init renderer ---
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
 
-    eps_translation = 0.01  # or 0.005
-    eps_rotation_deg = 0.75  # degrees
-    eps_scale = 0.05
-    eps_color = 0.1
+    # Step sizes for different parameter types
+    eps_translation = 0.01      # translation step (world units)
+    eps_rotation_deg = 0.75     # rotation step (degrees)
+    eps_scale = 0.05            # scale step (dimensionless)
+    eps_color = 0.1             # unused here
 
+    # Decide which epsilon corresponds to the scalar parameter being tested
+    if args.param == "translation":
+        param_eps = eps_translation
+    elif args.param == "rotation":
+        param_eps = eps_rotation_deg
+    elif args.param == "scale":
+        param_eps = eps_scale
+    elif args.param == "translation_rotation":
+        param_eps = eps_translation
+    else:
+        raise ValueError("param must be 'translation', 'rotation', 'scale', or 'translation_rotation'")
 
     # --- render: minus and plus depending on parameter type ---
     if args.param == "translation":
-        # central differences over translation component: (f(+e) - f(-e)) / (2e)
         if axis == "x":
             negative_vector, positive_vector = (-eps_translation, 0.0, 0.0), (+eps_translation, 0.0, 0.0)
         elif axis == "y":
@@ -346,13 +358,10 @@ def main(args) -> None:
         rgb_plus = render_with_translation(renderer, *positive_vector, args.index)
 
     elif args.param == "rotation":
-        # central differences over rotation angle (in degrees) around given axis
-        # parameter = rotation angle; we perturb by ±eps degrees
         rgb_minus = render_with_rotation(renderer, -eps_rotation_deg, axis, args.index)
         rgb_plus = render_with_rotation(renderer, +eps_rotation_deg, axis, args.index)
 
     elif args.param == "scale":
-        # central differences over scale along one axis; base scale = 1
         if axis == "x":
             negative_scale = (1.0 - eps_scale, 1.0, 1.0)
             positive_scale = (1.0 + eps_scale, 1.0, 1.0)
@@ -367,34 +376,23 @@ def main(args) -> None:
 
         rgb_minus = render_with_scale(renderer, *negative_scale, args.index)
         rgb_plus = render_with_scale(renderer, *positive_scale, args.index)
-    elif args.param == "translation_rotation":
-        # One scalar parameter π moves you simultaneously in translation and rotation.
-        # Here we use:
-        #   translation = π * e_axis
-        #   rotation angle (degrees) = π
-        #
-        # Finite differences: f(π + eps) - f(π - eps)
-        # with base π = 0, so:
-        #   minus: translation = -eps * e_axis, angle = -eps
-        #   plus:  translation = +eps * e_axis, angle = +eps
 
-        axis = args.axis.lower()
-        if axis == "x":
+    elif args.param == "translation_rotation":
+        axis_l = args.axis.lower()
+        if axis_l == "x":
             t_dir = (1.0, 0.0, 0.0)
-        elif axis == "y":
+        elif axis_l == "y":
             t_dir = (0.0, 1.0, 0.0)
-        elif axis == "z":
+        elif axis_l == "z":
             t_dir = (0.0, 0.0, 1.0)
         else:
             raise ValueError("axis must be 'x', 'y', or 'z'")
 
-        # translation for ±eps
         negative_translation = tuple(-eps_translation * c for c in t_dir)
         positive_translation = tuple(+eps_translation * c for c in t_dir)
 
-        # rotation for ±eps degrees around same axis
-        qx_minus, qy_minus, qz_minus, qw_minus = degrees_to_quaternion(-eps_rotation_deg, axis)
-        qx_plus,  qy_plus,  qz_plus,  qw_plus  = degrees_to_quaternion(+eps_rotation_deg, axis)
+        qx_minus, qy_minus, qz_minus, qw_minus = degrees_to_quaternion(-eps_rotation_deg, axis_l)
+        qx_plus,  qy_plus,  qz_plus,  qw_plus  = degrees_to_quaternion(+eps_rotation_deg, axis_l)
 
         rgb_minus = render_with_trs(
             renderer,
@@ -412,43 +410,16 @@ def main(args) -> None:
         )
 
     else:
-        raise ValueError("param must be 'translation', 'rotation', or 'scale'")
+        raise ValueError("param must be 'translation', 'rotation', 'scale', or 'translation_rotation'")
 
-    # raw gradient
-    grad_raw = (rgb_plus - rgb_minus) / (2.0 * eps_translation)
+    # --- finite-difference gradients (display space = linear RGB) ---
+    grad_disp_fd = (rgb_plus - rgb_minus) / (2.0 * param_eps)   # H x W x 3
 
-    # display-space gradient by finite differences
-    grad_disp_fd = (rgb_plus - rgb_minus) / (2.0 * eps_translation)
-
-    # display-space gradient via chain rule (predict from raw)
-    dTdx_mid = 0.5 * (rgb_minus + rgb_plus)
-    grad_disp_chain = dTdx_mid * grad_raw
-
-    # previews
+    # previews for sanity
     save_rgb_preview_png(rgb_minus, output_dir / "initial.png")
     save_rgb_preview_png(rgb_plus, output_dir / "target.png")
 
-    # luminance projection (equal weights)
-    weights_luminance = np.array([1.0, 1.0, 1.0], dtype=np.float32) / 3.0
-    luma_grad = np.tensordot(grad_disp_fd, weights_luminance, 1)
-
-    # legacy visualizers
-    save_color_luma_seismic_white(luma_grad, output_dir / "grad_disp_fd_luma_white.png")
-
-    # robust percentile scaling (symmetric) and save scale for reproducibility
-    scale_used = saveSeismicSignedRobust(
-        luma_grad, output_dir / "grad_disp_fd_seismic_robust.png",
-        mode="percentile", percentile=0.995
-    )
-    np.savetxt(output_dir / "grad_scale_used.txt", [scale_used])
-
-    # log-compressed magnitude view for very small dynamic ranges
-    _ = saveSignedLogCompress(
-        luma_grad, output_dir / "grad_disp_fd_seismic_log.png",
-        epsilon=1e-6, percentile=0.995
-    )
-
-    # direct percentiles for comparison with your previous function
+    # helper for seismic output (unchanged)
     def save_seismic_signed(scalar: np.ndarray, out_png: Path, abs_quantile: float = 1.0) -> None:
         scalar_array = np.asarray(scalar, dtype=np.float32)
         finite_mask = np.isfinite(scalar_array)
@@ -467,19 +438,47 @@ def main(args) -> None:
         rgb[~finite_mask] = (255, 255, 255)
         Image.fromarray(rgb).save(out_png)
 
-    # seismic, full range and 0.99 percentile for continuity with old outputs
-    save_seismic_signed(luma_grad, output_dir / "grad_disp_fd_seismic.png", abs_quantile=1.0)
-    save_seismic_signed(luma_grad, output_dir / "grad_disp_fd_seismic_q099.png", abs_quantile=0.99)
+    # ---------- per-channel visualizations (R, G, B) ----------
+    channel_names = ["R", "G", "B"]
+    for c_idx, cname in enumerate(channel_names):
+        grad_c = grad_disp_fd[..., c_idx]  # H x W scalar
+
+        # seismic, full range and 0.99 percentile
+        save_seismic_signed(
+            grad_c,
+            output_dir / f"grad_disp_fd_{cname}_seismic.png",
+            abs_quantile=1.0,
+        )
+        save_seismic_signed(
+            grad_c,
+            output_dir / f"grad_disp_fd_{cname}_seismic_q099.png",
+            abs_quantile=0.99,
+        )
+
+    # ---------- combined 4th image: luminance ----------
+    luminance_weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    luma_grad = np.tensordot(grad_disp_fd, luminance_weights, axes=([2], [0]))  # H x W
+
+    save_seismic_signed(
+        luma_grad,
+        output_dir / "grad_disp_fd_L_seismic.png",
+        abs_quantile=1.0,
+    )
+    save_seismic_signed(
+        luma_grad,
+        output_dir / "grad_disp_fd_L_seismic_q099.png",
+        abs_quantile=0.99,
+    )
 
     print("Wrote:")
-    print(f"  {(output_dir / 'initial.png').resolve()}   (minus, preview)")
-    print(f"  {(output_dir / 'target.png').resolve()}    (plus,  preview)")
-    print(f"  {(output_dir / 'grad_disp_fd_luma_white.png').resolve()}")
-    print(f"  {(output_dir / 'grad_disp_fd_seismic_robust.png').resolve()}   (robust percentile)")
-    print(f"  {(output_dir / 'grad_disp_fd_seismic_log.png').resolve()}      (log-compressed)")
-    print(f"  {(output_dir / 'grad_disp_fd_seismic.png').resolve()}          (legacy full-range)")
-    print(f"  {(output_dir / 'grad_disp_fd_seismic_q099.png').resolve()}     (legacy q=0.99)")
-    print(f"  {(output_dir / 'grad_scale_used.txt').resolve()}               (scale used)")
+    print(f"  {(output_dir / 'initial.png').resolve()}                  (minus, preview)")
+    print(f"  {(output_dir / 'target.png').resolve()}                   (plus,  preview)")
+    for cname in channel_names:
+        print(f"  {(output_dir / f'grad_disp_fd_{cname}_seismic.png').resolve()}")
+        print(f"  {(output_dir / f'grad_disp_fd_{cname}_seismic_q099.png').resolve()}")
+    print(f"  {(output_dir / 'grad_disp_fd_L_seismic.png').resolve()}            (luminance, full-range)")
+    print(f"  {(output_dir / 'grad_disp_fd_L_seismic_q099.png').resolve()}       (luminance, q=0.99)")
+
     time.sleep(1)
 
 

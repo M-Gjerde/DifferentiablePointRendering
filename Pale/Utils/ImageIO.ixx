@@ -22,6 +22,9 @@ export namespace Pale::Utils {
         std::uint32_t imageWidth,
         std::uint32_t imageHeight) {
 
+        if (!std::filesystem::exists(filePath.parent_path())) {
+            std::filesystem::create_directories(filePath.parent_path());
+        }
         return  stbi_write_png(filePath.c_str(),
                        static_cast<int>(imageWidth),
                        static_cast<int>(imageHeight),

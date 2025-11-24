@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = false;
+    bool addPoints = true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -237,9 +237,7 @@ int main(int argc, char** argv) {
         auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
     }
 
-
-    bool renderBunny = true;
-    if (renderBunny) {
+    if (!addPoints) {
         Pale::Entity bunnyEntity = scene->createEntity("Bunny");
         // 1) Transform
         auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
