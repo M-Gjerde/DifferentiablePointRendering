@@ -864,7 +864,7 @@ namespace Pale {
     }
 
 
-    inline void atomicAddFloat4ToImage(float4* dst, const float3& v) {
+    inline void atomicAddFloat4ToImage(float4* dst, const float4& v) {
         for (int c = 0; c < 3; ++c) {
             sycl::atomic_ref<float, sycl::memory_order::relaxed,
                              sycl::memory_scope::device,

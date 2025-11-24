@@ -593,6 +593,55 @@ export namespace Pale::Utils {
                               3, srcPtr, bytesPerRow) != 0;
     }
 
+    inline bool saveGradientSingleChannelPNG(
+    const std::filesystem::path &filePath,
+    const std::vector<float> &inputRGBA,
+    std::uint32_t imageWidth,
+    std::uint32_t imageHeight,
+    std::uint32_t channelIndex,          // 0=R, 1=G, 2=B, 3=A
+    float adjointSamplesPerPixel = 32.0f,
+    float absQuantile = 0.99f,
+    bool flipY = false,
+    bool useSeismic = true
+) {
+        if (channelIndex > 3) {
+            return false;
+        }
+
+        if (imageWidth == 0 || imageHeight == 0) {
+            return false;
+        }
+
+        const std::size_t pixelCount = std::size_t(imageWidth) * imageHeight;
+        const std::size_t expectedSize = pixelCount * 4u;
+        if (inputRGBA.size() < expectedSize) {
+            return false;
+        }
+
+        // Build a temporary RGBA where R=G=B = chosen channel, A=0.
+        std::vector<float> replicatedRGBA(expectedSize);
+        for (std::size_t i = 0; i < pixelCount; ++i) {
+            const float channelValue = inputRGBA[i * 4 + channelIndex];
+            replicatedRGBA[i * 4 + 0] = channelValue; // R
+            replicatedRGBA[i * 4 + 1] = channelValue; // G
+            replicatedRGBA[i * 4 + 2] = channelValue; // B
+            replicatedRGBA[i * 4 + 3] = 0.0f;         // A (unused)
+        }
+
+        // Reuse your existing robust scaling + seismic colormap pipeline.
+        return saveGradientSignPNG(
+            filePath,
+            replicatedRGBA,
+            imageWidth,
+            imageHeight,
+            adjointSamplesPerPixel,
+            absQuantile,
+            flipY,
+            useSeismic
+        );
+    }
+
+
     inline bool saveGradientSignRGB(
         const std::filesystem::path &filePath,
         const std::vector<float> &inputRGB, // 3 floats per pixel

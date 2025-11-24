@@ -165,7 +165,6 @@ namespace Pale {
                             // Cost weighting: keep RGB if your loss is RGB; else reduce at end
                             const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(
                                 whTransmit, scene, photonMap);
-                            const float L_bg = luminance(backgroundRadianceRGB);
 
                             // Collect all alpha_i and d(alpha_i)/dPi for this segment
                             struct LocalTerm {
@@ -265,7 +264,6 @@ namespace Pale {
 
                             if (validCount != 0) {
                                 float3 pAdjoint = rayState.pathThroughput;
-                                float p = luminanceGrayscale(pAdjoint);
 
                                 for (int i = 0; i < validCount; ++i) {
                                     const uint32_t primIdx = localTerms[i].primitiveIndex;
@@ -281,31 +279,54 @@ namespace Pale {
                                     const float dTauDsv = weight * localTerms[i].dAlphaDsv;
                                     // dτ/ds_u, dτ/ds_v
 
+                                    float R = pAdjoint[0] * backgroundRadianceRGB[0];
+                                    float G = pAdjoint[1] * backgroundRadianceRGB[1];
+                                    float B = pAdjoint[2] * backgroundRadianceRGB[2];
 
                                     // Cost gradients: ∂C/∂(·) = p * L_bg * dτ/d(·)
-                                    const float3 grad_C_pos = p * L_bg * dTauDPos;
-                                    const float3 grad_C_tanU = p * L_bg * dTauDtU;
-                                    const float3 grad_C_tanV = p * L_bg * dTauDtV;
-                                    const float grad_C_scaleU = p * L_bg * dTauDsu;
-                                    const float grad_C_scaleV = p * L_bg * dTauDsv;
+                                    const float3 grad_C_pos_R = R * dTauDPos;
+                                    const float3 grad_C_pos_G = G * dTauDPos;
+                                    const float3 grad_C_pos_B = B * dTauDPos;
+                                    const float3 grad_C_tanU_R = R * dTauDtU;
+                                    const float3 grad_C_tanU_G = G * dTauDtU;
+                                    const float3 grad_C_tanU_B = B * dTauDtU;
+                                    const float3 grad_C_tanV_R = R * dTauDtV;
+                                    const float3 grad_C_tanV_G = G * dTauDtV;
+                                    const float3 grad_C_tanV_B = B * dTauDtV;
+                                    const float grad_C_scaleU_R = R * dTauDsu;
+                                    const float grad_C_scaleU_G = G * dTauDsu;
+                                    const float grad_C_scaleU_B = B * dTauDsu;
+                                    const float grad_C_scaleV_R = R * dTauDsv;
+                                    const float grad_C_scaleV_G = G * dTauDsv;
+                                    const float grad_C_scaleV_B = B * dTauDsv;
 
                                     // Accumulate
-                                    atomicAddFloat3(gradients.gradPosition[primIdx], grad_C_pos);
-                                    atomicAddFloat3(gradients.gradTanU[primIdx], grad_C_tanU);
-                                    atomicAddFloat3(gradients.gradTanV[primIdx], grad_C_tanV);
-                                    atomicAddFloat(gradients.gradScale[primIdx].x(), grad_C_scaleU);
-                                    atomicAddFloat(gradients.gradScale[primIdx].y(), grad_C_scaleV);
+                                    atomicAddFloat3(gradients.gradPosition[primIdx],
+                                                    grad_C_pos_R + grad_C_pos_G + grad_C_pos_B);
+                                    atomicAddFloat3(gradients.gradTanU[primIdx],
+                                                    grad_C_tanU_R + grad_C_tanU_G + grad_C_tanU_B);
+                                    atomicAddFloat3(gradients.gradTanV[primIdx],
+                                                    grad_C_tanV_R + grad_C_tanV_G + grad_C_tanV_B);
+                                    atomicAddFloat(gradients.gradScale[primIdx].x(),
+                                                   grad_C_scaleU_R + grad_C_scaleU_G + grad_C_scaleU_B);
+                                    atomicAddFloat(gradients.gradScale[primIdx].y(),
+                                                   grad_C_scaleV_R + grad_C_scaleV_G + grad_C_scaleV_B);
 
+                                    /*
                                     const auto& surfel = scene.points[primIdx];
                                     float dBsdf_world = dot(
                                         grad_C_tanU, cross(float3{0, 1, 0}, surfel.tanU)) + dot(
                                         grad_C_tanV, cross(float3{0, 1, 0}, surfel.tanV));
+                                    */
 
 
                                     if (rayState.bounceIndex >= recordBounceIndex) {
-                                        const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
+                                        const float dVdp_scalar_R = dot(grad_C_pos_R, parameterAxis);
+                                        const float dVdp_scalar_G = dot(grad_C_pos_G, parameterAxis);
+                                        const float dVdp_scalar_B = dot(grad_C_pos_B, parameterAxis);
                                         float4& gradImageDst = gradients.framebuffer[rayState.pixelIndex];
-                                        atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                                        float4 gradVectorRGB = {dVdp_scalar_R, dVdp_scalar_G, dVdp_scalar_B, 0.0f};
+                                        atomicAddFloat4ToImage(&gradImageDst, gradVectorRGB);
                                     }
 
                                     /*
@@ -425,10 +446,8 @@ namespace Pale {
                                 const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
                                     terminal, ray.direction, scene, photonMap,
                                     false, true, true);
-                                float L_surfel = luminanceGrayscale(surfelRadianceRGB);
                                 // 5) Final gradient assembly
                                 float3 pAdjoint = rayState.pathThroughput;
-                                float p = luminanceGrayscale(pAdjoint);
                                 // Transmission gradient from direction change
                                 float brdfLuminance = luminanceGrayscale(f_s_rgb);
 
@@ -443,49 +462,56 @@ namespace Pale {
                                 float brdfGrad_scaleV = gradsv;
                                 float brdfGrad_color = alpha;
 
-                                float3 grad_C_pos = p * L_surfel * (brdfGrad_Position);
-                                float3 grad_C_tanU = p * L_surfel * (brdfGrad_TanU);
-                                float3 grad_C_tanV = p * L_surfel * (brdfGrad_TanV);
-                                float grad_C_scaleU = p * L_surfel * brdfGrad_scaleU;
-                                float grad_C_scaleV = p * L_surfel * brdfGrad_scaleV;
-                                float grad_C_color = p * L_surfel * brdfGrad_color;
 
+                                float R = pAdjoint[0] * surfelRadianceRGB[0];
+                                float G = pAdjoint[1] * surfelRadianceRGB[1];
+                                float B = pAdjoint[2] * surfelRadianceRGB[2];
 
-                                const uint32_t primitiveIndex = terminal.primitiveIndex;
+                                // Cost gradients: ∂C/∂(·) = p * L_bg * dτ/d(·)
+                                const float3 grad_C_pos_R = R * brdfGrad_Position;
+                                const float3 grad_C_pos_G = G * brdfGrad_Position;
+                                const float3 grad_C_pos_B = B * brdfGrad_Position;
+                                const float3 grad_C_tanU_R = R * brdfGrad_TanU;
+                                const float3 grad_C_tanU_G = G * brdfGrad_TanU;
+                                const float3 grad_C_tanU_B = B * brdfGrad_TanU;
+                                const float3 grad_C_tanV_R = R * brdfGrad_TanV;
+                                const float3 grad_C_tanV_G = G * brdfGrad_TanV;
+                                const float3 grad_C_tanV_B = B * brdfGrad_TanV;
+                                const float grad_C_scaleU_R = R * brdfGrad_scaleU;
+                                const float grad_C_scaleU_G = G * brdfGrad_scaleU;
+                                const float grad_C_scaleU_B = B * brdfGrad_scaleU;
+                                const float grad_C_scaleV_R = R * brdfGrad_scaleV;
+                                const float grad_C_scaleV_G = G * brdfGrad_scaleV;
+                                const float grad_C_scaleV_B = B * brdfGrad_scaleV;
 
-                                // Position
-                                float3 gradPosValue{grad_C_pos.x(), grad_C_pos.y(), grad_C_pos.z()};
-                                atomicAddFloat3(gradients.gradPosition[primitiveIndex], gradPosValue);
-
-                                // Tangent U
-                                float3 gradTanUValue{grad_C_tanU.x(), grad_C_tanU.y(), grad_C_tanU.z()};
-                                atomicAddFloat3(gradients.gradTanU[primitiveIndex], gradTanUValue);
-
-                                // Tangent V
-                                float3 gradTanVValue{grad_C_tanV.x(), grad_C_tanV.y(), grad_C_tanV.z()};
-                                atomicAddFloat3(gradients.gradTanV[primitiveIndex], gradTanVValue);
-
-                                float3 gradColorValue{grad_C_color, grad_C_color, grad_C_color};
-                                atomicAddFloat3(gradients.gradColor[primitiveIndex], gradColorValue);
-
-                                // Scale (only x,y)
-                                atomicAddFloat(gradients.gradScale[primitiveIndex].x(), grad_C_scaleU);
-                                atomicAddFloat(gradients.gradScale[primitiveIndex].y(), grad_C_scaleV);
-
+                                uint32_t primIdx = terminalPrim;
+                                // Accumulate
+                                atomicAddFloat3(gradients.gradPosition[primIdx],
+                                                grad_C_pos_R + grad_C_pos_G + grad_C_pos_B);
+                                atomicAddFloat3(gradients.gradTanU[primIdx],
+                                                grad_C_tanU_R + grad_C_tanU_G + grad_C_tanU_B);
+                                atomicAddFloat3(gradients.gradTanV[primIdx],
+                                                grad_C_tanV_R + grad_C_tanV_G + grad_C_tanV_B);
+                                atomicAddFloat(gradients.gradScale[primIdx].x(),
+                                               grad_C_scaleU_R + grad_C_scaleU_G + grad_C_scaleU_B);
+                                atomicAddFloat(gradients.gradScale[primIdx].y(),
+                                               grad_C_scaleV_R + grad_C_scaleV_G + grad_C_scaleV_B);
                                 // Mapping to world coordinates:
 
+                                /*
                                 float dBsdf_world = dot(
                                     grad_C_tanU, cross(float3{0, 1, 0}, surfel.tanU)) + dot(
                                     grad_C_tanV, cross(float3{0, 1, 0}, surfel.tanV));
-
-
                                 float dBsdf_world_deg = dBsdf_world;
-
+                                */
 
                                 if (rayState.bounceIndex >= recordBounceIndex) {
-                                    const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
+                                    const float dVdp_scalar_R = dot(grad_C_pos_R, parameterAxis);
+                                    const float dVdp_scalar_G = dot(grad_C_pos_G, parameterAxis);
+                                    const float dVdp_scalar_B = dot(grad_C_pos_B, parameterAxis);
                                     float4& gradImageDst = gradients.framebuffer[rayState.pixelIndex];
-                                    atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                                    float4 gradVectorRGB = {dVdp_scalar_R, dVdp_scalar_G, dVdp_scalar_B, 0.0f};
+                                    atomicAddFloat4ToImage(&gradImageDst, gradVectorRGB);
                                 }
 
 
@@ -673,31 +699,56 @@ namespace Pale {
                                     // dτ/ds_u, dτ/ds_v
 
 
+                                    float R = pAdjoint[0] * backgroundRadianceRGB[0];
+                                    float G = pAdjoint[1] * backgroundRadianceRGB[1];
+                                    float B = pAdjoint[2] * backgroundRadianceRGB[2];
+
                                     // Cost gradients: ∂C/∂(·) = p * L_bg * dτ/d(·)
-                                    const float3 grad_C_pos = p * L_bg * dTauDPos;
-                                    const float3 grad_C_tanU = p * L_bg * dTauDtU;
-                                    const float3 grad_C_tanV = p * L_bg * dTauDtV;
-                                    const float grad_C_scaleU = p * L_bg * dTauDsu;
-                                    const float grad_C_scaleV = p * L_bg * dTauDsv;
+                                    const float3 grad_C_pos_R = R * dTauDPos;
+                                    const float3 grad_C_pos_G = G * dTauDPos;
+                                    const float3 grad_C_pos_B = B * dTauDPos;
+                                    const float3 grad_C_tanU_R = R * dTauDtU;
+                                    const float3 grad_C_tanU_G = G * dTauDtU;
+                                    const float3 grad_C_tanU_B = B * dTauDtU;
+                                    const float3 grad_C_tanV_R = R * dTauDtV;
+                                    const float3 grad_C_tanV_G = G * dTauDtV;
+                                    const float3 grad_C_tanV_B = B * dTauDtV;
+                                    const float grad_C_scaleU_R = R * dTauDsu;
+                                    const float grad_C_scaleU_G = G * dTauDsu;
+                                    const float grad_C_scaleU_B = B * dTauDsu;
+                                    const float grad_C_scaleV_R = R * dTauDsv;
+                                    const float grad_C_scaleV_G = G * dTauDsv;
+                                    const float grad_C_scaleV_B = B * dTauDsv;
 
                                     // Accumulate
-                                    atomicAddFloat3(gradients.gradPosition[primIdx], grad_C_pos);
-                                    atomicAddFloat3(gradients.gradTanU[primIdx], grad_C_tanU);
-                                    atomicAddFloat3(gradients.gradTanV[primIdx], grad_C_tanV);
-                                    atomicAddFloat(gradients.gradScale[primIdx].x(), grad_C_scaleU);
-                                    atomicAddFloat(gradients.gradScale[primIdx].y(), grad_C_scaleV);
+                                    atomicAddFloat3(gradients.gradPosition[primIdx],
+                                                    grad_C_pos_R + grad_C_pos_G + grad_C_pos_B);
+                                    atomicAddFloat3(gradients.gradTanU[primIdx],
+                                                    grad_C_tanU_R + grad_C_tanU_G + grad_C_tanU_B);
+                                    atomicAddFloat3(gradients.gradTanV[primIdx],
+                                                    grad_C_tanV_R + grad_C_tanV_G + grad_C_tanV_B);
+                                    atomicAddFloat(gradients.gradScale[primIdx].x(),
+                                                   grad_C_scaleU_R + grad_C_scaleU_G + grad_C_scaleU_B);
+                                    atomicAddFloat(gradients.gradScale[primIdx].y(),
+                                                   grad_C_scaleV_R + grad_C_scaleV_G + grad_C_scaleV_B);
 
+                                    /*
                                     const auto& surfel = scene.points[primIdx];
                                     float dBsdf_world = dot(
                                         grad_C_tanU, cross(float3{0, 1, 0}, surfel.tanU)) + dot(
                                         grad_C_tanV, cross(float3{0, 1, 0}, surfel.tanV));
+                                    */
 
 
                                     if (rayState.bounceIndex >= recordBounceIndex) {
-                                        const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
+                                        const float dVdp_scalar_R = dot(grad_C_pos_R, parameterAxis);
+                                        const float dVdp_scalar_G = dot(grad_C_pos_G, parameterAxis);
+                                        const float dVdp_scalar_B = dot(grad_C_pos_B, parameterAxis);
                                         float4& gradImageDst = gradients.framebuffer[rayState.pixelIndex];
-                                        atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                                        float4 gradVectorRGB = {dVdp_scalar_R, dVdp_scalar_G, dVdp_scalar_B, 0.0f};
+                                        atomicAddFloat4ToImage(&gradImageDst, gradVectorRGB);
                                     }
+
 
                                     /*
                                                                         if (isWatched) {
@@ -717,8 +768,6 @@ namespace Pale {
 
 
                     {
-
-
                         AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng128);
                         // Direction to the sampled emitter point
                         const float3 toLightVector = ls.positionW - rayState.ray.origin;
@@ -877,30 +926,56 @@ namespace Pale {
                                             // dτ/ds_u, dτ/ds_v
 
 
+                                            float R = pAdjoint[0] * backgroundRadianceRGB[0];
+                                            float G = pAdjoint[1] * backgroundRadianceRGB[1];
+                                            float B = pAdjoint[2] * backgroundRadianceRGB[2];
+
                                             // Cost gradients: ∂C/∂(·) = p * L_bg * dτ/d(·)
-                                            const float3 grad_C_pos = p * L_bg * dTauDPos;
-                                            const float3 grad_C_tanU = p * L_bg * dTauDtU;
-                                            const float3 grad_C_tanV = p * L_bg * dTauDtV;
-                                            const float grad_C_scaleU = p * L_bg * dTauDsu;
-                                            const float grad_C_scaleV = p * L_bg * dTauDsv;
+                                            const float3 grad_C_pos_R = R * dTauDPos;
+                                            const float3 grad_C_pos_G = G * dTauDPos;
+                                            const float3 grad_C_pos_B = B * dTauDPos;
+                                            const float3 grad_C_tanU_R = R * dTauDtU;
+                                            const float3 grad_C_tanU_G = G * dTauDtU;
+                                            const float3 grad_C_tanU_B = B * dTauDtU;
+                                            const float3 grad_C_tanV_R = R * dTauDtV;
+                                            const float3 grad_C_tanV_G = G * dTauDtV;
+                                            const float3 grad_C_tanV_B = B * dTauDtV;
+                                            const float grad_C_scaleU_R = R * dTauDsu;
+                                            const float grad_C_scaleU_G = G * dTauDsu;
+                                            const float grad_C_scaleU_B = B * dTauDsu;
+                                            const float grad_C_scaleV_R = R * dTauDsv;
+                                            const float grad_C_scaleV_G = G * dTauDsv;
+                                            const float grad_C_scaleV_B = B * dTauDsv;
 
                                             // Accumulate
-                                            atomicAddFloat3(gradients.gradPosition[primIdx], grad_C_pos);
-                                            atomicAddFloat3(gradients.gradTanU[primIdx], grad_C_tanU);
-                                            atomicAddFloat3(gradients.gradTanV[primIdx], grad_C_tanV);
-                                            atomicAddFloat(gradients.gradScale[primIdx].x(), grad_C_scaleU);
-                                            atomicAddFloat(gradients.gradScale[primIdx].y(), grad_C_scaleV);
+                                            atomicAddFloat3(gradients.gradPosition[primIdx],
+                                                            grad_C_pos_R + grad_C_pos_G + grad_C_pos_B);
+                                            atomicAddFloat3(gradients.gradTanU[primIdx],
+                                                            grad_C_tanU_R + grad_C_tanU_G + grad_C_tanU_B);
+                                            atomicAddFloat3(gradients.gradTanV[primIdx],
+                                                            grad_C_tanV_R + grad_C_tanV_G + grad_C_tanV_B);
+                                            atomicAddFloat(gradients.gradScale[primIdx].x(),
+                                                           grad_C_scaleU_R + grad_C_scaleU_G + grad_C_scaleU_B);
+                                            atomicAddFloat(gradients.gradScale[primIdx].y(),
+                                                           grad_C_scaleV_R + grad_C_scaleV_G + grad_C_scaleV_B);
 
+                                            /*
                                             const auto& surfel = scene.points[primIdx];
                                             float dBsdf_world = dot(
                                                 grad_C_tanU, cross(float3{0, 1, 0}, surfel.tanU)) + dot(
                                                 grad_C_tanV, cross(float3{0, 1, 0}, surfel.tanV));
+                                            */
 
 
                                             if (rayState.bounceIndex >= recordBounceIndex) {
-                                                const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
+                                                const float dVdp_scalar_R = dot(grad_C_pos_R, parameterAxis);
+                                                const float dVdp_scalar_G = dot(grad_C_pos_G, parameterAxis);
+                                                const float dVdp_scalar_B = dot(grad_C_pos_B, parameterAxis);
                                                 float4& gradImageDst = gradients.framebuffer[rayState.pixelIndex];
-                                                atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                                                float4 gradVectorRGB = {
+                                                    dVdp_scalar_R, dVdp_scalar_G, dVdp_scalar_B, 0.0f
+                                                };
+                                                atomicAddFloat4ToImage(&gradImageDst, gradVectorRGB);
                                             }
                                         }
                                     }
@@ -908,7 +983,6 @@ namespace Pale {
                             }
                         }
                     }
-
 
 
                     uint32_t numSurfelsOnRay = whTransmit.splatEventCount;
@@ -1012,62 +1086,64 @@ namespace Pale {
                                 const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
                                     terminal, ray.direction, scene, photonMap,
                                     false, true, true);
-                                float L_surfel = luminanceGrayscale(surfelRadianceRGB);
                                 // 5) Final gradient assembly
                                 float3 pAdjoint = rayState.pathThroughput;
-                                float p = luminanceGrayscale(pAdjoint);
                                 // Transmission gradient from direction change
-                                float brdfLuminance = luminanceGrayscale(f_s_rgb);
-
-
-                                float gradsu = dFsDsu;
-                                float gradsv = dFsDsv;
 
                                 float3 brdfGrad_Position = dFsDPosition;
                                 float3 brdfGrad_TanU = dFsDtU;
                                 float3 brdfGrad_TanV = dFsDtV;
-                                float brdfGrad_scaleU = gradsu;
-                                float brdfGrad_scaleV = gradsv;
+                                float brdfGrad_scaleU = dFsDsu;
+                                float brdfGrad_scaleV = dFsDsv;
 
-                                float3 grad_C_pos = p * L_surfel * (brdfGrad_Position);
-                                float3 grad_C_tanU = p * L_surfel * (brdfGrad_TanU);
-                                float3 grad_C_tanV = p * L_surfel * (brdfGrad_TanV);
-                                float grad_C_scaleU = p * L_surfel * brdfGrad_scaleU;
-                                float grad_C_scaleV = p * L_surfel * brdfGrad_scaleV;
+                                float R = pAdjoint[0] * surfelRadianceRGB[0];
+                                float G = pAdjoint[1] * surfelRadianceRGB[1];
+                                float B = pAdjoint[2] * surfelRadianceRGB[2];
+                                // Cost gradients: ∂C/∂(·) = p * L_bg * dτ/d(·)
+                                const float3 grad_C_pos_R = R * brdfGrad_Position;
+                                const float3 grad_C_pos_G = G * brdfGrad_Position;
+                                const float3 grad_C_pos_B = B * brdfGrad_Position;
+                                const float3 grad_C_tanU_R = R * brdfGrad_TanU;
+                                const float3 grad_C_tanU_G = G * brdfGrad_TanU;
+                                const float3 grad_C_tanU_B = B * brdfGrad_TanU;
+                                const float3 grad_C_tanV_R = R * brdfGrad_TanV;
+                                const float3 grad_C_tanV_G = G * brdfGrad_TanV;
+                                const float3 grad_C_tanV_B = B * brdfGrad_TanV;
+                                const float grad_C_scaleU_R = R * brdfGrad_scaleU;
+                                const float grad_C_scaleU_G = G * brdfGrad_scaleU;
+                                const float grad_C_scaleU_B = B * brdfGrad_scaleU;
+                                const float grad_C_scaleV_R = R * brdfGrad_scaleV;
+                                const float grad_C_scaleV_G = G * brdfGrad_scaleV;
+                                const float grad_C_scaleV_B = B * brdfGrad_scaleV;
 
-
-                                const uint32_t primitiveIndex = terminal.primitiveIndex;
-
-                                // Position
-                                float3 gradPosValue{grad_C_pos.x(), grad_C_pos.y(), grad_C_pos.z()};
-                                atomicAddFloat3(gradients.gradPosition[primitiveIndex], gradPosValue);
-
-                                // Tangent U
-                                float3 gradTanUValue{grad_C_tanU.x(), grad_C_tanU.y(), grad_C_tanU.z()};
-                                atomicAddFloat3(gradients.gradTanU[primitiveIndex], gradTanUValue);
-
-                                // Tangent V
-                                float3 gradTanVValue{grad_C_tanV.x(), grad_C_tanV.y(), grad_C_tanV.z()};
-                                atomicAddFloat3(gradients.gradTanV[primitiveIndex], gradTanVValue);
-
-                                // Scale (only x,y)
-                                atomicAddFloat(gradients.gradScale[primitiveIndex].x(), grad_C_scaleU);
-                                atomicAddFloat(gradients.gradScale[primitiveIndex].y(), grad_C_scaleV);
-
+                                uint32_t primIdx = terminalPrim;
+                                // Accumulate
+                                atomicAddFloat3(gradients.gradPosition[primIdx],
+                                                grad_C_pos_R + grad_C_pos_G + grad_C_pos_B);
+                                atomicAddFloat3(gradients.gradTanU[primIdx],
+                                                grad_C_tanU_R + grad_C_tanU_G + grad_C_tanU_B);
+                                atomicAddFloat3(gradients.gradTanV[primIdx],
+                                                grad_C_tanV_R + grad_C_tanV_G + grad_C_tanV_B);
+                                atomicAddFloat(gradients.gradScale[primIdx].x(),
+                                               grad_C_scaleU_R + grad_C_scaleU_G + grad_C_scaleU_B);
+                                atomicAddFloat(gradients.gradScale[primIdx].y(),
+                                               grad_C_scaleV_R + grad_C_scaleV_G + grad_C_scaleV_B);
                                 // Mapping to world coordinates:
 
+                                /*
                                 float dBsdf_world = dot(
                                     grad_C_tanU, cross(float3{0, 1, 0}, surfel.tanU)) + dot(
                                     grad_C_tanV, cross(float3{0, 1, 0}, surfel.tanV));
-
-
                                 float dBsdf_world_deg = dBsdf_world;
-
+                                */
 
                                 if (rayState.bounceIndex >= recordBounceIndex) {
-                                    const float dVdp_scalar = dot(grad_C_pos, parameterAxis);
+                                    const float dVdp_scalar_R = dot(grad_C_pos_R, parameterAxis);
+                                    const float dVdp_scalar_G = dot(grad_C_pos_G, parameterAxis);
+                                    const float dVdp_scalar_B = dot(grad_C_pos_B, parameterAxis);
                                     float4& gradImageDst = gradients.framebuffer[rayState.pixelIndex];
-                                    atomicAddFloatToImage(&gradImageDst, dVdp_scalar);
+                                    float4 gradVectorRGB = {dVdp_scalar_R, dVdp_scalar_G, dVdp_scalar_B, 0.0f};
+                                    atomicAddFloat4ToImage(&gradImageDst, gradVectorRGB);
                                 }
 
 

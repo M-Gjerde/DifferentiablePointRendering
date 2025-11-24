@@ -339,24 +339,62 @@ int main(int argc, char** argv) {
     tracer.renderBackward(adjointSensor, gradients); // PRNG replay adjoint
 
 
+{
+    auto rgba = Pale::downloadDebugGradientImage(
+        deviceSelector.getQueue(), adjointSensor, gradients);
+    const uint32_t imageWidth  = adjointSensor.width;
+    const uint32_t imageHeight = adjointSensor.height;
+    const float adjointSamplesPerPixel =
+        static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
+
+    std::filesystem::path baseDir =
+        "Output" / pointCloudPath.filename().replace_extension("");
+
+    // X gradient
     {
-        // // Save each sensor image
-        auto rgba = Pale::downloadDebugGradientImage(deviceSelector.getQueue(), adjointSensor, gradients);
-        const uint32_t W = adjointSensor.width, H = adjointSensor.height;
-        std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") / "adjoint_out.png";
-        if (Pale::Utils::saveGradientSignPNG(
-            filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 1.0, false, true)) {
+        auto filePath = baseDir / "adjoint_grad_R_seismic.png";
+        if (Pale::Utils::saveGradientSingleChannelPNG(
+                filePath, rgba, imageWidth, imageHeight,
+                /*channelIndex=*/0,
+                adjointSamplesPerPixel,
+                /*absQuantile=*/1.0f,
+                /*flipY=*/false,
+                /*useSeismic=*/true)) {
             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-        };
+        }
 
-        Pale::Utils::savePFM(filePath.replace_extension(".pfm"), rgba, W, H); // writes RGB, drops A}
-
-        filePath.replace_filename("adjoint_out_099_quantile.png");
-        if (Pale::Utils::saveGradientSignPNG(
-            filePath, rgba, W, H, tracer.getSettings().adjointSamplesPerPixel, 0.99, false, true)) {
-            Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-        };
+        filePath = baseDir / "adjoint_grad_R_seismic_q099.png";
+        Pale::Utils::saveGradientSingleChannelPNG(
+            filePath, rgba, imageWidth, imageHeight,
+            0, adjointSamplesPerPixel, 0.99f, false, true);
     }
+
+    // Y gradient
+    {
+        auto filePath = baseDir / "adjoint_grad_G_seismic.png";
+        Pale::Utils::saveGradientSingleChannelPNG(
+            filePath, rgba, imageWidth, imageHeight,
+            1, adjointSamplesPerPixel, 1.0f, false, true);
+
+        filePath = baseDir / "adjoint_grad_G_seismic_q099.png";
+        Pale::Utils::saveGradientSingleChannelPNG(
+            filePath, rgba, imageWidth, imageHeight,
+            1, adjointSamplesPerPixel, 0.99f, false, true);
+    }
+
+    // Z gradient
+    {
+        auto filePath = baseDir / "adjoint_grad_B_seismic.png";
+        Pale::Utils::saveGradientSingleChannelPNG(
+            filePath, rgba, imageWidth, imageHeight,
+            2, adjointSamplesPerPixel, 1.0f, false, true);
+
+        filePath = baseDir / "adjoint_grad_B_seismic_q099.png";
+        Pale::Utils::saveGradientSingleChannelPNG(
+            filePath, rgba, imageWidth, imageHeight,
+            2, adjointSamplesPerPixel, 0.99f, false, true);
+    }
+}
 
 
     // Write Registry:
