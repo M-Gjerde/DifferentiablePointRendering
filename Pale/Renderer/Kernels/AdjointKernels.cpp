@@ -460,7 +460,7 @@ namespace Pale {
                                 float3 brdfGrad_TanV = dFsDtV;
                                 float brdfGrad_scaleU = gradsu;
                                 float brdfGrad_scaleV = gradsv;
-                                float brdfGrad_color = alpha;
+                                float brdfGrad_albedo = alpha;
 
 
                                 float R = pAdjoint[0] * surfelRadianceRGB[0];
@@ -484,6 +484,11 @@ namespace Pale {
                                 const float grad_C_scaleV_G = G * brdfGrad_scaleV;
                                 const float grad_C_scaleV_B = B * brdfGrad_scaleV;
 
+                                const float grad_C_albedo_R = R * brdfGrad_albedo;
+                                const float grad_C_albedo_G = G * brdfGrad_albedo;
+                                const float grad_C_albedo_B = B * brdfGrad_albedo;
+
+
                                 uint32_t primIdx = terminalPrim;
                                 // Accumulate
                                 atomicAddFloat3(gradients.gradPosition[primIdx],
@@ -496,14 +501,11 @@ namespace Pale {
                                                grad_C_scaleU_R + grad_C_scaleU_G + grad_C_scaleU_B);
                                 atomicAddFloat(gradients.gradScale[primIdx].y(),
                                                grad_C_scaleV_R + grad_C_scaleV_G + grad_C_scaleV_B);
-                                // Mapping to world coordinates:
 
-                                /*
-                                float dBsdf_world = dot(
-                                    grad_C_tanU, cross(float3{0, 1, 0}, surfel.tanU)) + dot(
-                                    grad_C_tanV, cross(float3{0, 1, 0}, surfel.tanV));
-                                float dBsdf_world_deg = dBsdf_world;
-                                */
+                                float3 gradColorValue{grad_C_albedo_R, grad_C_albedo_G, grad_C_albedo_B};
+                                atomicAddFloat3(gradients.gradColor[primIdx], gradColorValue);
+
+                                // Mapping to world coordinates:
 
                                 if (rayState.bounceIndex >= recordBounceIndex) {
                                     const float dVdp_scalar_R = dot(grad_C_pos_R, parameterAxis);
@@ -582,7 +584,6 @@ namespace Pale {
                             // Cost weighting: keep RGB if your loss is RGB; else reduce at end
                             const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(
                                 whTransmit, scene, photonMap);
-                            const float L_bg = luminance(backgroundRadianceRGB);
 
                             // Collect all alpha_i and d(alpha_i)/dPi for this segment
                             struct LocalTerm {
@@ -719,6 +720,7 @@ namespace Pale {
                                     const float grad_C_scaleV_R = R * dTauDsv;
                                     const float grad_C_scaleV_G = G * dTauDsv;
                                     const float grad_C_scaleV_B = B * dTauDsv;
+
 
                                     // Accumulate
                                     atomicAddFloat3(gradients.gradPosition[primIdx],
@@ -1095,6 +1097,7 @@ namespace Pale {
                                 float3 brdfGrad_TanV = dFsDtV;
                                 float brdfGrad_scaleU = dFsDsu;
                                 float brdfGrad_scaleV = dFsDsv;
+                                float brdfGrad_albedo = alpha;
 
                                 float R = pAdjoint[0] * surfelRadianceRGB[0];
                                 float G = pAdjoint[1] * surfelRadianceRGB[1];
@@ -1115,6 +1118,10 @@ namespace Pale {
                                 const float grad_C_scaleV_R = R * brdfGrad_scaleV;
                                 const float grad_C_scaleV_G = G * brdfGrad_scaleV;
                                 const float grad_C_scaleV_B = B * brdfGrad_scaleV;
+                                const float grad_C_albedo_R = R * brdfGrad_albedo;
+                                const float grad_C_albedo_G = G * brdfGrad_albedo;
+                                const float grad_C_albedo_B = B * brdfGrad_albedo;
+
 
                                 uint32_t primIdx = terminalPrim;
                                 // Accumulate
@@ -1128,8 +1135,9 @@ namespace Pale {
                                                grad_C_scaleU_R + grad_C_scaleU_G + grad_C_scaleU_B);
                                 atomicAddFloat(gradients.gradScale[primIdx].y(),
                                                grad_C_scaleV_R + grad_C_scaleV_G + grad_C_scaleV_B);
-                                // Mapping to world coordinates:
 
+                                float3 gradColorValue{grad_C_albedo_R, grad_C_albedo_G, grad_C_albedo_B};
+                                atomicAddFloat3(gradients.gradColor[primIdx], gradColorValue);
                                 /*
                                 float dBsdf_world = dot(
                                     grad_C_tanU, cross(float3{0, 1, 0}, surfel.tanU)) + dot(
