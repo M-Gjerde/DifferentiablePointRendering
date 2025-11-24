@@ -229,10 +229,14 @@ int main(int argc, char** argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
-    auto entityGaussian = scene->createEntity("Gaussian");
-    entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
-    auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
+    bool addPoints = false;
+    if (addPoints) {
+        auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
+        auto entityGaussian = scene->createEntity("Gaussian");
+        entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
+        auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
+    }
+
 
     bool renderBunny = true;
     if (renderBunny) {
@@ -273,10 +277,10 @@ int main(int argc, char** argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e5; // 1e6
     settings.maxBounces = 4;
-    settings.numForwardPasses = 10;
+    settings.numForwardPasses = 20;
     settings.numGatherPasses = 2;
     settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 4;
+    settings.adjointSamplesPerPixel = 2;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);
@@ -284,8 +288,7 @@ int main(int argc, char** argv) {
 
     Pale::SensorGPU sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
 
-    sensor.gammaCorrection = 2.2f;
-    sensor.exposureCorrection = 2.0f;
+
     tracer.renderForward(sensor); // films is span/array
 
     {
@@ -301,6 +304,7 @@ int main(int argc, char** argv) {
     // DEBUG: modify topology via asset, then rebuild scene
     // -------------------------------------------------------
 
+    /*
     const uint32_t numberOfDebugCopies = 10;
     debugDensifyPointAsset(assetManager, assetHandle, numberOfDebugCopies);
 
@@ -319,6 +323,7 @@ int main(int argc, char** argv) {
             "out_photonmap_ldr_modified.png";
         Pale::Utils::savePNGWith3Channel(filePath, rgb, W, H);
     }
+    */
 
     // outputs derived from cameras
     // Start a Tracer

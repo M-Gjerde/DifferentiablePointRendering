@@ -17,8 +17,8 @@
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="300"/>
-            <integer name="height" value="300"/>
+            <integer name="width" value="700"/>
+            <integer name="height" value="700"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>
             <string name="component_format" value="float32"/>
@@ -45,6 +45,9 @@
         <rgb name="reflectance" value="0.570068,0.0430135,0.0443706"/>
     </bsdf>
 
+    <bsdf type="diffuse" id="blue">
+        <rgb name="reflectance" value="0.105421,0.076425,0.37798"/>
+    </bsdf>
 
     <!-- Floor:
     <shape type="obj" id="bunny">
@@ -85,7 +88,7 @@
             <rotate x="1" y="0" z="0" angle="90"/>
             <translate x="0" y="1" z="1"/>
         </transform>
-        <ref id="gray"/>
+        <ref id="blue"/>
     </shape>
 
     <!-- Left wall: x=-1, normal +X -->

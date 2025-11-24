@@ -10,7 +10,7 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e5
     bounces: int = 4
-    forward_passes: int = 10
+    forward_passes: int = 20
     gather_passes: int = 2
     adjoint_bounces: int = 2
     adjoint_passes: int = 2
@@ -35,6 +35,7 @@ class OptimizationConfig:
     pointcloud_ply: str
     target_image_path: Path
     output_dir: Path
+    personal_suffix: str = ""
 
     iterations: int = 10
     learning_rate: float = 1e-2  # base LR (for convenience / default)
@@ -85,6 +86,14 @@ def parse_args() -> OptimizationConfig:
         default=Path("OptimizationOutput"),
         help="Directory where intermediate and final outputs are saved.",
     )
+
+    parser.add_argument(
+        "--suffix",
+        type=str,
+        default="",
+        help="Optional string appended to the run output folder (e.g. 'no_shadows', 'debug', 'v2').",
+    )
+
     parser.add_argument(
         "--iterations",
         type=int,
@@ -167,10 +176,10 @@ def parse_args() -> OptimizationConfig:
     lr_base = args.learning_rate
     base_lr = args.learning_rate * args.learning_rate_multiplier
 
-    lr_pos = args.learning_rate_position or (0.5 * base_lr)
-    lr_tan = args.learning_rate_tangent or  (0.1 * base_lr)
-    lr_scale = args.learning_rate_scale or  (0.1 * base_lr)
-    lr_color = args.learning_rate_color or  (0.1 * base_lr)
+    lr_pos = args.learning_rate_position or (1.0 * base_lr)
+    lr_tan = args.learning_rate_tangent or (1.0 * base_lr)
+    lr_scale = args.learning_rate_scale or (1.0 * base_lr)
+    lr_color = args.learning_rate_color or (1.0 * base_lr)
 
     return OptimizationConfig(
         assets_root=args.assets_root,
@@ -188,4 +197,5 @@ def parse_args() -> OptimizationConfig:
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         device=args.device,
+        personal_suffix=args.suffix,
     )

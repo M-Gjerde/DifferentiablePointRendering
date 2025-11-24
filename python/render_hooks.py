@@ -84,7 +84,7 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.001, max=1.0)
+        s_clamped = torch.clamp(s, min=0.00, max=1.0)
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -110,7 +110,7 @@ def verify_colors_inplace(colors: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.0, max=1.0)
+        s_clamped = torch.clamp(s, min=0.0, max=0.99)
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())

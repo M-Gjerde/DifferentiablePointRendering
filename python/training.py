@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import time
 from pathlib import Path
@@ -17,7 +18,12 @@ from io_utils import (
     save_loss_image,
     save_gaussians_to_ply
 )
-from losses import compute_l2_loss, compute_l2_loss_and_grad
+from losses import (
+    compute_l2_loss,
+    compute_l2_loss_and_grad,
+    compute_parameter_mse,
+)
+
 from optimizers import create_optimizer
 from density_control import densify_points
 from render_hooks import (
@@ -32,6 +38,69 @@ from render_hooks import (
 from debug_init_utils import add_debug_noise_to_initial_parameters
 
 from repulsion import compute_elliptical_repulsion_loss
+import sys
+import select
+
+
+def poll_save_hotkey() -> bool:
+    """
+    Non-blocking check for a single-line keyboard input.
+    Returns True if the user typed 's' (case-insensitive) and pressed Enter.
+    """
+    if not sys.stdin.isatty():
+        return False
+
+    # select with timeout=0 -> non-blocking
+    rlist, _, _ = select.select([sys.stdin], [], [], 0.0)
+    if not rlist:
+        return False
+
+    line = sys.stdin.readline().strip()
+    return line.lower() == "s"
+
+
+def save_manual_snapshot(
+        output_dir: Path,
+        iteration: int,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        colors: torch.Tensor,
+        current_rgb_np: np.ndarray,
+) -> None:
+    """
+    Save the current state using the same filenames as the final output.
+    These will be overwritten later, both by future manual saves and at the end.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save current render
+    save_render(output_dir / "render_final.png", current_rgb_np)
+
+    # Save positions as numpy
+    save_positions_numpy(
+        output_dir / "positions_final.npy",
+        positions.detach().cpu().numpy(),
+    )
+
+    # Save full parameter set as PLY
+    ply_path = output_dir / "points_final.ply"
+    save_gaussians_to_ply(
+        ply_path,
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        colors,
+        opacity_default=1.0,
+        beta_default=0.0,
+        shape_default=0.0,
+    )
+    print(
+        f"[Iter {iteration:04d}] Hotkey 's' pressed -> "
+        f"saved render_final.png, positions_final.npy and points_final.ply"
+    )
 
 
 def clear_output_dir(output_dir: Path) -> None:
@@ -72,19 +141,28 @@ def run_optimization(
     initial_color_np = initial_params["color"]
 
     num_points = initial_positions_np.shape[0]
-    print(f"Fetched {num_points} initial points from renderer.")
+    print(f"Fetched {num_points} initial points from PLY.")
 
-    # --- Debug noise injection (can be removed later) ---
+    # For parameter-MSE reference, keep an immutable copy
+    initial_params_reference = {
+        "position": initial_positions_np.copy(),
+        "tangent_u": initial_tangent_u_np.copy(),
+        "tangent_v": initial_tangent_v_np.copy(),
+        "scale": initial_scale_np.copy(),
+        "color": initial_color_np.copy(),
+    }
+
+    ## --- Debug noise injection (can be removed later) ---
     # (initial_positions_np,
-    #   initial_tangent_u_np,
-    #   initial_tangent_v_np,
-    #   initial_scale_np,
-    #   initial_color_np,) = add_debug_noise_to_initial_parameters(
-    #   initial_positions_np,
-    #   initial_tangent_u_np,
-    #   initial_tangent_v_np,
-    #   initial_scale_np,
-    #   initial_color_np,)
+    # initial_tangent_u_np,
+    # initial_tangent_v_np,
+    # initial_scale_np,
+    # initial_color_np,) = add_debug_noise_to_initial_parameters(
+    #    initial_positions_np,
+    #    initial_tangent_u_np,
+    #    initial_tangent_v_np,
+    #    initial_scale_np,
+    #    initial_color_np, )
     # print("Initial parameters perturbed by debug Gaussian noise.")
 
     device = torch.device(config.device)
@@ -115,10 +193,42 @@ def run_optimization(
     )
 
     # --- Initial snapshot ---
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors)
-    orthonormalize_tangents_inplace(tangent_u, tangent_v)
     verify_scales_inplace(scales)
     verify_colors_inplace(colors)
+    orthonormalize_tangents_inplace(tangent_u, tangent_v)
+
+    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors)
+    rebuild_bvh(renderer)
+    # Re-fetch parameters from renderer to get canonical ordering
+    updated_parameters = fetch_parameters(renderer)
+    new_positions_np = updated_parameters["position"]
+    new_tangent_u_np = updated_parameters["tangent_u"]
+    new_tangent_v_np = updated_parameters["tangent_v"]
+    new_scale_np = updated_parameters["scale"]
+    new_color_np = updated_parameters["color"]
+    positions = torch.nn.Parameter(
+        torch.tensor(new_positions_np, device=device, dtype=torch.float32)
+    )
+    tangent_u = torch.nn.Parameter(
+        torch.tensor(new_tangent_u_np, device=device, dtype=torch.float32)
+    )
+    tangent_v = torch.nn.Parameter(
+        torch.tensor(new_tangent_v_np, device=device, dtype=torch.float32)
+    )
+    scales = torch.nn.Parameter(
+        torch.tensor(new_scale_np, device=device, dtype=torch.float32)
+    )
+    colors = torch.nn.Parameter(
+        torch.tensor(new_color_np, device=device, dtype=torch.float32)
+    )
+    optimizer = create_optimizer(
+        config,
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        colors,
+    )
 
     initial_rgb = renderer.render_forward()
     initial_rgb_np = np.asarray(initial_rgb, dtype=np.float32, order="C")
@@ -135,136 +245,105 @@ def run_optimization(
     save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
 
     iteration = 0
-    densification_interval = 50
+    densification_interval = 1e100
     rebuild_bvh_interval = 5
-    try:
-        for iteration in range(1, config.iterations + 1):
-            iteration_start = time.perf_counter()
 
-            # 1) Forward
-            current_rgb = renderer.render_forward()
-            current_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
+    metrics_csv_path = config.output_dir / "metrics.csv"
+    clear_output_dir(config.output_dir)
 
-            # 2) Loss + backward image
-            loss_value, loss_grad_image, loss_image = compute_l2_loss_and_grad(
-                current_rgb_np,
-                target_rgb,
-                return_loss_image=True,
-            )
+    # initial renders and saves (unchanged)
+    save_render(config.output_dir / "render_initial.png", initial_rgb_np)
+    save_render(config.output_dir / "render_target.png", target_rgb)
+    save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
 
-            gradients, grad_img = renderer.render_backward(loss_grad_image)
+    with open(metrics_csv_path, "w", newline="") as csv_file:
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow([
+            "iteration",
+            "loss_l2",
+            "repulsion_loss",
+            "parameter_mse",
+            "num_points",
+            "iteration_time_sec",
+        ])
 
-            # 3) Extract gradients
-            grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
-            grad_tangent_u_np = np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
-            grad_tangent_v_np = np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
-            grad_scales_np = np.asarray(gradients["scale"], dtype=np.float32, order="C")
-            grad_colors_np = np.asarray(gradients["color"], dtype=np.float32, order="C")
+        try:
+            for iteration in range(1, config.iterations + 1):
+                iteration_start = time.perf_counter()
 
-            # Optional: sanity check vs CURRENT parameter shapes
-            current_positions_shape = tuple(positions.shape)
-            if grad_position_np.shape != current_positions_shape:
-                raise RuntimeError(
-                    f"Gradient shape mismatch for position: expected {current_positions_shape}, "
-                    f"got {grad_position_np.shape}"
+                # 1) Forward
+                current_rgb = renderer.render_forward()
+                current_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
+
+                # 2) Loss + backward image
+                loss_value, loss_grad_image, loss_image = compute_l2_loss_and_grad(
+                    current_rgb_np,
+                    target_rgb,
+                    return_loss_image=True,
                 )
 
-            # 4) Apply gradients to current parameters
-            optimizer.zero_grad(set_to_none=True)
-            # Renderer gradients (from your custom adjoint)
-            positions.grad = torch.tensor(
-                grad_position_np, device=device, dtype=torch.float32
-            )
-            tangent_u.grad = torch.tensor(
-                grad_tangent_u_np, device=device, dtype=torch.float32
-            )
-            tangent_v.grad = torch.tensor(
-                grad_tangent_v_np, device=device, dtype=torch.float32
-            )
-            scales.grad = torch.tensor(
-                grad_scales_np, device=device, dtype=torch.float32
-            )
-            colors.grad = torch.tensor(
-                grad_colors_np, device=device, dtype=torch.float32
-            )
+                gradients, grad_img = renderer.render_backward(loss_grad_image)
 
-            ## --- Elliptical repulsion term (on positions only) ---------------
-            repulsion_loss = compute_elliptical_repulsion_loss(
-                positions=positions,
-                tangent_u=tangent_u,
-                tangent_v=tangent_v,
-                scales=scales,
-                radius_factor=3.0,  # ~ footprint size in uv; tune
-                repulsion_weight=5e-1,  # strength; tune
-            )
+                # 3) Extract gradients
+                grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
+                grad_tangent_u_np = np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
+                grad_tangent_v_np = np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
+                grad_scales_np = np.asarray(gradients["scale"], dtype=np.float32, order="C")
+                grad_colors_np = np.asarray(gradients["color"], dtype=np.float32, order="C")
 
-            # This will ADD to positions.grad (since we already set it),
-            # but won't touch tangent/scales/colors because we detach them.
-            if torch.isfinite(repulsion_loss) and repulsion_loss.detach().item() != 0.0:
-                repulsion_loss.backward()
+                # Optional: sanity check vs CURRENT parameter shapes
+                current_positions_shape = tuple(positions.shape)
+                if grad_position_np.shape != current_positions_shape:
+                    raise RuntimeError(
+                        f"Gradient shape mismatch for position: expected {current_positions_shape}, "
+                        f"got {grad_position_np.shape}"
+                    )
 
-            optimizer.step()
-
-            # 5) Reparameterization
-            orthonormalize_tangents_inplace(tangent_u, tangent_v)
-            verify_scales_inplace(scales)
-            verify_colors_inplace(colors)
-
-            # 6) Upload updated parameters (and rebuild if topology changed)
-            apply_point_parameters(
-                renderer,
-                positions,
-                tangent_u,
-                tangent_v,
-                scales,
-                colors,
-            )
-
-            if iteration % rebuild_bvh_interval == 0:
-                rebuild_bvh(renderer)
-
-            # 7) Densification AFTER step, at interval
-            perform_density_update = (iteration % densification_interval == 1)
-            if perform_density_update:
-                densification_result = densify_points(
-                    positions,
-                    tangent_u,
-                    tangent_v,
-                    scales,
-                    colors,
+                # 4) Apply gradients to current parameters
+                optimizer.zero_grad(set_to_none=True)
+                positions.grad = torch.tensor(
+                    grad_position_np, device=device, dtype=torch.float32
                 )
-            else:
-                densification_result = None
-
-            if densification_result is not None:
-                apply_new_points(renderer, densification_result)
-
-                # Re-fetch parameters from renderer to get canonical ordering
-                updated_parameters = fetch_parameters(renderer)
-                new_positions_np = updated_parameters["position"]
-                new_tangent_u_np = updated_parameters["tangent_u"]
-                new_tangent_v_np = updated_parameters["tangent_v"]
-                new_scale_np = updated_parameters["scale"]
-                new_color_np = updated_parameters["color"]
-
-                positions = torch.nn.Parameter(
-                    torch.tensor(new_positions_np, device=device, dtype=torch.float32)
+                tangent_u.grad = torch.tensor(
+                    grad_tangent_u_np, device=device, dtype=torch.float32
                 )
-                tangent_u = torch.nn.Parameter(
-                    torch.tensor(new_tangent_u_np, device=device, dtype=torch.float32)
+                tangent_v.grad = torch.tensor(
+                    grad_tangent_v_np, device=device, dtype=torch.float32
                 )
-                tangent_v = torch.nn.Parameter(
-                    torch.tensor(new_tangent_v_np, device=device, dtype=torch.float32)
+                scales.grad = torch.tensor(
+                    grad_scales_np, device=device, dtype=torch.float32
                 )
-                scales = torch.nn.Parameter(
-                    torch.tensor(new_scale_np, device=device, dtype=torch.float32)
-                )
-                colors = torch.nn.Parameter(
-                    torch.tensor(new_color_np, device=device, dtype=torch.float32)
+                colors.grad = torch.tensor(
+                    grad_colors_np, device=device, dtype=torch.float32
                 )
 
-                optimizer = create_optimizer(
-                    config,
+                # --- Elliptical repulsion term (on positions only) ---------------
+                repulsion_loss = compute_elliptical_repulsion_loss(
+                    positions=positions,
+                    tangent_u=tangent_u,
+                    tangent_v=tangent_v,
+                    scales=scales,
+                    radius_factor=3.0,  # tune
+                    repulsion_weight=5e-1,  # tune
+                )
+                if torch.isfinite(repulsion_loss):
+                    repulsion_value = float(repulsion_loss.detach().item())
+                else:
+                    repulsion_value = float("nan")
+                # This will ADD to positions.grad (since we already set it)
+                # if torch.isfinite(repulsion_loss) and repulsion_value != 0.0:
+                #    repulsion_loss.backward()
+
+                optimizer.step()
+
+                # 5) Reparameterization
+                orthonormalize_tangents_inplace(tangent_u, tangent_v)
+                verify_scales_inplace(scales)
+                verify_colors_inplace(colors)
+
+                # 6) Upload updated parameters (and rebuild if topology changed)
+                apply_point_parameters(
+                    renderer,
                     positions,
                     tangent_u,
                     tangent_v,
@@ -272,54 +351,175 @@ def run_optimization(
                     colors,
                 )
 
-            if iteration % config.save_interval == 0 or iteration == config.iterations:
-                snapshot_rgb_np = current_rgb_np
-                render_path = config.output_dir / "render" / f"render_iter_{iteration:04d}.png"
-                save_render(render_path, snapshot_rgb_np)
+                if iteration % rebuild_bvh_interval == 0:
+                    rebuild_bvh(renderer)
+                    # Re-fetch parameters from renderer to get canonical ordering
+                    updated_parameters = fetch_parameters(renderer)
+                    new_positions_np = updated_parameters["position"]
+                    new_tangent_u_np = updated_parameters["tangent_u"]
+                    new_tangent_v_np = updated_parameters["tangent_v"]
+                    new_scale_np = updated_parameters["scale"]
+                    new_color_np = updated_parameters["color"]
 
-                img = np.asarray(grad_img, dtype=np.float32, order="C")
-                img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+                    positions = torch.nn.Parameter(
+                        torch.tensor(new_positions_np, device=device, dtype=torch.float32)
+                    )
+                    tangent_u = torch.nn.Parameter(
+                        torch.tensor(new_tangent_u_np, device=device, dtype=torch.float32)
+                    )
+                    tangent_v = torch.nn.Parameter(
+                        torch.tensor(new_tangent_v_np, device=device, dtype=torch.float32)
+                    )
+                    scales = torch.nn.Parameter(
+                        torch.tensor(new_scale_np, device=device, dtype=torch.float32)
+                    )
+                    colors = torch.nn.Parameter(
+                        torch.tensor(new_color_np, device=device, dtype=torch.float32)
+                    )
+                    optimizer = create_optimizer(
+                        config,
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        colors,
+                    )
 
-                render_grad_quantile = (
-                        config.output_dir / "grad" / f"render_iter_grad_099_{iteration:04d}.png"
+                # 7) Densification AFTER step, at interval
+                perform_density_update = (iteration % densification_interval == 0)
+                if perform_density_update:
+                    densification_result = densify_points(
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        colors,
+                    )
+                else:
+                    densification_result = None
+
+                if densification_result is not None:
+                    apply_new_points(renderer, densification_result)
+
+                    # Re-fetch parameters from renderer to get canonical ordering
+                    updated_parameters = fetch_parameters(renderer)
+                    new_positions_np = updated_parameters["position"]
+                    new_tangent_u_np = updated_parameters["tangent_u"]
+                    new_tangent_v_np = updated_parameters["tangent_v"]
+                    new_scale_np = updated_parameters["scale"]
+                    new_color_np = updated_parameters["color"]
+
+                    positions = torch.nn.Parameter(
+                        torch.tensor(new_positions_np, device=device, dtype=torch.float32)
+                    )
+                    tangent_u = torch.nn.Parameter(
+                        torch.tensor(new_tangent_u_np, device=device, dtype=torch.float32)
+                    )
+                    tangent_v = torch.nn.Parameter(
+                        torch.tensor(new_tangent_v_np, device=device, dtype=torch.float32)
+                    )
+                    scales = torch.nn.Parameter(
+                        torch.tensor(new_scale_np, device=device, dtype=torch.float32)
+                    )
+                    colors = torch.nn.Parameter(
+                        torch.tensor(new_color_np, device=device, dtype=torch.float32)
+                    )
+
+                    optimizer = create_optimizer(
+                        config,
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        colors,
+                    )
+
+                # snapshots (unchanged)
+                if iteration % config.save_interval == 0 or iteration == config.iterations:
+                    snapshot_rgb_np = current_rgb_np
+                    render_path = config.output_dir / "render" / f"render_iter_{iteration:04d}.png"
+                    save_render(render_path, snapshot_rgb_np)
+
+                    img = np.asarray(grad_img, dtype=np.float32, order="C")
+                    img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+
+                    render_grad_quantile = (
+                            config.output_dir / "grad" / f"render_iter_grad_099_{iteration:04d}.png"
+                    )
+                    save_gradient_sign_png_py(
+                        render_grad_quantile,
+                        img,
+                        adjoint_spp=8,
+                        abs_quantile=0.999,
+                        flip_y=False,
+                    )
+
+                    save_loss_image(config.output_dir, loss_image, iteration)
+
+                num_points = positions.shape[0]
+                iteration_end = time.perf_counter()
+                iteration_time = iteration_end - iteration_start
+
+                # --- Parameter MSE vs. initial parameters -----------------------
+                current_params_np = {
+                    "position": np.array(positions.detach().cpu().numpy()),
+                    "tangent_u": np.array(tangent_u.detach().cpu().numpy()),
+                    "tangent_v": np.array(tangent_v.detach().cpu().numpy()),
+                    "scale": np.array(scales.detach().cpu().numpy()),
+                    "color": np.array(colors.detach().cpu().numpy()),
+                }
+                parameter_mse = compute_parameter_mse(
+                    current_params_np,
+                    initial_params_reference,
                 )
-                save_gradient_sign_png_py(
-                    render_grad_quantile,
-                    img,
-                    adjoint_spp=8,
-                    abs_quantile=0.999,
-                    flip_y=False,
-                )
 
-                save_loss_image(config.output_dir, loss_image, iteration)
+                # --- Write CSV row ----------------------------------------------
+                csv_writer.writerow([
+                    iteration,
+                    loss_value,
+                    repulsion_value,
+                    parameter_mse,
+                    num_points,
+                    iteration_time,
+                ])
+                csv_file.flush()
 
-            num_points = positions.shape[0]
-            iteration_end = time.perf_counter()
-            iteration_time = iteration_end - iteration_start
+                # --- Console logging (unchanged, now uses num_points, iteration_time) ---
+                if iteration % config.log_interval == 0 or iteration == 1:
+                    grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
+                    grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
+                    grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
+                    grad_scale = float(np.linalg.norm(grad_scales_np) / max(num_points, 1))
+                    grad_color = float(np.linalg.norm(grad_colors_np) / max(num_points, 1))
+                    print(
+                        f"[Iter {iteration:04d}/{config.iterations}] "
+                        f"Loss = {loss_value:.6e}, "
+                        f"|trans| = {grad_norm:.3e}, "
+                        f"|tu| = {grad_tanu:.3e}, "
+                        f"|tv| = {grad_tanv:.3e}, "
+                        f"|su,sv| = {grad_scale:.3e}, "
+                        f"|color| = {grad_color:.3e}, "
+                        f"|pts| = {num_points}, "
+                        f"t = {iteration_time:.3f} s"
+                    )
+                # --- Hotkey: press 's' + Enter in the terminal to save current state ---
+                if poll_save_hotkey():
+                    save_manual_snapshot(
+                        config.output_dir,
+                        iteration,
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        colors,
+                        current_rgb_np,
+                    )
 
-            if iteration % config.log_interval == 0 or iteration == 1:
-                grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
-                grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
-                grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
-                grad_scale = float(np.linalg.norm(grad_scales_np) / max(num_points, 1))
-                grad_color = float(np.linalg.norm(grad_colors_np) / max(num_points, 1))
-                print(
-                    f"[Iter {iteration:04d}/{config.iterations}] "
-                    f"Loss = {loss_value:.6e}, "
-                    f"|translation| = {grad_norm:.3e}, "
-                    f"|tan_u| = {grad_tanu:.3e}, "
-                    f"|tan_v| = {grad_tanv:.3e}, "
-                    f"|scale| = {grad_scale:.3e}, "
-                    f"|color| = {grad_color:.3e}, "
-                    f"|Points| = {num_points}, "
-                    f"Time = {iteration_time:.3f} s"
-                )
-
-    except KeyboardInterrupt:
-        print(
-            f"\nCtrl+C detected at iteration {iteration:04d}. "
-            "Stopping optimization loop and saving current result..."
-        )
+        except KeyboardInterrupt:
+            print(
+                f"\nCtrl+C detected at iteration {iteration:04d}. "
+                "Stopping optimization loop and saving current result..."
+            )
 
     apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors, False)
     final_rgb = renderer.render_forward()

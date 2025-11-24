@@ -742,6 +742,26 @@ public:
         Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
         pathTracer->setScene(sceneGpu, buildProducts);
     }
+    void rebuild_bvh() {
+        Pale::AssetAccessFromManager assetAccessor(*assetManager);
+
+        buildProducts = Pale::SceneBuild::build(
+            scene,
+            assetAccessor,
+            Pale::SceneBuild::BuildOptions()
+        );
+
+        Pale::SceneUpload::uploadOrReallocate(
+            buildProducts,
+            sceneGpu,
+            deviceSelector->getQueue()
+        );
+
+        Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
+        gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts);
+
+        pathTracer->setScene(sceneGpu, buildProducts);
+    }
 
     void add_new_points(const py::dict& parameterDictionary) {
         // ---------------------------------------------------------------------
@@ -984,29 +1004,7 @@ public:
         rebuild_bvh();
     }
 
-    void rebuild_bvh() {
-        Pale::AssetAccessFromManager assetAccessor(*assetManager);
 
-        buildProducts = Pale::SceneBuild::build(
-            scene,
-            assetAccessor,
-            Pale::SceneBuild::BuildOptions()
-        );
-
-        Pale::SceneUpload::uploadOrReallocate(
-            buildProducts,
-            sceneGpu,
-            deviceSelector->getQueue()
-        );
-
-        Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
-        gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts);
-
-        sensorForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
-        sensorAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
-
-        pathTracer->setScene(sceneGpu, buildProducts);
-    }
 
     void set_gaussian_transform(py::tuple translation3,
                                 py::tuple rotationQuat4,

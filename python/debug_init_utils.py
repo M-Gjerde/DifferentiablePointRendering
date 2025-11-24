@@ -16,11 +16,11 @@ def add_debug_noise_to_initial_parameters(
     scales: np.ndarray,
     colors: np.ndarray,
     *,
-    seed_positions: int = 42,
+    seed_positions: int = 7,
     seed_colors: int = 12345,
-    noise_sigma_translation: float = 0.06,
-    noise_sigma_tangent: float = 0.03,
-    noise_sigma_scale: float = 0.05,
+    noise_sigma_translation: float = 0.07,
+    noise_sigma_tangent: float = 0.05,
+    noise_sigma_scale: float = 0.03,
     noise_sigma_color: float = 0.2,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """

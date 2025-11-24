@@ -48,3 +48,36 @@ def compute_l2_loss_and_grad(
         return loss, grad_image, loss_image
 
     return loss, grad_image
+
+
+def compute_parameter_mse(current_params: dict[str, np.ndarray],
+                          initial_params: dict[str, np.ndarray]) -> float:
+    """
+    Compute a single scalar MSE over all points and all parameters
+    (position, tangent_u, tangent_v, scale, color), comparing the
+    current values to the initial ones.
+
+    If the number of points changes (densification), we only compare
+    over the first min(N_initial, N_current) points for each tensor.
+    """
+    total_sq = 0.0
+    total_count = 0
+
+    for key in ("position", "tangent_u", "tangent_v", "scale", "color"):
+        cur = current_params[key]
+        init = initial_params[key]
+
+        n = min(cur.shape[0], init.shape[0])
+        if n == 0:
+            continue
+
+        diff = cur[:n] - init[:n]
+        diff_flat = diff.reshape(-1)
+
+        total_sq += float(np.dot(diff_flat, diff_flat))
+        total_count += diff_flat.size
+
+    if total_count == 0:
+        return 0.0
+    return total_sq / total_count
+

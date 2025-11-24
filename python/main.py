@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from pathlib import Path
+
 from config import RendererSettingsConfig, parse_args
 from training import run_optimization
 
@@ -7,6 +10,33 @@ from training import run_optimization
 def main() -> None:
     config = parse_args()
     renderer_settings = RendererSettingsConfig()
+
+    base_output_dir: Path = config.output_dir
+
+    # Human-readable timestamp
+    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+
+    # Short scene name
+    scene_short = Path(config.scene_xml).stem
+
+    # Build readable base
+    run_folder_name = (
+        f"{timestamp}_"
+        f"lr{config.learning_rate_position:.3g}_"
+        f"it{config.iterations}_"
+        f"{scene_short}"
+    )
+
+    # Optional custom suffix
+    if config.personal_suffix:
+        # ensure clean formatting: no spaces, only safe chars
+        safe_suffix = config.personal_suffix.strip().replace(" ", "_")
+        run_folder_name += f"_{safe_suffix}"
+
+    run_output_dir = base_output_dir / run_folder_name
+
+    # Override config.output_dir
+    config.output_dir = run_output_dir
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Starting optimization with configuration:")
@@ -20,8 +50,8 @@ def main() -> None:
     print(f"  lr_scale             : {config.learning_rate_scale}")
     print(f"  lr_color             : {config.learning_rate_color}")
     print(f"  optimizer            : {config.optimizer_type}")
-    print(f"  output_dir           : {config.output_dir}")
-    print(f"  device               : {config.device}")
+    print(f"  suffix               : '{config.personal_suffix}'")
+    print(f"  run_output_dir       : {config.output_dir}")
 
     run_optimization(config, renderer_settings)
 
