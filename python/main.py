@@ -48,7 +48,7 @@ def main() -> None:
     print(f"  lr_position          : {config.learning_rate_position}")
     print(f"  lr_tangent           : {config.learning_rate_tangent}")
     print(f"  lr_scale             : {config.learning_rate_scale}")
-    print(f"  lr_color             : {config.learning_rate_color}")
+    print(f"  lr_color             : {config.learning_rate_albedo}")
     print(f"  optimizer            : {config.optimizer_type}")
     print(f"  suffix               : '{config.personal_suffix}'")
     print(f"  run_output_dir       : {config.output_dir}")

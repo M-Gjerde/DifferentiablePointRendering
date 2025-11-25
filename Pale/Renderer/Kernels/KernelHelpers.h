@@ -435,7 +435,7 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float* outOpacity, float kSigmas = 2.6f) {
+    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float* outOpacity, float kSigmas = 2.2f) {
         const float r2 = u * u + v * v;
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 > kSigmas * kSigmas)
@@ -668,6 +668,22 @@ namespace Pale {
         return static_cast<std::uint32_t>(linear);
     }
 
+    inline float squaredDistanceToCellBounds(const float3& point,
+                                         const sycl::int3& cell,
+                                         const DeviceSurfacePhotonMapGrid& grid) {
+        const float3 cellMin = grid.gridOriginWorld + float3{
+            static_cast<float>(cell.x()) * grid.cellSizeWorld.x(),
+            static_cast<float>(cell.y()) * grid.cellSizeWorld.y(),
+            static_cast<float>(cell.z()) * grid.cellSizeWorld.z()};
+        const float3 cellMax = cellMin + grid.cellSizeWorld;
+
+        const float dx = sycl::fmax(cellMin.x() - point.x(), point.x() - cellMax.x());
+        const float dy = sycl::fmax(cellMin.y() - point.y(), point.y() - cellMax.y());
+        const float dz = sycl::fmax(cellMin.z() - point.z(), point.z() - cellMax.z());
+
+        return dx * dx + dy * dy + dz * dz;
+    }
+
     inline int signNonZero(float x) { return (x >= 0.0f) ? 1 : -1; }
 
 
@@ -736,6 +752,8 @@ namespace Pale {
                     };
 
                     if (!isInsideGrid(neighborCell, photonMap.gridResolution)) continue;
+                    if (squaredDistanceToCellBounds(surfacePositionW, neighborCell, photonMap) > localRadiusSquared)
+                        continue;
 
                     const std::uint32_t cellIndex =
                         linearCellIndex(neighborCell, photonMap.gridResolution);
@@ -822,6 +840,8 @@ namespace Pale {
                 for (int dx = -rx; dx <= rx; ++dx) {
                     const sycl::int3 neighborCell{centerCell.x() + dx, centerCell.y() + dy, centerCell.z() + dz};
                     if (!isInsideGrid(neighborCell, photonMap.gridResolution)) continue;
+                    if (squaredDistanceToCellBounds(surfacePositionW, neighborCell, photonMap) > localRadiusSq)
+                        continue;
 
                     const std::uint32_t cellIndex = linearCellIndex(neighborCell, photonMap.gridResolution);
 

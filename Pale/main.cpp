@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-            assetIndexer.importPath("meshes/Torus.ply", Pale::AssetType::Mesh);
+            assetIndexer.importPath("meshes/torus.ply", Pale::AssetType::Mesh);
 
         auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
@@ -273,12 +273,12 @@ int main(int argc, char** argv) {
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e4;
+    settings.photonsPerLaunch = 1e5;
     settings.maxBounces = 4;
-    settings.numForwardPasses = 20;
-    settings.numGatherPasses = 2;
+    settings.numForwardPasses = 15;
+    settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 2;
+    settings.adjointSamplesPerPixel = 16;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);

@@ -10,10 +10,10 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e5
     bounces: int = 4
-    forward_passes: int = 20
-    gather_passes: int = 2
+    forward_passes: int = 15
+    gather_passes: int = 1
     adjoint_bounces: int = 2
-    adjoint_passes: int = 2
+    adjoint_passes: int = 4
     logging: int = 3  # Spdlog enums
 
     def as_dict(self) -> Dict[str, float | int]:
@@ -42,7 +42,8 @@ class OptimizationConfig:
     learning_rate_position: float = 1e-2
     learning_rate_tangent: float = 1e-2
     learning_rate_scale: float = 1e-2
-    learning_rate_color: float = 1e-2
+    learning_rate_albedo: float = 1e-2
+    learning_rate_opacity: float = 1e-2
     optimizer_type: str = "adam"  # "adam" or "sgd"
     log_interval: int = 1
     save_interval: int = 5
@@ -170,6 +171,13 @@ def parse_args() -> OptimizationConfig:
         default=None,
         help="Learning rate for colors (defaults to ~0.5 * base LR if omitted).",
     )
+    parser.add_argument(
+        "--lr-opacity",
+        dest="learning_rate_opacity",
+        type=float,
+        default=None,
+        help="Learning rate for opacities (defaults to ~0.5 * base LR if omitted).",
+    )
 
     args = parser.parse_args()
 
@@ -180,6 +188,7 @@ def parse_args() -> OptimizationConfig:
     lr_tan = args.learning_rate_tangent or (1.0 * base_lr)
     lr_scale = args.learning_rate_scale or (1.0 * base_lr)
     lr_color = args.learning_rate_color or (1.0 * base_lr)
+    lr_opacity = args.learning_rate_opacity or (10.0 * base_lr)
 
     return OptimizationConfig(
         assets_root=args.assets_root,
@@ -192,7 +201,8 @@ def parse_args() -> OptimizationConfig:
         learning_rate_position=lr_pos,
         learning_rate_tangent=lr_tan,
         learning_rate_scale=lr_scale,
-        learning_rate_color=lr_color,
+        learning_rate_albedo=lr_color,
+        learning_rate_opacity=lr_opacity,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,

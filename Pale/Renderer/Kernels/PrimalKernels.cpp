@@ -465,13 +465,19 @@ void launchCameraGatherKernel(RenderPackage &pkg, int totalSamplesPerPixel) {
                     float3 surfelShadedRadiance =
                         0.5f * surfelRadianceFront + 0.5f * surfelRadianceBack;
 
-                    const float surfelAlpha = terminalSplatEvent.alpha;
-                    const float oneMinusAlpha = 1.0f - surfelAlpha;
+
+                    const Point &surfel = scene.points[terminalSplatEvent.primitiveIndex];
+
+                    const float alphaGeom   = terminalSplatEvent.alpha;   // α(u,v)
+                    const float eta        = surfel.opacity;            // eta
+                    const float surfelOpacity = eta * alphaGeom;          // α_eff = eta α
+
+                    const float oneMinusTotalOpacity = 1.0f - surfelOpacity;
 
                     accumulatedRadianceRGB +=
-                        transmittanceTau * surfelShadedRadiance * surfelAlpha;
+                        transmittanceTau * surfelShadedRadiance * surfelOpacity;
 
-                    transmittanceTau *= oneMinusAlpha;
+                    transmittanceTau *= oneMinusTotalOpacity;
                     if (transmittanceTau <= 1e-4f) {
                         // Almost fully opaque, no need to continue
                         break;

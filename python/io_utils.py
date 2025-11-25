@@ -9,11 +9,11 @@ import numpy as np
 
 
 def save_gradient_sign_png_py(
-    file_path: Path,
-    rgba32f: np.ndarray,  # (H,W,4) float32
-    adjoint_spp: float = 32.0,
-    abs_quantile: float = 0.99,
-    flip_y: bool = True,
+        file_path: Path,
+        rgba32f: np.ndarray,  # (H,W,4) float32
+        adjoint_spp: float = 32.0,
+        abs_quantile: float = 0.99,
+        flip_y: bool = True,
 ) -> bool:
     file_path.parent.mkdir(parents=True, exist_ok=True)
     img = np.asarray(rgba32f, dtype=np.float32, order="C")
@@ -80,9 +80,9 @@ def save_render(path: Path, rgb: np.ndarray) -> None:
 
 
 def save_loss_image(
-    output_dir: Path,
-    loss_image: np.ndarray,
-    iteration: int,
+        output_dir: Path,
+        loss_image: np.ndarray,
+        iteration: int,
 ) -> None:
     loss_image_vis = np.clip(
         loss_image / np.percentile(loss_image, 99.0), 0.0, 1.0
@@ -96,15 +96,15 @@ def save_loss_image(
 
 
 def save_gaussians_to_ply(
-    file_path: Path,
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    colors: torch.Tensor,
-    opacity_default: float = 1.0,
-    beta_default: float = 0.0,
-    shape_default: float = 0.0,
+        file_path: Path,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        colors: torch.Tensor,
+        opacities: torch.Tensor,
+        beta_default: float = 0.0,
+        shape_default: float = 0.0,
 ) -> None:
     """
     Save current point parameters to an ASCII PLY file with layout:
@@ -145,12 +145,13 @@ def save_gaussians_to_ply(
     tv = tangent_v.detach().cpu().numpy()
     sc = scales.detach().cpu().numpy()
     col = colors.detach().cpu().numpy()
+    opa = opacities.detach().cpu().numpy()
 
     num_points = pos.shape[0]
 
-    if not (tu.shape[0] == tv.shape[0] == sc.shape[0] == col.shape[0] == num_points):
+    if not (tu.shape[0] == tv.shape[0] == sc.shape[0] == col.shape[0] == opa.shape[0] == num_points):
         raise ValueError(
-            "Inconsistent point counts between positions/tangent_u/tangent_v/scales/colors"
+            "Inconsistent point counts between positions/tangent_u/tangent_v/scales/colors/opacities"
         )
 
     if sc.ndim != 2 or sc.shape[1] < 2:
@@ -195,6 +196,7 @@ def save_gaussians_to_ply(
             tv_x, tv_y, tv_z = tv[i]
             su_i = su[i]
             sv_i = sv[i]
+            opa_i = opa[i]
             albedo_r, albedo_g, albedo_b = col[i]
 
             # Use general-format with enough precision, but still readable
@@ -204,6 +206,6 @@ def save_gaussians_to_ply(
                 f"{tv_x:.9g} {tv_y:.9g} {tv_z:.9g}  "
                 f"{su_i:.9g} {sv_i:.9g}  "
                 f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
-                f"{opacity_default:.9g} {beta_default:.9g} {shape_default:.9g}\n"
+                f"{opa_i:.9g} {beta_default:.9g} {shape_default:.9g}\n"
             )
             f.write(line)

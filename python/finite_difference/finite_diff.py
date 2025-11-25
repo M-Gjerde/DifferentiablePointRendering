@@ -266,7 +266,8 @@ def render_with_rotation(renderer,
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(qx, qy, qz, qw),
         scale3=(1.0, 1.0, 1.0),
-        opacity = 1,
+        color3=(0.0, 0.0, 0.0),
+        opacity = 0,
         index=i
     )
 
@@ -285,7 +286,8 @@ def render_with_scale(renderer,
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(sx, sy, sz),
-        opacity=1,
+        color3=(0.0, 0.0, 0.0),
+        opacity=0.0,
         index=i
     )
     rgb = renderer.render_forward()
@@ -329,6 +331,7 @@ def main(args) -> None:
     eps_translation = 0.01      # translation step (world units)
     eps_rotation_deg = 0.75     # rotation step (degrees)
     eps_scale = 0.05            # scale step (dimensionless)
+    eps_opacity = 0.1            # scale step (dimensionless)
     eps_color = 0.1             # unused here
 
     # Decide which epsilon corresponds to the scalar parameter being tested
@@ -340,8 +343,10 @@ def main(args) -> None:
         param_eps = eps_scale
     elif args.param == "translation_rotation":
         param_eps = eps_translation
+    elif args.param == "opacity":
+        param_eps = eps_opacity
     else:
-        raise ValueError("param must be 'translation', 'rotation', 'scale', or 'translation_rotation'")
+        raise ValueError(...)
 
     # --- render: minus and plus depending on parameter type ---
     if args.param == "translation":
@@ -408,7 +413,31 @@ def main(args) -> None:
             scale3=(1.0, 1.0, 1.0),
             i=args.index,
         )
+    elif args.param == "opacity":
+        negative_opacity = - eps_opacity
+        positive_opacity = + eps_opacity
 
+        # minus
+        renderer.set_gaussian_transform(
+            translation3=(0.0, 0.0, 0.0),
+            rotation_quat4=(0.0, 0.0, 0.0, 1.0),
+            scale3=(1.0, 1.0, 1.0),
+            color3=(0.0, 0.0, 0.0),
+            opacity=negative_opacity,
+            index=args.index
+        )
+        rgb_minus = np.asarray(renderer.render_forward(), dtype=np.float32)
+
+        # plus
+        renderer.set_gaussian_transform(
+            translation3=(0.0, 0.0, 0.0),
+            rotation_quat4=(0.0, 0.0, 0.0, 1.0),
+            scale3=(1.0, 1.0, 1.0),
+            color3=(0.0, 0.0, 0.0),
+            opacity=positive_opacity,
+            index=args.index
+        )
+        rgb_plus = np.asarray(renderer.render_forward(), dtype=np.float32)
     else:
         raise ValueError("param must be 'translation', 'rotation', 'scale', or 'translation_rotation'")
 
@@ -502,13 +531,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--param",
         type=str,
-        choices=["translation", "rotation", "scale", "translation_rotation"],
+        choices=["translation", "rotation", "scale", "translation_rotation", "opacity"],
         default="translation",
-        help=(
-            "Which parameter to finite-difference: "
-            "'translation', 'rotation', 'scale', or 'translation_rotation'."
-        ),
     )
+
     parser.add_argument(
         "--axis",
         type=str,

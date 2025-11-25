@@ -124,6 +124,32 @@ def verify_colors_inplace(colors: torch.Tensor) -> dict[str, float]:
         }
 
 
+def verify_opacities_inplace(opacities: torch.Tensor) -> dict[str, float]:
+    """
+    In-place verification/clamping of color values.
+
+    Enforces:
+        0.0 <= c <= 1.0
+    """
+    with torch.no_grad():
+        s = opacities.data
+        before_min = float(s.min().item())
+        before_max = float(s.max().item())
+
+        s_clamped = torch.clamp(s, min=0.0, max=1.0)
+        s.copy_(s_clamped)
+
+        after_min = float(s.min().item())
+        after_max = float(s.max().item())
+
+        return {
+            "before_min": before_min,
+            "before_max": before_max,
+            "after_min": after_min,
+            "after_max": after_max,
+        }
+
+
 def apply_point_parameters(
         renderer: pale.Renderer,
         positions: torch.Tensor,
@@ -131,7 +157,7 @@ def apply_point_parameters(
         tangent_v: torch.Tensor,
         scales: torch.Tensor,
         colors: torch.Tensor,
-        shouldRebuild: bool = False
+        opacities: torch.Tensor,
 ) -> None:
     """
     Push updated positions, tangent_u, tangent_v, scales, and colors into the renderer.
@@ -155,16 +181,15 @@ def apply_point_parameters(
         colors.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
 
-    opacities = np.ones((positions_np.shape[0],), dtype=np.float32)
+    opacities_np = np.asarray(
+        opacities.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
 
     if positions_np.shape != tangent_u_np.shape or positions_np.shape != tangent_v_np.shape:
         raise RuntimeError(
             f"Shape mismatch between position {positions_np.shape}, "
             f"tangent_u {tangent_u_np.shape}, tangent_v {tangent_v_np.shape}"
         )
-
-    if shouldRebuild:
-        pass
 
     renderer.apply_point_optimization(
         {
@@ -173,18 +198,55 @@ def apply_point_parameters(
             "tangent_v": tangent_v_np,
             "scale": scales_np,
             "color": colors_np,
-            "opacity": opacities
+            "opacity": opacities_np
         }
     )
 
 
-def apply_new_points(renderer: pale.Renderer, new_points: dict[str, np.ndarray]) -> None:
+def apply_new_points(renderer, densification_result: dict | None) -> None:
+    if densification_result is None:
+        return
+
+    # densification_result is assumed to have already been applied to the
+    # PyTorch tensors (positions, scales, etc.) via your Python logic.
+    # Here we only care about actually appending new Gaussians.
+
+    new_block = densification_result.get("new")
+    if new_block is None:
+        # No new points to append
+        return
+
+    # new_block should already be numpy arrays with shapes
+    # (N,3) for position/tangent_u/tangent_v/color, (N,2) for scale
+    parameters_for_cpp = {
+        "new": {
+            "position": new_block["position"],
+            "tangent_u": new_block["tangent_u"],
+            "tangent_v": new_block["tangent_v"],
+            "scale": new_block["scale"],
+            "color": new_block["color"],
+            "opacity": new_block["opacity"],
+        }
+    }
+
+    renderer.add_points(parameters_for_cpp)
+
+
+def remove_points(renderer: pale.Renderer, indices_to_remove: np.ndarray) -> None:
     """
-    new_points dict has keys: position, tangent_u, tangent_v, scale, color.
-    This function is responsible for telling the renderer to append these
-    to its point cloud asset and rebuild its BVH/GPU buffers.
+    Remove points by index from the renderer's canonical point cloud.
+
+    indices_to_remove:
+        1D array-like of int (int32 or int64). Indices are in the current
+        canonical ordering of the renderer (i.e., after the most recent
+        fetch_parameters call).
     """
-    renderer.add_points(new_points)  # C++ binding you implement
+    indices_np = np.asarray(indices_to_remove, dtype=np.int64)
+    if indices_np.ndim != 1:
+        raise ValueError("remove_points: indices_to_remove must be 1D")
+
+    renderer.remove_points({"indices": indices_np})
+
 
 def rebuild_bvh(renderer: pale.Renderer) -> None:
     """

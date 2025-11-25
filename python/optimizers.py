@@ -12,6 +12,7 @@ def create_optimizer(
     tangent_v: torch.nn.Parameter,
     scales: torch.nn.Parameter,
     colors: torch.nn.Parameter,
+    opacities: torch.nn.Parameter,
 ) -> torch.optim.Optimizer:
     """
     Create an optimizer with per-parameter learning rates.
@@ -23,7 +24,8 @@ def create_optimizer(
     lr_pos = config.learning_rate_position or config.learning_rate
     lr_tan = config.learning_rate_tangent or config.learning_rate
     lr_scale = config.learning_rate_scale or config.learning_rate
-    lr_color = config.learning_rate_color or config.learning_rate
+    lr_color = config.learning_rate_albedo or config.learning_rate
+    lr_opacity = config.learning_rate_opacity or config.learning_rate
 
     param_groups = [
         {
@@ -41,6 +43,10 @@ def create_optimizer(
         {
             "params": [colors],
             "lr": lr_color,
+        },
+        {
+            "params": [opacities],
+            "lr": lr_opacity,
         },
     ]
 

@@ -63,7 +63,7 @@ def compute_parameter_mse(current_params: dict[str, np.ndarray],
     total_sq = 0.0
     total_count = 0
 
-    for key in ("position", "tangent_u", "tangent_v", "scale", "color"):
+    for key in ("position", "tangent_u", "tangent_v", "scale", "color", "opacity"):
         cur = current_params[key]
         init = initial_params[key]
 
