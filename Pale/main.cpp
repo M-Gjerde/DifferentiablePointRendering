@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e5; // 1e6
+    settings.photonsPerLaunch = 1e4;
     settings.maxBounces = 4;
     settings.numForwardPasses = 20;
     settings.numGatherPasses = 2;

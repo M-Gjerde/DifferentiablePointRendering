@@ -777,7 +777,7 @@ namespace Pale {
                         if (distanceToLight > 1e-6f) {
                             const float3 lightDirection = toLightVector / distanceToLight;
                             // Cosines
-                            const float3 shadingNormalW = rayState.ray.normal; // or your surfel normal
+                            const float3 shadingNormalW = rayState.ray.normal;
                             const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
                             const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
 

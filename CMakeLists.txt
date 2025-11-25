@@ -11,7 +11,6 @@ set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # PIC everywhere
 set(BUILD_SHARED_LIBS OFF)               # prefer static vendors we control
 
-
 find_package(AdaptiveCpp REQUIRED)
 
 # -------- Vendors --------
@@ -22,12 +21,12 @@ set(TINY_PLY_DIR vendor/tinyply)
 add_subdirectory(${TINY_PLY_DIR})
 include(FetchContent)
 set(SPDLOG_USE_STD_FORMAT ON)
-FetchContent_Declare(spdlog  SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/spdlog"  BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/spdlog-build")
-FetchContent_Declare(glm     SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/glm"     BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/glm-build")
+FetchContent_Declare(spdlog SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/spdlog" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/spdlog-build")
+FetchContent_Declare(glm SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/glm" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/glm-build")
 # assimp
 set(ASSIMP_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(ASSIMP_BUILD_ZLIB        ON  CACHE BOOL "" FORCE)   # internal zlib
-FetchContent_Declare(assimp  SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/assimp"  BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/assimp-build")
+set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)   # internal zlib
+FetchContent_Declare(assimp SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/assimp" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/assimp-build")
 FetchContent_Declare(yaml_cpp SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/yaml-cpp" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/yaml-cpp-build")
 FetchContent_MakeAvailable(spdlog glm assimp yaml_cpp)
 
@@ -91,11 +90,15 @@ target_sources(PaleLib
         Pale/Utils/StringFormatting.ixx
 )
 
+# ---- PaleLib ----
 target_compile_features(PaleLib PUBLIC cxx_std_20)
 target_compile_options(PaleLib
-        PUBLIC      -fopenmp=libomp
-        PRIVATE     -g -O0 -fno-inline -fno-omit-frame-pointer
+        PUBLIC
+        -fopenmp=libomp
+        PRIVATE
+        $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer>
 )
+
 target_link_libraries(PaleLib
         PRIVATE
         pugixml
@@ -123,9 +126,12 @@ add_sycl_to_target(TARGET PaleLib)
 
 # -------- Executable (main only) --------
 add_executable(${PROJECT_NAME} Pale/main.cpp)
-target_compile_options(${PROJECT_NAME} PRIVATE -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
+target_compile_options(${PROJECT_NAME}
+        PRIVATE
+        -fopenmp=libomp
+        $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer>
+)
 target_link_libraries(${PROJECT_NAME} PRIVATE PaleLib)
-
 # If main.cpp itself submits SYCL (unlikely), also decorate the exe:
 add_sycl_to_target(TARGET ${PROJECT_NAME})
 
@@ -150,20 +156,20 @@ option(BUILD_PYBIND "Build the Python module (pybind11)" OFF)
 # ---------- ... your existing CMakeLists up to cleanup.cmake ----------
 
 # ===== Optional pybind11 module =====
-if(BUILD_PYBIND)
+if (BUILD_PYBIND)
     message(STATUS "BUILD_PYBIND=ON: building Python module 'pale'")
 
     # pybind11: prefer vendored, else FetchContent
-    if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/pybind11/CMakeLists.txt")
+    if (EXISTS "${CMAKE_SOURCE_DIR}/vendor/pybind11/CMakeLists.txt")
         add_subdirectory("${CMAKE_SOURCE_DIR}/vendor/pybind11")
-    else()
+    else ()
         include(FetchContent)
         FetchContent_Declare(pybind11
                 GIT_REPOSITORY https://github.com/pybind/pybind11.git
-                GIT_TAG        v2.13.5
+                GIT_TAG v2.13.5
         )
         FetchContent_MakeAvailable(pybind11)
-    endif()
+    endif ()
 
     # Use current Python (helps conda/venv)
     find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
@@ -172,7 +178,11 @@ if(BUILD_PYBIND)
     add_library(pale MODULE Pale/pale_bindings.cpp)
     target_link_libraries(pale PRIVATE PaleLib pybind11::module)
     target_compile_features(pale PRIVATE cxx_std_20)
-    target_compile_options(pale PRIVATE -g -O0 -fno-inline -fno-omit-frame-pointer -fopenmp=libomp)
+    target_compile_options(pale
+            PRIVATE
+            -fopenmp=libomp
+            $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer>
+    )
 
     # If the bindings submit SYCL, decorate the module as well
     add_sycl_to_target(TARGET pale)
@@ -188,9 +198,9 @@ if(BUILD_PYBIND)
 
     # Install into the active interpreter's site-packages
     set(PYTHON_SITE "${Python3_SITEARCH}")
-    if(NOT PYTHON_SITE)
+    if (NOT PYTHON_SITE)
         set(PYTHON_SITE "${Python3_SITELIB}")
-    endif()
+    endif ()
 
     include(GNUInstallDirs)
     install(TARGETS pale
@@ -202,6 +212,6 @@ if(BUILD_PYBIND)
     add_custom_target(install_pale_debug
             COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --config Debug
             DEPENDS pale)
-else()
+else ()
     message(STATUS "BUILD_PYBIND=OFF: skipping Python module")
-endif()
+endif ()
