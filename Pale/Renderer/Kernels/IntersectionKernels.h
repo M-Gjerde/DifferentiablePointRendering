@@ -134,8 +134,8 @@ namespace Pale {
         float bestAcceptedTHit = std::numeric_limits<float>::infinity();
         bool foundAcceptedScatter = false;
         const float3 inverseDirection = safeInvDir(rayObject.direction);
-        constexpr float rayEpsilon = 1e-4f;
-        constexpr float sameDepthEpsilon = 1e-3f;
+        constexpr float rayEpsilon = 1e-6f;
+        constexpr float sameDepthEpsilon = 1e-6f;
 
         float cumulativeTransmittanceBefore = 1.0f;
 

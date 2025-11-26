@@ -483,7 +483,8 @@ namespace Pale {
                                               float tMin, float tMax,
                                               float& outTHit,
                                               float3& outHitLocal,
-                                              float& outOpacity) {
+                                              float& outOpacity,
+                                              const float& eps = 1e-6f) {
         // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
@@ -492,7 +493,7 @@ namespace Pale {
 
         // 2) Ray-plane hit
         const float nDotD = dot(unitNormal, rayObject.direction);
-        if (sycl::fabs(nDotD) < 1e-6f)
+        if (sycl::fabs(nDotD) < eps)
             return false;
 
         const float tHit = dot(unitNormal, (surfel.position - rayObject.origin)) / nDotD;

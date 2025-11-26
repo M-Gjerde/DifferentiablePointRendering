@@ -25,7 +25,8 @@ from losses import (
 )
 
 from optimizers import create_optimizer
-from density_control import densify_points
+from density_control import (densify_points_long_axis_split, compute_prune_indices_by_opacity)
+from render_hooks import remove_points
 from render_hooks import (
     fetch_parameters,
     apply_point_parameters,
@@ -33,7 +34,7 @@ from render_hooks import (
     verify_scales_inplace,
     verify_colors_inplace,
     verify_opacities_inplace,
-    apply_new_points,
+    add_new_points,
     rebuild_bvh
 )
 from debug_init_utils import add_debug_noise_to_initial_parameters
@@ -157,19 +158,19 @@ def run_optimization(
     }
 
     # --- Debug noise injection (can be removed later) ---
-    (initial_positions_np,
-     initial_tangent_u_np,
-     initial_tangent_v_np,
-     initial_scale_np,
-     initial_color_np,
-     initial_opacity_np) = add_debug_noise_to_initial_parameters(
-        initial_positions_np,
-        initial_tangent_u_np,
-        initial_tangent_v_np,
-        initial_scale_np,
-        initial_color_np,
-        initial_opacity_np)
-    print("Initial parameters perturbed by debug Gaussian noise.")
+    # (initial_positions_np,
+    # initial_tangent_u_np,
+    # initial_tangent_v_np,
+    # initial_scale_np,
+    # initial_color_np,
+    # initial_opacity_np) = add_debug_noise_to_initial_parameters(
+    #    initial_positions_np,
+    #    initial_tangent_u_np,
+    #    initial_tangent_v_np,
+    #    initial_scale_np,
+    #    initial_color_np,
+    #    initial_opacity_np)
+    # print("Initial parameters perturbed by debug Gaussian noise.")
 
     device = torch.device(config.device)
 
@@ -251,9 +252,20 @@ def run_optimization(
     save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
 
     iteration = 0
-    densification_interval = 1e100
-    rebuild_bvh_interval = 5
+    # Heuristics for density control:
+    # - Start after a short burn-in so geometry and lighting stabilize a bit.
+    # - Densify less often than you optimize.
+    # - Prune slightly more often than you densify.
+    densification_interval = 10  # densify every 100 iterations
+    prune_interval = 5  # prune every 50 iterations
+    burnin_iterations = 5  # do not touch topology before this
+    reset_opacity_interval = 200  # do not touch topology before this
 
+    # Opacity-based pruning parameters
+    opacity_prune_threshold = 0.5  # prune lowest 15% opacities (quantile mode)
+    max_prune_fraction = 0.3  # never prune more than 30% in one step
+
+    rebuild_bvh_interval = 1  # keep this if you want per-iter rebuild
     metrics_csv_path = config.output_dir / "metrics.csv"
     clear_output_dir(config.output_dir)
 
@@ -326,7 +338,26 @@ def run_optimization(
                     grad_opacities_np, device=device, dtype=torch.float32
                 )
 
+                # --- Elliptical repulsion term (on positions only) ---------------
+                repulsion_loss = compute_elliptical_repulsion_loss(
+                    positions=positions,
+                    tangent_u=tangent_u,
+                    tangent_v=tangent_v,
+                    scales=scales,
+                    radius_factor=1.0,  # 1 surfel-radius in the normalization
+                    repulsion_weight=1e-2,  # tune relative to image loss
+                    contact_distance=2.0,  # ~no overlap at d_hat >= 2
+                )
+
+                if torch.isfinite(repulsion_loss) and repulsion_loss.item() != 0.0:
+                    repulsion_loss.backward()
+
                 optimizer.step()
+
+                if iteration % reset_opacity_interval == 0:
+                    with torch.no_grad():
+                        opacities[:] = 0.1
+                    print(f"[Iter {iteration:04d}] Resetting all opacities to 0.1")
 
                 # 5) Reparameterization
                 orthonormalize_tangents_inplace(tangent_u, tangent_v)
@@ -384,25 +415,73 @@ def run_optimization(
                         opacities
                     )
 
-                # 7) Densification AFTER step, at interval
-                perform_density_update = (iteration % densification_interval == 0)
-                if perform_density_update:
-                    densification_result = densify_points(
+                # 7) Densification + pruning AFTER step, at interval
+                densification_result = None
+                indices_to_remove_list: list[int] = []
+
+                if iteration >= burnin_iterations and iteration % densification_interval == 0:
+                    # Build EDC-like importance from current gradients
+                    grad_pos_norm = np.linalg.norm(grad_position_np, axis=1)
+                    grad_scale_norm = np.linalg.norm(grad_scales_np, axis=1)
+                    grad_opacity_abs = np.abs(grad_opacities_np).reshape(-1)
+
+                    importance_np = (
+                            grad_pos_norm +
+                            0.3 * grad_scale_norm +
+                            0.1 * grad_opacity_abs
+                    )
+
+                    importance_np = np.asarray(importance_np, dtype=np.float32)  # final guarantee
+                    importance_tensor = torch.from_numpy(importance_np)
+
+                    # Reasonable budget, e.g. at most 20% new points
+                    max_new_points = max(int(0.2 * positions.shape[0]), int(5))  # or a fixed number
+
+                    densification_result = densify_points_long_axis_split(
                         positions,
                         tangent_u,
                         tangent_v,
                         scales,
                         colors,
+                        opacities,
+                        importance=importance_tensor,
+                        max_new_points=max_new_points,
+                        split_distance=0.4,
+                        minor_axis_shrink=0.85,
+                        opacity_reduction=0.8,
+                        min_long_axis_scale=0.03,
+                        grad_threshold=1e-4,
                     )
-                else:
-                    densification_result = None
 
-                if densification_result is not None:
-                    # 7a) Append new points on the C++ side (children only)
-                    apply_new_points(renderer, densification_result)
+                    if densification_result is not None:
+                        parent_indices = densification_result["prune_indices"]
+                        if parent_indices is not None and len(parent_indices) > 0:
+                            indices_to_remove_list.extend(int(i) for i in parent_indices)
 
-                    # 7b) Re-fetch parameters from renderer to get canonical ordering,
-                    #     now including the newly appended children.
+                if iteration >= burnin_iterations and iteration % prune_interval == 0:
+                    opacity_prune_indices = compute_prune_indices_by_opacity(
+                        opacities,
+                        min_opacity=opacity_prune_threshold,
+                        use_quantile=False,
+                        max_fraction_to_prune=max_prune_fraction,
+                    )
+                    if opacity_prune_indices.size > 0:
+                        indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
+
+                if indices_to_remove_list or densification_result is not None:
+                    # 1) Remove all chosen indices (split parents + low-opacity points)
+                    if indices_to_remove_list:
+                        indices_to_remove = np.unique(
+                            np.asarray(indices_to_remove_list, dtype=np.int64)
+                        )
+                        remove_points(renderer, indices_to_remove)
+                        rebuild_bvh(renderer)
+                    # 2) Add children from long-axis split (if any)
+                    if densification_result is not None:
+                        add_new_points(renderer, densification_result)
+
+                    # 3) Re-fetch parameters from renderer to get canonical ordering,
+                    #    now including the newly appended children and without pruned ones.
                     updated_parameters = fetch_parameters(renderer)
                     new_positions_np = updated_parameters["position"]
                     new_tangent_u_np = updated_parameters["tangent_u"]
@@ -430,32 +509,13 @@ def run_optimization(
                         torch.tensor(new_opacity_np, device=device, dtype=torch.float32)
                     )
 
-                    # 7c) Apply parent updates from densification in Python
-                    updated_block = densification_result.get("updated")
-                    if updated_block is not None:
-                        # updated_block["indices"]: 1D array of parent indices
-                        # updated_block["scale"]:   (K,2) array of new scales for those parents
-                        parent_indices = torch.as_tensor(
-                            updated_block["indices"],
-                            device=device,
-                            dtype=torch.long,
-                        )
-                        parent_scales = torch.as_tensor(
-                            updated_block["scale"],
-                            device=device,
-                            dtype=torch.float32,
-                        )  # shape (K, 2)
-
-                        # Overwrite selected parent scales in the tensor
-                        scales.data[parent_indices] = parent_scales
-
-                    # 7d) Reparameterization on the new tensor state
+                    # 4) Reparameterization on the new tensor state
                     orthonormalize_tangents_inplace(tangent_u, tangent_v)
                     verify_scales_inplace(scales)
                     verify_colors_inplace(colors)
                     verify_opacities_inplace(opacities)
 
-                    # Apply the changed points
+                    # 5) Push back to renderer
                     apply_point_parameters(
                         renderer,
                         positions,
@@ -463,10 +523,11 @@ def run_optimization(
                         tangent_v,
                         scales,
                         colors,
-                        opacities
+                        opacities,
                     )
 
-                    # 7e) Recreate optimizer for the new parameter set (N has changed)
+                    # 6) Rebuild BVH (topology changed) and recreate optimizer
+                    rebuild_bvh(renderer)
                     optimizer = create_optimizer(
                         config,
                         positions,
@@ -474,25 +535,25 @@ def run_optimization(
                         tangent_v,
                         scales,
                         colors,
-                        opacities
+                        opacities,
                     )
 
                 # snapshots (unchanged)
                 if iteration % config.save_interval == 0 or iteration == config.iterations:
                     snapshot_rgb_np = current_rgb_np
-                    render_path = config.output_dir / "render" / f"render_iter_{iteration:04d}.png"
+                    render_path = config.output_dir / "render" / f"{iteration:04d}_render.png"
                     save_render(render_path, snapshot_rgb_np)
 
                     img = np.asarray(grad_img, dtype=np.float32, order="C")
                     img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
 
                     render_grad_quantile = (
-                            config.output_dir / "grad" / f"render_iter_grad_099_{iteration:04d}.png"
+                            config.output_dir / "grad" / f"{iteration:04d}_grad_099.png"
                     )
                     save_gradient_sign_png_py(
                         render_grad_quantile,
                         img,
-                        adjoint_spp=8,
+                        adjoint_spp=renderer_settings.adjoint_passes,
                         abs_quantile=0.999,
                         flip_y=False,
                     )

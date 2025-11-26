@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = true;
+    bool addPoints = false;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -243,11 +243,11 @@ int main(int argc, char** argv) {
         auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
         bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.0f, 0.8f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, -25.0f, 45.0f));
-        bunnyTransformComponent.setScale(glm::vec3(0.45f));
+        bunnyTransformComponent.setScale(glm::vec3(1.0f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-            assetIndexer.importPath("meshes/torus.ply", Pale::AssetType::Mesh);
+            assetIndexer.importPath("meshes/cube.ply", Pale::AssetType::Mesh);
 
         auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
@@ -275,7 +275,7 @@ int main(int argc, char** argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e5;
     settings.maxBounces = 4;
-    settings.numForwardPasses = 15;
+    settings.numForwardPasses = 10;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 16;

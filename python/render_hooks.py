@@ -84,7 +84,7 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.00, max=1.0)
+        s_clamped = torch.clamp(s, min=0.00, max=0.3) ## TODO Enforcing a max size for the gaussians. Look if its possible to avoid this.
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -203,7 +203,7 @@ def apply_point_parameters(
     )
 
 
-def apply_new_points(renderer, densification_result: dict | None) -> None:
+def add_new_points(renderer, densification_result: dict | None) -> None:
     if densification_result is None:
         return
 
