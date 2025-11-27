@@ -8,12 +8,12 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 2e5
+    photons: float = 5e4
     bounces: int = 4
     forward_passes: int = 20
     gather_passes: int = 1
     adjoint_bounces: int = 2
-    adjoint_passes: int = 4
+    adjoint_passes: int = 8
     logging: int = 3  # Spdlog enums
 
     def as_dict(self) -> Dict[str, float | int]:
@@ -45,6 +45,7 @@ class OptimizationConfig:
     learning_rate_scale: float = 5.0e-3         # 31.25 × base
     learning_rate_albedo: float = 2.5e-3        # 15.625 × base
     learning_rate_opacity: float = 5.0e-2       # 312.5 × base
+    learning_rate_beta: float = 5.0e-2       # 312.5 × base
     optimizer_type: str = "adam"  # "adam" or "sgd"
     log_interval: int = 1
     save_interval: int = 5
@@ -179,6 +180,13 @@ def parse_args() -> OptimizationConfig:
         default=None,
         help="Learning rate for opacities (defaults to ~0.5 * base LR if omitted).",
     )
+    parser.add_argument(
+        "--lr-beta",
+        dest="learning_rate_beta",
+        type=float,
+        default=None,
+        help="Learning rate for opacities (defaults to ~0.5 * base LR if omitted).",
+    )
 
     args = parser.parse_args()
 
@@ -187,17 +195,19 @@ def parse_args() -> OptimizationConfig:
     lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log it
 
     # 3DGS-inspired relative factors w.r.t. position LR
-    factor_position = 2  # ~rotation_lr / position_lr
-    factor_tangent = 2.5  # ~rotation_lr / position_lr
-    factor_scale = 5  # ~scaling_lr / position_lr
-    factor_color = 2.5  # ~feature_lr / position_lr
+    factor_position = 0.25  # ~rotation_lr / position_lr
+    factor_tangent = 10  # ~rotation_lr / position_lr
+    factor_scale = 10  # ~scaling_lr / position_lr
+    factor_color = 15  # ~feature_lr / position_lr
     factor_opacity = 25  # ~opacity_lr / position_lr
+    factor_beta = 15  # ~opacity_lr / position_lr
 
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)
     lr_scale = args.learning_rate_scale or (factor_scale * base_lr)
     lr_color = args.learning_rate_color or (factor_color * base_lr)
     lr_opacity = args.learning_rate_opacity or (factor_opacity * base_lr)
+    lr_beta = args.learning_rate_beta or (factor_beta * base_lr)
 
     return OptimizationConfig(
         assets_root=args.assets_root,
@@ -212,6 +222,7 @@ def parse_args() -> OptimizationConfig:
         learning_rate_scale=lr_scale,
         learning_rate_albedo=lr_color,
         learning_rate_opacity=lr_opacity,
+        learning_rate_beta=lr_beta,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,

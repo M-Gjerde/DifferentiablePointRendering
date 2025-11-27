@@ -5,12 +5,11 @@
 
 
 namespace Pale {
-
     using AtomicFloat = sycl::atomic_ref<
-    float,
-    sycl::memory_order::relaxed,
-    sycl::memory_scope::device,
-    sycl::access::address_space::global_space>;
+        float,
+        sycl::memory_order::relaxed,
+        sycl::memory_scope::device,
+        sycl::access::address_space::global_space>;
 
     inline void atomicAddFloat(float &destination, float valueToAdd) {
         AtomicFloat(destination).fetch_add(valueToAdd);
@@ -236,7 +235,7 @@ namespace Pale {
             return float3{0.0f, 0.0f, 0.0f};
         }
         const float3 crossTuWithPkMinusX = cross(tangentUWorld, centerMinusOrigin);
-        const float3 crossTuWithD =        cross(tangentUWorld, rayDirectionWorld);
+        const float3 crossTuWithD = cross(tangentUWorld, rayDirectionWorld);
         const float3 firstTerm = crossTuWithPkMinusX / nd;
         const float scale = np / (nd * nd);
         const float3 secondTerm = scale * crossTuWithD;
@@ -254,7 +253,6 @@ namespace Pale {
         // outputs
         float3 &dUdTu, float3 &dVdTu,
         float3 &dUdTv, float3 &dVdTv) {
-
         const float3 offsetFromCenter = hitWorld - surfelCenterWorld; // z - p_k
 
         const float3 gradRt_tu = computeGradRayParameterWrtTU(
@@ -287,14 +285,72 @@ namespace Pale {
     inline float3 computeDuvDScale(
         float u, float v,
         float su, float sv) {
-
-        const float dAlphaDSu = -u / su;
-        const float dAlphaDSv = -v / sv;
+        const float dAlphaDSu = -(u * u) / su;
+        const float dAlphaDSv = -(v * v) / sv;
         // If you later add anisotropic / z-scale, you can extend this.
         return float3{dAlphaDSu, dAlphaDSv, 0.0f};
     }
 
-    static void calculateProjectionGradients() {
+    float3 DalphaDuvPositionGaussian(float3 DuvPosition, float alpha, float opacity) {
+        return -alpha * opacity * DuvPosition;
+    }
 
+    /*
+    float3 DalphaDuvScaleGaussian(float3 DuvDScale, float alpha) {
+        return -alpha * DuvPosition;
+    }
+    */
+
+    float3 computeDAlphaDPositionBeta(
+        const float3 &dUvWeightedDPosition, // u*du/dpos + v*dv/dpos per component
+        float beta,
+        float rSquared,
+        float alpha,
+        float opacity
+    ) {
+        const float oneMinusRSquared = 1.0f - rSquared;
+        if (oneMinusRSquared <= 0.0f) {
+            return float3(0.0f); // or clamp
+        }
+        const float factor = -2.0f * beta * alpha * opacity / oneMinusRSquared;
+        return factor * dUvWeightedDPosition;
+    }
+    float2 computeDAlphaDScaleGaussian(
+        const float3 &dUdVdScale, // u*du/dpos + v*dv/dpos per component
+        float u,
+        float v,
+        float alpha,
+        float opacity
+    ) {
+        return alpha * opacity * float2{dUdVdScale.x() * u, dUdVdScale.y() * v};
+    }
+
+    float2 computeDAlphaDScaleBeta(
+        const float3 &dUdVdScale, // u*du/dpos + v*dv/dpos per component
+        float u,
+        float v,
+        float alpha,
+        float opacity,
+        float beta,
+        float r2
+    ) {
+
+        return (-2 * beta * alpha * opacity / (1 - r2))  * float2{dUdVdScale.x() * u, dUdVdScale.y() * v};
+    }
+
+    float computeDAlphaDb(
+        float beta, // beta = 4*exp(b)
+        float rSquared,
+        float alpha
+    ) {
+        const float oneMinusRSquared = 1.0f - rSquared;
+        if (oneMinusRSquared <= 0.0f) {
+            return 0.0f;
+        }
+        return alpha * beta * std::log(oneMinusRSquared);
+    }
+
+
+    static void calculateProjectionGradients() {
     }
 }

@@ -84,7 +84,7 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.00, max=0.3) ## TODO Enforcing a max size for the gaussians. Look if its possible to avoid this.
+        s_clamped = torch.clamp(s, min=0.00, max=1.0) ## TODO Enforcing a max size for the gaussians. Look if its possible to avoid this.
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -149,6 +149,31 @@ def verify_opacities_inplace(opacities: torch.Tensor) -> dict[str, float]:
             "after_max": after_max,
         }
 
+def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
+    """
+    In-place verification/clamping of color values.
+
+    Enforces:
+        0.0 <= c <= 1.0
+    """
+    with torch.no_grad():
+        s = betas.data
+        before_min = float(s.min().item())
+        before_max = float(s.max().item())
+
+        s_clamped = torch.clamp(s, min=-4.0, max=3.0)
+        s.copy_(s_clamped)
+
+        after_min = float(s.min().item())
+        after_max = float(s.max().item())
+
+        return {
+            "before_min": before_min,
+            "before_max": before_max,
+            "after_min": after_min,
+            "after_max": after_max,
+        }
+
 
 def apply_point_parameters(
         renderer: pale.Renderer,
@@ -158,6 +183,7 @@ def apply_point_parameters(
         scales: torch.Tensor,
         colors: torch.Tensor,
         opacities: torch.Tensor,
+        betas: torch.Tensor,
 ) -> None:
     """
     Push updated positions, tangent_u, tangent_v, scales, and colors into the renderer.
@@ -184,6 +210,9 @@ def apply_point_parameters(
     opacities_np = np.asarray(
         opacities.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
+    betas_np = np.asarray(
+        betas.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
 
     if positions_np.shape != tangent_u_np.shape or positions_np.shape != tangent_v_np.shape:
         raise RuntimeError(
@@ -198,7 +227,8 @@ def apply_point_parameters(
             "tangent_v": tangent_v_np,
             "scale": scales_np,
             "color": colors_np,
-            "opacity": opacities_np
+            "opacity": opacities_np,
+            "beta": betas_np
         }
     )
 
@@ -226,6 +256,7 @@ def add_new_points(renderer, densification_result: dict | None) -> None:
             "scale": new_block["scale"],
             "color": new_block["color"],
             "opacity": new_block["opacity"],
+            "beta": new_block["beta"],
         }
     }
 

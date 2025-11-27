@@ -208,7 +208,7 @@ def saveSignedLogCompress(
 
 
 # ---------- TRS helpers ----------
-def degrees_to_quaternion(deg: float, axis: str) -> tuple[float, float, float, float]:
+def degrees_to_quaternion(deg: float, axis: str):
     """Quaternion (x, y, z, w) for rotation of `deg` degrees around axis {'x','y','z'}."""
     rad = np.deg2rad(deg)
     half = rad * 0.5
@@ -233,19 +233,22 @@ def render_with_trs(
     scale3,
     color3,
     opacity,
-    index: int,
+    beta = 0.0,
+    index = -1,
 ) -> np.ndarray:
-    """Apply a full TRS+color+opacity and render."""
+    """Apply a full TRS+color+opacity+beta and render."""
     renderer.set_gaussian_transform(
         translation3=translation3,
         rotation_quat4=rotation_quat4,
         scale3=scale3,
         color3=color3,
         opacity=opacity,
+        beta=beta,
         index=index,
     )
     rgb = np.asarray(renderer.render_forward(), dtype=np.float32)
     return rgb
+
 
 
 # ---------- Finite difference core ----------
@@ -420,6 +423,40 @@ def finite_difference_albedo(
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
     return rgb_minus, rgb_plus, grad
 
+def finite_difference_beta(
+    renderer, index: int, eps: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Central finite differences for the beta parameter (log-shape).
+    b = 4 * exp(beta); here we perturb beta by ±eps.
+    """
+    beta_minus = -eps
+    beta_plus = +eps
+
+    rgb_minus = render_with_trs(
+        renderer,
+        translation3=(0.0, 0.0, 0.0),
+        rotation_quat4=(0.0, 0.0, 0.0, 1.0),
+        scale3=(1.0, 1.0, 1.0),
+        color3=(0.0, 0.0, 0.0),
+        opacity=1.0,
+        beta=beta_minus,
+        index=index,
+    )
+    rgb_plus = render_with_trs(
+        renderer,
+        translation3=(0.0, 0.0, 0.0),
+        rotation_quat4=(0.0, 0.0, 0.0, 1.0),
+        scale3=(1.0, 1.0, 1.0),
+        color3=(0.0, 0.0, 0.0),
+        opacity=1.0,
+        beta=beta_plus,
+        index=index,
+    )
+    grad = (rgb_plus - rgb_minus) / (2.0 * eps)
+    return rgb_minus, rgb_plus, grad
+
+
 
 # ---------- Visualization for one FD gradient tensor ----------
 def write_fd_images(
@@ -502,7 +539,7 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e4,
         "bounces": 4,
-        "forward_passes": 5000,
+        "forward_passes": 500,
         "gather_passes": 4,
         "adjoint_bounces": 4,
         "adjoint_passes": 6,
@@ -527,11 +564,22 @@ def main(args) -> None:
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
 
     # Step sizes
-    eps_translation = 0.01
+    eps_translation = 0.005
     eps_rotation_deg = 0.75
     eps_scale = 0.05
     eps_opacity = 0.1
     eps_albedo = 0.1
+    eps_beta = 0.5  # reasonable start for log-shape
+
+    # --- Rotation (x,y,z) ---
+    for axis in ["x", "y", "z"]:
+        print(f"[FD] Rotation axis={axis}")
+        rgb_minus, rgb_plus, grad_fd = finite_difference_rotation(
+            renderer, args.index, axis, eps_rotation_deg
+        )
+        out_dir = base_output_dir / "rotation" / axis
+        write_fd_images(grad_fd, rgb_minus, rgb_plus, out_dir, "rotation", axis)
+
 
     # --- Translation (x,y,z) ---
     for axis in ["x", "y", "z"]:
@@ -542,14 +590,6 @@ def main(args) -> None:
         out_dir = base_output_dir / "translation" / axis
         write_fd_images(grad_fd, rgb_minus, rgb_plus, out_dir, "translation", axis)
 
-    # --- Rotation (x,y,z) ---
-    for axis in ["x", "y", "z"]:
-        print(f"[FD] Rotation axis={axis}")
-        rgb_minus, rgb_plus, grad_fd = finite_difference_rotation(
-            renderer, args.index, axis, eps_rotation_deg
-        )
-        out_dir = base_output_dir / "rotation" / axis
-        write_fd_images(grad_fd, rgb_minus, rgb_plus, out_dir, "rotation", axis)
 
     # --- Scale (x,y,z) ---
     for axis in ["x", "y", "z"]:
@@ -570,6 +610,14 @@ def main(args) -> None:
 
     # --- Albedo (R,G,B channels as separate parameters) ---
     for channel in ["R", "G", "B"]:
+        print("[FD] Beta parameter")
+        rgb_minus, rgb_plus, grad_fd = finite_difference_beta(
+            renderer, args.index, eps_beta
+        )
+        out_dir = base_output_dir / "beta"
+        write_fd_images(grad_fd, rgb_minus, rgb_plus, out_dir, "beta", "scalar")
+
+
         print(f"[FD] Albedo channel={channel}")
         rgb_minus, rgb_plus, grad_fd = finite_difference_albedo(
             renderer, args.index, channel, eps_albedo
@@ -579,6 +627,7 @@ def main(args) -> None:
 
     print("Finite-difference image generation complete.")
     time.sleep(1)
+
 
 
 def parse_args() -> argparse.Namespace:

@@ -50,7 +50,7 @@ export namespace Pale {
 
     PointGradients
     makeGradientsForScene(sycl::queue queue,
-                          const SceneBuild::BuildProducts &buildProducts) {
+                          const SceneBuild::BuildProducts &buildProducts, bool allocateDebugImages = false) {
         PointGradients out{};
 
         const uint32_t numPoints =
@@ -98,7 +98,7 @@ export namespace Pale {
         }
 
         // Allocate adjoint framebuffer (same resolution as first camera)
-        if (buildProducts.cameraCount() > 0) {
+        if (allocateDebugImages && buildProducts.cameraCount() > 0) {
             const auto &cam = buildProducts.cameras().front();
             const size_t pixelCount =
                     static_cast<size_t>(cam.width) *

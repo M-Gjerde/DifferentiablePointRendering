@@ -315,6 +315,8 @@ namespace Pale {
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
         uint32_t russianRouletteStart = 3; // Which bounce to start RR
+
+        bool renderDebugGradientImages = false;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

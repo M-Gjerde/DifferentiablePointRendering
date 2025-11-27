@@ -6,6 +6,7 @@ from pathlib import Path
 import imageio.v3 as iio
 import matplotlib
 import numpy as np
+import torch
 
 
 def save_gradient_sign_png_py(
@@ -103,7 +104,7 @@ def save_gaussians_to_ply(
         scales: torch.Tensor,
         colors: torch.Tensor,
         opacities: torch.Tensor,
-        beta_default: float = 0.0,
+        betas: torch.Tensor,
         shape_default: float = 0.0,
 ) -> None:
     """
@@ -146,10 +147,11 @@ def save_gaussians_to_ply(
     sc = scales.detach().cpu().numpy()
     col = colors.detach().cpu().numpy()
     opa = opacities.detach().cpu().numpy()
+    betas = betas.detach().cpu().numpy()
 
     num_points = pos.shape[0]
 
-    if not (tu.shape[0] == tv.shape[0] == sc.shape[0] == col.shape[0] == opa.shape[0] == num_points):
+    if not (tu.shape[0] == tv.shape[0] == sc.shape[0] == col.shape[0] == opa.shape[0] ==  betas.shape[0] == num_points):
         raise ValueError(
             "Inconsistent point counts between positions/tangent_u/tangent_v/scales/colors/opacities"
         )
@@ -197,6 +199,7 @@ def save_gaussians_to_ply(
             su_i = su[i]
             sv_i = sv[i]
             opa_i = opa[i]
+            beta_i = betas[i]
             albedo_r, albedo_g, albedo_b = col[i]
 
             # Use general-format with enough precision, but still readable
@@ -206,6 +209,6 @@ def save_gaussians_to_ply(
                 f"{tv_x:.9g} {tv_y:.9g} {tv_z:.9g}  "
                 f"{su_i:.9g} {sv_i:.9g}  "
                 f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
-                f"{opa_i:.9g} {beta_default:.9g} {shape_default:.9g}\n"
+                f"{opa_i:.9g} {beta_i:.9g} {shape_default:.9g}\n"
             )
             f.write(line)

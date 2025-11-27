@@ -274,14 +274,15 @@ int main(int argc, char **argv) {
     settings.maxBounces = 4;
     settings.numForwardPasses = 10;
     settings.numGatherPasses = 1;
-    settings.maxAdjointBounces = 1;
+    settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 16;
+    settings.renderDebugGradientImages = false;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);
     Pale::Log::PA_INFO("Forward Render Pass...");
 
-    Pale::SensorGPU sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+    Pale::SensorGPU sensor = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true);
 
 
     tracer.renderForward(sensor); // films is span/array

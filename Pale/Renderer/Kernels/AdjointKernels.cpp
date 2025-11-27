@@ -169,12 +169,15 @@ namespace Pale {
                             // Collect all alpha_i and d(alpha_i)/dPi for this segment
                             struct LocalTerm {
                                 float alpha{};
+                                float betaKernel{};
                                 float eta{};
+                                float r2{};
                                 float3 dAlphaDPos; // dα/d(center)
                                 float3 dAlphaDtU; // dα/d(tanU)
                                 float3 dAlphaDtV; // dα/d(tanV)
                                 float dAlphaDsu{}; // dα/ds_u
                                 float dAlphaDsv{}; // dα/ds_v
+                                float dalphaDbeta{}; // dα/ds_v
                                 uint32_t primitiveIndex{};
                             };
 
@@ -196,16 +199,17 @@ namespace Pale {
                                 if (sycl::fabs(denom) <= 1e-4f)
                                     continue; // skip grazing
 
+
                                 const float2 uv = phiInverse(splatEvent.hitWorld, surfel);
                                 const float u = uv.x();
                                 const float v = uv.y();
+                                const float r2 = u * u + v * v;
                                 const float alpha = splatEvent.alpha;
-
                                 const float su = surfel.scale.x();
                                 const float sv = surfel.scale.y();
 
                                 // ---- dα/d(position) ----
-                                const float3 DuvDpos =
+                                const float3 DuvPosition =
                                         computeDuvDPosition(
                                             surfel.tanU,
                                             surfel.tanV,
@@ -215,7 +219,6 @@ namespace Pale {
                                             su, sv
                                         );
 
-                                // ---- dα/d(tangents) via your existing helper ----
                                 float3 dUdTu, dVdTu, dUdTv, dVdTv;
                                 computeFullDuDvWrtTangents(
                                     ray.origin,
@@ -228,21 +231,41 @@ namespace Pale {
                                     dUdTu, dVdTu, dUdTv, dVdTv
                                 );
 
-                                float3 dAlphaDtU = (u * dUdTu + v * dVdTu);
-                                float3 dAlphaDtV = (u * dUdTv + v * dVdTv);
+                                // Full dudv derivatives
+                                float3 dFsDtU = (u * dUdTu + v * dVdTu);
+                                float3 dFsDtV = (u * dUdTv + v * dVdTv);
 
-                                // ---- dα/d(scale) (kernel-only; no area Jacobian in τ) ----
+                                float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
+                                float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
+
+                                const float betaKernel = 4 * std::exp(surfel.beta);
+                                float betaKernelFactor = (-2 * betaKernel * alpha * surfel.opacity / (1 - r2));
+                                float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
+                                float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
+
+
+                                // ---- dα/d(scale) (s_u, s_v) ----
                                 const float3 dUdVdScale =
-                                        computeDuvDScale(u, v, su, sv);
-                                // du/dsu = -u/su
-                                // dv/dsv = -v/sv
-                                const float duDsu = dUdVdScale.x();
-                                const float dvDsv = dUdVdScale.y();
+                                        computeDuvDScale(
+                                            u, v,
+                                            su, sv
+                                        );
 
-                                // dα/ds_u = (∂α/∂u)(∂u/∂s_u) = (-u α) * duDsu
-                                const float dAlphaDsu = u * duDsu;
-                                // dα/ds_v = (∂α/∂v)(∂v/∂s_v) = (-v α) * dvDsv
-                                const float dAlphaDsv = v * dvDsv;
+                                // Example: BSDF gradients for each parameter group
+                                //const float3 dFsDPosition = DalphaDuvPositionGaussian(DuvPosition, alpha, surfel.opacity);
+                                const float3 dFsDPosition = betaKernelFactor * DuvPosition;
+
+                                // dα/ds_u = (∂α/∂u)(∂u/∂s_u) = (-u α) * (du/dsu)
+                                // Gaussian Like scale
+                                //const float dFsDsu = u * dUdVdScale.x();
+                                //const float dFsDsv = v * dUdVdScale.y();
+
+                                //float2 DFsDsusv = computeDAlphaDScaleGaussian(dUdVdScale, u, v, alpha, surfel.opacity);
+                                float3 DFsDsusv = betaKernelFactor * dUdVdScale;
+
+                                // Beta parameter:
+                                float DalphaDbeta = alpha * betaKernel * sycl::log(1.0f - r2) * surfel.opacity;
+
 
                                 const float oneMinusAlpha = 1.0f - alpha * surfel.opacity;
                                 if (oneMinusAlpha <= 1e-6f)
@@ -253,11 +276,14 @@ namespace Pale {
                                 auto &lt = localTerms[validCount++];
                                 lt.alpha = alpha;
                                 lt.eta = surfel.opacity;
-                                lt.dAlphaDPos = DuvDpos;
-                                lt.dAlphaDtU = dAlphaDtU;
-                                lt.dAlphaDtV = dAlphaDtV;
-                                lt.dAlphaDsu = dAlphaDsu;
-                                lt.dAlphaDsv = dAlphaDsv;
+                                lt.r2 = r2;
+                                lt.betaKernel = betaKernel;
+                                lt.dAlphaDPos = dFsDPosition;
+                                lt.dAlphaDtU = dFsDtUBeta;
+                                lt.dAlphaDtV = dFsDtVBeta;
+                                lt.dAlphaDsu = DFsDsusv.x();
+                                lt.dAlphaDsv = DFsDsusv.y();
+                                lt.dalphaDbeta = DalphaDbeta;
                                 lt.primitiveIndex = splatEvent.primitiveIndex;
 
                                 // Update τ
@@ -272,16 +298,37 @@ namespace Pale {
 
                                     const float alpha = localTerms[i].alpha;
                                     const float eta = localTerms[i].eta;
-                                    const float weight = tau * (alpha * eta) / (1.0f - alpha * eta);
-                                    // NOTE: no extra alpha, and minus sign
+                                    const float r2 = localTerms[i].r2;
+                                    const float betaKernel = localTerms[i].betaKernel;
 
-                                    const float3 dTauDPos = weight * localTerms[i].dAlphaDPos;
-                                    const float3 dTauDtU = weight * localTerms[i].dAlphaDtU;
-                                    const float3 dTauDtV = weight * localTerms[i].dAlphaDtV;
-                                    const float dTauDsu = weight * localTerms[i].dAlphaDsu;
-                                    const float dTauDsv = weight * localTerms[i].dAlphaDsv;
-                                    const float dTauDeta = -tau * alpha / (1 - eta * alpha);
-                                    // dτ/ds_u, dτ/ds_v
+                                    // Precompute τ_i = 1 - η_i α_i
+                                    const float tau_i = 1.0f - eta * alpha;
+                                    if (tau_i <= 1e-6f)
+                                        continue;
+                                    const float invTau_i = 1.0f / tau_i;
+
+                                    // localTerms store d(ηα)/d(·) already:
+                                    const float3 dEtaAlphaDPos = localTerms[i].dAlphaDPos;
+                                    const float3 dEtaAlphaDtU = localTerms[i].dAlphaDtU;
+                                    const float3 dEtaAlphaDtV = localTerms[i].dAlphaDtV;
+                                    const float dEtaAlphaDsu = localTerms[i].dAlphaDsu;
+                                    const float dEtaAlphaDsv = localTerms[i].dAlphaDsv;
+                                    const float dEtaAlphaDbeta = localTerms[i].dalphaDbeta;
+
+                                    // From derivation:
+                                    // dτ/dΠ|_i = - τ * ( d(ηα)/dΠ ) / (1 - ηα)
+                                    const float minusTauInvTau_i = -tau * invTau_i;
+
+                                    const float3 dTauDPos = minusTauInvTau_i * dEtaAlphaDPos;
+                                    const float3 dTauDtU = minusTauInvTau_i * dEtaAlphaDtU;
+                                    const float3 dTauDtV = minusTauInvTau_i * dEtaAlphaDtV;
+                                    const float dTauDsu = minusTauInvTau_i * dEtaAlphaDsu;
+                                    const float dTauDsv = minusTauInvTau_i * dEtaAlphaDsv;
+                                    const float dTauDbeta = minusTauInvTau_i * dEtaAlphaDbeta;
+
+                                    // Opacity derivative stays:
+                                    // dτ/dη_i = τ * [ -α_i / (1 - η_i α_i) ]
+                                    const float dTauDeta = -tau * alpha * invTau_i;
 
                                     float R = pAdjoint[0] * backgroundRadianceRGB[0];
                                     float G = pAdjoint[1] * backgroundRadianceRGB[1];
@@ -312,6 +359,11 @@ namespace Pale {
                                     const float gradCOpacityG = G * dTauDeta;
                                     const float gradCOpacityB = B * dTauDeta;
 
+                                    // NEW: beta cost gradients
+                                    const float gradCBetaR = R * dTauDbeta;
+                                    const float gradCBetaG = G * dTauDbeta;
+                                    const float gradCBetaB = B * dTauDbeta;
+
                                     uint32_t primitiveIndex = primIdx;
 
                                     // Accumulate parameter-space gradients
@@ -339,7 +391,10 @@ namespace Pale {
                                         gradients.gradOpacity[primitiveIndex],
                                         gradCOpacityR + gradCOpacityG + gradCOpacityB
                                     );
-
+                                    atomicAddFloat(
+                                        gradients.gradBeta[primitiveIndex],
+                                        gradCBetaR + gradCBetaG + gradCBetaB
+                                    );
                                     // Mapping to world coordinates:
                                     const auto &surfel = scene.points[primitiveIndex];
                                     float3 dBsdf_world = float3{
@@ -353,7 +408,8 @@ namespace Pale {
                                         dot(gradCTanVB, cross(float3{0.0f, 1.0f, 0.0f}, surfel.tanV))
                                     };
 
-                                    if (rayState.bounceIndex >= recordBounceIndex) {
+                                    if (settings.renderDebugGradientImages && rayState.bounceIndex >=
+                                        recordBounceIndex) {
                                         // --- Position debug (projection on parameterAxis) ------------------
                                         const float dCdp_R = dot(gradCPosR, parameterAxis);
                                         const float dCdp_G = dot(gradCPosG, parameterAxis);
@@ -375,6 +431,10 @@ namespace Pale {
                                         const float4 opacityScalarRGB{
                                             gradCOpacityR, gradCOpacityG, gradCOpacityB, 0.0f
                                         };
+                                        // --- Opacity debug --------------------------------------------------
+                                        const float4 betaScalarRGB{
+                                            gradCBetaR, gradCBetaG, gradCBetaB, 0.0f
+                                        };
 
                                         // Write to per-parameter debug framebuffers
                                         atomicAddFloat4ToImage(
@@ -392,6 +452,10 @@ namespace Pale {
                                         atomicAddFloat4ToImage(
                                             &gradients.framebuffer_opacity[rayState.pixelIndex],
                                             opacityScalarRGB
+                                        );
+                                        atomicAddFloat4ToImage(
+                                            &gradients.framebuffer_beta[rayState.pixelIndex],
+                                            betaScalarRGB
                                         );
                                     }
 
@@ -456,6 +520,7 @@ namespace Pale {
                                 const float2 uv = phiInverse(hitWorld, surfel);
                                 const float u = uv.x();
                                 const float v = uv.y();
+                                const float r2 = u * u + v * v;
                                 const float alpha = terminal.alpha;
                                 const float su = surfel.scale.x();
                                 const float sv = surfel.scale.y();
@@ -487,6 +552,14 @@ namespace Pale {
                                 float3 dFsDtU = (u * dUdTu + v * dVdTu);
                                 float3 dFsDtV = (u * dUdTv + v * dVdTv);
 
+                                float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
+                                float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
+
+                                const float beta = 4 * std::exp(surfel.beta);
+                                float betaKernelFactor = (-2 * beta * alpha * surfel.opacity / (1 - r2));
+                                float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
+                                float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
+
 
                                 // ---- dα/d(scale) (s_u, s_v) ----
                                 const float3 dUdVdScale =
@@ -496,11 +569,20 @@ namespace Pale {
                                         );
 
                                 // Example: BSDF gradients for each parameter group
-                                const float3 dFsDPosition = DuvPosition;
+                                //const float3 dFsDPosition = DalphaDuvPositionGaussian(DuvPosition, alpha, surfel.opacity);
+                                const float3 dFsDPosition = betaKernelFactor * DuvPosition;
+
                                 // dα/ds_u = (∂α/∂u)(∂u/∂s_u) = (-u α) * (du/dsu)
-                                const float dFsDsu = u * dUdVdScale.x();
-                                // dα/ds_v = (∂α/∂v)(∂v/∂s_v) = (-v α) * (dv/dsv)
-                                const float dFsDsv = v * dUdVdScale.y();
+                                // Gaussian Like scale
+                                //const float dFsDsu = u * dUdVdScale.x();
+                                //const float dFsDsv = v * dUdVdScale.y();
+
+                                //float2 DFsDsusv = computeDAlphaDScaleGaussian(dUdVdScale, u, v, alpha, surfel.opacity);
+                                float3 DFsDsusv = betaKernelFactor * dUdVdScale;
+
+                                // Beta parameter:
+                                float DalphaDbeta = alpha * beta * sycl::log(1.0f - r2) * surfel.opacity;
+
 
                                 const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
                                     terminal, ray.direction, scene, photonMap,
@@ -508,17 +590,17 @@ namespace Pale {
 
                                 // 5) Final gradient assembly
                                 float3 pathAdjoint = rayState.pathThroughput;
-                                float gradSurfaceScaleU = dFsDsu;
-                                float gradSurfaceScaleV = dFsDsv;
 
-                                float3 brdfGradPosition = dFsDPosition * surfel.opacity * (-alpha);
-                                float3 brdfGradTanU = dFsDtU * surfel.opacity * (-alpha);
-                                float3 brdfGradTanV = dFsDtV * surfel.opacity * (-alpha);
-                                float brdfGradScaleU = gradSurfaceScaleU * surfel.opacity * (-alpha);
-                                float brdfGradScaleV = gradSurfaceScaleV * surfel.opacity * (-alpha);
+
+                                float3 brdfGradPosition = dFsDPosition;
+                                float3 brdfGradTanU = dFsDtUBeta;
+                                float3 brdfGradTanV = dFsDtVBeta;
+                                float brdfGradScaleU = DFsDsusv.x();
+                                float brdfGradScaleV = DFsDsusv.y();
 
                                 float brdfGradAlbedo = alpha * surfel.opacity;
                                 float3 brdfGradOpacity = alpha * surfel.color;
+                                float brdfGradBeta = DalphaDbeta;
 
                                 // Per-channel adjoint * radiance factor
                                 float R = pathAdjoint[0] * tau * surfelRadianceRGB[0];
@@ -554,6 +636,10 @@ namespace Pale {
                                 const float gradCOpacityG = G * brdfGradOpacity[1];
                                 const float gradCOpacityB = B * brdfGradOpacity[2];
 
+                                const float gradCBetaR = R * brdfGradBeta;
+                                const float gradCBetaG = G * brdfGradBeta;
+                                const float gradCBetaB = B * brdfGradBeta;
+
                                 uint32_t primitiveIndex = terminalPrim;
 
                                 // Accumulate parameter-space gradients
@@ -581,6 +667,10 @@ namespace Pale {
                                     gradients.gradOpacity[primitiveIndex],
                                     gradCOpacityR + gradCOpacityG + gradCOpacityB
                                 );
+                                atomicAddFloat(
+                                    gradients.gradBeta[primitiveIndex],
+                                    gradCBetaR + gradCBetaG + gradCBetaB
+                                );
 
                                 float3 gradColorValue{gradCAlbedoR, gradCAlbedoG, gradCAlbedoB};
                                 atomicAddFloat3(gradients.gradColor[primitiveIndex], gradColorValue);
@@ -597,7 +687,7 @@ namespace Pale {
                                     dot(gradCTanVB, cross(float3{0.0f, 1.0f, 0.0f}, surfel.tanV))
                                 };
 
-                                if (rayState.bounceIndex >= recordBounceIndex) {
+                                if (settings.renderDebugGradientImages && rayState.bounceIndex >= recordBounceIndex) {
                                     // --- Position debug (projection on parameterAxis) ------------------
                                     const float dCdp_R = dot(gradCPosR, parameterAxis);
                                     const float dCdp_G = dot(gradCPosG, parameterAxis);
@@ -622,6 +712,10 @@ namespace Pale {
                                     const float4 albedoScalarRGB{
                                         gradCAlbedoR, gradCAlbedoG, gradCAlbedoB, 0.0f
                                     };
+                                    // --- Beta debug ---------------------------------------------------
+                                    const float4 betaScalarRGB{
+                                        gradCBetaR, gradCBetaG, gradCBetaB, 0.0f
+                                    };
 
                                     // Write to per-parameter debug framebuffers
                                     atomicAddFloat4ToImage(
@@ -643,6 +737,10 @@ namespace Pale {
                                     atomicAddFloat4ToImage(
                                         &gradients.framebuffer_albedo[rayState.pixelIndex],
                                         albedoScalarRGB
+                                    );
+                                    atomicAddFloat4ToImage(
+                                        &gradients.framebuffer_beta[rayState.pixelIndex],
+                                        betaScalarRGB
                                     );
                                 }
 
@@ -720,12 +818,15 @@ namespace Pale {
                             // Collect all alpha_i and d(alpha_i)/dPi for this segment
                             struct LocalTerm {
                                 float alpha{};
+                                float betaKernel{};
                                 float eta{};
+                                float r2{};
                                 float3 dAlphaDPos; // dα/d(center)
                                 float3 dAlphaDtU; // dα/d(tanU)
                                 float3 dAlphaDtV; // dα/d(tanV)
                                 float dAlphaDsu{}; // dα/ds_u
                                 float dAlphaDsv{}; // dα/ds_v
+                                float dalphaDbeta{}; // dα/ds_v
                                 uint32_t primitiveIndex{};
                             };
 
@@ -747,16 +848,17 @@ namespace Pale {
                                 if (sycl::fabs(denom) <= 1e-4f)
                                     continue; // skip grazing
 
+
                                 const float2 uv = phiInverse(splatEvent.hitWorld, surfel);
                                 const float u = uv.x();
                                 const float v = uv.y();
+                                const float r2 = u * u + v * v;
                                 const float alpha = splatEvent.alpha;
-
                                 const float su = surfel.scale.x();
                                 const float sv = surfel.scale.y();
 
                                 // ---- dα/d(position) ----
-                                const float3 DuvDpos =
+                                const float3 DuvPosition =
                                         computeDuvDPosition(
                                             surfel.tanU,
                                             surfel.tanV,
@@ -766,7 +868,6 @@ namespace Pale {
                                             su, sv
                                         );
 
-                                // ---- dα/d(tangents) via your existing helper ----
                                 float3 dUdTu, dVdTu, dUdTv, dVdTv;
                                 computeFullDuDvWrtTangents(
                                     ray.origin,
@@ -779,21 +880,41 @@ namespace Pale {
                                     dUdTu, dVdTu, dUdTv, dVdTv
                                 );
 
-                                float3 dAlphaDtU = (u * dUdTu + v * dVdTu);
-                                float3 dAlphaDtV = (u * dUdTv + v * dVdTv);
+                                // Full dudv derivatives
+                                float3 dFsDtU = (u * dUdTu + v * dVdTu);
+                                float3 dFsDtV = (u * dUdTv + v * dVdTv);
 
-                                // ---- dα/d(scale) (kernel-only; no area Jacobian in τ) ----
+                                float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
+                                float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
+
+                                const float betaKernel = 4 * std::exp(surfel.beta);
+                                float betaKernelFactor = (-2 * betaKernel * alpha * surfel.opacity / (1 - r2));
+                                float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
+                                float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
+
+
+                                // ---- dα/d(scale) (s_u, s_v) ----
                                 const float3 dUdVdScale =
-                                        computeDuvDScale(u, v, su, sv);
-                                // du/dsu = -u/su
-                                // dv/dsv = -v/sv
-                                const float duDsu = dUdVdScale.x();
-                                const float dvDsv = dUdVdScale.y();
+                                        computeDuvDScale(
+                                            u, v,
+                                            su, sv
+                                        );
 
-                                // dα/ds_u = (∂α/∂u)(∂u/∂s_u) = (-u α) * duDsu
-                                const float dAlphaDsu = u * duDsu;
-                                // dα/ds_v = (∂α/∂v)(∂v/∂s_v) = (-v α) * dvDsv
-                                const float dAlphaDsv = v * dvDsv;
+                                // Example: BSDF gradients for each parameter group
+                                //const float3 dFsDPosition = DalphaDuvPositionGaussian(DuvPosition, alpha, surfel.opacity);
+                                const float3 dFsDPosition = betaKernelFactor * DuvPosition;
+
+                                // dα/ds_u = (∂α/∂u)(∂u/∂s_u) = (-u α) * (du/dsu)
+                                // Gaussian Like scale
+                                //const float dFsDsu = u * dUdVdScale.x();
+                                //const float dFsDsv = v * dUdVdScale.y();
+
+                                //float2 DFsDsusv = computeDAlphaDScaleGaussian(dUdVdScale, u, v, alpha, surfel.opacity);
+                                float3 DFsDsusv = betaKernelFactor * dUdVdScale;
+
+                                // Beta parameter:
+                                float DalphaDbeta = alpha * betaKernel * sycl::log(1.0f - r2) * surfel.opacity;
+
 
                                 const float oneMinusAlpha = 1.0f - alpha * surfel.opacity;
                                 if (oneMinusAlpha <= 1e-6f)
@@ -804,11 +925,14 @@ namespace Pale {
                                 auto &lt = localTerms[validCount++];
                                 lt.alpha = alpha;
                                 lt.eta = surfel.opacity;
-                                lt.dAlphaDPos = DuvDpos;
-                                lt.dAlphaDtU = dAlphaDtU;
-                                lt.dAlphaDtV = dAlphaDtV;
-                                lt.dAlphaDsu = dAlphaDsu;
-                                lt.dAlphaDsv = dAlphaDsv;
+                                lt.r2 = r2;
+                                lt.betaKernel = betaKernel;
+                                lt.dAlphaDPos = dFsDPosition;
+                                lt.dAlphaDtU = dFsDtUBeta;
+                                lt.dAlphaDtV = dFsDtVBeta;
+                                lt.dAlphaDsu = DFsDsusv.x();
+                                lt.dAlphaDsv = DFsDsusv.y();
+                                lt.dalphaDbeta = DalphaDbeta;
                                 lt.primitiveIndex = splatEvent.primitiveIndex;
 
                                 // Update τ
@@ -823,20 +947,42 @@ namespace Pale {
 
                                     const float alpha = localTerms[i].alpha;
                                     const float eta = localTerms[i].eta;
-                                    const float weight = tau * (alpha * eta) / (1.0f - alpha * eta);
-                                    // NOTE: no extra alpha, and minus sign
+                                    const float r2 = localTerms[i].r2;
+                                    const float betaKernel = localTerms[i].betaKernel;
 
-                                    const float3 dTauDPos = weight * localTerms[i].dAlphaDPos;
-                                    const float3 dTauDtU = weight * localTerms[i].dAlphaDtU;
-                                    const float3 dTauDtV = weight * localTerms[i].dAlphaDtV;
-                                    const float dTauDsu = weight * localTerms[i].dAlphaDsu;
-                                    const float dTauDsv = weight * localTerms[i].dAlphaDsv;
-                                    const float dTauDeta = -tau * alpha / (1 - eta * alpha);
-                                    // dτ/ds_u, dτ/ds_v
+                                    // Precompute τ_i = 1 - η_i α_i
+                                    const float tau_i = 1.0f - eta * alpha;
+                                    if (tau_i <= 1e-6f)
+                                        continue;
+                                    const float invTau_i = 1.0f / tau_i;
+
+                                    // localTerms store d(ηα)/d(·) already:
+                                    const float3 dEtaAlphaDPos = localTerms[i].dAlphaDPos;
+                                    const float3 dEtaAlphaDtU = localTerms[i].dAlphaDtU;
+                                    const float3 dEtaAlphaDtV = localTerms[i].dAlphaDtV;
+                                    const float dEtaAlphaDsu = localTerms[i].dAlphaDsu;
+                                    const float dEtaAlphaDsv = localTerms[i].dAlphaDsv;
+                                    const float dEtaAlphaDbeta = localTerms[i].dalphaDbeta;
+
+                                    // From derivation:
+                                    // dτ/dΠ|_i = - τ * ( d(ηα)/dΠ ) / (1 - ηα)
+                                    const float minusTauInvTau_i = -tau * invTau_i;
+
+                                    const float3 dTauDPos = minusTauInvTau_i * dEtaAlphaDPos;
+                                    const float3 dTauDtU = minusTauInvTau_i * dEtaAlphaDtU;
+                                    const float3 dTauDtV = minusTauInvTau_i * dEtaAlphaDtV;
+                                    const float dTauDsu = minusTauInvTau_i * dEtaAlphaDsu;
+                                    const float dTauDsv = minusTauInvTau_i * dEtaAlphaDsv;
+                                    const float dTauDbeta = minusTauInvTau_i * dEtaAlphaDbeta;
+
+                                    // Opacity derivative stays:
+                                    // dτ/dη_i = τ * [ -α_i / (1 - η_i α_i) ]
+                                    const float dTauDeta = -tau * alpha * invTau_i;
 
                                     float R = pAdjoint[0] * backgroundRadianceRGB[0];
                                     float G = pAdjoint[1] * backgroundRadianceRGB[1];
                                     float B = pAdjoint[2] * backgroundRadianceRGB[2];
+
                                     // Cost gradients: ∂C/∂(·) = p * L_bg * dτ/d(·)
                                     const float3 gradCPosR = R * dTauDPos;
                                     const float3 gradCPosG = G * dTauDPos;
@@ -861,6 +1007,11 @@ namespace Pale {
                                     const float gradCOpacityR = R * dTauDeta;
                                     const float gradCOpacityG = G * dTauDeta;
                                     const float gradCOpacityB = B * dTauDeta;
+
+                                    // NEW: beta cost gradients
+                                    const float gradCBetaR = R * dTauDbeta;
+                                    const float gradCBetaG = G * dTauDbeta;
+                                    const float gradCBetaB = B * dTauDbeta;
 
                                     uint32_t primitiveIndex = primIdx;
 
@@ -889,7 +1040,10 @@ namespace Pale {
                                         gradients.gradOpacity[primitiveIndex],
                                         gradCOpacityR + gradCOpacityG + gradCOpacityB
                                     );
-
+                                    atomicAddFloat(
+                                        gradients.gradBeta[primitiveIndex],
+                                        gradCBetaR + gradCBetaG + gradCBetaB
+                                    );
                                     // Mapping to world coordinates:
                                     const auto &surfel = scene.points[primitiveIndex];
                                     float3 dBsdf_world = float3{
@@ -903,7 +1057,8 @@ namespace Pale {
                                         dot(gradCTanVB, cross(float3{0.0f, 1.0f, 0.0f}, surfel.tanV))
                                     };
 
-                                    if (rayState.bounceIndex >= recordBounceIndex) {
+                                    if (settings.renderDebugGradientImages && rayState.bounceIndex >=
+                                        recordBounceIndex) {
                                         // --- Position debug (projection on parameterAxis) ------------------
                                         const float dCdp_R = dot(gradCPosR, parameterAxis);
                                         const float dCdp_G = dot(gradCPosG, parameterAxis);
@@ -925,6 +1080,10 @@ namespace Pale {
                                         const float4 opacityScalarRGB{
                                             gradCOpacityR, gradCOpacityG, gradCOpacityB, 0.0f
                                         };
+                                        // --- Opacity debug --------------------------------------------------
+                                        const float4 betaScalarRGB{
+                                            gradCBetaR, gradCBetaG, gradCBetaB, 0.0f
+                                        };
 
                                         // Write to per-parameter debug framebuffers
                                         atomicAddFloat4ToImage(
@@ -943,7 +1102,12 @@ namespace Pale {
                                             &gradients.framebuffer_opacity[rayState.pixelIndex],
                                             opacityScalarRGB
                                         );
+                                        atomicAddFloat4ToImage(
+                                            &gradients.framebuffer_beta[rayState.pixelIndex],
+                                            betaScalarRGB
+                                        );
                                     }
+
 
                                     /*
                                                                         if (isWatched) {
@@ -1005,12 +1169,15 @@ namespace Pale {
                                     // Collect all alpha_i and d(alpha_i)/dPi for this segment
                                     struct LocalTerm {
                                         float alpha{};
+                                        float betaKernel{};
                                         float eta{};
+                                        float r2{};
                                         float3 dAlphaDPos; // dα/d(center)
                                         float3 dAlphaDtU; // dα/d(tanU)
                                         float3 dAlphaDtV; // dα/d(tanV)
                                         float dAlphaDsu{}; // dα/ds_u
                                         float dAlphaDsv{}; // dα/ds_v
+                                        float dalphaDbeta{}; // dα/ds_v
                                         uint32_t primitiveIndex{};
                                     };
 
@@ -1018,8 +1185,7 @@ namespace Pale {
                                     int validCount = 0;
                                     float tau = 1.0f; // full product over all (1 - alpha_i)
 
-                                    for (size_t eventIdx = 0; eventIdx < shadowWorldHit.splatEventCount; ++
-                                         eventIdx) {
+                                    for (size_t eventIdx = 0; eventIdx < shadowWorldHit.splatEventCount; ++eventIdx) {
                                         if (validCount >= kMaxSplatEvents)
                                             break;
 
@@ -1033,16 +1199,17 @@ namespace Pale {
                                         if (sycl::fabs(denom) <= 1e-4f)
                                             continue; // skip grazing
 
+
                                         const float2 uv = phiInverse(splatEvent.hitWorld, surfel);
                                         const float u = uv.x();
                                         const float v = uv.y();
+                                        const float r2 = u * u + v * v;
                                         const float alpha = splatEvent.alpha;
-
                                         const float su = surfel.scale.x();
                                         const float sv = surfel.scale.y();
 
                                         // ---- dα/d(position) ----
-                                        const float3 DuvDpos =
+                                        const float3 DuvPosition =
                                                 computeDuvDPosition(
                                                     surfel.tanU,
                                                     surfel.tanV,
@@ -1052,7 +1219,6 @@ namespace Pale {
                                                     su, sv
                                                 );
 
-                                        // ---- dα/d(tangents) via your existing helper ----
                                         float3 dUdTu, dVdTu, dUdTv, dVdTv;
                                         computeFullDuDvWrtTangents(
                                             ray.origin,
@@ -1065,21 +1231,41 @@ namespace Pale {
                                             dUdTu, dVdTu, dUdTv, dVdTv
                                         );
 
-                                        float3 dAlphaDtU = (u * dUdTu + v * dVdTu);
-                                        float3 dAlphaDtV = (u * dUdTv + v * dVdTv);
+                                        // Full dudv derivatives
+                                        float3 dFsDtU = (u * dUdTu + v * dVdTu);
+                                        float3 dFsDtV = (u * dUdTv + v * dVdTv);
 
-                                        // ---- dα/d(scale) (kernel-only; no area Jacobian in τ) ----
+                                        float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
+                                        float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
+
+                                        const float betaKernel = 4 * std::exp(surfel.beta);
+                                        float betaKernelFactor = (-2 * betaKernel * alpha * surfel.opacity / (1 - r2));
+                                        float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
+                                        float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
+
+
+                                        // ---- dα/d(scale) (s_u, s_v) ----
                                         const float3 dUdVdScale =
-                                                computeDuvDScale(u, v, su, sv);
-                                        // du/dsu = -u/su
-                                        // dv/dsv = -v/sv
-                                        const float duDsu = dUdVdScale.x();
-                                        const float dvDsv = dUdVdScale.y();
+                                                computeDuvDScale(
+                                                    u, v,
+                                                    su, sv
+                                                );
 
-                                        // dα/ds_u = (∂α/∂u)(∂u/∂s_u) = (-u α) * duDsu
-                                        const float dAlphaDsu = u * duDsu;
-                                        // dα/ds_v = (∂α/∂v)(∂v/∂s_v) = (-v α) * dvDsv
-                                        const float dAlphaDsv = v * dvDsv;
+                                        // Example: BSDF gradients for each parameter group
+                                        //const float3 dFsDPosition = DalphaDuvPositionGaussian(DuvPosition, alpha, surfel.opacity);
+                                        const float3 dFsDPosition = betaKernelFactor * DuvPosition;
+
+                                        // dα/ds_u = (∂α/∂u)(∂u/∂s_u) = (-u α) * (du/dsu)
+                                        // Gaussian Like scale
+                                        //const float dFsDsu = u * dUdVdScale.x();
+                                        //const float dFsDsv = v * dUdVdScale.y();
+
+                                        //float2 DFsDsusv = computeDAlphaDScaleGaussian(dUdVdScale, u, v, alpha, surfel.opacity);
+                                        float3 DFsDsusv = betaKernelFactor * dUdVdScale;
+
+                                        // Beta parameter:
+                                        float DalphaDbeta = alpha * betaKernel * sycl::log(1.0f - r2) * surfel.opacity;
+
 
                                         const float oneMinusAlpha = 1.0f - alpha * surfel.opacity;
                                         if (oneMinusAlpha <= 1e-6f)
@@ -1090,11 +1276,14 @@ namespace Pale {
                                         auto &lt = localTerms[validCount++];
                                         lt.alpha = alpha;
                                         lt.eta = surfel.opacity;
-                                        lt.dAlphaDPos = DuvDpos;
-                                        lt.dAlphaDtU = dAlphaDtU;
-                                        lt.dAlphaDtV = dAlphaDtV;
-                                        lt.dAlphaDsu = dAlphaDsu;
-                                        lt.dAlphaDsv = dAlphaDsv;
+                                        lt.r2 = r2;
+                                        lt.betaKernel = betaKernel;
+                                        lt.dAlphaDPos = dFsDPosition;
+                                        lt.dAlphaDtU = dFsDtUBeta;
+                                        lt.dAlphaDtV = dFsDtVBeta;
+                                        lt.dAlphaDsu = DFsDsusv.x();
+                                        lt.dAlphaDsv = DFsDsusv.y();
+                                        lt.dalphaDbeta = DalphaDbeta;
                                         lt.primitiveIndex = splatEvent.primitiveIndex;
 
                                         // Update τ
@@ -1109,16 +1298,37 @@ namespace Pale {
 
                                             const float alpha = localTerms[i].alpha;
                                             const float eta = localTerms[i].eta;
-                                            const float weight = tau * (alpha * eta) / (1.0f - alpha * eta);
-                                            // NOTE: no extra alpha, and minus sign
+                                            const float r2 = localTerms[i].r2;
+                                            const float betaKernel = localTerms[i].betaKernel;
 
-                                            const float3 dTauDPos = weight * localTerms[i].dAlphaDPos;
-                                            const float3 dTauDtU = weight * localTerms[i].dAlphaDtU;
-                                            const float3 dTauDtV = weight * localTerms[i].dAlphaDtV;
-                                            const float dTauDsu = weight * localTerms[i].dAlphaDsu;
-                                            const float dTauDsv = weight * localTerms[i].dAlphaDsv;
-                                            const float dTauDeta = -tau * alpha / (1 - eta * alpha);
-                                            // dτ/ds_u, dτ/ds_v
+                                            // Precompute τ_i = 1 - η_i α_i
+                                            const float tau_i = 1.0f - eta * alpha;
+                                            if (tau_i <= 1e-6f)
+                                                continue;
+                                            const float invTau_i = 1.0f / tau_i;
+
+                                            // localTerms store d(ηα)/d(·) already:
+                                            const float3 dEtaAlphaDPos = localTerms[i].dAlphaDPos;
+                                            const float3 dEtaAlphaDtU = localTerms[i].dAlphaDtU;
+                                            const float3 dEtaAlphaDtV = localTerms[i].dAlphaDtV;
+                                            const float dEtaAlphaDsu = localTerms[i].dAlphaDsu;
+                                            const float dEtaAlphaDsv = localTerms[i].dAlphaDsv;
+                                            const float dEtaAlphaDbeta = localTerms[i].dalphaDbeta;
+
+                                            // From derivation:
+                                            // dτ/dΠ|_i = - τ * ( d(ηα)/dΠ ) / (1 - ηα)
+                                            const float minusTauInvTau_i = -tau * invTau_i;
+
+                                            const float3 dTauDPos = minusTauInvTau_i * dEtaAlphaDPos;
+                                            const float3 dTauDtU = minusTauInvTau_i * dEtaAlphaDtU;
+                                            const float3 dTauDtV = minusTauInvTau_i * dEtaAlphaDtV;
+                                            const float dTauDsu = minusTauInvTau_i * dEtaAlphaDsu;
+                                            const float dTauDsv = minusTauInvTau_i * dEtaAlphaDsv;
+                                            const float dTauDbeta = minusTauInvTau_i * dEtaAlphaDbeta;
+
+                                            // Opacity derivative stays:
+                                            // dτ/dη_i = τ * [ -α_i / (1 - η_i α_i) ]
+                                            const float dTauDeta = -tau * alpha * invTau_i;
 
                                             float R = pAdjoint[0] * backgroundRadianceRGB[0];
                                             float G = pAdjoint[1] * backgroundRadianceRGB[1];
@@ -1149,6 +1359,11 @@ namespace Pale {
                                             const float gradCOpacityG = G * dTauDeta;
                                             const float gradCOpacityB = B * dTauDeta;
 
+                                            // NEW: beta cost gradients
+                                            const float gradCBetaR = R * dTauDbeta;
+                                            const float gradCBetaG = G * dTauDbeta;
+                                            const float gradCBetaB = B * dTauDbeta;
+
                                             uint32_t primitiveIndex = primIdx;
 
                                             // Accumulate parameter-space gradients
@@ -1176,7 +1391,10 @@ namespace Pale {
                                                 gradients.gradOpacity[primitiveIndex],
                                                 gradCOpacityR + gradCOpacityG + gradCOpacityB
                                             );
-
+                                            atomicAddFloat(
+                                                gradients.gradBeta[primitiveIndex],
+                                                gradCBetaR + gradCBetaG + gradCBetaB
+                                            );
                                             // Mapping to world coordinates:
                                             const auto &surfel = scene.points[primitiveIndex];
                                             float3 dBsdf_world = float3{
@@ -1190,7 +1408,8 @@ namespace Pale {
                                                 dot(gradCTanVB, cross(float3{0.0f, 1.0f, 0.0f}, surfel.tanV))
                                             };
 
-                                            if (rayState.bounceIndex >= recordBounceIndex) {
+                                            if (settings.renderDebugGradientImages && rayState.bounceIndex >=
+                                                recordBounceIndex) {
                                                 // --- Position debug (projection on parameterAxis) ------------------
                                                 const float dCdp_R = dot(gradCPosR, parameterAxis);
                                                 const float dCdp_G = dot(gradCPosG, parameterAxis);
@@ -1214,6 +1433,10 @@ namespace Pale {
                                                 const float4 opacityScalarRGB{
                                                     gradCOpacityR, gradCOpacityG, gradCOpacityB, 0.0f
                                                 };
+                                                // --- Opacity debug --------------------------------------------------
+                                                const float4 betaScalarRGB{
+                                                    gradCBetaR, gradCBetaG, gradCBetaB, 0.0f
+                                                };
 
                                                 // Write to per-parameter debug framebuffers
                                                 atomicAddFloat4ToImage(
@@ -1231,6 +1454,10 @@ namespace Pale {
                                                 atomicAddFloat4ToImage(
                                                     &gradients.framebuffer_opacity[rayState.pixelIndex],
                                                     opacityScalarRGB
+                                                );
+                                                atomicAddFloat4ToImage(
+                                                    &gradients.framebuffer_beta[rayState.pixelIndex],
+                                                    betaScalarRGB
                                                 );
                                             }
                                         }
@@ -1273,15 +1500,18 @@ namespace Pale {
                             const Ray &ray = rayState.ray;
                             // 3) Terminal scatter at z: dα/dc with correct sign
                             const uint32_t terminalPrim = whScatter.primitiveIndex;
-                            const SplatEvent &terminal = whScatter.splatEvents[whScatter.splatEventCount - 1]; {
+                            const SplatEvent &terminal = whScatter.splatEvents[
+                                whScatter.splatEventCount - 1]; {
                                 const auto surfel = scene.points[terminal.primitiveIndex];
-                                const float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
+                                const float3 canonicalNormalWorld = normalize(
+                                    cross(surfel.tanU, surfel.tanV));
                                 const float3 rayDirection = ray.direction;
                                 const float3 hitWorld = terminal.hitWorld;
 
                                 const float2 uv = phiInverse(hitWorld, surfel);
                                 const float u = uv.x();
                                 const float v = uv.y();
+                                const float r2 = u * u + v * v;
                                 const float alpha = terminal.alpha;
                                 const float su = surfel.scale.x();
                                 const float sv = surfel.scale.y();
@@ -1313,6 +1543,14 @@ namespace Pale {
                                 float3 dFsDtU = (u * dUdTu + v * dVdTu);
                                 float3 dFsDtV = (u * dUdTv + v * dVdTv);
 
+                                float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
+                                float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
+
+                                const float beta = 4 * std::exp(surfel.beta);
+                                float betaKernelFactor = (-2 * beta * alpha * surfel.opacity / (1 - r2));
+                                float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
+                                float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
+
 
                                 // ---- dα/d(scale) (s_u, s_v) ----
                                 const float3 dUdVdScale =
@@ -1322,11 +1560,20 @@ namespace Pale {
                                         );
 
                                 // Example: BSDF gradients for each parameter group
-                                const float3 dFsDPosition = DuvPosition;
+                                //const float3 dFsDPosition = DalphaDuvPositionGaussian(DuvPosition, alpha, surfel.opacity);
+                                const float3 dFsDPosition = betaKernelFactor * DuvPosition;
+
                                 // dα/ds_u = (∂α/∂u)(∂u/∂s_u) = (-u α) * (du/dsu)
-                                const float dFsDsu = u * dUdVdScale.x();
-                                // dα/ds_v = (∂α/∂v)(∂v/∂s_v) = (-v α) * (dv/dsv)
-                                const float dFsDsv = v * dUdVdScale.y();
+                                // Gaussian Like scale
+                                //const float dFsDsu = u * dUdVdScale.x();
+                                //const float dFsDsv = v * dUdVdScale.y();
+
+                                //float2 DFsDsusv = computeDAlphaDScaleGaussian(dUdVdScale, u, v, alpha, surfel.opacity);
+                                float3 DFsDsusv = betaKernelFactor * dUdVdScale;
+
+                                // Beta parameter:
+                                float DalphaDbeta = alpha * beta * sycl::log(1.0f - r2) * surfel.opacity;
+
 
                                 const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
                                     terminal, ray.direction, scene, photonMap,
@@ -1334,17 +1581,17 @@ namespace Pale {
 
                                 // 5) Final gradient assembly
                                 float3 pathAdjoint = rayState.pathThroughput;
-                                float gradSurfaceScaleU = dFsDsu;
-                                float gradSurfaceScaleV = dFsDsv;
 
-                                float3 brdfGradPosition = dFsDPosition * surfel.opacity * (-alpha);
-                                float3 brdfGradTanU = dFsDtU * surfel.opacity * (-alpha);
-                                float3 brdfGradTanV = dFsDtV * surfel.opacity * (-alpha);
-                                float brdfGradScaleU = gradSurfaceScaleU * surfel.opacity * (-alpha);
-                                float brdfGradScaleV = gradSurfaceScaleV * surfel.opacity * (-alpha);
+
+                                float3 brdfGradPosition = dFsDPosition;
+                                float3 brdfGradTanU = dFsDtUBeta;
+                                float3 brdfGradTanV = dFsDtVBeta;
+                                float brdfGradScaleU = DFsDsusv.x();
+                                float brdfGradScaleV = DFsDsusv.y();
 
                                 float brdfGradAlbedo = alpha * surfel.opacity;
                                 float3 brdfGradOpacity = alpha * surfel.color;
+                                float brdfGradBeta = DalphaDbeta;
 
                                 // Per-channel adjoint * radiance factor
                                 float R = pathAdjoint[0] * tau * surfelRadianceRGB[0];
@@ -1380,6 +1627,10 @@ namespace Pale {
                                 const float gradCOpacityG = G * brdfGradOpacity[1];
                                 const float gradCOpacityB = B * brdfGradOpacity[2];
 
+                                const float gradCBetaR = R * brdfGradBeta;
+                                const float gradCBetaG = G * brdfGradBeta;
+                                const float gradCBetaB = B * brdfGradBeta;
+
                                 uint32_t primitiveIndex = terminalPrim;
 
                                 // Accumulate parameter-space gradients
@@ -1407,6 +1658,10 @@ namespace Pale {
                                     gradients.gradOpacity[primitiveIndex],
                                     gradCOpacityR + gradCOpacityG + gradCOpacityB
                                 );
+                                atomicAddFloat(
+                                    gradients.gradBeta[primitiveIndex],
+                                    gradCBetaR + gradCBetaG + gradCBetaB
+                                );
 
                                 float3 gradColorValue{gradCAlbedoR, gradCAlbedoG, gradCAlbedoB};
                                 atomicAddFloat3(gradients.gradColor[primitiveIndex], gradColorValue);
@@ -1423,7 +1678,7 @@ namespace Pale {
                                     dot(gradCTanVB, cross(float3{0.0f, 1.0f, 0.0f}, surfel.tanV))
                                 };
 
-                                if (rayState.bounceIndex >= recordBounceIndex) {
+                                if (settings.renderDebugGradientImages && rayState.bounceIndex >= recordBounceIndex) {
                                     // --- Position debug (projection on parameterAxis) ------------------
                                     const float dCdp_R = dot(gradCPosR, parameterAxis);
                                     const float dCdp_G = dot(gradCPosG, parameterAxis);
@@ -1448,6 +1703,10 @@ namespace Pale {
                                     const float4 albedoScalarRGB{
                                         gradCAlbedoR, gradCAlbedoG, gradCAlbedoB, 0.0f
                                     };
+                                    // --- Beta debug ---------------------------------------------------
+                                    const float4 betaScalarRGB{
+                                        gradCBetaR, gradCBetaG, gradCBetaB, 0.0f
+                                    };
 
                                     // Write to per-parameter debug framebuffers
                                     atomicAddFloat4ToImage(
@@ -1470,8 +1729,11 @@ namespace Pale {
                                         &gradients.framebuffer_albedo[rayState.pixelIndex],
                                         albedoScalarRGB
                                     );
+                                    atomicAddFloat4ToImage(
+                                        &gradients.framebuffer_beta[rayState.pixelIndex],
+                                        betaScalarRGB
+                                    );
                                 }
-
 
                                 /*
                                 if (isWatched) {

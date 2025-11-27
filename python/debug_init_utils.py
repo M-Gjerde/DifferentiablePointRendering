@@ -16,14 +16,16 @@ def add_debug_noise_to_initial_parameters(
     scales: np.ndarray,
     colors: np.ndarray,
     opacities: np.ndarray,
+    betas: np.ndarray,
     *,
-    seed_positions: int = 7,
+    seed_positions: int = 12,
     seed_colors: int = 12345,
-    noise_sigma_translation: float = 0.0,
-    noise_sigma_tangent: float = 0.0,
-    noise_sigma_scale: float = 0.0,
-    noise_sigma_color: float = 0.0,
-    noise_sigma_opacity: float = 0.4,
+    noise_sigma_translation: float = 0.02,
+    noise_sigma_tangent: float = 0.2,
+    noise_sigma_scale: float = 0.1,
+    noise_sigma_color: float = 0.1,
+    noise_sigma_opacity: float = 0.2,
+    noise_sigma_beta: float = 0.3,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Debug utility: add Gaussian noise to initial parameters.
@@ -85,6 +87,14 @@ def add_debug_noise_to_initial_parameters(
     )
     noisy_opacities += opacity_noise
     noisy_opacities = noisy_opacities.astype(np.float32)
+    # --- betas (grayscale noise per point) ---
+    rng_beta = np.random.default_rng(seed_colors)
+    noisy_Betas = betas.copy()
+    opacity_noise = rng_beta.normal(
+        0.4, noise_sigma_beta, size=(noisy_Betas.shape)
+    )
+    noisy_Betas += opacity_noise
+    noisy_Betas = noisy_Betas.astype(np.float32)
 
     return (
         noisy_positions,
@@ -93,4 +103,5 @@ def add_debug_noise_to_initial_parameters(
         noisy_scales,
         noisy_colors,
         noisy_opacities,
+        noisy_Betas,
     )

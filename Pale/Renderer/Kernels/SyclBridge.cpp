@@ -111,12 +111,14 @@ namespace Pale {
             pkg.queue.fill(pkg.gradients.gradScale, float2{0, 0}, pkg.gradients.numPoints).wait();
             pkg.queue.fill(pkg.gradients.gradColor, float3{0}, pkg.gradients.numPoints).wait();
             pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints).wait();
-            pkg.queue.fill(pkg.gradients.framebuffer_pos, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
-            pkg.queue.fill(pkg.gradients.framebuffer_rot, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
-            pkg.queue.fill(pkg.gradients.framebuffer_scale, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
-            pkg.queue.fill(pkg.gradients.framebuffer_opacity, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
-            pkg.queue.fill(pkg.gradients.framebuffer_albedo, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
-            pkg.queue.fill(pkg.gradients.framebuffer_beta, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
+            if (pkg.settings.renderDebugGradientImages) {
+                pkg.queue.fill(pkg.gradients.framebuffer_pos, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
+                pkg.queue.fill(pkg.gradients.framebuffer_rot, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
+                pkg.queue.fill(pkg.gradients.framebuffer_scale, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
+                pkg.queue.fill(pkg.gradients.framebuffer_opacity, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
+                pkg.queue.fill(pkg.gradients.framebuffer_albedo, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
+                pkg.queue.fill(pkg.gradients.framebuffer_beta, float4{0}, pkg.sensor.height * pkg.sensor.width).wait();
+            }
 
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
             for (int spp = 0; spp < samplesPerPixel; ++spp) {

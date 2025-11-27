@@ -673,6 +673,7 @@ public:
         assignFloat2FieldFromArray("scale", &Pale::Point::scale);
         assignFloat3FieldFromArray("color", &Pale::Point::color);
         assignFloat1FieldFromArray("opacity", &Pale::Point::opacity);
+        assignFloat1FieldFromArray("beta", &Pale::Point::beta);
 
         // 4) Mirror changes back to the underlying point cloud asset
         if (!assetManager) {
@@ -696,16 +697,18 @@ public:
                         pointGeometry.tanV.size() != pointCount ||
                         pointGeometry.scales.size() != pointCount ||
                         pointGeometry.colors.size() != pointCount ||
+                        pointGeometry.betas.size() != pointCount ||
                         pointGeometry.opacities.size() != pointCount) {
                         Pale::Log::PA_ERROR(
                             "apply_point_optimization: PointGeometry size mismatch. "
-                            "positions={}, tanU={}, tanV={}, scales={}, colors={}, opacities={}, expected={}",
+                            "positions={}, tanU={}, tanV={}, scales={}, colors={}, opacities={}, betas={}, expected={}",
                             pointGeometry.positions.size(),
                             pointGeometry.tanU.size(),
                             pointGeometry.tanV.size(),
                             pointGeometry.scales.size(),
                             pointGeometry.colors.size(),
                             pointGeometry.opacities.size(),
+                            pointGeometry.betas.size(),
                             pointCount
                         );
                         throw std::runtime_error(
@@ -722,7 +725,7 @@ public:
                         pointGeometry.colors[pointIndex] = Pale::sycl2glm(optimizedPoint.color);
                         pointGeometry.opacities[pointIndex] = optimizedPoint.opacity;
                         // If you also keep beta/shape in the asset, mirror them here as well:
-                        // pointGeometry.betas[pointIndex]     = optimizedPoint.beta;
+                        pointGeometry.betas[pointIndex]     = optimizedPoint.beta;
                         // pointGeometry.shapes[pointIndex]    = optimizedPoint.shape;
                     }
 
@@ -938,6 +941,7 @@ public:
         py::array scaleArray = getArray("scale");
         py::array colorArray = getArray("color");
         py::array opacityArray = getArray("opacity");
+        py::array betaArray = getArray("beta");
 
         py::buffer_info positionInfo = positionArray.request();
         py::buffer_info tangentUInfo = tangentUArray.request();
@@ -945,6 +949,7 @@ public:
         py::buffer_info scaleInfo = scaleArray.request();
         py::buffer_info colorInfo = colorArray.request();
         py::buffer_info opacityInfo = opacityArray.request();
+        py::buffer_info betaInfo = betaArray.request();
 
         auto checkShape = [](const py::buffer_info &bufferInfo,
                              std::size_t expectedCount,
@@ -992,6 +997,15 @@ public:
             throw std::runtime_error(
                 "add_new_points: 'new.opacity' must be float32");
         }
+        if (betaInfo.ndim != 1 ||
+            betaInfo.shape[0] != static_cast<ssize_t>(newPointCount)) {
+            throw std::runtime_error(
+                "add_new_points: 'new.opacity' must have shape (N,)");
+            }
+        if (betaInfo.itemsize != sizeof(float)) {
+            throw std::runtime_error(
+                "add_new_points: 'new.opacity' must be float32");
+        }
 
         const float *positionData = static_cast<float *>(positionInfo.ptr);
         const float *tangentUData = static_cast<float *>(tangentUInfo.ptr);
@@ -999,6 +1013,7 @@ public:
         const float *scaleData = static_cast<float *>(scaleInfo.ptr);
         const float *colorData = static_cast<float *>(colorInfo.ptr);
         const float *opacityData = static_cast<float *>(opacityInfo.ptr);
+        const float *betaData = static_cast<float *>(betaInfo.ptr);
 
         // ---------------------------------------------------------------------
         // 2) Append new points at the bottom (no modification of existing points)
@@ -1026,6 +1041,7 @@ public:
             const std::size_t baseScaleIndex = pointIndex * 2;
             const std::size_t baseColorIndex = pointIndex * 3;
             const std::size_t baseOpacityIndex = pointIndex * 1;
+            const std::size_t baseBetaIndex = pointIndex * 1;
 
             glm::vec3 positionValue;
             positionValue.x = positionData[basePositionIndex + 0];
@@ -1052,6 +1068,7 @@ public:
             colorValue.z = colorData[baseColorIndex + 2];
 
             float opacityValue = opacityData[baseOpacityIndex];
+            float betaValue = betaData[baseBetaIndex];
 
             pointGeometry.positions.push_back(positionValue);
             pointGeometry.tanU.push_back(tangentUValue);
@@ -1060,9 +1077,10 @@ public:
             pointGeometry.colors.push_back(colorValue);
             pointGeometry.opacities.push_back(opacityValue);
 
+            pointGeometry.betas.push_back(betaValue);
+
             // Defaults for other attributes of new Gaussians
             pointGeometry.shapes.push_back(0.0f);
-            pointGeometry.betas.push_back(0.0f);
         }
 
         Pale::Log::PA_INFO(
@@ -1084,6 +1102,7 @@ public:
                                 py::tuple scale3,
                                 py::tuple color3,
                                 float opacity,
+                                float beta,
                                 int index = -1) {
         if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3) {
             throw std::runtime_error("Expected translation(3), rotation_quat(4), scale(3)");
@@ -1139,6 +1158,7 @@ public:
 
                 point.color += Pale::glm2sycl(newColor);
                 point.opacity += opacity;
+                point.beta += beta;
                 point.scale *= scaleDelta; // component-wise
             }
         }
@@ -1206,5 +1226,5 @@ PYBIND11_MODULE(pale, m) {
                  py::arg("parameters"))
     .def("rebuild_bvh", &PythonRenderer::rebuild_bvh).def("set_gaussian_transform", &PythonRenderer::set_gaussian_transform,
      py::arg("translation3"), py::arg("rotation_quat4"), py::arg("scale3"), py::arg("color3"),
-     py::arg("opacity"), py::arg("index") = -1);
+     py::arg("opacity"), py::arg("beta"), py::arg("index") = -1);
 }
