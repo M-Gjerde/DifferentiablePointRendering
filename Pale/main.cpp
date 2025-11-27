@@ -272,11 +272,11 @@ int main(int argc, char **argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e5;
     settings.maxBounces = 4;
-    settings.numForwardPasses = 10;
+    settings.numForwardPasses = 20;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 16;
-    settings.renderDebugGradientImages = false;
+    settings.adjointSamplesPerPixel = 4;
+    settings.renderDebugGradientImages = true;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);

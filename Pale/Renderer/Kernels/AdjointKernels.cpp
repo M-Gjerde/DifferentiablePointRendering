@@ -26,7 +26,7 @@ namespace Pale {
         uint32_t raysPerSet = imageWidth * imageHeight;
 
         //raysPerSet = 1;
-        float raysTotal = settings.adjointSamplesPerPixel;
+        float raysTotal = settings.adjointSamplesPerPixel * raysPerSet;
 
         const uint32_t perPassRayCount = raysPerSet;
         queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
@@ -195,10 +195,6 @@ namespace Pale {
                                 const float3 canonicalNormalW =
                                         normalize(cross(surfel.tanU, surfel.tanV));
 
-                                const float denom = dot(canonicalNormalW, ray.direction);
-                                if (sycl::fabs(denom) <= 1e-4f)
-                                    continue; // skip grazing
-
 
                                 const float2 uv = phiInverse(splatEvent.hitWorld, surfel);
                                 const float u = uv.x();
@@ -238,8 +234,7 @@ namespace Pale {
                                 float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
                                 float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
 
-                                const float betaKernel = 4 * std::exp(surfel.beta);
-                                float betaKernelFactor = (-2 * betaKernel * alpha * surfel.opacity / (1 - r2));
+                                float betaKernelFactor = computeSmoothedBetaFactor(surfel.beta, r2, alpha, surfel.opacity);
                                 float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
                                 float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
 
@@ -264,7 +259,7 @@ namespace Pale {
                                 float3 DFsDsusv = betaKernelFactor * dUdVdScale;
 
                                 // Beta parameter:
-                                float DalphaDbeta = alpha * betaKernel * sycl::log(1.0f - r2) * surfel.opacity;
+                                float DalphaDbeta = alpha * betaKernel(surfel.beta) * sycl::log(1.0f - r2) * surfel.opacity;
 
 
                                 const float oneMinusAlpha = 1.0f - alpha * surfel.opacity;
@@ -277,7 +272,7 @@ namespace Pale {
                                 lt.alpha = alpha;
                                 lt.eta = surfel.opacity;
                                 lt.r2 = r2;
-                                lt.betaKernel = betaKernel;
+                                lt.betaKernel = betaKernel(surfel.beta);
                                 lt.dAlphaDPos = dFsDPosition;
                                 lt.dAlphaDtU = dFsDtUBeta;
                                 lt.dAlphaDtV = dFsDtVBeta;
@@ -555,8 +550,7 @@ namespace Pale {
                                 float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
                                 float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
 
-                                const float beta = 4 * std::exp(surfel.beta);
-                                float betaKernelFactor = (-2 * beta * alpha * surfel.opacity / (1 - r2));
+                                float betaKernelFactor = computeSmoothedBetaFactor(surfel.beta, r2, alpha, surfel.opacity);
                                 float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
                                 float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
 
@@ -581,7 +575,7 @@ namespace Pale {
                                 float3 DFsDsusv = betaKernelFactor * dUdVdScale;
 
                                 // Beta parameter:
-                                float DalphaDbeta = alpha * beta * sycl::log(1.0f - r2) * surfel.opacity;
+                                float DalphaDbeta = alpha * betaKernel(surfel.beta) * sycl::log(1.0f - r2) * surfel.opacity;
 
 
                                 const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
@@ -844,11 +838,6 @@ namespace Pale {
                                 const float3 canonicalNormalW =
                                         normalize(cross(surfel.tanU, surfel.tanV));
 
-                                const float denom = dot(canonicalNormalW, ray.direction);
-                                if (sycl::fabs(denom) <= 1e-4f)
-                                    continue; // skip grazing
-
-
                                 const float2 uv = phiInverse(splatEvent.hitWorld, surfel);
                                 const float u = uv.x();
                                 const float v = uv.y();
@@ -887,8 +876,8 @@ namespace Pale {
                                 float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
                                 float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
 
-                                const float betaKernel = 4 * std::exp(surfel.beta);
-                                float betaKernelFactor = (-2 * betaKernel * alpha * surfel.opacity / (1 - r2));
+                                float betaKernelFactor = computeSmoothedBetaFactor(surfel.beta, r2, alpha, surfel.opacity);
+
                                 float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
                                 float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
 
@@ -913,7 +902,7 @@ namespace Pale {
                                 float3 DFsDsusv = betaKernelFactor * dUdVdScale;
 
                                 // Beta parameter:
-                                float DalphaDbeta = alpha * betaKernel * sycl::log(1.0f - r2) * surfel.opacity;
+                                float DalphaDbeta = alpha * betaKernel(surfel.beta) * sycl::log(1.0f - r2) * surfel.opacity;
 
 
                                 const float oneMinusAlpha = 1.0f - alpha * surfel.opacity;
@@ -926,7 +915,7 @@ namespace Pale {
                                 lt.alpha = alpha;
                                 lt.eta = surfel.opacity;
                                 lt.r2 = r2;
-                                lt.betaKernel = betaKernel;
+                                lt.betaKernel = betaKernel(surfel.beta);
                                 lt.dAlphaDPos = dFsDPosition;
                                 lt.dAlphaDtU = dFsDtUBeta;
                                 lt.dAlphaDtV = dFsDtVBeta;
@@ -1195,11 +1184,6 @@ namespace Pale {
                                         const float3 canonicalNormalW =
                                                 normalize(cross(surfel.tanU, surfel.tanV));
 
-                                        const float denom = dot(canonicalNormalW, ray.direction);
-                                        if (sycl::fabs(denom) <= 1e-4f)
-                                            continue; // skip grazing
-
-
                                         const float2 uv = phiInverse(splatEvent.hitWorld, surfel);
                                         const float u = uv.x();
                                         const float v = uv.y();
@@ -1238,8 +1222,7 @@ namespace Pale {
                                         float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
                                         float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
 
-                                        const float betaKernel = 4 * std::exp(surfel.beta);
-                                        float betaKernelFactor = (-2 * betaKernel * alpha * surfel.opacity / (1 - r2));
+                                        float betaKernelFactor = computeSmoothedBetaFactor(surfel.beta, r2, alpha, surfel.opacity);
                                         float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
                                         float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
 
@@ -1264,7 +1247,7 @@ namespace Pale {
                                         float3 DFsDsusv = betaKernelFactor * dUdVdScale;
 
                                         // Beta parameter:
-                                        float DalphaDbeta = alpha * betaKernel * sycl::log(1.0f - r2) * surfel.opacity;
+                                        float DalphaDbeta = alpha * betaKernel(surfel.beta) * sycl::log(1.0f - r2) * surfel.opacity;
 
 
                                         const float oneMinusAlpha = 1.0f - alpha * surfel.opacity;
@@ -1277,7 +1260,7 @@ namespace Pale {
                                         lt.alpha = alpha;
                                         lt.eta = surfel.opacity;
                                         lt.r2 = r2;
-                                        lt.betaKernel = betaKernel;
+                                        lt.betaKernel = betaKernel(surfel.beta);
                                         lt.dAlphaDPos = dFsDPosition;
                                         lt.dAlphaDtU = dFsDtUBeta;
                                         lt.dAlphaDtV = dFsDtVBeta;
@@ -1546,8 +1529,9 @@ namespace Pale {
                                 float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
                                 float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
 
-                                const float beta = 4 * std::exp(surfel.beta);
-                                float betaKernelFactor = (-2 * beta * alpha * surfel.opacity / (1 - r2));
+                                float betaKernelFactor = computeSmoothedBetaFactor(surfel.beta, r2, alpha, surfel.opacity);
+
+
                                 float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
                                 float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
 
@@ -1572,7 +1556,7 @@ namespace Pale {
                                 float3 DFsDsusv = betaKernelFactor * dUdVdScale;
 
                                 // Beta parameter:
-                                float DalphaDbeta = alpha * beta * sycl::log(1.0f - r2) * surfel.opacity;
+                                float DalphaDbeta = alpha * betaKernel(surfel.beta) * sycl::log(1.0f - r2) * surfel.opacity;
 
 
                                 const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(

@@ -281,24 +281,26 @@ def run_optimization(
     }
 
     #Optional debug noise
-    (
-        initial_positions_np,
-        initial_tangent_u_np,
-        initial_tangent_v_np,
-        initial_scale_np,
-        initial_color_np,
-        initial_opacity_np,
-        initial_beta_np,
-    ) = add_debug_noise_to_initial_parameters(
-        initial_positions_np,
-        initial_tangent_u_np,
-        initial_tangent_v_np,
-        initial_scale_np,
-        initial_color_np,
-        initial_opacity_np,
-        initial_beta_np,
-    )
-    print("Initial parameters perturbed by debug Gaussian noise.")
+    apply_noise = True
+    if apply_noise:
+        (
+            initial_positions_np,
+            initial_tangent_u_np,
+            initial_tangent_v_np,
+            initial_scale_np,
+            initial_color_np,
+            initial_opacity_np,
+            initial_beta_np,
+        ) = add_debug_noise_to_initial_parameters(
+            initial_positions_np,
+            initial_tangent_u_np,
+            initial_tangent_v_np,
+            initial_scale_np,
+            initial_color_np,
+            initial_opacity_np,
+            initial_beta_np,
+        )
+        print("Initial parameters perturbed by debug Gaussian noise.")
 
     device = torch.device(config.device)
 
@@ -455,18 +457,17 @@ def run_optimization(
                     grad_betas_np,
                 )
 
-                # Optional repulsion term (currently disabled)
-                # repulsion_loss = compute_elliptical_repulsion_loss(
-                #     positions=positions,
-                #     tangent_u=tangent_u,
-                #     tangent_v=tangent_v,
-                #     scales=scales,
-                #     radius_factor=1.0,
-                #     repulsion_weight=1e-2,
-                #     contact_distance=2.0,
-                # )
-                # if torch.isfinite(repulsion_loss) and repulsion_loss.item() != 0.0:
-                #     repulsion_loss.backward()
+                #Optional repulsion term (currently disabled)
+                #repulsion_loss = compute_elliptical_repulsion_loss(
+                #    positions=positions,
+                #    tangent_u=tangent_u,
+                #    tangent_v=tangent_v,
+                #    scales=scales,
+                #    radius_factor=1.0,
+                #    repulsion_weight=1e-3,
+                #)
+                #if torch.isfinite(repulsion_loss) and repulsion_loss.item() != 0.0:
+                #    repulsion_loss.backward()
 
                 optimizer.step()
 

@@ -291,6 +291,21 @@ namespace Pale {
         return float3{dAlphaDSu, dAlphaDSv, 0.0f};
     }
 
+    inline float betaKernel(float beta_param) {
+
+        return 4.0f * sycl::exp(beta_param);
+    }
+
+    inline float computeSmoothedBetaFactor(float beta_param, float r2, float alpha, float opacity) {
+        float beta       = 4.0f * sycl::exp(beta_param);
+        float denom      = 1.0f - r2;
+        const float eps  = 1e-3f;        // still keep a small epsilon
+        denom           = sycl::fmax(denom, eps);
+        float betaKernelFactor = -2.0f * beta * alpha * opacity / denom;
+
+        return betaKernelFactor;
+    }
+
     float3 DalphaDuvPositionGaussian(float3 DuvPosition, float alpha, float opacity) {
         return -alpha * opacity * DuvPosition;
     }

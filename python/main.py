@@ -76,7 +76,7 @@ def main() -> None:
             "--render-dir",
             str(config.assets_root / render_output_dir),
             "--refresh-ms",
-            "30",  # adjust refresh rate as desired
+            "1",  # adjust refresh rate as desired
         ]
         try:
             image_preview_process = subprocess.Popen(preview_args)

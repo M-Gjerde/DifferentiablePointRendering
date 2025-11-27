@@ -27,7 +27,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--refresh-ms",
         type=int,
-        default=500,
+        default=1,
         help="Refresh interval in milliseconds (default: 500).",
     )
     return parser.parse_args()

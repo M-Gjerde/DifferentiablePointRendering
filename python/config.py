@@ -8,12 +8,12 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 5e4
+    photons: float = 1e5
     bounces: int = 4
     forward_passes: int = 20
     gather_passes: int = 1
     adjoint_bounces: int = 2
-    adjoint_passes: int = 8
+    adjoint_passes: int = 4
     logging: int = 3  # Spdlog enums
 
     def as_dict(self) -> Dict[str, float | int]:
@@ -195,12 +195,12 @@ def parse_args() -> OptimizationConfig:
     lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log it
 
     # 3DGS-inspired relative factors w.r.t. position LR
-    factor_position = 0.25  # ~rotation_lr / position_lr
-    factor_tangent = 10  # ~rotation_lr / position_lr
-    factor_scale = 10  # ~scaling_lr / position_lr
-    factor_color = 15  # ~feature_lr / position_lr
-    factor_opacity = 25  # ~opacity_lr / position_lr
-    factor_beta = 15  # ~opacity_lr / position_lr
+    factor_position = 0.5  # ~rotation_lr / position_lr
+    factor_tangent = 5  # ~rotation_lr / position_lr
+    factor_scale = 5  # ~scaling_lr / position_lr
+    factor_color = 2.5  # ~feature_lr / position_lr
+    factor_opacity = 10  # ~opacity_lr / position_lr
+    factor_beta = 5  # ~opacity  _lr / position_lr
 
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)

@@ -18,14 +18,14 @@ def add_debug_noise_to_initial_parameters(
     opacities: np.ndarray,
     betas: np.ndarray,
     *,
-    seed_positions: int = 12,
+    seed_positions: int = 42,
     seed_colors: int = 12345,
-    noise_sigma_translation: float = 0.02,
-    noise_sigma_tangent: float = 0.2,
+    noise_sigma_translation: float = 0.01,
+    noise_sigma_tangent: float = 0.1,
     noise_sigma_scale: float = 0.1,
     noise_sigma_color: float = 0.1,
-    noise_sigma_opacity: float = 0.2,
-    noise_sigma_beta: float = 0.3,
+    noise_sigma_opacity: float = 0.1,
+    noise_sigma_beta: float = 0.1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Debug utility: add Gaussian noise to initial parameters.

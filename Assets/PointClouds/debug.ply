@@ -1,0 +1,25 @@
+ply
+format ascii 1.0
+comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity
+element vertex 3
+property float x          # pk.x
+property float y          # pk.y
+property float z          # pk.z
+property float tu_x       # tangential axis u (unit)
+property float tu_y
+property float tu_z
+property float tv_x       # tangential axis v (unit, orthonormal to tu)
+property float tv_y
+property float tv_z
+property float su         # scale along tu
+property float sv         # scale along tv
+property float albedo_r   # diffuse BRDF albedo
+property float albedo_g
+property float albedo_b
+property float opacity
+property float beta
+property float shape
+end_header
+-0.0449999087 -0.0182001013 1.08419764  0.947299719 -0.318878114 0.0306592099  0.301755428 0.920352995 0.248785406  0.292007476 0.676262617  0.99000001 0.99000001 0.99000001  0.89989537 -2.70000196 0
+0.257403702 -0.0349553674 0.595005512  -0.189740479 0.967523456 -0.167024225  -0.883122027 -0.0938365608 0.459663361  0.371807009 0.425602078  0 0 0  0.980014205 -2.69998574 0
+-0.255800813 -0.0421970375 0.596618056  0.574344575 -0.808958173 -0.125359386  0.709275484 0.415303349 0.569606364  0.355761796 0.611756325  0.0792866945 0.0532585941 0.0242508966  1 -2.69998765 0
