@@ -295,33 +295,6 @@ namespace Pale {
         };
 
 
-
-        auto transmitCurrentGroup = [&](rng::Xorshift128 &rng)-> bool {
-            if (groupLocalTs.empty()) return false;
-
-            // 1) push this slice’s events into LocalHit (depth-sorted already)
-            for (size_t i = 0; i < groupLocalTs.size(); ++i) {
-                if (localHitOut.splatEventCount >= kMaxSplatEvents - 1)
-                    continue;
-                int index = localHitOut.splatEventCount++;
-
-                localHitOut.splatEvents[index].t = groupLocalTs[i];
-                localHitOut.splatEvents[index].alpha = groupAlphas[i];
-                localHitOut.splatEvents[index].primitiveIndex = groupIndices[i];
-            }
-
-            // 2) composite transmit through the slice
-            float oneMinus = 1.0f;
-            for (size_t i = 0; i < groupAlphas.size(); ++i) oneMinus *= (1.0f - groupAlphas[i]);
-            float compositeAlpha = 1.0f - oneMinus;
-
-            cumulativeTransmittanceBefore *= (1.0f - compositeAlpha);
-            clearCurrentGroup();
-
-            // 3) never accept; keep traversing
-            return false;
-        };
-
         while (!traversalStack.empty()) {
             const int nodeIndex = traversalStack.pop();
             const BVHNode &node = bvhNodes[nodeIndex];
@@ -415,17 +388,11 @@ namespace Pale {
                     (void) groupAlphas.pushBack(alphaAtHit);
                     (void) groupIndices.pushBack(surfelIndex);
                 } else {
-                    switch (rayIntersectMode) {
-                        case RayIntersectMode::Transmit:
-                            transmitCurrentGroup(rng128); // must write groupLocalTs[i] to out events
-                            break;
-                        default:
-                            if (scatterCurrentGroup(rng128)) {
-                                foundAcceptedScatter = true;
-                                bestAcceptedTHit = localHitOut.t; // set from groupLocalTs in scatterCurrentGroup
-                                break;
-                            }
-                    }
+                    if (scatterCurrentGroup(rng128))
+                        foundAcceptedScatter = true;
+                    bestAcceptedTHit = localHitOut.t; // set from groupLocalTs in scatterCurrentGroup
+                    break;
+
                     if (foundAcceptedScatter) break;
 
                     currentGroupDepthKey = depthKey;
@@ -445,13 +412,9 @@ namespace Pale {
 
         // Tail group
         if (!foundAcceptedScatter && groupLocalTs.size() > 0) {
-            if (rayIntersectMode == RayIntersectMode::Transmit) {
-                (void) transmitCurrentGroup(rng128);
-            } else {
                 if (scatterCurrentGroup(rng128)) {
                     foundAcceptedScatter = true;
                     bestAcceptedTHit = localHitOut.t;
-                }
             }
         }
 

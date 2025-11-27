@@ -21,14 +21,14 @@ import Pale.Render.Sensors;
 import Pale.Scene;
 
 
-static std::string assetPathOrId(const Pale::AssetRegistry& reg, const Pale::AssetHandle& id) {
+static std::string assetPathOrId(const Pale::AssetRegistry &reg, const Pale::AssetHandle &id) {
     if (auto m = reg.meta(id)) return m->path.string();
     return std::string(id); // fallback if it's not in the registry
 }
 
-static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
-                            Pale::AssetManager& am) {
-    auto& reg = am.registry();
+static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
+                            Pale::AssetManager &am) {
+    auto &reg = am.registry();
 
     Pale::Log::PA_INFO("===== Scene Summary =====");
     size_t entityCount = 0;
@@ -36,11 +36,11 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
     size_t emissiveCount = 0;
 
     auto view = scene->getAllEntitiesWith<Pale::IDComponent>();
-    for (entt::entity entity : view) {
+    for (entt::entity entity: view) {
         Pale::Entity e(entity, scene.get());
         ++entityCount;
 
-        const char* name = e.getName().c_str();
+        const char *name = e.getName().c_str();
         bool hasMesh = e.hasComponent<Pale::MeshComponent>();
         bool hasMat = e.hasComponent<Pale::MaterialComponent>();
         bool hasEm = e.hasComponent<Pale::AreaLightComponent>();
@@ -49,15 +49,14 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
 
         // Mesh
         if (hasMesh) {
-            auto& mc = e.getComponent<Pale::MeshComponent>();
+            auto &mc = e.getComponent<Pale::MeshComponent>();
             ++meshCount;
             std::string meshLabel = assetPathOrId(reg, mc.meshID);
 
             size_t submeshCount = 0;
             if (auto mesh = am.get<Pale::Mesh>(mc.meshID)) {
                 submeshCount = mesh->submeshes.size();
-            }
-            else {
+            } else {
                 Pale::Log::PA_WARN("  Mesh: {} (FAILED to load)", meshLabel);
             }
 
@@ -66,7 +65,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
 
         // Material
         if (hasMat) {
-            auto& matc = e.getComponent<Pale::MaterialComponent>();
+            auto &matc = e.getComponent<Pale::MaterialComponent>();
             std::string matLabel = assetPathOrId(reg, matc.materialID);
 
             if (auto mat = am.get<Pale::Material>(matc.materialID)) {
@@ -76,8 +75,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
                     mat->baseColor.x, mat->baseColor.y, mat->baseColor.z,
                     mat->roughness, mat->metallic
                 );
-            }
-            else {
+            } else {
                 Pale::Log::PA_INFO("  Material: {}  (pending load)", matLabel);
             }
         }
@@ -85,7 +83,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
         // Emissive
         if (hasEm) {
             ++emissiveCount;
-            auto& em = e.getComponent<Pale::AreaLightComponent>();
+            auto &em = e.getComponent<Pale::AreaLightComponent>();
             Pale::Log::PA_INFO("  Emissive radiance=({:.3f},{:.3f},{:.3f})",
                                em.radiance.x, em.radiance.y, em.radiance.z);
         }
@@ -97,8 +95,8 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
 
 
 static void debugDensifyPointAsset(
-    Pale::AssetManager& assetManager,
-    const Pale::AssetHandle& pointCloudAssetHandle,
+    Pale::AssetManager &assetManager,
+    const Pale::AssetHandle &pointCloudAssetHandle,
     uint32_t numberOfDebugCopies) {
     auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(pointCloudAssetHandle);
     if (!pointAssetSharedPtr) {
@@ -107,13 +105,13 @@ static void debugDensifyPointAsset(
         return;
     }
 
-    Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+    Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
     if (pointAsset.points.empty()) {
         Pale::Log::PA_WARN("debugDensifyPointAsset: PointAsset has no PointGeometry blocks");
         return;
     }
 
-    Pale::PointGeometry& pointGeometry = pointAsset.points.front();
+    Pale::PointGeometry &pointGeometry = pointAsset.points.front();
     const std::size_t originalPointCount = pointGeometry.positions.size();
 
     if (originalPointCount == 0) {
@@ -129,7 +127,7 @@ static void debugDensifyPointAsset(
 
     // Reserve space for all attribute arrays
     const std::size_t newTotalPointCount = originalPointCount + numberOfDebugCopies;
-    auto reserveAttribute = [newTotalPointCount](auto& vectorAttribute) {
+    auto reserveAttribute = [newTotalPointCount](auto &vectorAttribute) {
         vectorAttribute.reserve(newTotalPointCount);
     };
 
@@ -195,7 +193,7 @@ static void debugDensifyPointAsset(
 }
 
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
@@ -224,39 +222,38 @@ int main(int argc, char** argv) {
     std::filesystem::path pointCloudPath;
     if (argc > 1) {
         pointCloudPath = argv[1];
-    }
-    else {
+    } else {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = false;
+    bool addPoints = true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
         entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
-        auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
+        auto &transform = entityGaussian.getComponent<Pale::TransformComponent>();
     }
 
     if (!addPoints) {
         Pale::Entity bunnyEntity = scene->createEntity("Bunny");
         // 1) Transform
-        auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
+        auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
         bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.0f, 0.8f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, -25.0f, 45.0f));
         bunnyTransformComponent.setScale(glm::vec3(1.0f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-            assetIndexer.importPath("meshes/cube.ply", Pale::AssetType::Mesh);
+                assetIndexer.importPath("meshes/cube.ply", Pale::AssetType::Mesh);
 
-        auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
+        auto &bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
 
         // 3) Material
         Pale::AssetHandle bunnyMaterialAssetHandle =
-            assetIndexer.importPath("Materials/cbox_custom/bsdf_light_gray_0.mat.yaml", Pale::AssetType::Material);
+                assetIndexer.importPath("Materials/cbox_custom/bsdf_light_gray_0.mat.yaml", Pale::AssetType::Material);
 
-        auto& bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
+        auto &bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
     }
 
@@ -277,7 +274,7 @@ int main(int argc, char** argv) {
     settings.maxBounces = 4;
     settings.numForwardPasses = 10;
     settings.numGatherPasses = 1;
-    settings.maxAdjointBounces = 2;
+    settings.maxAdjointBounces = 1;
     settings.adjointSamplesPerPixel = 16;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
@@ -294,7 +291,7 @@ int main(int argc, char** argv) {
         std::vector<uint8_t> rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
         const uint32_t W = sensor.width, H = sensor.height;
         std::filesystem::path filePath = "Output" / pointCloudPath.filename().replace_extension("") /
-            "out_photonmap.png";
+                                         "out_photonmap.png";
         Pale::Utils::savePNG(filePath, rgba, W, H);
     }
 
@@ -338,63 +335,78 @@ int main(int argc, char** argv) {
     Pale::Log::PA_INFO("Adjoint Render Pass...");
     tracer.renderBackward(adjointSensor, gradients); // PRNG replay adjoint
 
-
-{
-    auto rgba = Pale::downloadDebugGradientImage(
-        deviceSelector.getQueue(), adjointSensor, gradients);
-    const uint32_t imageWidth  = adjointSensor.width;
-    const uint32_t imageHeight = adjointSensor.height;
-    const float adjointSamplesPerPixel =
-        static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
-
-    std::filesystem::path baseDir =
-        "Output" / pointCloudPath.filename().replace_extension("");
-
-    // X gradient
     {
-        auto filePath = baseDir / "adjoint_grad_R_seismic.png";
-        if (Pale::Utils::saveGradientSingleChannelPNG(
-                filePath, rgba, imageWidth, imageHeight,
-                /*channelIndex=*/0,
-                adjointSamplesPerPixel,
-                /*absQuantile=*/1.0f,
-                /*flipY=*/false,
-                /*useSeismic=*/true)) {
-            Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-        }
+        auto debugImages = Pale::downloadDebugGradientImages(
+            deviceSelector.getQueue(), adjointSensor, gradients);
 
-        filePath = baseDir / "adjoint_grad_R_seismic_q099.png";
-        Pale::Utils::saveGradientSingleChannelPNG(
-            filePath, rgba, imageWidth, imageHeight,
-            0, adjointSamplesPerPixel, 0.99f, false, true);
+        const uint32_t imageWidth = adjointSensor.width;
+        const uint32_t imageHeight = adjointSensor.height;
+        const float adjointSamplesPerPixel =
+                static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
+
+        std::filesystem::path baseDir =
+                "Output" / pointCloudPath.filename().replace_extension("");
+        std::filesystem::create_directories(baseDir);
+
+        auto saveGradientSet = [&](const std::vector<float> &rgbaBuffer,
+                                   const std::string &prefixBaseName) {
+            // channelIndex: 0 = R, 1 = G, 2 = B
+            const char channelNames[3] = {'R', 'G', 'B'};
+
+            for (int channelIndex = 0; channelIndex < 3; ++channelIndex) {
+                const char channelChar = channelNames[channelIndex];
+
+                // Full-range (absQuantile = 1.0)
+                {
+                    std::string fileName =
+                            "adjoint_" + prefixBaseName + "_" + channelChar + "_seismic.png";
+                    std::filesystem::path filePath = baseDir / fileName;
+
+                    if (Pale::Utils::saveGradientSingleChannelPNG(
+                        filePath,
+                        rgbaBuffer,
+                        imageWidth,
+                        imageHeight,
+                        /*channelIndex=*/channelIndex,
+                        adjointSamplesPerPixel,
+                        /*absQuantile=*/1.0f,
+                        /*flipY=*/false,
+                        /*useSeismic=*/true)) {
+                        Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
+                    }
+
+                    // q=0.99
+                    std::string fileNameQuantile =
+                            "adjoint_" + prefixBaseName + "_" + channelChar + "_seismic_q099.png";
+                    std::filesystem::path filePathQuantile = baseDir / fileNameQuantile;
+
+                    Pale::Utils::saveGradientSingleChannelPNG(
+                        filePathQuantile,
+                        rgbaBuffer,
+                        imageWidth,
+                        imageHeight,
+                        /*channelIndex=*/channelIndex,
+                        adjointSamplesPerPixel,
+                        /*absQuantile=*/0.99f,
+                        /*flipY=*/false,
+                        /*useSeismic=*/true);
+                }
+            }
+        };
+
+        // Save all debug gradient images:
+        //  - position   → framebuffer_pos
+        //  - rotation   → framebuffer_rot
+        //  - scale      → framebuffer_scale
+        //  - opacity    → framebuffer_opacity
+        //  - albedo     → framebuffer_albedo
+        saveGradientSet(debugImages.position, "pos");
+        saveGradientSet(debugImages.rotation, "rot");
+        saveGradientSet(debugImages.scale, "scale");
+        saveGradientSet(debugImages.opacity, "opacity");
+        saveGradientSet(debugImages.albedo, "albedo");
+        saveGradientSet(debugImages.beta, "beta");
     }
-
-    // Y gradient
-    {
-        auto filePath = baseDir / "adjoint_grad_G_seismic.png";
-        Pale::Utils::saveGradientSingleChannelPNG(
-            filePath, rgba, imageWidth, imageHeight,
-            1, adjointSamplesPerPixel, 1.0f, false, true);
-
-        filePath = baseDir / "adjoint_grad_G_seismic_q099.png";
-        Pale::Utils::saveGradientSingleChannelPNG(
-            filePath, rgba, imageWidth, imageHeight,
-            1, adjointSamplesPerPixel, 0.99f, false, true);
-    }
-
-    // Z gradient
-    {
-        auto filePath = baseDir / "adjoint_grad_B_seismic.png";
-        Pale::Utils::saveGradientSingleChannelPNG(
-            filePath, rgba, imageWidth, imageHeight,
-            2, adjointSamplesPerPixel, 1.0f, false, true);
-
-        filePath = baseDir / "adjoint_grad_B_seismic_q099.png";
-        Pale::Utils::saveGradientSingleChannelPNG(
-            filePath, rgba, imageWidth, imageHeight,
-            2, adjointSamplesPerPixel, 0.99f, false, true);
-    }
-}
 
 
     // Write Registry:

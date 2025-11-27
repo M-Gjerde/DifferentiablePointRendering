@@ -329,6 +329,52 @@ namespace Pale {
     }
 
 
+    inline AABB surfelObjectAabbBeta(const Point& surfel,
+                                     float supportRadiusScale = 1.0f,
+                                     float normalThickness     = 0.001f)
+    {
+        const float3 tangentU = normalize(surfel.tanU);
+        const float3 tangentV = normalize(surfel.tanV);
+        const float3 normalDirection = normalize(cross(tangentU, tangentV));
+
+        // For the beta kernel with r^2 = u^2 + v^2 <= 1, the in-plane radii
+        // are just scale.x() and scale.y(), times an optional safety factor.
+        const float supportRadiusU = supportRadiusScale * std::max(surfel.scale.x(), 1e-8f);
+        const float supportRadiusV = supportRadiusScale * std::max(surfel.scale.y(), 1e-8f);
+        const float normalExtent   = normalThickness;
+
+        auto computeAxisExtent = [&](int axisIndex) -> float {
+            const float tangentUComponent =
+                (axisIndex == 0) ? tangentU.x()
+              : (axisIndex == 1) ? tangentU.y()
+                                 : tangentU.z();
+
+            const float tangentVComponent =
+                (axisIndex == 0) ? tangentV.x()
+              : (axisIndex == 1) ? tangentV.y()
+                                 : tangentV.z();
+
+            const float normalComponent =
+                (axisIndex == 0) ? std::fabs(normalDirection.x())
+              : (axisIndex == 1) ? std::fabs(normalDirection.y())
+                                 : std::fabs(normalDirection.z());
+
+            const float projectedInPlane =
+                std::sqrt((supportRadiusU * tangentUComponent) * (supportRadiusU * tangentUComponent) +
+                          (supportRadiusV * tangentVComponent) * (supportRadiusV * tangentVComponent));
+
+            return projectedInPlane + normalExtent * normalComponent;
+        };
+
+        const float3 halfExtent{
+            computeAxisExtent(0),
+            computeAxisExtent(1),
+            computeAxisExtent(2)
+        };
+
+        return { surfel.position - halfExtent, surfel.position + halfExtent };
+    }
+
 
     inline AABB surfelObjectAabb(const Point& surfel,
                                   float kStdDevs = 2.8f, // Should be similar to the same kSigmas as in intersect surfels
@@ -369,7 +415,7 @@ namespace Pale {
         std::vector<AABB>   localAabbs(localPoints.size());
         std::vector<float3> localCentroids(localPoints.size());
         for (uint32_t i = 0; i < localPoints.size(); ++i) {
-            const AABB aabb = surfelObjectAabb(localPoints[i]);
+            const AABB aabb = surfelObjectAabbBeta(localPoints[i]);
             localAabbs[i]   = aabb;
             localCentroids[i]= (aabb.minP + aabb.maxP) * 0.5f;
         }

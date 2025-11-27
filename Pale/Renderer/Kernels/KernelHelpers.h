@@ -445,10 +445,24 @@ namespace Pale {
         return true;
     }
 
+    SYCL_EXTERNAL static bool opacityBeta(float u, float v, const Point& surfel, float* outOpacity) {
+        const float r2 = u * u + v * v;
+        // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
+        if (r2 >= 1.0)
+            return false;
+
+        float base = 1 - r2;
+        float exp = 4 * std::exp(surfel.beta);
+
+        *outOpacity = std::pow(base, exp);
+        return true;
+    }
+
 
     SYCL_EXTERNAL inline float logit(float x) { return sycl::log(x / (1.0f - x)); }
 
 
+    /*
     SYCL_EXTERNAL static float opacityBeta(float u, float v, const Point& surfel, float* opacity) {
         float su = surfel.scale.x();
         float sv = surfel.scale.y();
@@ -476,7 +490,7 @@ namespace Pale {
         *opacity = sycl::pow(1.0f - r, exponent);
         return true;
     }
-
+*/
 
     SYCL_EXTERNAL static bool intersectSurfel(const Ray& rayObject,
                                               const Point& surfel,
@@ -503,12 +517,11 @@ namespace Pale {
         outHitLocal = rayObject.origin + tHit * rayObject.direction;
         float2 uv = phiInverse(outHitLocal, surfel);
 
-        if (!opacityGaussian(uv[0], uv[1], &outOpacity))
-            return false;
-
-        //if (!opacityBeta(uv[0], uv[1], surfel, &outOpacity))
+        //if (!opacityGaussian(uv[0], uv[1], &outOpacity))
         //    return false;
 
+        if (!opacityBeta(uv[0], uv[1], surfel, &outOpacity))
+            return false;
         outTHit = tHit;
         return true;
     }

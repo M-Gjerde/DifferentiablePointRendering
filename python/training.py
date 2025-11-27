@@ -4,6 +4,7 @@ import csv
 import os
 import time
 from pathlib import Path
+from typing import Dict, Tuple, Optional, List
 
 import numpy as np
 import torch
@@ -16,18 +17,20 @@ from io_utils import (
     save_render,
     save_gradient_sign_png_py,
     save_loss_image,
-    save_gaussians_to_ply
+    save_gaussians_to_ply,
 )
 from losses import (
     compute_l2_loss,
     compute_l2_loss_and_grad,
     compute_parameter_mse,
 )
-
 from optimizers import create_optimizer
-from density_control import (densify_points_long_axis_split, compute_prune_indices_by_opacity)
-from render_hooks import remove_points
+from density_control import (
+    densify_points_long_axis_split,
+    compute_prune_indices_by_opacity,
+)
 from render_hooks import (
+    remove_points,
     fetch_parameters,
     apply_point_parameters,
     orthonormalize_tangents_inplace,
@@ -35,14 +38,18 @@ from render_hooks import (
     verify_colors_inplace,
     verify_opacities_inplace,
     add_new_points,
-    rebuild_bvh
+    rebuild_bvh,
 )
-from debug_init_utils import add_debug_noise_to_initial_parameters
+# from debug_init_utils import add_debug_noise_to_initial_parameters
+from repulsion import compute_elliptical_repulsion_loss  # noqa: F401  (kept for future use)
 
-from repulsion import compute_elliptical_repulsion_loss
 import sys
 import select
 
+
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
 
 def poll_save_hotkey() -> bool:
     """
@@ -52,9 +59,8 @@ def poll_save_hotkey() -> bool:
     if not sys.stdin.isatty():
         return False
 
-    # select with timeout=0 -> non-blocking
-    rlist, _, _ = select.select([sys.stdin], [], [], 0.0)
-    if not rlist:
+    readable, _, _ = select.select([sys.stdin], [], [], 0.0)
+    if not readable:
         return False
 
     line = sys.stdin.readline().strip()
@@ -62,15 +68,15 @@ def poll_save_hotkey() -> bool:
 
 
 def save_manual_snapshot(
-        output_dir: Path,
-        iteration: int,
-        positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
-        scales: torch.Tensor,
-        colors: torch.Tensor,
-        opacities: torch.Tensor,
-        current_rgb_np: np.ndarray,
+    output_dir: Path,
+    iteration: int,
+    positions: torch.Tensor,
+    tangent_u: torch.Tensor,
+    tangent_v: torch.Tensor,
+    scales: torch.Tensor,
+    colors: torch.Tensor,
+    opacities: torch.Tensor,
+    current_rgb_np: np.ndarray,
 ) -> None:
     """
     Save the current state using the same filenames as the final output.
@@ -107,23 +113,130 @@ def save_manual_snapshot(
 
 
 def clear_output_dir(output_dir: Path) -> None:
+    """
+    Remove all files in the given directory (and direct subdirectories),
+    then ensure the directory exists.
+    """
     if output_dir.exists():
         for item in output_dir.iterdir():
             if item.is_file():
                 item.unlink()
             elif item.is_dir():
-                for item2 in item.iterdir():
-                    if item2.is_file():
-                        item2.unlink()
+                for sub_item in item.iterdir():
+                    if sub_item.is_file():
+                        sub_item.unlink()
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
 
 
-def run_optimization(
-        config: OptimizationConfig,
-        renderer_settings: RendererSettingsConfig,
+def refetch_parameters_as_torch(
+    renderer: pale.Renderer,
+    device: torch.device,
+) -> Tuple[torch.nn.Parameter, ...]:
+    """
+    Fetch parameters from the renderer, convert them to torch.nn.Parameter tensors.
+    Returns (positions, tangent_u, tangent_v, scales, colors, opacities).
+    """
+    updated = fetch_parameters(renderer)
+
+    positions = torch.nn.Parameter(
+        torch.tensor(updated["position"], device=device, dtype=torch.float32)
+    )
+    tangent_u = torch.nn.Parameter(
+        torch.tensor(updated["tangent_u"], device=device, dtype=torch.float32)
+    )
+    tangent_v = torch.nn.Parameter(
+        torch.tensor(updated["tangent_v"], device=device, dtype=torch.float32)
+    )
+    scales = torch.nn.Parameter(
+        torch.tensor(updated["scale"], device=device, dtype=torch.float32)
+    )
+    colors = torch.nn.Parameter(
+        torch.tensor(updated["color"], device=device, dtype=torch.float32)
+    )
+    opacities = torch.nn.Parameter(
+        torch.tensor(updated["opacity"], device=device, dtype=torch.float32)
+    )
+
+    return positions, tangent_u, tangent_v, scales, colors, opacities
+
+
+def verify_parameters_inplane(
+    tangent_u: torch.Tensor,
+    tangent_v: torch.Tensor,
+    scales: torch.Tensor,
+    colors: torch.Tensor,
+    opacities: torch.Tensor,
 ) -> None:
-    # --- Initialize renderer ---
+    """
+    Enforce parameter constraints in-place:
+    - orthonormal tangents
+    - valid scales, colors, and opacities
+    """
+    orthonormalize_tangents_inplace(tangent_u, tangent_v)
+    verify_scales_inplace(scales)
+    verify_colors_inplace(colors)
+    verify_opacities_inplace(opacities)
+
+
+def assign_numpy_gradients_to_tensors(
+    device: torch.device,
+    positions: torch.nn.Parameter,
+    tangent_u: torch.nn.Parameter,
+    tangent_v: torch.nn.Parameter,
+    scales: torch.nn.Parameter,
+    colors: torch.nn.Parameter,
+    opacities: torch.nn.Parameter,
+    grad_position_np: np.ndarray,
+    grad_tangent_u_np: np.ndarray,
+    grad_tangent_v_np: np.ndarray,
+    grad_scales_np: np.ndarray,
+    grad_colors_np: np.ndarray,
+    grad_opacities_np: np.ndarray,
+) -> None:
+    """
+    Copy numpy gradient arrays into the .grad fields of the given torch Parameters.
+    """
+    positions.grad = torch.tensor(grad_position_np, device=device, dtype=torch.float32)
+    tangent_u.grad = torch.tensor(grad_tangent_u_np, device=device, dtype=torch.float32)
+    tangent_v.grad = torch.tensor(grad_tangent_v_np, device=device, dtype=torch.float32)
+    scales.grad = torch.tensor(grad_scales_np, device=device, dtype=torch.float32)
+    colors.grad = torch.tensor(grad_colors_np, device=device, dtype=torch.float32)
+    opacities.grad = torch.tensor(grad_opacities_np, device=device, dtype=torch.float32)
+
+
+def compute_density_importance(
+    grad_position_np: np.ndarray,
+    grad_scales_np: np.ndarray,
+    grad_opacities_np: np.ndarray,
+) -> torch.Tensor:
+    """
+    Construct a scalar importance per point from position, scale, and opacity gradients.
+    """
+    grad_pos_norm = np.linalg.norm(grad_position_np, axis=1)
+    grad_scale_norm = np.linalg.norm(grad_scales_np, axis=1)
+    grad_opacity_abs = np.abs(grad_opacities_np).reshape(-1)
+
+    importance_np = (
+        grad_pos_norm
+        + 0.3 * grad_scale_norm
+        + 0.1 * grad_opacity_abs
+    ).astype(np.float32)
+
+    return torch.from_numpy(importance_np)
+
+
+# ---------------------------------------------------------------------------
+# Main optimization
+# ---------------------------------------------------------------------------
+
+def run_optimization(
+    config: OptimizationConfig,
+    renderer_settings: RendererSettingsConfig,
+) -> None:
+    # ------------------------------------------------------------------
+    # 1. Initialize renderer and target
+    # ------------------------------------------------------------------
     renderer = pale.Renderer(
         str(config.assets_root),
         config.scene_xml,
@@ -131,11 +244,9 @@ def run_optimization(
         renderer_settings.as_dict(),
     )
 
-    # --- Load target image ---
     target_rgb = load_target_image(config.target_image_path)
     print(f"Loaded target image: {config.target_image_path} with shape {target_rgb.shape}")
 
-    # --- Fetch initial parameters from renderer ---
     initial_params = fetch_parameters(renderer)
     initial_positions_np = initial_params["position"]
     initial_tangent_u_np = initial_params["tangent_u"]
@@ -144,11 +255,11 @@ def run_optimization(
     initial_color_np = initial_params["color"]
     initial_opacity_np = initial_params["opacity"]
 
-    num_points = initial_positions_np.shape[0]
-    print(f"Fetched {num_points} initial points from PLY.")
+    num_points_initial = initial_positions_np.shape[0]
+    print(f"Fetched {num_points_initial} initial points from PLY.")
 
-    # For parameter-MSE reference, keep an immutable copy
-    initial_params_reference = {
+    # Immutable reference for parameter MSE
+    initial_params_reference: Dict[str, np.ndarray] = {
         "position": initial_positions_np.copy(),
         "tangent_u": initial_tangent_u_np.copy(),
         "tangent_v": initial_tangent_v_np.copy(),
@@ -157,23 +268,27 @@ def run_optimization(
         "opacity": initial_opacity_np.copy(),
     }
 
-    # --- Debug noise injection (can be removed later) ---
-    # (initial_positions_np,
-    # initial_tangent_u_np,
-    # initial_tangent_v_np,
-    # initial_scale_np,
-    # initial_color_np,
-    # initial_opacity_np) = add_debug_noise_to_initial_parameters(
-    #    initial_positions_np,
-    #    initial_tangent_u_np,
-    #    initial_tangent_v_np,
-    #    initial_scale_np,
-    #    initial_color_np,
-    #    initial_opacity_np)
+    # Optional debug noise
+    # (
+    #     initial_positions_np,
+    #     initial_tangent_u_np,
+    #     initial_tangent_v_np,
+    #     initial_scale_np,
+    #     initial_color_np,
+    #     initial_opacity_np,
+    # ) = add_debug_noise_to_initial_parameters(
+    #     initial_positions_np,
+    #     initial_tangent_u_np,
+    #     initial_tangent_v_np,
+    #     initial_scale_np,
+    #     initial_color_np,
+    #     initial_opacity_np,
+    # )
     # print("Initial parameters perturbed by debug Gaussian noise.")
 
     device = torch.device(config.device)
 
+    # Create initial trainable tensors from numpy
     positions = torch.nn.Parameter(
         torch.tensor(initial_positions_np, device=device, dtype=torch.float32)
     )
@@ -193,40 +308,24 @@ def run_optimization(
         torch.tensor(initial_opacity_np, device=device, dtype=torch.float32)
     )
 
-    # --- Initial snapshot ---
-    verify_scales_inplace(scales)
-    verify_colors_inplace(colors)
-    verify_opacities_inplace(opacities)
-    orthonormalize_tangents_inplace(tangent_u, tangent_v)
+    # ------------------------------------------------------------------
+    # 2. Initial reparameterization and sync with renderer
+    # ------------------------------------------------------------------
+    verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities)
 
     apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors, opacities)
     rebuild_bvh(renderer)
-    # Re-fetch parameters from renderer to get canonical ordering
-    updated_parameters = fetch_parameters(renderer)
-    new_positions_np = updated_parameters["position"]
-    new_tangent_u_np = updated_parameters["tangent_u"]
-    new_tangent_v_np = updated_parameters["tangent_v"]
-    new_scale_np = updated_parameters["scale"]
-    new_color_np = updated_parameters["color"]
-    new_opacity_np = updated_parameters["opacity"]
-    positions = torch.nn.Parameter(
-        torch.tensor(new_positions_np, device=device, dtype=torch.float32)
-    )
-    tangent_u = torch.nn.Parameter(
-        torch.tensor(new_tangent_u_np, device=device, dtype=torch.float32)
-    )
-    tangent_v = torch.nn.Parameter(
-        torch.tensor(new_tangent_v_np, device=device, dtype=torch.float32)
-    )
-    scales = torch.nn.Parameter(
-        torch.tensor(new_scale_np, device=device, dtype=torch.float32)
-    )
-    colors = torch.nn.Parameter(
-        torch.tensor(new_color_np, device=device, dtype=torch.float32)
-    )
-    opacities = torch.nn.Parameter(
-        torch.tensor(new_opacity_np, device=device, dtype=torch.float32)
-    )
+
+    # Ensure canonical ordering from renderer
+    (
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        colors,
+        opacities,
+    ) = refetch_parameters_as_torch(renderer, device)
+
     optimizer = create_optimizer(
         config,
         positions,
@@ -234,15 +333,15 @@ def run_optimization(
         tangent_v,
         scales,
         colors,
-        opacities
+        opacities,
     )
 
+    # ------------------------------------------------------------------
+    # 3. Initial loss and output dir setup
+    # ------------------------------------------------------------------
     initial_rgb = renderer.render_forward()
     initial_rgb_np = np.asarray(initial_rgb, dtype=np.float32, order="C")
-    initial_loss, _ = compute_l2_loss_and_grad(
-        initial_rgb_np,
-        target_rgb,
-    )
+    initial_loss, _ = compute_l2_loss_and_grad(initial_rgb_np, target_rgb)
     print(f"Initial loss (L2): {initial_loss:.6e}")
 
     clear_output_dir(config.output_dir)
@@ -251,48 +350,44 @@ def run_optimization(
     save_render(config.output_dir / "render_target.png", target_rgb)
     save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
 
+    # ------------------------------------------------------------------
+    # 4. Density control / scheduling hyperparameters
+    # ------------------------------------------------------------------
     iteration = 0
-    # Heuristics for density control:
-    # - Start after a short burn-in so geometry and lighting stabilize a bit.
-    # - Densify less often than you optimize.
-    # - Prune slightly more often than you densify.
-    densification_interval = 10  # densify every 100 iterations
-    prune_interval = 5  # prune every 50 iterations
-    burnin_iterations = 5  # do not touch topology before this
-    reset_opacity_interval = 200  # do not touch topology before this
+
+    # Density control settings (currently effectively disabled with large intervals)
+    densification_interval = int(1e10)
+    prune_interval = int(1e10)
+    burnin_iterations = 5
+    reset_opacity_interval = 400
 
     # Opacity-based pruning parameters
-    opacity_prune_threshold = 0.5  # prune lowest 15% opacities (quantile mode)
-    max_prune_fraction = 0.3  # never prune more than 30% in one step
+    opacity_prune_threshold = 0.5
+    max_prune_fraction = 0.3
 
-    rebuild_bvh_interval = 1  # keep this if you want per-iter rebuild
+    # BVH rebuild schedule
+    rebuild_bvh_interval = 1
+
+    # Metrics logging
     metrics_csv_path = config.output_dir / "metrics.csv"
-    clear_output_dir(config.output_dir)
-
-    # initial renders and saves (unchanged)
-    save_render(config.output_dir / "render_initial.png", initial_rgb_np)
-    save_render(config.output_dir / "render_target.png", target_rgb)
-    save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
 
     with open(metrics_csv_path, "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow([
-            "iteration",
-            "loss_l2",
-            "parameter_mse",
-            "num_points",
-            "iteration_time_sec",
-        ])
+        csv_writer.writerow(
+            ["iteration", "loss_l2", "parameter_mse", "num_points", "iteration_time_sec"]
+        )
 
         try:
             for iteration in range(1, config.iterations + 1):
                 iteration_start = time.perf_counter()
 
-                # 1) Forward
+                # --------------------------------------------------------------
+                # 5. Forward pass and image-space loss
+                # --------------------------------------------------------------
                 current_rgb = renderer.render_forward()
                 current_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
 
-                # 2) Loss + backward image
                 loss_value, loss_grad_image, loss_image = compute_l2_loss_and_grad(
                     current_rgb_np,
                     target_rgb,
@@ -301,7 +396,7 @@ def run_optimization(
 
                 gradients, grad_img = renderer.render_backward(loss_grad_image)
 
-                # 3) Extract gradients
+                # Extract numpy gradients
                 grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
                 grad_tangent_u_np = np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
                 grad_tangent_v_np = np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
@@ -309,7 +404,7 @@ def run_optimization(
                 grad_colors_np = np.asarray(gradients["color"], dtype=np.float32, order="C")
                 grad_opacities_np = np.asarray(gradients["opacity"], dtype=np.float32, order="C")
 
-                # Optional: sanity check vs CURRENT parameter shapes
+                # Sanity check shapes
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
                     raise RuntimeError(
@@ -317,55 +412,53 @@ def run_optimization(
                         f"got {grad_position_np.shape}"
                     )
 
-                # 4) Apply gradients to current parameters
+                # --------------------------------------------------------------
+                # 6. Optimizer step
+                # --------------------------------------------------------------
                 optimizer.zero_grad(set_to_none=True)
-                positions.grad = torch.tensor(
-                    grad_position_np, device=device, dtype=torch.float32
-                )
-                tangent_u.grad = torch.tensor(
-                    grad_tangent_u_np, device=device, dtype=torch.float32
-                )
-                tangent_v.grad = torch.tensor(
-                    grad_tangent_v_np, device=device, dtype=torch.float32
-                )
-                scales.grad = torch.tensor(
-                    grad_scales_np, device=device, dtype=torch.float32
-                )
-                colors.grad = torch.tensor(
-                    grad_colors_np, device=device, dtype=torch.float32
-                )
-                opacities.grad = torch.tensor(
-                    grad_opacities_np, device=device, dtype=torch.float32
+
+                assign_numpy_gradients_to_tensors(
+                    device,
+                    positions,
+                    tangent_u,
+                    tangent_v,
+                    scales,
+                    colors,
+                    opacities,
+                    grad_position_np,
+                    grad_tangent_u_np,
+                    grad_tangent_v_np,
+                    grad_scales_np,
+                    grad_colors_np,
+                    grad_opacities_np,
                 )
 
-                # --- Elliptical repulsion term (on positions only) ---------------
-                repulsion_loss = compute_elliptical_repulsion_loss(
-                    positions=positions,
-                    tangent_u=tangent_u,
-                    tangent_v=tangent_v,
-                    scales=scales,
-                    radius_factor=1.0,  # 1 surfel-radius in the normalization
-                    repulsion_weight=1e-2,  # tune relative to image loss
-                    contact_distance=2.0,  # ~no overlap at d_hat >= 2
-                )
-
-                if torch.isfinite(repulsion_loss) and repulsion_loss.item() != 0.0:
-                    repulsion_loss.backward()
+                # Optional repulsion term (currently disabled)
+                # repulsion_loss = compute_elliptical_repulsion_loss(
+                #     positions=positions,
+                #     tangent_u=tangent_u,
+                #     tangent_v=tangent_v,
+                #     scales=scales,
+                #     radius_factor=1.0,
+                #     repulsion_weight=1e-2,
+                #     contact_distance=2.0,
+                # )
+                # if torch.isfinite(repulsion_loss) and repulsion_loss.item() != 0.0:
+                #     repulsion_loss.backward()
 
                 optimizer.step()
 
+                # Reset opacities on schedule
                 if iteration % reset_opacity_interval == 0:
                     with torch.no_grad():
                         opacities[:] = 0.1
                     print(f"[Iter {iteration:04d}] Resetting all opacities to 0.1")
 
-                # 5) Reparameterization
-                orthonormalize_tangents_inplace(tangent_u, tangent_v)
-                verify_scales_inplace(scales)
-                verify_colors_inplace(colors)
-                verify_opacities_inplace(opacities)
+                # --------------------------------------------------------------
+                # 7. Reparameterization and sync
+                # --------------------------------------------------------------
+                verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities)
 
-                # 6) Upload updated parameters (and rebuild if topology changed)
                 apply_point_parameters(
                     renderer,
                     positions,
@@ -373,38 +466,20 @@ def run_optimization(
                     tangent_v,
                     scales,
                     colors,
-                    opacities
+                    opacities,
                 )
 
                 if iteration % rebuild_bvh_interval == 0:
                     rebuild_bvh(renderer)
-                    # Re-fetch parameters from renderer to get canonical ordering
-                    updated_parameters = fetch_parameters(renderer)
-                    new_positions_np = updated_parameters["position"]
-                    new_tangent_u_np = updated_parameters["tangent_u"]
-                    new_tangent_v_np = updated_parameters["tangent_v"]
-                    new_scale_np = updated_parameters["scale"]
-                    new_color_np = updated_parameters["color"]
-                    new_opacity_np = updated_parameters["opacity"]
+                    (
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        colors,
+                        opacities,
+                    ) = refetch_parameters_as_torch(renderer, device)
 
-                    positions = torch.nn.Parameter(
-                        torch.tensor(new_positions_np, device=device, dtype=torch.float32)
-                    )
-                    tangent_u = torch.nn.Parameter(
-                        torch.tensor(new_tangent_u_np, device=device, dtype=torch.float32)
-                    )
-                    tangent_v = torch.nn.Parameter(
-                        torch.tensor(new_tangent_v_np, device=device, dtype=torch.float32)
-                    )
-                    scales = torch.nn.Parameter(
-                        torch.tensor(new_scale_np, device=device, dtype=torch.float32)
-                    )
-                    colors = torch.nn.Parameter(
-                        torch.tensor(new_color_np, device=device, dtype=torch.float32)
-                    )
-                    opacities = torch.nn.Parameter(
-                        torch.tensor(new_opacity_np, device=device, dtype=torch.float32)
-                    )
                     optimizer = create_optimizer(
                         config,
                         positions,
@@ -412,30 +487,26 @@ def run_optimization(
                         tangent_v,
                         scales,
                         colors,
-                        opacities
+                        opacities,
                     )
 
-                # 7) Densification + pruning AFTER step, at interval
-                densification_result = None
-                indices_to_remove_list: list[int] = []
+                # --------------------------------------------------------------
+                # 8. Densification + pruning
+                # --------------------------------------------------------------
+                densification_result: Optional[Dict[str, np.ndarray]] = None
+                indices_to_remove_list: List[int] = []
 
                 if iteration >= burnin_iterations and iteration % densification_interval == 0:
-                    # Build EDC-like importance from current gradients
-                    grad_pos_norm = np.linalg.norm(grad_position_np, axis=1)
-                    grad_scale_norm = np.linalg.norm(grad_scales_np, axis=1)
-                    grad_opacity_abs = np.abs(grad_opacities_np).reshape(-1)
-
-                    importance_np = (
-                            grad_pos_norm +
-                            0.3 * grad_scale_norm +
-                            0.1 * grad_opacity_abs
+                    importance_tensor = compute_density_importance(
+                        grad_position_np,
+                        grad_scales_np,
+                        grad_opacities_np,
                     )
 
-                    importance_np = np.asarray(importance_np, dtype=np.float32)  # final guarantee
-                    importance_tensor = torch.from_numpy(importance_np)
-
-                    # Reasonable budget, e.g. at most 20% new points
-                    max_new_points = max(int(0.2 * positions.shape[0]), int(5))  # or a fixed number
+                    max_new_points = max(
+                        int(0.2 * positions.shape[0]),
+                        5,
+                    )
 
                     densification_result = densify_points_long_axis_split(
                         positions,
@@ -469,53 +540,30 @@ def run_optimization(
                         indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
 
                 if indices_to_remove_list or densification_result is not None:
-                    # 1) Remove all chosen indices (split parents + low-opacity points)
+                    # 1) Remove points
                     if indices_to_remove_list:
                         indices_to_remove = np.unique(
                             np.asarray(indices_to_remove_list, dtype=np.int64)
                         )
                         remove_points(renderer, indices_to_remove)
                         rebuild_bvh(renderer)
-                    # 2) Add children from long-axis split (if any)
+
+                    # 2) Add children from long-axis split
                     if densification_result is not None:
                         add_new_points(renderer, densification_result)
 
-                    # 3) Re-fetch parameters from renderer to get canonical ordering,
-                    #    now including the newly appended children and without pruned ones.
-                    updated_parameters = fetch_parameters(renderer)
-                    new_positions_np = updated_parameters["position"]
-                    new_tangent_u_np = updated_parameters["tangent_u"]
-                    new_tangent_v_np = updated_parameters["tangent_v"]
-                    new_scale_np = updated_parameters["scale"]
-                    new_color_np = updated_parameters["color"]
-                    new_opacity_np = updated_parameters["opacity"]
+                    # 3) Refetch parameters in canonical order
+                    (
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        colors,
+                        opacities,
+                    ) = refetch_parameters_as_torch(renderer, device)
 
-                    positions = torch.nn.Parameter(
-                        torch.tensor(new_positions_np, device=device, dtype=torch.float32)
-                    )
-                    tangent_u = torch.nn.Parameter(
-                        torch.tensor(new_tangent_u_np, device=device, dtype=torch.float32)
-                    )
-                    tangent_v = torch.nn.Parameter(
-                        torch.tensor(new_tangent_v_np, device=device, dtype=torch.float32)
-                    )
-                    scales = torch.nn.Parameter(
-                        torch.tensor(new_scale_np, device=device, dtype=torch.float32)
-                    )
-                    colors = torch.nn.Parameter(
-                        torch.tensor(new_color_np, device=device, dtype=torch.float32)
-                    )
-                    opacities = torch.nn.Parameter(
-                        torch.tensor(new_opacity_np, device=device, dtype=torch.float32)
-                    )
-
-                    # 4) Reparameterization on the new tensor state
-                    orthonormalize_tangents_inplace(tangent_u, tangent_v)
-                    verify_scales_inplace(scales)
-                    verify_colors_inplace(colors)
-                    verify_opacities_inplace(opacities)
-
-                    # 5) Push back to renderer
+                    # 4) Reparameterize and sync
+                    verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities)
                     apply_point_parameters(
                         renderer,
                         positions,
@@ -526,7 +574,7 @@ def run_optimization(
                         opacities,
                     )
 
-                    # 6) Rebuild BVH (topology changed) and recreate optimizer
+                    # 5) Rebuild BVH and recreate optimizer
                     rebuild_bvh(renderer)
                     optimizer = create_optimizer(
                         config,
@@ -538,21 +586,22 @@ def run_optimization(
                         opacities,
                     )
 
-                # snapshots (unchanged)
+                # --------------------------------------------------------------
+                # 9. Snapshots
+                # --------------------------------------------------------------
                 if iteration % config.save_interval == 0 or iteration == config.iterations:
-                    snapshot_rgb_np = current_rgb_np
                     render_path = config.output_dir / "render" / f"{iteration:04d}_render.png"
-                    save_render(render_path, snapshot_rgb_np)
+                    save_render(render_path, current_rgb_np)
 
-                    img = np.asarray(grad_img, dtype=np.float32, order="C")
-                    img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+                    grad_img_np = np.asarray(grad_img, dtype=np.float32, order="C")
+                    grad_img_np = np.nan_to_num(grad_img_np, nan=0.0, posinf=0.0, neginf=0.0)
 
                     render_grad_quantile = (
-                            config.output_dir / "grad" / f"{iteration:04d}_grad_099.png"
+                        config.output_dir / "grad" / f"{iteration:04d}_grad_099.png"
                     )
                     save_gradient_sign_png_py(
                         render_grad_quantile,
-                        img,
+                        grad_img_np,
                         adjoint_spp=renderer_settings.adjoint_passes,
                         abs_quantile=0.999,
                         flip_y=False,
@@ -560,42 +609,40 @@ def run_optimization(
 
                     save_loss_image(config.output_dir, loss_image, iteration)
 
+                # --------------------------------------------------------------
+                # 10. Metrics and logging
+                # --------------------------------------------------------------
                 num_points = positions.shape[0]
                 iteration_end = time.perf_counter()
                 iteration_time = iteration_end - iteration_start
 
-                # --- Parameter MSE vs. initial parameters -----------------------
                 current_params_np = {
-                    "position": np.array(positions.detach().cpu().numpy()),
-                    "tangent_u": np.array(tangent_u.detach().cpu().numpy()),
-                    "tangent_v": np.array(tangent_v.detach().cpu().numpy()),
-                    "scale": np.array(scales.detach().cpu().numpy()),
-                    "color": np.array(colors.detach().cpu().numpy()),
-                    "opacity": np.array(opacities.detach().cpu().numpy()),
+                    "position": positions.detach().cpu().numpy(),
+                    "tangent_u": tangent_u.detach().cpu().numpy(),
+                    "tangent_v": tangent_v.detach().cpu().numpy(),
+                    "scale": scales.detach().cpu().numpy(),
+                    "color": colors.detach().cpu().numpy(),
+                    "opacity": opacities.detach().cpu().numpy(),
                 }
                 parameter_mse = compute_parameter_mse(
                     current_params_np,
                     initial_params_reference,
                 )
 
-                # --- Write CSV row ----------------------------------------------
-                csv_writer.writerow([
-                    iteration,
-                    loss_value,
-                    parameter_mse,
-                    num_points,
-                    iteration_time,
-                ])
+                csv_writer.writerow(
+                    [iteration, loss_value, parameter_mse, num_points, iteration_time]
+                )
                 csv_file.flush()
 
-                # --- Console logging (unchanged, now uses num_points, iteration_time) ---
                 if iteration % config.log_interval == 0 or iteration == 1:
-                    grad_norm = float(np.linalg.norm(grad_position_np) / max(num_points, 1))
-                    grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / max(num_points, 1))
-                    grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / max(num_points, 1))
-                    grad_scale = float(np.linalg.norm(grad_scales_np) / max(num_points, 1))
-                    grad_color = float(np.linalg.norm(grad_colors_np) / max(num_points, 1))
-                    grad_opacity = float(np.linalg.norm(grad_opacities_np) / max(num_points, 1))
+                    denom = max(num_points, 1)
+                    grad_norm = float(np.linalg.norm(grad_position_np) / denom)
+                    grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / denom)
+                    grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / denom)
+                    grad_scale = float(np.linalg.norm(grad_scales_np) / denom)
+                    grad_color = float(np.linalg.norm(grad_colors_np) / denom)
+                    grad_opacity = float(np.linalg.norm(grad_opacities_np) / denom)
+
                     print(
                         f"[Iter {iteration:04d}/{config.iterations}] "
                         f"Loss = {loss_value:.6e}, "
@@ -608,7 +655,8 @@ def run_optimization(
                         f"|pts| = {num_points}, "
                         f"t = {iteration_time:.3f} s"
                     )
-                # --- Hotkey: press 's' + Enter in the terminal to save current state ---
+
+                # Hotkey snapshot
                 if poll_save_hotkey():
                     save_manual_snapshot(
                         config.output_dir,
@@ -628,6 +676,9 @@ def run_optimization(
                 "Stopping optimization loop and saving current result..."
             )
 
+    # ------------------------------------------------------------------
+    # 11. Final render and export
+    # ------------------------------------------------------------------
     apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors, opacities)
     final_rgb = renderer.render_forward()
     final_rgb_np = np.asarray(final_rgb, dtype=np.float32, order="C")
@@ -639,7 +690,6 @@ def run_optimization(
         positions.detach().cpu().numpy(),
     )
 
-    # --- Save full final parameter set as ASCII PLY for inspection ---
     ply_path = config.output_dir / "points_final.ply"
     save_gaussians_to_ply(
         ply_path,

@@ -28,7 +28,12 @@ namespace Pale {
         size_t numPoints{0};
 
         // debug
-        float4 *framebuffer = nullptr; // gradient image
+        float4 *framebuffer_pos = nullptr; // gradient image
+        float4 *framebuffer_rot = nullptr; // gradient image
+        float4 *framebuffer_scale = nullptr; // gradient image
+        float4 *framebuffer_opacity = nullptr; // gradient image
+        float4 *framebuffer_albedo = nullptr; // gradient image
+        float4 *framebuffer_beta = nullptr; // gradient image
 
     };
 

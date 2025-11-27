@@ -109,11 +109,34 @@ export namespace Pale {
                 cam.width, cam.height, pixelCount
             );
 
-            out.framebuffer =
+            out.framebuffer_pos =
                     reinterpret_cast<float4 *>(
                         sycl::malloc_device(pixelCount * sizeof(float4), queue));
+            out.framebuffer_rot =
+                    reinterpret_cast<float4 *>(
+                        sycl::malloc_device(pixelCount * sizeof(float4), queue));
+            out.framebuffer_scale =
+                    reinterpret_cast<float4 *>(
+                        sycl::malloc_device(pixelCount * sizeof(float4), queue));
+            out.framebuffer_opacity =
+                    reinterpret_cast<float4 *>(
+                        sycl::malloc_device(pixelCount * sizeof(float4), queue));
+            out.framebuffer_albedo =
+                    reinterpret_cast<float4 *>(
+                        sycl::malloc_device(pixelCount * sizeof(float4), queue));
+
+            out.framebuffer_beta =
+                    reinterpret_cast<float4 *>(
+                        sycl::malloc_device(pixelCount * sizeof(float4), queue));
+
+
         } else {
-            out.framebuffer = nullptr;
+            out.framebuffer_pos = nullptr;
+            out.framebuffer_rot = nullptr;
+            out.framebuffer_scale = nullptr;
+            out.framebuffer_opacity = nullptr;
+            out.framebuffer_albedo = nullptr;
+            out.framebuffer_beta = nullptr;
         }
 
         queue.wait();
@@ -130,7 +153,12 @@ export namespace Pale {
         if (g.gradOpacity)   { sycl::free(g.gradOpacity,  queue);  g.gradOpacity   = nullptr; }
         if (g.gradBeta)      { sycl::free(g.gradBeta,     queue);  g.gradBeta      = nullptr; }
         if (g.gradShape)     { sycl::free(g.gradShape,    queue);  g.gradShape     = nullptr; }
-        if (g.framebuffer)   { sycl::free(g.framebuffer,  queue);  g.framebuffer   = nullptr; }
+        if (g.framebuffer_pos)   { sycl::free(g.framebuffer_pos,  queue);  g.framebuffer_pos   = nullptr; }
+        if (g.framebuffer_rot)   { sycl::free(g.framebuffer_rot,  queue);  g.framebuffer_rot   = nullptr; }
+        if (g.framebuffer_scale)   { sycl::free(g.framebuffer_scale,  queue);  g.framebuffer_scale   = nullptr; }
+        if (g.framebuffer_opacity)   { sycl::free(g.framebuffer_opacity,  queue);  g.framebuffer_opacity   = nullptr; }
+        if (g.framebuffer_albedo)   { sycl::free(g.framebuffer_albedo,  queue);  g.framebuffer_albedo   = nullptr; }
+        if (g.framebuffer_beta)   { sycl::free(g.framebuffer_beta,  queue);  g.framebuffer_beta   = nullptr; }
 
         g.numPoints = 0;
     }
@@ -198,26 +226,54 @@ export namespace Pale {
         return hostSideFramebuffer;
     }
 
-    inline std::vector<float>
-    downloadDebugGradientImage(sycl::queue queue, const SensorGPU &sensorGpu, PointGradients &gradients) {
-        // Total number of float elements = width * height * 4 (RGBA channels)
-        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
-                                       * static_cast<size_t>(sensorGpu.height)
-                                       * 4u;
-        std::vector<float> hostSideFramebuffer(totalFloatCount);
+struct DebugGradientImages {
+    // Each buffer has size: width * height * 4 (RGBA)
+    std::vector<float> position;  // framebuffer_pos
+    std::vector<float> rotation;  // framebuffer_rot
+    std::vector<float> scale;     // framebuffer_scale
+    std::vector<float> opacity;   // framebuffer_opacity
+    std::vector<float> albedo;    // framebuffer_albedo
+    std::vector<float> beta;    // framebuffer_albedo
+};
 
+inline DebugGradientImages downloadDebugGradientImages(
+    sycl::queue queue,
+    const SensorGPU &sensorGpu,
+    const PointGradients &gradients
+) {
+    const std::size_t pixelCount = static_cast<std::size_t>(sensorGpu.width)
+                                   * static_cast<std::size_t>(sensorGpu.height);
+    const std::size_t totalFloatCount = pixelCount * 4u; // RGBA
 
-        // Allocate host-side buffer
-        queue.wait();
-        // Copy device framebuffer → host buffer
+    DebugGradientImages images;
+    images.position.resize(totalFloatCount);
+    images.rotation.resize(totalFloatCount);
+    images.scale.resize(totalFloatCount);
+    images.opacity.resize(totalFloatCount);
+    images.albedo.resize(totalFloatCount);
+    images.beta.resize(totalFloatCount);
+
+    auto copyBuffer = [&] (std::vector<float> &hostBuffer, const float4 *deviceBuffer) {
         queue.memcpy(
-            hostSideFramebuffer.data(), // destination
-            gradients.framebuffer, // source (device pointer)
-            totalFloatCount * sizeof(float) // size in bytes
-        ).wait();
+            hostBuffer.data(),       // destination (host)
+            deviceBuffer,            // source (device)
+            totalFloatCount * sizeof(float)
+        );
+    };
 
-        return hostSideFramebuffer;
-    }
+    copyBuffer(images.position, gradients.framebuffer_pos);
+    copyBuffer(images.rotation, gradients.framebuffer_rot);
+    copyBuffer(images.scale,    gradients.framebuffer_scale);
+    copyBuffer(images.opacity,  gradients.framebuffer_opacity);
+    copyBuffer(images.albedo,   gradients.framebuffer_albedo);
+    copyBuffer(images.beta,   gradients.framebuffer_beta);
+
+    // Ensure all copies are completed before returning
+    queue.wait();
+
+    return images;
+}
+
 
     inline std::vector<float>
     uploadSensorRGBA(sycl::queue queue, const SensorGPU &sensorGpu, std::vector<float> hostSideFramebuffer) {

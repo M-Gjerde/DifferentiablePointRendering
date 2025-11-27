@@ -94,7 +94,7 @@ namespace Pale {
     void PathTracer::allocatePhotonMap() {
         freePhotonMap();
 
-        constexpr std::size_t maxPhotonBytes = 2ull * 1024ull * 1024ull * 1024ull; // 2GB
+        constexpr std::size_t maxPhotonBytes = 8ull * 1024ull * 1024ull * 1024ull; // 8GB
         std::size_t photonSize = sizeof(DevicePhotonSurface);
 
 

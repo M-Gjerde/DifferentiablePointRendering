@@ -8,12 +8,12 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e5
+    photons: float = 2e5
     bounces: int = 4
-    forward_passes: int = 10
+    forward_passes: int = 20
     gather_passes: int = 1
-    adjoint_bounces: int = 3
-    adjoint_passes: int = 2
+    adjoint_bounces: int = 2
+    adjoint_passes: int = 4
     logging: int = 3  # Spdlog enums
 
     def as_dict(self) -> Dict[str, float | int]:
