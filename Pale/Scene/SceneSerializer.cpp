@@ -81,8 +81,11 @@ namespace Pale {
         }
 
         // (2) sensor -> camera
-        if (auto sensor = scene.child("sensor")) {
-            Entity cameraEntity = m_scene->createEntity("Camera");
+        for (auto sensor: scene.children("sensor")) {
+            std::string name = attrs(sensor, "id", "");
+            if (name.empty()) return false;
+
+            Entity cameraEntity = m_scene->createEntity(name);
             auto &cameraComponent = cameraEntity.addComponent<CameraComponent>();
 
             const std::string sensorType = sensor.attribute("type").as_string();
@@ -147,9 +150,6 @@ namespace Pale {
             auto &transform = cameraEntity.getComponent<TransformComponent>();
             transform.setTransform(worldFromCamera);
 
-        } else {
-            Log::PA_INFO("No <sensor> found; creating default camera");
-            // create default if desired
         }
 
 

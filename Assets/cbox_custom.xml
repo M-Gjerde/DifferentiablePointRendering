@@ -4,7 +4,29 @@
         <integer name="max_depth" value="6"/>
     </integrator>
 
-    <sensor type="perspective" id="sensor">
+    <sensor type="perspective" id="camera2">
+        <string name="fov_axis" value="smaller"/>
+        <float name="near_clip" value="0.01"/>
+        <float name="far_clip" value="100.0"/>
+        <float name="focus_distance" value="1000"/>
+        <float name="fov" value="40.3077"/>
+        <transform name="to_world">
+            <lookat origin="1.5,-3,1.0" target="0,0,1" up="0,0,1"/>
+        </transform>
+        <sampler type="independent">
+            <integer name="sample_count" value="128"/>
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="300"/>
+            <integer name="height" value="300"/>
+            <rfilter type="tent"/>
+            <string name="pixel_format" value="rgb"/>
+            <string name="component_format" value="float32"/>
+        </film>
+    </sensor>
+
+
+    <sensor type="perspective" id="camera1">
         <string name="fov_axis" value="smaller"/>
         <float name="near_clip" value="0.01"/>
         <float name="far_clip" value="100.0"/>
@@ -12,6 +34,28 @@
         <float name="fov" value="40.3077"/>
         <transform name="to_world">
             <lookat origin="0,-4,1" target="0,0,1" up="0,0,1"/>
+        </transform>
+        <sampler type="independent">
+            <integer name="sample_count" value="128"/>
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="300"/>
+            <integer name="height" value="300"/>
+            <rfilter type="tent"/>
+            <string name="pixel_format" value="rgb"/>
+            <string name="component_format" value="float32"/>
+        </film>
+    </sensor>
+
+
+    <sensor type="perspective" id="camera3">
+        <string name="fov_axis" value="smaller"/>
+        <float name="near_clip" value="0.01"/>
+        <float name="far_clip" value="100.0"/>
+        <float name="focus_distance" value="1000"/>
+        <float name="fov" value="40.3077"/>
+        <transform name="to_world">
+            <lookat origin="-1.5,-3,1.0" target="0,0,1" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
@@ -39,7 +83,7 @@
         <rgb name="reflectance" value="0.8, 0.8, 0.8"/>
     </bsdf>
     <bsdf type="diffuse" id="green">
-        <rgb name="reflectance" value="0.105421,0.37798,0.076425"/>
+        <rgb name="reflectance" value="0.0430135,0.570068,0.0443706"/>
     </bsdf>
     <bsdf type="diffuse" id="red">
         <rgb name="reflectance" value="0.570068,0.0430135,0.0443706"/>
@@ -88,7 +132,7 @@
             <rotate x="1" y="0" z="0" angle="90"/>
             <translate x="0" y="1" z="1"/>
         </transform>
-        <ref id="gray"/>
+        <ref id="blue"/>
     </shape>
 
     <!-- Left wall: x=-1, normal +X -->
@@ -132,6 +176,6 @@
         </transform>
         <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
-         <emitter type="area"><rgb name="radiance" value="0.9,0.8,0.7"/></emitter>
+         <emitter type="area"><rgb name="radiance" value="0.9,0.9,0.7"/></emitter>
      </shape>
  </scene>

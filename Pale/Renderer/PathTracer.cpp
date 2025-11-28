@@ -196,7 +196,7 @@ namespace Pale {
     }
 
 
-    void PathTracer::renderForward(SensorGPU &sensor) {
+    void PathTracer::renderForward(std::vector<SensorGPU> &sensor) {
         ScopedTimer forwardTimer("Forward pass total", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
@@ -206,6 +206,7 @@ namespace Pale {
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .sensor = sensor,
+            .numSensors = static_cast<uint32_t>(sensor.size())
         };
 
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
@@ -218,9 +219,9 @@ namespace Pale {
         m_queue.wait();
     }
 
-    void PathTracer::renderBackward(SensorGPU &sensor, PointGradients &gradients) {
+    void PathTracer::renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages* debugImages) {
 
-        const uint32_t requiredRayCapacity = sensor.width * sensor.height;
+        const uint32_t requiredRayCapacity = sensor[0].width * sensor[0].height;
         if (requiredRayCapacity > m_rayQueueCapacity) {
             Log::PA_WARN("RayQueue Capacity too small for adjoint pass. Resizing queue capacity or just reduce image size");
             ensureRayCapacity(requiredRayCapacity);
@@ -236,7 +237,9 @@ namespace Pale {
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .sensor = sensor,
-            .gradients = gradients
+            .numSensors = static_cast<uint32_t>(sensor.size()),
+            .gradients = gradients,
+            .debugImages = debugImages
         };
 
         submitKernel(renderPackage);

@@ -22,6 +22,7 @@ from io_utils import (
 from losses import (
     compute_l2_loss,
     compute_l2_loss_and_grad,
+    compute_l2_ssim_loss_and_grad,
     compute_parameter_mse,
 )
 from optimizers import create_optimizer
@@ -40,6 +41,7 @@ from render_hooks import (
     verify_beta_inplace,
     add_new_points,
     rebuild_bvh,
+    get_camera_names,
 )
 from debug_init_utils import add_debug_noise_to_initial_parameters
 from repulsion import compute_elliptical_repulsion_loss  # noqa: F401  (kept for future use)
@@ -89,12 +91,6 @@ def save_manual_snapshot(
     # Save current render
     save_render(output_dir / "render_final.png", current_rgb_np)
 
-    # Save positions as numpy
-    save_positions_numpy(
-        output_dir / "positions_final.npy",
-        positions.detach().cpu().numpy(),
-    )
-
     # Save full parameter set as PLY
     ply_path = output_dir / "points_final.ply"
     save_gaussians_to_ply(
@@ -110,7 +106,7 @@ def save_manual_snapshot(
     )
     print(
         f"[Iter {iteration:04d}] Hotkey 's' pressed -> "
-        f"saved render_final.png, positions_final.npy and points_final.ply"
+        f"saved render_final.png and points_final.ply"
     )
 
 
@@ -241,22 +237,40 @@ def compute_density_importance(
 # ---------------------------------------------------------------------------
 
 def run_optimization(
+        renderer: Pale.Renderer,
         config: OptimizationConfig,
         renderer_settings: RendererSettingsConfig,
 ) -> None:
-    # ------------------------------------------------------------------
-    # 1. Initialize renderer and target
-    # ------------------------------------------------------------------
-    renderer = pale.Renderer(
-        str(config.assets_root),
-        config.scene_xml,
-        config.pointcloud_ply,
-        renderer_settings.as_dict(),
-    )
 
-    target_rgb = load_target_image(config.target_image_path)
-    print(f"Loaded target image: {config.target_image_path} with shape {target_rgb.shape}")
+    # ------------------------------------------------------------------
+    # 1a. Load target images per camera
+    # ------------------------------------------------------------------
+    target_path = Path(config.dataset_path)
+    target_images: Dict[str, np.ndarray] = {}
 
+    # Multi-camera mode: interpret dataset path as a directory
+    if not target_path.is_dir():
+        raise RuntimeError(
+            f"Target path '{target_path}' must be a directory when multiple cameras are used."
+        )
+
+    print(f"Loading target images from directory: {target_path}")
+    camera_ids = get_camera_names(renderer)
+    for camera_name in camera_ids:
+        image_path = target_path / f"{camera_name}" / "out_photonmap.png"
+        if not image_path.is_file():
+            raise RuntimeError(
+                f"Missing target image for camera '{camera_name}': {image_path}"
+            )
+        target_images[camera_name] = load_target_image(image_path)
+        print(
+            f"  Camera '{camera_name}': loaded target {image_path} "
+            f"with shape {target_images[camera_name].shape}"
+        )
+
+    # ------------------------------------------------------------------
+    # Fetch initial parameters from renderer
+    # ------------------------------------------------------------------
     initial_params = fetch_parameters(renderer)
     initial_positions_np = initial_params["position"]
     initial_tangent_u_np = initial_params["tangent_u"]
@@ -280,8 +294,8 @@ def run_optimization(
         "beta": initial_beta_np.copy(),
     }
 
-    #Optional debug noise
-    apply_noise = True
+    # (Optionally apply debug noise as before...)
+    apply_noise = False
     if apply_noise:
         (
             initial_positions_np,
@@ -304,7 +318,7 @@ def run_optimization(
 
     device = torch.device(config.device)
 
-    # Create initial trainable tensors from numpy
+    # Create initial trainable tensors from numpy (unchanged)
     positions = torch.nn.Parameter(
         torch.tensor(initial_positions_np, device=device, dtype=torch.float32)
     )
@@ -332,10 +346,11 @@ def run_optimization(
     # ------------------------------------------------------------------
     verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities, betas)
 
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors, opacities, betas)
+    apply_point_parameters(
+        renderer, positions, tangent_u, tangent_v, scales, colors, opacities, betas
+    )
     rebuild_bvh(renderer)
 
-    # Ensure canonical ordering from renderer
     (
         positions,
         tangent_u,
@@ -343,7 +358,7 @@ def run_optimization(
         scales,
         colors,
         opacities,
-        betas
+        betas,
     ) = refetch_parameters_as_torch(renderer, device)
 
     optimizer = create_optimizer(
@@ -354,42 +369,56 @@ def run_optimization(
         scales,
         colors,
         opacities,
-        betas
+        betas,
     )
 
     # ------------------------------------------------------------------
-    # 3. Initial loss and output dir setup
+    # 3. Initial loss and output dir setup (multi-camera)
     # ------------------------------------------------------------------
-    initial_rgb = renderer.render_forward()
-    initial_rgb_np = np.asarray(initial_rgb, dtype=np.float32, order="C")
-    initial_loss, _ = compute_l2_loss_and_grad(initial_rgb_np, target_rgb)
-    print(f"Initial loss (L2): {initial_loss:.6e}")
+    # Forward pass: dict[name -> HxWx3]
+    initial_images = renderer.render_forward()
+
+    initial_loss = 0.0
+    main_camera = camera_ids[0]
 
     clear_output_dir(config.output_dir)
 
-    save_render(config.output_dir / "render_initial.png", initial_rgb_np)
-    save_render(config.output_dir / "render_target.png", target_rgb)
-    save_positions_numpy(config.output_dir / "positions_initial.npy", initial_positions_np)
+    for camera_name in camera_ids:
+        img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")
+        tgt_np = target_images[camera_name]
+
+        loss_cam, _ = compute_l2_loss_and_grad(img_np, tgt_np)
+        initial_loss += loss_cam
+
+        camera_base_dir = config.output_dir / camera_name
+        camera_base_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save per-camera initial render and target
+        save_render(
+            config.output_dir / f"render_initial_{camera_name}.png",
+            img_np,
+        )
+        save_render(
+            config.output_dir / f"render_target_{camera_name}.png",
+            tgt_np,
+        )
+
+    print(f"Initial loss (L2, summed over cameras): {initial_loss:.6e}")
 
     # ------------------------------------------------------------------
     # 4. Density control / scheduling hyperparameters
     # ------------------------------------------------------------------
     iteration = 0
 
-    # Density control settings (currently effectively disabled with large intervals)
-    densification_interval = int(1e10)
-    prune_interval = int(1e10)
-    burnin_iterations = 5
+    densification_interval = 200
+    prune_interval = 100
+    burnin_iterations = 0
     reset_opacity_interval = int(1e10)
 
-    # Opacity-based pruning parameters
     opacity_prune_threshold = 0.5
     max_prune_fraction = 0.3
-
-    # BVH rebuild schedule
     rebuild_bvh_interval = 1
 
-    # Metrics logging
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -404,18 +433,45 @@ def run_optimization(
                 iteration_start = time.perf_counter()
 
                 # --------------------------------------------------------------
-                # 5. Forward pass and image-space loss
+                # 5. Forward pass and image-space loss (multi-camera)
                 # --------------------------------------------------------------
-                current_rgb = renderer.render_forward()
-                current_rgb_np = np.asarray(current_rgb, dtype=np.float32, order="C")
+                # dict[name -> HxWx3]
+                current_images = renderer.render_forward()
 
-                loss_value, loss_grad_image, loss_image = compute_l2_loss_and_grad(
-                    current_rgb_np,
-                    target_rgb,
-                    return_loss_image=True,
+                total_loss_value = 0.0
+                loss_grad_images: Dict[str, np.ndarray] = {}
+                loss_images: Dict[str, np.ndarray] = {}
+
+                for camera_name in camera_ids:
+                    current_rgb_np = np.asarray(
+                        current_images[camera_name],
+                        dtype=np.float32,
+                        order="C",
+                    )
+                    target_rgb_np = target_images[camera_name]
+
+                    loss_value_cam, loss_grad_cam, loss_image_cam = compute_l2_loss_and_grad(
+                        current_rgb_np,
+                        target_rgb_np,
+                        return_loss_image=True,
+                    )
+
+                    total_loss_value += float(loss_value_cam)
+                    loss_grad_images[camera_name] = loss_grad_cam
+                    loss_images[camera_name] = loss_image_cam
+
+                # Use main camera image for manual snapshot and some logs
+                current_main_rgb_np = np.asarray(
+                    current_images[main_camera],
+                    dtype=np.float32,
+                    order="C",
                 )
 
-                gradients, grad_img = renderer.render_backward(loss_grad_image)
+                # --------------------------------------------------------------
+                # 6. Backward pass in renderer (multi-camera)
+                # --------------------------------------------------------------
+                gradients, adjoint_images = renderer.render_backward(loss_grad_images)
+                # `adjoint_images` is dict[name -> HxWx4 float]
 
                 # Extract numpy gradients
                 grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
@@ -426,6 +482,15 @@ def run_optimization(
                 grad_opacities_np = np.asarray(gradients["opacity"], dtype=np.float32, order="C")
                 grad_betas_np = np.asarray(gradients["beta"], dtype=np.float32, order="C")
 
+                # Zero the first row for each
+                #grad_position_np[0, :] = 0
+                #grad_tangent_u_np[0, :] = 0
+                #grad_tangent_v_np[0, :] = 0
+                #grad_scales_np[0, :] = 0
+                #grad_colors_np[0, :] = 0
+                #grad_opacities_np[0] = 0
+                #grad_betas_np[0] = 0
+
                 # Sanity check shapes
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
@@ -435,7 +500,7 @@ def run_optimization(
                     )
 
                 # --------------------------------------------------------------
-                # 6. Optimizer step
+                # 7. Optimizer step
                 # --------------------------------------------------------------
                 optimizer.zero_grad(set_to_none=True)
 
@@ -457,28 +522,16 @@ def run_optimization(
                     grad_betas_np,
                 )
 
-                #Optional repulsion term (currently disabled)
-                #repulsion_loss = compute_elliptical_repulsion_loss(
-                #    positions=positions,
-                #    tangent_u=tangent_u,
-                #    tangent_v=tangent_v,
-                #    scales=scales,
-                #    radius_factor=1.0,
-                #    repulsion_weight=1e-3,
-                #)
-                #if torch.isfinite(repulsion_loss) and repulsion_loss.item() != 0.0:
-                #    repulsion_loss.backward()
-
                 optimizer.step()
 
-                # Reset opacities on schedule
+                # Reset opacities on schedule (unchanged)
                 if iteration % reset_opacity_interval == 0:
                     with torch.no_grad():
                         opacities[:] = 0.1
                     print(f"[Iter {iteration:04d}] Resetting all opacities to 0.1")
 
                 # --------------------------------------------------------------
-                # 7. Reparameterization and sync
+                # 8. Reparameterization, sync, BVH (unchanged logic)
                 # --------------------------------------------------------------
                 verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities, betas)
 
@@ -490,7 +543,7 @@ def run_optimization(
                     scales,
                     colors,
                     opacities,
-                    betas
+                    betas,
                 )
 
                 if iteration % rebuild_bvh_interval == 0:
@@ -513,11 +566,11 @@ def run_optimization(
                         scales,
                         colors,
                         opacities,
-                        betas
+                        betas,
                     )
 
                 # --------------------------------------------------------------
-                # 8. Densification + pruning
+                # 9. Densification + pruning (unchanged)
                 # --------------------------------------------------------------
                 densification_result: Optional[Dict[str, np.ndarray]] = None
                 indices_to_remove_list: List[int] = []
@@ -541,13 +594,14 @@ def run_optimization(
                         scales,
                         colors,
                         opacities,
+                        betas,
                         importance=importance_tensor,
                         max_new_points=max_new_points,
-                        split_distance=0.4,
+                        split_distance=0.15,
                         minor_axis_shrink=0.85,
-                        opacity_reduction=0.8,
+                        opacity_reduction=0.6,
                         min_long_axis_scale=0.03,
-                        grad_threshold=1e-4,
+                        grad_threshold=1e-7,
                     )
 
                     if densification_result is not None:
@@ -566,7 +620,6 @@ def run_optimization(
                         indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
 
                 if indices_to_remove_list or densification_result is not None:
-                    # 1) Remove points
                     if indices_to_remove_list:
                         indices_to_remove = np.unique(
                             np.asarray(indices_to_remove_list, dtype=np.int64)
@@ -574,11 +627,9 @@ def run_optimization(
                         remove_points(renderer, indices_to_remove)
                         rebuild_bvh(renderer)
 
-                    # 2) Add children from long-axis split
                     if densification_result is not None:
                         add_new_points(renderer, densification_result)
 
-                    # 3) Refetch parameters in canonical order
                     (
                         positions,
                         tangent_u,
@@ -586,10 +637,9 @@ def run_optimization(
                         scales,
                         colors,
                         opacities,
-                        betas
+                        betas,
                     ) = refetch_parameters_as_torch(renderer, device)
 
-                    # 4) Reparameterize and sync
                     verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities, betas)
                     apply_point_parameters(
                         renderer,
@@ -599,10 +649,9 @@ def run_optimization(
                         scales,
                         colors,
                         opacities,
-                        betas
+                        betas,
                     )
 
-                    # 5) Rebuild BVH and recreate optimizer
                     rebuild_bvh(renderer)
                     optimizer = create_optimizer(
                         config,
@@ -612,34 +661,64 @@ def run_optimization(
                         scales,
                         colors,
                         opacities,
-                        betas
+                        betas,
                     )
 
                 # --------------------------------------------------------------
-                # 9. Snapshots
+                # 10. Snapshots (per-camera images)
                 # --------------------------------------------------------------
                 if iteration % config.save_interval == 0 or iteration == config.iterations:
-                    render_path = config.output_dir / "render" / f"{iteration:04d}_render.png"
-                    save_render(render_path, current_rgb_np)
+                    for camera_name in camera_ids:
+                        camera_base_dir = config.output_dir / camera_name
+                        camera_render_dir = camera_base_dir / "render"
+                        camera_grad_dir = camera_base_dir / "grad"
+                        camera_render_dir.mkdir(parents=True, exist_ok=True)
+                        camera_grad_dir.mkdir(parents=True, exist_ok=True)
 
-                    grad_img_np = np.asarray(grad_img, dtype=np.float32, order="C")
-                    grad_img_np = np.nan_to_num(grad_img_np, nan=0.0, posinf=0.0, neginf=0.0)
+                        # Per-camera render
+                        image_numpy = np.asarray(
+                            current_images[camera_name],
+                            dtype=np.float32,
+                            order="C",
+                        )
+                        render_path = (
+                                camera_render_dir
+                                / f"{iteration:04d}_render.png"
+                        )
+                        save_render(render_path, image_numpy)
 
-                    render_grad_quantile = (
-                            config.output_dir / "grad" / f"{iteration:04d}_grad_099.png"
-                    )
-                    save_gradient_sign_png_py(
-                        render_grad_quantile,
-                        grad_img_np,
-                        adjoint_spp=renderer_settings.adjoint_passes,
-                        abs_quantile=0.999,
-                        flip_y=False,
-                    )
+                        # Per-camera adjoint/gradient visualization
+                        grad_image_numpy = np.asarray(
+                            adjoint_images[camera_name],
+                            dtype=np.float32,
+                            order="C",
+                        )
+                        grad_image_numpy = np.nan_to_num(
+                            grad_image_numpy,
+                            nan=0.0,
+                            posinf=0.0,
+                            neginf=0.0,
+                        )
 
-                    save_loss_image(config.output_dir, loss_image, iteration)
+                        grad_path = (
+                                camera_grad_dir
+                                / f"{iteration:04d}_grad_099.png"
+                        )
+                        save_gradient_sign_png_py(
+                            grad_path,
+                            grad_image_numpy,
+                            adjoint_spp=renderer_settings.adjoint_passes,
+                            abs_quantile=0.999,
+                            flip_y=False,
+                        )
+
+                        # Loss image: store under main camera
+                        main_loss_image = loss_images[camera_name]
+                        main_camera_loss_root = config.output_dir / camera_name
+                        save_loss_image(main_camera_loss_root, main_loss_image, iteration)
 
                 # --------------------------------------------------------------
-                # 10. Metrics and logging
+                # 11. Metrics and logging
                 # --------------------------------------------------------------
                 num_points = positions.shape[0]
                 iteration_end = time.perf_counter()
@@ -660,7 +739,7 @@ def run_optimization(
                 )
 
                 csv_writer.writerow(
-                    [iteration, loss_value, parameter_mse, num_points, iteration_time]
+                    [iteration, total_loss_value, parameter_mse, num_points, iteration_time]
                 )
                 csv_file.flush()
 
@@ -676,7 +755,7 @@ def run_optimization(
 
                     print(
                         f"[Iter {iteration:04d}/{config.iterations}] "
-                        f"Loss = {loss_value:.6e}, "
+                        f"Loss = {total_loss_value:.6e}, "
                         f"|trans| = {grad_norm:.3e}, "
                         f"|tu| = {grad_tanu:.3e}, "
                         f"|tv| = {grad_tanv:.3e}, "
@@ -688,7 +767,7 @@ def run_optimization(
                         f"t = {iteration_time:.3f} s"
                     )
 
-                # Hotkey snapshot
+                # Hotkey snapshot: use main camera for the image
                 if poll_save_hotkey():
                     save_manual_snapshot(
                         config.output_dir,
@@ -700,7 +779,7 @@ def run_optimization(
                         colors,
                         opacities,
                         betas,
-                        current_rgb_np,
+                        current_main_rgb_np,
                     )
 
         except KeyboardInterrupt:
@@ -710,14 +789,36 @@ def run_optimization(
             )
 
     # ------------------------------------------------------------------
-    # 11. Final render and export
+    # 12. Final render and export (multi-camera)
     # ------------------------------------------------------------------
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, colors, opacities, betas)
-    final_rgb = renderer.render_forward()
-    final_rgb_np = np.asarray(final_rgb, dtype=np.float32, order="C")
-    final_loss = compute_l2_loss(final_rgb_np, target_rgb)
+    apply_point_parameters(
+        renderer,
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        colors,
+        opacities,
+        betas,
+    )
 
-    save_render(config.output_dir / "render_final.png", final_rgb_np)
+    final_images = renderer.render_forward()
+
+    final_loss = 0.0
+    for camera_name in camera_ids:
+        img_np = np.asarray(
+            final_images[camera_name],
+            dtype=np.float32,
+            order="C",
+        )
+        tgt_np = target_images[camera_name]
+        final_loss += compute_l2_loss(img_np, tgt_np)
+
+        save_render(
+            config.output_dir / f"render_final_{camera_name}.png",
+            img_np,
+        )
+
     save_positions_numpy(
         config.output_dir / "positions_final.npy",
         positions.detach().cpu().numpy(),
@@ -738,6 +839,6 @@ def run_optimization(
     print(f"Final parameters written to PLY: {ply_path}")
 
     print("\nOptimization completed.")
-    print(f"Initial loss: {initial_loss:.6e}")
-    print(f"Final loss:   {final_loss:.6e}")
+    print(f"Initial loss (sum over cameras): {initial_loss:.6e}")
+    print(f"Final loss   (sum over cameras): {final_loss:.6e}")
     print(f"Outputs saved in: {config.output_dir.resolve()}")

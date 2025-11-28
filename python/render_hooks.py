@@ -161,7 +161,7 @@ def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=-3.0, max=3.0)
+        s_clamped = torch.clamp(s, min=-3.0, max=0.0)
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -286,3 +286,6 @@ def rebuild_bvh(renderer: pale.Renderer) -> None:
     to its point cloud asset and rebuild its BVH/GPU buffers.
     """
     renderer.rebuild_bvh()  # C++ binding you implement
+
+def get_camera_names(renderer: pale.Renderer) -> None:
+    return renderer.get_camera_names()  # C++ binding you implement

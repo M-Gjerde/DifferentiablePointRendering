@@ -116,7 +116,7 @@ namespace Pale::rng {
 
 namespace Pale {
     SYCL_EXTERNAL inline float3 safeInvDir(const float3& dir) {
-        constexpr float EPS = 1e-8f; // treat anything smaller as “zero”
+        constexpr float EPS = 1e-6f; // treat anything smaller as “zero”
         constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
         float3 inv;
         inv.x() = (abs(dir.x()) < EPS) ? HUGE : 1.f / dir.x();
@@ -186,7 +186,7 @@ namespace Pale {
         /* 3.  Already found a closer hit in the SAME SPACE                   */
 
         if (tmin > tMaxLimit) return false;
-        constexpr float kEps = 1e-4f;
+        constexpr float kEps = 1e-6f;
         tEntry = max(tmin, kEps); // clamp if origin is inside
         return true;
     }

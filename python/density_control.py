@@ -4,20 +4,21 @@ from typing import Optional, Dict, Any
 
 
 def densify_points_long_axis_split(
-    positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
-    scales: torch.nn.Parameter,
-    colors: torch.nn.Parameter,
-    opacities: torch.nn.Parameter,
-    *,
-    importance: Optional[torch.Tensor] = None,  # (N,) scores, EDC-style
-    max_new_points: Optional[int] = None,
-    split_distance: float = 0.6,
-    minor_axis_shrink: float = 0.85,
-    opacity_reduction: float = 0.6,
-    min_long_axis_scale: float = 0.0,  # ignore “dust” surfels if desired
-    grad_threshold: float = 0.0,       # minimal importance to be considered
+        positions: torch.nn.Parameter,
+        tangent_u: torch.nn.Parameter,
+        tangent_v: torch.nn.Parameter,
+        scales: torch.nn.Parameter,
+        colors: torch.nn.Parameter,
+        opacities: torch.nn.Parameter,
+        betas: torch.nn.Parameter,
+        *,
+        importance: Optional[torch.Tensor] = None,  # (N,) scores, EDC-style
+        max_new_points: Optional[int] = None,
+        split_distance: float = 0.6,
+        minor_axis_shrink: float = 0.85,
+        opacity_reduction: float = 0.6,
+        min_long_axis_scale: float = 0.0,  # ignore “dust” surfels if desired
+        grad_threshold: float = 0.0,  # minimal importance to be considered
 ) -> Optional[Dict[str, Any]]:
     """
     Long-Axis Split style densification for your 2D surfels.
@@ -51,7 +52,7 @@ def densify_points_long_axis_split(
         scales_np = scales.detach().cpu().numpy()
         colors_np = colors.detach().cpu().numpy()
         opacities_np = opacities.detach().cpu().numpy()
-
+        betas_np = betas.detach().cpu().numpy()
         if importance is not None:
             importance_np = importance.detach().cpu().numpy().reshape(-1)
         else:
@@ -116,6 +117,7 @@ def densify_points_long_axis_split(
     new_scales_list = []
     new_colors_list = []
     new_opacities_list = []
+    new_betas_list = []
 
     for parent_index in parent_indices:
         parent_position = positions_np[parent_index]
@@ -124,6 +126,7 @@ def densify_points_long_axis_split(
         parent_scale = scales_np[parent_index]  # [s_u, s_v]
         parent_color = colors_np[parent_index]
         parent_opacity = float(opacities_np[parent_index])
+        parent_beta = float(betas_np[parent_index])
 
         scale_u = float(parent_scale[0])
         scale_v = float(parent_scale[1])
@@ -159,7 +162,7 @@ def densify_points_long_axis_split(
 
         # Child opacity
         child_opacity = np.clip(parent_opacity * opacity_reduction, 0.0, 1.0)
-
+        child_beta = parent_beta
         # Record two children
         for child_position in (child_position_pos, child_position_neg):
             new_positions_list.append(child_position)
@@ -168,7 +171,7 @@ def densify_points_long_axis_split(
             new_scales_list.append(child_scale)
             new_colors_list.append(parent_color)
             new_opacities_list.append(child_opacity)
-
+            new_betas_list.append(child_beta)
     if not new_positions_list:
         return None
 
@@ -178,7 +181,7 @@ def densify_points_long_axis_split(
     new_scales_np = np.asarray(new_scales_list, dtype=np.float32)
     new_colors_np = np.asarray(new_colors_list, dtype=np.float32)
     new_opacities_np = np.asarray(new_opacities_list, dtype=np.float32)
-
+    new_betas_np = np.asarray(new_betas_list, dtype=np.float32)
     return {
         "prune_indices": parent_indices,
         "new": {
@@ -188,16 +191,17 @@ def densify_points_long_axis_split(
             "scale": new_scales_np,
             "color": new_colors_np,
             "opacity": new_opacities_np,
+            "beta": new_betas_np,
         },
     }
 
 
 def compute_prune_indices_by_opacity(
-    opacities: torch.Tensor,
-    min_opacity: float,
-    use_quantile: bool = True,
-    max_fraction_to_prune: float = 0.3,
-    min_points_to_keep: int = 1,
+        opacities: torch.Tensor,
+        min_opacity: float,
+        use_quantile: bool = True,
+        max_fraction_to_prune: float = 0.3,
+        min_points_to_keep: int = 1,
 ) -> np.ndarray:
     """
     Decide which points to prune based on opacity (EDC-style).

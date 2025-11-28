@@ -555,7 +555,7 @@ def main(args) -> None:
     print("Index:", args.index)
 
     base_output_dir = (
-        Path(__file__).parent / "Output" / "gaussian_kernel" / args.scene
+        Path(__file__).parent / "Output" / "beta_kernel" / args.scene
         if args.output == "" or args.output is None
         else Path(__file__).parent / Path(args.output)
     )

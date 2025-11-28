@@ -21,8 +21,8 @@ export namespace Pale {
     public:
         explicit PathTracer(sycl::queue q, const PathTracerSettings& settings = {});
         void setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp);
-        void renderForward(SensorGPU& sensors);
-        void renderBackward(SensorGPU &sensor, PointGradients &gradients);
+        void renderForward(std::vector<SensorGPU>& sensors);
+        void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages* debugImages);
         void reset();
 
         PathTracerSettings& getSettings() { return m_settings; }

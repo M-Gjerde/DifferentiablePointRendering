@@ -8,12 +8,12 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e5
+    photons: float = 1e4
     bounces: int = 4
-    forward_passes: int = 20
+    forward_passes: int = 10
     gather_passes: int = 1
     adjoint_bounces: int = 2
-    adjoint_passes: int = 4
+    adjoint_passes: int = 1
     logging: int = 3  # Spdlog enums
 
     def as_dict(self) -> Dict[str, float | int]:
@@ -33,7 +33,7 @@ class OptimizationConfig:
     assets_root: Path
     scene_xml: str
     pointcloud_ply: str
-    target_image_path: Path
+    dataset_path: Path
     output_dir: Path
     personal_suffix: str = ""
 
@@ -77,10 +77,10 @@ def parse_args() -> OptimizationConfig:
         help="Point cloud PLY file used by the renderer.",
     )
     parser.add_argument(
-        "--target-image",
+        "--dataset-path",
         type=Path,
         required=False,
-        default=Path("./Output/target/out_photonmap.png"),
+        default=Path("./Output/target"),
         help="Path to target RGB image (PNG, JPG, EXR, etc.).",
     )
     parser.add_argument(
@@ -196,11 +196,11 @@ def parse_args() -> OptimizationConfig:
 
     # 3DGS-inspired relative factors w.r.t. position LR
     factor_position = 0.5  # ~rotation_lr / position_lr
-    factor_tangent = 5  # ~rotation_lr / position_lr
-    factor_scale = 5  # ~scaling_lr / position_lr
-    factor_color = 2.5  # ~feature_lr / position_lr
+    factor_tangent = 0.5  # ~rotation_lr / position_lr
+    factor_scale = 0.5  # ~scaling_lr / position_lr
+    factor_color = 10  # ~feature_lr / position_lr
     factor_opacity = 10  # ~opacity_lr / position_lr
-    factor_beta = 5  # ~opacity  _lr / position_lr
+    factor_beta = 5.0  # ~opacity  _lr / position_lr
 
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)
@@ -213,7 +213,7 @@ def parse_args() -> OptimizationConfig:
         assets_root=args.assets_root,
         scene_xml=args.scene_xml,
         pointcloud_ply=args.pointcloud,
-        target_image_path=args.target_image,
+        dataset_path=args.dataset_path,
         output_dir=args.output_dir,
         iterations=args.iterations,
         learning_rate=lr_base,

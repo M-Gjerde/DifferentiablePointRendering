@@ -131,7 +131,6 @@ def _ssim_torch(
 
     return ssim_map.mean()
 
-
 def compute_l2_ssim_loss_and_grad(
     current_rgb: np.ndarray,
     target_rgb: np.ndarray,
@@ -143,68 +142,57 @@ def compute_l2_ssim_loss_and_grad(
     Combined L2 + SSIM loss, with gradient w.r.t. the rendered image.
 
     Args:
-        current_rgb: (H, W, 3), float32, typically [0, 1] or HDR.
+        current_rgb: (H, W, 3), float32, arbitrary range (e.g. [0,1] or HDR).
         target_rgb:  (H, W, 3), same shape.
-        ssim_weight: mixing parameter (similar spirit to 3DGS). 0 -> pure L2, 1 -> pure SSIM.
+        ssim_weight: mixing parameter; 0 -> pure L2, 1 -> pure SSIM.
         window_size, sigma: SSIM window parameters.
 
     Returns:
         loss_value: scalar float (combined L2 + SSIM loss)
         grad_image: (H, W, 3) numpy array with dLoss/dI
-        loss_image: (H, W) numpy array (here: per-pixel L2 map for visualization)
+        loss_image: (H, W) numpy array, per-pixel L2 map (for visualization)
     """
     assert current_rgb.shape == target_rgb.shape, "current_rgb and target_rgb must have the same shape"
     H, W, C = current_rgb.shape
     assert C == 3, "SSIM helper currently assumes 3 channels"
 
-    device = torch.device("cpu")  # safe & simple; can be changed to "cuda" if desired
+    device = torch.device("cpu")  # or "cuda" if you like
 
-    # (1) Wrap images as torch tensors
-    pred = torch.tensor(current_rgb, dtype=torch.float32, device=device)
+    # Wrap as a leaf tensor that we will differentiate w.r.t.
+    pred = torch.tensor(current_rgb, dtype=torch.float32, device=device, requires_grad=True)
     tgt = torch.tensor(target_rgb, dtype=torch.float32, device=device)
 
-    # Normalize to [0, 1] for SSIM stability (approximate; keep L2 on original scale)
-    # Prevent division by zero if max == min.
-    pred_min, pred_max = float(pred.min()), float(pred.max())
-    tgt_min, tgt_max = float(tgt.min()), float(tgt.max())
-    eps = 1e-6
+    # L2 term on original scale
+    mse = torch.mean((pred - tgt) ** 2)
 
+    # Normalization for SSIM (do not backprop through min/max -> treat as constants)
+    with torch.no_grad():
+        pred_min = pred.min().item()
+        pred_max = pred.max().item()
+        tgt_min = tgt.min().item()
+        tgt_max = tgt.max().item()
+
+    eps = 1e-6
     pred_norm = (pred - pred_min) / (pred_max - pred_min + eps)
     tgt_norm = (tgt - tgt_min) / (tgt_max - tgt_min + eps)
 
+    # To NCHW
     pred_norm = pred_norm.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
     tgt_norm = tgt_norm.permute(2, 0, 1).unsqueeze(0)
 
-    pred_norm = pred_norm.clone().detach().requires_grad_(True)
-
-    # (2) L2 term (on original, un-normalized scale, averaged)
-    mse = torch.mean((pred - tgt) ** 2)
-
-    # (3) SSIM term on normalized images
+    # SSIM term
     window = _create_gaussian_window(window_size, sigma, channels=3).to(device)
     ssim_val = _ssim_torch(pred_norm, tgt_norm, window, window_size, channels=3)
-    ssim_loss = 1.0 - ssim_val  # DSSIM-like
+    ssim_loss = 1.0 - ssim_val  # DSSIM-style
 
-    # (4) Combine like 3DGS-style: L = (1 - w) * L2 + w * DSSIM
+    # Combined objective
     loss = (1.0 - ssim_weight) * mse + ssim_weight * ssim_loss
 
+    # Backprop to the original image
     loss.backward()
+    grad_image = pred.grad.detach().cpu().numpy()  # (H, W, 3)
 
-    # (5) Gradient w.r.t. the original image (H, W, 3) via chain rule:
-    # dL/dI = dL/dI_norm * dI_norm/dI, but we approximated by normalizing only for SSIM.
-    # A simple and stable approach: reuse dL/d(pred) from mse + ssim via pred_norm path.
-    # To keep consistent with your pipeline, we backprop through pred_norm scaling.
-    grad_pred_norm = pred_norm.grad.detach()  # (1, 3, H, W)
-
-    # Map gradient in normalized space back to original image approx:
-    # I_norm = (I - min) / (max - min + eps)
-    # => dI_norm/dI ≈ 1 / (max - min + eps)
-    scale = 1.0 / (pred_max - pred_min + eps)
-    grad_image = grad_pred_norm * scale
-    grad_image = grad_image.squeeze(0).permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
-
-    # (6) Per-pixel L2 map (for debug / visualization)
+    # Per-pixel L2 map for debug
     loss_image = np.mean((current_rgb - target_rgb) ** 2, axis=-1).astype(np.float32)
 
     return float(loss.item()), grad_image, loss_image
-

@@ -13,6 +13,7 @@ namespace Pale {
         float exposureCorrection = 2.0f;
         float* ldrFramebuffer = nullptr;
         sycl::uchar4* outputFramebuffer = nullptr;
+        char name[16];
     };
 
     // GPU Struct
@@ -26,7 +27,9 @@ namespace Pale {
         float  *gradBeta = nullptr;
         float  *gradShape = nullptr;
         size_t numPoints{0};
+    };
 
+    struct DebugImages {
         // debug
         float4 *framebuffer_pos = nullptr; // gradient image
         float4 *framebuffer_rot = nullptr; // gradient image
@@ -34,7 +37,7 @@ namespace Pale {
         float4 *framebuffer_opacity = nullptr; // gradient image
         float4 *framebuffer_albedo = nullptr; // gradient image
         float4 *framebuffer_beta = nullptr; // gradient image
-
+        uint32_t numPixels = 0;
     };
 
     struct AdjointGPU {
@@ -50,8 +53,11 @@ namespace Pale {
         PathTracerSettings settings{};
         GPUSceneBuffers scene{};
         RenderIntermediatesGPU intermediates{};
-        SensorGPU sensor{};
         PointGradients gradients{};
+        std::vector<SensorGPU> sensor{};
+        DebugImages* debugImages{};
+        uint32_t numSensors{};
+
     };
 
 }

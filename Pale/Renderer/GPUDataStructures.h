@@ -169,6 +169,7 @@ namespace Pale {
         float3 pos{}; // 144
         float3 forward{}; // 160
         uint32_t width{}, height{}; // 168
+        char name[16];
     };
 
     CHECK_16(CameraGPU);

@@ -307,8 +307,8 @@ namespace Pale {
 
     void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
                                     BuildProducts& outBuildProducts) {
-        auto view = scene->getAllEntitiesWith<CameraComponent, TransformComponent>();
-        for (auto [entityId, cameraComponent, transformComponent] : view.each()) {
+        auto view = scene->getAllEntitiesWith<TagComponent, CameraComponent, TransformComponent>();
+        for (auto [entityId,tagComponent, cameraComponent, transformComponent] : view.each()) {
             CameraGPU gpuCam{};
             const glm::mat4 world = transformComponent.getTransform();
             const glm::mat4 viewMat = glm::inverse(world);
@@ -324,6 +324,7 @@ namespace Pale {
             gpuCam.forward = float3{forward.x, forward.y, forward.z};
             gpuCam.width = cameraComponent.camera.width;
             gpuCam.height = cameraComponent.camera.height;
+            copyName(gpuCam.name, tagComponent.getTag());
             outBuildProducts.cameraGPUs.push_back(gpuCam);
         }
     }
@@ -331,7 +332,7 @@ namespace Pale {
 
     inline AABB surfelObjectAabbBeta(const Point& surfel,
                                      float supportRadiusScale = 1.0f,
-                                     float normalThickness     = 0.0001f)
+                                     float normalThickness     = 0.01f)
     {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
@@ -378,7 +379,7 @@ namespace Pale {
 
     inline AABB surfelObjectAabb(const Point& surfel,
                                   float kStdDevs = 2.8f, // Should be similar to the same kSigmas as in intersect surfels
-                                  float sigmaNormal = 0.001f) // set >0 model thickness
+                                  float sigmaNormal = 0.1f) // set >0 model thickness
     {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
