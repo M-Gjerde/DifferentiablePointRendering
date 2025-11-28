@@ -54,21 +54,124 @@ import select
 # Utility helpers
 # ---------------------------------------------------------------------------
 
-def poll_save_hotkey() -> bool:
+def poll_hotkey() -> Optional[str]:
     """
     Non-blocking check for a single-line keyboard input.
-    Returns True if the user typed 's' (case-insensitive) and pressed Enter.
+
+    Returns:
+        's' if the user typed 's' + Enter      -> manual snapshot (render + points)
+        'g' if the user typed 'g' + Enter      -> gradient dump
+        None otherwise.
+
+    Only works when stdin is a TTY (interactive terminal).
     """
     if not sys.stdin.isatty():
-        return False
+        return None
 
     readable, _, _ = select.select([sys.stdin], [], [], 0.0)
     if not readable:
-        return False
+        return None
 
-    line = sys.stdin.readline().strip()
-    return line.lower() == "s"
+    line = sys.stdin.readline().strip().lower()
+    if line in ("s", "g"):
+        return line
+    return None
 
+def save_gradients_snapshot(
+    output_dir: Path,
+    iteration: int,
+    grad_position_np: np.ndarray,
+    grad_tangent_u_np: np.ndarray,
+    grad_tangent_v_np: np.ndarray,
+    grad_scales_np: np.ndarray,
+    grad_colors_np: np.ndarray,
+    grad_opacities_np: np.ndarray,
+    grad_betas_np: np.ndarray,
+) -> None:
+    """
+    Save point-wise gradients to disk:
+
+    - CSV: one row per point, easy to open in Excel:
+        point_index,
+        grad_pos_x, grad_pos_y, grad_pos_z,
+        grad_tan_u_x, grad_tan_u_y, grad_tan_u_z,
+        grad_tan_v_x, grad_tan_v_y, grad_tan_v_z,
+        grad_scale_u, grad_scale_v,
+        grad_color_r, grad_color_g, grad_color_b,
+        grad_opacity, grad_beta
+
+    - NPZ: raw arrays for programmatic inspection.
+    """
+    gradients_dir = output_dir / "gradients"
+    gradients_dir.mkdir(parents=True, exist_ok=True)
+
+    num_points = grad_position_np.shape[0]
+
+    # Make sure 1D quantities are truly 1D
+    grad_opacity_flat = grad_opacities_np.reshape(num_points)
+    grad_beta_flat = grad_betas_np.reshape(num_points)
+
+    # 1) CSV for quick inspection
+    csv_path = gradients_dir / f"gradients_iter_{iteration:04d}.csv"
+    with open(csv_path, "w", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+
+        header = [
+            "point_index",
+            # position
+            "grad_pos_x", "grad_pos_y", "grad_pos_z",
+            # tangent_u
+            "grad_tan_u_x", "grad_tan_u_y", "grad_tan_u_z",
+            # tangent_v
+            "grad_tan_v_x", "grad_tan_v_y", "grad_tan_v_z",
+            # scales (s_u, s_v)
+            "grad_scale_u", "grad_scale_v",
+            # colors (R,G,B)
+            "grad_color_r", "grad_color_g", "grad_color_b",
+            # scalar params
+            "grad_opacity",
+            "grad_beta",
+        ]
+        writer.writerow(header)
+
+        for idx in range(num_points):
+            gx, gy, gz = grad_position_np[idx]
+            gux, guy, guz = grad_tangent_u_np[idx]
+            gvx, gvy, gvz = grad_tangent_v_np[idx]
+            gsu, gsv = grad_scales_np[idx]
+            gcr, gcg, gcb = grad_colors_np[idx]
+            gop = grad_opacity_flat[idx]
+            gb = grad_beta_flat[idx]
+
+            row = [
+                idx,
+                gx, gy, gz,
+                gux, guy, guz,
+                gvx, gvy, gvz,
+                gsu, gsv,
+                gcr, gcg, gcb,
+                gop,
+                gb,
+            ]
+            writer.writerow(row)
+
+    # 2) NPZ with full arrays (for Python / NumPy)
+    npz_path = gradients_dir / f"gradients_iter_{iteration:04d}.npz"
+    np.savez_compressed(
+        npz_path,
+        grad_position=grad_position_np,
+        grad_tangent_u=grad_tangent_u_np,
+        grad_tangent_v=grad_tangent_v_np,
+        grad_scales=grad_scales_np,
+        grad_colors=grad_colors_np,
+        grad_opacities=grad_opacities_np,
+        grad_betas=grad_betas_np,
+    )
+
+    print(
+        f"[Iter {iteration:04d}] Hotkey 'g' pressed -> "
+        f"saved gradients to:\n  {csv_path}\n  {npz_path}"
+    )
 
 def save_manual_snapshot(
         output_dir: Path,
@@ -415,7 +518,7 @@ def run_optimization(
     burnin_iterations = 0
     reset_opacity_interval = int(1e10)
 
-    opacity_prune_threshold = 0.5
+    opacity_prune_threshold = 0.7
     max_prune_fraction = 0.3
     rebuild_bvh_interval = 1
 
@@ -482,15 +585,6 @@ def run_optimization(
                 grad_opacities_np = np.asarray(gradients["opacity"], dtype=np.float32, order="C")
                 grad_betas_np = np.asarray(gradients["beta"], dtype=np.float32, order="C")
 
-                # Zero the first row for each
-                #grad_position_np[0, :] = 0
-                #grad_tangent_u_np[0, :] = 0
-                #grad_tangent_v_np[0, :] = 0
-                #grad_scales_np[0, :] = 0
-                #grad_colors_np[0, :] = 0
-                #grad_opacities_np[0] = 0
-                #grad_betas_np[0] = 0
-
                 # Sanity check shapes
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
@@ -521,6 +615,21 @@ def run_optimization(
                     grad_opacities_np,
                     grad_betas_np,
                 )
+
+                ### --- Elliptical repulsion term (on positions only) ---------------
+                #repulsion_loss = compute_elliptical_repulsion_loss(
+                #    positions=positions,
+                #    tangent_u=tangent_u,
+                #    tangent_v=tangent_v,
+                #    scales=scales,
+                #    radius_factor=0.8,  # ~ footprint size in uv; tune
+                #    repulsion_weight=1e-3,  # strength; tune
+                #)
+#
+                ## This will ADD to positions.grad (since we already set it),
+                ## but won't touch tangent/scales/colors because we detach them.
+                #if torch.isfinite(repulsion_loss) and repulsion_loss.detach().item() != 0.0:
+                #    repulsion_loss.backward()
 
                 optimizer.step()
 
@@ -768,19 +877,37 @@ def run_optimization(
                     )
 
                 # Hotkey snapshot: use main camera for the image
-                if poll_save_hotkey():
-                    save_manual_snapshot(
-                        config.output_dir,
-                        iteration,
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        colors,
-                        opacities,
-                        betas,
-                        current_main_rgb_np,
-                    )
+                    # --------------------------------------------------------------
+                    # 12. Hotkeys (snapshot + gradient dump)
+                    # --------------------------------------------------------------
+                    hotkey = poll_hotkey()
+                    if hotkey == "s":
+                        # Save current state (render + PLY) using main camera
+                        save_manual_snapshot(
+                            config.output_dir,
+                            iteration,
+                            positions,
+                            tangent_u,
+                            tangent_v,
+                            scales,
+                            colors,
+                            opacities,
+                            betas,
+                            current_main_rgb_np,
+                        )
+                    elif hotkey == "g":
+                        # Save gradients for all points
+                        save_gradients_snapshot(
+                            config.output_dir,
+                            iteration,
+                            grad_position_np,
+                            grad_tangent_u_np,
+                            grad_tangent_v_np,
+                            grad_scales_np,
+                            grad_colors_np,
+                            grad_opacities_np,
+                            grad_betas_np,
+                        )
 
         except KeyboardInterrupt:
             print(

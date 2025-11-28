@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
         auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
         bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.0f, 0.8f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, -25.0f, 45.0f));
-        bunnyTransformComponent.setScale(glm::vec3(1.0f));
+        bunnyTransformComponent.setScale(glm::vec3(0.3f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =

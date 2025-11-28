@@ -8,5 +8,6 @@
 namespace Pale {
 
     void launchPostProcessKernel(RenderPackage& pkg);
+    void accumulatePhotonEnergyPerSurfelDebug(RenderPackage& pkg);
 
 }

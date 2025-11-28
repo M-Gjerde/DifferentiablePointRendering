@@ -195,12 +195,12 @@ def parse_args() -> OptimizationConfig:
     lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log it
 
     # 3DGS-inspired relative factors w.r.t. position LR
-    factor_position = 0.5  # ~rotation_lr / position_lr
+    factor_position = 0.1  # ~rotation_lr / position_lr
     factor_tangent = 0.5  # ~rotation_lr / position_lr
     factor_scale = 0.5  # ~scaling_lr / position_lr
-    factor_color = 10  # ~feature_lr / position_lr
+    factor_color = 0  # ~feature_lr / position_lr
     factor_opacity = 10  # ~opacity_lr / position_lr
-    factor_beta = 5.0  # ~opacity  _lr / position_lr
+    factor_beta = 5.0  # ~beta_lr / position_lr
 
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)

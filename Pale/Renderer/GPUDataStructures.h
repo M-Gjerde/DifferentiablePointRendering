@@ -152,7 +152,7 @@ namespace Pale {
     /*************************  Scene graph **************************/
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
 
-    enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1 };
+    enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1, InvalidType = UINT32_MAX };
 
     struct alignas(16) MeshRange {
         uint32_t firstTri{}, triCount{};
@@ -200,7 +200,7 @@ namespace Pale {
     };
 
     struct InstanceRecord {
-        GeometryType geometryType{GeometryType::Mesh};
+        GeometryType geometryType{GeometryType::InvalidType};
         uint32_t geometryIndex{0}; // meshRanges index or pointRanges index
         uint32_t materialIndex{0}; // mesh only; point cloud = kInvalidMaterialIndex
         uint32_t transformIndex{0}; // index into transforms
@@ -336,6 +336,7 @@ namespace Pale {
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
         int    sideSign{};       // +1 or -1: hemisphere relative to canonical surfel normal
+        GeometryType geometryType{GeometryType::InvalidType};       // +1 or -1: hemisphere relative to canonical surfel normal
         uint32_t primitiveIndex = UINT32_MAX;
 
     };

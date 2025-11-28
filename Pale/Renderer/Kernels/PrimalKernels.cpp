@@ -251,6 +251,7 @@ namespace Pale {
                                 const float signedCosineIncident = dot(canonicalNormalW, -rayState.ray.direction);
                                 photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
                                 photonEntry.sideSign = signNonZero(signedCosineIncident);
+                                photonEntry.geometryType = instance.geometryType;
                                 photonEntry.primitiveIndex = event.primitiveIndex;
                                 intermediates.map.photons[slot] = photonEntry;
                             }
@@ -264,6 +265,7 @@ namespace Pale {
                             const float signedCosineIncident = dot(worldHit.geometricNormalW, -rayState.ray.direction);
                             photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
                             photonEntry.sideSign = signNonZero(signedCosineIncident);
+                            photonEntry.geometryType = instance.geometryType;
                             photonEntry.primitiveIndex = instance.geometryType == GeometryType::Mesh
                                                              ? worldHit.instanceIndex
                                                              : worldHit.primitiveIndex;
@@ -315,7 +317,6 @@ namespace Pale {
         auto& scene = pkg.scene;
         auto& settings = pkg.settings;
         auto& photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
-
 
 
         queue.wait();
