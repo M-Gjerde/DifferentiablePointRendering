@@ -8,9 +8,9 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e3
+    photons: float = 1e4
     bounces: int = 4
-    forward_passes: int = 10
+    forward_passes: int = 50
     gather_passes: int = 1
     adjoint_bounces: int = 2
     adjoint_passes: int = 1

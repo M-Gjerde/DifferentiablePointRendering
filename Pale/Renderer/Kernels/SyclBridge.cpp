@@ -95,7 +95,7 @@ namespace Pale {
             // Post processing:
             // Gamma, exposure and rgb8 conversion
             launchPostProcessKernel(pkg);
-            accumulatePhotonEnergyPerSurfelDebug(pkg);
+            //accumulatePhotonEnergyPerSurfelDebug(pkg);
         }
         else if (pkg.settings.rayGenMode == RayGenMode::Adjoint) {
             pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();

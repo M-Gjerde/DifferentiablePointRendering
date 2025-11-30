@@ -30,46 +30,129 @@ def fetch_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
 
 
 def orthonormalize_tangents_inplace(
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
-) -> dict[str, float]:
+    tangentU: torch.Tensor,
+    tangentV: torch.Tensor,
+    referenceDirection: Optional[torch.Tensor] = None,
+) -> Dict[str, float]:
     """
-    In-place Gram–Schmidt on (tangent_u, tangent_v) rows, enforcing:
+    In-place Gram–Schmidt on (tangentU, tangentV) rows, enforcing:
 
-        |tangent_u| = |tangent_v| = 1
-        tangent_u ⟂ tangent_v
-        n = tangent_u × tangent_v  (right-handed frame)
+        |tangentU| = |tangentV| = 1
+        tangentU ⟂ tangentV
+        n = tangentU × tangentV   (right-handed frame)
+        dot(n, referenceDirection) >= 0 (orientation consistency)
 
-    Returns some diagnostics.
+    Args:
+        tangentU: (N, 3) tensor of primary tangent directions.
+        tangentV: (N, 3) tensor of secondary tangent directions.
+        referenceDirection: (3,) or (1, 3) tensor specifying the desired
+                            normal orientation hemisphere. If None, uses +Z.
+
+    Returns:
+        Dictionary with diagnostics about norms, orthogonality, and orientation.
     """
+    if tangentU.ndim != 2 or tangentU.shape[1] != 3:
+        raise ValueError(f"tangentU must be (N, 3), got {tuple(tangentU.shape)}")
+    if tangentV.ndim != 2 or tangentV.shape[1] != 3:
+        raise ValueError(f"tangentV must be (N, 3), got {tuple(tangentV.shape)}")
+    if tangentU.shape != tangentV.shape:
+        raise ValueError(
+            f"tangentU and tangentV must have same shape, got "
+            f"{tuple(tangentU.shape)} and {tuple(tangentV.shape)}"
+        )
+
     with torch.no_grad():
-        tu = tangent_u.data
-        tv = tangent_v.data
+        epsilon = 1e-6
+        device = tangentU.device
+        dtype = tangentU.dtype
 
-        tu_norm = tu.norm(dim=1, keepdim=True).clamp(min=1e-8)
-        tu_unit = tu / tu_norm
+        primaryTangent = tangentU
+        secondaryTangent = tangentV
 
-        tv_proj = (tv * tu_unit).sum(dim=1, keepdim=True) * tu_unit
-        tv_orth = tv - tv_proj
+        # 1. Normalize tangentU
+        primaryNorm = primaryTangent.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        primaryUnit = primaryTangent / primaryNorm
 
-        tv_norm = tv_orth.norm(dim=1, keepdim=True).clamp(min=1e-8)
-        tv_unit = tv_orth / tv_norm
+        # 2. Gram–Schmidt orthogonalize tangentV against tangentU
+        secondaryProjection = (secondaryTangent * primaryUnit).sum(dim=1, keepdim=True) * primaryUnit
+        secondaryOrtho = secondaryTangent - secondaryProjection
 
-        tangent_u.data.copy_(tu_unit)
-        tangent_v.data.copy_(tv_unit)
+        # Degeneracy fix: if secondaryOrtho is too small, choose a stable orthogonal vector
+        squaredLengthSecondaryOrtho = (secondaryOrtho * secondaryOrtho).sum(dim=1, keepdim=True)
+        degenerateMask = squaredLengthSecondaryOrtho < epsilon
 
-        dot_uv = (tangent_u * tangent_v).sum(dim=1)
-        norm_u = tangent_u.norm(dim=1)
-        norm_v = tangent_v.norm(dim=1)
-        cross = torch.cross(tangent_u, tangent_v, dim=1)
-        cross_norm = cross.norm(dim=1)
+        if degenerateMask.any():
+            # Choose (0, 1, 0) if primaryUnit.y is not ~1, otherwise (1, 0, 0)
+            useYAxisMask = (primaryUnit[:, 1].abs() < 0.9).view(-1, 1)
 
-        return {
-            "max_dev_norm_u": float((norm_u - 1.0).abs().max().item()),
-            "max_dev_norm_v": float((norm_v - 1.0).abs().max().item()),
-            "max_abs_dot_uv": float(dot_uv.abs().max().item()),
-            "min_cross_norm": float(cross_norm.min().item()),
+            yAxisVector = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype).view(1, 3)
+            xAxisVector = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=dtype).view(1, 3)
+
+            yAxisBatch = yAxisVector.expand_as(primaryUnit)
+            xAxisBatch = xAxisVector.expand_as(primaryUnit)
+
+            arbitraryDirection = torch.where(useYAxisMask, yAxisBatch, xAxisBatch)
+            arbitraryDirection = arbitraryDirection - (
+                (arbitraryDirection * primaryUnit).sum(dim=1, keepdim=True) * primaryUnit
+            )
+
+            secondaryOrtho = torch.where(degenerateMask, arbitraryDirection, secondaryOrtho)
+
+        # Normalize tangentV
+        secondaryNorm = secondaryOrtho.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        secondaryUnit = secondaryOrtho / secondaryNorm
+
+        # 3. Compute right-handed normal
+        normalVector = torch.cross(primaryUnit, secondaryUnit, dim=1)
+        normalNorm = normalVector.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        normalUnit = normalVector / normalNorm
+
+        # 4. Enforce consistent orientation w.r.t. referenceDirection
+        if referenceDirection is None:
+            referenceDirection = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=dtype)
+
+        if referenceDirection.ndim == 1:
+            referenceDirection = referenceDirection.view(1, 3)
+        elif referenceDirection.ndim != 2 or referenceDirection.shape[1] != 3:
+            raise ValueError(
+                f"referenceDirection must be (3,) or (1, 3) or (N, 3), "
+                f"got {tuple(referenceDirection.shape)}"
+            )
+
+        if referenceDirection.shape[0] == 1:
+            referenceDirection = referenceDirection.expand_as(primaryUnit)
+        elif referenceDirection.shape[0] != primaryUnit.shape[0]:
+            raise ValueError(
+                f"referenceDirection batch size must be 1 or N={primaryUnit.shape[0]}, "
+                f"got {referenceDirection.shape[0]}"
+            )
+
+        normalDotReference = (normalUnit * referenceDirection).sum(dim=1, keepdim=True)
+        flipMask = normalDotReference < 0.0
+
+        secondaryUnit = torch.where(flipMask, -secondaryUnit, secondaryUnit)
+        normalUnit = torch.where(flipMask, -normalUnit, normalUnit)
+
+        # 5. Write back in place
+        tangentU.copy_(primaryUnit)
+        tangentV.copy_(secondaryUnit)
+
+        # Diagnostics
+        dotUV = (tangentU * tangentV).sum(dim=1)
+        normU = tangentU.norm(dim=1)
+        normV = tangentV.norm(dim=1)
+        crossProduct = torch.cross(tangentU, tangentV, dim=1)
+        crossNorm = crossProduct.norm(dim=1)
+        normalDotReferenceFinal = (normalUnit * referenceDirection).sum(dim=1)
+
+        diagnostics: Dict[str, float] = {
+            "max_dev_norm_u": float((normU - 1.0).abs().max().item()),
+            "max_dev_norm_v": float((normV - 1.0).abs().max().item()),
+            "max_abs_dot_uv": float(dotUV.abs().max().item()),
+            "min_cross_norm": float(crossNorm.min().item()),
+            "min_normal_dot_ref": float(normalDotReferenceFinal.min().item()),
         }
+        return diagnostics
 
 
 def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:

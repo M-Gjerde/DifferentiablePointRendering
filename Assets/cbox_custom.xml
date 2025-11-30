@@ -4,27 +4,6 @@
         <integer name="max_depth" value="6"/>
     </integrator>
 
-    <sensor type="perspective" id="camera2">
-        <string name="fov_axis" value="smaller"/>
-        <float name="near_clip" value="0.01"/>
-        <float name="far_clip" value="100.0"/>
-        <float name="focus_distance" value="1000"/>
-        <float name="fov" value="40.3077"/>
-        <transform name="to_world">
-            <lookat origin="1.5,-3,1.0" target="0,0,1" up="0,0,1"/>
-        </transform>
-        <sampler type="independent">
-            <integer name="sample_count" value="128"/>
-        </sampler>
-        <film type="hdrfilm">
-            <integer name="width" value="300"/>
-            <integer name="height" value="300"/>
-            <rfilter type="tent"/>
-            <string name="pixel_format" value="rgb"/>
-            <string name="component_format" value="float32"/>
-        </film>
-    </sensor>
-
 
     <sensor type="perspective" id="camera1">
         <string name="fov_axis" value="smaller"/>
@@ -39,13 +18,36 @@
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="300"/>
-            <integer name="height" value="300"/>
+            <integer name="width" value="400"/>
+            <integer name="height" value="400"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>
             <string name="component_format" value="float32"/>
         </film>
     </sensor>
+
+
+    <sensor type="perspective" id="camera2">
+        <string name="fov_axis" value="smaller"/>
+        <float name="near_clip" value="0.01"/>
+        <float name="far_clip" value="100.0"/>
+        <float name="focus_distance" value="1000"/>
+        <float name="fov" value="40.3077"/>
+        <transform name="to_world">
+            <lookat origin="1.5,-3,1.0" target="0,0,1" up="0,0,1"/>
+        </transform>
+        <sampler type="independent">
+            <integer name="sample_count" value="128"/>
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="400"/>
+            <integer name="height" value="400"/>
+            <rfilter type="tent"/>
+            <string name="pixel_format" value="rgb"/>
+            <string name="component_format" value="float32"/>
+        </film>
+    </sensor>
+
 
 
     <sensor type="perspective" id="camera3">
@@ -61,8 +63,8 @@
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="300"/>
-            <integer name="height" value="300"/>
+            <integer name="width" value="400"/>
+            <integer name="height" value="400"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>
             <string name="component_format" value="float32"/>
