@@ -246,7 +246,7 @@ def render_with_trs(
         beta=beta,
         index=index,
     )
-    rgb = np.asarray(renderer.render_forward(), dtype=np.float32)
+    rgb = np.asarray(renderer.render_forward()["camera1"], dtype=np.float32)
     return rgb
 
 
@@ -302,6 +302,7 @@ def finite_difference_rotation(
         scale3=(1.0, 1.0, 1.0),
         color3=(0.0, 0.0, 0.0),
         opacity=0.0,
+        beta=0.0,
         index=index,
     )
     rgb_plus = render_with_trs(
@@ -311,6 +312,7 @@ def finite_difference_rotation(
         scale3=(1.0, 1.0, 1.0),
         color3=(0.0, 0.0, 0.0),
         opacity=0.0,
+        beta=0.0,
         index=index,
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps_degrees)
@@ -339,6 +341,7 @@ def finite_difference_scale(
         scale3=negative_scale,
         color3=(0.0, 0.0, 0.0),
         opacity=0.0,
+        beta=0.0,
         index=index,
     )
     rgb_plus = render_with_trs(
@@ -348,6 +351,7 @@ def finite_difference_scale(
         scale3=positive_scale,
         color3=(0.0, 0.0, 0.0),
         opacity=0.0,
+        beta=0.0,
         index=index,
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
@@ -367,6 +371,7 @@ def finite_difference_opacity(
         scale3=(1.0, 1.0, 1.0),
         color3=(0.0, 0.0, 0.0),
         opacity=negative_opacity,
+        beta=0.0,
         index=index,
     )
     rgb_plus = render_with_trs(
@@ -376,6 +381,7 @@ def finite_difference_opacity(
         scale3=(1.0, 1.0, 1.0),
         color3=(0.0, 0.0, 0.0),
         opacity=positive_opacity,
+        beta=0.0,
         index=index,
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
@@ -409,6 +415,7 @@ def finite_difference_albedo(
         scale3=(1.0, 1.0, 1.0),
         color3=color_minus,
         opacity=1.0,
+        beta=0.0,
         index=index,
     )
     rgb_plus = render_with_trs(
@@ -418,6 +425,7 @@ def finite_difference_albedo(
         scale3=(1.0, 1.0, 1.0),
         color3=color_plus,
         opacity=1.0,
+        beta=0.0,
         index=index,
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
@@ -537,12 +545,12 @@ def write_fd_images(
 # ---------- Main driver: compute FD for all parameters ----------
 def main(args) -> None:
     renderer_settings = {
-        "photons": 1e4,
+        "photons": 1e5,
         "bounces": 4,
-        "forward_passes": 500,
-        "gather_passes": 4,
-        "adjoint_bounces": 4,
-        "adjoint_passes": 6,
+        "forward_passes": 50,
+        "gather_passes": 1,
+        "adjoint_bounces": 0,
+        "adjoint_passes": 0,
         "logging": 2,
     }
 
