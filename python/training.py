@@ -398,7 +398,7 @@ def run_optimization(
     }
 
     # (Optionally apply debug noise as before...)
-    apply_noise = False
+    apply_noise = True
     if apply_noise:
         (
             initial_positions_np,
@@ -513,12 +513,12 @@ def run_optimization(
     # ------------------------------------------------------------------
     iteration = 0
 
-    densification_interval = 200
-    prune_interval = 100
+    densification_interval = 20000
+    prune_interval = 10000
     burnin_iterations = 0
     reset_opacity_interval = int(1e10)
 
-    opacity_prune_threshold = 0.7
+    opacity_prune_threshold = 0.4
     max_prune_fraction = 0.3
     rebuild_bvh_interval = 1
 

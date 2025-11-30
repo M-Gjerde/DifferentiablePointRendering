@@ -375,6 +375,32 @@ namespace Pale {
         return unitSampledDirectionW;
     }
 
+    inline void buildIntersectionNormal(const GPUSceneBuffers& scene, WorldHit& worldHit) {
+        if (!worldHit.hit)
+            return;
+        InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
+        if (instance.geometryType == GeometryType::Mesh) {
+            const Triangle& triangle = scene.triangles[worldHit.primitiveIndex];
+            const Transform& objectWorldTransform = scene.transforms[instance.transformIndex];
+            const Vertex& vertex0 = scene.vertices[triangle.v0];
+            const Vertex& vertex1 = scene.vertices[triangle.v1];
+            const Vertex& vertex2 = scene.vertices[triangle.v2];
+            // Canonical geometric normal (no face-forwarding)
+            const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
+            const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
+            const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
+            const float3 canonicalNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
+            worldHit.geometricNormalW = canonicalNormalW;
+        }
+        else if (instance.geometryType == GeometryType::PointCloud) {
+            const auto& surfel = scene.points[worldHit.primitiveIndex];
+            // Canonical surfel normal from tangents (no face-forwarding)
+            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+            worldHit.geometricNormalW = canonicalNormalW;
+        }
+
+    }
+
 
     inline float2 phiInverse(float3 hitWorld, float3 surfelCenter, float3 tu, float3 tv, float su, float sv) {
         float3 r = hitWorld - surfelCenter;

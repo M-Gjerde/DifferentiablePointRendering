@@ -545,10 +545,10 @@ def write_fd_images(
 # ---------- Main driver: compute FD for all parameters ----------
 def main(args) -> None:
     renderer_settings = {
-        "photons": 1e5,
+        "photons": 1e4,
         "bounces": 4,
-        "forward_passes": 50,
-        "gather_passes": 1,
+        "forward_passes": 1000,
+        "gather_passes": 2,
         "adjoint_bounces": 0,
         "adjoint_passes": 0,
         "logging": 2,

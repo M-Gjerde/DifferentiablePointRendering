@@ -96,37 +96,9 @@ namespace Pale {
                 m_intermediates.hitRecords[rayIndex] = worldHit;
                 return;
             }
+            buildIntersectionNormal(m_scene, worldHit);
+            m_intermediates.hitRecords[rayIndex] = worldHit;
 
-            auto& instance = m_scene.instances[worldHit.instanceIndex];
-
-            switch (instance.geometryType) {
-            case GeometryType::Mesh:
-                {
-                    const Triangle& triangle = m_scene.triangles[worldHit.primitiveIndex];
-                    const Transform& objectWorldTransform = m_scene.transforms[instance.transformIndex];
-                    const Vertex& vertex0 = m_scene.vertices[triangle.v0];
-                    const Vertex& vertex1 = m_scene.vertices[triangle.v1];
-                    const Vertex& vertex2 = m_scene.vertices[triangle.v2];
-                    // Canonical geometric normal (no face-forwarding)
-                    const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
-                    const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
-                    const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
-                    const float3 canonicalNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
-                    worldHit.geometricNormalW = canonicalNormalW;
-                    m_intermediates.hitRecords[rayIndex] = worldHit;
-                }
-                break;
-
-            case GeometryType::PointCloud:
-                {
-                    const auto& surfel = m_scene.points[worldHit.primitiveIndex];
-                    // Canonical surfel normal from tangents (no face-forwarding)
-                    const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                    worldHit.geometricNormalW = canonicalNormalW;
-                    m_intermediates.hitRecords[rayIndex] = worldHit;
-                }
-                break;
-            }
         }
 
     private:

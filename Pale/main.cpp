@@ -273,12 +273,12 @@ int main(int argc, char** argv) {
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e5;
+    settings.photonsPerLaunch = 1e4;
     settings.maxBounces = 4;
-    settings.numForwardPasses = 50;
+    settings.numForwardPasses = 500;
     settings.numGatherPasses = 1;
-    settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 8;
+    settings.maxAdjointBounces = 1;
+    settings.adjointSamplesPerPixel = 16;
     settings.renderDebugGradientImages = true;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
