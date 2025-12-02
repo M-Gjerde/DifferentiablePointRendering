@@ -76,7 +76,7 @@ def densify_points_long_axis_split(
     if importance_np is not None:
         candidate_scores = importance_np[candidate_indices]
         # Filter by gradient threshold
-        print(candidate_scores)
+        print("Candidate Scores: ", candidate_scores)
         if grad_threshold > 0.0:
             grad_mask = candidate_scores >= grad_threshold
             candidate_indices = candidate_indices[grad_mask]

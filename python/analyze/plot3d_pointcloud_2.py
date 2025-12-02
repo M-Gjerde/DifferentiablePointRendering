@@ -75,6 +75,12 @@ def find_latest_points_ply(outputRootPath: Path) -> Path:
     if not outputRootPath.exists():
         raise FileNotFoundError(f"Output root '{outputRootPath}' does not exist.")
 
+    # Case we gave them the file
+    pointsInRoot = outputRootPath
+    if pointsInRoot.is_file():
+        print(f"Using point_ploud.ply in run directory: {outputRootPath}")
+        return pointsInRoot
+
     # Case 1: the provided path is already a run directory
     pointsInRoot = outputRootPath / "points_final.ply"
     if pointsInRoot.is_file():
@@ -179,6 +185,7 @@ def load_surfels_from_ply(
     positions = np.stack([pkX, pkY, pkZ], axis=1)
     tangentU = np.stack([tuX, tuY, tuZ], axis=1)
     tangentV = np.stack([tvX, tvY, tvZ], axis=1)
+
     su = np.array(suValues)
     sv = np.array(svValues)
     colors = np.stack([color0, color1, color2], axis=1)

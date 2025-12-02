@@ -356,6 +356,11 @@ export namespace Pale {
                     gpuSceneBuffers.points,
                     buildProducts.points.data(),
                     gpuSceneBuffers.pointCount * sizeof(Point));
+
+                for (int i = 0; const auto &it : buildProducts.points) {
+                    Log::PA_INFO("Point After Upload [{}]: {}, {}, {}", i, it.position.x(), it.position.y(), it.position.z());
+                    i++;
+                }
             }
 
             if (gpuSceneBuffers.blasNodeCount > 0 &&

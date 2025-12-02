@@ -83,6 +83,8 @@ namespace Pale {
                     rayState.pathThroughput = initialAdjointWeight;
                     rayState.bounceIndex = 0;
                     rayState.pixelIndex = pixelIndex;
+                    rayState.pixelX = pixelX;
+                    rayState.pixelY = pixelY;
 
                     intermediates.primaryRays[baseOutputSlot] = rayState;
                 });
@@ -94,20 +96,19 @@ namespace Pale {
         uint32_t pixelX;
     };
 
-    static constexpr DebugPixel kDebugPixels[] = {
-        {265, 220},
-        {290, 220},
+    DebugPixel kDebugPixels[] = {
+        {300, 500},
+        {301, 299},
         // {700, 250},
         // {700, 330},
         // {700, 400},
         // {700, 530},
     };
 
-    SYCL_EXTERNAL inline bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
+    bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
         bool isMatch = false;
-        constexpr uint32_t count = sizeof(kDebugPixels) / sizeof(DebugPixel);
 
-        for (uint32_t i = 0; i < count; ++i) {
+        for (uint32_t i = 0; i < 2; ++i) {
             const DebugPixel& debugPixel = kDebugPixels[i];
             if (pixelY == debugPixel.pixelY && pixelX == debugPixel.pixelX) {
                 isMatch = true;
@@ -139,8 +140,6 @@ namespace Pale {
                     rng::Xorshift128 rng128(perItemSeed);
 
                     const RayState& rayState = intermediates.primaryRays[rayIndex];
-                    //const WorldHit &worldHit = intermediates.hitRecords[rayIndex];
-                    uint32_t recordBounceIndex = 0;
                     // Shoot one transmit ray. The amount intersected here will tell us how many scatter rays we will transmit.
                     WorldHit whTransmit{};
                     intersectScene(rayState.ray, &whTransmit, scene, rng128, RayIntersectMode::Transmit);
@@ -148,21 +147,39 @@ namespace Pale {
                         return;
                     buildIntersectionNormal(scene, whTransmit);
 
-                    uint32_t pixelX = rayIndex % sensor.camera.width;
-                    uint32_t pixelY = (rayIndex / sensor.camera.width);
-
-                    const bool isWatched = isWatchedPixel(pixelX, pixelY);
                     const InstanceRecord& meshInstance = scene.instances[whTransmit.instanceIndex];
 
+                    //uint32_t debugIndex = 1;
+                    uint32_t debugIndex = UINT32_MAX;
+                    //debugIndex = 0;
+                    uint32_t numShadowRays = 1;
                     // Transmission gradients with shadow rays
                     if (meshInstance.geometryType == GeometryType::Mesh) {
                         // Transmission
-                            accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
+
+
+                        accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
                                          settings.renderDebugGradientImages, gradients,
-                                         debugImage);
+                                         debugImage, debugIndex);
+
+
                     }
                     // Shadow ray on mesh intersection
-                    shadowRay(scene, rayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, 1);
+                    shadowRay(scene, rayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
+
+                    uint32_t pixelX = rayState.pixelX;
+                    uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
+                    bool isWatched = false;
+                    if (pixelX == 400 && pixelY == 510) {
+                        isWatched = true;
+                        int debug = 1;
+
+                    }
+                    if (pixelX == 400 && pixelY == 545) {
+                        isWatched = true;
+                        int debug = 1;
+
+                    }
 
 
                     uint32_t numSurfelsOnRay = whTransmit.splatEventCount;
@@ -178,33 +195,42 @@ namespace Pale {
                         if (!whScatter.hit) {
                             return;
                         }
-                        float tau = whScatter.transmissivity;
-                        scatterRayState.pathThroughput *= tau;
 
-                        accumulateBrdfGradientsAtScatterSurfel(
+                        accumulateBsdfGradientsAtScatterSurfel(
                             scatterRayState,
                             whScatter,
                             scene,
                             photonMap,
                             gradients,
                             debugImage,
-                            settings.renderDebugGradientImages
+                            settings.renderDebugGradientImages,
+                            debugIndex
                         );
 
-                        auto event = whScatter.splatEvents[whScatter.splatEventCount - 1];
-                        scatterRayState.pathThroughput *= event.alpha * scene.points[scatterOnPrimitiveIndex].opacity;
 
-                        shadowRay(
+                        SplatEvent& splatEvent =  whTransmit.splatEvents[scatterRay];
+                        auto& point = scene.points[splatEvent.primitiveIndex];
+                        scatterRayState.pathThroughput *= splatEvent.alpha * scene.points[scatterOnPrimitiveIndex].opacity;
+
+                        shadowRay(scene, rayState, whScatter,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
+
+                        //if (isWatched)
+
+                        shadowRayAttachedOriginSelf(
                             scene,
                             scatterRayState,
                             whScatter,
+                            splatEvent,
                             gradients,
                             debugImage,
                             photonMap,
                             rng128,
                             settings.renderDebugGradientImages,
-                            1
+                            numShadowRays,
+                            scatterOnPrimitiveIndex,
+                            isWatched
                         );
+
 
                     }
 
@@ -332,7 +358,7 @@ namespace Pale {
                                 float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
                                 float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
 
-                                float betaKernelFactor = computeSmoothedBetaFactor(
+                                float betaKernelFactor = computeSmoothedBetaFactorBSDF(
                                     surfel.beta, r2, alpha, surfel.opacity);
 
                                 float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
@@ -652,7 +678,7 @@ namespace Pale {
                                 float3 dFsDtUGaussian = dFsDtU * surfel.opacity * (-alpha);
                                 float3 dFsDtVGaussian = dFsDtV * surfel.opacity * (-alpha);
 
-                                float betaKernelFactor = computeSmoothedBetaFactor(
+                                float betaKernelFactor = computeSmoothedBetaFactorBSDF(
                                     surfel.beta, r2, alpha, surfel.opacity);
 
 
@@ -918,8 +944,10 @@ namespace Pale {
                     if (instance.geometryType == GeometryType::PointCloud) {
                         // PointCloud
                         GPUMaterial material{};
-                        material.baseColor = scene.points[worldHit.primitiveIndex].color;
                         const float3 lambertBrdf = material.baseColor * M_1_PIf;
+                        auto& surfel = scene.points[worldHit.primitiveIndex];
+                        float alpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
+                        material.baseColor =  surfel.color;
 
                         const float interactionAlpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
                         // α
@@ -936,7 +964,7 @@ namespace Pale {
                             const float cosTheta = sycl::fmax(
                                 0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
                             throughputMultiplier =
-                                throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
+                                throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity * alpha;
                         }
                         else {
                             float sampledPdf = 0.0f;
@@ -948,7 +976,7 @@ namespace Pale {
                             const float cosTheta =
                                 sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, oppositeSideNormalW));
                             throughputMultiplier =
-                                throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf);
+                                throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity * alpha;;
                         }
                     }
 

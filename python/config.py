@@ -10,7 +10,7 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e4
     bounces: int = 4
-    forward_passes: int = 50
+    forward_passes: int = 30
     gather_passes: int = 1
     adjoint_bounces: int = 2
     adjoint_passes: int = 1
@@ -197,7 +197,7 @@ def parse_args() -> OptimizationConfig:
     # 3DGS-inspired relative factors w.r.t. position LR
     factor_position = 0.01  # ~rotation_lr / position_lr
     factor_tangent = 0.1  # ~rotation_lr / position_lr
-    factor_scale = 0.1  # ~scaling_lr / position_lr
+    factor_scale = 0.005  # ~scaling_lr / position_lr
     factor_color = 5.0  # ~feature_lr / position_lr
     factor_opacity = 1.0  # ~opacity_lr / position_lr
     factor_beta = 0.01  # ~beta_lr / position_lr

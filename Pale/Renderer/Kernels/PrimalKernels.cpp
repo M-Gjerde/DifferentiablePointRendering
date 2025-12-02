@@ -166,19 +166,8 @@ namespace Pale {
                     // Now we do either BRDF or BTDF
                     if (instance.geometryType == GeometryType::PointCloud) {
                         const float alpha = worldHit.splatEvents[0].alpha; // opacity at (u,v)
-                        if (rng128.nextFloat() >= alpha) {
-                            // NULL TRANSMIT: keep direction, no weight change
-                            sampledOutgoingDirectionW = rayState.ray.direction;
-                            // throughputMultiplier stays 1
-                        }
-                        else {
+ {
                             // SURFACE EVENT
-                            const float3 enteredSideNormalW = (signNonZero(
-                                                                  dot(worldHit.geometricNormalW,
-                                                                      -rayState.ray.direction)) >= 0)
-                                                                  ? worldHit.geometricNormalW
-                                                                  : (-worldHit.geometricNormalW);
-
                             // 50/50 reflect vs transmit for a symmetric diffuse sheet
                             float probReflect = 1.0f;
                             const bool chooseReflect = (rng128.nextFloat() < probReflect);
@@ -191,10 +180,12 @@ namespace Pale {
                             sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
                             cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, eventNormalW));
 
+                            auto& surfel = scene.points[worldHit.primitiveIndex];
+                            float alpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
                             // Single albedo factor through BRDF
-                            const float3 baseColor = scene.points[worldHit.primitiveIndex].color;
+                            const float3 baseColor = surfel.color;
                             const float3 lambertBrdf = baseColor * M_1_PIf;
-                            throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf);
+                            throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity * alpha;
                         }
                     }
 
@@ -248,7 +239,7 @@ namespace Pale {
                     // --- Spawn next ray with offset along *oriented* normal ---
                     RayState nextState{};
                     // Spawn next ray
-                    nextState.ray.origin = worldHit.hitPositionW + enteredSideNormalW * 1e-7f;
+                    nextState.ray.origin = worldHit.hitPositionW + (enteredSideNormalW) * 1e-5f;
                     nextState.ray.direction = sampledOutgoingDirectionW;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;

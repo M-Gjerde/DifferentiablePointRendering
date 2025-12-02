@@ -957,6 +957,9 @@ namespace Pale {
     inline float3 phiMapping(float3 surfelCenter, float3 tu, float3 tv, float su, float sv, float u, float v) {
         return surfelCenter + su * tu * u + sv * tv * v;
     }
+    inline float3 phiMapping(const Point& surfel, float u, float v) {
+        return surfel.position + surfel.scale.x() * surfel.tanU * u + surfel.scale.y() * surfel.tanV * v;
+    }
 
     inline float computeLuminanceRec709(const float3& inputRgbLinear) {
         const float redWeight = 0.2126f;

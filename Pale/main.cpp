@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = true;
+    bool addPoints = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-            assetIndexer.importPath("meshes/cube.ply", Pale::AssetType::Mesh);
+            assetIndexer.importPath("meshes/rectangle.obj", Pale::AssetType::Mesh);
 
         auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
@@ -275,10 +275,10 @@ int main(int argc, char** argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e4;
     settings.maxBounces = 4;
-    settings.numForwardPasses = 500;
+    settings.numForwardPasses = 30;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 1;
-    settings.adjointSamplesPerPixel = 16;
+    settings.adjointSamplesPerPixel = 8;
     settings.renderDebugGradientImages = true;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
@@ -388,6 +388,28 @@ int main(int argc, char** argv) {
         saveGradientSet(debugImagesHost.beta, "beta");
     }
 
+    // Download and log gradPosition[0]
+    if (gradients.numPoints > 0 && gradients.gradPosition != nullptr) {
+        Pale::float3 hostGradientPosition0{};
+        deviceSelector.getQueue()
+            .memcpy(&hostGradientPosition0,
+                    gradients.gradPosition,
+                    sizeof(Pale::float3))
+            .wait();
+
+        const float gradientMagnitude =
+            std::sqrt(hostGradientPosition0.x() * hostGradientPosition0.x() +
+                      hostGradientPosition0.y() * hostGradientPosition0.y() +
+                      hostGradientPosition0.z() * hostGradientPosition0.z());
+
+        Pale::Log::PA_INFO(
+            "gradPosition[0] = ({}, {}, {}), |g| = {}",
+            hostGradientPosition0.x(),
+            hostGradientPosition0.y(),
+            hostGradientPosition0.z(),
+            gradientMagnitude
+        );
+    }
 
     // Write Registry:
     assetManager.registry().save("asset_registry.yaml");

@@ -398,7 +398,7 @@ def run_optimization(
     }
 
     # (Optionally apply debug noise as before...)
-    apply_noise = True
+    apply_noise = False
     if apply_noise:
         (
             initial_positions_np,
@@ -513,10 +513,11 @@ def run_optimization(
     # ------------------------------------------------------------------
     iteration = 0
 
-    densification_interval = 20000
-    prune_interval = 10000
+    densification_interval = 50
+    prune_interval = 50
     burnin_iterations = 0
     reset_opacity_interval = int(1e10)
+    densification_grad_threshold = 1e-9
 
     opacity_prune_threshold = 0.4
     max_prune_fraction = 0.3
@@ -616,20 +617,20 @@ def run_optimization(
                     grad_betas_np,
                 )
 
-                ### --- Elliptical repulsion term (on positions only) ---------------
-                #repulsion_loss = compute_elliptical_repulsion_loss(
-                #    positions=positions,
-                #    tangent_u=tangent_u,
-                #    tangent_v=tangent_v,
-                #    scales=scales,
-                #    radius_factor=0.8,  # ~ footprint size in uv; tune
-                #    repulsion_weight=1e-3,  # strength; tune
-                #)
-#
+                ## --- Elliptical repulsion term (on positions only) ---------------
+                repulsion_loss = compute_elliptical_repulsion_loss(
+                    positions=positions,
+                    tangent_u=tangent_u,
+                    tangent_v=tangent_v,
+                    scales=scales,
+                    radius_factor=1.0,  # ~ footprint size in uv; tune
+                    repulsion_weight=1e-3,  # strength; tune
+                )
+
                 ## This will ADD to positions.grad (since we already set it),
                 ## but won't touch tangent/scales/colors because we detach them.
-                #if torch.isfinite(repulsion_loss) and repulsion_loss.detach().item() != 0.0:
-                #    repulsion_loss.backward()
+                if torch.isfinite(repulsion_loss) and repulsion_loss.detach().item() != 0.0:
+                    repulsion_loss.backward()
 
                 optimizer.step()
 
@@ -709,9 +710,12 @@ def run_optimization(
                         split_distance=0.15,
                         minor_axis_shrink=0.85,
                         opacity_reduction=0.6,
-                        min_long_axis_scale=0.03,
-                        grad_threshold=1e-7,
+                        min_long_axis_scale=0.15,
+                        grad_threshold=densification_grad_threshold,
                     )
+
+
+
 
                     if densification_result is not None:
                         parent_indices = densification_result["prune_indices"]

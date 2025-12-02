@@ -1301,6 +1301,7 @@ public:
         if (index < 0) {
             // perturb all points
             const sycl::float3 translationDelta = Pale::glm2sycl(newTranslation);
+            int i = 0;
             for (auto& point : buildProducts.points) {
                 point.position += translationDelta;
 
@@ -1319,14 +1320,52 @@ public:
                 point.opacity += opacity;
                 point.beta += beta;
                 point.scale *= scaleDelta; // component-wise
+
+                Pale::Log::PA_INFO("Point After pertubation [{}]: {}, {}, {}", i, point.position.x(), point.position.y(), point.position.z());
+                i++;
             }
         }
-        else {
-            if (static_cast<std::size_t>(index) >= buildProducts.points.size()) {
+        else { // index >= 0
+            const std::size_t pointIndex = static_cast<std::size_t>(index);
+            if (pointIndex >= buildProducts.points.size()) {
                 throw std::out_of_range("set_gaussian_transform: index out of range");
             }
-            buildProducts.points[index].position += Pale::glm2sycl(newTranslation);
+
+            auto& point = buildProducts.points[pointIndex];
+
+            // --- translation ---
+            const sycl::float3 translationDelta = Pale::glm2sycl(newTranslation);
+            point.position += translationDelta;
+
+            // --- rotation: rotate tangentU / tangentV ---
+            glm::vec3 tangentUGlm = Pale::sycl2glm(point.tanU);
+            glm::vec3 tangentVGlm = Pale::sycl2glm(point.tanV);
+            tangentUGlm = rotationDelta * tangentUGlm;
+            tangentVGlm = rotationDelta * tangentVGlm;
+            point.tanU = Pale::glm2sycl(tangentUGlm);
+            point.tanV = Pale::glm2sycl(tangentVGlm);
+
+            // --- scale ---
+            const sycl::float2 scaleDelta = Pale::glm2sycl(newScale);
+            point.scale *= scaleDelta; // elementwise
+
+            // --- color ---
+            const sycl::float3 colorDelta = Pale::glm2sycl(newColor);
+            point.color += colorDelta;
+
+            // --- opacity & beta ---
+            point.opacity += opacity;
+            point.beta    += beta;
+
+            Pale::Log::PA_INFO(
+                "Point [{}] after perturbation: {}, {}, {}",
+                pointIndex,
+                point.position.x(),
+                point.position.y(),
+                point.position.z()
+            );
         }
+
 
         Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
         sensorForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);

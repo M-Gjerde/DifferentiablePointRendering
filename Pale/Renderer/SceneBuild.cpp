@@ -212,6 +212,7 @@ namespace Pale {
                 gpuPoint.shape = pointGeometry.shapes[i];
                 gpuPoint.beta = pointGeometry.betas[i];
 
+                //Log::PA_INFO("Point [{}]: {}, {}, {}", i, gpuPoint.position.x(), gpuPoint.position.y(), gpuPoint.position.z());
                 collectedPoints.push_back(gpuPoint);
             }
 
