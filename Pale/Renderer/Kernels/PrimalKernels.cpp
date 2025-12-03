@@ -165,8 +165,6 @@ namespace Pale {
                     // If our hit instance was a point cloud it means we hit a surfel
                     // Now we do either BRDF or BTDF
                     if (instance.geometryType == GeometryType::PointCloud) {
-                        const float alpha = worldHit.splatEvents[0].alpha; // opacity at (u,v)
- {
                             // SURFACE EVENT
                             // 50/50 reflect vs transmit for a symmetric diffuse sheet
                             float probReflect = 1.0f;
@@ -186,7 +184,6 @@ namespace Pale {
                             const float3 baseColor = surfel.color;
                             const float3 lambertBrdf = baseColor * M_1_PIf;
                             throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity * alpha;
-                        }
                     }
 
                     if (settings.rayGenMode == RayGenMode::Emitter) {

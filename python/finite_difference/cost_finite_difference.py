@@ -16,7 +16,7 @@ from pathlib import Path
 import pale
 import numpy as np
 from PIL import Image
-from matplotlib import cm
+import csv
 
 from losses import (
     compute_l2_loss,
@@ -35,6 +35,159 @@ from io_utils import (
     save_loss_image,
     save_gaussians_to_ply,
 )
+
+from finite_difference.finite_diff_helpers import (
+    finite_difference_translation,
+    finite_difference_rotation,
+    finite_difference_scale,
+)
+
+def append_translation_run_to_history(
+    history_path: Path,
+    scene_name: str,
+    gaussian_index: int,
+    run_label: str,
+    loss_value: float,
+    grad_trans: dict[str, float],
+    analytical_gradients_position: np.ndarray,
+) -> None:
+    """
+    Append one row to the translation gradient history CSV.
+
+    Columns:
+        scene, index, label, loss,
+        fd_x, fd_y, fd_z,
+        an_x, an_y, an_z,
+        err_x, err_y, err_z,
+        abs_err_x, abs_err_y, abs_err_z
+    """
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    file_exists = history_path.exists()
+
+    fd_x = float(grad_trans["x"])
+    fd_y = float(grad_trans["y"])
+    fd_z = float(grad_trans["z"])
+
+    an_x = float(analytical_gradients_position[0][0])
+    an_y = float(analytical_gradients_position[0][1])
+    an_z = float(analytical_gradients_position[0][2])
+
+    err_x = fd_x - an_x
+    err_y = fd_y - an_y
+    err_z = fd_z - an_z
+
+    abs_err_x = abs(err_x)
+    abs_err_y = abs(err_y)
+    abs_err_z = abs(err_z)
+
+    with history_path.open("a", newline="") as file_handle:
+        writer = csv.writer(file_handle)
+        if not file_exists:
+            writer.writerow(
+                [
+                    "scene",
+                    "index",
+                    "label",
+                    "loss",
+                    "fd_x",
+                    "fd_y",
+                    "fd_z",
+                    "an_x",
+                    "an_y",
+                    "an_z",
+                    "err_x",
+                    "err_y",
+                    "err_z",
+                    "abs_err_x",
+                    "abs_err_y",
+                    "abs_err_z",
+                ]
+            )
+
+        writer.writerow(
+            [
+                scene_name,
+                gaussian_index,
+                run_label,
+                loss_value,
+                fd_x,
+                fd_y,
+                fd_z,
+                an_x,
+                an_y,
+                an_z,
+                err_x,
+                err_y,
+                err_z,
+                abs_err_x,
+                abs_err_y,
+                abs_err_z,
+            ]
+        )
+def print_translation_history(history_path: Path) -> None:
+    """
+    Print all stored translation FD/AN runs so far.
+
+    Shows FD, AN, and FD-AN error per axis to compare progress.
+    """
+    if not history_path.exists():
+        print("\n[HIST] No history file found yet.")
+        return
+
+    with history_path.open("r", newline="") as file_handle:
+        reader = csv.DictReader(file_handle)
+        rows = list(reader)
+
+    if not rows:
+        print("\n[HIST] History file is empty.")
+        return
+
+    print("\n================ Translation Gradient History ================")
+    for row in rows:
+        scene_name = row["scene"]
+        gaussian_index = int(row["index"])
+        run_label = row["label"]
+        loss_value = float(row["loss"])
+
+        fd_x = float(row["fd_x"])
+        fd_y = float(row["fd_y"])
+        fd_z = float(row["fd_z"])
+
+        an_x = float(row["an_x"])
+        an_y = float(row["an_y"])
+        an_z = float(row["an_z"])
+
+        # Support both new and older files (if errors not present)
+        if "err_x" in row and row["err_x"] != "":
+            err_x = float(row["err_x"])
+            err_y = float(row["err_y"])
+            err_z = float(row["err_z"])
+            abs_err_x = float(row["abs_err_x"])
+            abs_err_y = float(row["abs_err_y"])
+            abs_err_z = float(row["abs_err_z"])
+        else:
+            err_x = fd_x - an_x
+            err_y = fd_y - an_y
+            err_z = fd_z - an_z
+            abs_err_x = abs(err_x)
+            abs_err_y = abs(err_y)
+            abs_err_z = abs(err_z)
+
+        print(
+            f"[RUN] label='{run_label}', scene='{scene_name}', index={gaussian_index}, "
+            f"loss={loss_value: .8f}"
+        )
+        print(f"      FD : x={fd_x: .10f}, y={fd_y: .10f}, z={fd_z: .10f}")
+        print(f"      AN : x={an_x: .10f}, y={an_y: .10f}, z={an_z: .10f}")
+        print(
+            "      ER : "
+            f"FD-AN_x={err_x: .10f}, |FD-AN_x|={abs_err_x: .10f}; "
+            f"FD-AN_y={err_y: .10f}, |FD-AN_y|={abs_err_y: .10f}; "
+            f"FD-AN_z={err_z: .10f}, |FD-AN_z|={abs_err_z: .10f}"
+        )
+        print("------------------------------------------------------------")
+
 
 def save_rgb_preview_png(
         img_f32: np.ndarray,
@@ -66,8 +219,8 @@ def save_rgb_preview_png(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     #print(f"Saving RGB preview to: {out_path.absolute()}")
-    Image.fromarray(img_u8, mode="RGB").save(out_path)
-
+    img = Image.fromarray(img_u8).convert("RGB")
+    img.save(out_path)
 
 def render_with_trs(
         renderer,
@@ -92,54 +245,15 @@ def render_with_trs(
     rgb = np.asarray(renderer.render_forward()["camera1"], dtype=np.float32)
     return rgb
 
-
-# ---------- Finite difference core ----------
-def finite_difference_translation(
-        renderer, index: int, axis: str, eps: float
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if axis == "x":
-        negative_vector = (-eps, 0.0, 0.0)
-        positive_vector = (+eps, 0.0, 0.0)
-    elif axis == "y":
-        negative_vector = (0.0, -eps, 0.0)
-        positive_vector = (0.0, +eps, 0.0)
-    elif axis == "z":
-        negative_vector = (0.0, 0.0, -eps)
-        positive_vector = (0.0, 0.0, +eps)
-    else:
-        raise ValueError("axis must be 'x', 'y', or 'z'")
-
-    rgb_minus = render_with_trs(
-        renderer,
-        translation3=negative_vector,
-        rotation_quat4=(0.0, 0.0, 0.0, 1.0),
-        scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
-        opacity=0.0,
-        index=index,
-    )
-    rgb_plus = render_with_trs(
-        renderer,
-        translation3=positive_vector,
-        rotation_quat4=(0.0, 0.0, 0.0, 1.0),
-        scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
-        opacity=0.0,
-        index=index,
-    )
-    grad = (rgb_plus - rgb_minus) / (2.0 * eps)
-    return rgb_minus, rgb_plus, grad
-
-
 # ---------- Main driver: compute FD for all parameters ----------
 def main(args) -> None:
 
     adjoint_passes = 4
 
     renderer_settings = {
-        "photons": 5e3,
+        "photons": 1e4,
         "bounces": 3,
-        "forward_passes": 1000,
+        "forward_passes": 500,
         "gather_passes": 1,
         "adjoint_bounces": 1,
         "adjoint_passes": adjoint_passes,
@@ -221,7 +335,6 @@ def main(args) -> None:
         initial_guess,
         target_image
     )
-
     loss_value = compute_l2_loss(
         initial_guess,
         target_image
@@ -259,7 +372,7 @@ def main(args) -> None:
     )
 
     # Step sizes
-    eps_translation = 0.001
+    eps_translation = 0.01
     eps_rotation_deg = 0.5
     eps_scale = 0.05
     eps_opacity = 0.1
@@ -277,17 +390,57 @@ def main(args) -> None:
         # OUr L1 loss is the differentiation of our L2 cost
         loss_negative = compute_l2_loss(rgb_minus, target_image)
         loss_positive = compute_l2_loss(rgb_plus, target_image)
-        grad_trans[axis] = (loss_positive - loss_negative) / eps_translation
+        grad_trans[axis] = (loss_positive - loss_negative) / (2.0 * eps_translation)
         save_rgb_preview_png(rgb_minus, base_output_dir / "translation" / f"{axis}_neg.png")
         save_rgb_preview_png(rgb_plus, base_output_dir / "translation" / f"{axis}_pos.png")
 
-    for axis in ["x", "y", "z"]:
-        print(f"[FD] Translation axis={axis}, Grad={grad_trans[axis]: .10f}")
+    # --- Rotation (x,y,z) ---
+    grad_rot = dict()
+    #for axis in ["x", "y", "z"]:
+    #    print(f"[FD] Computing Rotation axis={axis}...")
+    #    rgb_minus, rgb_plus, grad_fd = finite_difference_rotation(
+    #        renderer, args.index, axis, eps_rotation_deg
+    #    )
+    #    # calculate loss for each image
+    #    # OUr L1 loss is the differentiation of our L2 cost
+    #    loss_negative = compute_l2_loss(rgb_minus, target_image)
+    #    loss_positive = compute_l2_loss(rgb_plus, target_image)
+    #    grad_rot[axis] = (loss_positive - loss_negative) / (2.0 * eps_rotation_deg)
+    #    save_rgb_preview_png(rgb_minus, base_output_dir / "rotation" / f"{axis}_neg.png")
+    #    save_rgb_preview_png(rgb_plus, base_output_dir / "rotation" / f"{axis}_pos.png")
 
-    print()
     axes = ["x", "y", "z"]
-    for axis in [0, 1, 2]:
-        print(f"[AN] Translation axis={axes[axis]}, Grad={analytical_gradients_position[0][axis]: .10f}")
+    print()
+    for axis_index, axis_name in enumerate(axes):
+        fd_val = float(grad_trans[axis_name])
+        an_val = float(analytical_gradients_position[0][axis_index])
+        err = fd_val - an_val
+        abs_err = abs(err)
+
+        print(f"[FD] Translation axis={axis_name}, Grad={fd_val: .10f}")
+        print(f"[AN] Translation axis={axis_name}, Grad={an_val: .10f}")
+        print(
+            f"[ER] Translation axis={axis_name}, "
+            f"FD-AN={err: .10f}, |FD-AN|={abs_err: .10f}"
+        )
+        print()
+
+
+    # ----------------------------------------------------------
+    # Save this run to history and print all runs so far
+    # ----------------------------------------------------------
+    history_path = base_output_dir / "translation_gradients_history.csv"
+    append_translation_run_to_history(
+        history_path=history_path,
+        scene_name=args.scene,
+        gaussian_index=args.index,
+        run_label=args.label,
+        loss_value=loss_value,
+        grad_trans=grad_trans,
+        analytical_gradients_position=analytical_gradients_position,
+    )
+    print_translation_history(history_path)
+
 
 
 def parse_args() -> argparse.Namespace:
@@ -312,6 +465,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Output directory (relative to this script). Default: Output/<scene>/finite_diff",
     )
+
+    parser.add_argument(
+        "--label",
+        type=str,
+        required=True,
+        help="Label for this FD/AN comparison run (e.g. 'step_0001', 'noisy_init').",
+    )
+
     return parser.parse_args()
 
 

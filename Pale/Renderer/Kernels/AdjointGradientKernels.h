@@ -195,9 +195,72 @@ namespace Pale {
         const float3 duDPk = ((tuDotD / denom) * canonicalNormalWorld - tangentUWorld) / su;
         const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
 
-        // dα/dc_pos = -α (u du/dc + v dv/dc)
-        const float3 dAlphaDPosition = u * duDPk + v * dvDPk;
-        return dAlphaDPosition;
+
+        // duv/dc_pos = (u du/dc + v dv/dc)
+        const float3 dUVPosition = u * duDPk + v * dvDPk;
+        return dUVPosition;
+    }
+    // ----------------- Position gradient (translation of surfel center) -----------------
+    inline float3 computeDuvDPositionFull(
+        const float3 &tangentUWorld,
+        const float3 &tangentVWorld,
+        const float3 &canonicalNormalWorld,
+        const float3 &y,
+        const float3 &x,
+        const float3 &pk,
+        float u, float v,
+        float su, float sv) {
+
+        /*
+        const float tuDotD = dot(tangentUWorld, rayDirection);
+        const float tvDotD = dot(tangentVWorld, rayDirection);
+
+        // du/dp_k and dv/dp_k (3x1 each), from your analytic expression
+        const float3 duDPk = ((tuDotD / denom) * canonicalNormalWorld - tangentUWorld) / su;
+        const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
+        */
+        // Direction from camera (x) to surfel (y)
+        float3 d = x - y;
+        const float rayLen = length(d);
+        d = d / rayLen;
+
+        const float3x3 I = identity3x3();
+        // d(x) derivative wrt origin position
+        const float3x3 grad_d_pk =
+                1.0f / rayLen * (I - outerProduct(d, d));
+
+        // derivative of intersection parameter
+
+        // rt(x) quotient-rule derivative
+        const float num = dot(canonicalNormalWorld, (pk - x));
+        const float denom = dot(canonicalNormalWorld, d);
+
+        const float3 grad_num =
+                canonicalNormalWorld;
+
+        const float3 grad_denom =
+                1.0f / rayLen * canonicalNormalWorld * (I - outerProduct(d, d));
+
+        const float3 grad_rt =
+                (grad_num * denom - num * grad_denom) / (denom * denom);
+
+        // Intersection parameter rt to blocker plane
+        const float rt =
+                dot(canonicalNormalWorld, (pk - x)) /
+                dot(canonicalNormalWorld, d);
+
+        // z(x) = x + rt(x) d(x)
+        const float3x3 term1 = outerProduct(d, grad_rt);
+        const float3x3 term2 = rt * grad_d_pk;
+        const float3x3 grad_z = term1 + term2;
+
+        const float3 duDpk = 1 / su * tangentUWorld * (grad_z - I);
+        const float3 dvDpk = 1 / sv * tangentVWorld * (grad_z - I);
+
+        // duv/dc_pos = (u du/dc + v dv/dc)
+        const float3 dUVPosition = u * duDpk + v * dvDpk;
+
+        return dUVPosition;
     }
 
 
@@ -465,15 +528,16 @@ namespace Pale {
             float3 dFsDtU = (u * dUdTu + v * dVdTu);
             float3 dFsDtV = (u * dUdTv + v * dVdTv);
 
-            const float betaKernelFactor =
-                    -surfel.opacity * computeSmoothedBetaFactor(surfel.beta, r2, alpha);
+            const float betaKernelFactor = -surfel.opacity * computeSmoothedBetaFactor(surfel.beta, r2, alpha);
             float3 dFsDtUBeta = betaKernelFactor * dFsDtU;
             float3 dFsDtVBeta = betaKernelFactor * dFsDtV;
 
             const float3 dUdVdScale =
                     computeDuvDScale(u, v, su, sv);
 
-            const float3 dFsDPosition = betaKernelFactor * dUvDPosition;
+            const float3 dFsDPosition = -alpha * dUvDPosition;
+
+
             float3 dFsDsusv = betaKernelFactor * dUdVdScale;
 
             const float dAlphaDbeta =
@@ -529,7 +593,7 @@ namespace Pale {
             const float dEtaAlphaDsv = localTerm.dAlphaDsv;
             const float dEtaAlphaDbeta = localTerm.dAlphaDbeta;
 
-            const float minusTauInverseTauLocal = tau * inverseTauLocal;
+            const float minusTauInverseTauLocal = -tau * eta * inverseTauLocal;
 
             const float3 dTauDPos = minusTauInverseTauLocal * dEtaAlphaDPos;
             const float3 dTauDtU = minusTauInverseTauLocal * dEtaAlphaDtU;
@@ -615,7 +679,7 @@ namespace Pale {
                     dot(gradCTanUB, cross(rotationAxis, surfel.tanU)) +
                     dot(gradCTanVB, cross(rotationAxis, surfel.tanV))
                 };
-                float3 parameterAxis = float3{1.0f, 0.0f, 0.0f};
+                float3 parameterAxis = float3{0.0f, 1.0f, 0.0f};
 
                 const float dCdpR = dot(gradCPosR, parameterAxis);
                 const float dCdpG = dot(gradCPosG, parameterAxis);
@@ -714,7 +778,7 @@ namespace Pale {
                     surfel.tanU,
                     surfel.tanV,
                     canonicalNormalWorld,
-                    rayDirection,
+                    -rayState.ray.direction,
                     u, v,
                     su, sv
                 );
@@ -736,14 +800,14 @@ namespace Pale {
         float3 dFsDtV = (u * dUdTv + v * dVdTv);
 
         const float betaKernelFactor =
-                computeSmoothedBetaFactorBSDF(surfel.beta, r2, alpha, surfel.opacity);
+                computeSmoothedBetaFactor(surfel.beta, r2, alpha);
         float3 bsdfGradTanU = betaKernelFactor * dFsDtU;
         float3 bsdfGradTanV = betaKernelFactor * dFsDtV;
 
         const float3 dUdVdScale =
                 computeDuvDScale(u, v, su, sv);
 
-        const float3 bsdfGradPosition = betaKernelFactor * dUvDPosition;
+        const float3 bsdfGradPosition = -alpha * dUvDPosition * surfel.color * surfel.opacity;
         const float3 dFsDsusv = betaKernelFactor * dUdVdScale;
 
         const float bsdfGradScaleU = dFsDsusv.x();
@@ -763,9 +827,9 @@ namespace Pale {
                     ray.direction,
                     scene,
                     photonMap,
-                    /*useBsdf*/ false,
-                    /*useDiffuseOnly*/ true,
-                    /*usePhotonMap*/ true
+                    false,
+                    true,
+                    true
                 );
 
         const float3 pathAdjoint = rayState.pathThroughput;
@@ -861,7 +925,7 @@ namespace Pale {
                 dot(gradCTanUB, cross(rotationAxis, surfel.tanU)) +
                 dot(gradCTanVB, cross(rotationAxis, surfel.tanV))
             };
-            float3 parameterAxis = float3{1.0f, 0.0f, 0.0f};
+            float3 parameterAxis = float3{0.0f, 1.0f, 0.0f};
 
             const float dCdpR = dot(gradCPosR, parameterAxis);
             const float dCdpG = dot(gradCPosG, parameterAxis);
@@ -924,19 +988,6 @@ namespace Pale {
                           bool renderDebugGradientImages,
                           uint32_t numShadowRays = 1,
                           uint32_t debugIndex = UINT32_MAX) {
-        const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
-
-        GPUMaterial material;
-        switch (instance.geometryType) {
-            case GeometryType::Mesh:
-                material = scene.materials[instance.materialIndex];
-                break;
-            case GeometryType::PointCloud:
-                material.baseColor = scene.points[worldHit.primitiveIndex].color;
-                break;
-            case GeometryType::InvalidType:
-                break;
-        }
 
         for (int i = 0; i < numShadowRays; ++i) {
             AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng);
@@ -967,12 +1018,9 @@ namespace Pale {
                     RayState shadowRayState = rayState;
                     shadowRayState.ray = shadowRay;
 
-                    // apply bsdf, tau and cosine:
-                    float cosine = fabs(dot(rayState.ray.direction, worldHit.geometricNormalW));
 
                     shadowRayState.pathThroughput =
-                            rayState.pathThroughput * geometryTerm * invPdf * cosine * material.baseColor * M_1_PIf *
-                            oneOverNumRays;
+                            rayState.pathThroughput * geometryTerm * invPdf * oneOverNumRays;
 
                     // BRDF
                     WorldHit shadowWorldHit{};

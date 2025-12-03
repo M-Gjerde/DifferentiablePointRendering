@@ -547,7 +547,7 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e4,
         "bounces": 4,
-        "forward_passes": 6000,
+        "forward_passes": 1000,
         "gather_passes": 1,
         "adjoint_bounces": 0,
         "adjoint_passes": 0,
@@ -572,12 +572,22 @@ def main(args) -> None:
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
 
     # Step sizes
-    eps_translation = 0.005
+    eps_translation = 0.01
     eps_rotation_deg = 0.5
     eps_scale = 0.05
     eps_opacity = 0.1
     eps_albedo = 0.1
     eps_beta = 0.5  # reasonable start for log-shape
+
+    # --- Translation (x,y,z) ---
+    for axis in ["x", "y", "z"]:
+        print(f"[FD] Translation axis={axis}")
+        rgb_minus, rgb_plus, grad_fd = finite_difference_translation(
+            renderer, args.index, axis, eps_translation
+        )
+        out_dir = base_output_dir / "translation" / axis
+        write_fd_images(grad_fd, rgb_minus, rgb_plus, out_dir, "translation", axis)
+
 
     # --- Rotation (x,y,z) ---
     for axis in ["y", "x", "z"]:
@@ -590,14 +600,6 @@ def main(args) -> None:
 
 
 
-    # --- Translation (x,y,z) ---
-    for axis in ["x", "y", "z"]:
-        print(f"[FD] Translation axis={axis}")
-        rgb_minus, rgb_plus, grad_fd = finite_difference_translation(
-            renderer, args.index, axis, eps_translation
-        )
-        out_dir = base_output_dir / "translation" / axis
-        write_fd_images(grad_fd, rgb_minus, rgb_plus, out_dir, "translation", axis)
 
 
 

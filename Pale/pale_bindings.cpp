@@ -1267,7 +1267,8 @@ public:
         }
 
         const glm::vec3 newTranslation{
-            py::cast<float>(translation3[0]), py::cast<float>(translation3[1]),
+            py::cast<float>(translation3[0]),
+            py::cast<float>(translation3[1]),
             py::cast<float>(translation3[2])
         };
         const glm::vec3 newColor{

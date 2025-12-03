@@ -223,7 +223,7 @@ namespace Pale {
 
         const uint32_t requiredRayCapacity = sensor[0].width * sensor[0].height;
         if (requiredRayCapacity > m_rayQueueCapacity) {
-            Log::PA_WARN("RayQueue Capacity too small for adjoint pass. Resizing queue capacity or just reduce image size");
+            Log::PA_INFO("RayQueue Capacity too small for per pixel adjoint pass. Resizing queue capacity..");
             ensureRayCapacity(requiredRayCapacity);
         }
 

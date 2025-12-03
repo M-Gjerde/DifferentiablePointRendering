@@ -4,6 +4,8 @@
 
 #include "Renderer/Kernels/PostprocessKernel.h"
 
+#include "KernelHelpers.h"
+
 namespace Pale {
     void launchPostProcessKernel(RenderPackage& pkg) {
         auto& queue = pkg.queue;
@@ -45,8 +47,7 @@ namespace Pale {
                         // ------------------------------------------------------------
                         // 2. Compute flipped Y coordinate for LDR output
                         // ------------------------------------------------------------
-                        const uint32_t flippedY = (imageHeight - 1u) - pixelY;
-                        const uint32_t flippedLinearIndex = flippedY * imageWidth + pixelX;
+                        const uint32_t linearIndexFlipped = flippedYLinearIndex(linearIndex, sensor.width, sensor.height);
 
 
                         // Read HDR color
@@ -100,13 +101,13 @@ namespace Pale {
                         );
 
                         // 3 floats per pixel, packed
-                        const uint32_t ldrBase = flippedLinearIndex * 3u;
+                        const uint32_t ldrBase = linearIndexFlipped * 3u;
                         sensor.ldrFramebuffer[ldrBase + 0u] = redLinear;
                         sensor.ldrFramebuffer[ldrBase + 1u] = greenLinear;
                         sensor.ldrFramebuffer[ldrBase + 2u] = blueLinear;
 
 
-                        sensor.outputFramebuffer[flippedLinearIndex] = outputPixel;
+                        sensor.outputFramebuffer[linearIndexFlipped] = outputPixel;
                     }
                 );
             });

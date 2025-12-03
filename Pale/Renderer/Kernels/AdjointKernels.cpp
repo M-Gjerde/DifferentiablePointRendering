@@ -43,8 +43,7 @@ namespace Pale {
                     uint32_t pixelY = pixelLinearIndexWithinImage / imageWidth;
 
 
-                    uint32_t index = flippedYLinearIndex(pixelLinearIndexWithinImage, sensor.width,
-                                                         sensor.height);
+                    uint32_t index = flippedYLinearIndex(pixelLinearIndexWithinImage, sensor.width, sensor.height);
 
                     const uint32_t pixelIndex = index;
                     // RNG for this pixel
@@ -152,10 +151,11 @@ namespace Pale {
                     //uint32_t debugIndex = 1;
                     uint32_t debugIndex = UINT32_MAX;
                     //debugIndex = 0;
-                    uint32_t numShadowRays = 1;
+                    uint32_t numShadowRays = 10;
                     // Transmission gradients with shadow rays
                     if (meshInstance.geometryType == GeometryType::Mesh) {
                         // Transmission
+
 
 
                         accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
@@ -163,9 +163,15 @@ namespace Pale {
                                          debugImage, debugIndex);
 
 
+
                     }
                     // Shadow ray on mesh intersection
-                    shadowRay(scene, rayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
+                    // apply bsdf, tau and cosine:
+                    RayState meshShadowRayState = rayState;
+                    float cosine = fabs(dot(rayState.ray.direction, whTransmit.geometricNormalW));
+                    auto& material = scene.materials[meshInstance.materialIndex];
+                    meshShadowRayState.pathThroughput *=  cosine * material.baseColor * M_1_PIf;
+                    //shadowRay(scene, meshShadowRayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
 
                     uint32_t pixelX = rayState.pixelX;
                     uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
@@ -173,14 +179,11 @@ namespace Pale {
                     if (pixelX == 400 && pixelY == 510) {
                         isWatched = true;
                         int debug = 1;
-
                     }
                     if (pixelX == 400 && pixelY == 545) {
                         isWatched = true;
                         int debug = 1;
-
                     }
-
 
                     uint32_t numSurfelsOnRay = whTransmit.splatEventCount;
                     for (size_t scatterRay = 0; scatterRay < numSurfelsOnRay; ++scatterRay) {
@@ -196,6 +199,8 @@ namespace Pale {
                             return;
                         }
 
+
+
                         accumulateBsdfGradientsAtScatterSurfel(
                             scatterRayState,
                             whScatter,
@@ -208,14 +213,19 @@ namespace Pale {
                         );
 
 
+
+
                         SplatEvent& splatEvent =  whTransmit.splatEvents[scatterRay];
                         auto& point = scene.points[splatEvent.primitiveIndex];
                         scatterRayState.pathThroughput *= splatEvent.alpha * scene.points[scatterOnPrimitiveIndex].opacity;
 
-                        shadowRay(scene, rayState, whScatter,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
+                        // apply bsdf, tau and cosine:
+                        float cosine = fabs(dot(rayState.ray.direction, whScatter.geometricNormalW));
+                        scatterRayState.pathThroughput *=  cosine * point.color * M_1_PIf;
 
-                        //if (isWatched)
+                        //shadowRay(scene, rayState, whScatter,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
 
+                        /*
                         shadowRayAttachedOriginSelf(
                             scene,
                             scatterRayState,
@@ -230,6 +240,7 @@ namespace Pale {
                             scatterOnPrimitiveIndex,
                             isWatched
                         );
+                        */
 
 
                     }
