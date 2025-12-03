@@ -182,11 +182,22 @@ namespace Pale {
         const float3 &canonicalNormalWorld,
         const float3 &rayDirection,
         float u, float v,
-        float su, float sv) {
+        float su, float sv,
+        bool isWatched = false) {
+
         const float denom = dot(canonicalNormalWorld, rayDirection);
         if (sycl::fabs(denom) <= 1e-4f) {
             return float3{0.0f, 0.0f, 0.0f};
         }
+
+        /*
+        const float3 d = rayDirection;
+        float3 grad_rt = canonicalNormalWorld / denom;
+        float3x3 grad_z = outerProduct(d, grad_rt);
+
+        const float3 duDPk = (1 / su) * tangentUWorld * (grad_z - identity3x3());
+        const float3 dvDPk = (1 / sv) * tangentVWorld * (grad_z - identity3x3());
+        */
 
         const float tuDotD = dot(tangentUWorld, rayDirection);
         const float tvDotD = dot(tangentVWorld, rayDirection);
@@ -197,7 +208,9 @@ namespace Pale {
 
 
         // duv/dc_pos = (u du/dc + v dv/dc)
-        const float3 dUVPosition = u * duDPk + v * dvDPk;
+        const float3 dUVPosition = (u * duDPk + v * dvDPk);
+        if (isWatched)
+            int debug = 1;
         return dUVPosition;
     }
     // ----------------- Position gradient (translation of surfel center) -----------------
@@ -378,7 +391,7 @@ namespace Pale {
         float denom = 1.0f - r2;
         const float eps = 1e-3f; // still keep a small epsilon
         denom = sycl::fmax(denom, eps);
-        float betaKernelFactor = -2.0f * beta * alpha / denom;
+        float betaKernelFactor = (beta * alpha * 2.0f )/ denom;
 
         return betaKernelFactor;
     }
@@ -535,7 +548,7 @@ namespace Pale {
             const float3 dUdVdScale =
                     computeDuvDScale(u, v, su, sv);
 
-            const float3 dFsDPosition = -alpha * dUvDPosition;
+            const float3 dFsDPosition = betaKernelFactor * dUvDPosition;
 
 
             float3 dFsDsusv = betaKernelFactor * dUdVdScale;
@@ -735,7 +748,8 @@ namespace Pale {
         const PointGradients &gradients,
         const DebugImages &debugImage,
         bool renderDebugGradientImage,
-        uint32_t debugIndex = UINT32_MAX
+        uint32_t debugIndex = UINT32_MAX,
+        bool isWatched = false
     ) {
         if (!scatterHit.hit || scatterHit.splatEventCount == 0) {
             return;
@@ -778,9 +792,10 @@ namespace Pale {
                     surfel.tanU,
                     surfel.tanV,
                     canonicalNormalWorld,
-                    -rayState.ray.direction,
+                    rayState.ray.direction,
                     u, v,
-                    su, sv
+                    su, sv,
+                    isWatched
                 );
 
         float3 dUdTu, dVdTu, dUdTv, dVdTv;
@@ -800,19 +815,23 @@ namespace Pale {
         float3 dFsDtV = (u * dUdTv + v * dVdTv);
 
         const float betaKernelFactor =
-                computeSmoothedBetaFactor(surfel.beta, r2, alpha);
+                -surfel.opacity * computeSmoothedBetaFactor(surfel.beta, r2, alpha);
         float3 bsdfGradTanU = betaKernelFactor * dFsDtU;
         float3 bsdfGradTanV = betaKernelFactor * dFsDtV;
 
         const float3 dUdVdScale =
                 computeDuvDScale(u, v, su, sv);
 
-        const float3 bsdfGradPosition = -alpha * dUvDPosition * surfel.color * surfel.opacity;
+        float beta = 4.0f * sycl::exp(surfel.beta);
+
+        const float3 bsdfGradPosition = betaKernelFactor * dUvDPosition * 0.000000022;
         const float3 dFsDsusv = betaKernelFactor * dUdVdScale;
 
         const float bsdfGradScaleU = dFsDsusv.x();
         const float bsdfGradScaleV = dFsDsusv.y();
 
+        if (isWatched)
+            int debug = 1;
         const float bsdfGradAlbedo = alpha * surfel.opacity;
         const float3 bsdfGradOpacity = alpha * surfel.color;
         const float bsdfGradBeta =
@@ -835,9 +854,9 @@ namespace Pale {
         const float3 pathAdjoint = rayState.pathThroughput;
 
         // Per-channel adjoint * τ * radiance
-        const float R = pathAdjoint[0] * surfelRadianceRGB[0];
-        const float G = pathAdjoint[1] * surfelRadianceRGB[1];
-        const float B = pathAdjoint[2] * surfelRadianceRGB[2];
+        const float R = pathAdjoint[0] * surfelRadianceRGB[0] * 0.0 + 1.0;
+        const float G = pathAdjoint[1] * surfelRadianceRGB[1] * 0.0 + 1.0;
+        const float B = pathAdjoint[2] * surfelRadianceRGB[2] * 0.0 + 1.0;
 
         // Position gradients
         const float3 gradCPosR = R * bsdfGradPosition;

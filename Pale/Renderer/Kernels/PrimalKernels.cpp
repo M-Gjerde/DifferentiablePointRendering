@@ -167,7 +167,7 @@ namespace Pale {
                     if (instance.geometryType == GeometryType::PointCloud) {
                             // SURFACE EVENT
                             // 50/50 reflect vs transmit for a symmetric diffuse sheet
-                            float probReflect = 1.0f;
+                            float probReflect = 0.5f;
                             const bool chooseReflect = (rng128.nextFloat() < probReflect);
 
                             float sampledPdf = 0.0f;
@@ -426,7 +426,7 @@ namespace Pale {
                                     primaryRay.direction,
                                     scene,
                                     photonMap,
-                                    false);
+                                    useOneSidedScatter);
 
                             float3 surfelRadianceBack =
                                 estimateSurfelRadianceFromPhotonMap(
@@ -436,7 +436,7 @@ namespace Pale {
                                     photonMap,
                                     useOneSidedScatter);
 
-                            float3 surfelShadedRadiance = surfelRadianceFront;
+                            float3 surfelShadedRadiance = surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f;
 
 
                             const Point& surfel = scene.points[terminalSplatEvent.primitiveIndex];

@@ -138,7 +138,7 @@ namespace Pale {
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.randomSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
 
-                    const RayState& rayState = intermediates.primaryRays[rayIndex];
+                    RayState& rayState = intermediates.primaryRays[rayIndex];
                     // Shoot one transmit ray. The amount intersected here will tell us how many scatter rays we will transmit.
                     WorldHit whTransmit{};
                     intersectScene(rayState.ray, &whTransmit, scene, rng128, RayIntersectMode::Transmit);
@@ -176,11 +176,11 @@ namespace Pale {
                     uint32_t pixelX = rayState.pixelX;
                     uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
                     bool isWatched = false;
-                    if (pixelX == 400 && pixelY == 510) {
+                    if (pixelX == 410 && pixelY == 430) {
                         isWatched = true;
                         int debug = 1;
                     }
-                    if (pixelX == 400 && pixelY == 545) {
+                    if (pixelX == 465 && pixelY == 430) {
                         isWatched = true;
                         int debug = 1;
                     }
@@ -200,7 +200,6 @@ namespace Pale {
                         }
 
 
-
                         accumulateBsdfGradientsAtScatterSurfel(
                             scatterRayState,
                             whScatter,
@@ -209,9 +208,9 @@ namespace Pale {
                             gradients,
                             debugImage,
                             settings.renderDebugGradientImages,
-                            debugIndex
+                            debugIndex,
+                            isWatched
                         );
-
 
 
 
