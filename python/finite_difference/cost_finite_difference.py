@@ -65,7 +65,7 @@ def save_rgb_preview_png(
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Saving RGB preview to: {out_path.absolute()}")
+    #print(f"Saving RGB preview to: {out_path.absolute()}")
     Image.fromarray(img_u8, mode="RGB").save(out_path)
 
 
@@ -269,7 +269,7 @@ def main(args) -> None:
     # --- Translation (x,y,z) ---
     grad_trans = dict()
     for axis in ["x", "y", "z"]:
-        print(f"[FD] Translation axis={axis}")
+        print(f"[FD] Computing Translation axis={axis}...")
         rgb_minus, rgb_plus, grad_fd = finite_difference_translation(
             renderer, args.index, axis, eps_translation
         )
