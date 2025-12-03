@@ -273,7 +273,7 @@ def main(args) -> None:
         rgb_minus, rgb_plus, grad_fd = finite_difference_translation(
             renderer, args.index, axis, eps_translation
         )
-        # calculate loss for each iamge
+        # calculate loss for each image
         # OUr L1 loss is the differentiation of our L2 cost
         loss_negative = compute_l2_loss(rgb_minus, target_image)
         loss_positive = compute_l2_loss(rgb_plus, target_image)
