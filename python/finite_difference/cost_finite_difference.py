@@ -137,13 +137,13 @@ def main(args) -> None:
     adjoint_passes = 4
 
     renderer_settings = {
-        "photons": 1e4,
-        "bounces": 4,
-        "forward_passes": 100,
+        "photons": 5e3,
+        "bounces": 3,
+        "forward_passes": 1000,
         "gather_passes": 1,
         "adjoint_bounces": 1,
         "adjoint_passes": adjoint_passes,
-        "logging": 2,
+        "logging": 3,
     }
 
     assets_root = Path(__file__).parent.parent.parent / "Assets"
@@ -284,6 +284,7 @@ def main(args) -> None:
     for axis in ["x", "y", "z"]:
         print(f"[FD] Translation axis={axis}, Grad={grad_trans[axis]: .10f}")
 
+    print()
     axes = ["x", "y", "z"]
     for axis in [0, 1, 2]:
         print(f"[AN] Translation axis={axes[axis]}, Grad={analytical_gradients_position[0][axis]: .10f}")

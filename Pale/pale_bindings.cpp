@@ -131,7 +131,6 @@ public:
         Pale::Log::PA_WARN("  Gather passes             : {}", settings.numGatherPasses);
         Pale::Log::PA_WARN("  Adjoint bounces           : {}", settings.maxAdjointBounces);
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
-        Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
 
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorForward.size(); ++i) {

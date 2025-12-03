@@ -20,8 +20,8 @@ def add_debug_noise_to_initial_parameters(
     *,
     seed_positions: int = 16,
     seed_colors: int = 12345,
-    noise_sigma_translation: float = 0.1,
-    noise_sigma_tangent: float = 0.2,
+    noise_sigma_translation: float = 0.0,
+    noise_sigma_tangent: float = 0.0,
     noise_sigma_scale: float = 0.00,
     noise_sigma_color: float = 0.0,
     noise_sigma_opacity: float = 0.00,
@@ -120,7 +120,7 @@ def add_debug_noise_to_initial_parameters(
     rng_beta = np.random.default_rng(seed_colors)
     noisy_betas = betas.copy()
     beta_noise = rng_beta.normal(
-        0.4,  # your mean
+        0.0,  # your mean
         noise_sigma_beta,
         size=noisy_betas[row_slice].shape,
     )
