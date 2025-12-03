@@ -9,16 +9,38 @@ import torch.nn.functional as F
 
 def compute_l2_loss(rendered: np.ndarray, target: np.ndarray) -> float:
     """
-    Simple L2 loss between rendered and target RGB images.
+    L2 loss (1/2 * mean squared error) between rendered and target RGB images.
 
-    Both inputs must be (H,W,3) float32.
+    rendered, target: (H, W, 3) float32 arrays.
     """
     if rendered.shape != target.shape:
         raise RuntimeError(
             f"Shape mismatch: rendered {rendered.shape}, target {target.shape}"
         )
+
+    diff = rendered - target                       # residuals r_i = p_i - t_i
+    loss = 0.5 * np.mean(diff * diff)              # 1/2 * mean(r^2)
+    return float(loss)
+
+
+def compute_l2_grad(rendered: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """
+    Gradient of the L2 loss w.r.t. rendered image.
+
+        dL/d(rendered_i) = (rendered_i - target_i) / N
+
+    Returns:
+        grad: same shape as rendered.
+    """
+    if rendered.shape != target.shape:
+        raise RuntimeError(
+            f"Shape mismatch: rendered {rendered.shape}, target {target.shape}"
+        )
+
     diff = rendered - target
-    return float(np.mean(diff * diff))
+    #grad = diff / diff.size   # We do this in the renderer
+    grad = diff
+    return grad.astype(np.float32)
 
 
 def compute_l2_loss_and_grad(
