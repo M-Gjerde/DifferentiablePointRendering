@@ -262,7 +262,7 @@ namespace Pale {
                     float cosine = fabs(dot(rayState.ray.direction, whTransmit.geometricNormalW));
                     auto& material = scene.materials[meshInstance.materialIndex];
                     meshShadowRayState.pathThroughput *= material.baseColor * M_1_PIf;
-                    //shadowRay(scene, meshShadowRayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
+                    shadowRay(scene, meshShadowRayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
 
                     /*
                     accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
