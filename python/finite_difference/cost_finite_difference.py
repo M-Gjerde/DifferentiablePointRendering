@@ -372,7 +372,7 @@ def main(args) -> None:
     )
 
     # Step sizes
-    eps_translation = 0.01
+    eps_translation = 0.005
     eps_rotation_deg = 0.5
     eps_scale = 0.05
     eps_opacity = 0.1

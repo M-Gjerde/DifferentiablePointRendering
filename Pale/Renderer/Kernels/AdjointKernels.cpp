@@ -139,6 +139,18 @@ namespace Pale {
                     rng::Xorshift128 rng128(perItemSeed);
 
                     RayState& rayState = intermediates.primaryRays[rayIndex];
+                    uint32_t pixelX = rayState.pixelX;
+                    uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
+                    bool isWatched = false;
+                    if (pixelX == 410 && pixelY == 430) {
+                        isWatched = true;
+                        int debug = 1;
+                    }
+                    if (pixelX == 465 && pixelY == 430) {
+                        isWatched = true;
+                        int debug = 1;
+                    }
+
                     // Shoot one transmit ray. The amount intersected here will tell us how many scatter rays we will transmit.
                     WorldHit whTransmit{};
                     intersectScene(rayState.ray, &whTransmit, scene, rng128, RayIntersectMode::Transmit);
@@ -155,35 +167,114 @@ namespace Pale {
                     // Transmission gradients with shadow rays
                     if (meshInstance.geometryType == GeometryType::Mesh) {
                         // Transmission
+                        // Cost weighting: photon-map radiance for this segment
+                        for (uint32_t i = 0; i < whTransmit.splatEventCount; ++i) {
+                            // Forward-side values reused in adjoint:
+                            float3 L_Mesh = estimateRadianceFromPhotonMap(whTransmit, scene, photonMap);
+                            auto& splatEvent = whTransmit.splatEvents[i]; // one surfel
+                            auto& surfel = scene.points[splatEvent.primitiveIndex];
+
+                            float alphaGeom = splatEvent.alpha; // α(u,v,β)
+                            float eta = surfel.opacity;
+                            float alphaEff = eta * alphaGeom; // α_eff
+
+                            // Shade surfel from photon map (front/back)
+                            const bool useOneSidedScatter = true;
+                            float3 surfelRadianceFront =
+                                estimateSurfelRadianceFromPhotonMap(
+                                    splatEvent,
+                                    rayState.ray.direction,
+                                    scene,
+                                    photonMap,
+                                    useOneSidedScatter);
+
+                            float3 surfelRadianceBack =
+                                estimateSurfelRadianceFromPhotonMap(
+                                    splatEvent,
+                                    -rayState.ray.direction,
+                                    scene,
+                                    photonMap,
+                                    useOneSidedScatter);
+
+                            float3 L_Surfel = (surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f);
+
+                            // Geometry for u,v and Jacobian:
+                            float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
+                            float3 hitWorld = splatEvent.hitWorld;
+                            float2 uv = phiInverse(hitWorld, surfel);
+                            float u = uv.x();
+                            float v = uv.y();
+                            float r2 = u * u + v * v;
+                            float su = surfel.scale.x();
+                            float sv = surfel.scale.y();
+
+                            float3 DuvDPosition = computeDuvDPosition(
+                                surfel.tanU,
+                                surfel.tanV,
+                                canonicalNormalWorld,
+                                rayState.ray.direction,
+                                u, v,
+                                su, sv,
+                                isWatched);
+
+                            // Beta kernel parameters:
+                            float beta = 4.0f * sycl::exp(surfel.beta);
+
+                            // d alpha / d position (beta kernel):
+                            float factor = (-2.0f * beta * alphaGeom) / (1.0f - r2);
+                            float3 dAlpha_dPos = factor * DuvDPosition;
+
+                            // d alpha_eff / d position:
+                            float3 dAlphaEff_dPos = eta * dAlpha_dPos;
+
+                            // Color difference for volumetric compositing:
+                            float3 colorDiff = L_Surfel - L_Mesh; // L_s - L_m
+
+                            // Pixel adjoint / path adjoint:
+                            const float3 pathAdjoint = rayState.pathThroughput; // dJ/dC (RGB) * transport
+
+                            // Scalar weight = ⟨adjoint, (L_s - L_m)⟩:
+                            float weight = dot(pathAdjoint, colorDiff);
+
+                            // Final position gradient vector:
+                            float3 gradPosition = weight * dAlphaEff_dPos;
+
+                            // Accumulate:
+                            uint32_t primitiveIndex = splatEvent.primitiveIndex;
+                            atomicAddFloat3(gradients.gradPosition[primitiveIndex], gradPosition);
 
 
+                            float3 parameterAxis = float3{0.0f, 1.0f, 0.0f};
 
-                        accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
-                                         settings.renderDebugGradientImages, gradients,
-                                         debugImage, debugIndex);
+                            const float dCdpR = dot(gradPosition, parameterAxis);
+                            const float4 posScalarRGB{dCdpR};
 
+                            const uint32_t pixelIndex = rayState.pixelIndex;
 
-
+                            atomicAddFloat4ToImage(
+                                &debugImage.framebuffer_pos[pixelIndex],
+                                posScalarRGB
+                            );
+                        }
                     }
-                    // Shadow ray on mesh intersection
-                    // apply bsdf, tau and cosine:
+
                     RayState meshShadowRayState = rayState;
                     float cosine = fabs(dot(rayState.ray.direction, whTransmit.geometricNormalW));
                     auto& material = scene.materials[meshInstance.materialIndex];
-                    meshShadowRayState.pathThroughput *=  cosine * material.baseColor * M_1_PIf;
+                    meshShadowRayState.pathThroughput *= material.baseColor * M_1_PIf;
                     //shadowRay(scene, meshShadowRayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
 
-                    uint32_t pixelX = rayState.pixelX;
-                    uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
-                    bool isWatched = false;
-                    if (pixelX == 410 && pixelY == 430) {
-                        isWatched = true;
-                        int debug = 1;
-                    }
-                    if (pixelX == 465 && pixelY == 430) {
-                        isWatched = true;
-                        int debug = 1;
-                    }
+                    /*
+                    accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
+                                     settings.renderDebugGradientImages, gradients,
+                                     debugImage, debugIndex);
+                    */
+
+                    /*
+                    // Shadow ray on mesh intersection
+                    // apply bsdf, tau and cosine:
+
+
 
                     uint32_t numSurfelsOnRay = whTransmit.splatEventCount;
                     for (size_t scatterRay = 0; scatterRay < numSurfelsOnRay; ++scatterRay) {
@@ -239,11 +330,11 @@ namespace Pale {
                             scatterOnPrimitiveIndex,
                             isWatched
                         );
-                        */
+
 
 
                     }
-
+                    */
                 }
             );
         });
@@ -957,7 +1048,7 @@ namespace Pale {
                         const float3 lambertBrdf = material.baseColor * M_1_PIf;
                         auto& surfel = scene.points[worldHit.primitiveIndex];
                         float alpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
-                        material.baseColor =  surfel.color;
+                        material.baseColor = surfel.color;
 
                         const float interactionAlpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
                         // α
