@@ -5,20 +5,18 @@
 #include "Renderer/Kernels/AdjointKernels.h"
 
 #include <cmath>
-#include <complex>
 
 #include "AdjointGradientKernels.h"
 #include "IntersectionKernels.h"
-#include "glm/gtc/constants.hpp"
 #include "Renderer/Kernels/KernelHelpers.h"
 
 
 namespace Pale {
-    void launchRayGenAdjointKernel(RenderPackage& pkg, int spp, uint32_t cameraIndex) {
-        auto& queue = pkg.queue;
-        auto& settings = pkg.settings;
-        auto& intermediates = pkg.intermediates;
-        auto& sensor = pkg.sensor[cameraIndex];
+    void launchRayGenAdjointKernel(RenderPackage &pkg, int spp, uint32_t cameraIndex) {
+        auto &queue = pkg.queue;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
+        auto &sensor = pkg.sensor[cameraIndex];
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
@@ -30,7 +28,7 @@ namespace Pale {
         const uint32_t perPassRayCount = raysPerSet;
         queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t baseSeed = settings.randomSeed * static_cast<uint64_t>(spp);
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
@@ -53,8 +51,8 @@ namespace Pale {
                     // Adjoint source weight
                     const float4 residualRgba = sensor.framebuffer[pixelIndex];
                     float3 initialAdjointWeight = float3{
-                        residualRgba.x(), residualRgba.y(), residualRgba.z()
-                    } / raysTotal;
+                                                      residualRgba.x(), residualRgba.y(), residualRgba.z()
+                                                  } / raysTotal;
                     // Or unit weights:
                     //initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
@@ -65,11 +63,12 @@ namespace Pale {
                     const float jitterX = pixelRng.nextFloat() - 0.5f;
                     const float jitterY = pixelRng.nextFloat() - 0.5f;
 
+
                     Ray primaryRay = makePrimaryRayFromPixelJittered(
                         sensor.camera,
                         static_cast<float>(pixelX),
                         static_cast<float>(pixelY),
-                        jitterX, jitterY
+                        0, 0
                     );
 
                     //primaryRay.direction = normalize(float3{-0.001, 0.982122211, 0.277827293});    // a
@@ -108,7 +107,7 @@ namespace Pale {
         bool isMatch = false;
 
         for (uint32_t i = 0; i < 2; ++i) {
-            const DebugPixel& debugPixel = kDebugPixels[i];
+            const DebugPixel &debugPixel = kDebugPixels[i];
             if (pixelY == debugPixel.pixelY && pixelX == debugPixel.pixelX) {
                 isMatch = true;
             }
@@ -117,19 +116,19 @@ namespace Pale {
     }
 
 
-    void launchAdjointKernel(RenderPackage& pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        auto& intermediates = pkg.intermediates;
-        auto& gradients = pkg.gradients;
-        auto& photonMap = pkg.intermediates.map;
-        auto* raysIn = pkg.intermediates.primaryRays;
+    void launchAdjointKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
+        auto &gradients = pkg.gradients;
+        auto &photonMap = pkg.intermediates.map;
+        auto *raysIn = pkg.intermediates.primaryRays;
 
-        auto& sensor = pkg.sensor[cameraIndex];
-        auto& debugImage = pkg.debugImages[cameraIndex];
+        auto &sensor = pkg.sensor[cameraIndex];
+        auto &debugImage = pkg.debugImages[cameraIndex];
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<struct AdjointShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
                 // ReSharper disable once CppDFAUnusedValue
@@ -138,7 +137,7 @@ namespace Pale {
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.randomSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
 
-                    RayState& rayState = intermediates.primaryRays[rayIndex];
+                    RayState &rayState = intermediates.primaryRays[rayIndex];
                     uint32_t pixelX = rayState.pixelX;
                     uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
                     bool isWatched = false;
@@ -146,7 +145,7 @@ namespace Pale {
                         isWatched = true;
                         int debug = 1;
                     }
-                    if (pixelX == 465 && pixelY == 430) {
+                    if (pixelX == 200 && pixelY == 200) {
                         isWatched = true;
                         int debug = 1;
                     }
@@ -158,7 +157,7 @@ namespace Pale {
                         return;
                     buildIntersectionNormal(scene, whTransmit);
 
-                    const InstanceRecord& meshInstance = scene.instances[whTransmit.instanceIndex];
+                    const InstanceRecord &meshInstance = scene.instances[whTransmit.instanceIndex];
 
                     //uint32_t debugIndex = 1;
                     uint32_t debugIndex = UINT32_MAX;
@@ -171,8 +170,8 @@ namespace Pale {
                         for (uint32_t i = 0; i < whTransmit.splatEventCount; ++i) {
                             // Forward-side values reused in adjoint:
                             float3 L_Mesh = estimateRadianceFromPhotonMap(whTransmit, scene, photonMap);
-                            auto& splatEvent = whTransmit.splatEvents[i]; // one surfel
-                            auto& surfel = scene.points[splatEvent.primitiveIndex];
+                            auto &splatEvent = whTransmit.splatEvents[i]; // one surfel
+                            auto &surfel = scene.points[splatEvent.primitiveIndex];
 
                             float alphaGeom = splatEvent.alpha; // α(u,v,β)
                             float eta = surfel.opacity;
@@ -181,25 +180,28 @@ namespace Pale {
                             // Shade surfel from photon map (front/back)
                             const bool useOneSidedScatter = true;
                             float3 surfelRadianceFront =
-                                estimateSurfelRadianceFromPhotonMap(
-                                    splatEvent,
-                                    rayState.ray.direction,
-                                    scene,
-                                    photonMap,
-                                    useOneSidedScatter);
+                                    estimateSurfelRadianceFromPhotonMap(
+                                        splatEvent,
+                                        rayState.ray.direction,
+                                        scene,
+                                        photonMap,
+                                        useOneSidedScatter);
 
                             float3 surfelRadianceBack =
-                                estimateSurfelRadianceFromPhotonMap(
-                                    splatEvent,
-                                    -rayState.ray.direction,
-                                    scene,
-                                    photonMap,
-                                    useOneSidedScatter);
+                                    estimateSurfelRadianceFromPhotonMap(
+                                        splatEvent,
+                                        -rayState.ray.direction,
+                                        scene,
+                                        photonMap,
+                                        useOneSidedScatter);
 
                             float3 L_Surfel = (surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f);
-
                             // Geometry for u,v and Jacobian:
+
                             float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
+                            const float travelSideSign =
+                                    signNonZero(dot(canonicalNormalWorld, -rayState.ray.direction));
+                            canonicalNormalWorld = canonicalNormalWorld * travelSideSign;
                             float3 hitWorld = splatEvent.hitWorld;
                             float2 uv = phiInverse(hitWorld, surfel);
                             float u = uv.x();
@@ -212,57 +214,50 @@ namespace Pale {
                                 surfel.tanU,
                                 surfel.tanV,
                                 canonicalNormalWorld,
-                                -rayState.ray.direction,
+                                rayState.ray.direction,
                                 u, v,
                                 su, sv,
                                 isWatched);
 
                             // Beta kernel parameters:
                             float beta = 4.0f * sycl::exp(surfel.beta);
-
                             // d alpha / d position (beta kernel):
                             float factor = (-2.0f * beta * alphaGeom) / (1.0f - r2);
                             float3 dAlpha_dPos = factor * DuvDPosition;
-
                             // d alpha_eff / d position:
                             float3 dAlphaEff_dPos = eta * dAlpha_dPos;
-
                             // Color difference for volumetric compositing:
                             float3 colorDiff = (L_Surfel) - (L_Mesh); // L_s - L_m
-
                             // Pixel adjoint / path adjoint:
                             const float3 pathAdjoint = rayState.pathThroughput; // dJ/dC (RGB) * transport
-
                             // Scalar weight = ⟨adjoint, (L_s - L_m)⟩:
                             float weight = dot(pathAdjoint, colorDiff);
-
                             // Final position gradient vector:
                             float3 gradPosition = weight * dAlphaEff_dPos;
-
                             // Accumulate:
                             uint32_t primitiveIndex = splatEvent.primitiveIndex;
                             atomicAddFloat3(gradients.gradPosition[primitiveIndex], gradPosition);
 
-
-                            float3 parameterAxis = float3{0.0f, 1.0f, 0.0f};
-
+                            float3 parameterAxis = float3{0.0f, 1.0f,0.0f};
                             const float dCdpR = dot(gradPosition, parameterAxis);
                             const float4 posScalarRGB{dCdpR};
-
                             const uint32_t pixelIndex = rayState.pixelIndex;
-
                             atomicAddFloat4ToImage(
                                 &debugImage.framebuffer_pos[pixelIndex],
                                 posScalarRGB
                             );
+
+                            if (isWatched) {
+                                int debug = 1;
+                            }
                         }
                     }
 
                     RayState meshShadowRayState = rayState;
                     float cosine = fabs(dot(rayState.ray.direction, whTransmit.geometricNormalW));
-                    auto& material = scene.materials[meshInstance.materialIndex];
-                    meshShadowRayState.pathThroughput *= material.baseColor * M_1_PIf;
-                    shadowRay(scene, meshShadowRayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
+                    auto &material = scene.materials[meshInstance.materialIndex];
+                    //meshShadowRayState.pathThroughput *= material.baseColor;
+                    //shadowRay(scene, meshShadowRayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
 
                     /*
                     accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
@@ -342,18 +337,18 @@ namespace Pale {
     }
 
 
-    void launchAdjointKernel2(RenderPackage& pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        auto& intermediates = pkg.intermediates;
-        auto& gradients = pkg.gradients;
-        auto& photonMap = pkg.intermediates.map;
-        auto* raysIn = pkg.intermediates.primaryRays;
-        auto& sensor = pkg.sensor[cameraIndex];
-        auto& debugImage = pkg.debugImages[cameraIndex];
+    void launchAdjointKernel2(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
+        auto &gradients = pkg.gradients;
+        auto &photonMap = pkg.intermediates.map;
+        auto *raysIn = pkg.intermediates.primaryRays;
+        auto &sensor = pkg.sensor[cameraIndex];
+        auto &debugImage = pkg.debugImages[cameraIndex];
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<struct AdjointShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
                 // ReSharper disable once CppDFAUnusedValue
@@ -361,7 +356,7 @@ namespace Pale {
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.randomSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
-                    const RayState& rayState = intermediates.primaryRays[rayIndex];
+                    const RayState &rayState = intermediates.primaryRays[rayIndex];
 
                     uint32_t recordBounceIndex = 0;
 
@@ -377,14 +372,14 @@ namespace Pale {
 
                     const bool isWatched = isWatchedPixel(pixelX, pixelY);
 
-                    const InstanceRecord& meshInstance = scene.instances[whTransmit.instanceIndex];
+                    const InstanceRecord &meshInstance = scene.instances[whTransmit.instanceIndex];
                     const float3 parameterAxis = {1.0f, 0.0f, 0.00f};
 
                     // Transmission gradients with shadow rays
                     if (meshInstance.geometryType == GeometryType::Mesh) {
                         // Transmission
                         if (whTransmit.splatEventCount > 0) {
-                            const Ray& ray = rayState.ray;
+                            const Ray &ray = rayState.ray;
                             const float3 x = ray.origin;
                             const float3 y = whTransmit.hitPositionW;
 
@@ -415,11 +410,11 @@ namespace Pale {
                                 if (validCount >= kMaxSplatEvents)
                                     break;
 
-                                const auto& splatEvent = whTransmit.splatEvents[eventIdx];
-                                const Point& surfel = scene.points[splatEvent.primitiveIndex];
+                                const auto &splatEvent = whTransmit.splatEvents[eventIdx];
+                                const Point &surfel = scene.points[splatEvent.primitiveIndex];
 
                                 const float3 canonicalNormalW =
-                                    normalize(cross(surfel.tanU, surfel.tanV));
+                                        normalize(cross(surfel.tanU, surfel.tanV));
 
                                 const float2 uv = phiInverse(splatEvent.hitWorld, surfel);
                                 const float u = uv.x();
@@ -431,14 +426,14 @@ namespace Pale {
 
                                 // ---- dα/d(position) ----
                                 const float3 DuvPosition =
-                                    computeDuvDPosition(
-                                        surfel.tanU,
-                                        surfel.tanV,
-                                        canonicalNormalW,
-                                        ray.direction,
-                                        u, v,
-                                        su, sv
-                                    );
+                                        computeDuvDPosition(
+                                            surfel.tanU,
+                                            surfel.tanV,
+                                            canonicalNormalW,
+                                            ray.direction,
+                                            u, v,
+                                            su, sv
+                                        );
 
                                 float3 dUdTu, dVdTu, dUdTv, dVdTv;
                                 computeFullDuDvWrtTangents(
@@ -468,10 +463,10 @@ namespace Pale {
 
                                 // ---- dα/d(scale) (s_u, s_v) ----
                                 const float3 dUdVdScale =
-                                    computeDuvDScale(
-                                        u, v,
-                                        su, sv
-                                    );
+                                        computeDuvDScale(
+                                            u, v,
+                                            su, sv
+                                        );
 
                                 // Example: BSDF gradients for each parameter group
                                 //const float3 dFsDPosition = DalphaDuvPositionGaussian(DuvPosition, alpha, surfel.opacity);
@@ -487,7 +482,7 @@ namespace Pale {
 
                                 // Beta parameter:
                                 float DalphaDbeta = alpha * betaKernel(surfel.beta) * sycl::log(1.0f - r2) * surfel.
-                                    opacity;
+                                                    opacity;
 
 
                                 const float oneMinusAlpha = 1.0f - alpha * surfel.opacity;
@@ -496,7 +491,7 @@ namespace Pale {
 
 
                                 // Store local term
-                                auto& lt = localTerms[validCount++];
+                                auto &lt = localTerms[validCount++];
                                 lt.alpha = alpha;
                                 lt.eta = surfel.opacity;
                                 lt.r2 = r2;
@@ -619,7 +614,7 @@ namespace Pale {
                                         gradCBetaR + gradCBetaG + gradCBetaB
                                     );
                                     // Mapping to world coordinates:
-                                    const auto& surfel = scene.points[primitiveIndex];
+                                    const auto &surfel = scene.points[primitiveIndex];
                                     float3 dBsdf_world = float3{
                                         dot(gradCTanUR, cross(float3{0.0f, 1.0f, 0.0f}, surfel.tanU)) +
                                         dot(gradCTanVR, cross(float3{0.0f, 1.0f, 0.0f}, surfel.tanV)),
@@ -715,8 +710,8 @@ namespace Pale {
                         float tau = 1.0f; // full product over all (1 - alpha_i)
                         if (whScatter.splatEventCount > 0) {
                             for (size_t eventIdx = 0; eventIdx < whScatter.splatEventCount - 1; ++eventIdx) {
-                                const auto& splatEvent = whScatter.splatEvents[eventIdx];
-                                const Point& surfel = scene.points[splatEvent.primitiveIndex];
+                                const auto &splatEvent = whScatter.splatEvents[eventIdx];
+                                const Point &surfel = scene.points[splatEvent.primitiveIndex];
                                 const float oneMinusAlpha = 1.0f - splatEvent.alpha * surfel.opacity;
                                 if (oneMinusAlpha <= 1e-6f)
                                     continue;
@@ -725,16 +720,15 @@ namespace Pale {
                             }
                         }
 
-                        const InstanceRecord& surfelInstance = scene.instances[whScatter.instanceIndex];
+                        const InstanceRecord &surfelInstance = scene.instances[whScatter.instanceIndex];
                         if (surfelInstance.geometryType == GeometryType::PointCloud) {
                             // 1) Build intervening splat list on (t_x, t_y), excluding terminal scatter surfel
                             // Do this however through a shadow ray
-                            const Ray& ray = rayState.ray;
+                            const Ray &ray = rayState.ray;
                             // 3) Terminal scatter at z: dα/dc with correct sign
                             const uint32_t terminalPrim = whScatter.primitiveIndex;
-                            const SplatEvent& terminal = whScatter.splatEvents[
-                                whScatter.splatEventCount - 1];
-                            {
+                            const SplatEvent &terminal = whScatter.splatEvents[
+                                whScatter.splatEventCount - 1]; {
                                 const auto surfel = scene.points[terminal.primitiveIndex];
                                 const float3 canonicalNormalWorld = normalize(
                                     cross(surfel.tanU, surfel.tanV));
@@ -751,14 +745,14 @@ namespace Pale {
 
                                 // ---- dα/d(position) ----
                                 const float3 DuvPosition =
-                                    computeDuvDPosition(
-                                        surfel.tanU,
-                                        surfel.tanV,
-                                        canonicalNormalWorld,
-                                        rayDirection,
-                                        u, v,
-                                        su, sv
-                                    );
+                                        computeDuvDPosition(
+                                            surfel.tanU,
+                                            surfel.tanV,
+                                            canonicalNormalWorld,
+                                            rayDirection,
+                                            u, v,
+                                            su, sv
+                                        );
 
                                 float3 dUdTu, dVdTu, dUdTv, dVdTv;
                                 computeFullDuDvWrtTangents(
@@ -789,10 +783,10 @@ namespace Pale {
 
                                 // ---- dα/d(scale) (s_u, s_v) ----
                                 const float3 dUdVdScale =
-                                    computeDuvDScale(
-                                        u, v,
-                                        su, sv
-                                    );
+                                        computeDuvDScale(
+                                            u, v,
+                                            su, sv
+                                        );
 
                                 // Example: BSDF gradients for each parameter group
                                 //const float3 dFsDPosition = DalphaDuvPositionGaussian(DuvPosition, alpha, surfel.opacity);
@@ -808,7 +802,7 @@ namespace Pale {
 
                                 // Beta parameter:
                                 float DalphaDbeta = alpha * betaKernel(surfel.beta) * sycl::log(1.0f - r2) * surfel.
-                                    opacity;
+                                                    opacity;
 
 
                                 const float3 surfelRadianceRGB = estimateSurfelRadianceFromPhotonMap(
@@ -990,23 +984,23 @@ namespace Pale {
         queue.wait();
     }
 
-    void generateNextAdjointRays(RenderPackage& pkg, uint32_t activeRayCount) {
-        auto& queue = pkg.queue;
-        auto& sensor = pkg.sensor;
-        auto& settings = pkg.settings;
-        auto& scene = pkg.scene;
-        auto& photonMap = pkg.intermediates.map;
+    void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &sensor = pkg.sensor;
+        auto &settings = pkg.settings;
+        auto &scene = pkg.scene;
+        auto &photonMap = pkg.intermediates.map;
 
-        auto* hitRecords = pkg.intermediates.hitRecords;
-        auto* raysIn = pkg.intermediates.primaryRays;
-        auto* raysOut = pkg.intermediates.extensionRaysA;
-        auto* countExtensionOut = pkg.intermediates.countExtensionOut;
+        auto *hitRecords = pkg.intermediates.hitRecords;
+        auto *raysIn = pkg.intermediates.primaryRays;
+        auto *raysOut = pkg.intermediates.extensionRaysA;
+        auto *countExtensionOut = pkg.intermediates.countExtensionOut;
 
         const uint32_t perPassRayCount = activeRayCount; // total number of rays (With n-samples per ray)
         const uint32_t perPixelRayCount = activeRayCount; // Number of rays per pixel
         const uint32_t photonsPerLaunch = settings.photonsPerLaunch;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             const uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<class GenerateNextAdjointRays>(
                 sycl::range<1>(perPixelRayCount),
@@ -1021,11 +1015,11 @@ namespace Pale {
                         return;
                     } // dead ray
 
-                    const InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
+                    const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
                     const float3 canonicalNormalW = worldHit.geometricNormalW;
                     const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
                     const float3 enteredSideNormalW =
-                        (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
+                            (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
                     float3 sampledOutgoingDirectionW{};
                     float3 throughputMultiplier = float3(1.0f);
 
@@ -1046,7 +1040,7 @@ namespace Pale {
                         // PointCloud
                         GPUMaterial material{};
                         const float3 lambertBrdf = material.baseColor * M_1_PIf;
-                        auto& surfel = scene.points[worldHit.primitiveIndex];
+                        auto &surfel = scene.points[worldHit.primitiveIndex];
                         float alpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
                         material.baseColor = surfel.color;
 
@@ -1065,9 +1059,9 @@ namespace Pale {
                             const float cosTheta = sycl::fmax(
                                 0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
                             throughputMultiplier =
-                                throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity * alpha;
-                        }
-                        else {
+                                    throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity *
+                                    alpha;
+                        } else {
                             float sampledPdf = 0.0f;
                             // Diffuse transmit: cosine hemisphere on the opposite side
                             const float3 oppositeSideNormalW = -enteredSideNormalW;
@@ -1075,9 +1069,10 @@ namespace Pale {
                                                    sampledPdf);
                             sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
                             const float cosTheta =
-                                sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, oppositeSideNormalW));
+                                    sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, oppositeSideNormalW));
                             throughputMultiplier =
-                                throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity * alpha;;
+                                    throughputMultiplier * lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity *
+                                    alpha;;
                         }
                     }
 
@@ -1094,10 +1089,10 @@ namespace Pale {
 
                     // compacted enqueue
                     sycl::atomic_ref<uint32_t,
-                                     sycl::memory_order::relaxed,
-                                     sycl::memory_scope::device,
-                                     sycl::access::address_space::global_space>
-                        activeCounter(*countExtensionOut);
+                                sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space>
+                            activeCounter(*countExtensionOut);
 
                     uint32_t outputSlot = activeCounter.fetch_add(1); // write only once to compacted slot
                     raysOut[outputSlot] = nextState;

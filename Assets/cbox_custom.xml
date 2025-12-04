@@ -18,8 +18,8 @@
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="800"/>
-            <integer name="height" value="800"/>
+            <integer name="width" value="400"/>
+            <integer name="height" value="400"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>
             <string name="component_format" value="float32"/>
@@ -69,7 +69,7 @@
         <transform name="to_world">
             <translate x="0" y="0" z="0"/>
         </transform>
-        <ref id="gray"/>
+        <ref id="black"/>
     </shape>
 
 

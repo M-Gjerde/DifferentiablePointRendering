@@ -169,6 +169,8 @@ namespace Pale {
         float3 pos{}; // 144
         float3 forward{}; // 160
         uint32_t width{}, height{}; // 168
+        float fovy = 60.0f;
+        
         char name[16];
     };
 
