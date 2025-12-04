@@ -80,7 +80,7 @@
             <rotate x="1" y="0" z="0" angle="180"/>
             <translate x="0" y="0" z="2"/>
         </transform>
-        <ref id="gray"/>
+        <ref id="black"/>
     </shape>
 
     <!-- Back wall: y=2, normal -Y -->
@@ -90,7 +90,7 @@
             <rotate x="1" y="0" z="0" angle="90"/>
             <translate x="0" y="1" z="1"/>
         </transform>
-        <ref id="blue"/>
+        <ref id="black"/>
     </shape>
 
     <!-- Left wall: x=-1, normal +X -->

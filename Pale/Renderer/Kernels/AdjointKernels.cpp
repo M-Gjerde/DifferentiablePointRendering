@@ -212,7 +212,7 @@ namespace Pale {
                                 surfel.tanU,
                                 surfel.tanV,
                                 canonicalNormalWorld,
-                                rayState.ray.direction,
+                                -rayState.ray.direction,
                                 u, v,
                                 su, sv,
                                 isWatched);
@@ -228,7 +228,7 @@ namespace Pale {
                             float3 dAlphaEff_dPos = eta * dAlpha_dPos;
 
                             // Color difference for volumetric compositing:
-                            float3 colorDiff = L_Surfel - L_Mesh; // L_s - L_m
+                            float3 colorDiff = (L_Surfel) - (L_Mesh); // L_s - L_m
 
                             // Pixel adjoint / path adjoint:
                             const float3 pathAdjoint = rayState.pathThroughput; // dJ/dC (RGB) * transport

@@ -288,39 +288,42 @@ def main(args) -> None:
     target_positions_np = target_params["position"]
     target_tangent_u_np = target_params["tangent_u"]
     target_tangent_v_np = target_params["tangent_v"]
-    target_scale_np = target_params["scale"]
-    target_color_np = target_params["color"]
-    target_opacity_np = target_params["opacity"]
-    target_beta_np = target_params["beta"]
+    target_scales_np = target_params["scale"]
+    target_colors_np = target_params["color"]
+    target_opacities_np = target_params["opacity"]
+    target_betas_np = target_params["beta"]
 
-    (
-        noisy_positions_np,
-        noisy_tangent_u_np,
-        noisy_tangent_v_np,
-        noisy_scales_np,
-        noisy_colors_np,
-        noisy_opacities_np,
-        noisy_betas_np,
-    ) = add_debug_noise_to_initial_parameters(
-        target_positions_np,
-        target_tangent_u_np,
-        target_tangent_v_np,
-        target_scale_np,
-        target_color_np,
-        target_opacity_np,
-        target_beta_np,
-    )
-    print("Initial parameters perturbed by debug Gaussian noise.")
+    apply_noise = False
+    if apply_noise:
+        (
+            noisy_positions_np,
+            noisy_tangent_u_np,
+            noisy_tangent_v_np,
+            noisy_scales_np,
+            noisy_colors_np,
+            noisy_opacities_np,
+            noisy_betas_np,
+        ) = add_debug_noise_to_initial_parameters(
+            target_positions_np,
+            target_tangent_u_np,
+            target_tangent_v_np,
+            target_scale_np,
+            target_color_np,
+            target_opacity_np,
+            target_beta_np,
+        )
+        print("Initial parameters perturbed by debug Gaussian noise.")
 
+    target_positions_np = target_positions_np + np.array([-0.25, 0.25, 0], dtype=np.float32)
     renderer.apply_point_optimization(
         {
-            "position": noisy_positions_np,
-            "tangent_u": noisy_tangent_u_np,
-            "tangent_v": noisy_tangent_v_np,
-            "scale": noisy_scales_np,
-            "color": noisy_colors_np,
-            "opacity": noisy_opacities_np,
-            "beta": noisy_betas_np
+            "position": target_positions_np,
+            "tangent_u": target_tangent_u_np,
+            "tangent_v": target_tangent_v_np,
+            "scale": target_scales_np,
+            "color": target_colors_np,
+            "opacity": target_opacities_np,
+            "beta": target_betas_np
         }
     )
     renderer.rebuild_bvh()
@@ -372,7 +375,7 @@ def main(args) -> None:
     )
 
     # Step sizes
-    eps_translation = 0.005
+    eps_translation = 0.01
     eps_rotation_deg = 0.5
     eps_scale = 0.05
     eps_opacity = 0.1

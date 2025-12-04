@@ -98,7 +98,6 @@ namespace Pale {
             }
             buildIntersectionNormal(m_scene, worldHit);
             m_intermediates.hitRecords[rayIndex] = worldHit;
-
         }
 
     private:
@@ -165,25 +164,31 @@ namespace Pale {
                     // If our hit instance was a point cloud it means we hit a surfel
                     // Now we do either BRDF or BTDF
                     if (instance.geometryType == GeometryType::PointCloud) {
-                            // SURFACE EVENT
-                            // 50/50 reflect vs transmit for a symmetric diffuse sheet
-                            float probReflect = 0.5f;
-                            const bool chooseReflect = (rng128.nextFloat() < probReflect);
+                        // SURFACE EVENT
+                        // 50/50 reflect vs transmit for a symmetric diffuse sheet
+                        float probReflect = 0.5f;
+                        const bool chooseReflect = (rng128.nextFloat() < probReflect);
 
-                            float sampledPdf = 0.0f;
-                            float cosTheta = 0.0f;
-                            float3 eventNormalW = chooseReflect ? enteredSideNormalW : -enteredSideNormalW;
+                        float sampledPdf = 0.0f;
+                        float cosTheta = 0.0f;
+                        float3 eventNormalW = chooseReflect ? enteredSideNormalW : -enteredSideNormalW;
 
-                            sampleCosineHemisphere(rng128, eventNormalW, sampledOutgoingDirectionW, sampledPdf);
-                            sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
-                            cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, eventNormalW));
+                        sampleCosineHemisphere(rng128, eventNormalW, sampledOutgoingDirectionW, sampledPdf);
+                        sampledPdf = sycl::fmax(sampledPdf, 1e-6f);
+                        cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, eventNormalW));
 
-                            auto& surfel = scene.points[worldHit.primitiveIndex];
-                            float alpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
-                            // Single albedo factor through BRDF
-                            const float3 baseColor = surfel.color;
-                            const float3 lambertBrdf = baseColor * M_1_PIf;
-                            throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf) * surfel.opacity * alpha;
+                        auto& surfel = scene.points[worldHit.primitiveIndex];
+                        float alpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
+                        // Single albedo factor through BRDF
+                        const float3 baseColor = surfel.color;
+                        // Mixture pdf:
+                        float branchProb = chooseReflect ? probReflect : (1.0f - probReflect);
+                        float pdfMixture = branchProb * sampledPdf;
+                        pdfMixture = sycl::fmax(pdfMixture, 1e-6f);
+
+                        const float3 lambertBrdf = baseColor * M_1_PIf; // ρ/π
+                        throughputMultiplier = lambertBrdf * (cosTheta / pdfMixture)
+                            * surfel.opacity * alpha;
                     }
 
                     if (settings.rayGenMode == RayGenMode::Emitter) {
