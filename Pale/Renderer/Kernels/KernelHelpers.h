@@ -1013,6 +1013,7 @@ namespace Pale {
         }
     }
 
+
     inline uint32_t flippedYLinearIndex(uint32_t linearIndex, uint32_t W, uint32_t H) {
         // Map to pixel (linear index; X/Y only needed if you want them)
         // ------------------------------------------------------------

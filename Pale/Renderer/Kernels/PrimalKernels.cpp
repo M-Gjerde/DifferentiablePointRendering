@@ -245,6 +245,8 @@ namespace Pale {
                     nextState.ray.direction = sampledOutgoingDirectionW;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;
+                    nextState.pixelX = rayState.pixelX;
+                    nextState.pixelY = rayState.pixelY;
                     nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
 
                     // --- Russian roulette termination (after computing nextState) ---

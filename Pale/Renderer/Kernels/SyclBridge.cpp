@@ -148,15 +148,17 @@ namespace Pale {
                     {
                         ScopedTimer timer("launchAdjointKernel");
                         if (bounce == 0) {
-                            launchAdjointKernel(pkg, activeCount, cameraIndex);
+                            launchAdjointProjectionKernel(pkg, activeCount, cameraIndex);
                         }
                         else {
-                            launchAdjointKernel2(pkg, activeCount, cameraIndex);
+                            launchAdjointTransportKernel(pkg, activeCount, cameraIndex);
                         }
                     }
                     {
                         ScopedTimer timer("generateNextRays");
-                        generateNextAdjointRays(pkg, activeCount);
+                        //generateNextAdjointRays(pkg, activeCount);
+                        generateNextRays(pkg, activeCount);
+
                     }
 
                     uint32_t nextCount = 0;

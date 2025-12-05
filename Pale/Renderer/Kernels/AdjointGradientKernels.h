@@ -182,8 +182,7 @@ namespace Pale {
         const float3 &canonicalNormalWorld,
         const float3 &rayDirection,
         float u, float v,
-        float su, float sv,
-        bool isWatched = false) {
+        float su, float sv) {
 
         const float denom = dot(canonicalNormalWorld, rayDirection);
         if (sycl::fabs(denom) <= 1e-4f) {
@@ -209,8 +208,6 @@ namespace Pale {
 
         // duv/dc_pos = (u du/dc + v dv/dc)
         const float3 dUVPosition = (u * duDPk + v * dvDPk);
-        if (isWatched)
-            int debug = 1;
         return dUVPosition;
     }
     // ----------------- Position gradient (translation of surfel center) -----------------
@@ -692,7 +689,7 @@ namespace Pale {
                     dot(gradCTanUB, cross(rotationAxis, surfel.tanU)) +
                     dot(gradCTanVB, cross(rotationAxis, surfel.tanV))
                 };
-                float3 parameterAxis = float3{0.0f, 1.0f, 0.0f};
+                float3 parameterAxis = float3{1.0f, 0.0f, 0.0f};
 
                 const float dCdpR = dot(gradCPosR, parameterAxis);
                 const float dCdpG = dot(gradCPosG, parameterAxis);
@@ -794,9 +791,7 @@ namespace Pale {
                     canonicalNormalWorld,
                     rayState.ray.direction,
                     u, v,
-                    su, sv,
-                    isWatched
-                );
+                    su, sv);
 
         float3 dUdTu, dVdTu, dUdTv, dVdTv;
         computeFullDuDvWrtTangents(
@@ -1031,10 +1026,13 @@ namespace Pale {
                     const float invPdf = 1.0f / (pdfLight * pdfArea);
                     float oneOverNumRays = 1.0f / static_cast<float>(numShadowRays);
 
-                    Ray shadowRay{
-                        worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-6f), lightDirection
-                    };
+
                     RayState shadowRayState = rayState;
+
+                    Ray shadowRay{
+                        worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-5f), lightDirection
+                    };
+
                     shadowRayState.ray = shadowRay;
 
 
@@ -1045,6 +1043,7 @@ namespace Pale {
                     WorldHit shadowWorldHit{};
                     intersectScene(shadowRayState.ray, &shadowWorldHit, scene, rng,
                                    RayIntersectMode::Transmit);
+                    buildIntersectionNormal(scene, shadowWorldHit);
 
                     accumulateTransmittanceGradientsAlongRay(shadowRayState, shadowWorldHit, scene, photonMap,
                                                              renderDebugGradientImages, gradients,
