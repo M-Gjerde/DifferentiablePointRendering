@@ -380,7 +380,9 @@ int main(int argc, char** argv) {
             }
         };
 
-        saveGradientSet(debugImagesHost.position, "pos");
+        saveGradientSet(debugImagesHost.positionX, "posX");
+        saveGradientSet(debugImagesHost.positionY, "posY");
+        saveGradientSet(debugImagesHost.positionZ, "posZ");
         saveGradientSet(debugImagesHost.rotation, "rot");
         saveGradientSet(debugImagesHost.scale, "scale");
         saveGradientSet(debugImagesHost.opacity, "opacity");

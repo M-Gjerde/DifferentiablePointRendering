@@ -110,7 +110,9 @@ namespace Pale {
             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
 
                 if (pkg.settings.renderDebugGradientImages) {
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_pos, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_posX, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_posY, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_posZ, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
                     pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_rot, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
                     pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_scale, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
                     pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_opacity, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();

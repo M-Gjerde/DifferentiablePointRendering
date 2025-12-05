@@ -716,7 +716,7 @@ namespace Pale {
                 };
 
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_pos[rayState.pixelIndex],
+                    &debugImage.framebuffer_posX[rayState.pixelIndex],
                     posScalarRGB
                 );
                 atomicAddFloat4ToImage(
@@ -974,7 +974,7 @@ namespace Pale {
             const uint32_t pixelIndex = rayState.pixelIndex;
 
             atomicAddFloat4ToImage(
-                &debugImage.framebuffer_pos[pixelIndex],
+                &debugImage.framebuffer_posX[pixelIndex],
                 posScalarRGB
             );
             atomicAddFloat4ToImage(
@@ -1365,7 +1365,7 @@ namespace Pale {
                 const float4 betaScalarRGB{0.0f, 0.0f, 0.0f, 0.0f};
 
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_pos[rayState.pixelIndex],
+                    &debugImage.framebuffer_posX[rayState.pixelIndex],
                     posScalarRGB
                 );
                 atomicAddFloat4ToImage(

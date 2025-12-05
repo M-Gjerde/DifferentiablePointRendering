@@ -238,14 +238,33 @@ namespace Pale {
                             uint32_t primitiveIndex = splatEvent.primitiveIndex;
                             atomicAddFloat3(gradients.gradPosition[primitiveIndex], gradPosition);
 
-                            float3 parameterAxis = float3{0.0f, 1.0f,0.0f};
-                            const float dCdpR = dot(gradPosition, parameterAxis);
-                            const float4 posScalarRGB{dCdpR};
                             const uint32_t pixelIndex = rayState.pixelIndex;
-                            atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_pos[pixelIndex],
-                                posScalarRGB
-                            );
+
+                            {
+                                float3 parameterAxisX = float3{1.0f, 0.0f,0.0f};
+                               float3 parameterAxisY = float3{0.0f, 1.0f,0.0f};
+                               float3 parameterAxisZ = float3{0.0f, 0.0f,1.0f};
+                               const float dCdpRX = dot(gradPosition, parameterAxisX);
+                               const float4 posScalarRGBX{dCdpRX};
+                               atomicAddFloat4ToImage(
+                                   &debugImage.framebuffer_posX[pixelIndex],
+                                   posScalarRGBX
+                               );
+
+                               const float dCdpRY = dot(gradPosition, parameterAxisY);
+                               const float4 posScalarRGBY{dCdpRY};
+                               atomicAddFloat4ToImage(
+                                   &debugImage.framebuffer_posY[pixelIndex],
+                                   posScalarRGBY
+                               );
+
+                               const float dCdpRZ = dot(gradPosition, parameterAxisZ);
+                               const float4 posScalarRGBZ{dCdpRZ};
+                               atomicAddFloat4ToImage(
+                                   &debugImage.framebuffer_posZ[pixelIndex],
+                                   posScalarRGBZ
+                               );
+                            }
 
                             if (isWatched) {
                                 int debug = 1;
@@ -256,8 +275,8 @@ namespace Pale {
                     RayState meshShadowRayState = rayState;
                     float cosine = fabs(dot(rayState.ray.direction, whTransmit.geometricNormalW));
                     auto &material = scene.materials[meshInstance.materialIndex];
-                    //meshShadowRayState.pathThroughput *= material.baseColor;
-                    //shadowRay(scene, meshShadowRayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
+                    meshShadowRayState.pathThroughput *= cosine; // * cosine * M_1_PIf; // TODO include bsdf here?
+                    shadowRay(scene, meshShadowRayState, whTransmit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
 
                     /*
                     accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
@@ -656,10 +675,6 @@ namespace Pale {
 
                                         // Write to per-parameter debug framebuffers
                                         atomicAddFloat4ToImage(
-                                            &debugImage.framebuffer_pos[rayState.pixelIndex],
-                                            posScalarRGB
-                                        );
-                                        atomicAddFloat4ToImage(
                                             &debugImage.framebuffer_rot[rayState.pixelIndex],
                                             rotScalarRGB
                                         );
@@ -939,10 +954,6 @@ namespace Pale {
                                     };
 
                                     // Write to per-parameter debug framebuffers
-                                    atomicAddFloat4ToImage(
-                                        &debugImage.framebuffer_pos[rayState.pixelIndex],
-                                        posScalarRGB
-                                    );
                                     atomicAddFloat4ToImage(
                                         &debugImage.framebuffer_rot[rayState.pixelIndex],
                                         rotScalarRGB

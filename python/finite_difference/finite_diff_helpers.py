@@ -1,5 +1,42 @@
 import numpy as np
-import pale
+from matplotlib import cm
+
+from PIL import Image
+from pathlib import Path
+
+
+def save_rgb_preview_png(
+        img_f32: np.ndarray,
+        out_path: Path,
+        exposure_stops: float = 0.0,
+        gamma: float = 1.0,
+) -> None:
+    """
+    Save a linear RGB float32 image as an 8-bit PNG.
+
+    img_f32:      HxWx3, linear RGB, usually HDR (0..+inf)
+    exposure_stops: photographic EV; +1 doubles brightness
+    gamma:        gamma for encoding (e.g. 2.2 for sRGB)
+    """
+    img = np.asarray(img_f32, dtype=np.float32)
+
+    if exposure_stops != 0.0:
+        img = img * (2.0 ** exposure_stops)
+
+    img = np.clip(img, 0.0, None)
+
+    if gamma != 1.0:
+        inv_gamma = 1.0 / gamma
+        img = np.power(img, inv_gamma, where=(img > 0.0), out=img)
+
+    img = np.clip(img, 0.0, 1.0)
+    img_u8 = (img * 255.0 + 0.5).astype(np.uint8)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    #print(f"Saving RGB preview to: {out_path.absolute()}")
+    img = Image.fromarray(img_u8).convert("RGB")
+    img.save(out_path)
 
 
 # ---------- TRS helpers ----------
@@ -41,6 +78,9 @@ def render_with_trs(
         beta=beta,
         index=index,
     )
+
+    renderer.rebuild_bvh()
+
     rgb = np.asarray(renderer.render_forward()["camera1"], dtype=np.float32)
     return rgb
 
@@ -260,3 +300,59 @@ def finite_difference_beta(
     return rgb_minus, rgb_plus, grad
 
 
+
+# ---------- Visualization for one FD gradient tensor ----------
+def write_fd_images(
+    grad_disp_fd: np.ndarray,
+    rgb_minus: np.ndarray,
+    rgb_plus: np.ndarray,
+    out_dir: Path,
+    param_name: str,
+    axis_or_channel: str,
+) -> None:
+    """
+    grad_disp_fd: H x W x 3, finite-difference gradient in display-space RGB.
+    Writes:
+      - minus/plus previews
+      - R/G/B seismic PNGs (full & q=0.99)
+      - luminance seismic PNGs (full & q=0.99)
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    channel_names = ["R", "G", "B"]
+
+    # Simple seismic helper (same as earlier script)
+    def save_seismic_signed(scalar: np.ndarray, out_png: Path, abs_quantile: float = 1.0) -> None:
+        scalar_array = np.asarray(scalar, dtype=np.float32)
+        finite_mask = np.isfinite(scalar_array)
+        if not np.any(finite_mask):
+            Image.fromarray(np.zeros((*scalar_array.shape, 3), dtype=np.uint8)).save(out_png)
+            return
+        magnitudes = np.abs(scalar_array[finite_mask])
+        q = np.clip(abs_quantile, 0.0, 1.0)
+        if q < 1.0:
+            scale_value = np.quantile(magnitudes, q)
+        else:
+            scale_value = magnitudes.max()
+        if not (np.isfinite(scale_value) and scale_value > 0.0):
+            scale_value = 1.0
+        normalized = np.clip(scalar_array / scale_value, -1.0, 1.0)
+        t = 0.5 * (normalized + 1.0)
+        rgba = cm.get_cmap("seismic")(t)
+        rgb = (rgba[..., :3] * 255.0 + 0.5).astype(np.uint8)
+        rgb[~finite_mask] = (255, 255, 255)
+        Image.fromarray(rgb).save(out_png)
+
+    # Per-channel outputs
+    for c_idx, cname in enumerate(channel_names):
+        grad_c = grad_disp_fd[..., c_idx]  # H x W
+
+        save_seismic_signed(
+            grad_c,
+            out_dir / f"{param_name}_{axis_or_channel}_grad_{cname}_seismic.png",
+            abs_quantile=1.0,
+        )
+        save_seismic_signed(
+            grad_c,
+            out_dir / f"{param_name}_{axis_or_channel}_grad_{cname}_seismic_q099.png",
+            abs_quantile=0.99,
+        )

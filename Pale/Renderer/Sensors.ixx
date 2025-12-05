@@ -152,7 +152,13 @@ export namespace Pale {
                 camera.width, camera.height, pixelCount
             );
 
-            debugImages[id].framebuffer_pos =
+            debugImages[id].framebuffer_posX =
+                reinterpret_cast<float4*>(
+                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+            debugImages[id].framebuffer_posY =
+                reinterpret_cast<float4*>(
+                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+            debugImages[id].framebuffer_posZ =
                 reinterpret_cast<float4*>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
             debugImages[id].framebuffer_rot =
@@ -218,9 +224,17 @@ export namespace Pale {
 
     inline void freeDebugImagesForScene(sycl::queue queue, DebugImages* g, size_t numDebugImages) {
         for (size_t id = 0; id < numDebugImages; id++) {
-            if (g[id].framebuffer_pos) {
-                sycl::free(g[id].framebuffer_pos, queue);
-                g[id].framebuffer_pos = nullptr;
+            if (g[id].framebuffer_posX) {
+                sycl::free(g[id].framebuffer_posX, queue);
+                g[id].framebuffer_posX = nullptr;
+            }
+            if (g[id].framebuffer_posY) {
+                sycl::free(g[id].framebuffer_posY, queue);
+                g[id].framebuffer_posY = nullptr;
+            }
+            if (g[id].framebuffer_posZ) {
+                sycl::free(g[id].framebuffer_posZ, queue);
+                g[id].framebuffer_posZ = nullptr;
             }
             if (g[id].framebuffer_rot) {
                 sycl::free(g[id].framebuffer_rot, queue);
@@ -308,9 +322,11 @@ export namespace Pale {
         return hostSideFramebuffer;
     }
 
-    struct DebugGradientImages {
+    struct DebugGradientImagesHost {
         // Each buffer has size: width * height * 4 (RGBA)
-        std::vector<float> position; // framebuffer_pos
+        std::vector<float> positionX; // framebuffer_pos
+        std::vector<float> positionY; // framebuffer_pos
+        std::vector<float> positionZ; // framebuffer_pos
         std::vector<float> rotation; // framebuffer_rot
         std::vector<float> scale; // framebuffer_scale
         std::vector<float> opacity; // framebuffer_opacity
@@ -318,7 +334,7 @@ export namespace Pale {
         std::vector<float> beta; // framebuffer_albedo
     };
 
-    inline DebugGradientImages downloadDebugGradientImages(
+    inline DebugGradientImagesHost downloadDebugGradientImages(
         sycl::queue queue,
         const SensorGPU& sensorGpu,
         const DebugImages& debugImages
@@ -327,8 +343,10 @@ export namespace Pale {
             * static_cast<std::size_t>(sensorGpu.height);
         const std::size_t totalFloatCount = pixelCount * 4u; // RGBA
 
-        DebugGradientImages images;
-        images.position.resize(totalFloatCount);
+        DebugGradientImagesHost images;
+        images.positionX.resize(totalFloatCount);
+        images.positionY.resize(totalFloatCount);
+        images.positionZ.resize(totalFloatCount);
         images.rotation.resize(totalFloatCount);
         images.scale.resize(totalFloatCount);
         images.opacity.resize(totalFloatCount);
@@ -343,7 +361,9 @@ export namespace Pale {
             );
         };
 
-        copyBuffer(images.position, debugImages.framebuffer_pos);
+        copyBuffer(images.positionX, debugImages.framebuffer_posX);
+        copyBuffer(images.positionY, debugImages.framebuffer_posY);
+        copyBuffer(images.positionZ, debugImages.framebuffer_posZ);
         copyBuffer(images.rotation, debugImages.framebuffer_rot);
         copyBuffer(images.scale, debugImages.framebuffer_scale);
         copyBuffer(images.opacity, debugImages.framebuffer_opacity);

@@ -15,7 +15,6 @@ import argparse
 from pathlib import Path
 import pale
 import numpy as np
-from PIL import Image
 import csv
 
 from losses import (
@@ -33,13 +32,14 @@ from io_utils import (
     save_render,
     save_gradient_sign_png_py,
     save_loss_image,
-    save_gaussians_to_ply,
 )
 
 from finite_difference.finite_diff_helpers import (
     finite_difference_translation,
     finite_difference_rotation,
     finite_difference_scale,
+    save_rgb_preview_png,
+    write_fd_images,
 )
 
 def append_translation_run_to_history(
@@ -188,40 +188,6 @@ def print_translation_history(history_path: Path) -> None:
         )
         print("------------------------------------------------------------")
 
-
-def save_rgb_preview_png(
-        img_f32: np.ndarray,
-        out_path: Path,
-        exposure_stops: float = 0.0,
-        gamma: float = 1.0,
-) -> None:
-    """
-    Save a linear RGB float32 image as an 8-bit PNG.
-
-    img_f32:      HxWx3, linear RGB, usually HDR (0..+inf)
-    exposure_stops: photographic EV; +1 doubles brightness
-    gamma:        gamma for encoding (e.g. 2.2 for sRGB)
-    """
-    img = np.asarray(img_f32, dtype=np.float32)
-
-    if exposure_stops != 0.0:
-        img = img * (2.0 ** exposure_stops)
-
-    img = np.clip(img, 0.0, None)
-
-    if gamma != 1.0:
-        inv_gamma = 1.0 / gamma
-        img = np.power(img, inv_gamma, where=(img > 0.0), out=img)
-
-    img = np.clip(img, 0.0, 1.0)
-    img_u8 = (img * 255.0 + 0.5).astype(np.uint8)
-
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    #print(f"Saving RGB preview to: {out_path.absolute()}")
-    img = Image.fromarray(img_u8).convert("RGB")
-    img.save(out_path)
-
 def render_with_trs(
         renderer,
         translation3,
@@ -251,13 +217,14 @@ def main(args) -> None:
     adjoint_passes = 4
 
     renderer_settings = {
-        "photons": 1e4,
+        "photons": 1e3,
         "bounces": 4,
-        "forward_passes": 500,
+        "forward_passes": 1000,
         "gather_passes": 1,
         "adjoint_bounces": 1,
         "adjoint_passes": adjoint_passes,
         "logging": 3,
+        "debug_images": True,
     }
 
     assets_root = Path(__file__).parent.parent.parent / "Assets"
@@ -314,7 +281,7 @@ def main(args) -> None:
         )
         print("Initial parameters perturbed by debug Gaussian noise.")
 
-    target_positions_np = target_positions_np + np.array([-0.25, 0.25, 0], dtype=np.float32)
+    target_positions_np = target_positions_np + np.array([-0.05, 0.1, 0.05], dtype=np.float32)
     renderer.apply_point_optimization(
         {
             "position": target_positions_np,
@@ -347,11 +314,16 @@ def main(args) -> None:
     loss_grad_images[camera] = loss_grad
 
     gradients, adjoint_images = renderer.render_backward(loss_grad_images)
-    analytical_gradients_position = np.asarray(gradients["position"], dtype=np.float32, order="C")
 
-    # Per-camera adjoint/gradient visualization
+    analytical_gradients_position = np.asarray(
+        gradients["position"],
+        dtype=np.float32,
+        order="C",
+    )
+
+    # Main adjoint source image per camera
     grad_image_numpy = np.asarray(
-        adjoint_images[camera],
+        adjoint_images["adjoint_source"][camera],
         dtype=np.float32,
         order="C",
     )
@@ -362,10 +334,7 @@ def main(args) -> None:
         neginf=0.0,
     )
 
-    grad_path = (
-            base_output_dir
-            / "grad_099.png"
-    )
+    grad_path = base_output_dir / "grad_099.png"
     save_gradient_sign_png_py(
         grad_path,
         grad_image_numpy,
@@ -373,6 +342,30 @@ def main(args) -> None:
         abs_quantile=0.999,
         flip_y=False,
     )
+
+    # Example: debug position gradient image
+    if "debug" in adjoint_images and camera in adjoint_images["debug"]:
+        for axis in ["x", "y", "z"]:
+            if f"position_{axis}" in adjoint_images["debug"][camera]:
+                debug_pos_img = np.asarray(
+                    adjoint_images["debug"][camera][f"position_{axis}"],
+                    dtype=np.float32,
+                    order="C",
+                )
+                debug_pos_img = np.nan_to_num(
+                    debug_pos_img,
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                )
+                debug_pos_path = base_output_dir / f"{axis}_position_debug_099.png"
+                save_gradient_sign_png_py(
+                    debug_pos_path,
+                    debug_pos_img,
+                    adjoint_spp=adjoint_passes,
+                    abs_quantile=0.999,
+                    flip_y=False,
+                )
 
     # Step sizes
     eps_translation = 0.01
@@ -396,6 +389,8 @@ def main(args) -> None:
         grad_trans[axis] = (loss_positive - loss_negative) / (2.0 * eps_translation)
         save_rgb_preview_png(rgb_minus, base_output_dir / "translation" / f"{axis}_neg.png")
         save_rgb_preview_png(rgb_plus, base_output_dir / "translation" / f"{axis}_pos.png")
+        write_fd_images(grad_fd, rgb_minus, rgb_plus, base_output_dir / "translation", "pos", axis)
+
 
     # --- Rotation (x,y,z) ---
     grad_rot = dict()
