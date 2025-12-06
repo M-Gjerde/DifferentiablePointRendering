@@ -68,7 +68,7 @@ namespace Pale {
                         sensor.camera,
                         static_cast<float>(pixelX),
                         static_cast<float>(pixelY),
-                        0, 0
+                        jitterX, jitterY
                     );
 
                     //primaryRay.direction = normalize(float3{-0.001, 0.982122211, 0.277827293});    // a
@@ -83,6 +83,10 @@ namespace Pale {
                     rayState.pixelIndex = pixelIndex;
                     rayState.pixelX = pixelX;
                     rayState.pixelY = pixelY;
+
+                    if (pixelX == 200 && pixelY == (sensor.height - 1 - 325)) {
+                        int debug = 1;
+                    }
 
                     intermediates.primaryRays[baseOutputSlot] = rayState;
                 });
@@ -155,14 +159,11 @@ namespace Pale {
                     rng::Xorshift128 rng128(perItemSeed);
 
                     RayState &rayState = intermediates.primaryRays[rayIndex];
+                    WorldHit &worldHit = intermediates.hitRecords[rayIndex];
                     uint32_t pixelX = rayState.pixelX;
                     uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
                     bool isWatched = false;
-                    if (pixelX == 410 && pixelY == 430) {
-                        isWatched = true;
-                        int debug = 1;
-                    }
-                    if (pixelX == 200 && pixelY == 200) {
+                    if (pixelX == 200 && pixelY == 325) {
                         isWatched = true;
                         int debug = 1;
                     }
@@ -281,78 +282,8 @@ namespace Pale {
                                    posScalarRGBZ
                                );
                             }
-
-                            if (isWatched) {
-                                int debug = 1;
-                            }
                         }
                     }
-
-                    /*
-                    // Shadow ray on mesh intersection
-                    // apply bsdf, tau and cosine:
-
-
-
-                    uint32_t numSurfelsOnRay = whTransmit.splatEventCount;
-                    for (size_t scatterRay = 0; scatterRay < numSurfelsOnRay; ++scatterRay) {
-                        const uint32_t scatterOnPrimitiveIndex = whTransmit.splatEvents[scatterRay].primitiveIndex;
-
-                        RayState scatterRayState = rayState;
-                        WorldHit whScatter{};
-                        intersectScene(scatterRayState.ray, &whScatter, scene, rng128,
-                                       RayIntersectMode::Scatter, scatterOnPrimitiveIndex);
-                        buildIntersectionNormal(scene, whScatter);
-
-                        if (!whScatter.hit) {
-                            return;
-                        }
-
-
-                        accumulateBsdfGradientsAtScatterSurfel(
-                            scatterRayState,
-                            whScatter,
-                            scene,
-                            photonMap,
-                            gradients,
-                            debugImage,
-                            settings.renderDebugGradientImages,
-                            debugIndex,
-                            isWatched
-                        );
-
-
-
-                        SplatEvent& splatEvent =  whTransmit.splatEvents[scatterRay];
-                        auto& point = scene.points[splatEvent.primitiveIndex];
-                        scatterRayState.pathThroughput *= splatEvent.alpha * scene.points[scatterOnPrimitiveIndex].opacity;
-
-                        // apply bsdf, tau and cosine:
-                        float cosine = fabs(dot(rayState.ray.direction, whScatter.geometricNormalW));
-                        scatterRayState.pathThroughput *=  cosine * point.color * M_1_PIf;
-
-                        //shadowRay(scene, rayState, whScatter,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, debugIndex);
-
-                        /*
-                        shadowRayAttachedOriginSelf(
-                            scene,
-                            scatterRayState,
-                            whScatter,
-                            splatEvent,
-                            gradients,
-                            debugImage,
-                            photonMap,
-                            rng128,
-                            settings.renderDebugGradientImages,
-                            numShadowRays,
-                            scatterOnPrimitiveIndex,
-                            isWatched
-                        );
-
-
-
-                    }
-                    */
                 }
             );
         });
@@ -385,6 +316,8 @@ namespace Pale {
         auto *hitRecords = pkg.intermediates.hitRecords;
         auto &debugImage = pkg.debugImages[cameraIndex];
 
+        auto &sensor = pkg.sensor[cameraIndex];
+
         queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<struct AdjointShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
@@ -400,16 +333,19 @@ namespace Pale {
                         return;
                     }
 
+                    uint32_t pixelX = rayState.pixelX;
+                    uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
+
+
+                    bool isWatched = false;
+                    //if (pixelX == 200 && pixelY == 325) {
+                    if (pixelX == 225 && pixelY == 220) {
+                        isWatched = true;
+                        int debug = 1;
+                    }
                     uint32_t numShadowRays = 1;
-                    //meshShadowRayState.pathThroughput *= cosine; // * cosine * M_1_PIf; // TODO include bsdf here?
-                    shadowRay(scene, rayState, worldHit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays);
 
-
-                    /*
-                    accumulateTransmittanceGradientsAlongRay(rayState, whTransmit, scene, photonMap,
-                                     settings.renderDebugGradientImages, gradients,
-                                     debugImage, debugIndex);
-                    */
+                    shadowRay(scene, rayState, worldHit,  gradients, debugImage, photonMap, rng128, settings.renderDebugGradientImages, numShadowRays, UINT32_MAX, isWatched );
 
                 });
         });

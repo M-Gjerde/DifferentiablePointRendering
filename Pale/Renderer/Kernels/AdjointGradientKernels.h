@@ -1001,17 +1001,18 @@ namespace Pale {
                           const DeviceSurfacePhotonMapGrid &photonMap, rng::Xorshift128 &rng,
                           bool renderDebugGradientImages,
                           uint32_t numShadowRays = 1,
-                          uint32_t debugIndex = UINT32_MAX) {
+                          uint32_t debugIndex = UINT32_MAX,
+                          bool debugBreakFlag = false) {
 
         for (int i = 0; i < numShadowRays; ++i) {
             AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng);
             // Direction to the sampled emitter point
-            const float3 toLightVector = ls.positionW - worldHit.hitPositionW;
+            const float3 toLightVector = ls.positionW - rayState.ray.origin;
             const float distanceToLight = length(toLightVector);
             if (distanceToLight > 1e-6f) {
                 const float3 lightDirection = toLightVector / distanceToLight;
                 // Cosines
-                const float3 shadingNormalW = worldHit.geometricNormalW;
+                const float3 shadingNormalW = rayState.ray.normal;
                 const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
                 const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
 
@@ -1026,16 +1027,11 @@ namespace Pale {
                     const float invPdf = 1.0f / (pdfLight * pdfArea);
                     float oneOverNumRays = 1.0f / static_cast<float>(numShadowRays);
 
-
                     RayState shadowRayState = rayState;
-
                     Ray shadowRay{
-                        worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-5f), lightDirection
+                        rayState.ray.origin + (rayState.ray.normal * 1e-4f), lightDirection
                     };
-
                     shadowRayState.ray = shadowRay;
-
-
                     shadowRayState.pathThroughput =
                             rayState.pathThroughput * geometryTerm * invPdf * oneOverNumRays;
 
@@ -1048,6 +1044,8 @@ namespace Pale {
                     accumulateTransmittanceGradientsAlongRay(shadowRayState, shadowWorldHit, scene, photonMap,
                                                              renderDebugGradientImages, gradients,
                                                              debugImage, debugIndex);
+                    if (debugBreakFlag)
+                        int debug = 1;
                 }
             }
         }

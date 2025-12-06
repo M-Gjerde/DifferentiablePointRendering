@@ -214,14 +214,14 @@ def render_with_trs(
 # ---------- Main driver: compute FD for all parameters ----------
 def main(args) -> None:
 
-    adjoint_passes = 4
+    adjoint_passes = 1
 
     renderer_settings = {
         "photons": 1e3,
         "bounces": 4,
         "forward_passes": 1000,
         "gather_passes": 1,
-        "adjoint_bounces": 1,
+        "adjoint_bounces": 8,
         "adjoint_passes": adjoint_passes,
         "logging": 3,
         "debug_images": True,

@@ -513,8 +513,8 @@ def run_optimization(
     # ------------------------------------------------------------------
     iteration = 0
 
-    densification_interval = 50
-    prune_interval = 50
+    densification_interval = 1e10
+    prune_interval = 1e10
     burnin_iterations = 0
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
@@ -802,7 +802,7 @@ def run_optimization(
 
                         # Per-camera adjoint/gradient visualization
                         grad_image_numpy = np.asarray(
-                            adjoint_images[camera_name],
+                            adjoint_images["adjoint_source"][camera_name],
                             dtype=np.float32,
                             order="C",
                         )

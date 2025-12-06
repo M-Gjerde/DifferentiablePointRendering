@@ -243,6 +243,7 @@ namespace Pale {
                     // Spawn next ray
                     nextState.ray.origin = worldHit.hitPositionW + (enteredSideNormalW) * 1e-5f;
                     nextState.ray.direction = sampledOutgoingDirectionW;
+                    nextState.ray.normal = worldHit.geometricNormalW;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;
                     nextState.pixelX = rayState.pixelX;
