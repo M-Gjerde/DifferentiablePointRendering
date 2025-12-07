@@ -1454,9 +1454,24 @@ public:
                 i++;
             }
         } else {
-            // index >= 0
-                throw std::out_of_range("set_gaussian_transform: index out of range");
+            if (index > pointGeometry.positions.size() - 1)
+                throw std::runtime_error("add_new_points: index out of range");
+            pointGeometry.positions[index] += newTranslation;
 
+            // 2) orientation: rotate tanU / tanV by the rotation delta
+            glm::vec3 tanUGlm = (pointGeometry.tanU[index]);
+            glm::vec3 tanVGlm = (pointGeometry.tanV[index]);
+
+            tanUGlm = rotationDelta * tanUGlm;
+            tanVGlm = rotationDelta * tanVGlm;
+
+            pointGeometry.tanU[index] = (tanUGlm);
+            pointGeometry.tanV[index] = (tanVGlm);
+
+            pointGeometry.colors[index] += (newColor);
+            pointGeometry.opacities[index] += opacity;
+            pointGeometry.betas[index] += beta;
+            pointGeometry.scales[index] *= newScale; // component-wise
         }
 
 

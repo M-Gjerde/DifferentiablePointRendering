@@ -69,9 +69,9 @@ def append_translation_run_to_history(
     fd_y = float(grad_trans["y"])
     fd_z = float(grad_trans["z"])
 
-    an_x = float(analytical_gradients_position[0][0])
-    an_y = float(analytical_gradients_position[0][1])
-    an_z = float(analytical_gradients_position[0][2])
+    an_x = float(analytical_gradients_position[0])
+    an_y = float(analytical_gradients_position[1])
+    an_z = float(analytical_gradients_position[2])
 
     err_x = fd_x - an_x
     err_y = fd_y - an_y
@@ -214,15 +214,13 @@ def render_with_trs(
 # ---------- Main driver: compute FD for all parameters ----------
 def main(args) -> None:
 
-    adjoint_passes = 1
-
     renderer_settings = {
         "photons": 1e3,
         "bounces": 4,
         "forward_passes": 1000,
         "gather_passes": 1,
-        "adjoint_bounces": 8,
-        "adjoint_passes": adjoint_passes,
+        "adjoint_bounces": 2,
+        "adjoint_passes": 4,
         "logging": 3,
         "debug_images": True,
     }
@@ -281,7 +279,11 @@ def main(args) -> None:
         )
         print("Initial parameters perturbed by debug Gaussian noise.")
 
-    target_positions_np = target_positions_np + np.array([-0.05, 0.1, 0.05], dtype=np.float32)
+    if args.index == -1:
+        target_positions_np = target_positions_np + np.array([-0.05, 0.1, 0.05], dtype=np.float32)
+    else:
+        target_positions_np[args.index] = target_positions_np[args.index] + np.array([-0.05, 0.1, 0.05], dtype=np.float32)
+
     renderer.apply_point_optimization(
         {
             "position": target_positions_np,
@@ -320,7 +322,6 @@ def main(args) -> None:
         dtype=np.float32,
         order="C",
     )
-
     # Main adjoint source image per camera
     grad_image_numpy = np.asarray(
         adjoint_images["adjoint_source"][camera],
@@ -338,7 +339,7 @@ def main(args) -> None:
     save_gradient_sign_png_py(
         grad_path,
         grad_image_numpy,
-        adjoint_spp=adjoint_passes,
+        adjoint_spp=1,
         abs_quantile=0.999,
         flip_y=False,
     )
@@ -362,7 +363,7 @@ def main(args) -> None:
                 save_gradient_sign_png_py(
                     debug_pos_path,
                     debug_pos_img,
-                    adjoint_spp=adjoint_passes,
+                    adjoint_spp=1,
                     abs_quantile=0.999,
                     flip_y=False,
                 )
@@ -392,26 +393,11 @@ def main(args) -> None:
         write_fd_images(grad_fd, rgb_minus, rgb_plus, base_output_dir / "translation", "pos", axis)
 
 
-    # --- Rotation (x,y,z) ---
-    grad_rot = dict()
-    #for axis in ["x", "y", "z"]:
-    #    print(f"[FD] Computing Rotation axis={axis}...")
-    #    rgb_minus, rgb_plus, grad_fd = finite_difference_rotation(
-    #        renderer, args.index, axis, eps_rotation_deg
-    #    )
-    #    # calculate loss for each image
-    #    # OUr L1 loss is the differentiation of our L2 cost
-    #    loss_negative = compute_l2_loss(rgb_minus, target_image)
-    #    loss_positive = compute_l2_loss(rgb_plus, target_image)
-    #    grad_rot[axis] = (loss_positive - loss_negative) / (2.0 * eps_rotation_deg)
-    #    save_rgb_preview_png(rgb_minus, base_output_dir / "rotation" / f"{axis}_neg.png")
-    #    save_rgb_preview_png(rgb_plus, base_output_dir / "rotation" / f"{axis}_pos.png")
-
     axes = ["x", "y", "z"]
     print()
     for axis_index, axis_name in enumerate(axes):
         fd_val = float(grad_trans[axis_name])
-        an_val = float(analytical_gradients_position[0][axis_index])
+        an_val = float(analytical_gradients_position[args.index][axis_index])
         err = fd_val - an_val
         abs_err = abs(err)
 
@@ -435,7 +421,7 @@ def main(args) -> None:
         run_label=args.label,
         loss_value=loss_value,
         grad_trans=grad_trans,
-        analytical_gradients_position=analytical_gradients_position,
+        analytical_gradients_position=analytical_gradients_position[args.index],
     )
     print_translation_history(history_path)
 
@@ -454,8 +440,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--index",
         type=int,
-        default=-1,
-        help="Gaussian index to perturb. Default: -1.",
+        required=True,
+        default=0,
+        help="Gaussian index to perturb. Default: 0",
     )
 
     parser.add_argument(
@@ -467,7 +454,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--label",
         type=str,
-        required=True,
+        required=False,
+        default="label",
         help="Label for this FD/AN comparison run (e.g. 'step_0001', 'noisy_init').",
     )
 

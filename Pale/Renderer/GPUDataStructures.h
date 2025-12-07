@@ -272,12 +272,13 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<RayState>);
 
 
-    constexpr int kMaxSplatEvents = 16;
+    constexpr int kMaxSplatEvents = 8;
 
     struct SplatEvent {
         float t = FLT_MAX; // local space t
         float3 hitWorld = float3(0.0f); // World hit position
         float alpha = 1.0f;
+        float tau = 1.0f;
         uint32_t primitiveIndex = UINT32_MAX; // primitiveIndex
     };
 

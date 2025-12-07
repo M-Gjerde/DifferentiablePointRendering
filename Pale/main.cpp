@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = !true;
+    bool addPoints = true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
     settings.numForwardPasses = 50;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 1;
+    settings.adjointSamplesPerPixel = 4;
     settings.renderDebugGradientImages = true;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);

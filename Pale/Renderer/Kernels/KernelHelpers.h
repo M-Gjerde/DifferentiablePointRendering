@@ -398,7 +398,6 @@ namespace Pale {
             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
             worldHit.geometricNormalW = canonicalNormalW;
         }
-
     }
 
 
@@ -709,12 +708,13 @@ namespace Pale {
     }
 
     inline float squaredDistanceToCellBounds(const float3& point,
-                                         const sycl::int3& cell,
-                                         const DeviceSurfacePhotonMapGrid& grid) {
+                                             const sycl::int3& cell,
+                                             const DeviceSurfacePhotonMapGrid& grid) {
         const float3 cellMin = grid.gridOriginWorld + float3{
             static_cast<float>(cell.x()) * grid.cellSizeWorld.x(),
             static_cast<float>(cell.y()) * grid.cellSizeWorld.y(),
-            static_cast<float>(cell.z()) * grid.cellSizeWorld.z()};
+            static_cast<float>(cell.z()) * grid.cellSizeWorld.z()
+        };
         const float3 cellMax = cellMin + grid.cellSizeWorld;
 
         const float dx = sycl::fmax(cellMin.x() - point.x(), point.x() - cellMax.x());
@@ -923,6 +923,29 @@ namespace Pale {
         return irradianceRgb * lambertBrdfRgb;
     }
 
+    inline float3 computeLSurfel(const GPUSceneBuffers& scene, const float3& direction, const SplatEvent& splatEvent,
+                                 const DeviceSurfacePhotonMapGrid& photonMap) {
+        // Shade surfel from photon map (front/back)
+        const bool useOneSidedScatter = true;
+        float3 surfelRadianceFront =
+            estimateSurfelRadianceFromPhotonMap(
+                splatEvent,
+                direction,
+                scene,
+                photonMap,
+                useOneSidedScatter);
+
+        float3 surfelRadianceBack =
+            estimateSurfelRadianceFromPhotonMap(
+                splatEvent,
+                -direction,
+                scene,
+                photonMap,
+                useOneSidedScatter);
+
+        return (surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f);
+    }
+
 
     inline void atomicAddFloat4ToImage(float4* dst, const float4& v) {
         for (int c = 0; c < 3; ++c) {
@@ -957,6 +980,7 @@ namespace Pale {
     inline float3 phiMapping(float3 surfelCenter, float3 tu, float3 tv, float su, float sv, float u, float v) {
         return surfelCenter + su * tu * u + sv * tv * v;
     }
+
     inline float3 phiMapping(const Point& surfel, float u, float v) {
         return surfel.position + surfel.scale.x() * surfel.tanU * u + surfel.scale.y() * surfel.tanV * v;
     }

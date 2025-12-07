@@ -495,12 +495,14 @@ namespace Pale {
             if (validCount >= kMaxSplatEvents) {
                 break;
             }
-
             const SplatEvent &splatEvent = worldHit.splatEvents[eventIndex];
             const Point &surfel = scene.points[splatEvent.primitiveIndex];
 
             if (splatEvent.primitiveIndex != debugIndex && debugIndex != UINT32_MAX)
                 continue;
+
+            //if (splatEvent.primitiveIndex != 0)
+            //    continue;
 
             const float3 canonicalNormalWorld =
                     normalize(cross(surfel.tanU, surfel.tanV));
@@ -646,9 +648,10 @@ namespace Pale {
             const float gradCBetaG = G * dTauDbeta;
             const float gradCBetaB = B * dTauDbeta;
 
+            float3 gradPosition = gradCPosR + gradCPosG + gradCPosB;
             atomicAddFloat3(
                 gradients.gradPosition[primitiveIndex],
-                gradCPosR + gradCPosG + gradCPosB
+                gradPosition
             );
             atomicAddFloat3(
                 gradients.gradTanU[primitiveIndex],
@@ -689,12 +692,30 @@ namespace Pale {
                     dot(gradCTanUB, cross(rotationAxis, surfel.tanU)) +
                     dot(gradCTanVB, cross(rotationAxis, surfel.tanV))
                 };
-                float3 parameterAxis = float3{1.0f, 0.0f, 0.0f};
+                float3 parameterAxisX = float3{1.0f, 0.0f, 0.0f};
+                float3 parameterAxisY = float3{0.0f, 1.0f, 0.0f};
+                float3 parameterAxisZ = float3{0.0f, 0.0f, 1.0f};
 
-                const float dCdpR = dot(gradCPosR, parameterAxis);
-                const float dCdpG = dot(gradCPosG, parameterAxis);
-                const float dCdpB = dot(gradCPosB, parameterAxis);
-                const float4 posScalarRGB{dCdpR, dCdpG, dCdpB, 0.0f};
+                const float dCdpRX = dot(gradPosition, parameterAxisX);
+                const float4 posScalarRGBX{dCdpRX};
+                atomicAddFloat4ToImage(
+                    &debugImage.framebuffer_posX[rayState.pixelIndex],
+                    posScalarRGBX
+                );
+
+                const float dCdpRY = dot(gradPosition, parameterAxisY);
+                const float4 posScalarRGBY{dCdpRY};
+                atomicAddFloat4ToImage(
+                    &debugImage.framebuffer_posY[rayState.pixelIndex],
+                    posScalarRGBY
+                );
+
+                const float dCdpRZ = dot(gradPosition, parameterAxisZ);
+                const float4 posScalarRGBZ{dCdpRZ};
+                atomicAddFloat4ToImage(
+                    &debugImage.framebuffer_posZ[rayState.pixelIndex],
+                    posScalarRGBZ
+                );
 
                 const float4 rotScalarRGB{
                     dBsdfWorld.x(), dBsdfWorld.y(), dBsdfWorld.z(), 0.0f
@@ -712,10 +733,6 @@ namespace Pale {
                     gradCBetaR, gradCBetaG, gradCBetaB, 0.0f
                 };
 
-                atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_posX[rayState.pixelIndex],
-                    posScalarRGB
-                );
                 atomicAddFloat4ToImage(
                     &debugImage.framebuffer_rot[rayState.pixelIndex],
                     rotScalarRGB
