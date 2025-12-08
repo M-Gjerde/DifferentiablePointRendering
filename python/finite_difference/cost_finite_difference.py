@@ -129,7 +129,88 @@ def append_translation_run_to_history(
         )
 
 
-def print_translation_history(history_path: Path) -> None:
+def append_scale_run_to_history(
+        history_path: Path,
+        scene_name: str,
+        gaussian_index: int,
+        run_label: str,
+        loss_value: float,
+        grad_scale: dict[str, float],
+        analytical_gradients_scale: np.ndarray,
+) -> None:
+    """
+    Append one row to the translation gradient history CSV.
+
+    Columns:
+        scene, index, label, loss,
+        fd_x, fd_y, fd_z,
+        an_x, an_y, an_z,
+        err_x, err_y, err_z,
+        abs_err_x, abs_err_y, abs_err_z
+    """
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    file_exists = history_path.exists()
+
+    fd_x = float(grad_scale["x"])
+    fd_y = float(grad_scale["y"])
+
+    an_x = float(analytical_gradients_scale[0])
+    an_y = float(analytical_gradients_scale[1])
+
+    err_x = fd_x - an_x
+    err_y = fd_y - an_y
+
+    abs_err_x = abs(err_x)
+    abs_err_y = abs(err_y)
+
+    with history_path.open("a", newline="") as file_handle:
+        writer = csv.writer(file_handle)
+        if not file_exists:
+            writer.writerow(
+                [
+                    "scene",
+                    "index",
+                    "label",
+                    "loss",
+                    "fd_x",
+                    "fd_y",
+                    "fd_z",
+                    "an_x",
+                    "an_y",
+                    "an_z",
+                    "err_x",
+                    "err_y",
+                    "err_z",
+                    "abs_err_x",
+                    "abs_err_y",
+                    "abs_err_z",
+                ]
+            )
+
+        writer.writerow(
+            [
+                scene_name,
+                gaussian_index,
+                run_label,
+                loss_value,
+                fd_x,
+                fd_y,
+                np.nan,
+                an_x,
+                an_y,
+                np.nan,
+                err_x,
+                err_y,
+                np.nan,
+                abs_err_x,
+                abs_err_y,
+                np.nan,
+            ]
+        )
+
+
+def print_history_3axis(history_path: Path) -> None:
     """
     Print all stored translation FD/AN runs so far.
 
@@ -189,6 +270,65 @@ def print_translation_history(history_path: Path) -> None:
             f"FD-AN_x={err_x: .10f}, |FD-AN_x|={abs_err_x: .10f}; "
             f"FD-AN_y={err_y: .10f}, |FD-AN_y|={abs_err_y: .10f}; "
             f"FD-AN_z={err_z: .10f}, |FD-AN_z|={abs_err_z: .10f}"
+        )
+        print("------------------------------------------------------------")
+
+
+def print_history_2axis(history_path: Path) -> None:
+    """
+    Print all stored translation FD/AN runs so far.
+
+    Shows FD, AN, and FD-AN error per axis to compare progress.
+    """
+    if not history_path.exists():
+        print("\n[HIST] No history file found yet.")
+        return
+
+    with history_path.open("r", newline="") as file_handle:
+        reader = csv.DictReader(file_handle)
+        rows = list(reader)
+
+    if not rows:
+        print("\n[HIST] History file is empty.")
+        return
+
+    print("\n================ Translation Gradient History ================")
+    for row in rows:
+        scene_name = row["scene"]
+        gaussian_index = int(row["index"])
+        run_label = row["label"]
+        loss_value = float(row["loss"])
+
+        fd_x = float(row["fd_x"])
+        fd_y = float(row["fd_y"])
+
+        an_x = float(row["an_x"])
+        an_y = float(row["an_y"])
+
+        # Support both new and older files (if errors not present)
+        if "err_x" in row and row["err_x"] != "":
+            err_x = float(row["err_x"])
+            err_y = float(row["err_y"])
+            err_z = float(row["err_z"])
+            abs_err_x = float(row["abs_err_x"])
+            abs_err_y = float(row["abs_err_y"])
+        else:
+            err_x = fd_x - an_x
+            err_y = fd_y - an_y
+            err_z = fd_z - an_z
+            abs_err_x = abs(err_x)
+            abs_err_y = abs(err_y)
+
+        print(
+            f"[RUN] label='{run_label}', scene='{scene_name}', index={gaussian_index}, "
+            f"loss={loss_value: .8f}"
+        )
+        print(f"      FD : x={fd_x: .10f}, y={fd_y: .10f}")
+        print(f"      AN : x={an_x: .10f}, y={an_y: .10f}")
+        print(
+            "      ER : "
+            f"FD-AN_x={err_x: .10f}, |FD-AN_x|={abs_err_x: .10f}; "
+            f"FD-AN_y={err_y: .10f}, |FD-AN_y|={abs_err_y: .10f}; "
         )
         print("------------------------------------------------------------")
 
@@ -277,69 +417,6 @@ def append_rotation_run_to_history(
             ]
         )
 
-
-def print_rotation_history(history_path: Path) -> None:
-    """
-    Print all stored translation FD/AN runs so far.
-
-    Shows FD, AN, and FD-AN error per axis to compare progress.
-    """
-    if not history_path.exists():
-        print("\n[HIST] No history file found yet.")
-        return
-
-    with history_path.open("r", newline="") as file_handle:
-        reader = csv.DictReader(file_handle)
-        rows = list(reader)
-
-    if not rows:
-        print("\n[HIST] History file is empty.")
-        return
-
-    print("\n================ Translation Gradient History ================")
-    for row in rows:
-        scene_name = row["scene"]
-        gaussian_index = int(row["index"])
-        run_label = row["label"]
-        loss_value = float(row["loss"])
-
-        fd_x = float(row["fd_x"])
-        fd_y = float(row["fd_y"])
-        fd_z = float(row["fd_z"])
-
-        an_x = float(row["an_x"])
-        an_y = float(row["an_y"])
-        an_z = float(row["an_z"])
-
-        # Support both new and older files (if errors not present)
-        if "err_x" in row and row["err_x"] != "":
-            err_x = float(row["err_x"])
-            err_y = float(row["err_y"])
-            err_z = float(row["err_z"])
-            abs_err_x = float(row["abs_err_x"])
-            abs_err_y = float(row["abs_err_y"])
-            abs_err_z = float(row["abs_err_z"])
-        else:
-            err_x = fd_x - an_x
-            err_y = fd_y - an_y
-            err_z = fd_z - an_z
-            abs_err_x = abs(err_x)
-            abs_err_y = abs(err_y)
-            abs_err_z = abs(err_z)
-
-        print(
-            f"[RUN] label='{run_label}', scene='{scene_name}', index={gaussian_index}, "
-            f"loss={loss_value: .8f}"
-        )
-        print(f"      FD : x={fd_x: .10f}, y={fd_y: .10f}, z={fd_z: .10f}")
-        print(f"      AN : x={an_x: .10f}, y={an_y: .10f}, z={an_z: .10f}")
-        print(
-            "      ER : "
-            f"FD-AN_x={err_x: .10f}, |FD-AN_x|={abs_err_x: .10f}; "
-            f"FD-AN_y={err_y: .10f}, |FD-AN_y|={abs_err_y: .10f}; "
-            f"FD-AN_z={err_z: .10f}, |FD-AN_z|={abs_err_z: .10f}"
-        )
-        print("------------------------------------------------------------")
 
 
 def apply_quaternion_to_vector(quaternion_xyzw: np.ndarray,
@@ -507,6 +584,16 @@ def main(args) -> None:
             target_tangent_v_np[args.index],
         )
 
+    elif args.param == "scale":
+        scale_percent = -20
+        eps_scale = 1.0 + scale_percent / 100
+        if args.axis == "x":
+            noise = [eps_scale, 1.0]
+        else:
+            noise = [1.0, eps_scale]
+
+        target_scales_np[args.index] = target_scales_np[args.index] * np.array(noise,dtype=np.float32)
+
     renderer.apply_point_optimization(
         {
             "position": target_positions_np,
@@ -557,6 +644,13 @@ def main(args) -> None:
         dtype=np.float32,
         order="C",
     )
+
+    analytical_gradients_scale = np.asarray(
+        gradients["scale"],
+        dtype=np.float32,
+        order="C",
+    )
+
     # Main adjoint source image per camera
     grad_image_numpy = np.asarray(
         adjoint_images["adjoint_source"][camera],
@@ -611,7 +705,7 @@ def main(args) -> None:
     eps_albedo = 0.1
     eps_beta = 0.5  # reasonable start for log-shape
 
-    iterations = 1
+    iterations = 6
 
     label = args.param + "_" + args.axis + "_" + str(args.index)
 
@@ -805,6 +899,95 @@ def main(args) -> None:
         )
 
         print_rotation_history(history_path)
+
+    if args.param == "scale":
+        # --- Scale (x,y,z) ---
+        grad_scale = {"x": 0.0, "y": 0.0}
+        grad_scale_samples = {"x": [], "y": []}
+
+        for i in range(iterations):
+            print(f"[FD] Computing Scale axis iteration={i + 1}/{iterations}...")
+            for axis in ["x", "y"]:
+                rgb_minus, rgb_plus, grad_fd = finite_difference_scale(
+                    renderer, args.index, axis, eps_scale
+                )
+                # calculate loss for each image
+                loss_negative = compute_l2_loss(rgb_minus, target_image)
+                loss_positive = compute_l2_loss(rgb_plus, target_image)
+
+                grad_value = (loss_positive - loss_negative) / (2.0 * eps_scale)
+
+                # accumulate for mean
+                grad_scale[axis] += grad_value
+                # store sample for std
+                grad_scale_samples[axis].append(grad_value)
+
+                if i == 0:
+                    save_rgb_preview_png(
+                        rgb_minus, base_output_dir / "scale" / f"{axis}_neg.png"
+                    )
+                    save_rgb_preview_png(
+                        rgb_plus, base_output_dir / "scale" / f"{axis}_pos.png"
+                    )
+                    write_fd_images(
+                        grad_fd,
+                        rgb_minus,
+                        rgb_plus,
+                        base_output_dir / "scale",
+                        "pos",
+                        axis,
+                    )
+
+        # compute means
+        for axis in ["x", "y"]:
+            grad_scale[axis] /= iterations
+
+        # compute mean and std per axis from samples
+        grad_scale_stats = {}
+        for axis in ["x", "y"]:
+            samples = np.array(grad_scale_samples[axis], dtype=np.float64)
+            mean_val = samples.mean()
+            # ddof=1 for sample std; use ddof=0 if you want population std
+            std_val = samples.std(ddof=1) if iterations > 1 else 0.0
+            grad_scale_stats[axis] = {"mean": float(mean_val), "std": float(std_val)}
+
+        axes = ["x", "y"]
+        print()
+        for axis_index, axis_name in enumerate(axes):
+            fd_val = float(grad_scale[axis_name])
+            an_val = float(analytical_gradients_position[args.index][axis_index])
+            err = fd_val - an_val
+            abs_err = abs(err)
+
+            mean_val = grad_scale_stats[axis_name]["mean"]
+            std_val = grad_scale_stats[axis_name]["std"]
+            print(
+                f"[FD] Scale axis={axis_name}, "
+                f"Mean Grad={mean_val: .10f}, Std={std_val: .10f}"
+            )
+
+            print(f"[FD] Scale axis={axis_name}, Grad={fd_val: .10f}")
+            print(f"[AN] Scale axis={axis_name}, Grad={an_val: .10f}")
+            print(
+                f"[ER] Scale axis={axis_name}, "
+                f"FD-AN={err: .10f}, |FD-AN|={abs_err: .10f}"
+            )
+            print()
+
+        # ----------------------------------------------------------
+        # Save this run to history and print all runs so far
+        # ----------------------------------------------------------
+        history_path = base_output_dir / "scale_gradients_history.csv"
+        append_scale_run_to_history(
+            history_path=history_path,
+            scene_name=args.scene,
+            gaussian_index=args.index,
+            run_label=label,
+            loss_value=loss_value,
+            grad_scale=grad_scale,
+            analytical_gradients_scale=analytical_gradients_scale[args.index],
+        )
+        print_history_2axis(history_path)
 
 
 def parse_args() -> argparse.Namespace:
