@@ -500,7 +500,7 @@ def main(args) -> None:
         "bounces": 4,
         "forward_passes": 100,
         "gather_passes": 1,
-        "adjoint_bounces": 1,
+        "adjoint_bounces": 2,
         "adjoint_passes": 4,
         "logging": 3,
         "debug_images": True,
@@ -561,15 +561,19 @@ def main(args) -> None:
         print("Initial parameters perturbed by debug Gaussian noise.")
 
     if args.param == "translation":
-        noise = [0.0, 0.0, 0.25]
-        if args.index == -1:
-            target_positions_np = target_positions_np + np.array(noise, dtype=np.float32)
+        eps_trans = 0.1
+        if args.axis == "x":
+            noise = [eps_trans, 0.0, 0.0]
+        elif args.axis == "y":
+            noise = [0.0, eps_trans, 0.0]
         else:
-            target_positions_np[args.index] = target_positions_np[args.index] + np.array(noise,
+            noise = [0.0, 0.0, eps_trans]
+
+        target_positions_np[args.index] = target_positions_np[args.index] + np.array(noise,
                                                                                          dtype=np.float32)
     elif args.param == "rotation":
         # Example: small rotation (e.g. for FD) around given axis
-        noise_deg = 5
+        noise_deg = 10
         qx_minus, qy_minus, qz_minus, qw_minus = degrees_to_quaternion(noise_deg, args.axis)
         quaternion_minus = np.array([qx_minus, qy_minus, qz_minus, qw_minus],
                                     dtype=np.float32)
@@ -585,7 +589,7 @@ def main(args) -> None:
         )
 
     elif args.param == "scale":
-        scale_percent = -20
+        scale_percent = 20
         eps_scale = 1.0 + scale_percent / 100
         if args.axis == "x":
             noise = [eps_scale, 1.0]
@@ -796,7 +800,7 @@ def main(args) -> None:
             grad_trans=grad_trans,
             analytical_gradients_position=analytical_gradients_position[args.index],
         )
-        print_translation_history(history_path)
+        print_history_3axis(history_path)
 
 
     elif args.param == "rotation":
@@ -898,7 +902,7 @@ def main(args) -> None:
             analytical_rot_grad=analytical_rot_grad,
         )
 
-        print_rotation_history(history_path)
+        print_history_3axis(history_path)
 
     if args.param == "scale":
         # --- Scale (x,y,z) ---
