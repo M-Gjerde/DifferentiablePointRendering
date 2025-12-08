@@ -250,6 +250,15 @@ namespace Pale {
                             float3 dAlphaEff_dTanU = eta * dAlpha_dTanU;
                             float3 dAlphaEff_dTanV = eta * dAlpha_dTanV;
 
+                            /// SCALE
+                            const float3 dUdVdScale =
+        computeDuvDScale(u, v, su, sv);
+                            float3 dAlpha_dScale = factor * dUdVdScale;
+                            // d alpha_eff / d position:
+                            float3 dAlphaEff_dScale = eta * dAlpha_dScale;
+                            const float dAlphaEff_dScaleU = dAlphaEff_dScale.x();
+                            const float dAlphaEff_dScaleV = dAlphaEff_dScale.y();
+
                             // Pixel adjoint / path adjoint:
                             const float3 pathAdjoint = rayState.pathThroughput; // dJ/dC (RGB) * transport
                             // Scalar weight = ⟨adjoint, (L_s - L_m)⟩:
@@ -306,6 +315,14 @@ namespace Pale {
                             float3 gradTanV_G = grad_luminance_opacity_G * dAlphaEff_dTanV * pathAdjoint[1];
                             float3 gradTanV_B = grad_luminance_opacity_B * dAlphaEff_dTanV * pathAdjoint[2];
 
+                            float gradScaleU_R = grad_luminance_opacity_R * dAlphaEff_dScaleU * pathAdjoint[0];
+                            float gradScaleU_G = grad_luminance_opacity_G * dAlphaEff_dScaleU * pathAdjoint[1];
+                            float gradScaleU_B = grad_luminance_opacity_B * dAlphaEff_dScaleU * pathAdjoint[2];
+
+                            float gradScaleV_R = grad_luminance_opacity_R * dAlphaEff_dScaleV * pathAdjoint[0];
+                            float gradScaleV_G = grad_luminance_opacity_G * dAlphaEff_dScaleV * pathAdjoint[1];
+                            float gradScaleV_B = grad_luminance_opacity_B * dAlphaEff_dScaleV * pathAdjoint[2];
+
                             //if (splatEvent.primitiveIndex != 0)
                             //    continue;
                             uint32_t primitiveIndex = splatEvent.primitiveIndex;
@@ -318,6 +335,9 @@ namespace Pale {
 
                             float3 gradTanV = gradTanV_R + gradTanV_G + gradTanV_B;
                             atomicAddFloat3(gradients.gradTanV[primitiveIndex], gradTanV);
+
+                            float2 gradScale = {gradScaleU_R + gradScaleU_G + gradScaleU_B, gradScaleV_R + gradScaleV_G + gradScaleV_B};
+                            atomicAddFloat2(gradients.gradScale[primitiveIndex], gradScale);
 
                             const uint32_t pixelIndex = rayState.pixelIndex;
 
@@ -365,6 +385,13 @@ namespace Pale {
                                     &debugImage.framebuffer_rot[pixelIndex],
                                     rotScalarRGB
                                 );
+
+
+                                atomicAddFloat4ToImage(
+                                    &debugImage.framebuffer_scale[pixelIndex],
+                                    float4{gradScale.x()}
+                                );
+
                             }
                         }
                     }
