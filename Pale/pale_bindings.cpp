@@ -396,10 +396,10 @@ public:
                     pointCount * sizeof(Pale::float2)
                 );
             }
-            if (gradients.gradColor) {
+            if (gradients.gradAlbedo) {
                 syclQueue.memcpy(
                     gradColorHost.data(),
-                    gradients.gradColor,
+                    gradients.gradAlbedo,
                     pointCount * sizeof(Pale::float3)
                 );
             }
@@ -532,7 +532,7 @@ public:
         gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
         gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
         gradientDictionary["scale"]     = makeFloat2Array(gradScaleHost, pointCount);
-        gradientDictionary["color"]     = makeFloat3Array(gradColorHost, pointCount);
+        gradientDictionary["albedo"]     = makeFloat3Array(gradColorHost, pointCount);
         gradientDictionary["opacity"]   = makeFloat1Array(gradOpacityHost, pointCount);
         gradientDictionary["beta"]      = makeFloat1Array(gradBetaHost, pointCount);
         gradientDictionary["shape"]     = makeFloat1Array(gradShapeHost, pointCount);
@@ -701,7 +701,7 @@ public:
         std::vector<Pale::float3> tangentUHost(pointCount);
         std::vector<Pale::float3> tangentVHost(pointCount);
         std::vector<Pale::float2> scaleHost(pointCount);
-        std::vector<Pale::float3> colorHost(pointCount);
+        std::vector<Pale::float3> albedoHost(pointCount);
         std::vector<float> opacityHost(pointCount);
         std::vector<float> betaHost(pointCount);
         std::vector<float> shapeHost(pointCount);
@@ -712,7 +712,7 @@ public:
             tangentUHost[pointIndex] = point.tanU;
             tangentVHost[pointIndex] = point.tanV;
             scaleHost[pointIndex] = point.scale;
-            colorHost[pointIndex] = point.color;
+            albedoHost[pointIndex] = point.albedo;
             opacityHost[pointIndex] = point.opacity;
             betaHost[pointIndex] = point.beta;
             shapeHost[pointIndex] = point.shape;
@@ -803,7 +803,7 @@ public:
         parameterDictionary["tangent_u"] = makeFloat3Array(tangentUHost, pointCount);
         parameterDictionary["tangent_v"] = makeFloat3Array(tangentVHost, pointCount);
         parameterDictionary["scale"] = makeFloat2Array(scaleHost, pointCount);
-        parameterDictionary["color"] = makeFloat3Array(colorHost, pointCount);
+        parameterDictionary["albedo"] = makeFloat3Array(albedoHost, pointCount);
         parameterDictionary["opacity"] = makeFloat1Array(opacityHost, pointCount);
         parameterDictionary["beta"] = makeFloat1Array(betaHost, pointCount);
         parameterDictionary["shape"] = makeFloat1Array(shapeHost, pointCount);
@@ -942,7 +942,7 @@ public:
         assignFloat3FieldFromArray("tangent_u", &Pale::Point::tanU);
         assignFloat3FieldFromArray("tangent_v", &Pale::Point::tanV);
         assignFloat2FieldFromArray("scale", &Pale::Point::scale);
-        assignFloat3FieldFromArray("color", &Pale::Point::color);
+        assignFloat3FieldFromArray("albedo", &Pale::Point::albedo);
         assignFloat1FieldFromArray("opacity", &Pale::Point::opacity);
         assignFloat1FieldFromArray("beta", &Pale::Point::beta);
 
@@ -967,17 +967,17 @@ public:
                         pointGeometry.tanU.size() != pointCount ||
                         pointGeometry.tanV.size() != pointCount ||
                         pointGeometry.scales.size() != pointCount ||
-                        pointGeometry.colors.size() != pointCount ||
+                        pointGeometry.albedos.size() != pointCount ||
                         pointGeometry.betas.size() != pointCount ||
                         pointGeometry.opacities.size() != pointCount) {
                         Pale::Log::PA_ERROR(
                             "apply_point_optimization: PointGeometry size mismatch. "
-                            "positions={}, tanU={}, tanV={}, scales={}, colors={}, opacities={}, betas={}, expected={}",
+                            "positions={}, tanU={}, tanV={}, scales={}, albedos={}, opacities={}, betas={}, expected={}",
                             pointGeometry.positions.size(),
                             pointGeometry.tanU.size(),
                             pointGeometry.tanV.size(),
                             pointGeometry.scales.size(),
-                            pointGeometry.colors.size(),
+                            pointGeometry.albedos.size(),
                             pointGeometry.opacities.size(),
                             pointGeometry.betas.size(),
                             pointCount
@@ -993,7 +993,7 @@ public:
                         pointGeometry.tanU[pointIndex] = Pale::sycl2glm(optimizedPoint.tanU);
                         pointGeometry.tanV[pointIndex] = Pale::sycl2glm(optimizedPoint.tanV);
                         pointGeometry.scales[pointIndex] = Pale::sycl2glm(optimizedPoint.scale);
-                        pointGeometry.colors[pointIndex] = Pale::sycl2glm(optimizedPoint.color);
+                        pointGeometry.albedos[pointIndex] = Pale::sycl2glm(optimizedPoint.albedo);
                         pointGeometry.opacities[pointIndex] = optimizedPoint.opacity;
                         // If you also keep beta/shape in the asset, mirror them here as well:
                         pointGeometry.betas[pointIndex] = optimizedPoint.beta;
@@ -1156,7 +1156,7 @@ public:
         filterVectorInPlace(pointGeometry.tanU);
         filterVectorInPlace(pointGeometry.tanV);
         filterVectorInPlace(pointGeometry.scales);
-        filterVectorInPlace(pointGeometry.colors);
+        filterVectorInPlace(pointGeometry.albedos);
         filterVectorInPlace(pointGeometry.opacities);
         filterVectorInPlace(pointGeometry.shapes);
         filterVectorInPlace(pointGeometry.betas);
@@ -1191,7 +1191,7 @@ public:
         Pale::PointGeometry &pointGeometry = pointAsset.points.front();
 
         // ---------------------------------------------------------------------
-        // 1) Read "new" points only (position / tangent_u / tangent_v / scale / color)
+        // 1) Read "new" points only (position / tangent_u / tangent_v / scale / albedo)
         // ---------------------------------------------------------------------
         if (!parameterDictionary.contains("new")) {
             Pale::Log::PA_INFO("add_new_points: no 'new' block provided, nothing to append.");
@@ -1211,7 +1211,7 @@ public:
         py::array tangentUArray = getArray("tangent_u");
         py::array tangentVArray = getArray("tangent_v");
         py::array scaleArray = getArray("scale");
-        py::array colorArray = getArray("color");
+        py::array albedoArray = getArray("albedo");
         py::array opacityArray = getArray("opacity");
         py::array betaArray = getArray("beta");
 
@@ -1219,7 +1219,7 @@ public:
         py::buffer_info tangentUInfo = tangentUArray.request();
         py::buffer_info tangentVInfo = tangentVArray.request();
         py::buffer_info scaleInfo = scaleArray.request();
-        py::buffer_info colorInfo = colorArray.request();
+        py::buffer_info albedoInfo = albedoArray.request();
         py::buffer_info opacityInfo = opacityArray.request();
         py::buffer_info betaInfo = betaArray.request();
 
@@ -1258,7 +1258,7 @@ public:
         checkShape(tangentUInfo, newPointCount, 3, "tangent_u");
         checkShape(tangentVInfo, newPointCount, 3, "tangent_v");
         checkShape(scaleInfo, newPointCount, 2, "scale");
-        checkShape(colorInfo, newPointCount, 3, "color");
+        checkShape(albedoInfo, newPointCount, 3, "albedo");
 
         if (opacityInfo.ndim != 1 ||
             opacityInfo.shape[0] != static_cast<ssize_t>(newPointCount)) {
@@ -1283,7 +1283,7 @@ public:
         const float *tangentUData = static_cast<float *>(tangentUInfo.ptr);
         const float *tangentVData = static_cast<float *>(tangentVInfo.ptr);
         const float *scaleData = static_cast<float *>(scaleInfo.ptr);
-        const float *colorData = static_cast<float *>(colorInfo.ptr);
+        const float *albedoData = static_cast<float *>(albedoInfo.ptr);
         const float *opacityData = static_cast<float *>(opacityInfo.ptr);
         const float *betaData = static_cast<float *>(betaInfo.ptr);
 
@@ -1301,7 +1301,7 @@ public:
         reserveAttribute(pointGeometry.tanU);
         reserveAttribute(pointGeometry.tanV);
         reserveAttribute(pointGeometry.scales);
-        reserveAttribute(pointGeometry.colors);
+        reserveAttribute(pointGeometry.albedos);
         reserveAttribute(pointGeometry.opacities);
         reserveAttribute(pointGeometry.shapes);
         reserveAttribute(pointGeometry.betas);
@@ -1334,10 +1334,10 @@ public:
             scaleValue.x = scaleData[baseScaleIndex + 0];
             scaleValue.y = scaleData[baseScaleIndex + 1];
 
-            glm::vec3 colorValue;
-            colorValue.x = colorData[baseColorIndex + 0];
-            colorValue.y = colorData[baseColorIndex + 1];
-            colorValue.z = colorData[baseColorIndex + 2];
+            glm::vec3 albedoValue;
+            albedoValue.x = albedoData[baseColorIndex + 0];
+            albedoValue.y = albedoData[baseColorIndex + 1];
+            albedoValue.z = albedoData[baseColorIndex + 2];
 
             float opacityValue = opacityData[baseOpacityIndex];
             float betaValue = betaData[baseBetaIndex];
@@ -1346,7 +1346,7 @@ public:
             pointGeometry.tanU.push_back(tangentUValue);
             pointGeometry.tanV.push_back(tangentVValue);
             pointGeometry.scales.push_back(scaleValue);
-            pointGeometry.colors.push_back(colorValue);
+            pointGeometry.albedos.push_back(albedoValue);
             pointGeometry.opacities.push_back(opacityValue);
 
             pointGeometry.betas.push_back(betaValue);
@@ -1379,7 +1379,7 @@ public:
     void set_gaussian_transform(py::tuple translation3,
                                 py::tuple rotationQuat4,
                                 py::tuple scale3,
-                                py::tuple color3,
+                                py::tuple albedo3,
                                 float opacity,
                                 float beta,
                                 int index = -1) {
@@ -1393,9 +1393,9 @@ public:
             py::cast<float>(translation3[2])
         };
         const glm::vec3 newColor{
-            py::cast<float>(color3[0]),
-            py::cast<float>(color3[1]),
-            py::cast<float>(color3[2])
+            py::cast<float>(albedo3[0]),
+            py::cast<float>(albedo3[1]),
+            py::cast<float>(albedo3[2])
         };
 
         // quaternion as (x, y, z, w)
@@ -1447,7 +1447,7 @@ public:
                 pointGeometry.tanU[i] = (tanUGlm);
                 pointGeometry.tanV[i] = (tanVGlm);
 
-                pointGeometry.colors[i] += (newColor);
+                pointGeometry.albedos[i] += (newColor);
                 pointGeometry.opacities[i] += opacity;
                 pointGeometry.betas[i] += beta;
                 pointGeometry.scales[i] *= newScale; // component-wise
@@ -1468,7 +1468,7 @@ public:
             pointGeometry.tanU[index] = (tanUGlm);
             pointGeometry.tanV[index] = (tanVGlm);
 
-            pointGeometry.colors[index] += (newColor);
+            pointGeometry.albedos[index] += newColor;
             pointGeometry.opacities[index] += opacity;
             pointGeometry.betas[index] += beta;
             pointGeometry.scales[index] *= newScale; // component-wise
@@ -1529,7 +1529,7 @@ PYBIND11_MODULE(pale, m) {
             .def("rebuild_bvh", &PythonRenderer::rebuild_bvh).def("set_gaussian_transform",
                                                                   &PythonRenderer::set_gaussian_transform,
                                                                   py::arg("translation3"), py::arg("rotation_quat4"),
-                                                                  py::arg("scale3"), py::arg("color3"),
+                                                                  py::arg("scale3"), py::arg("albedo3"),
                                                                   py::arg("opacity"), py::arg("beta"),
                                                                   py::arg("index") = -1);
 }

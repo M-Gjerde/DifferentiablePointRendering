@@ -845,7 +845,7 @@ namespace Pale {
         if (isWatched)
             int debug = 1;
         const float bsdfGradAlbedo = alpha * surfel.opacity;
-        const float3 bsdfGradOpacity = alpha * surfel.color;
+        const float3 bsdfGradOpacity = alpha * surfel.albedo;
         const float bsdfGradBeta =
                 alpha * betaKernel(surfel.beta) *
                 sycl::log(1.0f - r2) *
@@ -941,7 +941,7 @@ namespace Pale {
         );
 
         float3 gradColorValue{gradCAlbedoR, gradCAlbedoG, gradCAlbedoB};
-        atomicAddFloat3(gradients.gradColor[primitiveIndex], gradColorValue);
+        atomicAddFloat3(gradients.gradAlbedo[primitiveIndex], gradColorValue);
 
         // Debug images
         if (renderDebugGradientImage) {
@@ -1419,7 +1419,7 @@ namespace Pale {
                 material = scene.materials[instance.materialIndex];
                 break;
             case GeometryType::PointCloud:
-                material.baseColor = scene.points[worldHit.primitiveIndex].color;
+                material.baseColor = scene.points[worldHit.primitiveIndex].albedo;
                 break;
             case GeometryType::InvalidType:
                 break;

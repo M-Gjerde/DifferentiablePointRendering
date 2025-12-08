@@ -756,7 +756,7 @@ namespace Pale {
         else {
             // Point-cloud splat surface
             const Point splat = scene.points[worldHit.primitiveIndex];
-            diffuseAlbedoRGB = splat.color; // Lambertian splat
+            diffuseAlbedoRGB = splat.albedo; // Lambertian splat
             // If you support emissive splats, add them here.
         }
 
@@ -848,7 +848,7 @@ namespace Pale {
         const float perHitRadiusScale = 1.0f;
         // Material (two-sided Lambert by construction; irradiance already includes cos)
         const Point surfelPoint = scene.points[event.primitiveIndex];
-        const float3 diffuseAlbedoRgb = surfelPoint.color;
+        const float3 diffuseAlbedoRgb = surfelPoint.albedo;
 
         // Canonical normal (no face-forwarding). Two-sided shading is fine.
         const float3 canonicalNormalW = normalize(cross(surfelPoint.tanU, surfelPoint.tanV));

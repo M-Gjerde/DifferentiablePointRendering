@@ -125,7 +125,7 @@ export namespace Pale {
             out.gradScale =
                 static_cast<float2*>(
                     sycl::malloc_device(numPoints * sizeof(float2), queue));
-            out.gradColor =
+            out.gradAlbedo =
                 static_cast<float3*>(
                     sycl::malloc_device(numPoints * sizeof(float3), queue));
             out.gradOpacity =
@@ -203,9 +203,9 @@ export namespace Pale {
             sycl::free(g.gradScale, queue);
             g.gradScale = nullptr;
         }
-        if (g.gradColor) {
-            sycl::free(g.gradColor, queue);
-            g.gradColor = nullptr;
+        if (g.gradAlbedo) {
+            sycl::free(g.gradAlbedo, queue);
+            g.gradAlbedo = nullptr;
         }
         if (g.gradOpacity) {
             sycl::free(g.gradOpacity, queue);

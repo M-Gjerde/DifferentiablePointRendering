@@ -137,7 +137,7 @@ static void debugDensifyPointAsset(
     reserveAttribute(pointGeometry.tanU);
     reserveAttribute(pointGeometry.tanV);
     reserveAttribute(pointGeometry.scales);
-    reserveAttribute(pointGeometry.colors);
+    reserveAttribute(pointGeometry.albedos);
     reserveAttribute(pointGeometry.opacities);
     reserveAttribute(pointGeometry.shapes);
     reserveAttribute(pointGeometry.betas);
@@ -148,7 +148,7 @@ static void debugDensifyPointAsset(
     const glm::vec3 baseTanU = pointGeometry.tanU[baseIndex];
     const glm::vec3 baseTanV = pointGeometry.tanV[baseIndex];
     const glm::vec2 baseScale = pointGeometry.scales[baseIndex];
-    const glm::vec3 baseColor = pointGeometry.colors[baseIndex];
+    const glm::vec3 baseColor = pointGeometry.albedos[baseIndex];
     const float baseOpacity = pointGeometry.opacities[baseIndex];
     const float baseShape = pointGeometry.shapes[baseIndex];
     const float baseBeta = pointGeometry.betas[baseIndex];
@@ -177,7 +177,7 @@ static void debugDensifyPointAsset(
         pointGeometry.tanU.push_back(baseTanU);
         pointGeometry.tanV.push_back(baseTanV);
         pointGeometry.scales.push_back(debugScale);
-        pointGeometry.colors.push_back(debugColor);
+        pointGeometry.albedos.push_back(debugColor);
         pointGeometry.opacities.push_back(baseOpacity);
         pointGeometry.shapes.push_back(baseShape);
         pointGeometry.betas.push_back(baseBeta);

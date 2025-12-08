@@ -180,7 +180,7 @@ namespace Pale {
                         auto& surfel = scene.points[worldHit.primitiveIndex];
                         float alpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
                         // Single albedo factor through BRDF
-                        const float3 baseColor = surfel.color;
+                        const float3 baseColor = surfel.albedo;
                         // Mixture pdf:
                         float branchProb = chooseReflect ? probReflect : (1.0f - probReflect);
                         float pdfMixture = branchProb * sampledPdf;

@@ -203,14 +203,14 @@ namespace Pale {
 
             for (size_t i = 0; i < pointGeometry.positions.size(); ++i) {
                 Point gpuPoint{};
-                gpuPoint.position = pointGeometry.positions[i];
-                gpuPoint.tanU = normalize(pointGeometry.tanU[i]);
-                gpuPoint.tanV = normalize(pointGeometry.tanV[i]); // assume orthonormal input
+                gpuPoint.position =  pointGeometry.positions[i];
+                gpuPoint.tanU =      normalize(pointGeometry.tanU[i]);
+                gpuPoint.tanV =      normalize(pointGeometry.tanV[i]); // assume orthonormal input
                 gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
-                gpuPoint.color = pointGeometry.colors[i];
-                gpuPoint.opacity = pointGeometry.opacities[i];
-                gpuPoint.shape = pointGeometry.shapes[i];
-                gpuPoint.beta = pointGeometry.betas[i];
+                gpuPoint.albedo =    glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
+                gpuPoint.opacity =   glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
+                gpuPoint.beta =     glm::clamp(pointGeometry.betas[i], -5.0f, 5.0f);
+                gpuPoint.shape =      glm::clamp(pointGeometry.shapes[i], -5.0f, 5.0f);
 
                 //Log::PA_INFO("Point [{}]: {}, {}, {}", i, gpuPoint.position.x(), gpuPoint.position.y(), gpuPoint.position.z());
                 collectedPoints.push_back(gpuPoint);

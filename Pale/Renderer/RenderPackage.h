@@ -22,7 +22,7 @@ namespace Pale {
         float3 *gradTanU = nullptr;
         float3 *gradTanV = nullptr;
         float2 *gradScale = nullptr;
-        float3 *gradColor = nullptr;
+        float3 *gradAlbedo = nullptr;
         float  *gradOpacity = nullptr;
         float  *gradBeta = nullptr;
         float  *gradShape = nullptr;

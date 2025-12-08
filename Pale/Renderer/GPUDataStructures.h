@@ -38,7 +38,7 @@ namespace Pale {
         float3 tanU{0.0f};
         float3 tanV{0.0f};
         float2 scale{0.0f};
-        float3 color{0.0f};
+        float3 albedo{0.0f};
         float opacity{0.0f};
         float beta{0.0f};
         float shape{0.0f};

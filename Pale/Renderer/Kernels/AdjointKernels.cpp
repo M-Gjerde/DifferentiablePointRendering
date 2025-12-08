@@ -252,12 +252,25 @@ namespace Pale {
 
                             /// SCALE
                             const float3 dUdVdScale =
-        computeDuvDScale(u, v, su, sv);
+                        computeDuvDScale(u, v, su, sv);
                             float3 dAlpha_dScale = factor * dUdVdScale;
                             // d alpha_eff / d position:
                             float3 dAlphaEff_dScale = eta * dAlpha_dScale;
                             const float dAlphaEff_dScaleU = dAlphaEff_dScale.x();
                             const float dAlphaEff_dScaleV = dAlphaEff_dScale.y();
+
+                            /// OPACITY
+                            //alpha^(eff)(u, v)(&PartialD; eta)/(&PartialD; Pi)
+                            float dAlphaEffOpacity = alphaEff;
+
+                            // Beta parameter:
+                            const float dAlphaEffBeta =
+                            alphaEff * betaKernel(surfel.beta) *
+                            sycl::log(1.0f - r2);
+
+                            // Albedo
+                            const float3 dAlphaEffAlbedo = float3{alphaEff};
+
 
                             // Pixel adjoint / path adjoint:
                             const float3 pathAdjoint = rayState.pathThroughput; // dJ/dC (RGB) * transport
@@ -323,6 +336,18 @@ namespace Pale {
                             float gradScaleV_G = grad_luminance_opacity_G * dAlphaEff_dScaleV * pathAdjoint[1];
                             float gradScaleV_B = grad_luminance_opacity_B * dAlphaEff_dScaleV * pathAdjoint[2];
 
+                            float gradOpacity_R = grad_luminance_opacity_R * dAlphaEffOpacity * pathAdjoint[0];
+                            float gradOpacity_G = grad_luminance_opacity_G * dAlphaEffOpacity * pathAdjoint[1];
+                            float gradOpacity_B = grad_luminance_opacity_B * dAlphaEffOpacity * pathAdjoint[2];
+
+                            float gradBeta_R = grad_luminance_opacity_R * dAlphaEffBeta * pathAdjoint[0];
+                            float gradBeta_G = grad_luminance_opacity_G * dAlphaEffBeta * pathAdjoint[1];
+                            float gradBeta_B = grad_luminance_opacity_B * dAlphaEffBeta * pathAdjoint[2];
+
+                            float3 gradAlbedo_R = grad_luminance_opacity_R * dAlphaEffAlbedo * pathAdjoint[0];
+                            float3 gradAlbedo_G = grad_luminance_opacity_G * dAlphaEffAlbedo * pathAdjoint[1];
+                            float3 gradAlbedo_B = grad_luminance_opacity_B * dAlphaEffAlbedo * pathAdjoint[2];
+
                             //if (splatEvent.primitiveIndex != 0)
                             //    continue;
                             uint32_t primitiveIndex = splatEvent.primitiveIndex;
@@ -338,6 +363,17 @@ namespace Pale {
 
                             float2 gradScale = {gradScaleU_R + gradScaleU_G + gradScaleU_B, gradScaleV_R + gradScaleV_G + gradScaleV_B};
                             atomicAddFloat2(gradients.gradScale[primitiveIndex], gradScale);
+
+                            float gradOpacity = gradOpacity_R + gradOpacity_G + gradOpacity_B;
+                            atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradOpacity);
+
+                            float gradBeta = gradBeta_R + gradBeta_G + gradBeta_B;
+                            atomicAddFloat(gradients.gradBeta[primitiveIndex], gradBeta);
+
+                            float3 gradAlbedo = gradAlbedo_R + gradAlbedo_G + gradAlbedo_B;
+                            atomicAddFloat3(gradients.gradAlbedo[primitiveIndex], gradAlbedo);
+
+
 
                             const uint32_t pixelIndex = rayState.pixelIndex;
 
@@ -390,6 +426,21 @@ namespace Pale {
                                 atomicAddFloat4ToImage(
                                     &debugImage.framebuffer_scale[pixelIndex],
                                     float4{gradScale.x()}
+                                );
+
+                                atomicAddFloat4ToImage(
+                                    &debugImage.framebuffer_opacity[pixelIndex],
+                                    float4{gradOpacity}
+                                );
+
+                                atomicAddFloat4ToImage(
+                                    &debugImage.framebuffer_beta[pixelIndex],
+                                    float4{gradBeta}
+                                );
+
+                                atomicAddFloat4ToImage(
+                                    &debugImage.framebuffer_albedo[pixelIndex],
+                                    float4{gradAlbedo, 1.0f}
                                 );
 
                             }
@@ -520,7 +571,7 @@ namespace Pale {
                         GPUMaterial material{};
                         auto& surfel = scene.points[worldHit.primitiveIndex];
                         float alpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
-                        material.baseColor = surfel.color;
+                        material.baseColor = surfel.albedo;
                         const float3 lambertBrdf = material.baseColor * M_1_PIf;
 
                         const float interactionAlpha = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;

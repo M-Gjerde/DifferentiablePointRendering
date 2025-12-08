@@ -251,7 +251,7 @@ export namespace Pale {
                 geometry.tanU.resize(vertexCount);
                 geometry.tanV.resize(vertexCount);
                 geometry.scales.resize(vertexCount);
-                geometry.colors.resize(vertexCount);
+                geometry.albedos.resize(vertexCount);
                 geometry.opacities.resize(vertexCount);
                 geometry.betas.resize(vertexCount);
                 geometry.shapes.resize(vertexCount);
@@ -280,7 +280,7 @@ export namespace Pale {
                     geometry.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
 
                     geometry.scales[i] = glm::vec2(scaleFloats[i2 + 0], scaleFloats[i2 + 1]);
-                    geometry.colors[i] = glm::clamp(
+                    geometry.albedos[i] = glm::clamp(
                         glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]), 0.0f, 1.0f);
                     geometry.opacities[i] = opacityFloats[i];
                     geometry.betas[i] = betaFloats[i];
@@ -316,7 +316,7 @@ export namespace Pale {
                 geometry.tanU.resize(vertexCount);
                 geometry.tanV.resize(vertexCount);
                 geometry.scales.resize(vertexCount);
-                geometry.colors.resize(vertexCount);
+                geometry.albedos.resize(vertexCount);
                 geometry.opacities.resize(vertexCount);
                 geometry.betas.resize(vertexCount);
                 geometry.shapes.resize(vertexCount);
@@ -348,7 +348,7 @@ export namespace Pale {
                     albedoLinear = glm::max(albedoLinear, glm::vec3(0)); // clamp negatives only
                     albedoLinear = glm::min(albedoLinear, glm::vec3(1)); // clamp {0, 1}
 
-                    geometry.colors[i] = glm::vec3(0.8f); // keep in linear space
+                    geometry.albedos[i] = glm::vec3(0.8f); // keep in linear space
 
                     geometry.opacities[i] = sigmoid(opacityFloats[i]);
 
