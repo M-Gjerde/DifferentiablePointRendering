@@ -1,7 +1,7 @@
 ply
 format ascii 1.0
 comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity
-element vertex 2
+element vertex 1
 property float x          # pk.x
 property float y          # pk.y
 property float z          # pk.z
