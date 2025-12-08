@@ -187,7 +187,7 @@ namespace Pale {
                         pdfMixture = sycl::fmax(pdfMixture, 1e-6f);
 
                         const float3 lambertBrdf = baseColor * M_1_PIf; // ρ/π
-                        throughputMultiplier = lambertBrdf * (cosTheta / pdfMixture)
+                        throughputMultiplier = lambertBrdf * cosTheta
                             * surfel.opacity * alpha;
                     }
 
@@ -206,7 +206,7 @@ namespace Pale {
                                 continue;
 
                             const uint32_t slot = photonCounter.fetch_add(1u);
-                            if (slot < intermediates.map.photonCapacity) {
+                            if (false && slot < intermediates.map.photonCapacity) {
                                 DevicePhotonSurface photonEntry{};
                                 photonEntry.position = event.hitWorld;
                                 photonEntry.power = rayState.pathThroughput;

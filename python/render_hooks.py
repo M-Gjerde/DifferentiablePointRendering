@@ -370,5 +370,5 @@ def rebuild_bvh(renderer: pale.Renderer) -> None:
     """
     renderer.rebuild_bvh()  # C++ binding you implement
 
-def get_camera_names(renderer: pale.Renderer) -> None:
+def get_camera_names(renderer: pale.Renderer) -> dict:
     return renderer.get_camera_names()  # C++ binding you implement

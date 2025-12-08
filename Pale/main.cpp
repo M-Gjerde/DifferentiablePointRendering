@@ -238,7 +238,7 @@ int main(int argc, char** argv) {
     }
 
     if (!addPoints) {
-        Pale::Entity bunnyEntity = scene->createEntity("Bunny");
+        Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
         bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.0f, 0.8f));
