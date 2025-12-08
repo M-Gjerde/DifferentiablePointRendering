@@ -8,7 +8,7 @@ def densify_points_long_axis_split(
         tangent_u: torch.nn.Parameter,
         tangent_v: torch.nn.Parameter,
         scales: torch.nn.Parameter,
-        colors: torch.nn.Parameter,
+        albedos: torch.nn.Parameter,
         opacities: torch.nn.Parameter,
         betas: torch.nn.Parameter,
         *,
@@ -39,7 +39,7 @@ def densify_points_long_axis_split(
                 "tangent_u": np.ndarray [2K, 3],
                 "tangent_v": np.ndarray [2K, 3],
                 "scale":     np.ndarray [2K, 2],
-                "color":     np.ndarray [2K, 3],
+                "albedo":     np.ndarray [2K, 3],
                 "opacity":   np.ndarray [2K],
             }
         }
@@ -50,7 +50,7 @@ def densify_points_long_axis_split(
         tangent_u_np = tangent_u.detach().cpu().numpy()
         tangent_v_np = tangent_v.detach().cpu().numpy()
         scales_np = scales.detach().cpu().numpy()
-        colors_np = colors.detach().cpu().numpy()
+        albedos_np = albedos.detach().cpu().numpy()
         opacities_np = opacities.detach().cpu().numpy()
         betas_np = betas.detach().cpu().numpy()
         if importance is not None:
@@ -115,7 +115,7 @@ def densify_points_long_axis_split(
     new_tangent_u_list = []
     new_tangent_v_list = []
     new_scales_list = []
-    new_colors_list = []
+    new_albedos_list = []
     new_opacities_list = []
     new_betas_list = []
 
@@ -124,7 +124,7 @@ def densify_points_long_axis_split(
         parent_tangent_u = tangent_u_np[parent_index]
         parent_tangent_v = tangent_v_np[parent_index]
         parent_scale = scales_np[parent_index]  # [s_u, s_v]
-        parent_color = colors_np[parent_index]
+        parent_albedo = albedos_np[parent_index]
         parent_opacity = float(opacities_np[parent_index])
         parent_beta = float(betas_np[parent_index])
 
@@ -169,7 +169,7 @@ def densify_points_long_axis_split(
             new_tangent_u_list.append(parent_tangent_u)
             new_tangent_v_list.append(parent_tangent_v)
             new_scales_list.append(child_scale)
-            new_colors_list.append(parent_color)
+            new_albedos_list.append(parent_albedo)
             new_opacities_list.append(child_opacity)
             new_betas_list.append(child_beta)
     if not new_positions_list:
@@ -179,7 +179,7 @@ def densify_points_long_axis_split(
     new_tangent_u_np = np.asarray(new_tangent_u_list, dtype=np.float32)
     new_tangent_v_np = np.asarray(new_tangent_v_list, dtype=np.float32)
     new_scales_np = np.asarray(new_scales_list, dtype=np.float32)
-    new_colors_np = np.asarray(new_colors_list, dtype=np.float32)
+    new_albedos_np = np.asarray(new_albedos_list, dtype=np.float32)
     new_opacities_np = np.asarray(new_opacities_list, dtype=np.float32)
     new_betas_np = np.asarray(new_betas_list, dtype=np.float32)
     return {
@@ -189,7 +189,7 @@ def densify_points_long_axis_split(
             "tangent_u": new_tangent_u_np,
             "tangent_v": new_tangent_v_np,
             "scale": new_scales_np,
-            "color": new_colors_np,
+            "albedo": new_albedos_np,
             "opacity": new_opacities_np,
             "beta": new_betas_np,
         },

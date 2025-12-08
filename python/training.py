@@ -36,7 +36,7 @@ from render_hooks import (
     apply_point_parameters,
     orthonormalize_tangents_inplace,
     verify_scales_inplace,
-    verify_colors_inplace,
+    verify_albedos_inplace,
     verify_opacities_inplace,
     verify_beta_inplace,
     add_new_points,
@@ -84,7 +84,7 @@ def save_gradients_snapshot(
     grad_tangent_u_np: np.ndarray,
     grad_tangent_v_np: np.ndarray,
     grad_scales_np: np.ndarray,
-    grad_colors_np: np.ndarray,
+    grad_albedos_np: np.ndarray,
     grad_opacities_np: np.ndarray,
     grad_betas_np: np.ndarray,
 ) -> None:
@@ -97,7 +97,7 @@ def save_gradients_snapshot(
         grad_tan_u_x, grad_tan_u_y, grad_tan_u_z,
         grad_tan_v_x, grad_tan_v_y, grad_tan_v_z,
         grad_scale_u, grad_scale_v,
-        grad_color_r, grad_color_g, grad_color_b,
+        grad_albedo_r, grad_albedo_g, grad_albedo_b,
         grad_opacity, grad_beta
 
     - NPZ: raw arrays for programmatic inspection.
@@ -126,8 +126,8 @@ def save_gradients_snapshot(
             "grad_tan_v_x", "grad_tan_v_y", "grad_tan_v_z",
             # scales (s_u, s_v)
             "grad_scale_u", "grad_scale_v",
-            # colors (R,G,B)
-            "grad_color_r", "grad_color_g", "grad_color_b",
+            # albedos (R,G,B)
+            "grad_albedo_r", "grad_albedo_g", "grad_albedo_b",
             # scalar params
             "grad_opacity",
             "grad_beta",
@@ -139,7 +139,7 @@ def save_gradients_snapshot(
             gux, guy, guz = grad_tangent_u_np[idx]
             gvx, gvy, gvz = grad_tangent_v_np[idx]
             gsu, gsv = grad_scales_np[idx]
-            gcr, gcg, gcb = grad_colors_np[idx]
+            gcr, gcg, gcb = grad_albedos_np[idx]
             gop = grad_opacity_flat[idx]
             gb = grad_beta_flat[idx]
 
@@ -163,7 +163,7 @@ def save_gradients_snapshot(
         grad_tangent_u=grad_tangent_u_np,
         grad_tangent_v=grad_tangent_v_np,
         grad_scales=grad_scales_np,
-        grad_colors=grad_colors_np,
+        grad_albedos=grad_albedos_np,
         grad_opacities=grad_opacities_np,
         grad_betas=grad_betas_np,
     )
@@ -180,7 +180,7 @@ def save_manual_snapshot(
         tangent_u: torch.Tensor,
         tangent_v: torch.Tensor,
         scales: torch.Tensor,
-        colors: torch.Tensor,
+        albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
         current_rgb_np: np.ndarray,
@@ -202,7 +202,7 @@ def save_manual_snapshot(
         tangent_u,
         tangent_v,
         scales,
-        colors,
+        albedos,
         opacities,
         betas,
         shape_default=0.0,
@@ -236,7 +236,7 @@ def refetch_parameters_as_torch(
 ) -> Tuple[torch.nn.Parameter, ...]:
     """
     Fetch parameters from the renderer, convert them to torch.nn.Parameter tensors.
-    Returns (positions, tangent_u, tangent_v, scales, colors, opacities).
+    Returns (positions, tangent_u, tangent_v, scales, albedos, opacities).
     """
     updated = fetch_parameters(renderer)
 
@@ -252,8 +252,8 @@ def refetch_parameters_as_torch(
     scales = torch.nn.Parameter(
         torch.tensor(updated["scale"], device=device, dtype=torch.float32)
     )
-    colors = torch.nn.Parameter(
-        torch.tensor(updated["color"], device=device, dtype=torch.float32)
+    albedos = torch.nn.Parameter(
+        torch.tensor(updated["albedo"], device=device, dtype=torch.float32)
     )
     opacities = torch.nn.Parameter(
         torch.tensor(updated["opacity"], device=device, dtype=torch.float32)
@@ -262,25 +262,25 @@ def refetch_parameters_as_torch(
         torch.tensor(updated["beta"], device=device, dtype=torch.float32)
     )
 
-    return positions, tangent_u, tangent_v, scales, colors, opacities, betas
+    return positions, tangent_u, tangent_v, scales, albedos, opacities, betas
 
 
 def verify_parameters_inplane(
         tangent_u: torch.Tensor,
         tangent_v: torch.Tensor,
         scales: torch.Tensor,
-        colors: torch.Tensor,
+        albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
 ) -> None:
     """
     Enforce parameter constraints in-place:
     - orthonormal tangents
-    - valid scales, colors, and opacities
+    - valid scales, albedos, and opacities
     """
     orthonormalize_tangents_inplace(tangent_u, tangent_v)
     verify_scales_inplace(scales)
-    verify_colors_inplace(colors)
+    verify_albedos_inplace(albedos)
     verify_opacities_inplace(opacities)
     verify_beta_inplace(betas)
 
@@ -291,14 +291,14 @@ def assign_numpy_gradients_to_tensors(
         tangent_u: torch.nn.Parameter,
         tangent_v: torch.nn.Parameter,
         scales: torch.nn.Parameter,
-        colors: torch.nn.Parameter,
+        albedos: torch.nn.Parameter,
         opacities: torch.nn.Parameter,
         betas: torch.nn.Parameter,
         grad_position_np: np.ndarray,
         grad_tangent_u_np: np.ndarray,
         grad_tangent_v_np: np.ndarray,
         grad_scales_np: np.ndarray,
-        grad_colors_np: np.ndarray,
+        grad_albedos_np: np.ndarray,
         grad_opacities_np: np.ndarray,
         grad_betas_np: np.ndarray,
 ) -> None:
@@ -309,7 +309,7 @@ def assign_numpy_gradients_to_tensors(
     tangent_u.grad = torch.tensor(grad_tangent_u_np, device=device, dtype=torch.float32)
     tangent_v.grad = torch.tensor(grad_tangent_v_np, device=device, dtype=torch.float32)
     scales.grad = torch.tensor(grad_scales_np, device=device, dtype=torch.float32)
-    colors.grad = torch.tensor(grad_colors_np, device=device, dtype=torch.float32)
+    albedos.grad = torch.tensor(grad_albedos_np, device=device, dtype=torch.float32)
     opacities.grad = torch.tensor(grad_opacities_np, device=device, dtype=torch.float32)
     betas.grad = torch.tensor(grad_betas_np, device=device, dtype=torch.float32)
 
@@ -379,7 +379,7 @@ def run_optimization(
     initial_tangent_u_np = initial_params["tangent_u"]
     initial_tangent_v_np = initial_params["tangent_v"]
     initial_scale_np = initial_params["scale"]
-    initial_color_np = initial_params["color"]
+    initial_albedo_np = initial_params["albedo"]
     initial_opacity_np = initial_params["opacity"]
     initial_beta_np = initial_params["beta"]
 
@@ -392,7 +392,7 @@ def run_optimization(
         "tangent_u": initial_tangent_u_np.copy(),
         "tangent_v": initial_tangent_v_np.copy(),
         "scale": initial_scale_np.copy(),
-        "color": initial_color_np.copy(),
+        "albedo": initial_albedo_np.copy(),
         "opacity": initial_opacity_np.copy(),
         "beta": initial_beta_np.copy(),
     }
@@ -405,7 +405,7 @@ def run_optimization(
             initial_tangent_u_np,
             initial_tangent_v_np,
             initial_scale_np,
-            initial_color_np,
+            initial_albedo_np,
             initial_opacity_np,
             initial_beta_np,
         ) = add_debug_noise_to_initial_parameters(
@@ -413,7 +413,7 @@ def run_optimization(
             initial_tangent_u_np,
             initial_tangent_v_np,
             initial_scale_np,
-            initial_color_np,
+            initial_albedo_np,
             initial_opacity_np,
             initial_beta_np,
         )
@@ -434,8 +434,8 @@ def run_optimization(
     scales = torch.nn.Parameter(
         torch.tensor(initial_scale_np, device=device, dtype=torch.float32)
     )
-    colors = torch.nn.Parameter(
-        torch.tensor(initial_color_np, device=device, dtype=torch.float32)
+    albedos = torch.nn.Parameter(
+        torch.tensor(initial_albedo_np, device=device, dtype=torch.float32)
     )
     opacities = torch.nn.Parameter(
         torch.tensor(initial_opacity_np, device=device, dtype=torch.float32)
@@ -447,10 +447,10 @@ def run_optimization(
     # ------------------------------------------------------------------
     # 2. Initial reparameterization and sync with renderer
     # ------------------------------------------------------------------
-    verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities, betas)
+    verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
 
     apply_point_parameters(
-        renderer, positions, tangent_u, tangent_v, scales, colors, opacities, betas
+        renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas
     )
     rebuild_bvh(renderer)
 
@@ -459,7 +459,7 @@ def run_optimization(
         tangent_u,
         tangent_v,
         scales,
-        colors,
+        albedos,
         opacities,
         betas,
     ) = refetch_parameters_as_torch(renderer, device)
@@ -470,7 +470,7 @@ def run_optimization(
         tangent_u,
         tangent_v,
         scales,
-        colors,
+        albedos,
         opacities,
         betas,
     )
@@ -513,8 +513,8 @@ def run_optimization(
     # ------------------------------------------------------------------
     iteration = 0
 
-    densification_interval = 1e10
-    prune_interval = 1e10
+    densification_interval = 200
+    prune_interval = 100
     burnin_iterations = 0
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
@@ -582,7 +582,7 @@ def run_optimization(
                 grad_tangent_u_np = np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
                 grad_tangent_v_np = np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
                 grad_scales_np = np.asarray(gradients["scale"], dtype=np.float32, order="C")
-                grad_colors_np = np.asarray(gradients["color"], dtype=np.float32, order="C")
+                grad_albedos_np = np.asarray(gradients["albedo"], dtype=np.float32, order="C")
                 grad_opacities_np = np.asarray(gradients["opacity"], dtype=np.float32, order="C")
                 grad_betas_np = np.asarray(gradients["beta"], dtype=np.float32, order="C")
 
@@ -605,32 +605,32 @@ def run_optimization(
                     tangent_u,
                     tangent_v,
                     scales,
-                    colors,
+                    albedos,
                     opacities,
                     betas,
                     grad_position_np,
                     grad_tangent_u_np,
                     grad_tangent_v_np,
                     grad_scales_np,
-                    grad_colors_np,
+                    grad_albedos_np,
                     grad_opacities_np,
                     grad_betas_np,
                 )
 
-                ## --- Elliptical repulsion term (on positions only) ---------------
-                repulsion_loss = compute_elliptical_repulsion_loss(
-                    positions=positions,
-                    tangent_u=tangent_u,
-                    tangent_v=tangent_v,
-                    scales=scales,
-                    radius_factor=1.0,  # ~ footprint size in uv; tune
-                    repulsion_weight=1e-3,  # strength; tune
-                )
-
-                ## This will ADD to positions.grad (since we already set it),
-                ## but won't touch tangent/scales/colors because we detach them.
-                if torch.isfinite(repulsion_loss) and repulsion_loss.detach().item() != 0.0:
-                    repulsion_loss.backward()
+                ### --- Elliptical repulsion term (on positions only) ---------------
+                #repulsion_loss = compute_elliptical_repulsion_loss(
+                #    positions=positions,
+                #    tangent_u=tangent_u,
+                #    tangent_v=tangent_v,
+                #    scales=scales,
+                #    radius_factor=0.8,  # ~ footprint size in uv; tune
+                #    repulsion_weight=1e-3,  # strength; tune
+                #)
+#
+                ### This will ADD to positions.grad (since we already set it),
+                ### but won't touch tangent/scales/albedos because we detach them.
+                #if torch.isfinite(repulsion_loss) and repulsion_loss.detach().item() != 0.0:
+                #    repulsion_loss.backward()
 
                 optimizer.step()
 
@@ -643,7 +643,7 @@ def run_optimization(
                 # --------------------------------------------------------------
                 # 8. Reparameterization, sync, BVH (unchanged logic)
                 # --------------------------------------------------------------
-                verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities, betas)
+                verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
 
                 apply_point_parameters(
                     renderer,
@@ -651,7 +651,7 @@ def run_optimization(
                     tangent_u,
                     tangent_v,
                     scales,
-                    colors,
+                    albedos,
                     opacities,
                     betas,
                 )
@@ -663,7 +663,7 @@ def run_optimization(
                         tangent_u,
                         tangent_v,
                         scales,
-                        colors,
+                        albedos,
                         opacities,
                         betas,
                     ) = refetch_parameters_as_torch(renderer, device)
@@ -674,7 +674,7 @@ def run_optimization(
                         tangent_u,
                         tangent_v,
                         scales,
-                        colors,
+                        albedos,
                         opacities,
                         betas,
                     )
@@ -702,7 +702,7 @@ def run_optimization(
                         tangent_u,
                         tangent_v,
                         scales,
-                        colors,
+                        albedos,
                         opacities,
                         betas,
                         importance=importance_tensor,
@@ -748,19 +748,19 @@ def run_optimization(
                         tangent_u,
                         tangent_v,
                         scales,
-                        colors,
+                        albedos,
                         opacities,
                         betas,
                     ) = refetch_parameters_as_torch(renderer, device)
 
-                    verify_parameters_inplane(tangent_u, tangent_v, scales, colors, opacities, betas)
+                    verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
                     apply_point_parameters(
                         renderer,
                         positions,
                         tangent_u,
                         tangent_v,
                         scales,
-                        colors,
+                        albedos,
                         opacities,
                         betas,
                     )
@@ -772,7 +772,7 @@ def run_optimization(
                         tangent_u,
                         tangent_v,
                         scales,
-                        colors,
+                        albedos,
                         opacities,
                         betas,
                     )
@@ -842,7 +842,7 @@ def run_optimization(
                     "tangent_u": tangent_u.detach().cpu().numpy(),
                     "tangent_v": tangent_v.detach().cpu().numpy(),
                     "scale": scales.detach().cpu().numpy(),
-                    "color": colors.detach().cpu().numpy(),
+                    "albedo": albedos.detach().cpu().numpy(),
                     "opacity": opacities.detach().cpu().numpy(),
                     "beta": betas.detach().cpu().numpy(),
                 }
@@ -862,7 +862,7 @@ def run_optimization(
                     grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / denom)
                     grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / denom)
                     grad_scale = float(np.linalg.norm(grad_scales_np) / denom)
-                    grad_color = float(np.linalg.norm(grad_colors_np) / denom)
+                    grad_albedo = float(np.linalg.norm(grad_albedos_np) / denom)
                     grad_opacity = float(np.linalg.norm(grad_opacities_np) / denom)
                     grad_beta = float(np.linalg.norm(grad_betas_np) / denom)
 
@@ -873,7 +873,7 @@ def run_optimization(
                         f"|tu| = {grad_tanu:.3e}, "
                         f"|tv| = {grad_tanv:.3e}, "
                         f"|su,sv| = {grad_scale:.3e}, "
-                        f"|color| = {grad_color:.3e}, "
+                        f"|albedo| = {grad_albedo:.3e}, "
                         f"|opacity| = {grad_opacity:.3e}, "
                         f"|beta| = {grad_beta:.3e}, "
                         f"|pts| = {num_points}, "
@@ -894,7 +894,7 @@ def run_optimization(
                             tangent_u,
                             tangent_v,
                             scales,
-                            colors,
+                            albedos,
                             opacities,
                             betas,
                             current_main_rgb_np,
@@ -908,7 +908,7 @@ def run_optimization(
                             grad_tangent_u_np,
                             grad_tangent_v_np,
                             grad_scales_np,
-                            grad_colors_np,
+                            grad_albedos_np,
                             grad_opacities_np,
                             grad_betas_np,
                         )
@@ -928,7 +928,7 @@ def run_optimization(
         tangent_u,
         tangent_v,
         scales,
-        colors,
+        albedos,
         opacities,
         betas,
     )
@@ -962,7 +962,7 @@ def run_optimization(
         tangent_u,
         tangent_v,
         scales,
-        colors,
+        albedos,
         opacities,
         betas,
         shape_default=0.0,

@@ -17,7 +17,7 @@ def fetch_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
         "tangent_u"  : (N,3)
         "tangent_v"  : (N,3)
         "scale"      : (N,2)
-        "color"      : (N,3)
+        "albedo"      : (N,3)
         "opacity"    : (N,)
         "beta"       : (N,)
         "shape"      : (N,)
@@ -181,19 +181,19 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         }
 
 
-def verify_colors_inplace(colors: torch.Tensor) -> dict[str, float]:
+def verify_albedos_inplace(albedos: torch.Tensor) -> dict[str, float]:
     """
-    In-place verification/clamping of color values.
+    In-place verification/clamping of albedo values.
 
     Enforces:
         0.0 <= c <= 1.0
     """
     with torch.no_grad():
-        s = colors.data
+        s = albedos.data
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.0, max=0.99)
+        s_clamped = torch.clamp(s, min=0.0, max=1.0)
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -209,7 +209,7 @@ def verify_colors_inplace(colors: torch.Tensor) -> dict[str, float]:
 
 def verify_opacities_inplace(opacities: torch.Tensor) -> dict[str, float]:
     """
-    In-place verification/clamping of color values.
+    In-place verification/clamping of albedo values.
 
     Enforces:
         0.0 <= c <= 1.0
@@ -234,7 +234,7 @@ def verify_opacities_inplace(opacities: torch.Tensor) -> dict[str, float]:
 
 def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
     """
-    In-place verification/clamping of color values.
+    In-place verification/clamping of albedo values.
 
     Enforces:
         0.0 <= c <= 1.0
@@ -244,7 +244,7 @@ def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=-3.0, max=0.0)
+        s_clamped = torch.clamp(s, min=-1.0, max=1.0)
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -264,15 +264,15 @@ def apply_point_parameters(
         tangent_u: torch.Tensor,
         tangent_v: torch.Tensor,
         scales: torch.Tensor,
-        colors: torch.Tensor,
+        albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
 ) -> None:
     """
-    Push updated positions, tangent_u, tangent_v, scales, and colors into the renderer.
+    Push updated positions, tangent_u, tangent_v, scales, and albedos into the renderer.
 
     Expects tensors of shape (N,3) for position/tangents, (N,2) for scales,
-    (N,3) for colors, on any device.
+    (N,3) for albedos, on any device.
     """
     positions_np = np.asarray(
         positions.detach().cpu().numpy(), dtype=np.float32, order="C"
@@ -286,8 +286,8 @@ def apply_point_parameters(
     scales_np = np.asarray(
         scales.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
-    colors_np = np.asarray(
-        colors.detach().cpu().numpy(), dtype=np.float32, order="C"
+    albedos_np = np.asarray(
+        albedos.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
 
     opacities_np = np.asarray(
@@ -309,7 +309,7 @@ def apply_point_parameters(
             "tangent_u": tangent_u_np,
             "tangent_v": tangent_v_np,
             "scale": scales_np,
-            "color": colors_np,
+            "albedo": albedos_np,
             "opacity": opacities_np,
             "beta": betas_np
         }
@@ -330,14 +330,14 @@ def add_new_points(renderer, densification_result: dict | None) -> None:
         return
 
     # new_block should already be numpy arrays with shapes
-    # (N,3) for position/tangent_u/tangent_v/color, (N,2) for scale
+    # (N,3) for position/tangent_u/tangent_v/albedo, (N,2) for scale
     parameters_for_cpp = {
         "new": {
             "position": new_block["position"],
             "tangent_u": new_block["tangent_u"],
             "tangent_v": new_block["tangent_v"],
             "scale": new_block["scale"],
-            "color": new_block["color"],
+            "albedo": new_block["albedo"],
             "opacity": new_block["opacity"],
             "beta": new_block["beta"],
         }
@@ -364,7 +364,7 @@ def remove_points(renderer: pale.Renderer, indices_to_remove: np.ndarray) -> Non
 
 def rebuild_bvh(renderer: pale.Renderer) -> None:
     """
-    new_points dict has keys: position, tangent_u, tangent_v, scale, color.
+    new_points dict has keys: position, tangent_u, tangent_v, scale, albedo.
     This function is responsible for telling the renderer to append these
     to its point cloud asset and rebuild its BVH/GPU buffers.
     """

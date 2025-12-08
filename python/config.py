@@ -9,7 +9,7 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e3
-    bounces: int = 4
+    bounces: int = 3
     forward_passes: int = 50
     gather_passes: int = 1
     adjoint_bounces: int = 2
@@ -167,11 +167,11 @@ def parse_args() -> OptimizationConfig:
         help="Learning rate for scales (defaults to ~0.2 * base LR if omitted).",
     )
     parser.add_argument(
-        "--lr-color",
-        dest="learning_rate_color",
+        "--lr-albedo",
+        dest="learning_rate_albedo",
         type=float,
         default=None,
-        help="Learning rate for colors (defaults to ~0.5 * base LR if omitted).",
+        help="Learning rate for albedos (defaults to ~0.5 * base LR if omitted).",
     )
     parser.add_argument(
         "--lr-opacity",
@@ -194,18 +194,19 @@ def parse_args() -> OptimizationConfig:
     base_lr = args.learning_rate * args.learning_rate_multiplier
     lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log it
 
+    lr_scale = 1e9
     # 3DGS-inspired relative factors w.r.t. position LR
-    factor_position = 0.01  # ~rotation_lr / position_lr
-    factor_tangent = 0.1  # ~rotation_lr / position_lr
-    factor_scale = 0.005  # ~scaling_lr / position_lr
-    factor_color = 5.0  # ~feature_lr / position_lr
-    factor_opacity = 1.0  # ~opacity_lr / position_lr
-    factor_beta = 0.01  # ~beta_lr / position_lr
+    factor_position = lr_scale * 0.0005  # ~rotation_lr / position_lr
+    factor_tangent  = lr_scale * 0.001  # ~rotation_lr / position_lr
+    factor_scale    = lr_scale * 0.005  # ~scaling_lr / position_lr
+    factor_albedo   = lr_scale * 0.01  # ~feature_lr / position_lr
+    factor_opacity  = lr_scale * 0.01  # ~opacity_lr / position_lr
+    factor_beta     = lr_scale * 0.001  # ~beta_lr / position_lr
 
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)
     lr_scale = args.learning_rate_scale or (factor_scale * base_lr)
-    lr_color = args.learning_rate_color or (factor_color * base_lr)
+    lr_albedo = args.learning_rate_albedo or (factor_albedo * base_lr)
     lr_opacity = args.learning_rate_opacity or (factor_opacity * base_lr)
     lr_beta = args.learning_rate_beta or (factor_beta * base_lr)
 
@@ -220,7 +221,7 @@ def parse_args() -> OptimizationConfig:
         learning_rate_position=lr_pos,
         learning_rate_tangent=lr_tan,
         learning_rate_scale=lr_scale,
-        learning_rate_albedo=lr_color,
+        learning_rate_albedo=lr_albedo,
         learning_rate_opacity=lr_opacity,
         learning_rate_beta=lr_beta,
         optimizer_type=args.optimizer,

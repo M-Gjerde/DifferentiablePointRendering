@@ -99,13 +99,24 @@ def main() -> None:
     if not run_dir.exists():
         raise RuntimeError(f"Output path '{run_dir}' does not exist.")
 
+    # Layout configuration
+    WINDOW_WIDTH = 500
+    WINDOW_HEIGHT = 500
+    WINDOWS_PER_ROW = 2
+    ROW_OFFSET_PIXELS = WINDOW_HEIGHT + 40  # gap between rows
+
+    # Stable camera index mapping for layout
+    camera_index_map: Dict[str, int] = {}
+    next_camera_index: int = 0
+
     # Per-camera render window state
-    windows_render: Dict[str, str] = {}                 # camera_name -> window title
-    last_render_paths: Dict[str, Optional[Path]] = {}   # camera_name -> last render Path
+    windows_render: Dict[str, str] = {}
+    last_render_paths: Dict[str, Optional[Path]] = {}
 
     # Per-target window state
-    target_windows: Dict[str, str] = {}                 # camera_name -> window title
-    last_target_paths: Dict[str, Optional[Path]] = {}   # camera_name -> last target Path
+    target_windows: Dict[str, str] = {}
+    last_target_paths: Dict[str, Optional[Path]] = {}
+
 
     try:
         while True:
@@ -115,13 +126,28 @@ def main() -> None:
             camera_dirs = discover_camera_dirs(run_dir)
             for camera_dir in camera_dirs:
                 camera_name = camera_dir.name
+
+                # Assign stable index for layout
+                if camera_name not in camera_index_map:
+                    camera_index_map[camera_name] = next_camera_index
+                    next_camera_index += 1
+
                 if camera_name not in windows_render:
                     render_window_title = f"Render ({camera_name})"
                     windows_render[camera_name] = render_window_title
                     last_render_paths[camera_name] = None
 
                     cv2.namedWindow(render_window_title, cv2.WINDOW_NORMAL)
-                    cv2.resizeWindow(render_window_title, 500, 500)
+                    cv2.resizeWindow(render_window_title, WINDOW_WIDTH, WINDOW_HEIGHT)
+
+                    camera_index = camera_index_map[camera_name]
+                    col_index = camera_index % WINDOWS_PER_ROW
+                    row_index = camera_index // WINDOWS_PER_ROW
+
+                    position_x = col_index * WINDOW_WIDTH
+                    position_y = row_index * ROW_OFFSET_PIXELS  # row 0 for renders
+
+                    cv2.moveWindow(render_window_title, position_x, position_y)
 
             # --------------------------------------------------
             # 2. Discover and show target images per camera
@@ -143,7 +169,17 @@ def main() -> None:
                     last_target_paths[camera_name] = None
 
                     cv2.namedWindow(target_window_title, cv2.WINDOW_NORMAL)
-                    cv2.resizeWindow(target_window_title, 500, 500)
+                    cv2.resizeWindow(target_window_title, WINDOW_WIDTH, WINDOW_HEIGHT)
+
+                    # Same column as render window, but on row 1 below it
+                    camera_index = camera_index_map.get(camera_name, 0)
+                    col_index = camera_index % WINDOWS_PER_ROW
+                    row_index = camera_index // WINDOWS_PER_ROW
+
+                    position_x = col_index * WINDOW_WIDTH
+                    position_y = row_index * ROW_OFFSET_PIXELS + ROW_OFFSET_PIXELS  # second row
+
+                    cv2.moveWindow(target_window_title, position_x, position_y)
 
                 prev_target_path = last_target_paths.get(camera_name)
                 if target_path != prev_target_path:

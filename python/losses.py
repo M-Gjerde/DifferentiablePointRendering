@@ -80,7 +80,7 @@ def compute_parameter_mse(current_params: dict[str, np.ndarray],
                           initial_params: dict[str, np.ndarray]) -> float:
     """
     Compute a single scalar MSE over all points and all parameters
-    (position, tangent_u, tangent_v, scale, color), comparing the
+    (position, tangent_u, tangent_v, scale, albedo), comparing the
     current values to the initial ones.
 
     If the number of points changes (densification), we only compare
@@ -89,7 +89,7 @@ def compute_parameter_mse(current_params: dict[str, np.ndarray],
     total_sq = 0.0
     total_count = 0
 
-    for key in ("position", "tangent_u", "tangent_v", "scale", "color", "opacity"):
+    for key in ("position", "tangent_u", "tangent_v", "scale", "albedo", "opacity"):
         cur = current_params[key]
         init = initial_params[key]
 

@@ -11,7 +11,7 @@ def create_optimizer(
     tangent_u: torch.nn.Parameter,
     tangent_v: torch.nn.Parameter,
     scales: torch.nn.Parameter,
-    colors: torch.nn.Parameter,
+    albedos: torch.nn.Parameter,
     opacities: torch.nn.Parameter,
     betas: torch.nn.Parameter,
 ) -> torch.optim.Optimizer:
@@ -25,7 +25,7 @@ def create_optimizer(
     lr_pos = config.learning_rate_position or config.learning_rate
     lr_tan = config.learning_rate_tangent or config.learning_rate
     lr_scale = config.learning_rate_scale or config.learning_rate
-    lr_color = config.learning_rate_albedo or config.learning_rate
+    lr_albedo = config.learning_rate_albedo or config.learning_rate
     lr_opacity = config.learning_rate_opacity or config.learning_rate
     lr_beta = config.learning_rate_beta or config.learning_rate
 
@@ -43,8 +43,8 @@ def create_optimizer(
             "lr": lr_scale,
         },
         {
-            "params": [colors],
-            "lr": lr_color,
+            "params": [albedos],
+            "lr": lr_albedo,
         },
         {
             "params": [opacities],
