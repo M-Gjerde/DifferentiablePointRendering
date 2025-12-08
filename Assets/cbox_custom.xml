@@ -72,7 +72,7 @@
         <transform name="to_world">
             <translate x="0" y="0" z="0"/>
         </transform>
-        <ref id="black"/>
+        <ref id="gray"/>
     </shape>
 
 
@@ -83,7 +83,7 @@
             <rotate x="1" y="0" z="0" angle="180"/>
             <translate x="0" y="0" z="2"/>
         </transform>
-        <ref id="black"/>
+        <ref id="blue"/>
     </shape>
 
     <!-- Back wall: y=2, normal -Y -->
@@ -93,7 +93,7 @@
             <rotate x="1" y="0" z="0" angle="90"/>
             <translate x="0" y="1" z="1"/>
         </transform>
-        <ref id="black"/>
+        <ref id="gray"/>
     </shape>
 
     <!-- Left wall: x=-1, normal +X -->
@@ -103,7 +103,7 @@
             <rotate x="0" y="1" z="0" angle="90"/>
             <translate x="-1" y="0" z="1"/>
         </transform>
-        <ref id="black"/>
+        <ref id="red"/>
     </shape>
 
     <!-- Right wall: x=+1, normal -X -->
@@ -113,7 +113,7 @@
             <rotate x="0" y="1" z="0" angle="-90"/>
             <translate x="1" y="0" z="1"/>
         </transform>
-        <ref id="black"/>
+        <ref id="green"/>
     </shape>
 
     <!-- Ceiling light: small, facing -Z

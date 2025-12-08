@@ -38,6 +38,9 @@ from finite_difference.finite_diff_helpers import (
     finite_difference_translation,
     finite_difference_rotation,
     finite_difference_scale,
+    finite_difference_opacity,
+    finite_difference_albedo,
+    finite_difference_beta,
     save_rgb_preview_png,
     write_fd_images,
     degrees_to_quaternion,
@@ -210,6 +213,82 @@ def append_scale_run_to_history(
         )
 
 
+def append_1d_run_to_history(
+        history_path: Path,
+        scene_name: str,
+        gaussian_index: int,
+        run_label: str,
+        loss_value: float,
+        fd_grad: float,
+        an_grad: float,
+) -> None:
+    """
+    Append one row to the translation gradient history CSV.
+
+    Columns:
+        scene, index, label, loss,
+        fd_x, fd_y, fd_z,
+        an_x, an_y, an_z,
+        err_x, err_y, err_z,
+        abs_err_x, abs_err_y, abs_err_z
+    """
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    file_exists = history_path.exists()
+
+    fd_x = float(fd_grad)
+    an_x = float(an_grad)
+
+    err_x = fd_x - an_x
+
+    abs_err_x = abs(err_x)
+
+    with history_path.open("a", newline="") as file_handle:
+        writer = csv.writer(file_handle)
+        if not file_exists:
+            writer.writerow(
+                [
+                    "scene",
+                    "index",
+                    "label",
+                    "loss",
+                    "fd_x",
+                    "fd_y",
+                    "fd_z",
+                    "an_x",
+                    "an_y",
+                    "an_z",
+                    "err_x",
+                    "err_y",
+                    "err_z",
+                    "abs_err_x",
+                    "abs_err_y",
+                    "abs_err_z",
+                ]
+            )
+
+        writer.writerow(
+            [
+                scene_name,
+                gaussian_index,
+                run_label,
+                loss_value,
+                fd_x,
+                np.nan,
+                np.nan,
+                an_x,
+                np.nan,
+                np.nan,
+                err_x,
+                np.nan,
+                np.nan,
+                abs_err_x,
+                np.nan,
+                np.nan,
+            ]
+        )
+
+
 def print_history_3axis(history_path: Path) -> None:
     """
     Print all stored translation FD/AN runs so far.
@@ -228,7 +307,7 @@ def print_history_3axis(history_path: Path) -> None:
         print("\n[HIST] History file is empty.")
         return
 
-    print("\n================ Translation Gradient History ================")
+    print("\n================ 3Axis Gradient History ================")
     for row in rows:
         scene_name = row["scene"]
         gaussian_index = int(row["index"])
@@ -329,6 +408,58 @@ def print_history_2axis(history_path: Path) -> None:
             "      ER : "
             f"FD-AN_x={err_x: .10f}, |FD-AN_x|={abs_err_x: .10f}; "
             f"FD-AN_y={err_y: .10f}, |FD-AN_y|={abs_err_y: .10f}; "
+        )
+        print("------------------------------------------------------------")
+
+
+def print_history_1axis(history_path: Path) -> None:
+    """
+    Print all stored translation FD/AN runs so far.
+
+    Shows FD, AN, and FD-AN error per axis to compare progress.
+    """
+    if not history_path.exists():
+        print("\n[HIST] No history file found yet.")
+        return
+
+    with history_path.open("r", newline="") as file_handle:
+        reader = csv.DictReader(file_handle)
+        rows = list(reader)
+
+    if not rows:
+        print("\n[HIST] History file is empty.")
+        return
+
+    print("\n================ Translation Gradient History ================")
+    for row in rows:
+        scene_name = row["scene"]
+        gaussian_index = int(row["index"])
+        run_label = row["label"]
+        loss_value = float(row["loss"])
+
+        fd_x = float(row["fd_x"])
+
+        an_x = float(row["an_x"])
+
+        # Support both new and older files (if errors not present)
+        if "err_x" in row and row["err_x"] != "":
+            err_x = float(row["err_x"])
+            err_y = float(row["err_y"])
+            err_z = float(row["err_z"])
+            abs_err_x = float(row["abs_err_x"])
+        else:
+            err_x = fd_x - an_x
+            abs_err_x = abs(err_x)
+
+        print(
+            f"[RUN] label='{run_label}', scene='{scene_name}', index={gaussian_index}, "
+            f"loss={loss_value: .8f}"
+        )
+        print(f"      FD : val={fd_x: .10f}")
+        print(f"      AN : val={an_x: .10f}")
+        print(
+            "      ER : "
+            f"FD-AN_x={err_x: .10f}, |FD-AN_x|={abs_err_x: .10f}; "
         )
         print("------------------------------------------------------------")
 
@@ -440,17 +571,17 @@ def render_with_trs(
         translation3,
         rotation_quat4,
         scale3,
-        color3,
+        albedo3,
         opacity,
         beta=0.0,
         index=-1,
 ) -> np.ndarray:
-    """Apply a full TRS+color+opacity+beta and render."""
+    """Apply a full TRS+albedo+opacity+beta and render."""
     renderer.set_gaussian_transform(
         translation3=translation3,
         rotation_quat4=rotation_quat4,
         scale3=scale3,
-        color3=color3,
+        albedo3=albedo3,
         opacity=opacity,
         beta=beta,
         index=index,
@@ -535,7 +666,7 @@ def main(args) -> None:
     target_tangent_u_np = target_params["tangent_u"]
     target_tangent_v_np = target_params["tangent_v"]
     target_scales_np = target_params["scale"]
-    target_colors_np = target_params["color"]
+    target_albedos_np = target_params["albedo"]
     target_opacities_np = target_params["opacity"]
     target_betas_np = target_params["beta"]
 
@@ -546,7 +677,7 @@ def main(args) -> None:
             noisy_tangent_u_np,
             noisy_tangent_v_np,
             noisy_scales_np,
-            noisy_colors_np,
+            noisy_albedos_np,
             noisy_opacities_np,
             noisy_betas_np,
         ) = add_debug_noise_to_initial_parameters(
@@ -554,7 +685,7 @@ def main(args) -> None:
             target_tangent_u_np,
             target_tangent_v_np,
             target_scale_np,
-            target_color_np,
+            target_albedo_np,
             target_opacity_np,
             target_beta_np,
         )
@@ -598,13 +729,33 @@ def main(args) -> None:
 
         target_scales_np[args.index] = target_scales_np[args.index] * np.array(noise,dtype=np.float32)
 
+    elif args.param == "opacity":
+        eps_opacity = 0.3
+        target_opacities_np[args.index] = target_opacities_np[args.index] + np.array(eps_opacity, dtype=np.float32)
+
+
+    if args.param == "albedo":
+        eps_albedo = -0.3
+        if args.axis == "x":
+            noise = [eps_albedo, 0.0, 0.0]
+        elif args.axis == "y":
+            noise = [0.0, eps_albedo, 0.0]
+        else:
+            noise = [0.0, 0.0, eps_albedo]
+        target_albedos_np[args.index] = target_albedos_np[args.index] + np.array(noise,
+                                                                                     dtype=np.float32)
+
+    elif args.param == "beta":
+        eps_beta = -0.3
+        target_betas_np[args.index] = target_betas_np[args.index] + np.array(eps_beta, dtype=np.float32)
+
     renderer.apply_point_optimization(
         {
             "position": target_positions_np,
             "tangent_u": target_tangent_u_np,
             "tangent_v": target_tangent_v_np,
             "scale": target_scales_np,
-            "color": target_colors_np,
+            "albedo": target_albedos_np,
             "opacity": target_opacities_np,
             "beta": target_betas_np
         }
@@ -651,6 +802,24 @@ def main(args) -> None:
 
     analytical_gradients_scale = np.asarray(
         gradients["scale"],
+        dtype=np.float32,
+        order="C",
+    )
+
+    analytical_gradients_opacity = np.asarray(
+        gradients["opacity"],
+        dtype=np.float32,
+        order="C",
+    )
+
+    analytical_gradients_beta = np.asarray(
+        gradients["beta"],
+        dtype=np.float32,
+        order="C",
+    )
+
+    analytical_gradients_albedo = np.asarray(
+        gradients["albedo"],
         dtype=np.float32,
         order="C",
     )
@@ -707,7 +876,7 @@ def main(args) -> None:
     eps_scale = 0.05
     eps_opacity = 0.1
     eps_albedo = 0.1
-    eps_beta = 0.5  # reasonable start for log-shape
+    eps_beta = 0.1  # reasonable start for log-shape
 
     iterations = 6
 
@@ -831,7 +1000,7 @@ def main(args) -> None:
                         rgb_minus,
                         rgb_plus,
                         base_output_dir / "rotation",
-                        "pos",
+                        "rot",
                         axis,
                     )
         # compute means
@@ -938,7 +1107,7 @@ def main(args) -> None:
                         rgb_minus,
                         rgb_plus,
                         base_output_dir / "scale",
-                        "pos",
+                        "scale",
                         axis,
                     )
 
@@ -993,6 +1162,257 @@ def main(args) -> None:
         )
         print_history_2axis(history_path)
 
+    if args.param == "opacity":
+        # --- Scale (x,y,z) ---
+        grad_opacity = 0.0
+        grad_opacity_samples = []
+
+        for i in range(iterations):
+            print(f"[FD] Computing Opacity iteration={i + 1}/{iterations}...")
+            rgb_minus, rgb_plus, grad_fd = finite_difference_opacity(
+                renderer, args.index, eps_opacity
+            )
+            # calculate loss for each image
+            loss_negative = compute_l2_loss(rgb_minus, target_image)
+            loss_positive = compute_l2_loss(rgb_plus, target_image)
+
+            grad_value = (loss_positive - loss_negative) / (2.0 * eps_opacity)
+
+            # accumulate for mean
+            grad_opacity += grad_value
+            # store sample for std
+            grad_opacity_samples.append(grad_value)
+
+            if i == 0:
+                save_rgb_preview_png(
+                    rgb_minus, base_output_dir / "opacity" / f"neg.png"
+                )
+                save_rgb_preview_png(
+                    rgb_plus, base_output_dir / "opacity" / f"pos.png"
+                )
+                write_fd_images(
+                    grad_fd,
+                    rgb_minus,
+                    rgb_plus,
+                    base_output_dir / "opacity",
+                    "opacity",
+                    "",
+                )
+
+
+        grad_opacity /= iterations
+
+        # compute mean and std per axis from samples
+        samples = np.array(grad_opacity_samples, dtype=np.float64)
+        mean_val = samples.mean()
+        # ddof=1 for sample std; use ddof=0 if you want population std
+        std_val = samples.std(ddof=1) if iterations > 1 else 0.0
+        grad_opacity_stats = {"mean": float(mean_val), "std": float(std_val)}
+
+        print()
+        fd_val = float(grad_opacity)
+        an_val = float(analytical_gradients_opacity[args.index])
+        err = fd_val - an_val
+        abs_err = abs(err)
+
+        mean_val = grad_opacity_stats["mean"]
+        std_val = grad_opacity_stats["std"]
+        print(
+            f"[FD] Mean Opacity Grad={mean_val: .10f}, Std={std_val: .10f}"
+        )
+
+        print(f"[FD] Opacity Grad={fd_val: .10f}")
+        print(f"[AN] Opacity Grad={an_val: .10f}")
+        print(
+            f"[ER] FD-AN={err: .10f}, |FD-AN|={abs_err: .10f}"
+        )
+        print()
+
+        # ----------------------------------------------------------
+        # Save this run to history and print all runs so far
+        # ----------------------------------------------------------
+        history_path = base_output_dir / "opacity_gradients_history.csv"
+        append_1d_run_to_history(
+            history_path=history_path,
+            scene_name=args.scene,
+            gaussian_index=args.index,
+            run_label=label,
+            loss_value=loss_value,
+            fd_grad=grad_opacity,
+            an_grad=analytical_gradients_opacity[args.index],
+        )
+        print_history_1axis(history_path)
+
+
+    if args.param == "beta":
+        # --- Scale (x,y,z) ---
+        grad_beta = 0.0
+        grad_beta_samples = []
+
+        for i in range(iterations):
+            print(f"[FD] Computing Beta iteration={i + 1}/{iterations}...")
+            rgb_minus, rgb_plus, grad_fd = finite_difference_beta(
+                renderer, args.index, eps_beta
+            )
+            # calculate loss for each image
+            loss_negative = compute_l2_loss(rgb_minus, target_image)
+            loss_positive = compute_l2_loss(rgb_plus, target_image)
+
+            grad_value = (loss_positive - loss_negative) / (2.0 * eps_beta)
+
+            # accumulate for mean
+            grad_beta += grad_value
+            # store sample for std
+            grad_beta_samples.append(grad_value)
+
+            if i == 0:
+                save_rgb_preview_png(
+                    rgb_minus, base_output_dir / "beta" / f"neg.png"
+                )
+                save_rgb_preview_png(
+                    rgb_plus, base_output_dir / "beta" / f"pos.png"
+                )
+                write_fd_images(
+                    grad_fd,
+                    rgb_minus,
+                    rgb_plus,
+                    base_output_dir / "beta",
+                    "beta",
+                    "",
+                )
+
+
+        grad_beta /= iterations
+
+        # compute mean and std per axis from samples
+        samples = np.array(grad_beta_samples, dtype=np.float64)
+        mean_val = samples.mean()
+        # ddof=1 for sample std; use ddof=0 if you want population std
+        std_val = samples.std(ddof=1) if iterations > 1 else 0.0
+        grad_beta_stats = {"mean": float(mean_val), "std": float(std_val)}
+
+        print()
+        fd_val = float(grad_beta)
+        an_val = float(analytical_gradients_beta[args.index])
+        err = fd_val - an_val
+        abs_err = abs(err)
+
+        mean_val = grad_beta_stats["mean"]
+        std_val = grad_beta_stats["std"]
+        print(
+            f"[FD] Mean Opacity Grad={mean_val: .10f}, Std={std_val: .10f}"
+        )
+
+        print(f"[FD] Opacity Grad={fd_val: .10f}")
+        print(f"[AN] Opacity Grad={an_val: .10f}")
+        print(
+            f"[ER] FD-AN={err: .10f}, |FD-AN|={abs_err: .10f}"
+        )
+        print()
+
+        # ----------------------------------------------------------
+        # Save this run to history and print all runs so far
+        # ----------------------------------------------------------
+        history_path = base_output_dir / "beta_gradients_history.csv"
+        append_1d_run_to_history(
+            history_path=history_path,
+            scene_name=args.scene,
+            gaussian_index=args.index,
+            run_label=label,
+            loss_value=loss_value,
+            fd_grad=grad_beta,
+            an_grad=analytical_gradients_beta[args.index],
+        )
+        print_history_1axis(history_path)
+
+    if args.param == "albedo":
+        # --- Albedo (x,y,z) ---
+        grad_albedo = {"x": 0.0, "y": 0.0, "z": 0.0}
+        grad_albedo_samples = {"x": [], "y": [], "z": []}
+
+        for i in range(iterations):
+            print(f"[FD] Computing Albedo axis iteration={i + 1}/{iterations}...")
+            for axis in ["x", "y", "z"]:
+                rgb_minus, rgb_plus, grad_fd = finite_difference_albedo(
+                    renderer, args.index, axis, eps_albedo
+                )
+                # calculate loss for each image
+                loss_negative = compute_l2_loss(rgb_minus, target_image)
+                loss_positive = compute_l2_loss(rgb_plus, target_image)
+
+                grad_value = (loss_positive - loss_negative) / (2.0 * eps_albedo)
+
+                # accumulate for mean
+                grad_albedo[axis] += grad_value
+                # store sample for std
+                grad_albedo_samples[axis].append(grad_value)
+
+                if i == 0:
+                    save_rgb_preview_png(
+                        rgb_minus, base_output_dir / "albedo" / f"{axis}_neg.png"
+                    )
+                    save_rgb_preview_png(
+                        rgb_plus, base_output_dir / "albedo" / f"{axis}_pos.png"
+                    )
+                    write_fd_images(
+                        grad_fd,
+                        rgb_minus,
+                        rgb_plus,
+                        base_output_dir / "albedo",
+                        "albedo",
+                        axis,
+                    )
+
+        # compute means
+        for axis in ["x", "y", "z"]:
+            grad_albedo[axis] /= iterations
+
+        # compute mean and std per axis from samples
+        grad_albedo_stats = {}
+        for axis in ["x", "y", "z"]:
+            samples = np.array(grad_albedo_samples[axis], dtype=np.float64)
+            mean_val = samples.mean()
+            # ddof=1 for sample std; use ddof=0 if you want population std
+            std_val = samples.std(ddof=1) if iterations > 1 else 0.0
+            grad_albedo_stats[axis] = {"mean": float(mean_val), "std": float(std_val)}
+
+        axes = ["x", "y", "z"]
+        print()
+        for axis_index, axis_name in enumerate(axes):
+            fd_val = float(grad_albedo[axis_name])
+            an_val = float(analytical_gradients_albedo[args.index][axis_index])
+            err = fd_val - an_val
+            abs_err = abs(err)
+
+            mean_val = grad_albedo_stats[axis_name]["mean"]
+            std_val = grad_albedo_stats[axis_name]["std"]
+            print(
+                f"[FD] Translation axis={axis_name}, "
+                f"Mean Grad={mean_val: .10f}, Std={std_val: .10f}"
+            )
+
+            print(f"[FD] Translation axis={axis_name}, Grad={fd_val: .10f}")
+            print(f"[AN] Translation axis={axis_name}, Grad={an_val: .10f}")
+            print(
+                f"[ER] Translation axis={axis_name}, "
+                f"FD-AN={err: .10f}, |FD-AN|={abs_err: .10f}"
+            )
+            print()
+
+        # ----------------------------------------------------------
+        # Save this run to history and print all runs so far
+        # ----------------------------------------------------------
+        history_path = base_output_dir / "albedo_gradients_history.csv"
+        append_translation_run_to_history(
+            history_path=history_path,
+            scene_name=args.scene,
+            gaussian_index=args.index,
+            run_label=label,
+            loss_value=loss_value,
+            grad_trans=grad_albedo,
+            analytical_gradients_position=analytical_gradients_albedo[args.index],
+        )
+        print_history_3axis(history_path)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -1028,7 +1448,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--axis",
         type=str,
-        required=True,
+        required=False,
         default="x",
         help="parameter axis to test",
     )

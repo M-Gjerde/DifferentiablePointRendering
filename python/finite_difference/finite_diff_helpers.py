@@ -63,7 +63,7 @@ def render_with_trs(
     translation3,
     rotation_quat4,
     scale3,
-    color3,
+    albedo3,
     opacity,
     beta = 0.0,
     index = -1,
@@ -73,7 +73,7 @@ def render_with_trs(
         translation3=translation3,
         rotation_quat4=rotation_quat4,
         scale3=scale3,
-        color3=color3,
+        albedo3=albedo3,
         opacity=opacity,
         beta=beta,
         index=index,
@@ -107,7 +107,7 @@ def finite_difference_translation(
         translation3=negative_vector,
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=0.0,
         index=index,
     )
@@ -116,7 +116,7 @@ def finite_difference_translation(
         translation3=positive_vector,
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=0.0,
         index=index,
     )
@@ -135,7 +135,7 @@ def finite_difference_rotation(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(qx_minus, qy_minus, qz_minus, qw_minus),
         scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=0.0,
         beta=0.0,
         index=index,
@@ -145,7 +145,7 @@ def finite_difference_rotation(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(qx_plus, qy_plus, qz_plus, qw_plus),
         scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=0.0,
         beta=0.0,
         index=index,
@@ -174,7 +174,7 @@ def finite_difference_scale(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=negative_scale,
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=0.0,
         beta=0.0,
         index=index,
@@ -184,7 +184,7 @@ def finite_difference_scale(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=positive_scale,
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=0.0,
         beta=0.0,
         index=index,
@@ -204,7 +204,7 @@ def finite_difference_opacity(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=negative_opacity,
         beta=0.0,
         index=index,
@@ -214,7 +214,7 @@ def finite_difference_opacity(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=positive_opacity,
         beta=0.0,
         index=index,
@@ -230,25 +230,25 @@ def finite_difference_albedo(
     channel in {'R','G','B'}: we perturb that color channel while keeping others at zero.
     Opacity is set to 1.0 so albedo changes have visible effect.
     """
-    channel = channel.upper()
-    if channel == "R":
+    channel = channel.lower()
+    if channel == "x":
         color_minus = (-eps, 0.0, 0.0)
         color_plus = (+eps, 0.0, 0.0)
-    elif channel == "G":
+    elif channel == "y":
         color_minus = (0.0, -eps, 0.0)
         color_plus = (0.0, +eps, 0.0)
-    elif channel == "B":
+    elif channel == "z":
         color_minus = (0.0, 0.0, -eps)
         color_plus = (0.0, 0.0, +eps)
     else:
-        raise ValueError("channel must be 'R', 'G', or 'B'")
+        raise ValueError("channel must be 'x', 'y', or 'z'")
 
     rgb_minus = render_with_trs(
         renderer,
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(1.0, 1.0, 1.0),
-        color3=color_minus,
+        albedo3=color_minus,
         opacity=1.0,
         beta=0.0,
         index=index,
@@ -258,7 +258,7 @@ def finite_difference_albedo(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(1.0, 1.0, 1.0),
-        color3=color_plus,
+        albedo3=color_plus,
         opacity=1.0,
         beta=0.0,
         index=index,
@@ -281,7 +281,7 @@ def finite_difference_beta(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=1.0,
         beta=beta_minus,
         index=index,
@@ -291,7 +291,7 @@ def finite_difference_beta(
         translation3=(0.0, 0.0, 0.0),
         rotation_quat4=(0.0, 0.0, 0.0, 1.0),
         scale3=(1.0, 1.0, 1.0),
-        color3=(0.0, 0.0, 0.0),
+        albedo3=(0.0, 0.0, 0.0),
         opacity=1.0,
         beta=beta_plus,
         index=index,
