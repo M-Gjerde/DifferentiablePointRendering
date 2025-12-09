@@ -115,6 +115,9 @@
         <string name="component_format" value="float32"/>
     </film>
 </sensor>
+
+    <!--
+
 <sensor type="perspective" id="DatasetCam_005">
     <string name="fov_axis" value="smaller"/>
     <float name="near_clip" value="0.01"/>
@@ -227,7 +230,7 @@
         <string name="component_format" value="float32"/>
     </film>
 </sensor>
-    <!---->
+    -->
     <bsdf type="diffuse" id="gray">
         <rgb name="reflectance" value="0.1,0.1,0.1"/>
     </bsdf>
