@@ -647,27 +647,6 @@ def main(args) -> None:
     target_opacities_np = target_params["opacity"]
     target_betas_np = target_params["beta"]
 
-    apply_noise = False
-    if apply_noise:
-        (
-            noisy_positions_np,
-            noisy_tangent_u_np,
-            noisy_tangent_v_np,
-            noisy_scales_np,
-            noisy_albedos_np,
-            noisy_opacities_np,
-            noisy_betas_np,
-        ) = add_debug_noise_to_initial_parameters(
-            target_positions_np,
-            target_tangent_u_np,
-            target_tangent_v_np,
-            target_scale_np,
-            target_albedo_np,
-            target_opacity_np,
-            target_beta_np,
-        )
-        print("Initial parameters perturbed by debug Gaussian noise.")
-
     if args.param == "translation":
         eps_trans = 0.1
         if args.axis == "x":
