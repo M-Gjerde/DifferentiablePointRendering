@@ -22,12 +22,12 @@ def create_optimizer(
     """
     opt_type = config.optimizer_type.lower()
 
-    lr_pos = config.learning_rate_position or config.learning_rate
-    lr_tan = config.learning_rate_tangent or config.learning_rate
-    lr_scale = config.learning_rate_scale or config.learning_rate
-    lr_albedo = config.learning_rate_albedo or config.learning_rate
-    lr_opacity = config.learning_rate_opacity or config.learning_rate
-    lr_beta = config.learning_rate_beta or config.learning_rate
+    lr_pos = config.learning_rate_position
+    lr_tan = config.learning_rate_tangent
+    lr_scale = config.learning_rate_scale
+    lr_albedo = config.learning_rate_albedo
+    lr_opacity = config.learning_rate_opacity
+    lr_beta = config.learning_rate_beta
 
     param_groups = [
         {

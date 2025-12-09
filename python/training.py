@@ -309,9 +309,9 @@ def assign_numpy_gradients_to_tensors(
     tangent_u.grad = torch.tensor(grad_tangent_u_np, device=device, dtype=torch.float32)
     tangent_v.grad = torch.tensor(grad_tangent_v_np, device=device, dtype=torch.float32)
     scales.grad = torch.tensor(grad_scales_np, device=device, dtype=torch.float32)
-    albedos.grad = torch.tensor(grad_albedos_np, device=device, dtype=torch.float32)
-    opacities.grad = torch.tensor(grad_opacities_np, device=device, dtype=torch.float32)
-    betas.grad = torch.tensor(grad_betas_np, device=device, dtype=torch.float32)
+    albedos.grad = torch.tensor   (grad_albedos_np, device=device, dtype=torch.float32)
+    opacities.grad = torch.tensor (grad_opacities_np, device=device, dtype=torch.float32)
+    betas.grad = torch.tensor     (grad_betas_np, device=device, dtype=torch.float32)
 
 
 def compute_density_importance(
@@ -594,13 +594,13 @@ def run_optimization(
                 # `adjoint_images` is dict[name -> HxWx4 float]
 
                 # Extract numpy gradients
-                grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
-                grad_tangent_u_np = np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
-                grad_tangent_v_np = np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
-                grad_scales_np = np.asarray(gradients["scale"], dtype=np.float32, order="C")
-                grad_albedos_np = np.asarray(gradients["albedo"], dtype=np.float32, order="C")
-                grad_opacities_np = np.asarray(gradients["opacity"], dtype=np.float32, order="C")
-                grad_betas_np = np.asarray(gradients["beta"], dtype=np.float32, order="C")
+                grad_position_np =     np.asarray(gradients["position"], dtype=np.float32, order="C")
+                grad_tangent_u_np =    np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
+                grad_tangent_v_np =    np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
+                grad_scales_np =       np.asarray(gradients["scale"], dtype=np.float32, order="C")
+                grad_albedos_np =      np.asarray(gradients["albedo"], dtype=np.float32, order="C")
+                grad_opacities_np =    np.asarray(gradients["opacity"], dtype=np.float32, order="C")
+                grad_betas_np =        np.asarray(gradients["beta"], dtype=np.float32, order="C")
 
                 # Sanity check shapes
                 current_positions_shape = tuple(positions.shape)

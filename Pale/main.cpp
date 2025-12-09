@@ -198,7 +198,7 @@ int main(int argc, char **argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
-    Pale::Log::init(spdlog::level::level_enum::info);
+    Pale::Log::init(spdlog::level::level_enum::debug);
 
     Pale::AssetManager assetManager{256};
     assetManager.enableHotReload(true);
@@ -216,7 +216,8 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    serializer.deserialize("scene_blender.xml");
+    //serializer.deserialize("scene_blender.xml");
+    serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -271,9 +272,9 @@ int main(int argc, char **argv) {
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e4;
+    settings.photonsPerLaunch = 1e6;
     settings.maxBounces = 3;
-    settings.numForwardPasses = 1000;
+    settings.numForwardPasses = 10;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;

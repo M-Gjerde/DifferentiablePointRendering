@@ -335,7 +335,7 @@ export namespace Pale {
                     //    continue;
                     //}
 
-                    geometry.scales[i] = glm::vec2(scaleU, scaleV);
+                    geometry.scales[i] = glm::vec2(scaleU, scaleV) * 2.0f;
 
                     geometry.positions[i] = glm::vec3(posFloats[i3 + 0], posFloats[i3 + 1], posFloats[i3 + 2]);
 

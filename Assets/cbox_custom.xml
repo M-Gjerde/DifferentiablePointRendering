@@ -27,28 +27,6 @@
     </sensor>
 
 
-    <sensor type="perspective" id="camera3">
-        <string name="fov_axis" value="smaller"/>
-        <float name="near_clip" value="0.01"/>
-        <float name="far_clip" value="100.0"/>
-        <float name="focus_distance" value="1000"/>
-        <float name="fov" value="75.3077"/>
-        <transform name="to_world">
-            <lookat origin="0.99, 0,1" target="0,0,1" up="0,0,1"/>
-        </transform>
-        <sampler type="independent">
-            <integer name="sample_count" value="128"/>
-        </sampler>
-        <film type="hdrfilm">
-            <integer name="width" value="400"/>
-            <integer name="height" value="400"/>
-            <rfilter type="tent"/>
-            <string name="pixel_format" value="rgb"/>
-            <string name="component_format" value="float32"/>
-        </film>
-    </sensor>
-
-
     <!-- BSDFs -->
     <bsdf type="diffuse" id="gray">
         <rgb name="reflectance" value="0.1,0.1,0.1"/>
