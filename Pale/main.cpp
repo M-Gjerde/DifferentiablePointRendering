@@ -275,10 +275,10 @@ int main(int argc, char** argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e3;
     settings.maxBounces = 4;
-    settings.numForwardPasses = 50;
+    settings.numForwardPasses = 25;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 4;
+    settings.adjointSamplesPerPixel = 1;
     settings.renderDebugGradientImages = true;
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);

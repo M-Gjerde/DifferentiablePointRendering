@@ -388,13 +388,11 @@ def print_history_2axis(history_path: Path) -> None:
         if "err_x" in row and row["err_x"] != "":
             err_x = float(row["err_x"])
             err_y = float(row["err_y"])
-            err_z = float(row["err_z"])
             abs_err_x = float(row["abs_err_x"])
             abs_err_y = float(row["abs_err_y"])
         else:
             err_x = fd_x - an_x
             err_y = fd_y - an_y
-            err_z = fd_z - an_z
             abs_err_x = abs(err_x)
             abs_err_y = abs(err_y)
 

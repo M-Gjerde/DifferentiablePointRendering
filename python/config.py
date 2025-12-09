@@ -8,9 +8,9 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e3
+    photons: float = 1e4
     bounces: int = 3
-    forward_passes: int = 50
+    forward_passes: int = 25
     gather_passes: int = 1
     adjoint_bounces: int = 2
     adjoint_passes: int = 1
@@ -194,7 +194,7 @@ def parse_args() -> OptimizationConfig:
     base_lr = args.learning_rate * args.learning_rate_multiplier
     lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log it
 
-    lr_scale = 1e9
+    lr_scale = 1
     # 3DGS-inspired relative factors w.r.t. position LR
     factor_position = lr_scale * 0.0005  # ~rotation_lr / position_lr
     factor_tangent  = lr_scale * 0.001  # ~rotation_lr / position_lr

@@ -1033,9 +1033,9 @@ public:
             deviceSelector->getQueue()
         );
 
-        //Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
-        //Pale::freeDebugImagesForScene(deviceSelector->getQueue(), debugImages.data(), debugImages.size());
-        //gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
+        Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
+        Pale::freeDebugImagesForScene(deviceSelector->getQueue(), debugImages.data(), debugImages.size());
+        gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
 
         pathTracer->setScene(sceneGpu, buildProducts);
     }

@@ -64,7 +64,7 @@ namespace Pale {
                     ray.ray.origin = ls.positionW;
                     ray.ray.direction = sampledDirection;
                     ray.pathThroughput = initialThroughput;
-                    ray.bounceIndex = 0u;
+                    ray.bounceIndex = 0;
 
                     auto counter = sycl::atomic_ref<uint32_t,
                                                     sycl::memory_order::relaxed,
@@ -166,7 +166,7 @@ namespace Pale {
                     if (instance.geometryType == GeometryType::PointCloud) {
                         // SURFACE EVENT
                         // 50/50 reflect vs transmit for a symmetric diffuse sheet
-                        float probReflect = 0.5f;
+                        float probReflect = 1.0f;
                         const bool chooseReflect = (rng128.nextFloat() < probReflect);
 
                         float sampledPdf = 0.0f;
@@ -206,7 +206,7 @@ namespace Pale {
                                 continue;
 
                             const uint32_t slot = photonCounter.fetch_add(1u);
-                            if (false && slot < intermediates.map.photonCapacity) {
+                            if (slot < intermediates.map.photonCapacity) {
                                 DevicePhotonSurface photonEntry{};
                                 photonEntry.position = event.hitWorld;
                                 photonEntry.power = rayState.pathThroughput;
@@ -286,7 +286,6 @@ namespace Pale {
         auto& settings = pkg.settings;
         auto& photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
 
-
         queue.wait();
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
             // Host-side (before launching kernel)
@@ -341,43 +340,8 @@ namespace Pale {
                             return;
                         }
 
-                        // Compute geometric normal for terminal hit
-                        const InstanceRecord& terminalInstance =
-                            scene.instances[transmitWorldHit.instanceIndex];
+                        buildIntersectionNormal(scene, transmitWorldHit);
 
-                        switch (terminalInstance.geometryType) {
-                        case GeometryType::Mesh:
-                            {
-                                const Triangle& triangle =
-                                    scene.triangles[transmitWorldHit.primitiveIndex];
-                                const Transform& objectToWorldTransform =
-                                    scene.transforms[terminalInstance.transformIndex];
-
-                                const Vertex& vertex0 = scene.vertices[triangle.v0];
-                                const Vertex& vertex1 = scene.vertices[triangle.v1];
-                                const Vertex& vertex2 = scene.vertices[triangle.v2];
-
-                                const float3 worldP0 =
-                                    toWorldPoint(vertex0.pos, objectToWorldTransform);
-                                const float3 worldP1 =
-                                    toWorldPoint(vertex1.pos, objectToWorldTransform);
-                                const float3 worldP2 =
-                                    toWorldPoint(vertex2.pos, objectToWorldTransform);
-
-                                transmitWorldHit.geometricNormalW =
-                                    normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
-                                break;
-                            }
-                        case GeometryType::PointCloud:
-                            {
-                                const Point& surfel =
-                                    scene.points[transmitWorldHit.primitiveIndex];
-                                const float3 canonicalNormalWorld =
-                                    normalize(cross(surfel.tanU, surfel.tanV));
-                                transmitWorldHit.geometricNormalW = canonicalNormalWorld;
-                                break;
-                            }
-                        }
 
                         // -----------------------------------------------------------------
                         // 2) For each surfel along the transmit segment, fire a scatter ray
@@ -444,8 +408,8 @@ namespace Pale {
                                     photonMap,
                                     useOneSidedScatter);
 
-                            float3 surfelShadedRadiance = surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f;
 
+                            float3 surfelShadedRadiance = surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f;
 
                             const Point& surfel = scene.points[terminalSplatEvent.primitiveIndex];
 
@@ -468,8 +432,10 @@ namespace Pale {
                         // -----------------------------------------------------------------
                         // 3) Shade terminal mesh (if any) with remaining transmittance
                         // -----------------------------------------------------------------
-                        if (transmittanceTau > 1e-4f &&
-                            terminalInstance.geometryType == GeometryType::Mesh) {
+                        if (transmittanceTau > 1e-4f) {
+
+                            auto& terminalInstance = scene.instances[transmitWorldHit.instanceIndex];
+
                             const GPUMaterial& material =
                                 scene.materials[terminalInstance.materialIndex];
 
