@@ -21,7 +21,6 @@ namespace Pale {
         auto* raysOut = pkg.intermediates.extensionRaysA;
         auto* countPrimary = pkg.intermediates.countPrimary;
 
-
         const uint32_t photonCount = settings.photonsPerLaunch;
         const uint32_t forwardPasses = settings.numForwardPasses;
         const float totalPhotons = photonCount * forwardPasses;
@@ -166,7 +165,7 @@ namespace Pale {
                     if (instance.geometryType == GeometryType::PointCloud) {
                         // SURFACE EVENT
                         // 50/50 reflect vs transmit for a symmetric diffuse sheet
-                        float probReflect = 1.0f;
+                        float probReflect = 0.5f;
                         const bool chooseReflect = (rng128.nextFloat() < probReflect);
 
                         float sampledPdf = 0.0f;

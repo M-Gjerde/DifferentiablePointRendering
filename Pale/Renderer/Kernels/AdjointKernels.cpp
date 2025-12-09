@@ -192,14 +192,10 @@ namespace Pale {
                             // Forward-side values reused in adjoint:
                             auto& splatEvent = whTransmit.splatEvents[i]; // one surfel
                             auto& surfel = scene.points[splatEvent.primitiveIndex];
-
                             float alphaGeom = splatEvent.alpha; // α(u,v,β)
                             float eta = surfel.opacity;
                             float alphaEff = eta * alphaGeom; // α_eff
-
-
                             // Geometry for u,v and Jacobian:
-
                             float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
                             const float travelSideSign =
                                 signNonZero(dot(canonicalNormalWorld, -rayState.ray.direction));
@@ -211,7 +207,6 @@ namespace Pale {
                             float r2 = u * u + v * v;
                             float su = surfel.scale.x();
                             float sv = surfel.scale.y();
-
                             float3 DuvDPosition = computeDuvDPosition(
                                 surfel.tanU,
                                 surfel.tanV,
@@ -219,7 +214,6 @@ namespace Pale {
                                 ray.direction,
                                 u, v,
                                 su, sv);
-
                             // Beta kernel parameters:
                             float beta = 4.0f * sycl::exp(surfel.beta);
                             // d alpha / d position (beta kernel):
@@ -227,7 +221,6 @@ namespace Pale {
                             float3 dAlpha_dPos = factor * DuvDPosition;
                             // d alpha_eff / d position:
                             float3 dAlphaEff_dPos = eta * dAlpha_dPos;
-
                             // ROTATION
                             float3 dUdTu, dVdTu, dUdTv, dVdTv;
                             computeFullDuDvWrtTangents(
@@ -240,7 +233,6 @@ namespace Pale {
                                 su, sv,
                                 dUdTu, dVdTu, dUdTv, dVdTv
                             );
-
                             // dudv derivatives wrt tangents
                             float3 dUVDtU = (u * dUdTu + v * dVdTu);
                             float3 dUVDtV = (u * dUdTv + v * dVdTv);
@@ -249,7 +241,6 @@ namespace Pale {
                             // d alpha_eff / d position:
                             float3 dAlphaEff_dTanU = eta * dAlpha_dTanU;
                             float3 dAlphaEff_dTanV = eta * dAlpha_dTanV;
-
                             /// SCALE
                             const float3 dUdVdScale =
                                 computeDuvDScale(u, v, su, sv);
@@ -258,20 +249,15 @@ namespace Pale {
                             float3 dAlphaEff_dScale = eta * dAlpha_dScale;
                             const float dAlphaEff_dScaleU = dAlphaEff_dScale.x();
                             const float dAlphaEff_dScaleV = dAlphaEff_dScale.y();
-
                             /// OPACITY
                             //alpha^(eff)(u, v)(&PartialD; eta)/(&PartialD; Pi)
-                            float dAlphaEffOpacity = alphaEff;
-
+                            float dAlphaEffOpacity = alphaGeom;
                             // Beta parameter:
                             const float dAlphaEffBeta =
-                                alphaEff * betaKernel(surfel.beta) *
+                                alphaGeom * surfel.opacity * betaKernel(surfel.beta) *
                                 sycl::log(1.0f - r2);
-
                             // Albedo
                             const float dAlphaEffAlbedo = alphaEff;
-
-
                             // Pixel adjoint / path adjoint:
                             const float3 pathAdjoint = rayState.pathThroughput; // dJ/dC (RGB) * transport
                             // Scalar weight = ⟨adjoint, (L_s - L_m)⟩:
@@ -284,21 +270,17 @@ namespace Pale {
                             for (uint32_t j = i + 1; j < S; ++j) {
                                 auto& jEvent = whTransmit.splatEvents[j];
                                 auto& jSurfel = scene.points[jEvent.primitiveIndex];
-
                                 const float jAlphaEff = jEvent.alpha * jSurfel.opacity;
-                                const float3 L_j = computeLSurfel(scene, rayState.ray.direction, jEvent, photonMap);
-
+                                const float3 L_surfel_j_incident = computeLSurfel(scene, ray.direction, jEvent, photonMap);
                                 // τ_j = Π_{k = i+1 .. j-1} (1 - α_k^eff)
                                 float tau_j = 1.0f;
                                 for (uint32_t k = i + 1; k < j; ++k) {
                                     auto& kEvent = whTransmit.splatEvents[k];
                                     auto& kSurfel = scene.points[kEvent.primitiveIndex];
                                     const float kAlphaEff = kEvent.alpha * kSurfel.opacity;
-
                                     tau_j *= (1.0f - kAlphaEff);
                                 }
-
-                                L_bg += L_j * jAlphaEff * tau_j;
+                                L_bg += L_surfel_j_incident * jAlphaEff * tau_j;
                             }
                             // 2) Background mesh term: τ_back = Π_{k = i+1 .. S-1} (1 - α_k^eff)
                             float tau_back = 1.0f;
@@ -310,11 +292,15 @@ namespace Pale {
                             }
                             L_bg += tau_back * L_Mesh; // Final position gradient vector:
 
-                            const float3& L_i = computeLSurfel(scene, rayState.ray.direction, splatEvent, photonMap);
+                            const float3& L_surfel_incident = computeLSurfel(scene, ray.direction, splatEvent, photonMap);
 
-                            float grad_luminance_opacity_R = tauFront * (L_i[0] - L_bg[0]);
-                            float grad_luminance_opacity_G = tauFront * (L_i[1] - L_bg[1]);
-                            float grad_luminance_opacity_B = tauFront * (L_i[2] - L_bg[2]);
+                            const float3& L_o = L_surfel_incident * alphaEff * surfel.albedo * M_1_PIf;
+
+
+
+                            float grad_luminance_opacity_R = tauFront * (L_o[0] - L_bg[0]);
+                            float grad_luminance_opacity_G = tauFront * (L_o[1] - L_bg[1]);
+                            float grad_luminance_opacity_B = tauFront * (L_o[2] - L_bg[2]);
 
                             float3 gradPosition_R = grad_luminance_opacity_R * dAlphaEff_dPos * pathAdjoint[0];
                             float3 gradPosition_G = grad_luminance_opacity_G * dAlphaEff_dPos * pathAdjoint[1];
@@ -336,18 +322,19 @@ namespace Pale {
                             float gradScaleV_G = grad_luminance_opacity_G * dAlphaEff_dScaleV * pathAdjoint[1];
                             float gradScaleV_B = grad_luminance_opacity_B * dAlphaEff_dScaleV * pathAdjoint[2];
 
-                            float gradOpacity_R = grad_luminance_opacity_R * dAlphaEffOpacity * pathAdjoint[0];
-                            float gradOpacity_G = grad_luminance_opacity_G * dAlphaEffOpacity * pathAdjoint[1];
-                            float gradOpacity_B = grad_luminance_opacity_B * dAlphaEffOpacity * pathAdjoint[2];
-
+                            //float gradOpacity_R = tauFront * L_i[0] * dAlphaEffOpacity * pathAdjoint[0];
+                            //float gradOpacity_G = tauFront * L_i[1] * dAlphaEffOpacity * pathAdjoint[1];
+                            //float gradOpacity_B = tauFront * L_i[2] * dAlphaEffOpacity * pathAdjoint[2];
+//
                             float gradBeta_R = grad_luminance_opacity_R * dAlphaEffBeta * pathAdjoint[0];
                             float gradBeta_G = grad_luminance_opacity_G * dAlphaEffBeta * pathAdjoint[1];
                             float gradBeta_B = grad_luminance_opacity_B * dAlphaEffBeta * pathAdjoint[2];
 
-                            float gradAlbedo_R = grad_luminance_opacity_R * dAlphaEffAlbedo * pathAdjoint[0];
-                            float gradAlbedo_G = grad_luminance_opacity_G * dAlphaEffAlbedo * pathAdjoint[1];
-                            float gradAlbedo_B = grad_luminance_opacity_B * dAlphaEffAlbedo * pathAdjoint[2];
+                            // dC/dρ = τ_front * α_eff * H
+                            float3 gradAlbedo = tauFront * alphaEff * alphaEff * L_surfel_incident * M_1_PIf * pathAdjoint;
 
+                            float3 gradOpacityRGB = alphaGeom * tauFront * (L_o - L_bg) * pathAdjoint;
+                            float gradOpacity = gradOpacityRGB[0] + gradOpacityRGB[1] + gradOpacityRGB[2];
                             //if (splatEvent.primitiveIndex != 0)
                             //    continue;
                             uint32_t primitiveIndex = splatEvent.primitiveIndex;
@@ -366,19 +353,17 @@ namespace Pale {
                             };
                             atomicAddFloat2(gradients.gradScale[primitiveIndex], gradScale);
 
-                            float gradOpacity = gradOpacity_R + gradOpacity_G + gradOpacity_B;
                             atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradOpacity);
 
                             float gradBeta = gradBeta_R + gradBeta_G + gradBeta_B;
                             atomicAddFloat(gradients.gradBeta[primitiveIndex], gradBeta);
 
-                            float3 gradAlbedo = {gradAlbedo_R, gradAlbedo_G, gradAlbedo_B};
                             atomicAddFloat3(gradients.gradAlbedo[primitiveIndex], gradAlbedo);
 
 
                             const uint32_t pixelIndex = rayState.pixelIndex;
 
-                            {
+                            if (settings.renderDebugGradientImages){
                                 float3 parameterAxisX = float3{1.0f, 0.0f, 0.0f};
                                 float3 parameterAxisY = float3{0.0f, 1.0f, 0.0f};
                                 float3 parameterAxisZ = float3{0.0f, 0.0f, 1.0f};

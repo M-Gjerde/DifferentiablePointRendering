@@ -866,9 +866,9 @@ namespace Pale {
         const float3 pathAdjoint = rayState.pathThroughput;
 
         // Per-channel adjoint * τ * radiance
-        const float R = pathAdjoint[0] * surfelRadianceRGB[0] + 1.0;
-        const float G = pathAdjoint[1] * surfelRadianceRGB[1] + 1.0;
-        const float B = pathAdjoint[2] * surfelRadianceRGB[2] + 1.0;
+        const float R = pathAdjoint[0] * surfelRadianceRGB[0];
+        const float G = pathAdjoint[1] * surfelRadianceRGB[1];
+        const float B = pathAdjoint[2] * surfelRadianceRGB[2];
 
         // Position gradients
         const float3 gradCPosR = R * bsdfGradPosition;

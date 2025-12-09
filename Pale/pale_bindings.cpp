@@ -1450,10 +1450,10 @@ public:
                 tanUGlm = rotationDelta * tanUGlm;
                 tanVGlm = rotationDelta * tanVGlm;
 
-                pointGeometry.tanU[i] = (tanUGlm);
-                pointGeometry.tanV[i] = (tanVGlm);
+                pointGeometry.tanU[i] = tanUGlm;
+                pointGeometry.tanV[i] = tanVGlm;
 
-                pointGeometry.albedos[i] += (newColor);
+                pointGeometry.albedos[i] += newColor;
                 pointGeometry.opacities[i] += opacity;
                 pointGeometry.betas[i] += beta;
                 pointGeometry.scales[i] *= newScale; // component-wise

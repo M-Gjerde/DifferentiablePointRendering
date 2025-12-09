@@ -915,12 +915,13 @@ namespace Pale {
             }
         }
 
-        const float3 irradianceRgb = weightedSumPhotonPowerRgb * inverseConeNormalization;
+        float3 irradianceRgb = weightedSumPhotonPowerRgb * inverseConeNormalization;
 
         // Two-sided Lambert: no extra abs(cos) on outgoing; irradiance already integrated over cos.
-        float3 lambertBrdfRgb = includeBrdf ? diffuseAlbedoRgb * M_1_PIf : float3{1.0f};
+        if (includeBrdf)
+            irradianceRgb *= diffuseAlbedoRgb * M_1_PIf;
 
-        return irradianceRgb * lambertBrdfRgb;
+        return irradianceRgb;
     }
 
     inline float3 computeLSurfel(const GPUSceneBuffers& scene, const float3& direction, const SplatEvent& splatEvent,
@@ -933,7 +934,8 @@ namespace Pale {
                 direction,
                 scene,
                 photonMap,
-                useOneSidedScatter);
+                useOneSidedScatter,
+                false);
 
         float3 surfelRadianceBack =
             estimateSurfelRadianceFromPhotonMap(
@@ -941,7 +943,8 @@ namespace Pale {
                 -direction,
                 scene,
                 photonMap,
-                useOneSidedScatter);
+                useOneSidedScatter,
+                false);
 
         return (surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f);
     }

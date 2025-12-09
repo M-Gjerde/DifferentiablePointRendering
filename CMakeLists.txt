@@ -103,11 +103,12 @@ target_link_libraries(PaleLib
         PRIVATE
         pugixml
         EnTT::EnTT
-        spdlog
         glm
         assimp
         yaml-cpp
         tinyply
+        PUBLIC
+        spdlog
 )
 
 target_include_directories(PaleLib

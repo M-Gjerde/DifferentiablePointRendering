@@ -9,7 +9,7 @@ export module Pale.Log; // ── named module
 export namespace Pale {
     class Log {
     public:
-        static void init(int level = spdlog::level::debug) {
+        static void init(int level = spdlog::level::trace) {
             // create colour console sinks for core and client
             s_coreLogger = spdlog::stdout_color_mt("PALE_CORE");
             s_coreLogger->set_pattern("[CORE] [%H:%M:%S.%e] [%^%l%$] %v");

@@ -564,28 +564,6 @@ def apply_quaternion_to_vector(quaternion_xyzw: np.ndarray,
     return rotated_vector
 
 
-def render_with_trs(
-        renderer,
-        translation3,
-        rotation_quat4,
-        scale3,
-        albedo3,
-        opacity,
-        beta=0.0,
-        index=-1,
-) -> np.ndarray:
-    """Apply a full TRS+albedo+opacity+beta and render."""
-    renderer.set_gaussian_transform(
-        translation3=translation3,
-        rotation_quat4=rotation_quat4,
-        scale3=scale3,
-        albedo3=albedo3,
-        opacity=opacity,
-        beta=beta,
-        index=index,
-    )
-    rgb = np.asarray(renderer.render_forward()["camera1"], dtype=np.float32)
-    return rgb
 
 def analytic_rotation_grad_for_axis_deg(
     axis_name: str,
@@ -625,9 +603,9 @@ def analytic_rotation_grad_for_axis_deg(
 # ---------- Main driver: compute FD for all parameters ----------
 def main(args) -> None:
     renderer_settings = {
-        "photons": 1e3,
+        "photons": 1e4,
         "bounces": 4,
-        "forward_passes": 100,
+        "forward_passes": 500,
         "gather_passes": 1,
         "adjoint_bounces": 2,
         "adjoint_passes": 4,
@@ -651,7 +629,8 @@ def main(args) -> None:
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
-    camera = renderer.get_camera_names()[0]
+    cameras = renderer.get_camera_names()
+    camera = cameras[0]
     target_image = renderer.render_forward()[camera]
     save_rgb_preview_png(target_image, base_output_dir / "target_image.png")
 
@@ -728,12 +707,12 @@ def main(args) -> None:
         target_scales_np[args.index] = target_scales_np[args.index] * np.array(noise,dtype=np.float32)
 
     elif args.param == "opacity":
-        eps_opacity = 0.3
+        eps_opacity = 0.2
         target_opacities_np[args.index] = target_opacities_np[args.index] + np.array(eps_opacity, dtype=np.float32)
 
 
     if args.param == "albedo":
-        eps_albedo = -0.3
+        eps_albedo = 0.2
         if args.axis == "x":
             noise = [eps_albedo, 0.0, 0.0]
         elif args.axis == "y":
@@ -873,7 +852,6 @@ def main(args) -> None:
     eps_rotation_deg = 0.5
     eps_scale = 0.05
     eps_opacity = 0.1
-    eps_albedo = 0.1
     eps_beta = 0.1  # reasonable start for log-shape
 
     iterations = 6
@@ -889,7 +867,7 @@ def main(args) -> None:
             print(f"[FD] Computing Translation axis iteration={i + 1}/{iterations}...")
             for axis in ["x", "y", "z"]:
                 rgb_minus, rgb_plus, grad_fd = finite_difference_translation(
-                    renderer, args.index, axis, eps_translation
+                    renderer, args.index, axis, eps_translation, camera
                 )
                 # calculate loss for each image
                 loss_negative = compute_l2_loss(rgb_minus, target_image)
@@ -978,7 +956,7 @@ def main(args) -> None:
             print(f"[FD] Computing Rotation axis iteration={i + 1}/{iterations}...")
             for axis in ["x", "y", "z"]:
                 rgb_minus, rgb_plus, grad_fd = finite_difference_rotation(
-                    renderer, args.index, axis, eps_rotation_deg
+                    renderer, args.index, axis, eps_rotation_deg, camera
                 )
                 loss_negative = compute_l2_loss(rgb_minus, target_image)
                 loss_positive = compute_l2_loss(rgb_plus, target_image)
@@ -1080,7 +1058,7 @@ def main(args) -> None:
             print(f"[FD] Computing Scale axis iteration={i + 1}/{iterations}...")
             for axis in ["x", "y"]:
                 rgb_minus, rgb_plus, grad_fd = finite_difference_scale(
-                    renderer, args.index, axis, eps_scale
+                    renderer, args.index, axis, eps_scale, camera
                 )
                 # calculate loss for each image
                 loss_negative = compute_l2_loss(rgb_minus, target_image)
@@ -1168,7 +1146,7 @@ def main(args) -> None:
         for i in range(iterations):
             print(f"[FD] Computing Opacity iteration={i + 1}/{iterations}...")
             rgb_minus, rgb_plus, grad_fd = finite_difference_opacity(
-                renderer, args.index, eps_opacity
+                renderer, args.index, eps_opacity, camera
             )
             # calculate loss for each image
             loss_negative = compute_l2_loss(rgb_minus, target_image)
@@ -1250,7 +1228,7 @@ def main(args) -> None:
         for i in range(iterations):
             print(f"[FD] Computing Beta iteration={i + 1}/{iterations}...")
             rgb_minus, rgb_plus, grad_fd = finite_difference_beta(
-                renderer, args.index, eps_beta
+                renderer, args.index, eps_beta, camera
             )
             # calculate loss for each image
             loss_negative = compute_l2_loss(rgb_minus, target_image)
@@ -1327,12 +1305,13 @@ def main(args) -> None:
         # --- Albedo (x,y,z) ---
         grad_albedo = {"x": 0.0, "y": 0.0, "z": 0.0}
         grad_albedo_samples = {"x": [], "y": [], "z": []}
+        eps_albedo = abs(eps_albedo)
 
         for i in range(iterations):
             print(f"[FD] Computing Albedo axis iteration={i + 1}/{iterations}...")
             for axis in ["x", "y", "z"]:
                 rgb_minus, rgb_plus, grad_fd = finite_difference_albedo(
-                    renderer, args.index, axis, eps_albedo
+                    renderer, args.index, axis, eps_albedo, camera
                 )
                 # calculate loss for each image
                 loss_negative = compute_l2_loss(rgb_minus, target_image)

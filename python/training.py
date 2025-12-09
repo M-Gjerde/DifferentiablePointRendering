@@ -351,25 +351,41 @@ def run_optimization(
     target_path = Path(config.dataset_path)
     target_images: Dict[str, np.ndarray] = {}
 
+    isColmap = True
     # Multi-camera mode: interpret dataset path as a directory
     if not target_path.is_dir():
         raise RuntimeError(
             f"Target path '{target_path}' must be a directory when multiple cameras are used."
         )
 
-    print(f"Loading target images from directory: {target_path}")
-    camera_ids = get_camera_names(renderer)
-    for camera_name in camera_ids:
-        image_path = target_path / f"{camera_name}" / "out_photonmap.png"
-        if not image_path.is_file():
-            raise RuntimeError(
-                f"Missing target image for camera '{camera_name}': {image_path}"
+    if isColmap:
+        print(f"Loading target images from directory: {target_path}")
+        camera_ids = get_camera_names(renderer)
+        for camera_name in camera_ids:
+            image_path = target_path / "images" / f"{camera_name}.png"
+            if not image_path.is_file():
+                raise RuntimeError(
+                    f"Missing target image for camera '{camera_name}': {image_path}"
+                )
+            target_images[camera_name] = load_target_image(image_path)
+            print(
+                f"  Camera '{camera_name}': loaded target {image_path} "
+                f"with shape {target_images[camera_name].shape}"
             )
-        target_images[camera_name] = load_target_image(image_path)
-        print(
-            f"  Camera '{camera_name}': loaded target {image_path} "
-            f"with shape {target_images[camera_name].shape}"
-        )
+    else:
+        print(f"Loading target images from directory: {target_path}")
+        camera_ids = get_camera_names(renderer)
+        for camera_name in camera_ids:
+            image_path = target_path / f"{camera_name}" / "out_photonmap.png"
+            if not image_path.is_file():
+                raise RuntimeError(
+                    f"Missing target image for camera '{camera_name}': {image_path}"
+                )
+            target_images[camera_name] = load_target_image(image_path)
+            print(
+                f"  Camera '{camera_name}': loaded target {image_path} "
+                f"with shape {target_images[camera_name].shape}"
+            )
 
     # ------------------------------------------------------------------
     # Fetch initial parameters from renderer

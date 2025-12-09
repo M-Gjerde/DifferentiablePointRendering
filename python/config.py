@@ -8,9 +8,9 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e4
+    photons: float = 1e3
     bounces: int = 3
-    forward_passes: int = 25
+    forward_passes: int = 500
     gather_passes: int = 1
     adjoint_bounces: int = 2
     adjoint_passes: int = 1
@@ -197,12 +197,19 @@ def parse_args() -> OptimizationConfig:
     lr_scale = 1
     # 3DGS-inspired relative factors w.r.t. position LR
     factor_position = lr_scale * 0.0005  # ~rotation_lr / position_lr
-    factor_tangent  = lr_scale * 0.001  # ~rotation_lr / position_lr
-    factor_scale    = lr_scale * 0.005  # ~scaling_lr / position_lr
-    factor_albedo   = lr_scale * 0.01  # ~feature_lr / position_lr
-    factor_opacity  = lr_scale * 0.01  # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 0.001  # ~beta_lr / position_lr
+    factor_tangent  = lr_scale * 0.001   # ~rotation_lr / position_lr
+    factor_scale    = lr_scale * 0.005   # ~scaling_lr / position_lr
+    factor_albedo   = lr_scale * 0.1    # ~feature_lr / position_lr
+    factor_opacity  = lr_scale * 0.01    # ~opacity_lr / position_lr
+    factor_beta     = lr_scale * 0.001   # ~beta_lr / position_lr
 
+    #factor_position = lr_scale * 1  # ~rotation_lr / position_lr
+    #factor_tangent  = lr_scale * 1  # ~rotation_lr / position_lr
+    #factor_scale    = lr_scale * 1  # ~scaling_lr / position_lr
+    #factor_albedo   = lr_scale * 1  # ~feature_lr / position_lr
+    #factor_opacity  = lr_scale * 1  # ~opacity_lr / position_lr
+    #factor_beta     = lr_scale * 1  # ~beta_lr / position_lr
+#
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)
     lr_scale = args.learning_rate_scale or (factor_scale * base_lr)

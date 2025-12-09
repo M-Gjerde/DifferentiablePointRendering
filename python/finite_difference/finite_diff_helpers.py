@@ -34,7 +34,7 @@ def save_rgb_preview_png(
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    #print(f"Saving RGB preview to: {out_path.absolute()}")
+    # print(f"Saving RGB preview to: {out_path.absolute()}")
     img = Image.fromarray(img_u8).convert("RGB")
     img.save(out_path)
 
@@ -59,14 +59,15 @@ def degrees_to_quaternion(deg: float, axis: str):
 
 
 def render_with_trs(
-    renderer,
-    translation3,
-    rotation_quat4,
-    scale3,
-    albedo3,
-    opacity,
-    beta = 0.0,
-    index = -1,
+        renderer,
+        translation3,
+        rotation_quat4,
+        scale3,
+        albedo3,
+        opacity,
+        beta=0.0,
+        index=-1,
+        camera_name="camera1"
 ) -> np.ndarray:
     """Apply a full TRS+color+opacity+beta and render."""
     renderer.set_gaussian_transform(
@@ -81,14 +82,14 @@ def render_with_trs(
 
     renderer.rebuild_bvh()
 
-    rgb = np.asarray(renderer.render_forward()["camera1"], dtype=np.float32)
+    image = renderer.render_forward()[camera_name]
+    rgb = np.asarray(image, dtype=np.float32)
     return rgb
-
 
 
 # ---------- Finite difference core ----------
 def finite_difference_translation(
-    renderer, index: int, axis: str, eps: float
+        renderer, index: int, axis: str, eps: float, camera_name: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if axis == "x":
         negative_vector = (-eps, 0.0, 0.0)
@@ -110,6 +111,7 @@ def finite_difference_translation(
         albedo3=(0.0, 0.0, 0.0),
         opacity=0.0,
         index=index,
+        camera_name=camera_name
     )
     rgb_plus = render_with_trs(
         renderer,
@@ -119,13 +121,15 @@ def finite_difference_translation(
         albedo3=(0.0, 0.0, 0.0),
         opacity=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
     return rgb_minus, rgb_plus, grad
 
 
 def finite_difference_rotation(
-    renderer, index: int, axis: str, eps_degrees: float
+        renderer, index: int, axis: str, eps_degrees: float, camera_name: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     qx_minus, qy_minus, qz_minus, qw_minus = degrees_to_quaternion(-eps_degrees, axis)
     qx_plus, qy_plus, qz_plus, qw_plus = degrees_to_quaternion(+eps_degrees, axis)
@@ -139,6 +143,8 @@ def finite_difference_rotation(
         opacity=0.0,
         beta=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     rgb_plus = render_with_trs(
         renderer,
@@ -149,13 +155,15 @@ def finite_difference_rotation(
         opacity=0.0,
         beta=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps_degrees)
     return rgb_minus, rgb_plus, grad
 
 
 def finite_difference_scale(
-    renderer, index: int, axis: str, eps: float
+        renderer, index: int, axis: str, eps: float, camera_name: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if axis == "x":
         negative_scale = (1.0 - eps, 1.0, 1.0)
@@ -178,6 +186,8 @@ def finite_difference_scale(
         opacity=0.0,
         beta=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     rgb_plus = render_with_trs(
         renderer,
@@ -188,13 +198,15 @@ def finite_difference_scale(
         opacity=0.0,
         beta=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
     return rgb_minus, rgb_plus, grad
 
 
 def finite_difference_opacity(
-    renderer, index: int, eps: float
+        renderer, index: int, eps: float, camera_name: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     negative_opacity = -eps
     positive_opacity = +eps
@@ -208,6 +220,8 @@ def finite_difference_opacity(
         opacity=negative_opacity,
         beta=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     rgb_plus = render_with_trs(
         renderer,
@@ -218,13 +232,15 @@ def finite_difference_opacity(
         opacity=positive_opacity,
         beta=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
     return rgb_minus, rgb_plus, grad
 
 
 def finite_difference_albedo(
-    renderer, index: int, channel: str, eps: float
+        renderer, index: int, channel: str, eps: float, camera_name: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     channel in {'R','G','B'}: we perturb that color channel while keeping others at zero.
@@ -252,6 +268,8 @@ def finite_difference_albedo(
         opacity=1.0,
         beta=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     rgb_plus = render_with_trs(
         renderer,
@@ -262,12 +280,15 @@ def finite_difference_albedo(
         opacity=1.0,
         beta=0.0,
         index=index,
+        camera_name=camera_name
+
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
     return rgb_minus, rgb_plus, grad
 
+
 def finite_difference_beta(
-    renderer, index: int, eps: float
+        renderer, index: int, eps: float, camera_name: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Central finite differences for the beta parameter (log-shape).
@@ -285,6 +306,8 @@ def finite_difference_beta(
         opacity=1.0,
         beta=beta_minus,
         index=index,
+        camera_name=camera_name
+
     )
     rgb_plus = render_with_trs(
         renderer,
@@ -295,20 +318,21 @@ def finite_difference_beta(
         opacity=1.0,
         beta=beta_plus,
         index=index,
+        camera_name=camera_name
+
     )
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
     return rgb_minus, rgb_plus, grad
 
 
-
 # ---------- Visualization for one FD gradient tensor ----------
 def write_fd_images(
-    grad_disp_fd: np.ndarray,
-    rgb_minus: np.ndarray,
-    rgb_plus: np.ndarray,
-    out_dir: Path,
-    param_name: str,
-    axis_or_channel: str,
+        grad_disp_fd: np.ndarray,
+        rgb_minus: np.ndarray,
+        rgb_plus: np.ndarray,
+        out_dir: Path,
+        param_name: str,
+        axis_or_channel: str,
 ) -> None:
     """
     grad_disp_fd: H x W x 3, finite-difference gradient in display-space RGB.
