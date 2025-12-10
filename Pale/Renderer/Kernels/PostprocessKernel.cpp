@@ -10,18 +10,12 @@ namespace Pale {
     void launchPostProcessKernel(RenderPackage& pkg) {
         auto& queue = pkg.queue;
         auto sensor = pkg.sensor;
-        auto& settings = pkg.settings;
-        auto& intermediates = pkg.intermediates;
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
             SensorGPU sensor = pkg.sensor[cameraIndex];
             const uint32_t imageWidth = sensor.camera.width;
             const uint32_t imageHeight = sensor.camera.height;
-
             const uint32_t raysPerSet = imageWidth * imageHeight;
 
-            queue
-                .memcpy(pkg.intermediates.countPrimary, &raysPerSet, sizeof(uint32_t))
-                .wait();
 
             queue.submit([&](sycl::handler& commandGroupHandler) {
                 const float exposureCorrection = sensor.exposureCorrection;
@@ -37,12 +31,6 @@ namespace Pale {
 
                         // Map to pixel (linear index; X/Y only needed if you want them)
                         const uint32_t linearIndex = globalRayIndex;
-
-                        // ------------------------------------------------------------
-                        // 1. Recover pixel coordinates (unflipped)
-                        // ------------------------------------------------------------
-                        const uint32_t pixelX = linearIndex % imageWidth;
-                        const uint32_t pixelY = linearIndex / imageWidth;
 
                         // ------------------------------------------------------------
                         // 2. Compute flipped Y coordinate for LDR output

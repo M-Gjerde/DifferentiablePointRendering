@@ -18,31 +18,30 @@ namespace Pale {
         float tEntry;
     };
 
-    SYCL_EXTERNAL inline bool computeAabbEntry(const Ray& ray,
-                                               const BVHNode& node,
-                                               const float3& inverseDirection,
+    SYCL_EXTERNAL inline bool computeAabbEntry(const Ray &ray,
+                                               const BVHNode &node,
+                                               const float3 &inverseDirection,
                                                float currentBestTHit,
-                                               float& outTEntry) {
+                                               float &outTEntry) {
         return slabIntersectAABB(ray, node, inverseDirection, currentBestTHit, outTEntry);
     }
 
-    SYCL_EXTERNAL inline bool computeAabbEntry(const Ray& ray,
-                                               const TLASNode& node,
-                                               const float3& inverseDirection,
+    SYCL_EXTERNAL inline bool computeAabbEntry(const Ray &ray,
+                                               const TLASNode &node,
+                                               const float3 &inverseDirection,
                                                float currentBestTHit,
-                                               float& outTEntry) {
+                                               float &outTEntry) {
         return slabIntersectAABB(ray, node, inverseDirection, currentBestTHit, outTEntry);
     }
 
-    template <typename StackT>
-    SYCL_EXTERNAL inline void pushNearFar(StackT& traversalStack,
+    template<typename StackT>
+    SYCL_EXTERNAL inline void pushNearFar(StackT &traversalStack,
                                           int leftIndex, float leftTEntry,
                                           int rightIndex, float rightTEntry) {
         if (leftTEntry <= rightTEntry) {
             traversalStack.push(rightIndex);
             traversalStack.push(leftIndex);
-        }
-        else {
+        } else {
             traversalStack.push(leftIndex);
             traversalStack.push(rightIndex);
         }
@@ -51,14 +50,14 @@ namespace Pale {
     // -----------------------------------------------------------------------------
     // Triangle BLAS (unchanged except near-to-far child push)
     // -----------------------------------------------------------------------------
-    SYCL_EXTERNAL static bool intersectBLASMesh(const Ray& rayObject,
+    SYCL_EXTERNAL static bool intersectBLASMesh(const Ray &rayObject,
                                                 uint32_t geometryIndex,
-                                                LocalHit& localHitOut,
-                                                const GPUSceneBuffers& scene) {
-        const BLASRange& blasRange = scene.blasRanges[geometryIndex];
-        const BVHNode* bvhNodes = scene.blasNodes + blasRange.firstNode;
-        const Triangle* triangles = scene.triangles;
-        const Vertex* vertices = scene.vertices;
+                                                LocalHit &localHitOut,
+                                                const GPUSceneBuffers &scene) {
+        const BLASRange &blasRange = scene.blasRanges[geometryIndex];
+        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
+        const Triangle *triangles = scene.triangles;
+        const Vertex *vertices = scene.vertices;
 
         float bestTHit = std::numeric_limits<float>::infinity();
         bool hitAnyTriangle = false;
@@ -69,7 +68,7 @@ namespace Pale {
 
         while (!traversalStack.empty()) {
             const int nodeIndex = traversalStack.pop();
-            const BVHNode& node = bvhNodes[nodeIndex];
+            const BVHNode &node = bvhNodes[nodeIndex];
 
             float nodeTEntry = 0.0f;
             if (!slabIntersectAABB(rayObject, node, inverseDirection, bestTHit, nodeTEntry))
@@ -97,7 +96,7 @@ namespace Pale {
             // Leaf: test triangles
             for (uint32_t i = 0; i < node.triCount; ++i) {
                 uint32_t triangleIndex = node.leftFirst + i; // global index
-                const Triangle& tri = triangles[triangleIndex];
+                const Triangle &tri = triangles[triangleIndex];
 
                 const float3 A = vertices[tri.v0].pos;
                 const float3 B = vertices[tri.v1].pos;
@@ -120,30 +119,29 @@ namespace Pale {
     // -----------------------------------------------------------------------------
     // Point-cloud BLAS with ordered Bernoulli thinning and depth grouping
     // -----------------------------------------------------------------------------
-    SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray& rayObject,
+    SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray &rayObject,
                                                       uint32_t blasRangeIndex,
-                                                      LocalHit& localHitOut,
-                                                      const GPUSceneBuffers& scene,
-                                                      rng::Xorshift128& rng128,
-                                                      const Transform& transform,
-                                                      const Ray& rayWorld,
+                                                      LocalHit &localHitOut,
+                                                      const GPUSceneBuffers &scene,
+                                                      rng::Xorshift128 &rng128,
+                                                      const Transform &transform,
+                                                      const Ray &rayWorld,
                                                       RayIntersectMode rayIntersectMode,
                                                       uint32_t scatterOnPrimitiveIndex) {
-        const BLASRange& blasRange = scene.blasRanges[blasRangeIndex];
-        const BVHNode* bvhNodes = scene.blasNodes + blasRange.firstNode;
+        const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
+        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
         float bestAcceptedTHit = std::numeric_limits<float>::infinity();
         bool foundAcceptedScatter = false;
         const float3 inverseDirection = safeInvDir(rayObject.direction);
         constexpr float rayEpsilon = 1e-6f;
-        constexpr float sameDepthEpsilon = 1e-6f;
+        constexpr float sameDepthEpsilon = 1e-2f;
 
         float cumulativeTransmittanceBefore = 1.0f;
 
         SmallStack<64> traversalStack;
         traversalStack.push(0);
 
-        float currentGroupDepthKey = -std::numeric_limits<float>::infinity();
         BoundedVector<float, kMaxSplatEvents> groupDepthKeys;
         BoundedVector<float, kMaxSplatEvents> groupLocalTs;
         BoundedVector<float, kMaxSplatEvents> groupAlphas;
@@ -156,7 +154,7 @@ namespace Pale {
             groupIndices.clear();
         };
 
-        auto scatterCurrentGroup = [&](rng::Xorshift128& randomNumberGenerator) -> bool {
+        auto scatterCurrentGroup = [&](rng::Xorshift128 &randomNumberGenerator) -> bool {
             if (groupLocalTs.empty()) return false;
 
             // 1) Push this slice’s events into LocalHit (depth-sorted already)
@@ -180,7 +178,7 @@ namespace Pale {
                 // Global τ_front for this event:
                 // τ_before_event = cumulativeTransmittanceBefore * Π_{prev events in this slice}(1 - α_eff)
                 const float tauBeforeThisEvent =
-                    cumulativeTransmittanceBefore * runningTransmittanceWithinSlice;
+                        cumulativeTransmittanceBefore * runningTransmittanceWithinSlice;
                 localHitOut.splatEvents[eventIndex].tau = tauBeforeThisEvent;
 
                 // Update within-slice transmittance for the *next* event
@@ -191,7 +189,8 @@ namespace Pale {
             // 2) Composite alpha at this depth slice
             float productOneMinusAlphaEff = 1.0f;
             for (size_t groupIndex = 0; groupIndex < groupAlphas.size(); ++groupIndex) {
-                productOneMinusAlphaEff *= (1.0f - groupAlphas[groupIndex] * scene.points[groupIndices[groupIndex]].opacity);
+                productOneMinusAlphaEff *= (1.0f - groupAlphas[groupIndex] * scene.points[groupIndices[groupIndex]].
+                                            opacity);
             }
 
             float compositeAlphaEff = 1.0f - productOneMinusAlphaEff;
@@ -205,8 +204,8 @@ namespace Pale {
 
             // 3) Forced-scatter debug: check if this slice contains the target surfel
             const bool forceScatterOnSpecificSurfel =
-                (rayIntersectMode == RayIntersectMode::Scatter) &&
-                (scatterOnPrimitiveIndex != UINT32_MAX);
+                    (rayIntersectMode == RayIntersectMode::Scatter) &&
+                    (scatterOnPrimitiveIndex != UINT32_MAX);
 
             int forcedGroupIndex = -1;
             if (forceScatterOnSpecificSurfel) {
@@ -223,38 +222,32 @@ namespace Pale {
             bool mustTransmit = false;
 
             switch (rayIntersectMode) {
-            case RayIntersectMode::Transmit:
-                {
+                case RayIntersectMode::Transmit: {
                     mustTransmit = true;
                     break;
                 }
-            case RayIntersectMode::Random:
-                {
+                case RayIntersectMode::Random: {
                     // Original behavior: stochastic choice between transmit and scatter
                     const float uniformSample = randomNumberGenerator.nextFloat();
                     if (uniformSample < compositeAlphaEff) {
                         mustScatter = true;
-                    }
-                    else {
+                    } else {
                         mustTransmit = true;
                     }
                     break;
                 }
-            case RayIntersectMode::Scatter:
-                {
+                case RayIntersectMode::Scatter: {
                     if (forceScatterOnSpecificSurfel) {
                         if (forcedGroupIndex >= 0) {
                             // This slice contains the requested surfel: we must scatter on it
                             mustScatter = true;
                             mustTransmit = false;
-                        }
-                        else {
+                        } else {
                             // This slice does *not* contain the requested surfel: pure transmit
                             mustScatter = false;
                             mustTransmit = true;
                         }
-                    }
-                    else {
+                    } else {
                         // Debug / forced-scatter mode without a specific primitive:
                         // if there is any opacity in this slice, we must scatter on one event.
                         mustScatter = true;
@@ -297,7 +290,7 @@ namespace Pale {
 
                 const float eventAlpha = groupAlphas[groupIndex] * opacity;
                 const float probabilityFirstHere =
-                    eventAlpha * survivalInsideGroup / safeCompositeAlpha;
+                        eventAlpha * survivalInsideGroup / safeCompositeAlpha;
 
                 if (randomNumberGenerator.nextFloat() < probabilityFirstHere) {
                     localHitOut.t = groupLocalTs[groupIndex];
@@ -321,9 +314,15 @@ namespace Pale {
             return true;
         };
 
+        BoundedVector<float,    kMaxSplatEvents> candidateLocalTs;
+        BoundedVector<float,    kMaxSplatEvents> candidateAlphas;
+        BoundedVector<float,    kMaxSplatEvents> candidateDepthKeys;
+        BoundedVector<uint32_t, kMaxSplatEvents> candidateIndices;
+
+
         while (!traversalStack.empty()) {
             const int nodeIndex = traversalStack.pop();
-            const BVHNode& node = bvhNodes[nodeIndex];
+            const BVHNode &node = bvhNodes[nodeIndex];
 
             float nodeTEntry = 0.0f;
             if (!slabIntersectAABB(rayObject, node, inverseDirection, bestAcceptedTHit, nodeTEntry))
@@ -343,31 +342,18 @@ namespace Pale {
 
                 if (hitLeft && hitRight) {
                     pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                }
-                else if (hitLeft) {
+                } else if (hitLeft) {
                     traversalStack.push(leftIndex);
-                }
-                else if (hitRight) {
+                } else if (hitRight) {
                     traversalStack.push(rightIndex);
                 }
                 continue;
             }
 
-            // Leaf: collect surfel events, sort by tHit
-            BoundedVector<float, kMaxSplatEvents> leafLocalTHits;
-            // Should match the maxleafpoints in the BVH construction
-            BoundedVector<float, kMaxSplatEvents> leafAlphas;
-            BoundedVector<float, kMaxSplatEvents> leafDepthKeys;
-            BoundedVector<uint32_t, kMaxSplatEvents> leafIndices;
-            leafLocalTHits.clear();
-            leafAlphas.clear();
-            leafIndices.clear();
-            leafDepthKeys.clear();
-
+            // Leaf: just collect candidates, DO NOT clear the global arrays here
             for (uint32_t local = 0; local < node.triCount; ++local) {
-                if (leafLocalTHits.size() >= kMaxSplatEvents)
-                    continue;
-
+                if (candidateLocalTs.size() >= kMaxSplatEvents)
+                    break;
 
                 const uint32_t surfelIndex = node.leftFirst + local;
                 const Point& surfel = scene.points[surfelIndex];
@@ -375,78 +361,91 @@ namespace Pale {
                 float tHitLocal = 0.0f;
                 float opacity = 0.0f;
                 float3 outHitLocal;
-                if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestAcceptedTHit, tHitLocal, outHitLocal, opacity))
+                if (!intersectSurfel(rayObject, surfel, rayEpsilon, FLT_MAX, tHitLocal, outHitLocal, opacity))
                     continue;
 
-                float3 worldPoint = toWorldPoint(outHitLocal, transform);
+                const float3 worldPoint = toWorldPoint(outHitLocal, transform);
                 const float depthKey = dot(worldPoint - rayWorld.origin, rayWorld.direction);
-
                 const float alphaAtHit = sycl::clamp(opacity, 0.0f, 1.0f);
 
-                leafLocalTHits.pushBack(tHitLocal);
-                leafAlphas.pushBack(alphaAtHit);
-                leafIndices.pushBack(surfelIndex);
-                leafDepthKeys.pushBack(depthKey);
+                candidateLocalTs.pushBack(tHitLocal);
+                candidateAlphas.pushBack(alphaAtHit);
+                candidateDepthKeys.pushBack(depthKey);
+                candidateIndices.pushBack(surfelIndex);
             }
+        }
 
-            // Sort leaf events by t using insertionSortByKey (no STL)
-            const int leafCount = leafLocalTHits.size();
-            BoundedVector<int, kMaxSplatEvents> order;
-            BoundedVector<float, kMaxSplatEvents> tempKeys;
-            order.clear();
-            tempKeys.clear();
-            for (int i = 0; i < leafCount; ++i) {
-                order.pushBack(i);
-                tempKeys.pushBack(leafDepthKeys[i]);
-            }
-            insertionSortByKeyTie(tempKeys.data(), leafAlphas.data(), order.data(), leafCount, sameDepthEpsilon);
+        const int candidateCount = candidateLocalTs.size();
+        BoundedVector<int,   kMaxSplatEvents> order;
+        BoundedVector<float, kMaxSplatEvents> tempKeys;
 
-            // Stream into running depth group
-            for (int k = 0; k < leafCount; ++k) {
-                const int i = order[k];
-                const float alphaAtHit = leafAlphas[i];
-                const float depthKey = leafDepthKeys[i]; // world-ray key
-                const float localTHit = leafLocalTHits[i]; // object-space t
-                const uint32_t surfelIndex = leafIndices[i];
+        order.clear();
+        tempKeys.clear();
+        for (int i = 0; i < candidateCount; ++i) {
+            order.pushBack(i);
+            tempKeys.pushBack(candidateDepthKeys[i]);
+        }
 
-                if (groupDepthKeys.size() == 0 || sycl::fabs(depthKey - currentGroupDepthKey) <= sameDepthEpsilon) {
-                    if (groupDepthKeys.size() == 0) currentGroupDepthKey = depthKey;
-                    (void)groupDepthKeys.pushBack(depthKey);
-                    (void)groupLocalTs.pushBack(localTHit);
-                    (void)groupAlphas.pushBack(alphaAtHit);
-                    (void)groupIndices.pushBack(surfelIndex);
-                }
-                else {
+        // Same insertionSortByKeyTie you already have
+        insertionSortByKeyTie(tempKeys.data(),
+                              candidateAlphas.data(),
+                              order.data(),
+                              candidateCount,
+                              sameDepthEpsilon);
+
+        float currentGroupDepthKey = -std::numeric_limits<float>::infinity();
+        groupDepthKeys.clear();
+        groupLocalTs.clear();
+        groupAlphas.clear();
+        groupIndices.clear();
+
+        for (int k = 0; k < candidateCount; ++k) {
+            const int i = order[k];
+            const float depthKey   = candidateDepthKeys[i];
+            const float localTHit  = candidateLocalTs[i];
+            const float alphaAtHit = candidateAlphas[i];
+            const uint32_t surfelIndex = candidateIndices[i];
+
+            if (groupDepthKeys.size() == 0 ||
+                sycl::fabs(depthKey - currentGroupDepthKey) <= sameDepthEpsilon) {
+
+                if (groupDepthKeys.size() == 0)
+                    currentGroupDepthKey = depthKey;
+
+                groupDepthKeys.pushBack(depthKey);
+                groupLocalTs.pushBack(localTHit);
+                groupAlphas.pushBack(alphaAtHit);
+                groupIndices.pushBack(surfelIndex);
+                } else {
+                    // finalize previous slice
                     if (scatterCurrentGroup(rng128)) {
                         foundAcceptedScatter = true;
-                        bestAcceptedTHit = localHitOut.t; // set from groupLocalTs in scatterCurrentGroup
+                        bestAcceptedTHit = localHitOut.t;
                         break;
                     }
 
-                    if (foundAcceptedScatter) break;
-
+                    // start new slice
                     currentGroupDepthKey = depthKey;
                     groupDepthKeys.clear();
                     groupLocalTs.clear();
                     groupAlphas.clear();
                     groupIndices.clear();
 
-                    (void)groupDepthKeys.pushBack(depthKey);
-                    (void)groupLocalTs.pushBack(localTHit);
-                    (void)groupAlphas.pushBack(alphaAtHit);
-                    (void)groupIndices.pushBack(surfelIndex);
+                    groupDepthKeys.pushBack(depthKey);
+                    groupLocalTs.pushBack(localTHit);
+                    groupAlphas.pushBack(alphaAtHit);
+                    groupIndices.pushBack(surfelIndex);
                 }
-            }
-            if (foundAcceptedScatter) break;
         }
 
-        // Tail group
+        // tail slice
         if (!foundAcceptedScatter && groupLocalTs.size() > 0) {
             if (scatterCurrentGroup(rng128)) {
                 foundAcceptedScatter = true;
                 bestAcceptedTHit = localHitOut.t;
             }
         }
+
 
         // Pure transmission through this BLAS
         if (!foundAcceptedScatter) {
@@ -460,15 +459,15 @@ namespace Pale {
     // -----------------------------------------------------------------------------
     // TLAS traversal with near-to-far ordering and multiplicative transmittance
     // -----------------------------------------------------------------------------
-    SYCL_EXTERNAL static bool intersectScene(const Ray& rayWorld,
-                                             WorldHit* worldHitOut,
-                                             const GPUSceneBuffers& scene,
-                                             rng::Xorshift128& rng128,
+    SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld,
+                                             WorldHit *worldHitOut,
+                                             const GPUSceneBuffers &scene,
+                                             rng::Xorshift128 &rng128,
                                              RayIntersectMode rayIntersectMode = RayIntersectMode::Random,
                                              uint32_t scatterOnPrimitiveIndex = UINT32_MAX) {
-        const TLASNode* tlasNodes = scene.tlasNodes;
-        const InstanceRecord* instanceRecords = scene.instances;
-        const Transform* transforms = scene.transforms;
+        const TLASNode *tlasNodes = scene.tlasNodes;
+        const InstanceRecord *instanceRecords = scene.instances;
+        const Transform *transforms = scene.transforms;
 
         bool foundAnySurfaceHit = false;
         const float3 inverseDirectionWorld = safeInvDir(rayWorld.direction);
@@ -483,7 +482,7 @@ namespace Pale {
 
         while (!traversalStack.empty()) {
             const int nodeIndex = traversalStack.pop();
-            const TLASNode& node = tlasNodes[nodeIndex];
+            const TLASNode &node = tlasNodes[nodeIndex];
 
             float nodeTEntry = 0.0f;
             if (!slabIntersectAABB(rayWorld, node, inverseDirectionWorld, bestWorldTHit, nodeTEntry))
@@ -504,11 +503,9 @@ namespace Pale {
 
                 if (hitLeft && hitRight) {
                     pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                }
-                else if (hitLeft) {
+                } else if (hitLeft) {
                     traversalStack.push(leftIndex);
-                }
-                else if (hitRight) {
+                } else if (hitRight) {
                     traversalStack.push(rightIndex);
                 }
                 continue;
@@ -516,8 +513,8 @@ namespace Pale {
 
             // Leaf: exactly one instance
             const uint32_t instanceIndex = node.leftChild;
-            const InstanceRecord& instance = instanceRecords[instanceIndex];
-            const Transform& transform = transforms[instance.transformIndex];
+            const InstanceRecord &instance = instanceRecords[instanceIndex];
+            const Transform &transform = transforms[instance.transformIndex];
             Ray rayObject = toObjectSpace(rayWorld, transform);
 
             LocalHit localHit{};
@@ -525,25 +522,74 @@ namespace Pale {
 
             if (instance.geometryType == GeometryType::Mesh) {
                 acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene);
-            }
-            else {
-                acceptedHitInInstance = intersectBLASPointCloud(rayObject, instance.blasRangeIndex, localHit, scene,
-                                                                rng128, transform, rayWorld, rayIntersectMode,
-                                                                scatterOnPrimitiveIndex);
-                for (size_t i = 0; i < localHit.splatEventCount; ++i) {
-                    worldHitOut->splatEvents[i].alpha = localHit.splatEvents[i].alpha;
-                    worldHitOut->splatEvents[i].primitiveIndex = localHit.splatEvents[i].primitiveIndex;
+            } else {
+                acceptedHitInInstance = intersectBLASPointCloud(
+                    rayObject,
+                    instance.blasRangeIndex,
+                    localHit,
+                    scene,
+                    rng128,
+                    transform,
+                    rayWorld,
+                    rayIntersectMode,
+                    scatterOnPrimitiveIndex);
 
-                    const float3 hitPointWorld = toWorldPoint(
-                        rayObject.origin + localHit.splatEvents[i].t * rayObject.direction,
-                        transform);
-                    const float tWorld = dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
-                    worldHitOut->splatEvents[i].hitWorld = hitPointWorld;
-                    worldHitOut->splatEvents[i].t = tWorld;
-                    worldHitOut->splatEvents[i].tau = localHit.splatEvents[i].tau;
+                // For TRANSMIT mode, we want to accumulate *all* surfel events along the ray
+                // from all point-cloud instances in front of the terminal surface.
+                if (rayIntersectMode == RayIntersectMode::Transmit) {
+
+                    if (rayIntersectMode == RayIntersectMode::Transmit) {
+                        int baseEventCount = worldHitOut->splatEventCount;
+
+                        for (std::size_t i = 0; i < localHit.splatEventCount; ++i) {
+                            if (baseEventCount >= kMaxSplatEvents)
+                                break;
+
+                            const SplatEvent& src = localHit.splatEvents[i];
+
+                            const float3 hitPointWorld =
+                                toWorldPoint(rayObject.origin + src.t * rayObject.direction, transform);
+                            const float tWorld = dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
+
+                            SplatEvent& dst = worldHitOut->splatEvents[baseEventCount];
+                            dst.alpha = src.alpha;
+                            dst.primitiveIndex = src.primitiveIndex;
+                            dst.hitWorld = hitPointWorld;
+                            dst.t = tWorld;
+                            dst.tau = transmittanceProduct * src.tau;
+
+                            ++baseEventCount;
+                        }
+
+                        worldHitOut->splatEventCount =
+                            static_cast<uint32_t>(sycl::min(baseEventCount, kMaxSplatEvents));
+                    }
+
+
+
+
+                } else {
+                    // Existing behavior for RANDOM/SCATTER modes: keep only this instance’s events.
+                    for (std::size_t i = 0; i < localHit.splatEventCount && i < kMaxSplatEvents; ++i) {
+                        const SplatEvent &src = localHit.splatEvents[i];
+
+                        const float3 hitPointWorld = toWorldPoint(
+                            rayObject.origin + src.t * rayObject.direction,
+                            transform);
+                        const float tWorld =
+                                dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
+
+                        SplatEvent &dst = worldHitOut->splatEvents[i];
+                        dst.alpha = src.alpha;
+                        dst.primitiveIndex = src.primitiveIndex;
+                        dst.hitWorld = hitPointWorld;
+                        dst.t = tWorld;
+                        dst.tau = src.tau; // unchanged: used only for that instance
+                    }
+                    worldHitOut->splatEventCount = std::min(localHit.splatEventCount, kMaxSplatEvents);
                 }
-                worldHitOut->splatEventCount = localHit.splatEventCount;
             }
+
 
             if (acceptedHitInInstance) {
                 // Convert to world, test depth
@@ -582,17 +628,30 @@ namespace Pale {
             worldHitOut->transmissivity = transmittanceProduct;
         }
 
+        const uint32_t count = worldHitOut->splatEventCount;
+        // Simple insertion sort by t for worldHitOut->splatEvents[0..count)
+        for (uint32_t i = 1; i < count; ++i) {
+            SplatEvent key = worldHitOut->splatEvents[i];
+            uint32_t j = i;
+            while (j > 0 && worldHitOut->splatEvents[j - 1].t > key.t) {
+                worldHitOut->splatEvents[j] = worldHitOut->splatEvents[j - 1];
+                --j;
+            }
+            worldHitOut->splatEvents[j] = key;
+        }
+
+
         return foundAnySurfaceHit;
     }
 
     // -----------------------------------------------------------------------------
     // Visibility wrapper
     // -----------------------------------------------------------------------------
-    SYCL_EXTERNAL static WorldHit traceVisibility(const Ray& rayIn,
+    SYCL_EXTERNAL static WorldHit traceVisibility(const Ray &rayIn,
                                                   float /*tMax*/,
                                                   // not used here; early-exit is driven by BVH and bestTHit
-                                                  const GPUSceneBuffers& scene,
-                                                  rng::Xorshift128& rng128) {
+                                                  const GPUSceneBuffers &scene,
+                                                  rng::Xorshift128 &rng128) {
         WorldHit worldHit{};
         intersectScene(rayIn, &worldHit, scene, rng128);
         return worldHit;

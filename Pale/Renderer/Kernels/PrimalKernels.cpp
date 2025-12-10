@@ -147,7 +147,7 @@ namespace Pale {
                     const float3 canonicalNormalW = worldHit.geometricNormalW;
                     const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
                     const float3 enteredSideNormalW = (travelSideSign >= 0) ? canonicalNormalW : (-canonicalNormalW);
-                    float3 sampledOutgoingDirectionW{};
+                    float3 sampledOutgoingDirectionW = rayState.ray.direction;
                     float3 throughputMultiplier = float3(1.0f);
 
                     // If we hit instance was a mesh do ordinary BRDF stuff.
@@ -293,6 +293,7 @@ namespace Pale {
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+        uint64_t baseSeed = pkg.settings.randomSeed;
 
         queue.wait();
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
@@ -306,7 +307,6 @@ namespace Pale {
 
             // Clear framebuffer before calling this, outside.
             queue.submit([&](sycl::handler &cgh) {
-                uint64_t baseSeed = pkg.settings.randomSeed;
                 auto samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
 
                 cgh.parallel_for<class CameraGatherKernel>(
@@ -333,6 +333,24 @@ namespace Pale {
                             jitterY);
 
 
+
+                        int pixelYFlipped = imageHeight - 1 - pixelY;
+                        bool isWatched = false;
+
+                        if (pixelX == 600 && pixelYFlipped == 800) {
+                            //isWatched = true;
+                            int debug = 1;
+                        }
+                        //if (pixelX == 200 && pixelYFlipped == 325) {
+                        if (pixelX == 600 && pixelYFlipped == 795) {
+                            isWatched = true;
+                            int debug = 1;
+                        }
+
+                        if (!isWatched) {
+                            //return;
+                        }
+
                         // -----------------------------------------------------------------
                         // 1) Transmit ray: collect all splat events + terminal mesh hit
                         // -----------------------------------------------------------------
@@ -350,6 +368,7 @@ namespace Pale {
 
                         buildIntersectionNormal(scene, transmitWorldHit);
 
+                        //if (pixelX == 200 && pixelY == 325) {
 
                         // -----------------------------------------------------------------
                         // 2) For each surfel along the transmit segment, fire a scatter ray
@@ -364,6 +383,7 @@ namespace Pale {
                              ++surfelEventIndex) {
                             const SplatEvent &terminalSplatEvent =
                                     transmitWorldHit.splatEvents[surfelEventIndex];
+                            const Point &surfel = scene.points[terminalSplatEvent.primitiveIndex];
 
 
                             // Shade surfel from photon map (front/back)
@@ -387,7 +407,6 @@ namespace Pale {
 
                             float3 surfelShadedRadiance = surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f;
 
-                            const Point &surfel = scene.points[terminalSplatEvent.primitiveIndex];
 
                             const float alphaGeom = terminalSplatEvent.alpha; // α(u,v)
                             const float eta = surfel.opacity; // eta
@@ -399,6 +418,18 @@ namespace Pale {
                                     transmittanceTau * surfelShadedRadiance * surfelOpacity;
 
                             transmittanceTau *= oneMinusTotalOpacity;
+
+
+                            if (pixelX == 600 && pixelYFlipped == 800) {
+                                isWatched = true;
+                                int debug = 1;
+                            }
+                            //if (pixelX == 200 && pixelYFlipped == 325) {
+                            if (pixelX == 600 && pixelYFlipped == 795) {
+                                isWatched = true;
+                                int debug = 1;
+                            }
+
                             if (transmittanceTau <= 1e-4f) {
                                 // Almost fully opaque, no need to continue
                                 break;

@@ -205,12 +205,16 @@ namespace Pale {
             .settings = m_settings,
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
+            .gradients = {},
             .sensor = sensor,
+            .debugImages = nullptr,
             .numSensors = static_cast<uint32_t>(sensor.size())
         };
 
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.map.photons, 0, sizeof(DevicePhotonSurface) * m_intermediates.map.photonCapacity);
+        m_queue.memset(m_intermediates.map.photonNextIndexArray, 0, sizeof(uint32_t) * m_intermediates.map.photonCapacity);
+        m_queue.memset(m_intermediates.map.cellHeadIndexArray, 0, sizeof(uint32_t) * m_intermediates.map.totalCellCount);
         m_queue.wait();
 
         Log::PA_INFO("Rendering {} point(s)", renderPackage.scene.pointCount);
@@ -239,10 +243,10 @@ namespace Pale {
             .settings = m_settings,
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
-            .sensor = sensors,
-            .numSensors = static_cast<uint32_t>(sensors.size()),
             .gradients = gradients,
-            .debugImages = debugImages
+            .sensor = sensors,
+            .debugImages = debugImages,
+            .numSensors = static_cast<uint32_t>(sensors.size()),
         };
 
         submitKernel(renderPackage);

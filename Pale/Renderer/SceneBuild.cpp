@@ -332,8 +332,8 @@ namespace Pale {
 
 
     inline AABB surfelObjectAabbBeta(const Point& surfel,
-                                     float supportRadiusScale = 1.1f,
-                                     float normalThickness     = 1e-5f)
+                                     float supportRadiusScale = 1.001f,
+                                     float normalThickness     = 0.01f)
     {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
@@ -341,8 +341,8 @@ namespace Pale {
 
         // For the beta kernel with r^2 = u^2 + v^2 <= 1, the in-plane radii
         // are just scale.x() and scale.y(), times an optional safety factor.
-        const float supportRadiusU = supportRadiusScale * std::max(surfel.scale.x(), 1e-8f);
-        const float supportRadiusV = supportRadiusScale * std::max(surfel.scale.y(), 1e-8f);
+        const float supportRadiusU = supportRadiusScale * surfel.scale.x();
+        const float supportRadiusV = supportRadiusScale * surfel.scale.y();
         const float normalExtent   = normalThickness;
 
         auto computeAxisExtent = [&](int axisIndex) -> float {
@@ -368,7 +368,7 @@ namespace Pale {
             return projectedInPlane + normalExtent * normalComponent;
         };
 
-        const float3 halfExtent{
+        float3 halfExtent{
             computeAxisExtent(0),
             computeAxisExtent(1),
             computeAxisExtent(2)
@@ -419,7 +419,7 @@ namespace Pale {
         for (uint32_t i = 0; i < localPoints.size(); ++i) {
             const AABB aabb = surfelObjectAabbBeta(localPoints[i]);
             localAabbs[i]   = aabb;
-            localCentroids[i]= (aabb.minP + aabb.maxP) * 0.5f;
+                localCentroids[i] = localPoints[i].position;
         }
 
         // 3) Build BVH over boxes

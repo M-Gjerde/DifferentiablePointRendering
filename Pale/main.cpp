@@ -216,8 +216,8 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    serializer.deserialize("scene_blender.xml");
-    //serializer.deserialize("cbox_custom.xml");
+    //serializer.deserialize("scene_blender.xml");
+    serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -266,13 +266,14 @@ int main(int argc, char **argv) {
     // Build rendering products (BLAS. TLAS, Emissive lists, etc..)
     Pale::AssetAccessFromManager assetAccessor(assetManager);
 
-    auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
+    auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor,
+                                                 Pale::SceneBuild::BuildOptions());
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e6;
+    settings.photonsPerLaunch = 5e5;
     settings.maxBounces = 3;
     settings.numForwardPasses = 10;
     settings.numGatherPasses = 1;
@@ -413,7 +414,6 @@ int main(int argc, char **argv) {
                 gradientMagnitude
             );
         }
-
     }
 
     // Write Registry:

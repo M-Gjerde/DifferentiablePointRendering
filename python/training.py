@@ -537,7 +537,7 @@ def run_optimization(
 
     opacity_prune_threshold = 0.4
     max_prune_fraction = 0.3
-    rebuild_bvh_interval = 1e10
+    rebuild_bvh_interval = 1
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)

@@ -1015,10 +1015,10 @@ public:
             }
         }
 
-        rebuild_bvh();
+        //rebuild_bvh();
         //// 5) Upload updated buildProducts to GPU, no BVH rebuild
-        //Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
-        //pathTracer->setScene(sceneGpu, buildProducts);
+        Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
+        pathTracer->setScene(sceneGpu, buildProducts);
     }
 
     void rebuild_bvh() {
