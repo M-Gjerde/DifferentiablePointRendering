@@ -605,7 +605,7 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 25,
+        "forward_passes": 10,
         "gather_passes": 1,
         "adjoint_bounces": 2,
         "adjoint_passes": 4,
@@ -622,7 +622,7 @@ def main(args) -> None:
     print("Index:", args.index)
 
     base_output_dir = (
-        Path(__file__).parent / "finite_diff" / "beta_kernel" / args.scene
+        Path(__file__).parent / "finite_diff" / "beta_kernel" / args.scene / args.camera
         if args.output == "" or args.output is None
         else Path(__file__).parent / Path(args.output)
     )
@@ -630,9 +630,9 @@ def main(args) -> None:
 
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
     cameras = renderer.get_camera_names()
-    camera = cameras[0]
+    camera = args.camera
     target_image = renderer.render_forward()[camera]
-    save_rgb_preview_png(target_image, base_output_dir / "target_image.png")
+    save_rgb_preview_png(target_image, base_output_dir / args.param/ args.eps / args.axis /  "0_target_image.png")
 
     ## Apply some noise to our target positions
     # ------------------------------------------------------------------
@@ -647,8 +647,11 @@ def main(args) -> None:
     target_opacities_np = target_params["opacity"]
     target_betas_np = target_params["beta"]
 
+    eps_direction = 1 if args.eps == "pos" else -1
+
+
     if args.param == "translation":
-        eps_trans = 0.1
+        eps_trans = 0.1 * eps_direction
         if args.axis == "x":
             noise = [eps_trans, 0.0, 0.0]
         elif args.axis == "y":
@@ -660,7 +663,7 @@ def main(args) -> None:
                                                                                          dtype=np.float32)
     elif args.param == "rotation":
         # Example: small rotation (e.g. for FD) around given axis
-        noise_deg = 10
+        noise_deg = 10 * eps_direction
         qx_minus, qy_minus, qz_minus, qw_minus = degrees_to_quaternion(noise_deg, args.axis)
         quaternion_minus = np.array([qx_minus, qy_minus, qz_minus, qw_minus],
                                     dtype=np.float32)
@@ -676,7 +679,7 @@ def main(args) -> None:
         )
 
     elif args.param == "scale":
-        scale_percent = 20
+        scale_percent = 20 * eps_direction
         eps_scale = 1.0 + scale_percent / 100
         if args.axis == "x":
             noise = [eps_scale, 1.0]
@@ -686,12 +689,12 @@ def main(args) -> None:
         target_scales_np[args.index] = target_scales_np[args.index] * np.array(noise,dtype=np.float32)
 
     elif args.param == "opacity":
-        eps_opacity = 0.2
+        eps_opacity = -0.2
         target_opacities_np[args.index] = target_opacities_np[args.index] + np.array(eps_opacity, dtype=np.float32)
 
 
     if args.param == "albedo":
-        eps_albedo = 0.2
+        eps_albedo = 0.2 * eps_direction
         if args.axis == "x":
             noise = [eps_albedo, 0.0, 0.0]
         elif args.axis == "y":
@@ -702,7 +705,7 @@ def main(args) -> None:
                                                                                      dtype=np.float32)
 
     elif args.param == "beta":
-        eps_beta = -0.3
+        eps_beta = 0.3 * eps_direction
         target_betas_np[args.index] = target_betas_np[args.index] + np.array(eps_beta, dtype=np.float32)
 
     renderer.apply_point_optimization(
@@ -719,7 +722,7 @@ def main(args) -> None:
     renderer.rebuild_bvh()
     # Render initial guess image:
     initial_guess = renderer.render_forward()[camera]
-    save_rgb_preview_png(initial_guess, base_output_dir / "initial_guess.png")
+    save_rgb_preview_png(initial_guess, base_output_dir / args.param / args.eps / args.axis /  "0_initial_guess.png")
 
     ## Now we're ready to do both analytical and finite difference calculation of cost function gradients
 
@@ -793,7 +796,7 @@ def main(args) -> None:
         neginf=0.0,
     )
 
-    grad_path = base_output_dir / "grad_099.png"
+    grad_path = base_output_dir /  args.param /args.eps / args.axis / "grad_099.png"
     save_gradient_sign_png_py(
         grad_path,
         grad_image_numpy,
@@ -817,7 +820,7 @@ def main(args) -> None:
                     posinf=0.0,
                     neginf=0.0,
                 )
-                debug_pos_path = base_output_dir / f"{axis}_position_debug_099.png"
+                debug_pos_path = base_output_dir / args.param /args.eps / args.axis / f"{axis}_position_debug_099.png"
                 save_gradient_sign_png_py(
                     debug_pos_path,
                     debug_pos_img,
@@ -835,7 +838,7 @@ def main(args) -> None:
 
     iterations = 6
 
-    label = args.param + "_" + args.axis + "_" + str(args.index)
+    label = args.camera + "_" + args.param + "_" + args.axis + "_" + str(args.index) + "_" + str(args.eps)
 
     if args.param == "translation":
         # --- Translation (x,y,z) ---
@@ -861,16 +864,16 @@ def main(args) -> None:
 
                 if i == 0:
                     save_rgb_preview_png(
-                        rgb_minus, base_output_dir / "translation" / f"{axis}_neg.png"
+                        rgb_minus, base_output_dir / "translation" /args.eps / axis / f"{axis}_neg.png"
                     )
                     save_rgb_preview_png(
-                        rgb_plus, base_output_dir / "translation" / f"{axis}_pos.png"
+                        rgb_plus, base_output_dir / "translation" / args.eps / axis /  f"{axis}_pos.png"
                     )
                     write_fd_images(
                         grad_fd,
                         rgb_minus,
                         rgb_plus,
-                        base_output_dir / "translation",
+                        base_output_dir / "translation" /args.eps / axis,
                         "pos",
                         axis,
                     )
@@ -914,7 +917,7 @@ def main(args) -> None:
         # ----------------------------------------------------------
         # Save this run to history and print all runs so far
         # ----------------------------------------------------------
-        history_path = base_output_dir / "translation_gradients_history.csv"
+        history_path = base_output_dir /  args.param /  "translation_gradients_history.csv"
         append_translation_run_to_history(
             history_path=history_path,
             scene_name=args.scene,
@@ -945,16 +948,16 @@ def main(args) -> None:
 
                 if i == 0:
                     save_rgb_preview_png(
-                        rgb_minus, base_output_dir / "rotation" / f"{axis}_neg.png"
+                        rgb_minus, base_output_dir / "rotation" / args.eps / axis / f"{axis}_neg.png"
                     )
                     save_rgb_preview_png(
-                        rgb_plus, base_output_dir / "rotation" / f"{axis}_pos.png"
+                        rgb_plus, base_output_dir / "rotation" /args.eps / axis /  f"{axis}_pos.png"
                     )
                     write_fd_images(
                         grad_fd,
                         rgb_minus,
                         rgb_plus,
-                        base_output_dir / "rotation",
+                        base_output_dir / "rotation" /args.eps / axis,
                         "rot",
                         axis,
                     )
@@ -1015,7 +1018,7 @@ def main(args) -> None:
                 analytical_gradients_tangent_v[args.index],
             )
 
-        history_path = base_output_dir / "rotation_gradients_history.csv"
+        history_path = base_output_dir /  args.param /  "rotation_gradients_history.csv"
         append_rotation_run_to_history(
             history_path=history_path,
             scene_name=args.scene,
@@ -1052,16 +1055,16 @@ def main(args) -> None:
 
                 if i == 0:
                     save_rgb_preview_png(
-                        rgb_minus, base_output_dir / "scale" / f"{axis}_neg.png"
+                        rgb_minus, base_output_dir / "scale" / args.eps / axis / f"{axis}_neg.png"
                     )
                     save_rgb_preview_png(
-                        rgb_plus, base_output_dir / "scale" / f"{axis}_pos.png"
+                        rgb_plus, base_output_dir / "scale" /args.eps /  axis /  f"{axis}_pos.png"
                     )
                     write_fd_images(
                         grad_fd,
                         rgb_minus,
                         rgb_plus,
-                        base_output_dir / "scale",
+                        base_output_dir / "scale" /args.eps / axis,
                         "scale",
                         axis,
                     )
@@ -1105,7 +1108,7 @@ def main(args) -> None:
         # ----------------------------------------------------------
         # Save this run to history and print all runs so far
         # ----------------------------------------------------------
-        history_path = base_output_dir / "scale_gradients_history.csv"
+        history_path = base_output_dir /  args.param /  "scale_gradients_history.csv"
         append_scale_run_to_history(
             history_path=history_path,
             scene_name=args.scene,
@@ -1140,16 +1143,16 @@ def main(args) -> None:
 
             if i == 0:
                 save_rgb_preview_png(
-                    rgb_minus, base_output_dir / "opacity" / f"neg.png"
+                    rgb_minus, base_output_dir / "opacity" / args.eps / f"neg.png"
                 )
                 save_rgb_preview_png(
-                    rgb_plus, base_output_dir / "opacity" / f"pos.png"
+                    rgb_plus, base_output_dir / "opacity" / args.eps / f"pos.png"
                 )
                 write_fd_images(
                     grad_fd,
                     rgb_minus,
                     rgb_plus,
-                    base_output_dir / "opacity",
+                    base_output_dir / "opacity" / args.eps,
                     "opacity",
                     "",
                 )
@@ -1186,7 +1189,7 @@ def main(args) -> None:
         # ----------------------------------------------------------
         # Save this run to history and print all runs so far
         # ----------------------------------------------------------
-        history_path = base_output_dir / "opacity_gradients_history.csv"
+        history_path = base_output_dir /  args.param /  "opacity_gradients_history.csv"
         append_1d_run_to_history(
             history_path=history_path,
             scene_name=args.scene,
@@ -1222,10 +1225,10 @@ def main(args) -> None:
 
             if i == 0:
                 save_rgb_preview_png(
-                    rgb_minus, base_output_dir / "beta" / f"neg.png"
+                    rgb_minus, base_output_dir / "beta" / args.eps /f"neg.png"
                 )
                 save_rgb_preview_png(
-                    rgb_plus, base_output_dir / "beta" / f"pos.png"
+                    rgb_plus, base_output_dir / "beta" / args.eps / f"pos.png"
                 )
                 write_fd_images(
                     grad_fd,
@@ -1268,7 +1271,7 @@ def main(args) -> None:
         # ----------------------------------------------------------
         # Save this run to history and print all runs so far
         # ----------------------------------------------------------
-        history_path = base_output_dir / "beta_gradients_history.csv"
+        history_path = base_output_dir /  args.param /  "beta_gradients_history.csv"
         append_1d_run_to_history(
             history_path=history_path,
             scene_name=args.scene,
@@ -1305,16 +1308,16 @@ def main(args) -> None:
 
                 if i == 0:
                     save_rgb_preview_png(
-                        rgb_minus, base_output_dir / "albedo" / f"{axis}_neg.png"
+                        rgb_minus, base_output_dir / "albedo" /  args.eps / axis /  f"{axis}_neg.png"
                     )
                     save_rgb_preview_png(
-                        rgb_plus, base_output_dir / "albedo" / f"{axis}_pos.png"
+                        rgb_plus, base_output_dir / "albedo" /args.eps / axis /  f"{axis}_pos.png"
                     )
                     write_fd_images(
                         grad_fd,
                         rgb_minus,
                         rgb_plus,
-                        base_output_dir / "albedo",
+                        base_output_dir / "albedo" /args.eps / axis,
                         "albedo",
                         axis,
                     )
@@ -1358,7 +1361,7 @@ def main(args) -> None:
         # ----------------------------------------------------------
         # Save this run to history and print all runs so far
         # ----------------------------------------------------------
-        history_path = base_output_dir / "albedo_gradients_history.csv"
+        history_path = base_output_dir /  args.param /  "albedo_gradients_history.csv"
         append_translation_run_to_history(
             history_path=history_path,
             scene_name=args.scene,
@@ -1407,6 +1410,21 @@ def parse_args() -> argparse.Namespace:
         required=False,
         default="x",
         help="parameter axis to test",
+    )
+
+    parser.add_argument(
+        "--camera",
+        type=str,
+        required=False,
+        default="camera1",
+        help="parameter axis to test",
+    )
+    parser.add_argument(
+        "--eps",
+        type=str,
+        required=False,
+        default="pos",
+        help="positive or negative (pos/neg)",
     )
 
     return parser.parse_args()

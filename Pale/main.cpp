@@ -216,8 +216,8 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    //serializer.deserialize("scene_blender.xml");
-    serializer.deserialize("cbox_custom.xml");
+    serializer.deserialize("scene_blender.xml");
+    //serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -280,6 +280,7 @@ int main(int argc, char **argv) {
     settings.adjointSamplesPerPixel = 1;
     settings.renderDebugGradientImages = false;
 
+
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
     tracer.setScene(gpu, buildProducts);
     Pale::Log::PA_INFO("Forward Render Pass...");
@@ -296,40 +297,27 @@ int main(int argc, char **argv) {
         const uint32_t imageHeight = sensor.height;
 
         // Per-camera output directory: Output/<pointcloud>/<camera_name>/
-        if (settings.renderDebugGradientImages) {
-            std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension("")
-                    / sensor.name; // assumes sensor.name is std::string
+        std::filesystem::path baseDir =
+                std::filesystem::path("Output")
+                / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
 
-            std::filesystem::create_directories(baseDir);
-
-            std::filesystem::path filePath = baseDir / "out_photonmap.png";
-            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
-        } else {
-            std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension("");// assumes sensor.name is std::string
-
-            std::filesystem::create_directories(baseDir);
-
-            std::string fileName = sensor.name;
-            std::filesystem::path filePath = baseDir / (fileName + ".png");
-            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
-        }
+        std::filesystem::create_directories(baseDir);
+        std::string fileName = sensor.name;
+        std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
+        Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
     }
 
-    std::vector<Pale::DebugImages> debugImages(sensors.size());
-    Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
-                                                                 debugImages.data());
-
-    std::vector<Pale::SensorGPU> adjointSensors =
-            Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
-
-    Pale::Log::PA_INFO("Adjoint Render Pass...");
-    tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
-
     if (settings.renderDebugGradientImages) {
+        std::vector<Pale::DebugImages> debugImages(sensors.size());
+        Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
+                                                                     debugImages.data());
+
+        std::vector<Pale::SensorGPU> adjointSensors =
+                Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+
+        Pale::Log::PA_INFO("Adjoint Render Pass...");
+        tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
+
         for (size_t i = 0; const auto &adjointSensor: adjointSensors) {
             auto debugImagesHost = Pale::downloadDebugGradientImages(
                 deviceSelector.getQueue(), adjointSensor, debugImages[i]);
@@ -372,7 +360,7 @@ int main(int argc, char **argv) {
                             /*flipY=*/false,
                             /*useSeismic=*/true)) {
                             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-                            }
+                        }
 
                         // q=0.99
                         std::string fileNameQuantile =
@@ -402,29 +390,30 @@ int main(int argc, char **argv) {
             saveGradientSet(debugImagesHost.albedo, "albedo");
             saveGradientSet(debugImagesHost.beta, "beta");
         }
-    }
 
-    // Download and log gradPosition[0]
-    if (gradients.numPoints > 0 && gradients.gradPosition != nullptr) {
-        Pale::float3 hostGradientPosition0{};
-        deviceSelector.getQueue()
-                .memcpy(&hostGradientPosition0,
-                        gradients.gradPosition,
-                        sizeof(Pale::float3))
-                .wait();
+        // Download and log gradPosition[0]
+        if (gradients.numPoints > 0 && gradients.gradPosition != nullptr) {
+            Pale::float3 hostGradientPosition0{};
+            deviceSelector.getQueue()
+                    .memcpy(&hostGradientPosition0,
+                            gradients.gradPosition,
+                            sizeof(Pale::float3))
+                    .wait();
 
-        const float gradientMagnitude =
-                std::sqrt(hostGradientPosition0.x() * hostGradientPosition0.x() +
-                          hostGradientPosition0.y() * hostGradientPosition0.y() +
-                          hostGradientPosition0.z() * hostGradientPosition0.z());
+            const float gradientMagnitude =
+                    std::sqrt(hostGradientPosition0.x() * hostGradientPosition0.x() +
+                              hostGradientPosition0.y() * hostGradientPosition0.y() +
+                              hostGradientPosition0.z() * hostGradientPosition0.z());
 
-        Pale::Log::PA_INFO(
-            "gradPosition[0] = ({}, {}, {}), |g| = {}",
-            hostGradientPosition0.x(),
-            hostGradientPosition0.y(),
-            hostGradientPosition0.z(),
-            gradientMagnitude
-        );
+            Pale::Log::PA_INFO(
+                "gradPosition[0] = ({}, {}, {}), |g| = {}",
+                hostGradientPosition0.x(),
+                hostGradientPosition0.y(),
+                hostGradientPosition0.z(),
+                gradientMagnitude
+            );
+        }
+
     }
 
     // Write Registry:

@@ -219,13 +219,16 @@ namespace Pale {
         m_queue.wait();
     }
 
-    void PathTracer::renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages* debugImages) {
+    void PathTracer::renderBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients, DebugImages* debugImages) {
 
-        const uint32_t requiredRayCapacity = sensor[0].width * sensor[0].height;
-        if (requiredRayCapacity > m_rayQueueCapacity) {
-            Log::PA_INFO("RayQueue Capacity too small for per pixel adjoint pass. Resizing queue capacity..");
-            ensureRayCapacity(requiredRayCapacity);
+        for (const auto& sensor : sensors) {
+            const uint32_t requiredRayCapacity = sensor.width * sensor.height;
+            if (requiredRayCapacity > m_rayQueueCapacity) {
+                Log::PA_INFO("RayQueue Capacity too small for per pixel adjoint pass. Resizing queue capacity..");
+                ensureRayCapacity(requiredRayCapacity);
+            }
         }
+
 
         m_settings.rayGenMode = RayGenMode::Adjoint;
 
@@ -236,8 +239,8 @@ namespace Pale {
             .settings = m_settings,
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
-            .sensor = sensor,
-            .numSensors = static_cast<uint32_t>(sensor.size()),
+            .sensor = sensors,
+            .numSensors = static_cast<uint32_t>(sensors.size()),
             .gradients = gradients,
             .debugImages = debugImages
         };

@@ -187,7 +187,9 @@ namespace Pale {
 
                         const float3 lambertBrdf = baseColor * M_1_PIf; // ρ/π
                         throughputMultiplier = lambertBrdf * cosTheta
-                                               * surfel.opacity * alpha;
+                                               * surfel.opacity * alpha
+                                               * worldHit.transmissivity
+                                               / pdfMixture;
                     }
 
                     if (settings.rayGenMode == RayGenMode::Emitter) {
@@ -208,8 +210,15 @@ namespace Pale {
                             if (slot < intermediates.map.photonCapacity) {
                                 DevicePhotonSurface photonEntry{};
                                 photonEntry.position = event.hitWorld;
-                                photonEntry.power = rayState.pathThroughput;
                                 const auto &surfel = scene.points[event.primitiveIndex];
+                                const float alphaGeom = event.alpha;
+                                const float eta = surfel.opacity;
+                                const float alphaEff = alphaGeom * eta;
+
+                                // Weight by transmittance before + effective alpha
+                                const float weight = event.tau * alphaEff;
+
+                                photonEntry.power = rayState.pathThroughput * weight;
                                 const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
 
                                 const float signedCosineIncident = dot(canonicalNormalW, -rayState.ray.direction);
@@ -224,7 +233,7 @@ namespace Pale {
                         if (slot < intermediates.map.photonCapacity) {
                             DevicePhotonSurface photonEntry{};
                             photonEntry.position = worldHit.hitPositionW;
-                            photonEntry.power = rayState.pathThroughput;
+                            photonEntry.power = rayState.pathThroughput * worldHit.transmissivity;
 
                             const float signedCosineIncident = dot(worldHit.geometricNormalW, -rayState.ray.direction);
                             photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
@@ -334,7 +343,7 @@ namespace Pale {
                                        randomNumberGenerator,
                                        RayIntersectMode::Transmit);
 
-                        if (!transmitWorldHit.hit) {
+                        if (!transmitWorldHit.hit && !transmitWorldHit.splatEventCount) {
                             // No geometry / environment handled elsewhere
                             return;
                         }
@@ -353,41 +362,9 @@ namespace Pale {
                         for (std::uint32_t surfelEventIndex = 0;
                              surfelEventIndex < numberOfSurfelsOnRay;
                              ++surfelEventIndex) {
-                            const SplatEvent &transmitSplatEvent =
+                            const SplatEvent &terminalSplatEvent =
                                     transmitWorldHit.splatEvents[surfelEventIndex];
 
-                            const std::uint32_t scatterOnPrimitiveIndex =
-                                    transmitSplatEvent.primitiveIndex;
-
-                            // Fire a scatter ray that treats this surfel as the scatter event
-                            WorldHit scatterWorldHit{};
-                            intersectScene(primaryRay,
-                                           &scatterWorldHit,
-                                           scene,
-                                           randomNumberGenerator,
-                                           RayIntersectMode::Scatter,
-                                           scatterOnPrimitiveIndex);
-
-                            if (!scatterWorldHit.hit) {
-                                // Should not normally happen; skip this event
-                                continue;
-                            }
-
-                            // The scatter call should have a terminal splat event for the surfel
-                            if (scatterWorldHit.splatEventCount == 0) {
-                                continue;
-                            }
-
-                            const std::uint32_t terminalEventIndex =
-                                    static_cast<std::uint32_t>(scatterWorldHit.splatEventCount - 1);
-                            const SplatEvent &terminalSplatEvent =
-                                    scatterWorldHit.splatEvents[terminalEventIndex];
-
-                            // Optional safety: ensure we are scattering on the same primitive
-                            if (terminalSplatEvent.primitiveIndex != scatterOnPrimitiveIndex) {
-                                // Inconsistent record; skip to be safe
-                                continue;
-                            }
 
                             // Shade surfel from photon map (front/back)
                             const bool useOneSidedScatter = true;
@@ -431,7 +408,7 @@ namespace Pale {
                         // -----------------------------------------------------------------
                         // 3) Shade terminal mesh (if any) with remaining transmittance
                         // -----------------------------------------------------------------
-                        if (transmittanceTau > 1e-4f) {
+                        if (transmittanceTau > 1e-4f && transmitWorldHit.instanceIndex != UINT32_MAX) {
                             auto &terminalInstance = scene.instances[transmitWorldHit.instanceIndex];
 
                             const GPUMaterial &material =

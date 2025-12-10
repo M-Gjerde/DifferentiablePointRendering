@@ -263,6 +263,7 @@ public:
         std::unordered_map<std::string, std::vector<float>> targetRgbaPerCamera;
         targetRgbaPerCamera.reserve(sensorAdjoint.size());
 
+        std::vector<Pale::SensorGPU> availableAdjointSensors;
         // ------------------------------------------------------------
         // 1. WITH GIL: read Python dict, convert to RGBA buffers
         // ------------------------------------------------------------
@@ -274,10 +275,11 @@ public:
             );
 
             if (!targetImagesDictionary.contains(py::str(cameraName))) {
-                throw std::runtime_error(
+                Pale::Log::PA_WARN(
                     "render_backward: missing target image for camera '" +
                     cameraName + "'"
                 );
+                continue;
             }
 
             py::array targetRgbArray =
@@ -334,6 +336,7 @@ public:
             }
 
             targetRgbaPerCamera.emplace(std::move(cameraName), std::move(rgbaTarget));
+            availableAdjointSensors.emplace_back(sensor);
         }
 
         // ------------------------------------------------------------
@@ -342,7 +345,7 @@ public:
         py::gil_scoped_release release;
 
         // 2a. Upload RGBA targets per sensor
-        for (auto& sensor : sensorAdjoint) {
+        for (auto& sensor : availableAdjointSensors) {
             std::string cameraName(
                 sensor.name,
                 strnlen(sensor.name, sizeof(sensor.name))
@@ -355,7 +358,7 @@ public:
         }
 
         // 2b. Run backward pass (re-enable when ready)
-        pathTracer->renderBackward(sensorAdjoint, gradients, debugImages.data());
+        pathTracer->renderBackward(availableAdjointSensors, gradients, debugImages.data());
 
         const std::size_t pointCount = gradients.numPoints;
 
@@ -430,7 +433,7 @@ public:
         }
 
         // 2c. Download adjoint images per sensor
-        for (auto& sensor : sensorAdjoint) {
+        for (auto& sensor : availableAdjointSensors) {
             HostAdjointImage hostImage;
             hostImage.cameraName = std::string(
                 sensor.name,
@@ -1012,9 +1015,10 @@ public:
             }
         }
 
-        // 5) Upload updated buildProducts to GPU, no BVH rebuild
-        Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
-        pathTracer->setScene(sceneGpu, buildProducts);
+        rebuild_bvh();
+        //// 5) Upload updated buildProducts to GPU, no BVH rebuild
+        //Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
+        //pathTracer->setScene(sceneGpu, buildProducts);
     }
 
     void rebuild_bvh() {

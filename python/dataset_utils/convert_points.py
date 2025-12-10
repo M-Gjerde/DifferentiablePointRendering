@@ -138,9 +138,7 @@ def compute_tangent_basis_from_normal(nx, ny, nz,
     return tu[0], tu[1], tu[2], tv[0], tv[1], tv[2]
 
 
-def write_gaussian_ply(vertices, output_path: Path,
-                       su_default=0.1,
-                       sv_default=0.1,
+def write_gaussian_ply(vertices, args,
                        opacity_default=0.9,
                        beta_default=-0.25,
                        shape_default=0.0):
@@ -185,6 +183,9 @@ def write_gaussian_ply(vertices, output_path: Path,
 
         tu_x, tu_y, tu_z, tv_x, tv_y, tv_z = compute_tangent_basis_from_normal(nx, ny, nz)
 
+        su_default = float(args.scale)
+        sv_default = float(args.scale)
+
         su = su_default
         sv = sv_default
 
@@ -206,7 +207,7 @@ def write_gaussian_ply(vertices, output_path: Path,
         )
         lines.append(line)
 
-    output_path.write_text("\n".join(lines) + "\n")
+    args.output.write_text("\n".join(lines) + "\n")
 
 
 def main():
@@ -225,10 +226,17 @@ def main():
         required=True,
         help="Output Gaussian splat PLY file.",
     )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        required=False,
+        default=0.1,
+        help="Default scale for su and sv parameters",
+    )
     args = parser.parse_args()
 
     vertices = read_colmap_ply(args.input)
-    write_gaussian_ply(vertices, args.output)
+    write_gaussian_ply(vertices, args)
 
 
 if __name__ == "__main__":

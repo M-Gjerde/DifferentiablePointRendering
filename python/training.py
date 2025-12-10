@@ -21,8 +21,7 @@ from io_utils import (
 )
 from losses import (
     compute_l2_loss,
-    compute_l2_loss_and_grad,
-    compute_l2_ssim_loss_and_grad,
+    compute_l2_grad,
     compute_parameter_mse,
 )
 from optimizers import create_optimizer
@@ -502,11 +501,12 @@ def run_optimization(
 
     clear_output_dir(config.output_dir)
 
+
     for camera_name in camera_ids:
         img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")
         tgt_np = target_images[camera_name]
 
-        loss_cam, _ = compute_l2_loss_and_grad(img_np, tgt_np)
+        loss_cam = compute_l2_loss(img_np, tgt_np)
         initial_loss += loss_cam
 
         camera_base_dir = config.output_dir / camera_name
@@ -537,7 +537,7 @@ def run_optimization(
 
     opacity_prune_threshold = 0.4
     max_prune_fraction = 0.3
-    rebuild_bvh_interval = 1
+    rebuild_bvh_interval = 1e10
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -570,15 +570,19 @@ def run_optimization(
                     )
                     target_rgb_np = target_images[camera_name]
 
-                    loss_value_cam, loss_grad_cam, loss_image_cam = compute_l2_loss_and_grad(
+                    ## Analytical first:
+                    loss_grad = compute_l2_grad(
                         current_rgb_np,
-                        target_rgb_np,
-                        return_loss_image=True,
+                        target_rgb_np
+                    )
+                    loss_value = compute_l2_loss(
+                        current_rgb_np,
+                        target_rgb_np
                     )
 
-                    total_loss_value += float(loss_value_cam)
-                    loss_grad_images[camera_name] = loss_grad_cam
-                    loss_images[camera_name] = loss_image_cam
+                    total_loss_value += float(loss_value)
+                    loss_grad_images[camera_name] = loss_grad
+                    loss_images[camera_name] = loss_grad
 
                 # Use main camera image for manual snapshot and some logs
                 current_main_rgb_np = np.asarray(
@@ -953,23 +957,15 @@ def run_optimization(
 
     final_loss = 0.0
     for camera_name in camera_ids:
-        img_np = np.asarray(
-            final_images[camera_name],
-            dtype=np.float32,
-            order="C",
-        )
+        img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")
         tgt_np = target_images[camera_name]
-        final_loss += compute_l2_loss(img_np, tgt_np)
+        loss_cam  = compute_l2_loss(img_np, tgt_np)
+        final_loss += float(loss_cam)
+        save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
 
-        save_render(
-            config.output_dir / f"render_final_{camera_name}.png",
-            img_np,
-        )
+    print(f"Initial loss (sum over cameras): {initial_loss:.6e}")
+    print(f"Final loss   (sum over cameras): {final_loss:.6e}")
 
-    save_positions_numpy(
-        config.output_dir / "positions_final.npy",
-        positions.detach().cpu().numpy(),
-    )
 
     ply_path = config.output_dir / "points_final.ply"
     save_gaussians_to_ply(

@@ -27,7 +27,7 @@ namespace Pale {
              sycl::property_list{sycl::property::queue::in_order{}},
         };
 
-        Log::PA_INFO("Using {}", m_device.get_info<sycl::info::device::name>());
+        Log::PA_WARN("Using {}", m_device.get_info<sycl::info::device::name>());
 
 
         /*
