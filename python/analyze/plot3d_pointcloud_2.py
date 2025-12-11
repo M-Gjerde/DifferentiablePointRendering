@@ -158,6 +158,11 @@ def load_surfels_from_ply(
             if len(parts) < 14:
                 continue
 
+            #opacity
+            opacity = (float(parts[13]))
+
+            if opacity < 0.9:
+                continue
             # pk
             pkX.append(float(parts[0]))
             pkY.append(float(parts[1]))
@@ -182,6 +187,7 @@ def load_surfels_from_ply(
             color1.append(float(parts[12]))
             color2.append(float(parts[13]))
 
+
     positions = np.stack([pkX, pkY, pkZ], axis=1)
     tangentU = np.stack([tuX, tuY, tuZ], axis=1)
     tangentV = np.stack([tvX, tvY, tvZ], axis=1)
@@ -189,6 +195,8 @@ def load_surfels_from_ply(
     su = np.array(suValues)
     sv = np.array(svValues)
     colors = np.stack([color0, color1, color2], axis=1)
+
+    print(f"Found {len(colors)} points")
 
     return positions, tangentU, tangentV, su, sv, colors
 
@@ -216,8 +224,8 @@ def plot_ellipses_3d(
     positions = positions[ellipseMask]
     tangent_u = tangent_u[ellipseMask]
     tangent_v = tangent_v[ellipseMask]
-    su = su[ellipseMask]
-    sv = sv[ellipseMask]
+    su = su[ellipseMask] * 0.5
+    sv = sv[ellipseMask] * 0.5
     colors = colors[ellipseMask]
 
     if max_ellipses is not None:

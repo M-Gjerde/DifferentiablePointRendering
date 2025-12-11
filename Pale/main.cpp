@@ -216,8 +216,8 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    //serializer.deserialize("scene_blender.xml");
-    serializer.deserialize("cbox_custom.xml");
+    serializer.deserialize("scene_blender.xml");
+    //serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -308,16 +308,18 @@ int main(int argc, char **argv) {
         Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
     }
 
+    std::vector<Pale::DebugImages> debugImages(sensors.size());
+    Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
+                                                                 debugImages.data());
+
+    std::vector<Pale::SensorGPU> adjointSensors =
+            Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+
+    Pale::Log::PA_INFO("Adjoint Render Pass...");
+    tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
+
     if (settings.renderDebugGradientImages) {
-        std::vector<Pale::DebugImages> debugImages(sensors.size());
-        Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
-                                                                     debugImages.data());
 
-        std::vector<Pale::SensorGPU> adjointSensors =
-                Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
-
-        Pale::Log::PA_INFO("Adjoint Render Pass...");
-        tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
 
         for (size_t i = 0; const auto &adjointSensor: adjointSensors) {
             auto debugImagesHost = Pale::downloadDebugGradientImages(

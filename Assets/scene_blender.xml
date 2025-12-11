@@ -3,23 +3,21 @@
     <integrator type="path">
         <integer name="max_depth" value="6"/>
     </integrator>
-
-
-    <sensor type="perspective" id="DatasetCam_000">
+<sensor type="perspective" id="DatasetCam_000">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
         <float name="far_clip" value="100.0" />
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="0.8012410402297974,2.0608012676239014,3.8333332538604736" target="0.6009307841356588,1.5456009013069636,2.9999999568835714" up="-0.3019790671494541,-0.7766936478185593,0.5527708570844208" />
+            <lookat origin="0.5792962908744812,1.4899568557739258,4.1666669845581055" target="0.4344722245667424,1.1174676795979914,3.250000303888482" up="-0.3321769786700103,-0.8543630717857723,0.39965259464995667" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="400" />
-            <integer name="height" value="400" />
+            <integer name="width" value="1000" />
+            <integer name="height" value="1000" />
             <rfilter type="tent" />
             <string name="pixel_format" value="rgb" />
             <string name="component_format" value="float32" />
@@ -32,14 +30,14 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="-3.1065468788146973,-1.5327644348144531,2.5" target="-2.3299101465059358,-1.1495733496938363,2.000000021687147" up="0.4483913667077333,0.22123549325096276,0.8660254261786857" />
+            <lookat origin="-2.372664213180542,-1.170668125152588,3.5" target="-1.779498217747665,-0.8780010632024282,2.749999938192279" up="0.6725871520990508,0.3318533280646884,0.6614377457355141" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="400" />
-            <integer name="height" value="400" />
+            <integer name="width" value="1000" />
+            <integer name="height" value="1000" />
             <rfilter type="tent" />
             <string name="pixel_format" value="rgb" />
             <string name="component_format" value="float32" />
@@ -52,19 +50,80 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="3.7868614196777344,-1.1023776531219482,1.1666667461395264" target="2.8401460383556763,-0.8267833215624714,1.0000001592646652" up="-0.16002404951901708,0.046583873051490414,0.9860133094167938" />
+            <lookat origin="3.119443893432617,-0.9080885648727417,2.8333332538604736" target="2.3395828620710124,-0.6810664986264792,2.249999941593043" up="-0.5600843306579187,0.16304376363362127,0.8122328937513273" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="400" />
-            <integer name="height" value="400" />
+            <integer name="width" value="1000" />
+            <integer name="height" value="1000" />
             <rfilter type="tent" />
             <string name="pixel_format" value="rgb" />
             <string name="component_format" value="float32" />
         </film>
     </sensor>
+    <sensor type="perspective" id="DatasetCam_003">
+        <string name="fov_axis" value="y" />
+        <float name="near_clip" value="0.01" />
+        <float name="far_clip" value="100.0" />
+        <float name="focus_distance" value="1000.0" />
+        <float name="fov" value="20.4" />
+        <transform name="to_world">
+            <lookat origin="-1.8878568410873413,3.1077675819396973,2.1666665077209473" target="-1.4158927110873814,2.330825611812044,1.749999932330574" up="0.21632434123928398,-0.35611065722062657,0.9090593925598499" />
+        </transform>
+        <sampler type="independent">
+            <integer name="sample_count" value="128" />
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="1000" />
+            <integer name="height" value="1000" />
+            <rfilter type="tent" />
+            <string name="pixel_format" value="rgb" />
+            <string name="component_format" value="float32" />
+        </film>
+    </sensor>
+    <sensor type="perspective" id="DatasetCam_004">
+        <string name="fov_axis" value="y" />
+        <float name="near_clip" value="0.01" />
+        <float name="far_clip" value="100.0" />
+        <float name="focus_distance" value="1000.0" />
+        <float name="fov" value="20.4" />
+        <transform name="to_world">
+            <lookat origin="-0.7532650828361511,-3.799025058746338,1.5" target="-0.5649487721858766,-2.84926875847307,1.2500001255314244" up="0.048623060410177305,0.24522590598786478,0.9682458639357976" />
+        </transform>
+        <sampler type="independent">
+            <integer name="sample_count" value="128" />
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="1000" />
+            <integer name="height" value="1000" />
+            <rfilter type="tent" />
+            <string name="pixel_format" value="rgb" />
+            <string name="component_format" value="float32" />
+        </film>
+    </sensor>
+    <sensor type="perspective" id="DatasetCam_005">
+        <string name="fov_axis" value="y" />
+        <float name="near_clip" value="0.01" />
+        <float name="far_clip" value="100.0" />
+        <float name="focus_distance" value="1000.0" />
+        <float name="fov" value="20.4" />
+        <transform name="to_world">
+            <lookat origin="3.2128007411956787,2.3594067096710205,0.8333333730697632" target="2.409600643110232,1.7695549053793345,0.7499999979468771" up="-0.06716694434473422,-0.049325980168399175,0.9965217254369411" />
+        </transform>
+        <sampler type="independent">
+            <integer name="sample_count" value="128" />
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="1000" />
+            <integer name="height" value="1000" />
+            <rfilter type="tent" />
+            <string name="pixel_format" value="rgb" />
+            <string name="component_format" value="float32" />
+        </film>
+    </sensor>
+
     <bsdf type="diffuse" id="gray">
         <rgb name="reflectance" value="0.1,0.1,0.1"/>
     </bsdf>

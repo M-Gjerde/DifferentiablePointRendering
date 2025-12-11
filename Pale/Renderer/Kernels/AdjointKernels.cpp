@@ -157,16 +157,7 @@ namespace Pale {
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.randomSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
-
                     RayState &rayState = intermediates.primaryRays[rayIndex];
-                    WorldHit &worldHit = intermediates.hitRecords[rayIndex];
-                    uint32_t pixelX = rayState.pixelX;
-                    uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
-                    bool isWatched = false;
-                    if (pixelX == 200 && pixelY == 200) {
-                        isWatched = true;
-                        int debug = 1;
-                    }
 
                     // Shoot one transmit ray. The amount intersected here will tell us how many scatter rays we will transmit.
                     WorldHit whTransmit{};
@@ -175,22 +166,14 @@ namespace Pale {
                         return;
 
                     buildIntersectionNormal(scene, whTransmit);
-
-
-                    //uint32_t debugIndex = 1;
-                    uint32_t debugIndex = UINT32_MAX;
-                    //debugIndex = 0;
-                    uint32_t numShadowRays = 10;
                     const Ray &ray = rayState.ray;
                     // Transmission gradients with shadow rays
                     float3 L_Mesh(0.0f);
                     if (whTransmit.instanceIndex != UINT32_MAX) {
                         L_Mesh = estimateRadianceFromPhotonMap(whTransmit, scene, photonMap);
                     }
-
                     // Transmission
                     // Cost weighting: photon-map radiance for this segment
-
                     for (uint32_t i = 0; i < whTransmit.splatEventCount; ++i) {
                         // Forward-side values reused in adjoint:
                         auto &splatEvent = whTransmit.splatEvents[i]; // one surfel
@@ -477,21 +460,9 @@ namespace Pale {
                     if (!worldHit.hit) {
                         return;
                     }
-
-                    uint32_t pixelX = rayState.pixelX;
-                    uint32_t pixelY = sensor.height - 1 - rayState.pixelY;
-
-
-                    bool isWatched = false;
-                    //if (pixelX == 200 && pixelY == 325) {
-                    if (pixelX == 225 && pixelY == 220) {
-                        isWatched = true;
-                        int debug = 1;
-                    }
                     uint32_t numShadowRays = 1;
-
                     shadowRay(scene, rayState, worldHit, gradients, debugImage, photonMap, rng128,
-                              settings.renderDebugGradientImages, numShadowRays, UINT32_MAX, isWatched);
+                              settings.renderDebugGradientImages, numShadowRays);
                 });
         });
         queue.wait();

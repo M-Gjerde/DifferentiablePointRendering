@@ -138,76 +138,175 @@ def compute_tangent_basis_from_normal(nx, ny, nz,
     return tu[0], tu[1], tu[2], tv[0], tv[1], tv[2]
 
 
-def write_gaussian_ply(vertices, args,
-                       opacity_default=0.9,
-                       beta_default=-0.25,
-                       shape_default=0.0):
+import numpy as np
+
+
+def write_gaussian_ply(
+    vertices,
+    output_path,
+    args,
+    opacity_default=0.9,
+    beta_default=-0.25,
+    shape_default=0.0,
+
+    # -----------------------------------------------------------
+    # Noise parameters (set these yourself)
+    # -----------------------------------------------------------
+    noise_sigma_translation=0.04,
+    noise_sigma_rotation=0.03,
+    noise_sigma_albedo=0.3,
+    noise_sigma_opacity=0.2,
+    noise_sigma_beta=0.0,
+    noise_sigma_shape=0.0,
+):
     """
-    Write out vertices in 2D Gaussian splat PLY format,
-    with tu/tv computed from normals.
+    Write 2D Gaussian splats to PLY with optional Gaussian noise added to:
+        - translation (x,y,z)
+        - rotation / tangent frame (tu,tv)   [renormalized + orthogonalized]
+        - albedo (r,g,b)  in [0,1]
+        - opacity
+        - beta
+        - shape
+    Scale (su,sv) is NOT perturbed.
     """
+
+    # ------------------------------
+    # Small utility functions
+    # ------------------------------
+    def add_noise(value, sigma):
+        if sigma == 0.0:
+            return value
+        return value + np.random.normal(0.0, sigma)
+
+    def renormalize(v):
+        norm = np.linalg.norm(v)
+        if norm < 1e-12:
+            return v
+        return v / norm
+
+    def orthonormalize(tu, tv, normal):
+        tu = renormalize(tu)
+        tv = tv - np.dot(tv, tu) * tu
+        tv = renormalize(tv)
+        # Ensure right-handed frame
+        if np.dot(np.cross(tu, tv), normal) < 0:
+            tv = -tv
+        return tu, tv
+
+    # ------------------------------
+    # Build header
+    # ------------------------------
     vertex_count = len(vertices)
 
-    lines = []
-    lines.append("ply")
-    lines.append("format ascii 1.0")
-    lines.append("comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity")
-    lines.append(f"element vertex {vertex_count}")
-    lines.append("property float x          # pk.x")
-    lines.append("property float y          # pk.y")
-    lines.append("property float z          # pk.z")
-    lines.append("property float tu_x       # tangential axis u (unit)")
-    lines.append("property float tu_y")
-    lines.append("property float tu_z")
-    lines.append("property float tv_x       # tangential axis v (unit, orthonormal to tu)")
-    lines.append("property float tv_y")
-    lines.append("property float tv_z")
-    lines.append("property float su         # scale along tu")
-    lines.append("property float sv         # scale along tv")
-    lines.append("property float albedo_r   # diffuse BRDF albedo")
-    lines.append("property float albedo_g")
-    lines.append("property float albedo_b")
-    lines.append("property float opacity")
-    lines.append("property float beta")
-    lines.append("property float shape")
-    lines.append("end_header")
+    lines = [
+        "ply",
+        "format ascii 1.0",
+        "comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity",
+        f"element vertex {vertex_count}",
+        "property float x",
+        "property float y",
+        "property float z",
+        "property float tu_x",
+        "property float tu_y",
+        "property float tu_z",
+        "property float tv_x",
+        "property float tv_y",
+        "property float tv_z",
+        "property float su",
+        "property float sv",
+        "property float albedo_r",
+        "property float albedo_g",
+        "property float albedo_b",
+        "property float opacity",
+        "property float beta",
+        "property float shape",
+        "end_header",
+    ]
 
+    # ------------------------------
+    # Vertex loop
+    # ------------------------------
     for vertex in vertices:
-        x = vertex["x"]
-        y = vertex["y"]
-        z = vertex["z"]
+        # Base position
+        x = float(vertex["x"])
+        y = float(vertex["y"])
+        z = float(vertex["z"])
 
-        nx = vertex["nx"]
-        ny = vertex["ny"]
-        nz = vertex["nz"]
+        nx = float(vertex["nx"])
+        ny = float(vertex["ny"])
+        nz = float(vertex["nz"])
 
+        # Compute tangent basis from normal
         tu_x, tu_y, tu_z, tv_x, tv_y, tv_z = compute_tangent_basis_from_normal(nx, ny, nz)
+        tu = np.array([tu_x, tu_y, tu_z], dtype=float)
+        tv = np.array([tv_x, tv_y, tv_z], dtype=float)
+        normal = np.array([nx, ny, nz], dtype=float)
 
-        su_default = float(args.scale)
-        sv_default = float(args.scale)
+        # Scales (unchanged)
+        su = float(args.scale)
+        sv = float(args.scale)
 
-        su = su_default
-        sv = sv_default
+        # Albedo 0..1
+        albedo = np.array([
+            vertex["r"] / 255.0,
+            vertex["g"] / 255.0,
+            vertex["b"] / 255.0
+        ], dtype=float)
 
-        albedo_r = vertex["r"] / 255.0
-        albedo_g = vertex["g"] / 255.0
-        albedo_b = vertex["b"] / 255.0
+        opacity = float(opacity_default)
+        beta = float(beta_default)
+        shape = float(shape_default)
 
-        opacity = opacity_default
-        beta = beta_default
-        shape = shape_default
+        # -------------------------------------------------------
+        # Noise injection
+        # -------------------------------------------------------
 
+        # Translation
+        if noise_sigma_translation > 0.0:
+            x = add_noise(x, noise_sigma_translation)
+            y = add_noise(y, noise_sigma_translation)
+            z = add_noise(z, noise_sigma_translation)
+
+        # Rotation
+        if noise_sigma_rotation > 0.0:
+            tu = tu + np.random.normal(0.0, noise_sigma_rotation, size=3)
+            tv = tv + np.random.normal(0.0, noise_sigma_rotation, size=3)
+            tu, tv = orthonormalize(tu, tv, normal)
+
+        # Albedo
+        if noise_sigma_albedo > 0.0:
+            albedo = albedo + np.random.normal(0.0, noise_sigma_albedo, size=3)
+            albedo = np.clip(albedo, 0.0, 1.0)
+
+        # Opacity
+        if noise_sigma_opacity > 0.0:
+            opacity = add_noise(opacity, noise_sigma_opacity)
+            opacity = float(np.clip(opacity, 0.0, 1.0))
+
+        # Beta
+        if noise_sigma_beta > 0.0:
+            beta = add_noise(beta, noise_sigma_beta)
+
+        # Shape
+        if noise_sigma_shape > 0.0:
+            shape = add_noise(shape, noise_sigma_shape)
+
+        # ------------------------------
+        # Emit line
+        # ------------------------------
         line = (
             f"{x:.7f} {y:.7f} {z:.7f} "
-            f"{tu_x:.7f} {tu_y:.7f} {tu_z:.7f} "
-            f"{tv_x:.7f} {tv_y:.7f} {tv_z:.7f} "
+            f"{tu[0]:.7f} {tu[1]:.7f} {tu[2]:.7f} "
+            f"{tv[0]:.7f} {tv[1]:.7f} {tv[2]:.7f} "
             f"{su:.7f} {sv:.7f} "
-            f"{albedo_r:.7f} {albedo_g:.7f} {albedo_b:.7f} "
+            f"{albedo[0]:.7f} {albedo[1]:.7f} {albedo[2]:.7f} "
             f"{opacity:.7f} {beta:.7f} {shape:.7f}"
         )
         lines.append(line)
 
-    args.output.write_text("\n".join(lines) + "\n")
+    # Save file
+    output_path.write_text("\n".join(lines) + "\n")
+
 
 
 def main():
@@ -230,13 +329,13 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.1,
+        default=0.05,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()
 
     vertices = read_colmap_ply(args.input)
-    write_gaussian_ply(vertices, args)
+    write_gaussian_ply(vertices, Path(args.output), args)
 
 
 if __name__ == "__main__":

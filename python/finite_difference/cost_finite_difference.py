@@ -603,7 +603,7 @@ def analytic_rotation_grad_for_axis_deg(
 # ---------- Main driver: compute FD for all parameters ----------
 def main(args) -> None:
     renderer_settings = {
-        "photons": 1e6,
+        "photons": 5e5,
         "bounces": 4,
         "forward_passes": 10,
         "gather_passes": 1,
@@ -689,7 +689,7 @@ def main(args) -> None:
         target_scales_np[args.index] = target_scales_np[args.index] * np.array(noise,dtype=np.float32)
 
     elif args.param == "opacity":
-        eps_opacity = -0.2
+        eps_opacity = 0.2  * eps_direction
         target_opacities_np[args.index] = target_opacities_np[args.index] + np.array(eps_opacity, dtype=np.float32)
 
 
@@ -836,7 +836,7 @@ def main(args) -> None:
     eps_opacity = 0.1
     eps_beta = 0.1  # reasonable start for log-shape
 
-    iterations = 6
+    iterations = 4
 
     label = args.camera + "_" + args.param + "_" + args.axis + "_" + str(args.index) + "_" + str(args.eps)
 
