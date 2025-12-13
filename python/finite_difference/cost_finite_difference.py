@@ -622,7 +622,7 @@ def main(args) -> None:
     print("Index:", args.index)
 
     base_output_dir = (
-        Path(__file__).parent / "finite_diff" / "beta_kernel" / args.scene / args.camera
+        Path(__file__).parent / "output" / args.scene / args.camera
         if args.output == "" or args.output is None
         else Path(__file__).parent / Path(args.output)
     )

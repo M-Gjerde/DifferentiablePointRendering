@@ -18,8 +18,8 @@
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
-            <integer name="width" value="400"/>
-            <integer name="height" value="400"/>
+            <integer name="width" value="1200"/>
+            <integer name="height" value="700"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>
             <string name="component_format" value="float32"/>
@@ -116,7 +116,7 @@
             <rotate x="1" y="0" z="0" angle="90"/>
             <translate x="0" y="1" z="1"/>
         </transform>
-        <ref id="yellow"/>
+        <ref id="gray"/>
     </shape>
 
     <!-- Left wall: x=-1, normal +X -->
@@ -160,6 +160,6 @@
         </transform>
         <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
-         <emitter type="area"><rgb name="radiance" value="0.9,0.9,0.7"/></emitter>
+         <emitter type="area"><rgb name="radiance" value="1.1,1.1,0.9"/></emitter>
      </shape>
  </scene>

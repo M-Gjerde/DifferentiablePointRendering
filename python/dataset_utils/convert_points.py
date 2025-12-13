@@ -145,17 +145,17 @@ def write_gaussian_ply(
     vertices,
     output_path,
     args,
-    opacity_default=0.9,
-    beta_default=-0.25,
+    opacity_default=1.0,
+    beta_default=-0.5,
     shape_default=0.0,
 
     # -----------------------------------------------------------
     # Noise parameters (set these yourself)
     # -----------------------------------------------------------
-    noise_sigma_translation=0.04,
-    noise_sigma_rotation=0.03,
-    noise_sigma_albedo=0.3,
-    noise_sigma_opacity=0.2,
+    noise_sigma_translation=0.00,
+    noise_sigma_rotation=0.00,
+    noise_sigma_albedo=0.0,
+    noise_sigma_opacity=0.0,
     noise_sigma_beta=0.0,
     noise_sigma_shape=0.0,
 ):
@@ -248,9 +248,9 @@ def write_gaussian_ply(
 
         # Albedo 0..1
         albedo = np.array([
-            vertex["r"] / 255.0,
-            vertex["g"] / 255.0,
-            vertex["b"] / 255.0
+            vertex["r"] / 255.0 * 0 + 1.0,
+            vertex["g"] / 255.0 * 0 + 1.0,
+            vertex["b"] / 255.0 * 0 + 0.5
         ], dtype=float)
 
         opacity = float(opacity_default)
@@ -329,7 +329,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.05,
+        default=0.02,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()

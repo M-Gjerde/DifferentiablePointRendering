@@ -273,9 +273,9 @@ int main(int argc, char **argv) {
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 5e5;
+    settings.photonsPerLaunch = 1e5;
     settings.maxBounces = 3;
-    settings.numForwardPasses = 10;
+    settings.numForwardPasses = 200;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;
@@ -308,18 +308,18 @@ int main(int argc, char **argv) {
         Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
     }
 
-    std::vector<Pale::DebugImages> debugImages(sensors.size());
-    Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
-                                                                 debugImages.data());
 
-    std::vector<Pale::SensorGPU> adjointSensors =
-            Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
-
-    Pale::Log::PA_INFO("Adjoint Render Pass...");
-    tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
 
     if (settings.renderDebugGradientImages) {
+        std::vector<Pale::DebugImages> debugImages(sensors.size());
+        Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
+                                                                     debugImages.data());
 
+        std::vector<Pale::SensorGPU> adjointSensors =
+                Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+
+        Pale::Log::PA_INFO("Adjoint Render Pass...");
+        tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
 
         for (size_t i = 0; const auto &adjointSensor: adjointSensors) {
             auto debugImagesHost = Pale::downloadDebugGradientImages(

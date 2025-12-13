@@ -173,7 +173,7 @@ namespace Pale {
         const std::uint64_t nz = static_cast<std::uint64_t>(grid.gridResolution.z());
         const std::uint64_t totalCells = nx * ny * nz;
         if (totalCells == 0 || totalCells > std::numeric_limits<std::uint32_t>::max())
-            throw std::runtime_error("Photon grid too large; increase r or tighten AABB.");
+            throw std::runtime_error("Photon grid resolution too high; increase r or tighten AABB.");
 
         grid.totalCellCount = static_cast<std::uint32_t>(totalCells);
 
