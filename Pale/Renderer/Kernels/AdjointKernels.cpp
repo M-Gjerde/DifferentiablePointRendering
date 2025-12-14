@@ -235,9 +235,7 @@ namespace Pale {
                         float3 dAlphaEff_dScale = eta * dAlpha_dScale;
                         const float dAlphaEff_dScaleU = dAlphaEff_dScale.x();
                         const float dAlphaEff_dScaleV = dAlphaEff_dScale.y();
-                        /// OPACITY
                         //alpha^(eff)(u, v)(&PartialD; eta)/(&PartialD; Pi)
-                        float dAlphaEffOpacity = alphaGeom;
                         // Beta parameter:
                         const float dAlphaEffBeta =
                                 alphaGeom * surfel.opacity * betaKernel(surfel.beta) *

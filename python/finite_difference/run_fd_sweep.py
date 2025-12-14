@@ -122,7 +122,7 @@ def history_filename_for_param(param: str) -> str:
 
 
 def build_base_output_dir(script_path: Path, scene: str, camera: str) -> Path:
-    return script_path.parent / "finite_diff" / "beta_kernel" / scene / camera
+    return script_path.parent / "output" / scene / camera
 
 
 # ============================================================

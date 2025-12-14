@@ -216,8 +216,8 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    serializer.deserialize("scene_blender.xml");
-    //serializer.deserialize("cbox_custom.xml");
+    //serializer.deserialize("scene_blender.xml");
+    serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -279,7 +279,7 @@ int main(int argc, char **argv) {
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;
-    settings.renderDebugGradientImages = false;
+    settings.renderDebugGradientImages = true;
 
 
     Pale::PathTracer tracer(deviceSelector.getQueue(), settings);

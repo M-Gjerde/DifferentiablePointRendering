@@ -248,9 +248,9 @@ def write_gaussian_ply(
 
         # Albedo 0..1
         albedo = np.array([
-            vertex["r"] / 255.0 * 0 + 1.0,
-            vertex["g"] / 255.0 * 0 + 1.0,
-            vertex["b"] / 255.0 * 0 + 0.5
+            vertex["r"] / 255.0,
+            vertex["g"] / 255.0,
+            vertex["b"] / 255.0
         ], dtype=float)
 
         opacity = float(opacity_default)

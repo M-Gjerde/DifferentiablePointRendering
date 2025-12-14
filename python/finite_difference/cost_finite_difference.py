@@ -605,10 +605,10 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 5e5,
         "bounces": 4,
-        "forward_passes": 10,
+        "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 2,
-        "adjoint_passes": 4,
+        "adjoint_passes": 1,
         "logging": 3,
         "debug_images": True,
     }
@@ -679,7 +679,7 @@ def main(args) -> None:
         )
 
     elif args.param == "scale":
-        scale_percent = 20 * eps_direction
+        scale_percent = 10 * eps_direction
         eps_scale = 1.0 + scale_percent / 100
         if args.axis == "x":
             noise = [eps_scale, 1.0]
@@ -705,7 +705,7 @@ def main(args) -> None:
                                                                                      dtype=np.float32)
 
     elif args.param == "beta":
-        eps_beta = 0.3 * eps_direction
+        eps_beta = 0.2
         target_betas_np[args.index] = target_betas_np[args.index] + np.array(eps_beta, dtype=np.float32)
 
     renderer.apply_point_optimization(
@@ -828,7 +828,26 @@ def main(args) -> None:
                     abs_quantile=0.999,
                     flip_y=False,
                 )
-
+        if f"beta" in adjoint_images["debug"][camera]:
+            debug_beta_img = np.asarray(
+                adjoint_images["debug"][camera][f"beta"],
+                dtype=np.float32,
+                order="C",
+            )
+            debug_beta_img = np.nan_to_num(
+                debug_beta_img,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+            debug_beta_path = base_output_dir / args.param / args.eps / args.axis / f"beta_debug_099.png"
+            save_gradient_sign_png_py(
+                debug_beta_path,
+                debug_beta_img,
+                adjoint_spp=1,
+                abs_quantile=0.999,
+                flip_y=False,
+            )
     # Step sizes
     eps_translation = 0.01
     eps_rotation_deg = 0.5
@@ -836,7 +855,7 @@ def main(args) -> None:
     eps_opacity = 0.1
     eps_beta = 0.1  # reasonable start for log-shape
 
-    iterations = 4
+    iterations = 2
 
     label = args.camera + "_" + args.param + "_" + args.axis + "_" + str(args.index) + "_" + str(args.eps)
 
@@ -1216,7 +1235,7 @@ def main(args) -> None:
             loss_negative = compute_l2_loss(rgb_minus, target_image)
             loss_positive = compute_l2_loss(rgb_plus, target_image)
 
-            grad_value = (loss_positive - loss_negative) / (2.0 * eps_beta)
+            grad_value = (loss_negative - loss_positive) / (2.0 * eps_beta)
 
             # accumulate for mean
             grad_beta += grad_value
@@ -1258,11 +1277,11 @@ def main(args) -> None:
         mean_val = grad_beta_stats["mean"]
         std_val = grad_beta_stats["std"]
         print(
-            f"[FD] Mean Opacity Grad={mean_val: .10f}, Std={std_val: .10f}"
+            f"[FD] Mean Beta Grad={mean_val: .10f}, Std={std_val: .10f}"
         )
 
-        print(f"[FD] Opacity Grad={fd_val: .10f}")
-        print(f"[AN] Opacity Grad={an_val: .10f}")
+        print(f"[FD] Beta Grad={fd_val: .10f}")
+        print(f"[AN] Beta Grad={an_val: .10f}")
         print(
             f"[ER] FD-AN={err: .10f}, |FD-AN|={abs_err: .10f}"
         )

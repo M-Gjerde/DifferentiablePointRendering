@@ -4,21 +4,40 @@
         <integer name="max_depth" value="6"/>
     </integrator>
 
-
-    <sensor type="perspective" id="DatasetCam_004">
+    <sensor type="perspective" id="DatasetCam_000">
         <string name="fov_axis" value="y"/>
         <float name="near_clip" value="0.01"/>
         <float name="far_clip" value="100.0"/>
         <float name="focus_distance" value="500.0"/>
         <float name="fov" value="20.4"/>
         <transform name="to_world">
-            <lookat origin="-0.7532650828361511,-3.799025058746338,1.5" target="-0.5649487721858766,-2.84926875847307,1.2500001255314244" up="0.048623060410177305,0.24522590598786478,0.9682458639357976"/>
+            <lookat origin="0.5792962908744812,1.4899568557739258,4.1666669845581055" target="0.4344722245667424,1.1174676795979914,3.250000303888482" up="-0.3321769786700103,-0.8543630717857723,0.39965259464995667"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
         </sampler>
         <film type="hdrfilm">
             <integer name="width" value="500"/>
+            <integer name="height" value="500"/>
+            <rfilter type="tent"/>
+            <string name="pixel_format" value="rgb"/>
+            <string name="component_format" value="float32"/>
+        </film>
+    </sensor>
+    <sensor type="perspective" id="DatasetCam_001">
+        <string name="fov_axis" value="y"/>
+        <float name="near_clip" value="0.01"/>
+        <float name="far_clip" value="100.0"/>
+        <float name="focus_distance" value="500.0"/>
+        <float name="fov" value="20.4"/>
+        <transform name="to_world">
+            <lookat origin="-2.372664213180542,-1.170668125152588,3.5" target="-1.779498217747665,-0.8780010632024282,2.749999938192279" up="0.6725871520990508,0.3318533280646884,0.6614377457355141"/>
+        </transform>
+        <sampler type="independent">
+            <integer name="sample_count" value="128"/>
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="1000"/>
             <integer name="height" value="500"/>
             <rfilter type="tent"/>
             <string name="pixel_format" value="rgb"/>

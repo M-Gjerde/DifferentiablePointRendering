@@ -59,26 +59,26 @@ def computeMeanGradient(csvPath: Path, axisNames: Sequence[str]) -> Tuple[float,
 # Paths
 # ------------------------------------------------------------
 translationGradientsPath = Path(
-    "output/target/camera1/translation/translation_gradients_history.csv"
+    "output/initial/camera1/translation/translation_gradients_history.csv"
 )
 
 rotationGradientsPath = Path(
-    "output/target/camera1/rotation/rotation_gradients_history.csv"
+    "output/initial/camera1/rotation/rotation_gradients_history.csv"
 )
 
 scaleGradientsPath = Path(
-    "output/target/camera1/scale/scale_gradients_history.csv"
+    "output/initial/camera1/scale/scale_gradients_history.csv"
 )
 opacityGradientsPath = Path(
-    "output/target/camera1/opacity/opacity_gradients_history.csv"
+    "output/initial/camera1/opacity/opacity_gradients_history.csv"
 )
 
 albedoGradientsPath = Path(
-    "output/target/camera1/albedo/albedo_gradients_history.csv"
+    "output/initial/camera1/albedo/albedo_gradients_history.csv"
 )
 
 betaGradientsPath = Path(
-    "output/target/camera1/beta/beta_gradients_history.csv"
+    "output/initial/camera1/beta/beta_gradients_history.csv"
 )
 
 # ------------------------------------------------------------
@@ -104,26 +104,42 @@ barWidth = 0.35
 
 plt.figure(figsize=(11.0, 4.5))
 
-plt.bar(
-    x - barWidth / 2.0,
-    fdValues,
-    width=barWidth,
-    label="FD mean(axes)",
-)
+finiteDifferenceColor = "#F4A261"  # light orange
+analyticColor = "#8FD3B6"          # light green
+
+
+groupSpacingFactor = 0.55  # > 0.5 gives visible air between bars
 
 plt.bar(
-    x + barWidth / 2.0,
+    x - groupSpacingFactor * barWidth,
     anValues,
     width=barWidth,
-    label="AN mean(axes)",
+    label="Analytic",
+    color=analyticColor,
+    edgecolor="black",
+    linewidth=0.0,
+    alpha=0.95,
 )
 
-plt.xticks(x, labels, rotation=20, ha="right")
+plt.bar(
+    x + groupSpacingFactor * barWidth,
+    fdValues,
+    width=barWidth,
+    label="Finite Difference",
+    color=finiteDifferenceColor,
+    edgecolor="black",
+    linewidth=0.0,
+    alpha=0.95,
+)
+
+plt.xticks(x, labels, rotation=0, ha="center")
 plt.yscale("symlog", linthresh=1e-6)
-plt.ylabel("Gradient magnitude (symlog scale)")
-plt.title("Mean FD vs Analytic gradients per parameter group")
+plt.ylabel("Gradient Magnitude")
+plt.title("FD vs Analytic gradients per parameter group")
 plt.legend()
 plt.tight_layout()
+currentYMin, currentYMax = plt.ylim()
+plt.ylim(currentYMin, currentYMax * 1.25)  # ~15% air on top
 
 outputPath = "finite_difference_plot.pdf"
 
