@@ -52,8 +52,8 @@ def generate_ply(
     actual_primitive_count_per_slice = grid_width * grid_height
 
     # Extents: [-2, 2] in both axes
-    min_coord = -0.5
-    max_coord = 0.5
+    min_coord = -0.45
+    max_coord = 0.45
 
     if grid_width > 1:
         grid_spacing_x = (max_coord - min_coord) / float(grid_width - 1)
@@ -72,8 +72,8 @@ def generate_ply(
     su = scale_value
     sv = scale_value
 
-    default_opacity = 1.0
-    default_beta = -1.0
+    default_opacity = 0.8
+    default_beta = -0.0
     default_shape = 0.0
 
     vertex_count = actual_primitive_count_per_slice * slice_count
@@ -184,19 +184,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--slice-vertical-offset",
         type=float,
-        default=0.2,
+        default=0.06,
         help="Vertical spacing between consecutive slices in world units.",
     )
     parser.add_argument(
         "--scale",
         type=float,
-        default=0.1,
+        default=0.012,
         help="Default scale value for su and sv.",
     )
     parser.add_argument(
         "--in-plane-noise-std",
         type=float,
-        default=0.02,
+        default=0.01,
         help="Standard deviation of XY jitter for slices above the base.",
     )
     parser.add_argument(

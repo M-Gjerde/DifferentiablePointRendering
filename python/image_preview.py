@@ -102,7 +102,7 @@ def main() -> None:
     # Layout configuration
     WINDOW_WIDTH = 500
     WINDOW_HEIGHT = 500
-    WINDOWS_PER_ROW = 6
+    WINDOWS_PER_ROW = 10
     ROW_OFFSET_PIXELS = WINDOW_HEIGHT + 40  # gap between rows
 
     # Stable camera index mapping for layout

@@ -152,10 +152,10 @@ def write_gaussian_ply(
     # -----------------------------------------------------------
     # Noise parameters (set these yourself)
     # -----------------------------------------------------------
-    noise_sigma_translation=0.00,
-    noise_sigma_rotation=0.00,
-    noise_sigma_albedo=0.0,
-    noise_sigma_opacity=0.0,
+    noise_sigma_translation=0.04,
+    noise_sigma_rotation=0.03,
+    noise_sigma_albedo=0.3,
+    noise_sigma_opacity=0.2,
     noise_sigma_beta=0.0,
     noise_sigma_shape=0.0,
 ):
@@ -329,7 +329,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.02,
+        default=0.05,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()

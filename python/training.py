@@ -530,14 +530,15 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 1e100
-    burnin_iterations = 0
+    prune_interval = 200
+    burnin_iterations = 100
+
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
 
-    opacity_prune_threshold = 0.4
+    opacity_prune_threshold = 0.1
     max_prune_fraction = 0.3
-    rebuild_bvh_interval = 1
+    rebuild_bvh_interval = 10
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)
