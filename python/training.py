@@ -172,6 +172,55 @@ def save_gradients_snapshot(
         f"saved gradients to:\n  {csv_path}\n  {npz_path}"
     )
 
+def save_checkpoint_snapshot(
+    output_dir: Path,
+    iteration: int,
+    camera_ids: List[str],
+    current_images: Dict[str, np.ndarray],
+    positions: torch.Tensor,
+    tangent_u: torch.Tensor,
+    tangent_v: torch.Tensor,
+    scales: torch.Tensor,
+    albedos: torch.Tensor,
+    opacities: torch.Tensor,
+    betas: torch.Tensor,
+    main_camera: str,
+) -> None:
+    """
+    Save an iteration checkpoint:
+      - output_dir/checkpoints/iter_XXXX/points.ply
+      - output_dir/checkpoints/iter_XXXX/render_<camera>.png (all cameras)
+      - output_dir/checkpoints/iter_XXXX/render_final.png (main camera convenience)
+    """
+    checkpoint_dir = output_dir / "checkpoints" / f"iter_{iteration:04d}"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save points
+    ply_path = checkpoint_dir / "points.ply"
+    save_gaussians_to_ply(
+        ply_path,
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        albedos,
+        opacities,
+        betas,
+        shape_default=0.0,
+    )
+
+    # Save renders (all cameras)
+    for camera_name in camera_ids:
+        image_numpy = np.asarray(current_images[camera_name], dtype=np.float32, order="C")
+        save_render(checkpoint_dir / f"render_{camera_name}.png", image_numpy)
+
+    # Convenience: main camera as "render_final.png" inside the checkpoint dir
+    main_img = np.asarray(current_images[main_camera], dtype=np.float32, order="C")
+    save_render(checkpoint_dir / "render_final.png", main_img)
+
+    print(f"[Iter {iteration:04d}] Saved checkpoint: {checkpoint_dir}")
+
+
 def save_manual_snapshot(
         output_dir: Path,
         iteration: int,
@@ -539,6 +588,7 @@ def run_optimization(
     opacity_prune_threshold = 0.1
     max_prune_fraction = 0.3
     rebuild_bvh_interval = 10
+    checkpoint_interval = 25  # near your other intervals (once), or inline here
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -851,6 +901,23 @@ def run_optimization(
                         main_camera_loss_root = config.output_dir / camera_name
                         save_loss_image(main_camera_loss_root, main_loss_image, iteration)
 
+
+                if (iteration % checkpoint_interval == 0) or (iteration == config.iterations):
+                    save_checkpoint_snapshot(
+                        output_dir=config.output_dir,
+                        iteration=iteration,
+                        camera_ids=camera_ids,
+                        current_images=current_images,
+                        positions=positions,
+                        tangent_u=tangent_u,
+                        tangent_v=tangent_v,
+                        scales=scales,
+                        albedos=albedos,
+                        opacities=opacities,
+                        betas=betas,
+                        main_camera=main_camera,
+                    )
+
                 # --------------------------------------------------------------
                 # 11. Metrics and logging
                 # --------------------------------------------------------------
@@ -933,6 +1000,7 @@ def run_optimization(
                             grad_opacities_np,
                             grad_betas_np,
                         )
+
 
         except KeyboardInterrupt:
             print(

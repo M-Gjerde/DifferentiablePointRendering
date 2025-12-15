@@ -10,7 +10,7 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 3
-    forward_passes: int = 20
+    forward_passes: int = 100
     gather_passes: int = 1
     adjoint_bounces: int = 2
     adjoint_passes: int = 1
