@@ -217,10 +217,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--count", type=int, required=True)
 
     # ✅ DEFAULTS REQUESTED
-    parser.add_argument("--min-x", type=float, default=-0.5)
+    parser.add_argument("--min-x", type=float, default=-0.55)
     parser.add_argument("--max-x", type=float, default=0.5)
-    parser.add_argument("--min-y", type=float, default=-0.25)
-    parser.add_argument("--max-y", type=float, default=0.25)
+    parser.add_argument("--min-y", type=float, default=-0.3)
+    parser.add_argument("--max-y", type=float, default=0.3)
     parser.add_argument("--min-z", type=float, default=0.1)
     parser.add_argument("--max-z", type=float, default=0.6)
 

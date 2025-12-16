@@ -257,7 +257,7 @@ def numpy_rgb01_to_vtk_u8_rgb(name: str, rgb01: np.ndarray) -> vtk.vtkUnsignedCh
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="VTK viewer: render surfels as oriented ellipses (glyphs).")
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--opacity-threshold", type=float, default=0.0)
+    parser.add_argument("--opacity-threshold", type=float, default=0.1)
     parser.add_argument("--area-threshold", type=float, default=0.0)
     parser.add_argument("--max-ellipses", type=int, default=0)
     parser.add_argument("--disk-resolution", type=int, default=16)
