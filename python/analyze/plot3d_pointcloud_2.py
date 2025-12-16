@@ -161,7 +161,7 @@ def load_surfels_from_ply(
             #opacity
             opacity = (float(parts[13]))
 
-            if opacity < 0.9:
+            if opacity < 0.5:
                 continue
             # pk
             pkX.append(float(parts[0]))
@@ -224,8 +224,8 @@ def plot_ellipses_3d(
     positions = positions[ellipseMask]
     tangent_u = tangent_u[ellipseMask]
     tangent_v = tangent_v[ellipseMask]
-    su = su[ellipseMask] * 0.5
-    sv = sv[ellipseMask] * 0.5
+    su = su[ellipseMask]
+    sv = sv[ellipseMask]
     colors = colors[ellipseMask]
 
     if max_ellipses is not None:

@@ -106,9 +106,9 @@ public:
         buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
         sceneGpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector->getQueue());
 
-        sensorForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
-        sensorAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
-        debugImages.resize(sensorForward.size());
+        sensorsForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+        sensorsAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+        debugImages.resize(sensorsForward.size());
         gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
 
         Pale::PathTracerSettings settings{}; // defaults from engine
@@ -140,8 +140,8 @@ public:
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
 
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
-        for (size_t i = 0; i < sensorForward.size(); ++i) {
-            const auto& s = sensorForward[i];
+        for (size_t i = 0; i < sensorsForward.size(); ++i) {
+            const auto& s = sensorsForward[i];
 
             Pale::Log::PA_WARN("  --- Sensor {} ---", i);
             Pale::Log::PA_WARN("      Name                : {}", s.name);
@@ -167,12 +167,21 @@ public:
     }
 
 
-    py::dict render_forward() {
+    py::dict render_forward(std::string cameraName) {
         // Release GIL while doing GPU work and host copies
         py::gil_scoped_release release;
 
+        std::vector<Pale::SensorGPU> selectedSensors;
+        for (const auto& sensor : sensorsForward) {
+            if (cameraName == sensor.name) {
+                selectedSensors.push_back(sensor);
+            }
+        }
+        if (cameraName.empty())
+            selectedSensors = sensorsForward;
+
         // Render all forward sensors
-        pathTracer->renderForward(sensorForward);
+        pathTracer->renderForward(selectedSensors);
 
         auto queue = deviceSelector->getQueue();
 
@@ -184,9 +193,9 @@ public:
         };
 
         std::vector<HostImage> hostImages;
-        hostImages.reserve(sensorForward.size());
+        hostImages.reserve(selectedSensors.size());
 
-        for (const auto& sensor : sensorForward) {
+        for (const auto& sensor : selectedSensors) {
             HostImage hostImage;
 
             // Safely build a std::string from char[16] (ensure zero-terminated on creation)
@@ -249,6 +258,7 @@ public:
 
         auto syclQueue = deviceSelector->getQueue();
 
+
         struct HostAdjointImage {
             std::string cameraName;
             std::uint32_t imageWidth{};
@@ -257,17 +267,17 @@ public:
         };
 
         std::vector<HostAdjointImage> hostAdjointImages;
-        hostAdjointImages.reserve(sensorAdjoint.size());
+        hostAdjointImages.reserve(sensorsAdjoint.size());
 
         // Map cameraName -> RGBA target buffer (HxWx4 float)
         std::unordered_map<std::string, std::vector<float>> targetRgbaPerCamera;
-        targetRgbaPerCamera.reserve(sensorAdjoint.size());
+        targetRgbaPerCamera.reserve(sensorsAdjoint.size());
 
         std::vector<Pale::SensorGPU> availableAdjointSensors;
         // ------------------------------------------------------------
         // 1. WITH GIL: read Python dict, convert to RGBA buffers
         // ------------------------------------------------------------
-        for (auto& sensor : sensorAdjoint) {
+        for (auto& sensor : sensorsAdjoint) {
             // Safe string construction
             std::string cameraName(
                 sensor.name,
@@ -275,10 +285,10 @@ public:
             );
 
             if (!targetImagesDictionary.contains(py::str(cameraName))) {
-                Pale::Log::PA_WARN(
-                    "render_backward: missing target image for camera '" +
-                    cameraName + "'"
-                );
+                //Pale::Log::PA_WARN(
+                //    "render_backward: missing target image for camera '" +
+                //    cameraName + "'"
+                //);
                 continue;
             }
 
@@ -595,8 +605,8 @@ public:
         if (pathTracer->getSettings().renderDebugGradientImages) {
             py::dict debugPerCameraDict;
 
-            for (std::size_t i = 0; i < sensorAdjoint.size(); ++i) {
-                const auto& sensor = sensorAdjoint[i];
+            for (std::size_t i = 0; i < sensorsAdjoint.size(); ++i) {
+                const auto& sensor = sensorsAdjoint[i];
 
                 Pale::DebugGradientImagesHost debugImagesHost =
                     Pale::downloadDebugGradientImages(
@@ -1494,8 +1504,8 @@ private:
     std::shared_ptr<Pale::Scene> scene{};
     std::unique_ptr<Pale::DeviceSelector> deviceSelector{};
 
-    std::vector<Pale::SensorGPU> sensorForward{};
-    std::vector<Pale::SensorGPU> sensorAdjoint{};
+    std::vector<Pale::SensorGPU> sensorsForward{};
+    std::vector<Pale::SensorGPU> sensorsAdjoint{};
     std::unique_ptr<Pale::PathTracer> pathTracer{};
     std::vector<Pale::DebugImages> debugImages;
 
@@ -1526,7 +1536,7 @@ PYBIND11_MODULE(pale, m) {
              py::arg("pointCloudFile") = "initial.ply",
              py::arg("settings") = py::dict() // default empty
         )
-        .def("render_forward", &PythonRenderer::render_forward)
+        .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "")
         .def("get_camera_names", &PythonRenderer::getCameraNames)
         .def("render_backward", &PythonRenderer::render_backward,
              py::arg("targetRgb32f"))

@@ -193,7 +193,7 @@ def verify_albedos_inplace(albedos: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.1, max=1.0)
+        s_clamped = torch.clamp(s, min=0.0, max=1.0)
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())

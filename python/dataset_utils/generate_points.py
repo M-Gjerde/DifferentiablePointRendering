@@ -7,216 +7,245 @@ import random
 from pathlib import Path
 
 
-def compute_square_grid_side(target_primitive_count: int) -> int:
-    """
-    Compute side length for a square grid that approximates target_primitive_count.
-    We round sqrt(N) to get the nearest square.
-    """
-    target_primitive_count = max(1, target_primitive_count)
-    side_float = math.sqrt(target_primitive_count)
-    side = max(1, int(round(side_float)))
-    return side
+def normalize3(x: float, y: float, z: float) -> tuple[float, float, float]:
+    length = math.sqrt(x * x + y * y + z * z)
+    if length <= 0.0:
+        return 1.0, 0.0, 0.0
+    inv = 1.0 / length
+    return x * inv, y * inv, z * inv
 
 
-def generate_ply(
-    output_path: Path,
-    target_primitive_count_per_slice: int,
-    slice_count: int,
-    slice_vertical_offset: float,
-    scale_value: float,
-    in_plane_noise_std: float,
-    seed: int | None = None,
+def orthonormalize_tangents(
+    tu: tuple[float, float, float],
+    tv: tuple[float, float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    tu_x, tu_y, tu_z = normalize3(*tu)
+    dot = tv[0] * tu_x + tv[1] * tu_y + tv[2] * tu_z
+    tv_x = tv[0] - dot * tu_x
+    tv_y = tv[1] - dot * tu_y
+    tv_z = tv[2] - dot * tu_z
+    tv_x, tv_y, tv_z = normalize3(tv_x, tv_y, tv_z)
+    return (tu_x, tu_y, tu_z), (tv_x, tv_y, tv_z)
+
+
+def rotate_tangent_frame_with_noise(
+    tangentNoiseStd: float,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    tu = (1.0, 0.0, 0.0)
+    tv = (0.0, 1.0, 0.0)
+
+    if tangentNoiseStd <= 0.0:
+        return tu, tv
+
+    tangentNoiseStdRadians = math.radians(tangentNoiseStd)
+
+    angle = random.gauss(0.0, tangentNoiseStdRadians)
+    axis_x = random.gauss(0.0, 1.0)
+    axis_y = random.gauss(0.0, 1.0)
+    axis_z = random.gauss(0.0, 1.0)
+    axis_x, axis_y, axis_z = normalize3(axis_x, axis_y, axis_z)
+
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+
+    def rotate(v):
+        vx, vy, vz = v
+        rx = (
+            vx * cos_a
+            + (axis_y * vz - axis_z * vy) * sin_a
+            + axis_x * (axis_x * vx + axis_y * vy + axis_z * vz) * (1.0 - cos_a)
+        )
+        ry = (
+            vy * cos_a
+            + (axis_z * vx - axis_x * vz) * sin_a
+            + axis_y * (axis_x * vx + axis_y * vy + axis_z * vz) * (1.0 - cos_a)
+        )
+        rz = (
+            vz * cos_a
+            + (axis_x * vy - axis_y * vx) * sin_a
+            + axis_z * (axis_x * vx + axis_y * vy + axis_z * vz) * (1.0 - cos_a)
+        )
+        return rx, ry, rz
+
+    tu_rot = rotate(tu)
+    tv_rot = rotate(tv)
+    return orthonormalize_tangents(tu_rot, tv_rot)
+
+
+def compute_grid_dimensions_for_volume(
+    targetPointCount: int,
+    extentX: float,
+    extentY: float,
+    extentZ: float,
+) -> tuple[int, int, int]:
+    targetPointCount = max(1, int(targetPointCount))
+    extentX = max(1e-12, extentX)
+    extentY = max(1e-12, extentY)
+    extentZ = max(1e-12, extentZ)
+
+    volume = extentX * extentY * extentZ
+    idealCellVolume = volume / float(targetPointCount)
+    idealSpacing = idealCellVolume ** (1.0 / 3.0)
+
+    nx = max(1, int(round(extentX / idealSpacing)))
+    ny = max(1, int(round(extentY / idealSpacing)))
+    nz = max(1, int(round(extentZ / idealSpacing)))
+
+    best = (nx, ny, nz)
+    bestError = abs(nx * ny * nz - targetPointCount)
+
+    for dx in range(-2, 3):
+        for dy in range(-2, 3):
+            for dz in range(-2, 3):
+                cx = max(1, nx + dx)
+                cy = max(1, ny + dy)
+                cz = max(1, nz + dz)
+                err = abs(cx * cy * cz - targetPointCount)
+                if err < bestError:
+                    bestError = err
+                    best = (cx, cy, cz)
+
+    return best
+
+
+def generate_volume_ply(
+    outputPath: Path,
+    minX: float,
+    maxX: float,
+    minY: float,
+    maxY: float,
+    minZ: float,
+    maxZ: float,
+    pointCount: int,
+    scaleValue: float,
+    positionNoiseStd: float,
+    tangentNoiseStd: float,
+    seed: int | None,
 ) -> None:
-    """
-    Generate a PLY file with Gaussian surfels arranged in a square grid per slice.
-
-    - Plane extents in XY are [-2, 2] × [-2, 2].
-    - Number of primitives per slice is approximated to a square grid:
-        side = round(sqrt(target_primitive_count_per_slice))
-        actual_per_slice = side * side
-    - Tangents:
-        tu = (1, 0, 0)
-        tv = (0, 1, 0)
-      → normal = tu × tv = (0, 0, 1) (z-up)
-    - Colors are randomized in [0, 1].
-    - Additional slices are stacked in +Z, with vertical spacing slice_vertical_offset,
-      and XY jitter (Gaussian noise) for slices above the base.
-    """
     if seed is not None:
         random.seed(seed)
 
-    # Decide square grid side and actual primitive count per slice
-    grid_side = compute_square_grid_side(target_primitive_count_per_slice)
-    grid_width = grid_side
-    grid_height = grid_side
-    actual_primitive_count_per_slice = grid_width * grid_height
+    minX, maxX = sorted((minX, maxX))
+    minY, maxY = sorted((minY, maxY))
+    minZ, maxZ = sorted((minZ, maxZ))
 
-    # Extents: [-2, 2] in both axes
-    min_coord = -0.45
-    max_coord = 0.45
+    extentX = maxX - minX
+    extentY = maxY - minY
+    extentZ = maxZ - minZ
 
-    if grid_width > 1:
-        grid_spacing_x = (max_coord - min_coord) / float(grid_width - 1)
-    else:
-        grid_spacing_x = 0.0
+    gridX, gridY, gridZ = compute_grid_dimensions_for_volume(
+        pointCount, extentX, extentY, extentZ
+    )
+    actualPointCount = gridX * gridY * gridZ
 
-    if grid_height > 1:
-        grid_spacing_y = (max_coord - min_coord) / float(grid_height - 1)
-    else:
-        grid_spacing_y = 0.0
+    stepX = extentX / (gridX - 1) if gridX > 1 else 0.0
+    stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
+    stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    # Tangents (z-up normal)
-    tu_x, tu_y, tu_z = 1.0, 0.0, 0.0
-    tv_x, tv_y, tv_z = 0.0, 1.0, 0.0
-
-    su = scale_value
-    sv = scale_value
-
-    default_opacity = 0.8
-    default_beta = -0.0
-    default_shape = 0.0
-
-    vertex_count = actual_primitive_count_per_slice * slice_count
+    defaultOpacity = 0.1
+    defaultBeta = 0.0
+    defaultShape = 0.0
 
     lines: list[str] = []
-    lines.append("ply")
-    lines.append("format ascii 1.0")
-    lines.append("comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity")
-    lines.append(f"element vertex {vertex_count}")
-    lines.append("property float x          # pk.x")
-    lines.append("property float y          # pk.y")
-    lines.append("property float z          # pk.z")
-    lines.append("property float tu_x       # tangential axis u (unit)")
-    lines.append("property float tu_y")
-    lines.append("property float tu_z")
-    lines.append("property float tv_x       # tangential axis v (unit, orthonormal to tu)")
-    lines.append("property float tv_y")
-    lines.append("property float tv_z")
-    lines.append("property float su         # scale along tu")
-    lines.append("property float sv         # scale along tv")
-    lines.append("property float albedo_r   # diffuse BRDF albedo")
-    lines.append("property float albedo_g")
-    lines.append("property float albedo_b")
-    lines.append("property float opacity")
-    lines.append("property float beta")
-    lines.append("property float shape")
-    lines.append("end_header")
+    lines.extend(
+        [
+            "ply",
+            "format ascii 1.0",
+            "comment Volume-initialized Gaussian surfels",
+            f"element vertex {actualPointCount}",
+            "property float x",
+            "property float y",
+            "property float z",
+            "property float tu_x",
+            "property float tu_y",
+            "property float tu_z",
+            "property float tv_x",
+            "property float tv_y",
+            "property float tv_z",
+            "property float su",
+            "property float sv",
+            "property float albedo_r",
+            "property float albedo_g",
+            "property float albedo_b",
+            "property float opacity",
+            "property float beta",
+            "property float shape",
+            "end_header",
+        ]
+    )
 
-    for slice_index in range(slice_count):
-        z = slice_index * slice_vertical_offset
+    for kz in range(gridZ):
+        z0 = minZ + kz * stepZ if gridZ > 1 else 0.5 * (minZ + maxZ)
+        for jy in range(gridY):
+            y0 = minY + jy * stepY if gridY > 1 else 0.5 * (minY + maxY)
+            for ix in range(gridX):
+                x0 = minX + ix * stepX if gridX > 1 else 0.5 * (minX + maxX)
 
-        for j in range(grid_height):
-            # y in [-2, 2]
-            if grid_height > 1:
-                base_y = min_coord + j * grid_spacing_y
-            else:
-                base_y = 0.0
+                x = x0 + random.gauss(0.0, positionNoiseStd)
+                y = y0 + random.gauss(0.0, positionNoiseStd)
+                z = z0 + random.gauss(0.0, positionNoiseStd)
 
-            for i in range(grid_width):
-                # x in [-2, 2]
-                if grid_width > 1:
-                    base_x = min_coord + i * grid_spacing_x
-                else:
-                    base_x = 0.0
-
-                if slice_index == 0:
-                    jitter_x = 0.0
-                    jitter_y = 0.0
-                else:
-                    jitter_x = random.gauss(0.0, in_plane_noise_std)
-                    jitter_y = random.gauss(0.0, in_plane_noise_std)
-
-                x = base_x + jitter_x
-                y = base_y + jitter_y
-
-                albedo_r = random.random()
-                albedo_g = random.random()
-                albedo_b = random.random()
+                (tu_x, tu_y, tu_z), (tv_x, tv_y, tv_z) = rotate_tangent_frame_with_noise(
+                    tangentNoiseStd
+                )
 
                 lines.append(
                     f"{x:.6f} {y:.6f} {z:.6f} "
                     f"{tu_x:.6f} {tu_y:.6f} {tu_z:.6f} "
                     f"{tv_x:.6f} {tv_y:.6f} {tv_z:.6f} "
-                    f"{su:.6f} {sv:.6f} "
-                    f"{albedo_r:.6f} {albedo_g:.6f} {albedo_b:.6f} "
-                    f"{default_opacity:.6f} {default_beta:.6f} {default_shape:.6f}"
+                    f"{scaleValue:.6f} {scaleValue:.6f} "
+                    f"1.000000 1.000000 1.000000 "
+                    f"{defaultOpacity:.6f} {defaultBeta:.6f} {defaultShape:.6f}"
                 )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    outputPath.parent.mkdir(parents=True, exist_ok=True)
+    outputPath.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     print(
-        f"Written {vertex_count} vertices "
-        f"({actual_primitive_count_per_slice} per slice, {slice_count} slices) "
-        f"to {output_path}"
+        f"Written {actualPointCount} points (requested {pointCount})\n"
+        f"Grid: {gridX} x {gridY} x {gridZ}\n"
+        f"AABB: x[{minX}, {maxX}] y[{minY}, {maxY}] z[{minZ}, {maxZ}]"
     )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Generate a PLY file with Gaussian surfels in a square grid per slice.\n"
-            "The base plane is in [-2, 2] x [-2, 2]. "
-            "Number of primitives per slice is rounded to a square."
-        )
+        description="Fill an axis-aligned volume with default-initialized Gaussian surfel points."
     )
-    parser.add_argument(
-        "--out",
-        type=Path,
-        required=True,
-        help="Output .ply file path.",
-    )
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=50,
-        help=(
-            "Desired number of primitives per slice. "
-            "Will be rounded to side^2 for a square grid."
-        ),
-    )
-    parser.add_argument(
-        "--slice-count",
-        type=int,
-        default=1,
-        help="Number of stacked slices in Z.",
-    )
-    parser.add_argument(
-        "--slice-vertical-offset",
-        type=float,
-        default=0.06,
-        help="Vertical spacing between consecutive slices in world units.",
-    )
-    parser.add_argument(
-        "--scale",
-        type=float,
-        default=0.012,
-        help="Default scale value for su and sv.",
-    )
-    parser.add_argument(
-        "--in-plane-noise-std",
-        type=float,
-        default=0.01,
-        help="Standard deviation of XY jitter for slices above the base.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Random seed for reproducible colors and jitter.",
-    )
+
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--count", type=int, required=True)
+
+    # ✅ DEFAULTS REQUESTED
+    parser.add_argument("--min-x", type=float, default=-0.5)
+    parser.add_argument("--max-x", type=float, default=0.5)
+    parser.add_argument("--min-y", type=float, default=-0.25)
+    parser.add_argument("--max-y", type=float, default=0.25)
+    parser.add_argument("--min-z", type=float, default=0.1)
+    parser.add_argument("--max-z", type=float, default=0.6)
+
+    parser.add_argument("--scale", type=float, default=0.015)
+    parser.add_argument("--position-noise-std", type=float, default=0.01)
+    parser.add_argument("--tangent-noise-std", type=float, default=90.0)
+    parser.add_argument("--seed", type=int, default=None)
+
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    generate_ply(
-        output_path=args.out,
-        target_primitive_count_per_slice=args.count,
-        slice_count=args.slice_count,
-        slice_vertical_offset=args.slice_vertical_offset,
-        scale_value=args.scale,
-        in_plane_noise_std=args.in_plane_noise_std,
+    generate_volume_ply(
+        outputPath=args.out,
+        minX=args.min_x,
+        maxX=args.max_x,
+        minY=args.min_y,
+        maxY=args.max_y,
+        minZ=args.min_z,
+        maxZ=args.max_z,
+        pointCount=args.count,
+        scaleValue=args.scale,
+        positionNoiseStd=args.position_noise_std,
+        tangentNoiseStd=args.tangent_noise_std,
         seed=args.seed,
     )
 

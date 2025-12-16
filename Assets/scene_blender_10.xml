@@ -4,8 +4,6 @@
         <integer name="max_depth" value="6"/>
     </integrator>
 
-
-
     <sensor type="perspective" id="DatasetCam_000">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -13,7 +11,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="0.45260608196258545,1.164108157157898,4.300000190734863" target="0.33945455307220196,0.8730811154271819,3.350000194686844" up="-0.34425613134579514,-0.8854308089897254,0.31224989755423" />
+            <lookat origin="3.0884039402008057,-2.3727505207061768,1.412041187286377" target="2.3163029580090866,-1.7795630257467903,1.1840309482127986" up="-0.18080966083286587,0.13891196180759577,0.9736587356031216" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -26,8 +24,6 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
-
-
     <sensor type="perspective" id="DatasetCam_001">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -35,7 +31,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="-1.8896386623382568,-0.9323441982269287,3.9000000953674316" target="-1.4172290275156034,-0.6992581640448169,3.0500000732521477" up="0.7622654495076258,0.3761003045577578,0.5267826358171831" />
+            <lookat origin="-2.2461304664611816,3.2855589389801025,0.8999999761581421" target="-1.6845978726679973,2.4641691504309025,0.8000001692833321" up="0.05643603363286962,-0.0825526290344179,0.9949874559748457" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -48,8 +44,6 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
-
-
     <sensor type="perspective" id="DatasetCam_002">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -57,7 +51,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="2.540303945541382,-0.7394974231719971,3.5" target="1.9052279956274485,-0.5546231500517474,2.749999972680551" up="-0.7201084971258381,0.20962774406051896,0.6614377985020697" />
+            <lookat origin="-3.956587314605713,-0.4305996000766754,0.8999999761581421" target="-2.9674404459309756,-0.3229497627569554,0.8000000525781703" up="0.09941292715394161,0.01081922109093137,0.9949874443276511" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -70,8 +64,6 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
-
-
     <sensor type="perspective" id="DatasetCam_003">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -79,7 +71,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="-1.5781667232513428,2.597959041595459,3.1000001430511475" target="-1.183625007606535,1.9484693430659217,2.4500001691126387" up="0.33746612915035523,-0.5555326692252106,0.7599342505110482" />
+            <lookat origin="0.734644889831543,-3.9115593433380127,0.8999999761581421" target="0.5509836825751256,-2.9336695091024723,0.7999998109187646" up="-0.018458669860811936,0.09828179252754157,0.9949874204051743" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -99,7 +91,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="-0.6497321128845215,-3.2768657207489014,2.700000047683716" target="-0.48729906719915717,-2.457649337239695,2.1500000270841952" up="0.10697073769019103,0.5394972703799387,0.8351646284000608" />
+            <lookat origin="-2.9060909748077393,1.3446799516677856,2.8971798419952393" target="-2.179568280672637,1.0085099889085565,2.2978848136117804" up="0.5438926874018513,-0.251665028634676,0.8005282368243484" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -119,7 +111,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="2.8791372776031494,2.1143720149993896,2.299999952316284" target="2.159353054941807,1.5857789351435572,1.849999920387027" up="-0.36270158873794983,-0.266359823473401,0.8930285560754402" />
+            <lookat origin="3.9707467555999756,0.270500123500824,0.8999999761581421" target="2.9780600766501286,0.20287524231506465,0.7999998117575997" up="-0.09976892840177999,-0.006796630511824542,0.9949874203924621" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -139,7 +131,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="-3.725085735321045,0.40464314818382263,1.899999976158142" target="-2.7938143211379782,0.3034823856238149,1.5499999000956517" up="0.3479532399343124,-0.03779696779518918,0.9367496634879057" />
+            <lookat origin="1.0552810430526733,3.837496757507324,0.8999999761581421" target="0.7914607296212324,2.878122544583834,0.8000001671664746" up="-0.02651489227788929,-0.0964205515575924,0.9949874560640559" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -152,7 +144,6 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
-      -->
     <sensor type="perspective" id="DatasetCam_007">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -160,7 +151,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="2.556593418121338,-2.909266233444214,1.5" target="1.917445062045863,-2.1819496733248736,1.2499999993956252" up="-0.16502740542296776,0.18779231110747702,0.9682458382808965" />
+            <lookat origin="-2.4472320079803467,-3.138638973236084,0.8999999761581421" target="-1.8354239553407123,-2.3539792245787576,0.8000000483465693" up="0.06148897955329494,0.07886121548837224,0.9949874441846948" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -173,9 +164,6 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
-
-
-
     <sensor type="perspective" id="DatasetCam_008">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -183,7 +171,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="0.08171816170215607,3.953899621963501,1.100000023841858" target="0.0612885748172273,2.965424691118664,0.95000021360529" up="-0.0030995017864172535,-0.14996778383496628,0.9886860254399801" />
+            <lookat origin="1.849054217338562,1.760566234588623,3.5791890621185303" target="1.3867906930256448,1.320424556941079,2.809391856558906" up="-0.5575051828819517,-0.5308254885878568,0.6382885489535469" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />
@@ -203,7 +191,7 @@
         <float name="focus_distance" value="1000.0" />
         <float name="fov" value="20.4" />
         <transform name="to_world">
-            <lookat origin="-2.7588751316070557,-2.8893957138061523,0.699999988079071" target="-2.069156275837047,-2.167046831068169,0.6500000720541692" up="0.03452910198496084,0.03616258594317949,0.9987492220242348" />
+            <lookat origin="-0.15084347128868103,-1.777632236480713,4.0801215171813965" target="-0.11313259998078651,-1.333224180183728,3.1850911435719107" up="0.07567708732752212,0.8918252939939898,0.44600518320548294" />
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128" />

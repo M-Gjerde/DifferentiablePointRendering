@@ -5,6 +5,7 @@ import os
 import time
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
+from collections import deque
 
 import numpy as np
 import torch
@@ -24,7 +25,12 @@ from losses import (
     compute_l2_grad,
     compute_parameter_mse,
 )
-from optimizers import create_optimizer
+from optimizers import (
+    create_optimizer,
+    create_masked_optimizer,
+    assign_numpy_gradients_to_tensors_masked,
+    compute_surfel_update_mask
+)
 from density_control import (
     densify_points_long_axis_split,
     compute_prune_indices_by_opacity,
@@ -76,16 +82,17 @@ def poll_hotkey() -> Optional[str]:
         return line
     return None
 
+
 def save_gradients_snapshot(
-    output_dir: Path,
-    iteration: int,
-    grad_position_np: np.ndarray,
-    grad_tangent_u_np: np.ndarray,
-    grad_tangent_v_np: np.ndarray,
-    grad_scales_np: np.ndarray,
-    grad_albedos_np: np.ndarray,
-    grad_opacities_np: np.ndarray,
-    grad_betas_np: np.ndarray,
+        output_dir: Path,
+        iteration: int,
+        grad_position_np: np.ndarray,
+        grad_tangent_u_np: np.ndarray,
+        grad_tangent_v_np: np.ndarray,
+        grad_scales_np: np.ndarray,
+        grad_albedos_np: np.ndarray,
+        grad_opacities_np: np.ndarray,
+        grad_betas_np: np.ndarray,
 ) -> None:
     """
     Save point-wise gradients to disk:
@@ -172,19 +179,20 @@ def save_gradients_snapshot(
         f"saved gradients to:\n  {csv_path}\n  {npz_path}"
     )
 
+
 def save_checkpoint_snapshot(
-    output_dir: Path,
-    iteration: int,
-    camera_ids: List[str],
-    current_images: Dict[str, np.ndarray],
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    albedos: torch.Tensor,
-    opacities: torch.Tensor,
-    betas: torch.Tensor,
-    main_camera: str,
+        output_dir: Path,
+        iteration: int,
+        camera_ids: List[str],
+        current_images: Dict[str, np.ndarray],
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        betas: torch.Tensor,
+        camera_name: str,
 ) -> None:
     """
     Save an iteration checkpoint:
@@ -215,7 +223,7 @@ def save_checkpoint_snapshot(
         save_render(checkpoint_dir / f"render_{camera_name}.png", image_numpy)
 
     # Convenience: main camera as "render_final.png" inside the checkpoint dir
-    main_img = np.asarray(current_images[main_camera], dtype=np.float32, order="C")
+    main_img = np.asarray(current_images[camera_name], dtype=np.float32, order="C")
     save_render(checkpoint_dir / "render_final.png", main_img)
 
     print(f"[Iter {iteration:04d}] Saved checkpoint: {checkpoint_dir}")
@@ -357,9 +365,9 @@ def assign_numpy_gradients_to_tensors(
     tangent_u.grad = torch.tensor(grad_tangent_u_np, device=device, dtype=torch.float32)
     tangent_v.grad = torch.tensor(grad_tangent_v_np, device=device, dtype=torch.float32)
     scales.grad = torch.tensor(grad_scales_np, device=device, dtype=torch.float32)
-    albedos.grad = torch.tensor   (grad_albedos_np, device=device, dtype=torch.float32)
-    opacities.grad = torch.tensor (grad_opacities_np, device=device, dtype=torch.float32)
-    betas.grad = torch.tensor     (grad_betas_np, device=device, dtype=torch.float32)
+    albedos.grad = torch.tensor(grad_albedos_np, device=device, dtype=torch.float32)
+    opacities.grad = torch.tensor(grad_opacities_np, device=device, dtype=torch.float32)
+    betas.grad = torch.tensor(grad_betas_np, device=device, dtype=torch.float32)
 
 
 def compute_density_importance(
@@ -392,7 +400,6 @@ def run_optimization(
         config: OptimizationConfig,
         renderer_settings: RendererSettingsConfig,
 ) -> None:
-
     # ------------------------------------------------------------------
     # 1a. Load target images per camera
     # ------------------------------------------------------------------
@@ -528,7 +535,7 @@ def run_optimization(
         betas,
     ) = refetch_parameters_as_torch(renderer, device)
 
-    optimizer = create_optimizer(
+    optimizer = create_masked_optimizer(
         config,
         positions,
         tangent_u,
@@ -546,11 +553,7 @@ def run_optimization(
     initial_images = renderer.render_forward()
 
     initial_loss = 0.0
-    main_camera = camera_ids[0]
-
     clear_output_dir(config.output_dir)
-
-
     for camera_name in camera_ids:
         img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")
         tgt_np = target_images[camera_name]
@@ -579,8 +582,8 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 200
-    burnin_iterations = 100
+    prune_interval = 25
+    burnin_iterations = 1000
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
@@ -596,8 +599,20 @@ def run_optimization(
     with open(metrics_csv_path, "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
         csv_writer.writerow(
-            ["iteration", "loss_l2", "parameter_mse", "num_points", "iteration_time_sec"]
+            [
+                "iteration",
+                "camera_name",
+                "loss_l2_current_camera",
+                "loss_l2_window_mean",
+                "loss_l2_window_sum_scaled",
+                "parameter_mse",
+                "num_points",
+                "iteration_time_sec",
+            ]
         )
+
+        #camera_name = camera_ids[0]
+        numCameras = len(camera_ids)
 
         try:
             for iteration in range(1, config.iterations + 1):
@@ -631,13 +646,16 @@ def run_optimization(
                         target_rgb_np
                     )
 
+                    loss_value_float = float(loss_value)
+
+
                     total_loss_value += float(loss_value)
                     loss_grad_images[camera_name] = loss_grad
                     loss_images[camera_name] = loss_grad
 
                 # Use main camera image for manual snapshot and some logs
                 current_main_rgb_np = np.asarray(
-                    current_images[main_camera],
+                    current_images[camera_name],
                     dtype=np.float32,
                     order="C",
                 )
@@ -649,13 +667,13 @@ def run_optimization(
                 # `adjoint_images` is dict[name -> HxWx4 float]
 
                 # Extract numpy gradients
-                grad_position_np =     np.asarray(gradients["position"], dtype=np.float32, order="C")
-                grad_tangent_u_np =    np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
-                grad_tangent_v_np =    np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
-                grad_scales_np =       np.asarray(gradients["scale"], dtype=np.float32, order="C")
-                grad_albedos_np =      np.asarray(gradients["albedo"], dtype=np.float32, order="C")
-                grad_opacities_np =    np.asarray(gradients["opacity"], dtype=np.float32, order="C")
-                grad_betas_np =        np.asarray(gradients["beta"], dtype=np.float32, order="C")
+                grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
+                grad_tangent_u_np = np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
+                grad_tangent_v_np = np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
+                grad_scales_np = np.asarray(gradients["scale"], dtype=np.float32, order="C")
+                grad_albedos_np = np.asarray(gradients["albedo"], dtype=np.float32, order="C")
+                grad_opacities_np = np.asarray(gradients["opacity"], dtype=np.float32, order="C")
+                grad_betas_np = np.asarray(gradients["beta"], dtype=np.float32, order="C")
 
                 # Sanity check shapes
                 current_positions_shape = tuple(positions.shape)
@@ -687,21 +705,6 @@ def run_optimization(
                     grad_opacities_np,
                     grad_betas_np,
                 )
-
-                ### --- Elliptical repulsion term (on positions only) ---------------
-                #repulsion_loss = compute_elliptical_repulsion_loss(
-                #    positions=positions,
-                #    tangent_u=tangent_u,
-                #    tangent_v=tangent_v,
-                #    scales=scales,
-                #    radius_factor=0.8,  # ~ footprint size in uv; tune
-                #    repulsion_weight=1e-3,  # strength; tune
-                #)
-#
-                ### This will ADD to positions.grad (since we already set it),
-                ### but won't touch tangent/scales/albedos because we detach them.
-                #if torch.isfinite(repulsion_loss) and repulsion_loss.detach().item() != 0.0:
-                #    repulsion_loss.backward()
 
                 optimizer.step()
 
@@ -739,7 +742,7 @@ def run_optimization(
                         betas,
                     ) = refetch_parameters_as_torch(renderer, device)
 
-                    optimizer = create_optimizer(
+                    optimizer = create_masked_optimizer(
                         config,
                         positions,
                         tangent_u,
@@ -784,9 +787,6 @@ def run_optimization(
                         min_long_axis_scale=0.15,
                         grad_threshold=densification_grad_threshold,
                     )
-
-
-
 
                     if densification_result is not None:
                         parent_indices = densification_result["prune_indices"]
@@ -837,7 +837,7 @@ def run_optimization(
                     )
 
                     rebuild_bvh(renderer)
-                    optimizer = create_optimizer(
+                    optimizer = create_masked_optimizer(
                         config,
                         positions,
                         tangent_u,
@@ -901,23 +901,6 @@ def run_optimization(
                         main_camera_loss_root = config.output_dir / camera_name
                         save_loss_image(main_camera_loss_root, main_loss_image, iteration)
 
-
-                if (iteration % checkpoint_interval == 0) or (iteration == config.iterations):
-                    save_checkpoint_snapshot(
-                        output_dir=config.output_dir,
-                        iteration=iteration,
-                        camera_ids=camera_ids,
-                        current_images=current_images,
-                        positions=positions,
-                        tangent_u=tangent_u,
-                        tangent_v=tangent_v,
-                        scales=scales,
-                        albedos=albedos,
-                        opacities=opacities,
-                        betas=betas,
-                        main_camera=main_camera,
-                    )
-
                 # --------------------------------------------------------------
                 # 11. Metrics and logging
                 # --------------------------------------------------------------
@@ -940,7 +923,16 @@ def run_optimization(
                 )
 
                 csv_writer.writerow(
-                    [iteration, total_loss_value, parameter_mse, num_points, iteration_time]
+                    [
+                        iteration,
+                        camera_name,
+                        loss_value_float,
+                        total_loss_value,
+                        total_loss_value,
+                        parameter_mse,
+                        num_points,
+                        iteration_time,
+                    ]
                 )
                 csv_file.flush()
 
@@ -956,19 +948,19 @@ def run_optimization(
 
                     print(
                         f"[Iter {iteration:04d}/{config.iterations}] "
-                        f"Loss = {total_loss_value:.6e}, "
-                        f"|trans| = {grad_norm:.3e}, "
-                        f"|tu| = {grad_tanu:.3e}, "
-                        f"|tv| = {grad_tanv:.3e}, "
-                        f"|su,sv| = {grad_scale:.3e}, "
-                        f"|albedo| = {grad_albedo:.3e}, "
-                        f"|opacity| = {grad_opacity:.3e}, "
-                        f"|beta| = {grad_beta:.3e}, "
-                        f"|pts| = {num_points}, "
+                        f"L2 Sum={total_loss_value:.6e}, "
+                        #f"|trans| = {grad_norm:.3e}, "
+                        #f"|tu| = {grad_tanu:.3e}, "
+                        #f"|tv| = {grad_tanv:.3e}, "
+                        #f"|su,sv| = {grad_scale:.3e}, "
+                        #f"|albedo| = {grad_albedo:.3e}, "
+                        #f"|opacity| = {grad_opacity:.3e}, "
+                        #f"|beta| = {grad_beta:.3e}, "
+                        f"pts = {num_points}, "
                         f"t = {iteration_time:.3f} s"
                     )
 
-                # Hotkey snapshot: use main camera for the image
+                    # Hotkey snapshot: use main camera for the image
                     # --------------------------------------------------------------
                     # 12. Hotkeys (snapshot + gradient dump)
                     # --------------------------------------------------------------
@@ -1000,7 +992,8 @@ def run_optimization(
                             grad_opacities_np,
                             grad_betas_np,
                         )
-
+                camera_index = (iteration - 1) % numCameras
+                camera_name = camera_ids[camera_index]
 
         except KeyboardInterrupt:
             print(
@@ -1028,13 +1021,12 @@ def run_optimization(
     for camera_name in camera_ids:
         img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")
         tgt_np = target_images[camera_name]
-        loss_cam  = compute_l2_loss(img_np, tgt_np)
+        loss_cam = compute_l2_loss(img_np, tgt_np)
         final_loss += float(loss_cam)
-        save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
+        save_render(Path(config.output_dir / f"render_final_{camera_name}.png"), img_np)
 
     print(f"Initial loss (sum over cameras): {initial_loss:.6e}")
     print(f"Final loss   (sum over cameras): {final_loss:.6e}")
-
 
     ply_path = config.output_dir / "points_final.ply"
     save_gaussians_to_ply(

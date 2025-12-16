@@ -169,7 +169,7 @@ namespace Pale {
                     const Ray &ray = rayState.ray;
                     // Transmission gradients with shadow rays
                     float3 L_Mesh(0.0f);
-                    if (whTransmit.instanceIndex != UINT32_MAX) {
+                    if (whTransmit.instanceIndex != UINT32_MAX && scene.instances[whTransmit.instanceIndex].geometryType == GeometryType::Mesh) {
                         L_Mesh = estimateRadianceFromPhotonMap(whTransmit, scene, photonMap);
                     }
                     // Transmission
