@@ -582,8 +582,8 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 10
-    burnin_iterations = 20
+    prune_interval = 1e100
+    burnin_iterations = 25
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
@@ -591,7 +591,6 @@ def run_optimization(
     opacity_prune_threshold = 0.1
     max_prune_fraction = 0.3
     rebuild_bvh_interval = 1
-    checkpoint_interval = 25  # near your other intervals (once), or inline here
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -759,39 +758,7 @@ def run_optimization(
                 densification_result: Optional[Dict[str, np.ndarray]] = None
                 indices_to_remove_list: List[int] = []
 
-                if iteration >= burnin_iterations and iteration % densification_interval == 0:
-                    importance_tensor = compute_density_importance(
-                        grad_position_np,
-                        grad_scales_np,
-                        grad_opacities_np,
-                    )
 
-                    max_new_points = max(
-                        int(0.2 * positions.shape[0]),
-                        5,
-                    )
-
-                    densification_result = densify_points_long_axis_split(
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        albedos,
-                        opacities,
-                        betas,
-                        importance=importance_tensor,
-                        max_new_points=max_new_points,
-                        split_distance=0.15,
-                        minor_axis_shrink=0.85,
-                        opacity_reduction=0.6,
-                        min_long_axis_scale=0.15,
-                        grad_threshold=densification_grad_threshold,
-                    )
-
-                    if densification_result is not None:
-                        parent_indices = densification_result["prune_indices"]
-                        if parent_indices is not None and len(parent_indices) > 0:
-                            indices_to_remove_list.extend(int(i) for i in parent_indices)
 
                 if iteration >= burnin_iterations and iteration % prune_interval == 0:
                     opacity_prune_indices = compute_prune_indices_by_opacity(
@@ -810,9 +777,6 @@ def run_optimization(
                         )
                         remove_points(renderer, indices_to_remove)
                         rebuild_bvh(renderer)
-
-                    if densification_result is not None:
-                        add_new_points(renderer, densification_result)
 
                     (
                         positions,
@@ -992,8 +956,6 @@ def run_optimization(
                             grad_opacities_np,
                             grad_betas_np,
                         )
-                camera_index = (iteration - 1) % numCameras
-                camera_name = camera_ids[camera_index]
 
         except KeyboardInterrupt:
             print(

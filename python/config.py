@@ -100,7 +100,7 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument(
         "--iterations",
         type=int,
-        default=20,
+        default=int(1e5),
         help="Number of optimization iterations.",
     )
     parser.add_argument(
@@ -136,14 +136,6 @@ def parse_args() -> OptimizationConfig:
         type=float,
         default=1.0,
         help="Base learning rate before per-parameter multipliers.",
-    )
-    parser.add_argument(
-        "--lr-multiplier",
-        "--learning-rate-multiplier",
-        dest="learning_rate_multiplier",
-        type=float,
-        default=1.0,
-        help="Global multiplier applied to all per-parameter learning rates.",
     )
     parser.add_argument(
         "--lr-pos",
@@ -191,20 +183,20 @@ def parse_args() -> OptimizationConfig:
     args = parser.parse_args()
 
     # Base LR (position LR), with optional global multiplier
-    base_lr = args.learning_rate * args.learning_rate_multiplier
+    base_lr = args.learning_rate
     lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log i
 
     lr_scale = 1
     if args.optimizer == "sgd":
-        lr_scale = 1000
+        lr_scale = 10000
 
     # 3DGS-inspired relative factors w.r.t. position LR
-    factor_position = lr_scale * 0.01  # ~rotation_lr / position_lr
+    factor_position = lr_scale * 0.005  # ~rotation_lr / position_lr
     factor_tangent  = lr_scale * 0.10   # ~rotation_lr / position_lr
-    factor_scale    = lr_scale * 0.0001   # ~scaling_lr / position_lr
-    factor_albedo   = lr_scale * 10.0    # ~feature_lr / position_lr
-    factor_opacity  = lr_scale * 10.0    # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 1.0  # ~beta_lr / position_lr
+    factor_scale    = lr_scale * 0.001   # ~scaling_lr / position_lr
+    factor_albedo   = lr_scale * 0.1    # ~feature_lr / position_lr
+    factor_opacity  = lr_scale * 0.1    # ~opacity_lr / position_lr
+    factor_beta     = lr_scale * 0.1  # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr

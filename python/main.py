@@ -63,6 +63,7 @@ def main() -> None:
     print(f"  pointcloud           : {config.pointcloud_ply}")
     print(f"  dataset_path         : {config.dataset_path}")
     print(f"  iterations           : {config.iterations}")
+    print(f"  lr_base              : {config.learning_rate}")
     print(f"  lr_position          : {config.learning_rate_position}")
     print(f"  lr_tangent           : {config.learning_rate_tangent}")
     print(f"  lr_scale             : {config.learning_rate_scale}")

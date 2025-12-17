@@ -484,38 +484,6 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline float logit(float x) { return sycl::log(x / (1.0f - x)); }
-
-
-    /*
-    SYCL_EXTERNAL static float opacityBeta(float u, float v, const Point& surfel, float* opacity) {
-        float su = surfel.scale.x();
-        float sv = surfel.scale.y();
-        // map shapeControl → p in [1, pMax]
-        const float pMax = 32.0f; // square-like; increase if needed
-        const float k = 1.0f; // blend sharpness
-        // anisotropic scaling to get rectangles (su, sv)
-        const float uu = fabs(u);
-        const float vv = fabs(v);
-
-        const float targetAtZero = 2.0f; // p(0) = 2  → circle
-        const float q = (targetAtZero - 1.0f) / (pMax - 1.0f); // desired sigmoid value at t=0
-        const float b = logit(q); // bias to hit p(0)=2
-        const float s = 1.0f / (1.0f + sycl::exp(-(k * surfel.shape + b)));
-
-        // L^p “radius”
-        const float p = 1.0f + (pMax - 1.0f) * s; // t<0 diamond, t=0 circle, t>0 square-like
-        const float up = sycl::pow(uu, p);
-        const float vp = sycl::pow(vv, p);
-        const float r = sycl::pow(up + vp, 1.0f / p);
-
-        if (r >= 1.0f) return false;
-
-        float exponent = 4.0f * std::exp(surfel.beta);
-        *opacity = sycl::pow(1.0f - r, exponent);
-        return true;
-    }
-*/
 
     SYCL_EXTERNAL static bool intersectSurfel(const Ray& rayObject,
                                               const Point& surfel,

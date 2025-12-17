@@ -3,226 +3,305 @@ from __future__ import annotations
 
 import argparse
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import List, Optional
 
 import cv2
 import numpy as np
 
 
+@dataclass
+class TileSelection:
+    cameraName: str
+    viewMode: str  # "render" or "target"
+
+
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Live preview for optimization run.\n"
-            "Expected structure in --output-path:\n"
-            "  run_dir/\n"
-            "    camera1/\n"
-            "      render/0001_render.png, ...   (or PNGs directly in camera1/)\n"
-            "    camera2/\n"
-            "      render/0001_render.png, ...\n"
-            "    render_target_camera1.png\n"
-            "    render_target_camera2.png\n"
-        )
-    )
-    parser.add_argument(
-        "--output-path",
-        type=Path,
-        required=True,
-        help="Path to the optimization output run directory.",
-    )
-    parser.add_argument(
-        "--refresh-ms",
-        type=int,
-        default=200,
-        help="Refresh interval in milliseconds (default: 200).",
-    )
+    parser = argparse.ArgumentParser(description="Single-window mosaic preview (NxM).")
+    parser.add_argument("--output-path", type=Path, required=True)
+    parser.add_argument("--refresh-ms", type=int, default=5)
+    parser.add_argument("--tile-width", type=int, default=500)
+    parser.add_argument("--tile-height", type=int, default=500)
+    parser.add_argument("--rows", type=int, default=2, help="Number of tile rows.")
+    parser.add_argument("--cols", type=int, default=4, help="Number of tile columns.")
+    parser.add_argument("--pad", type=int, default=6, help="Padding between tiles (pixels).")
+    parser.add_argument("--window-scale", type=float, default=1.0, help="Resize window to scale*mosaic size.")
     return parser.parse_args()
 
 
-def load_image_rgb(image_path: Path, wait_time: float = 0.05) -> Optional[np.ndarray]:
-    """
-    Load an RGB image safely, skipping if the file is still being written.
-    """
+def load_image_bgr_safely(image_path: Path, wait_time: float = 0.03) -> Optional[np.ndarray]:
     if not image_path.exists():
         return None
 
-    size1 = image_path.stat().st_size
-    time.sleep(wait_time)
-    if not image_path.exists():
+    try:
+        size1 = image_path.stat().st_size
+        time.sleep(wait_time)
+        if not image_path.exists():
+            return None
+        size2 = image_path.stat().st_size
+    except OSError:
         return None
-    size2 = image_path.stat().st_size
 
     if size1 != size2:
-        # File is still being written; skip this frame
         return None
 
-    image_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
-    if image_bgr is None:
-        return None
-    return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    return cv2.imread(str(image_path), cv2.IMREAD_COLOR)
 
 
 def discover_camera_dirs(run_dir: Path) -> List[Path]:
-    """
-    Discover camera directories under run_dir.
-    Any immediate subdirectory is treated as a camera folder.
-    """
     if not run_dir.is_dir():
         raise RuntimeError(f"output-path '{run_dir}' must be a directory.")
-
-    camera_dirs: List[Path] = []
-    for entry in sorted(run_dir.iterdir()):
-        if entry.is_dir():
-            camera_dirs.append(entry)
-    return camera_dirs
+    return [p for p in sorted(run_dir.iterdir()) if p.is_dir()]
 
 
-def get_latest_render_image_path(render_directory: Path) -> Optional[Path]:
-    """
-    Returns the latest PNG found in render_directory, or None if none exist.
-    """
+def get_latest_png(render_directory: Path) -> Optional[Path]:
     if not render_directory.exists():
         return None
 
-    render_files: List[Path] = sorted(render_directory.glob("*.png"))
-    if not render_files:
+    candidates = sorted(render_directory.glob("*.png"))
+    if not candidates:
         return None
-    return render_files[-1]
+
+    # Prefer 1 step behind newest to avoid reading a file that's still being written.
+    if len(candidates) >= 2:
+        return candidates[-2]
+
+    return candidates[-1]
+
+
+
+def get_latest_render_path(run_dir: Path, camera_name: str) -> Optional[Path]:
+    camera_dir = run_dir / camera_name
+    render_dir = camera_dir / "render"
+    if not render_dir.exists():
+        render_dir = camera_dir
+    return get_latest_png(render_dir)
+
+
+def get_target_path(run_dir: Path, camera_name: str) -> Optional[Path]:
+    candidate = run_dir / f"render_target_{camera_name}.png"
+    return candidate if candidate.exists() else None
+
+
+def resize_and_letterbox(image_bgr: np.ndarray, tile_w: int, tile_h: int) -> np.ndarray:
+    h, w = image_bgr.shape[:2]
+    if h <= 0 or w <= 0:
+        return np.zeros((tile_h, tile_w, 3), dtype=np.uint8)
+
+    scale = min(tile_w / w, tile_h / h)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    canvas = np.zeros((tile_h, tile_w, 3), dtype=np.uint8)
+    x0 = (tile_w - new_w) // 2
+    y0 = (tile_h - new_h) // 2
+    canvas[y0 : y0 + new_h, x0 : x0 + new_w] = resized
+    return canvas
+
+
+def draw_label(tile_bgr: np.ndarray, text: str, is_selected: bool) -> None:
+    cv2.rectangle(tile_bgr, (0, 0), (tile_bgr.shape[1], 26), (0, 0, 0), thickness=-1)
+    cv2.putText(
+        tile_bgr,
+        text,
+        (8, 18),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    if is_selected:
+        cv2.rectangle(
+            tile_bgr,
+            (0, 0),
+            (tile_bgr.shape[1] - 1, tile_bgr.shape[0] - 1),
+            (255, 255, 255),
+            2,
+        )
+
+
+def build_mosaic(
+    tiles: List[np.ndarray],
+    rows: int,
+    cols: int,
+    tile_w: int,
+    tile_h: int,
+    pad: int,
+) -> np.ndarray:
+    mosaic_h = rows * tile_h + (rows + 1) * pad
+    mosaic_w = cols * tile_w + (cols + 1) * pad
+    mosaic = np.zeros((mosaic_h, mosaic_w, 3), dtype=np.uint8)
+
+    for idx, tile in enumerate(tiles[: rows * cols]):
+        r = idx // cols
+        c = idx % cols
+        y0 = pad + r * (tile_h + pad)
+        x0 = pad + c * (tile_w + pad)
+        mosaic[y0 : y0 + tile_h, x0 : x0 + tile_w] = tile
+
+    return mosaic
+
+
+def compute_default_view_mode(tile_index: int, cols: int, rows: int) -> str:
+    row_index = tile_index // cols
+    is_bottom_row = (row_index == rows - 1)
+    return "target" if is_bottom_row else "render"
+
 
 
 def main() -> None:
     args = parse_arguments()
-
     run_dir: Path = args.output_path
     refresh_ms: int = args.refresh_ms
+    tile_w: int = args.tile_width
+    tile_h: int = args.tile_height
+    rows: int = max(1, int(args.rows))
+    cols: int = max(1, int(args.cols))
+    pad: int = max(0, int(args.pad))
+    window_scale: float = float(args.window_scale)
 
     if not run_dir.exists():
         raise RuntimeError(f"Output path '{run_dir}' does not exist.")
 
-    # Layout configuration
-    WINDOW_WIDTH = 500
-    WINDOW_HEIGHT = 500
-    WINDOWS_PER_ROW = 10
-    ROW_OFFSET_PIXELS = WINDOW_HEIGHT + 40  # gap between rows
+    tile_count = rows * cols
+    active_tile_index = 0
+    selections: List[Optional[TileSelection]] = [None] * tile_count
 
-    # Stable camera index mapping for layout
-    camera_index_map: Dict[str, int] = {}
-    next_camera_index: int = 0
+    window_title = (
+        f"Optimization Preview ({rows}x{cols}) — "
+        "1-9 tile, arrows move, r/t toggle, [ ] camera, n/p page cameras, q quit"
+    )
+    cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
 
-    # Per-camera render window state
-    windows_render: Dict[str, str] = {}
-    last_render_paths: Dict[str, Optional[Path]] = {}
+    mosaic_w = cols * tile_w + (cols + 1) * pad
+    mosaic_h = rows * tile_h + (rows + 1) * pad
+    cv2.resizeWindow(window_title, max(200, int(mosaic_w * window_scale)), max(200, int(mosaic_h * window_scale)))
+    camera_offset = 0  # index into camera_names
 
-    # Per-target window state
-    target_windows: Dict[str, str] = {}
-    last_target_paths: Dict[str, Optional[Path]] = {}
-
-
+    time.sleep(3)
     try:
         while True:
-            # --------------------------------------------------
-            # 1. Discover camera folders dynamically
-            # --------------------------------------------------
             camera_dirs = discover_camera_dirs(run_dir)
-            for camera_dir in camera_dirs:
-                camera_name = camera_dir.name
+            camera_names = [p.name for p in camera_dirs]
 
-                # Assign stable index for layout
-                if camera_name not in camera_index_map:
-                    camera_index_map[camera_name] = next_camera_index
-                    next_camera_index += 1
+            if not camera_names:
+                blank_tiles = [np.zeros((tile_h, tile_w, 3), dtype=np.uint8) for _ in range(tile_count)]
+                mosaic = build_mosaic(blank_tiles, rows, cols, tile_w, tile_h, pad)
+                cv2.imshow(window_title, mosaic)
+                key = cv2.waitKey(refresh_ms) & 0xFF
+                if key in (ord("q"), 27):
+                    break
+                continue
 
-                if camera_name not in windows_render:
-                    render_window_title = f"Render ({camera_name})"
-                    windows_render[camera_name] = render_window_title
-                    last_render_paths[camera_name] = None
 
-                    cv2.namedWindow(render_window_title, cv2.WINDOW_NORMAL)
-                    cv2.resizeWindow(render_window_title, WINDOW_WIDTH, WINDOW_HEIGHT)
+            cameras = []
+            for i in range(cols):
+                cameras.append(camera_names[(camera_offset + i) % len(camera_names)])
 
-                    camera_index = camera_index_map[camera_name]
-                    col_index = camera_index % WINDOWS_PER_ROW
-                    row_index = camera_index // WINDOWS_PER_ROW
+            # Initialize any unset tiles with defaults
+            for i in range(tile_count):
+                if selections[i] is None:
+                    default_camera = cameras[(i) % len(cameras)]
+                    default_mode = "target" if (i // cols) == (rows - 1) else "render"
+                    selections[i] = TileSelection(
+                        cameraName=default_camera,
+                        viewMode=default_mode
+                    )
 
-                    position_x = col_index * WINDOW_WIDTH
-                    position_y = row_index * ROW_OFFSET_PIXELS  # row 0 for renders
+            tiles: List[np.ndarray] = []
+            for i in range(tile_count):
+                tile_selection = selections[i]
+                assert tile_selection is not None
 
-                    cv2.moveWindow(render_window_title, position_x, position_y)
+                if tile_selection.viewMode == "render":
+                    image_path = get_latest_render_path(run_dir, tile_selection.cameraName)
+                else:
+                    image_path = get_target_path(run_dir, tile_selection.cameraName)
 
-            # --------------------------------------------------
-            # 2. Discover and show target images per camera
-            #    Files must be named: render_target_<camera>.png
-            # --------------------------------------------------
-            target_candidates = sorted(run_dir.glob("render_target_*.png"))
+                image_bgr: Optional[np.ndarray] = None
+                if image_path is not None:
+                    image_bgr = load_image_bgr_safely(image_path)
 
-            for target_path in target_candidates:
-                stem = target_path.stem  # e.g. "render_target_camera1"
-                prefix = "render_target_"
-                if not stem.startswith(prefix):
-                    continue
-                camera_name = stem[len(prefix) :]
+                if image_bgr is None:
+                    tile_bgr = np.zeros((tile_h, tile_w, 3), dtype=np.uint8)
+                else:
+                    tile_bgr = resize_and_letterbox(image_bgr, tile_w, tile_h)
 
-                # Create window if new
-                if camera_name not in target_windows:
-                    target_window_title = f"Target ({camera_name})"
-                    target_windows[camera_name] = target_window_title
-                    last_target_paths[camera_name] = None
+                label = f"[{i+1}] {tile_selection.cameraName} | {tile_selection.viewMode}"
+                draw_label(tile_bgr, label, is_selected=(i == active_tile_index))
+                tiles.append(tile_bgr)
 
-                    cv2.namedWindow(target_window_title, cv2.WINDOW_NORMAL)
-                    cv2.resizeWindow(target_window_title, WINDOW_WIDTH, WINDOW_HEIGHT)
+            mosaic = build_mosaic(tiles, rows, cols, tile_w, tile_h, pad)
+            cv2.imshow(window_title, mosaic)
 
-                    # Same column as render window, but on row 1 below it
-                    camera_index = camera_index_map.get(camera_name, 0)
-                    col_index = camera_index % WINDOWS_PER_ROW
-                    row_index = camera_index // WINDOWS_PER_ROW
-
-                    position_x = col_index * WINDOW_WIDTH
-                    position_y = row_index * ROW_OFFSET_PIXELS + ROW_OFFSET_PIXELS  # second row
-
-                    cv2.moveWindow(target_window_title, position_x, position_y)
-
-                prev_target_path = last_target_paths.get(camera_name)
-                if target_path != prev_target_path:
-                    target_image_rgb = load_image_rgb(target_path)
-                    if target_image_rgb is not None:
-                        cv2.imshow(
-                            target_windows[camera_name],
-                            cv2.cvtColor(target_image_rgb, cv2.COLOR_RGB2BGR),
-                        )
-                        last_target_paths[camera_name] = target_path
-
-            # --------------------------------------------------
-            # 3. For each camera, display latest render
-            # --------------------------------------------------
-            for camera_name, render_window_title in windows_render.items():
-                camera_dir = run_dir / camera_name
-
-                # Prefer camera_dir/render/ if it exists, else camera_dir itself
-                render_dir = camera_dir / "render"
-                if not render_dir.exists():
-                    render_dir = camera_dir
-
-                latest_render_path = get_latest_render_image_path(render_dir)
-                prev_render_path = last_render_paths.get(camera_name)
-
-                if latest_render_path is not None and latest_render_path != prev_render_path:
-                    render_image_rgb = load_image_rgb(latest_render_path)
-                    if render_image_rgb is not None:
-                        cv2.imshow(
-                            render_window_title,
-                            cv2.cvtColor(render_image_rgb, cv2.COLOR_RGB2BGR),
-                        )
-                        last_render_paths[camera_name] = latest_render_path
-
-            # --------------------------------------------------
-            # 4. Handle keyboard input
-            # --------------------------------------------------
-            key_code = cv2.waitKey(refresh_ms) & 0xFF
-            if key_code == ord("q") or key_code == 27:  # 'q' or ESC
+            key = cv2.waitKey(refresh_ms) & 0xFF
+            if key in (ord("q"), 27):
                 break
 
-    except KeyboardInterrupt:
-        print("Preview interrupted by user.")
+            # Tile selection:
+            # - 1..9 selects tiles 0..8
+            # - 0 selects tile 9 (10th tile)
+            # For >10 tiles, use arrow keys to move selection.
+            if ord("1") <= key <= ord("9"):
+                requested_index = int(chr(key)) - 1
+                if requested_index < tile_count:
+                    active_tile_index = requested_index
+                continue
+            if key == ord("0"):
+                if tile_count >= 10:
+                    active_tile_index = 9
+                continue
+
+            # Page cameras if more cameras than tiles
+            if key == ord("n") and len(camera_names) > tile_count:
+                camera_offset = (camera_offset - tile_count) % len(camera_names)
+                selections = [None] * tile_count  # reinitialize tiles
+                continue
+
+            if key == ord("p") and len(camera_names) > tile_count:
+                camera_offset = (camera_offset + tile_count) % len(camera_names)
+                selections = [None] * tile_count
+                continue
+
+            # Arrow-key navigation (works for any tile_count)
+            if key in (81, 82, 83, 84):  # left, up, right, down in OpenCV waitKey
+                r = active_tile_index // cols
+                c = active_tile_index % cols
+                if key == 81:  # left
+                    c = max(0, c - 1)
+                elif key == 83:  # right
+                    c = min(cols - 1, c + 1)
+                elif key == 82:  # up
+                    r = max(0, r - 1)
+                elif key == 84:  # down
+                    r = min(rows - 1, r + 1)
+                active_tile_index = r * cols + c
+                continue
+
+            # Toggle render/target on active tile
+            if key == ord("r"):
+                selections[active_tile_index].viewMode = "render"
+                continue
+            if key == ord("t"):
+                selections[active_tile_index].viewMode = "target"
+                continue
+
+            # Cycle camera on active tile
+            if key in (ord("["), ord("]")):
+                current_camera = selections[active_tile_index].cameraName
+                if current_camera not in camera_names:
+                    selections[active_tile_index].cameraName = camera_names[0]
+                    continue
+
+                current_index = camera_names.index(current_camera)
+                delta = -1 if key == ord("[") else 1
+                new_index = (current_index + delta) % len(camera_names)
+                selections[active_tile_index].cameraName = camera_names[new_index]
+                continue
+
     finally:
         cv2.destroyAllWindows()
 
