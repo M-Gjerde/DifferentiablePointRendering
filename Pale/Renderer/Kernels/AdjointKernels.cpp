@@ -167,7 +167,14 @@ namespace Pale {
 
                     buildIntersectionNormal(scene, whTransmit);
                     const Ray &ray = rayState.ray;
-                    // Transmission gradients with shadow rays
+
+                    // Populate and record which surfels were intersected per camera ray for our depth distortion regularization
+
+
+                    // Normal Regularization
+
+
+                    // Volumetric composition gradients
                     float3 L_Mesh(0.0f);
                     if (whTransmit.instanceIndex != UINT32_MAX && scene.instances[whTransmit.instanceIndex].geometryType == GeometryType::Mesh) {
                         L_Mesh = estimateRadianceFromPhotonMap(whTransmit, scene, photonMap);

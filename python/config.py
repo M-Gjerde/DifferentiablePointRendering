@@ -193,17 +193,17 @@ def parse_args() -> OptimizationConfig:
     # 3DGS-inspired relative factors w.r.t. position LR
     factor_position = lr_scale * 0.005  # ~rotation_lr / position_lr
     factor_tangent  = lr_scale * 0.10   # ~rotation_lr / position_lr
-    factor_scale    = lr_scale * 0.001   # ~scaling_lr / position_lr
+    factor_scale    = lr_scale * 0.01   # ~scaling_lr / position_lr
     factor_albedo   = lr_scale * 0.1    # ~feature_lr / position_lr
     factor_opacity  = lr_scale * 0.1    # ~opacity_lr / position_lr
     factor_beta     = lr_scale * 0.1  # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr
-    #factor_tangent  = lr_scale * 0  # ~rotation_lr / position_lr
+    ##factor_tangent  = lr_scale * 0  # ~rotation_lr / position_lr
     #factor_scale    = lr_scale * 0  # ~scaling_lr / position_lr
     #factor_albedo   = lr_scale * 0  # ~feature_lr / position_lr
-    #factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
+    ##factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
     #factor_beta     = lr_scale * 0  # ~beta_lr / position_lr
 #
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
