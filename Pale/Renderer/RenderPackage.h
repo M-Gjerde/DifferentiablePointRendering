@@ -41,6 +41,8 @@ namespace Pale {
         float4 *framebufferBeta = nullptr; // gradient image
 
         float4 * framebufferDepthLoss = nullptr;
+        float4 * framebufferNormalLoss = nullptr;
+        float4 * framebufferDepthLossPos = nullptr;
         uint32_t numPixels = 0;
     };
 

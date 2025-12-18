@@ -328,6 +328,7 @@ namespace Pale {
 
         bool renderDebugGradientImages = false;
         float depthDistortionWeight = 0.0f;
+        float normalConsistencyWeight = 0.0f;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

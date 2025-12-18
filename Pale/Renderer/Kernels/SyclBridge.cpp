@@ -116,6 +116,8 @@ namespace Pale {
                     pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferOpacity, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
                     pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferAlbedo, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
                     pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferBeta, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferDepthLoss, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferDepthLossPos, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
                 }
 
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;

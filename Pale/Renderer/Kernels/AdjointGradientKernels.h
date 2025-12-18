@@ -752,89 +752,57 @@ namespace Pale {
             }
         }
     }
-
-// Compute depth distortion loss for ONE camera ray (one WorldHit record).
-// Squared variant:
-//   L = sum_{i<j} omega_i * omega_j * (t_i - t_j)^2
-// where:
-//   alphaEff_i = opacity_i * alphaGeom_i
-//   T_i        = prod_{k<i} (1 - alphaEff_k)   (front transmittance)
-//   omega_i    = T_i * alphaEff_i
-//
-// Notes:
-// - Uses ray parameter t (distance along ray direction) as "depth".
-// - Assumes the splatEvents are ordered front-to-back along the ray.
-// - If worldHit.splatEvents[i].tau already equals T_i, you can use it,
-//   otherwise we recompute T_i from alphaEff for correctness.
-SYCL_EXTERNAL inline float computeDepthDistortionLossForRay(
-    const GPUSceneBuffers& scene,
-    const RayState& rayState,
-    const WorldHit& worldHit)
-{
-    const uint32_t splatEventCount = worldHit.splatEventCount;
-    if (splatEventCount < 2) {
-        return 0.0f;
+SYCL_EXTERNAL inline bool computeRayPlaneIntersectionRtDerivatives(
+    const float3& rayOrigin,
+    const float3& rayDirection,
+    const float3& surfelPosition,
+    const float3& surfelTanU,
+    const float3& surfelTanV,
+    float& outRt,
+    float3& outDRtDPosition, // vector: ∂rt/∂p (so δrt = dot(outDRtDPosition, δp))
+    float3& outDRtDTanU,     // vector: ∂rt/∂tanU
+    float3& outDRtDTanV      // vector: ∂rt/∂tanV
+) {
+    const float3 n = cross(surfelTanU, surfelTanV); // unnormalized plane normal
+    const float denom = dot(n, rayDirection);
+    // Avoid exploding gradients if nearly parallel
+    if (sycl::fabs(denom) < 1e-8f) {
+        outRt = 0.0f;
+        outDRtDPosition = float3{0.0f, 0.0f, 0.0f};
+        outDRtDTanU     = float3{0.0f, 0.0f, 0.0f};
+        outDRtDTanV     = float3{0.0f, 0.0f, 0.0f};
+        return false;
     }
 
-    const uint32_t clampedEventCount =
-        (splatEventCount > kMaxSplatEventsPerRay) ? kMaxSplatEventsPerRay : splatEventCount;
+    const float3 w = surfelPosition - rayOrigin;
+    const float num = dot(n, w);
 
-    const Ray& ray = rayState.ray;
+    outRt = num / denom;
 
-    // Per-hit arrays
-    float alphaEffArray[kMaxSplatEventsPerRay];
-    float transmittanceFrontArray[kMaxSplatEventsPerRay]; // T_i
-    float omegaArray[kMaxSplatEventsPerRay];
-    float depthTArray[kMaxSplatEventsPerRay];
+    // ∂rt/∂p = n / denom
+    outDRtDPosition = n / denom;
 
-    // 1) Gather alphaEff and depth t_i
-    for (uint32_t eventIndex = 0; eventIndex < clampedEventCount; ++eventIndex) {
-        const auto& splatEvent = worldHit.splatEvents[eventIndex];
-        const uint32_t primitiveIndex = splatEvent.primitiveIndex;
-        const auto& surfel = scene.points[primitiveIndex];
+    // For tanU/tanV we use quotient rule:
+    // rt = num/denom
+    // d(rt) = (dnum*denom - num*ddenom) / denom^2
+    const float invDenom = 1.0f / denom;
+    const float invDenom2 = invDenom * invDenom;
 
-        const float alphaGeom = splatEvent.alpha;       // alpha(u,v,beta)
-        const float opacityEta = surfel.opacity;        // eta
-        const float alphaEff = opacityEta * alphaGeom;  // alpha^eff
+    // dnum/dtanU = cross(tanV, w)
+    // dden/dtanU = cross(tanV, rayDirection)
+    const float3 dNumDTanU = cross(surfelTanV, w);
+    const float3 dDenDTanU = cross(surfelTanV, rayDirection);
 
-        // Depth along ray: t = dot((hit - origin), dir)
-        // If ray.direction is not normalized, this is still fine as a consistent "ray parameter".
-        const float depthT = dot(splatEvent.hitWorld - ray.origin, ray.direction);
-        alphaEffArray[eventIndex] = alphaEff;
-        depthTArray[eventIndex] = depthT;
-    }
+    outDRtDTanU = (dNumDTanU * denom - dDenDTanU * num) * invDenom2;
 
-    // 2) Recompute T_i (front transmittance) for correctness
-    // T_0 = 1
-    // T_{i+1} = T_i * (1 - alphaEff_i)
-    float runningTransmittance = 1.0f;
-    for (uint32_t eventIndex = 0; eventIndex < clampedEventCount; ++eventIndex) {
-        transmittanceFrontArray[eventIndex] = runningTransmittance;
-        omegaArray[eventIndex] = runningTransmittance * alphaEffArray[eventIndex];
+    // dnum/dtanV = cross(w, tanU)
+    // dden/dtanV = cross(rayDirection, tanU)
+    const float3 dNumDTanV = cross(w, surfelTanU);
+    const float3 dDenDTanV = cross(rayDirection, surfelTanU);
 
-        // Clamp (1 - alphaEff) away from negative to avoid weirdness if alphaEff > 1 due to bugs
-        const float oneMinusAlphaEff = sycl::fmax(0.0f, 1.0f - alphaEffArray[eventIndex]);
-        runningTransmittance *= oneMinusAlphaEff;
-    }
+    outDRtDTanV = (dNumDTanV * denom - dDenDTanV * num) * invDenom2;
 
-    // 3) Pairwise sum (i<j)
-    float depthDistortionLoss = 0.0f;
-    for (uint32_t i = 0; i < clampedEventCount; ++i) {
-        const float omegaI = omegaArray[i];
-        const float depthTI = depthTArray[i];
-
-        for (uint32_t j = i + 1; j < clampedEventCount; ++j) {
-            const float omegaJ = omegaArray[j];
-            const float depthTJ = depthTArray[j];
-
-            const float depthDifference = depthTI - depthTJ;
-            const float squaredDistance = depthDifference * depthDifference;
-
-            depthDistortionLoss += omegaI * omegaJ * squaredDistance;
-        }
-    }
-
-    return depthDistortionLoss;
+    return true;
 }
 
 SYCL_EXTERNAL inline void accumulateDepthDistortionGradientsForRay(
@@ -842,16 +810,545 @@ SYCL_EXTERNAL inline void accumulateDepthDistortionGradientsForRay(
     const RayState& rayState,
     const WorldHit& worldHit,
     const PointGradients& gradients,
-    const DebugImages& debugImages)
+    const DebugImages& debugImages,
+    const float& invRayCount,
+    float depthDistortionWeight)
 {
-    // For now: just compute the loss value (per your request).
-    // Later we’ll add differentiated accumulation into gradients.* buffers.
-    const float lossValue = computeDepthDistortionLossForRay(scene, rayState, worldHit);
-    // If you want to debug / log lossValue per-ray, you’ll need a buffer to accumulate it into.
-    // Example (if you add a device float* debugLossBuffer indexed by rayState.pixelIndex):
-    atomicAddFloatToImage(&debugImages.framebufferDepthLoss[rayState.pixelIndex], lossValue);
+    const uint32_t splatEventCount = worldHit.splatEventCount;
+    if (splatEventCount < 2 || depthDistortionWeight <= 0.0f) {
+        return;
+    }
 
+    const uint32_t eventCount =
+        (splatEventCount > kMaxSplatEventsPerRay) ? kMaxSplatEventsPerRay : splatEventCount;
+
+    const Ray& ray = rayState.ray;
+    const float3 rayOrigin = ray.origin;
+    const float3 rayDirection = ray.direction;
+    const float rayDirLen2 = dot(rayDirection, rayDirection);
+
+    // Per-event arrays
+    float alphaGeomArray[kMaxSplatEventsPerRay];
+    float alphaEffArray[kMaxSplatEventsPerRay];       // a_i
+    float oneMinusAlphaEff[kMaxSplatEventsPerRay];    // (1 - a_i)
+    float transmittanceFront[kMaxSplatEventsPerRay];  // T_i
+    float omegaArray[kMaxSplatEventsPerRay];          // ω_i = T_i a_i
+    float depthTArray[kMaxSplatEventsPerRay];         // t_i
+
+    uint32_t primitiveIndexArray[kMaxSplatEventsPerRay];
+
+    // Intersection rt derivatives (needed for dt gradients)
+    float rtArray[kMaxSplatEventsPerRay];
+    float3 dRtDPosArray[kMaxSplatEventsPerRay];
+    float3 dRtDTanUArray[kMaxSplatEventsPerRay];
+    float3 dRtDTanVArray[kMaxSplatEventsPerRay];
+    bool rtValidArray[kMaxSplatEventsPerRay];
+
+    // 1) Gather a_i and t_i and rt-derivs
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        const auto& splatEvent = worldHit.splatEvents[i];
+        const uint32_t primitiveIndex = splatEvent.primitiveIndex;
+        primitiveIndexArray[i] = primitiveIndex;
+
+        const auto& surfel = scene.points[primitiveIndex];
+
+        const float alphaGeom = splatEvent.alpha;      // alpha(u,v,beta)
+        const float opacityEta = surfel.opacity;       // eta
+        const float alphaEff = opacityEta * alphaGeom; // a_i
+
+        alphaGeomArray[i] = alphaGeom;
+        alphaEffArray[i] = alphaEff;
+
+        const float oneMinus = sycl::fmax(1e-8f, 1.0f - alphaEff);
+        oneMinusAlphaEff[i] = oneMinus;
+
+        // Depth along ray as ray-parameter (consistent even if dir not normalized)
+        depthTArray[i] = dot(splatEvent.hitWorld - rayOrigin, rayDirection);
+
+        // For dt gradients: re-derive rt and its derivatives w.r.t. p, tanU, tanV
+        float rt = 0.0f;
+        float3 dRtDPos{0.0f, 0.0f, 0.0f};
+        float3 dRtDTanU{0.0f, 0.0f, 0.0f};
+        float3 dRtDTanV{0.0f, 0.0f, 0.0f};
+
+        const bool valid = computeRayPlaneIntersectionRtDerivatives(
+            rayOrigin, rayDirection,
+            surfel.position, surfel.tanU, surfel.tanV,
+            rt, dRtDPos, dRtDTanU, dRtDTanV
+        );
+
+        rtValidArray[i] = valid;
+        rtArray[i] = rt;
+        dRtDPosArray[i] = dRtDPos;
+        dRtDTanUArray[i] = dRtDTanU;
+        dRtDTanVArray[i] = dRtDTanV;
+    }
+
+    // 2) Compute T_i and ω_i
+    float runningT = 1.0f;
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        transmittanceFront[i] = runningT;
+        omegaArray[i] = runningT * alphaEffArray[i];
+        runningT *= oneMinusAlphaEff[i];
+    }
+
+    // 3) Compute loss and partials dL/dω_i and dL/dt_i
+    float dLdOmega[kMaxSplatEventsPerRay];
+    float dLdT[kMaxSplatEventsPerRay];
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        dLdOmega[i] = 0.0f;
+        dLdT[i] = 0.0f;
+    }
+
+    float depthDistortionLoss = 0.0f;
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        const float omegaI = omegaArray[i];
+        const float tI = depthTArray[i];
+
+        for (uint32_t j = i + 1; j < eventCount; ++j) {
+            const float omegaJ = omegaArray[j];
+            const float tJ = depthTArray[j];
+
+            const float dt = tI - tJ;
+            const float dt2 = dt * dt;
+
+            depthDistortionLoss += omegaI * omegaJ * dt2;
+
+            // ∂/∂ω_i: ω_j * (t_i - t_j)^2
+            dLdOmega[i] += omegaJ * dt2;
+            dLdOmega[j] += omegaI * dt2;
+
+            // ∂/∂t_i: 2 ω_i ω_j (t_i - t_j)
+            const float common = 2.0f * omegaI * omegaJ * dt;
+            dLdT[i] += common;
+            dLdT[j] -= common;
+        }
+    }
+
+
+        const float pairCount = 0.5f * float(eventCount) * float(eventCount - 1u);
+        const float invPairCount = (pairCount > 0.0f) ? (1.0f / pairCount) : 0.0f;
+        const float lossScale = depthDistortionWeight * invRayCount * invPairCount;
+
+    // Optional debug visualization of loss value (scaled)
+    {
+        const uint32_t pixelIndex = rayState.pixelIndex;
+        const float scaledLoss = lossScale * depthDistortionLoss;
+        atomicAddFloat4ToImage(&debugImages.framebufferDepthLoss[pixelIndex], float4{scaledLoss, 0.0f, 0.0f, 0.0f});
+    }
+
+    // 4) Convert dL/dω -> dL/da (a = alphaEff) using:
+    // dL/da_i = dL/dω_i * T_i - ( Σ_{k>i} dL/dω_k * ω_k ) / (1 - a_i)
+    float suffixSum = 0.0f;
+    float dLdAlphaEff[kMaxSplatEventsPerRay];
+
+    for (int32_t i = int32_t(eventCount) - 1; i >= 0; --i) {
+        const float Ti = transmittanceFront[i];
+        const float invOneMinus = 1.0f / oneMinusAlphaEff[i];
+
+        dLdAlphaEff[i] = dLdOmega[i] * Ti - suffixSum * invOneMinus;
+
+        suffixSum += dLdOmega[i] * omegaArray[i];
+    }
+
+    // 5) Accumulate parameter gradients for each surfel event
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        const uint32_t primitiveIndex = primitiveIndexArray[i];
+        const auto& splatEvent = worldHit.splatEvents[i];
+        const auto& surfel = scene.points[primitiveIndex];
+
+        const float alphaGeom = alphaGeomArray[i];
+        const float eta = surfel.opacity;
+        const float alphaEff = alphaEffArray[i];
+
+        // Global scaling of the regularizer
+        const float dL_dAlphaEff = dLdAlphaEff[i];
+        const float dL_dT = dLdT[i];
+
+        // -------------------------
+        // A) Gradient through alphaEff (weights path)
+        // alphaEff = eta * alphaGeom
+        // -------------------------
+
+        // Recompute u,v and reuse your alphaEff derivatives wrt geometry/scale/tangents/beta
+        float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
+        const float travelSideSign = signNonZero(dot(canonicalNormalWorld, -rayDirection));
+        canonicalNormalWorld = canonicalNormalWorld * travelSideSign;
+
+        const float3 hitWorld = splatEvent.hitWorld;
+        const float2 uv = phiInverse(hitWorld, surfel);
+        const float u = uv.x();
+        const float v = uv.y();
+        const float r2 = u * u + v * v;
+
+        const float su = surfel.scale.x();
+        const float sv = surfel.scale.y();
+
+        // Guard against r2 >= 1 where beta kernel uses log(1-r2) and division
+        const float oneMinusR2 = sycl::fmax(1e-8f, 1.0f - r2);
+
+        // Beta kernel exponent helper
+        const float betaExp = 4.0f * sycl::exp(surfel.beta);
+
+        // Your existing DuvDPosition helper (returns vector used in dAlpha_dPos)
+        const float3 dUvDPosition = computeDuvDPosition(
+            surfel.tanU, surfel.tanV, canonicalNormalWorld,
+            rayDirection, u, v, su, sv
+        );
+
+        // factor = (-2 * betaExp * alphaGeom) / (1 - r2)
+        const float factor = (-2.0f * betaExp * alphaGeom) / oneMinusR2;
+
+        // d alphaEff / d position
+        const float3 dAlpha_dPos = factor * dUvDPosition;
+        const float3 dAlphaEff_dPos = eta * dAlpha_dPos;
+
+        // Tangent derivatives (you already have this helper)
+        float3 dUdTu, dVdTu, dUdTv, dVdTv;
+        computeFullDuDvWrtTangents(
+            rayOrigin, rayDirection,
+            surfel.position, hitWorld,
+            surfel.tanU, surfel.tanV,
+            su, sv,
+            dUdTu, dVdTu, dUdTv, dVdTv
+        );
+
+        const float3 dUVDtU = (u * dUdTu + v * dVdTu);
+        const float3 dUVDtV = (u * dUdTv + v * dVdTv);
+
+        const float3 dAlpha_dTanU = factor * dUVDtU;
+        const float3 dAlpha_dTanV = factor * dUVDtV;
+        const float3 dAlphaEff_dTanU = eta * dAlpha_dTanU;
+        const float3 dAlphaEff_dTanV = eta * dAlpha_dTanV;
+
+        // Scale derivatives (your helper)
+        const float3 dUdVdScale = computeDuvDScale(u, v, su, sv);
+        const float3 dAlpha_dScale = factor * dUdVdScale;
+        const float3 dAlphaEff_dScale = eta * dAlpha_dScale;
+
+        // Opacity derivative: ∂alphaEff/∂eta = alphaGeom
+        const float dAlphaEff_dOpacity = alphaGeom;
+
+        // Beta parameter derivative: your existing expression
+        // d alphaEff / d betaParam = alphaGeom * eta * (d/dβ betaExp) * log(1-r2)
+        // where d/dβ betaExp = betaExp
+        const float dAlphaEff_dBeta = alphaGeom * eta * betaExp * sycl::log(oneMinusR2);
+
+        if (primitiveIndex == 0) {
+            const uint32_t pixelIndex = rayState.pixelIndex;
+            float3 parameterAxis = float3{0.0f, 1.0f, 0.0f};
+            float param = dot(lossScale * dL_dAlphaEff * dAlphaEff_dPos, parameterAxis);
+            atomicAddFloat4ToImage(&debugImages.framebufferDepthLossPos[pixelIndex], float4{param, param, param, 0.0f});
+        }
+
+
+        // Global scaling for this ray
+
+
+        // Accumulate alphaEff path contributions
+        atomicAddFloat3(gradients.gradPosition[primitiveIndex], lossScale * dL_dAlphaEff * dAlphaEff_dPos);
+        atomicAddFloat3(gradients.gradTanU[primitiveIndex],     lossScale * dL_dAlphaEff * dAlphaEff_dTanU);
+        atomicAddFloat3(gradients.gradTanV[primitiveIndex],     lossScale * dL_dAlphaEff * dAlphaEff_dTanV);
+
+        {
+            const float2 dScale{dAlphaEff_dScale.x(), dAlphaEff_dScale.y()};
+            atomicAddFloat2(gradients.gradScale[primitiveIndex], lossScale * dL_dAlphaEff * dScale);
+        }
+
+        //atomicAddFloat(gradients.gradOpacity[primitiveIndex], dL_dAlphaEff * dAlphaEff_dOpacity);
+        //atomicAddFloat(gradients.gradBeta[primitiveIndex],    dL_dAlphaEff * dAlphaEff_dBeta);
+
+
+        // -------------------------
+        // B) Gradient through depth t_i (depth path)
+        // t_i = dot(hit - origin, dir) = rt * dot(dir,dir)
+        // dt/dparam = (drt/dparam) * dot(dir,dir)
+        // -------------------------
+        if (rtValidArray[i]) {
+            const float dL_dRt = dL_dT * rayDirLen2;
+
+            const float3 dRtDPos = dRtDPosArray[i];
+            const float3 dRtDTanU = dRtDTanUArray[i];
+            const float3 dRtDTanV = dRtDTanVArray[i];
+
+            atomicAddFloat3(gradients.gradPosition[primitiveIndex], lossScale * dL_dRt * dRtDPos);
+            atomicAddFloat3(gradients.gradTanU[primitiveIndex],     lossScale * dL_dRt * dRtDTanU);
+            atomicAddFloat3(gradients.gradTanV[primitiveIndex],     lossScale * dL_dRt * dRtDTanV);
+        }
+    }
 }
+
+    // Normal consistency regularizer (2DGS-style):
+//   L_n = sum_{i<j} ω_i ω_j (1 - dot(n_i, n_j))
+// where ω_i = T_i * α_i^eff , and n_i = normalize(cross(tanU_i, tanV_i)) (optionally sided).
+//
+// This implementation mirrors your depth distortion structure:
+//  1) gather α^eff, compute T_i and ω_i
+//  2) compute loss, dL/dω_i, dL/dn_i
+//  3) convert dL/dω -> dL/dα^eff using the same suffix-sum rule you used
+//  4) accumulate gradients:
+//      A) α^eff-path (position/scale/tangents/opacity/beta) via your existing alpha kernel derivs
+//      B) normal-path (tangents) via derivative of normalize(cross(tu,tv))
+//
+// Notes:
+// - This does NOT use depth t_i at all.
+// - If you want to keep normal loss isolated from volumetric/color, call it in its own `if`
+//   right next to your depth regularizer call, exactly like you do now.
+
+SYCL_EXTERNAL inline float3 projectOntoPlanePerpToUnit(const float3& v, const float3& unit_n) {
+    // (I - n n^T) v
+    return v - unit_n * dot(unit_n, v);
+}
+
+SYCL_EXTERNAL inline void accumulateNormalConsistencyGradientsForRay(
+    const GPUSceneBuffers& scene,
+    const RayState& rayState,
+    const WorldHit& worldHit,
+    const PointGradients& gradients,
+    const DebugImages& debugImages,
+    const float& invRayCount,
+    const float normalConsistencyWeight)
+{
+    const uint32_t splatEventCount = worldHit.splatEventCount;
+    if (splatEventCount < 2 || normalConsistencyWeight <= 0.0f) {
+        return;
+    }
+
+    const uint32_t eventCount =
+        (splatEventCount > kMaxSplatEventsPerRay) ? kMaxSplatEventsPerRay : splatEventCount;
+
+    const Ray& ray = rayState.ray;
+    const float3 rayOrigin = ray.origin;
+    const float3 rayDirection = ray.direction;
+
+    // Per-event arrays
+    uint32_t primitiveIndexArray[kMaxSplatEventsPerRay];
+
+    float alphaGeomArray[kMaxSplatEventsPerRay];
+    float alphaEffArray[kMaxSplatEventsPerRay];       // a_i
+    float oneMinusAlphaEff[kMaxSplatEventsPerRay];    // (1 - a_i)
+    float transmittanceFront[kMaxSplatEventsPerRay];  // T_i
+    float omegaArray[kMaxSplatEventsPerRay];          // ω_i = T_i a_i
+
+    float3 normalArray[kMaxSplatEventsPerRay];        // n_i (unit)
+    float  normalLenArray[kMaxSplatEventsPerRay];     // |cross(tu,tv)| for stability (optional)
+
+    // 1) Gather α_i^eff and normals
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        const auto& splatEvent = worldHit.splatEvents[i];
+        const uint32_t primitiveIndex = splatEvent.primitiveIndex;
+        primitiveIndexArray[i] = primitiveIndex;
+
+        const auto& surfel = scene.points[primitiveIndex];
+
+        const float alphaGeom = splatEvent.alpha;      // alpha(u,v,beta)
+        const float eta = surfel.opacity;              // opacity
+        const float alphaEff = eta * alphaGeom;        // a_i
+
+        alphaGeomArray[i] = alphaGeom;
+        alphaEffArray[i] = alphaEff;
+
+        const float oneMinus = sycl::fmax(1e-8f, 1.0f - alphaEff);
+        oneMinusAlphaEff[i] = oneMinus;
+
+        // Normal from tangents
+        const float3 c = cross(surfel.tanU, surfel.tanV);
+        const float cLen = sycl::sqrt(sycl::fmax(1e-20f, dot(c, c)));
+        float3 n = c * (1.0f / cLen);
+
+        // Optional: make it sided w.r.t. ray direction, but treat sign as constant (no gradient through it).
+        // This usually helps avoid "sign flip" noise for the loss.
+        const float side = signNonZero(dot(n, -rayDirection));
+        n = n * side;
+
+        normalArray[i] = n;
+        normalLenArray[i] = cLen;
+    }
+
+    // 2) Compute T_i and ω_i
+    float runningT = 1.0f;
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        transmittanceFront[i] = runningT;
+        omegaArray[i] = runningT * alphaEffArray[i];
+        runningT *= oneMinusAlphaEff[i];
+    }
+
+    // 3) Compute loss and partials dL/dω_i and dL/dn_i
+    float dLdOmega[kMaxSplatEventsPerRay];
+    float3 dLdN[kMaxSplatEventsPerRay];
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        dLdOmega[i] = 0.0f;
+        dLdN[i] = float3{0.0f, 0.0f, 0.0f};
+    }
+
+    float normalConsistencyLoss = 0.0f;
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        const float  omegaI = omegaArray[i];
+        const float3 nI = normalArray[i];
+
+        for (uint32_t j = i + 1; j < eventCount; ++j) {
+            const float  omegaJ = omegaArray[j];
+            const float3 nJ = normalArray[j];
+
+            const float cosine = dot(nI, nJ);
+            const float term = (1.0f - cosine);
+
+            normalConsistencyLoss += omegaI * omegaJ * term;
+
+            // ∂/∂ω_i : ω_j (1 - dot(n_i,n_j))
+            dLdOmega[i] += omegaJ * term;
+            dLdOmega[j] += omegaI * term;
+
+            // ∂/∂n_i : ω_i ω_j * ( - n_j )
+            // ∂/∂n_j : ω_i ω_j * ( - n_i )
+            const float pairW = omegaI * omegaJ;
+            dLdN[i] += (-pairW) * nJ;
+            dLdN[j] += (-pairW) * nI;
+        }
+    }
+
+    // Normalize like you did for depth: average over rays and pairs
+    const float pairCount = 0.5f * float(eventCount) * float(eventCount - 1u);
+    const float invPairCount = (pairCount > 0.0f) ? (1.0f / pairCount) : 0.0f;
+    const float lossScale = normalConsistencyWeight * invRayCount * invPairCount;
+
+    // Optional debug: show per-pixel loss in red
+    {
+        const uint32_t pixelIndex = rayState.pixelIndex;
+        const float scaledLoss = lossScale * normalConsistencyLoss;
+        atomicAddFloat4ToImage(&debugImages.framebufferNormalLoss[pixelIndex],
+                               float4{scaledLoss, 0.0f, 0.0f, 0.0f});
+    }
+
+    // 4) Convert dL/dω -> dL/dα^eff using the same recurrence you used:
+    //    dL/da_i = dL/dω_i * T_i - ( Σ_{k>i} dL/dω_k * ω_k ) / (1 - a_i)
+    float suffixSum = 0.0f;
+    float dLdAlphaEff[kMaxSplatEventsPerRay];
+
+    for (int32_t i = int32_t(eventCount) - 1; i >= 0; --i) {
+        const float Ti = transmittanceFront[i];
+        const float invOneMinus = 1.0f / oneMinusAlphaEff[i];
+        dLdAlphaEff[i] = dLdOmega[i] * Ti - suffixSum * invOneMinus;
+        suffixSum += dLdOmega[i] * omegaArray[i];
+    }
+
+    // 5) Accumulate parameter gradients per event
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        const uint32_t primitiveIndex = primitiveIndexArray[i];
+        const auto& splatEvent = worldHit.splatEvents[i];
+        const auto& surfel = scene.points[primitiveIndex];
+
+        const float alphaGeom = alphaGeomArray[i];
+        const float eta = surfel.opacity;
+
+        // -------------------------
+        // A) α^eff-path (weights path)
+        // -------------------------
+        // dL/dα^eff_i already includes all pair interactions via ω.
+        const float dL_dAlphaEff = lossScale * dLdAlphaEff[i];
+
+        // Recompute u,v and your existing derivatives (same as depth distortion implementation)
+        float3 canonicalNormalWorld = normalize(cross(surfel.tanU, surfel.tanV));
+        const float travelSideSign = signNonZero(dot(canonicalNormalWorld, -rayDirection));
+        canonicalNormalWorld = canonicalNormalWorld * travelSideSign;
+
+        const float3 hitWorld = splatEvent.hitWorld;
+        const float2 uv = phiInverse(hitWorld, surfel);
+        const float u = uv.x();
+        const float v = uv.y();
+        const float r2 = u * u + v * v;
+
+        const float su = surfel.scale.x();
+        const float sv = surfel.scale.y();
+
+        const float oneMinusR2 = sycl::fmax(1e-8f, 1.0f - r2);
+        const float betaExp = 4.0f * sycl::exp(surfel.beta);
+
+        const float3 dUvDPosition = computeDuvDPosition(
+            surfel.tanU, surfel.tanV, canonicalNormalWorld,
+            rayDirection, u, v, su, sv
+        );
+
+        const float factor = (-2.0f * betaExp * alphaGeom) / oneMinusR2;
+
+        const float3 dAlpha_dPos = factor * dUvDPosition;
+        const float3 dAlphaEff_dPos = eta * dAlpha_dPos;
+
+        float3 dUdTu, dVdTu, dUdTv, dVdTv;
+        computeFullDuDvWrtTangents(
+            rayOrigin, rayDirection,
+            surfel.position, hitWorld,
+            surfel.tanU, surfel.tanV,
+            su, sv,
+            dUdTu, dVdTu, dUdTv, dVdTv
+        );
+
+        const float3 dUVDtU = (u * dUdTu + v * dVdTu);
+        const float3 dUVDtV = (u * dUdTv + v * dVdTv);
+
+        const float3 dAlpha_dTanU = factor * dUVDtU;
+        const float3 dAlpha_dTanV = factor * dUVDtV;
+        const float3 dAlphaEff_dTanU = eta * dAlpha_dTanU;
+        const float3 dAlphaEff_dTanV = eta * dAlpha_dTanV;
+
+        const float3 dUdVdScale = computeDuvDScale(u, v, su, sv);
+        const float3 dAlpha_dScale = factor * dUdVdScale;
+        const float3 dAlphaEff_dScale = eta * dAlpha_dScale;
+
+        // Opacity/Beta if you want them enabled:
+        // const float dAlphaEff_dOpacity = alphaGeom;
+        // const float dAlphaEff_dBeta = alphaGeom * eta * betaExp * sycl::log(oneMinusR2);
+
+        atomicAddFloat3(gradients.gradPosition[primitiveIndex], dL_dAlphaEff * dAlphaEff_dPos);
+        atomicAddFloat3(gradients.gradTanU[primitiveIndex],     dL_dAlphaEff * dAlphaEff_dTanU);
+        atomicAddFloat3(gradients.gradTanV[primitiveIndex],     dL_dAlphaEff * dAlphaEff_dTanV);
+
+        {
+            const float2 dScale{dAlphaEff_dScale.x(), dAlphaEff_dScale.y()};
+            atomicAddFloat2(gradients.gradScale[primitiveIndex], dL_dAlphaEff * dScale);
+        }
+        // atomicAddFloat(gradients.gradOpacity[primitiveIndex], dL_dAlphaEff * dAlphaEff_dOpacity);
+        // atomicAddFloat(gradients.gradBeta[primitiveIndex],    dL_dAlphaEff * dAlphaEff_dBeta);
+
+        // -------------------------
+        // B) normal-path (tangents only)
+        // -------------------------
+        // dL/dn_i is already accumulated from all pairs.
+        const float3 dL_dN = lossScale * dLdN[i];
+
+        // n = s * normalize(cross(tu,tv)), s is the (non-diff) travelSideSign in the gather step
+        // We'll recompute with the same siding so the sign matches.
+        const float3 tu = surfel.tanU;
+        const float3 tv = surfel.tanV;
+
+        const float3 c = cross(tu, tv);
+        const float c2 = dot(c, c);
+        if (c2 > 1e-20f) {
+            const float invCLen = sycl::rsqrt(c2);
+            float3 n = c * invCLen;
+
+            const float side = signNonZero(dot(n, -rayDirection));
+            n = n * side;
+
+            // dL/dc = (I - n n^T)/|c| * dL/dn
+            // Include the (treated-constant) side in the chain by multiplying dL/dn by side.
+            const float3 dL_dN_sided = dL_dN * side;
+            const float3 dL_dC = projectOntoPlanePerpToUnit(dL_dN_sided, n) * invCLen;
+
+            // c = tu × tv
+            // ∂L/∂tu = tv × dL/dc
+            // ∂L/∂tv = (dL/dc) × tu
+            const float3 dL_dTu = cross(tv, dL_dC);
+            const float3 dL_dTv = cross(dL_dC, tu);
+
+            atomicAddFloat3(gradients.gradTanU[primitiveIndex], dL_dTu);
+            atomicAddFloat3(gradients.gradTanV[primitiveIndex], dL_dTv);
+        }
+    }
+}
+
+
+
 
     SYCL_EXTERNAL inline void accumulateBsdfGradientsAtScatterSurfel(
         const RayState &rayState,

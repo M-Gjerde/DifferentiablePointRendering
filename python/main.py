@@ -48,7 +48,7 @@ def main() -> None:
         str(config.assets_root),
         config.scene_xml,
         config.pointcloud_ply,
-        renderer_settings.as_dict(),
+        renderer_settings.as_dict(config),
     )
 
     # Camera IDs from C++

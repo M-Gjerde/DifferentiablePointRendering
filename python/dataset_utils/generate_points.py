@@ -226,8 +226,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-z", type=float, default=0.55)
 
     parser.add_argument("--scale", type=float, default=0.05)
-    parser.add_argument("--position-noise-std", type=float, default=0.0)
-    parser.add_argument("--tangent-noise-std", type=float, default=0.0)
+    parser.add_argument("--position-noise-std", type=float, default=0.03)
+    parser.add_argument("--tangent-noise-std", type=float, default=90)
     parser.add_argument("--seed", type=int, default=None)
 
     return parser.parse_args()

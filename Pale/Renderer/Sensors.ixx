@@ -184,6 +184,12 @@ export namespace Pale {
             debugImages[id].framebufferDepthLoss =
                 reinterpret_cast<float4 *>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
+            debugImages[id].framebufferDepthLossPos =
+                reinterpret_cast<float4 *>(
+                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+            debugImages[id].framebufferNormalLoss =
+                reinterpret_cast<float4 *>(
+                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
 
             debugImages[id].numPixels = pixelCount;
 
@@ -268,6 +274,14 @@ export namespace Pale {
                 sycl::free(g[id].framebufferDepthLoss, queue);
                 g[id].framebufferDepthLoss = nullptr;
             }
+            if (g[id].framebufferDepthLossPos) {
+                sycl::free(g[id].framebufferDepthLossPos, queue);
+                g[id].framebufferDepthLossPos = nullptr;
+            }
+            if (g[id].framebufferNormalLoss) {
+                sycl::free(g[id].framebufferNormalLoss, queue);
+                g[id].framebufferNormalLoss = nullptr;
+            }
         }
     }
 
@@ -345,6 +359,8 @@ export namespace Pale {
         std::vector<float> albedo; // framebuffer_albedo
         std::vector<float> beta; // framebuffer_albedo
         std::vector<float> depthLoss; // framebuffer_albedo
+        std::vector<float> depthLossPos; // framebuffer_albedo
+        std::vector<float> normalLoss; // framebuffer_albedo
     };
 
     inline DebugGradientImagesHost downloadDebugGradientImages(
@@ -366,6 +382,8 @@ export namespace Pale {
         images.albedo.resize(totalFloatCount);
         images.beta.resize(totalFloatCount);
         images.depthLoss.resize(totalFloatCount);
+        images.depthLossPos.resize(totalFloatCount);
+        images.normalLoss.resize(totalFloatCount);
 
         auto copyBuffer = [&](std::vector<float>& hostBuffer, const float4* deviceBuffer) {
             queue.memcpy(
@@ -384,6 +402,8 @@ export namespace Pale {
         copyBuffer(images.albedo, debugImages.framebufferAlbedo);
         copyBuffer(images.beta, debugImages.framebufferBeta);
         copyBuffer(images.depthLoss, debugImages.framebufferDepthLoss);
+        copyBuffer(images.depthLossPos, debugImages.framebufferDepthLossPos);
+        copyBuffer(images.normalLoss, debugImages.framebufferNormalLoss);
 
 
         // Ensure all copies are completed before returning

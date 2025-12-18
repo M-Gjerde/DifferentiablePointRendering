@@ -171,12 +171,20 @@ namespace Pale {
 
                     // Implement depth distortion regularization
 
+
+                    const float invRayCount = 1.0f / float(activeRayCount);   // if summing over rays in-kernel
+
                     if (settings.depthDistortionWeight > 0.0f) {
-                        accumulateDepthDistortionGradientsForRay(scene, rayState, whTransmit, gradients, debugImage);
+                        accumulateDepthDistortionGradientsForRay(scene, rayState, whTransmit, gradients, debugImage, invRayCount, settings.depthDistortionWeight);
                     }
 
                     // Normal Regularization
-
+                    if (settings.normalConsistencyWeight > 0.0f) {
+                        accumulateNormalConsistencyGradientsForRay(
+                            scene, rayState, whTransmit, gradients, debugImage,
+                            invRayCount, settings.normalConsistencyWeight
+                        );
+                    }
 
                     // Volumetric composition gradients
                     float3 L_Mesh(0.0f);
