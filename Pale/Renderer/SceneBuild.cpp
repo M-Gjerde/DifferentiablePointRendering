@@ -325,6 +325,7 @@ namespace Pale {
             gpuCam.forward = float3{forward.x, forward.y, forward.z};
             gpuCam.width = cameraComponent.camera.width;
             gpuCam.height = cameraComponent.camera.height;
+            gpuCam.useForAdjointPass = cameraComponent.useForAdjointPass;
             copyName(gpuCam.name, tagComponent.getTag());
             outBuildProducts.cameraGPUs.push_back(gpuCam);
         }

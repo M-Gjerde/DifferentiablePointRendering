@@ -216,9 +216,9 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    serializer.deserialize("scene_blender_4.xml");
+    //serializer.deserialize("scene_blender_4.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    //serializer.deserialize("cbox_custom.xml");
+    serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -280,6 +280,7 @@ int main(int argc, char **argv) {
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;
+    settings.depthDistortionWeight = 0.002;
     settings.renderDebugGradientImages = true;
 
 
@@ -386,13 +387,14 @@ int main(int argc, char **argv) {
             };
 
             saveGradientSet(debugImagesHost.positionX, "posX");
-            saveGradientSet(debugImagesHost.positionY, "posY");
-            saveGradientSet(debugImagesHost.positionZ, "posZ");
-            saveGradientSet(debugImagesHost.rotation, "rot");
-            saveGradientSet(debugImagesHost.scale, "scale");
-            saveGradientSet(debugImagesHost.opacity, "opacity");
-            saveGradientSet(debugImagesHost.albedo, "albedo");
-            saveGradientSet(debugImagesHost.beta, "beta");
+            //saveGradientSet(debugImagesHost.positionY, "posY");
+            //saveGradientSet(debugImagesHost.positionZ, "posZ");
+            //saveGradientSet(debugImagesHost.rotation, "rot");
+            //saveGradientSet(debugImagesHost.scale, "scale");
+            //saveGradientSet(debugImagesHost.opacity, "opacity");
+            //saveGradientSet(debugImagesHost.albedo, "albedo");
+            //saveGradientSet(debugImagesHost.beta, "beta");
+            saveGradientSet(debugImagesHost.depthLoss, "DepthLoss");
         }
 
         // Download and log gradPosition[0]

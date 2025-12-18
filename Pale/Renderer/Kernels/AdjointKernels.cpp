@@ -119,6 +119,7 @@ namespace Pale {
         return isMatch;
     }
 
+
     // -----------------------------------------------------------------------------
     // launchAdjointProjectionKernel
     // -----------------------------------------------------------------------------
@@ -147,7 +148,7 @@ namespace Pale {
         auto *raysIn = pkg.intermediates.primaryRays;
 
         auto &sensor = pkg.sensor[cameraIndex];
-        auto &debugImage = pkg.debugImages[cameraIndex];
+        DebugImages& debugImage = pkg.debugImages[cameraIndex];
 
         queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<struct AdjointShadeKernelTag>(
@@ -168,8 +169,11 @@ namespace Pale {
                     buildIntersectionNormal(scene, whTransmit);
                     const Ray &ray = rayState.ray;
 
-                    // Populate and record which surfels were intersected per camera ray for our depth distortion regularization
+                    // Implement depth distortion regularization
 
+                    if (settings.depthDistortionWeight > 0.0f) {
+                        accumulateDepthDistortionGradientsForRay(scene, rayState, whTransmit, gradients, debugImage);
+                    }
 
                     // Normal Regularization
 
@@ -357,21 +361,21 @@ namespace Pale {
                             const float dCdpRX = dot(gradPosition, parameterAxisX);
                             const float4 posScalarRGBX{dCdpRX};
                             atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_posX[pixelIndex],
+                                &debugImage.framebufferPosX[pixelIndex],
                                 posScalarRGBX
                             );
 
                             const float dCdpRY = dot(gradPosition, parameterAxisY);
                             const float4 posScalarRGBY{dCdpRY};
                             atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_posY[pixelIndex],
+                                &debugImage.framebufferPosY[pixelIndex],
                                 posScalarRGBY
                             );
 
                             const float dCdpRZ = dot(gradPosition, parameterAxisZ);
                             const float4 posScalarRGBZ{dCdpRZ};
                             atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_posZ[pixelIndex],
+                                &debugImage.framebufferPosZ[pixelIndex],
                                 posScalarRGBZ
                             );
 
@@ -391,28 +395,28 @@ namespace Pale {
                             };
 
                             atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_rot[pixelIndex],
+                                &debugImage.framebufferRot[pixelIndex],
                                 rotScalarRGB
                             );
 
 
                             atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_scale[pixelIndex],
+                                &debugImage.framebufferScale[pixelIndex],
                                 float4{gradScale.x()}
                             );
 
                             atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_opacity[pixelIndex],
+                                &debugImage.framebufferOpacity[pixelIndex],
                                 float4{gradOpacity}
                             );
 
                             atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_beta[pixelIndex],
+                                &debugImage.framebufferBeta[pixelIndex],
                                 float4{gradBeta}
                             );
 
                             atomicAddFloat4ToImage(
-                                &debugImage.framebuffer_albedo[pixelIndex],
+                                &debugImage.framebufferAlbedo[pixelIndex],
                                 float4{gradAlbedo, 1.0f}
                             );
                         }

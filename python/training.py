@@ -230,6 +230,7 @@ def save_checkpoint_snapshot(
 
 
 def save_manual_snapshot(
+        renderer: Pale.Renderer,
         output_dir: Path,
         iteration: int,
         positions: torch.Tensor,
@@ -239,16 +240,17 @@ def save_manual_snapshot(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
-        current_rgb_np: np.ndarray,
+        camera_ids: List[str],
 ) -> None:
     """
     Save the current state using the same filenames as the final output.
     These will be overwritten later, both by future manual saves and at the end.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save current render
-    save_render(output_dir / "render_final.png", current_rgb_np)
+    final_images = renderer.render_forward()
+    for camera_name in camera_ids:
+        img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")
+        save_render(Path(output_dir / f"render_final_{camera_name}.png"), img_np)
 
     # Save full parameter set as PLY
     ply_path = output_dir / "points_final.ply"
@@ -652,13 +654,6 @@ def run_optimization(
                     loss_grad_images[camera_name] = loss_grad
                     loss_images[camera_name] = loss_grad
 
-                # Use main camera image for manual snapshot and some logs
-                current_main_rgb_np = np.asarray(
-                    current_images[camera_name],
-                    dtype=np.float32,
-                    order="C",
-                )
-
                 # --------------------------------------------------------------
                 # 6. Backward pass in renderer (multi-camera)
                 # --------------------------------------------------------------
@@ -836,34 +831,38 @@ def run_optimization(
                         save_render(render_path, image_numpy)
 
                         # Per-camera adjoint/gradient visualization
-                        grad_image_numpy = np.asarray(
-                            adjoint_images["adjoint_source"][camera_name],
-                            dtype=np.float32,
-                            order="C",
-                        )
-                        grad_image_numpy = np.nan_to_num(
-                            grad_image_numpy,
-                            nan=0.0,
-                            posinf=0.0,
-                            neginf=0.0,
-                        )
+                        adjointSourceImages = adjoint_images.get("adjoint_source")
+                        if adjointSourceImages is not None and camera_name in adjointSourceImages:
+                            grad_image_numpy = np.asarray(
+                                adjointSourceImages[camera_name],
+                                dtype=np.float32,
+                                order="C",
+                            )
+                            # proceed with saving gradImageNumpy
 
-                        grad_path = (
-                                camera_grad_dir
-                                / f"{iteration:04d}_grad_099.png"
-                        )
-                        save_gradient_sign_png_py(
-                            grad_path,
-                            grad_image_numpy,
-                            adjoint_spp=renderer_settings.adjoint_passes,
-                            abs_quantile=0.999,
-                            flip_y=False,
-                        )
+                            grad_image_numpy = np.nan_to_num(
+                                grad_image_numpy,
+                                nan=0.0,
+                                posinf=0.0,
+                                neginf=0.0,
+                            )
 
-                        # Loss image: store under main camera
-                        main_loss_image = loss_images[camera_name]
-                        main_camera_loss_root = config.output_dir / camera_name
-                        save_loss_image(main_camera_loss_root, main_loss_image, iteration)
+                            grad_path = (
+                                    camera_grad_dir
+                                    / f"{iteration:04d}_grad_099.png"
+                            )
+                            save_gradient_sign_png_py(
+                                grad_path,
+                                grad_image_numpy,
+                                adjoint_spp=renderer_settings.adjoint_passes,
+                                abs_quantile=0.999,
+                                flip_y=False,
+                            )
+
+                            # Loss image: store under main camera
+                            main_loss_image = loss_images[camera_name]
+                            main_camera_loss_root = config.output_dir / camera_name
+                            save_loss_image(main_camera_loss_root, main_loss_image, iteration)
 
                 # --------------------------------------------------------------
                 # 11. Metrics and logging
@@ -932,6 +931,7 @@ def run_optimization(
                     if hotkey == "s":
                         # Save current state (render + PLY) using main camera
                         save_manual_snapshot(
+                            renderer,
                             config.output_dir,
                             iteration,
                             positions,
@@ -941,7 +941,7 @@ def run_optimization(
                             albedos,
                             opacities,
                             betas,
-                            current_main_rgb_np,
+                            camera_ids,
                         )
                     elif hotkey == "g":
                         # Save gradients for all points

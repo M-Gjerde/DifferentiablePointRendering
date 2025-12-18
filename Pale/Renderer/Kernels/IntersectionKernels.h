@@ -142,10 +142,10 @@ namespace Pale {
         SmallStack<256> traversalStack;
         traversalStack.push(0);
 
-        BoundedVector<float, kMaxSplatEvents> groupDepthKeys;
-        BoundedVector<float, kMaxSplatEvents> groupLocalTs;
-        BoundedVector<float, kMaxSplatEvents> groupAlphas;
-        BoundedVector<uint32_t, kMaxSplatEvents> groupIndices;
+        BoundedVector<float, kMaxSplatEventsPerRay> groupDepthKeys;
+        BoundedVector<float, kMaxSplatEventsPerRay> groupLocalTs;
+        BoundedVector<float, kMaxSplatEventsPerRay> groupAlphas;
+        BoundedVector<uint32_t, kMaxSplatEventsPerRay> groupIndices;
 
         auto clearCurrentGroup = [&]() {
             groupDepthKeys.clear();
@@ -161,7 +161,7 @@ namespace Pale {
             float runningTransmittanceWithinSlice = 1.0f;
 
             for (size_t groupIndex = 0; groupIndex < groupLocalTs.size(); ++groupIndex) {
-                if (localHitOut.splatEventCount >= kMaxSplatEvents)
+                if (localHitOut.splatEventCount >= kMaxSplatEventsPerRay)
                     continue;
 
                 const uint32_t surfelIndex = groupIndices[groupIndex];
@@ -314,10 +314,10 @@ namespace Pale {
             return true;
         };
 
-        BoundedVector<float,    kMaxSplatEvents> candidateLocalTs;
-        BoundedVector<float,    kMaxSplatEvents> candidateAlphas;
-        BoundedVector<float,    kMaxSplatEvents> candidateDepthKeys;
-        BoundedVector<uint32_t, kMaxSplatEvents> candidateIndices;
+        BoundedVector<float,    kMaxSplatEventsPerRay> candidateLocalTs;
+        BoundedVector<float,    kMaxSplatEventsPerRay> candidateAlphas;
+        BoundedVector<float,    kMaxSplatEventsPerRay> candidateDepthKeys;
+        BoundedVector<uint32_t, kMaxSplatEventsPerRay> candidateIndices;
 
 
         while (!traversalStack.empty()) {
@@ -352,7 +352,7 @@ namespace Pale {
 
             // Leaf: just collect candidates, DO NOT clear the global arrays here
             for (uint32_t local = 0; local < node.triCount; ++local) {
-                if (candidateLocalTs.size() >= kMaxSplatEvents)
+                if (candidateLocalTs.size() >= kMaxSplatEventsPerRay)
                     break;
 
                 const uint32_t surfelIndex = node.leftFirst + local;
@@ -376,8 +376,8 @@ namespace Pale {
         }
 
         const int candidateCount = candidateLocalTs.size();
-        BoundedVector<int,   kMaxSplatEvents> order;
-        BoundedVector<float, kMaxSplatEvents> tempKeys;
+        BoundedVector<int,   kMaxSplatEventsPerRay> order;
+        BoundedVector<float, kMaxSplatEventsPerRay> tempKeys;
 
         order.clear();
         tempKeys.clear();
@@ -542,7 +542,7 @@ namespace Pale {
                         int baseEventCount = worldHitOut->splatEventCount;
 
                         for (std::size_t i = 0; i < localHit.splatEventCount; ++i) {
-                            if (baseEventCount >= kMaxSplatEvents)
+                            if (baseEventCount >= kMaxSplatEventsPerRay)
                                 break;
 
                             const SplatEvent& src = localHit.splatEvents[i];
@@ -562,7 +562,7 @@ namespace Pale {
                         }
 
                         worldHitOut->splatEventCount =
-                            static_cast<uint32_t>(sycl::min(baseEventCount, kMaxSplatEvents));
+                            static_cast<uint32_t>(sycl::min(baseEventCount, kMaxSplatEventsPerRay));
                     }
 
 
@@ -570,7 +570,7 @@ namespace Pale {
 
                 } else {
                     // Existing behavior for RANDOM/SCATTER modes: keep only this instance’s events.
-                    for (std::size_t i = 0; i < localHit.splatEventCount && i < kMaxSplatEvents; ++i) {
+                    for (std::size_t i = 0; i < localHit.splatEventCount && i < kMaxSplatEventsPerRay; ++i) {
                         const SplatEvent &src = localHit.splatEvents[i];
 
                         const float3 hitPointWorld = toWorldPoint(
@@ -586,7 +586,7 @@ namespace Pale {
                         dst.t = tWorld;
                         dst.tau = src.tau; // unchanged: used only for that instance
                     }
-                    worldHitOut->splatEventCount = std::min(localHit.splatEventCount, kMaxSplatEvents);
+                    worldHitOut->splatEventCount = std::min(localHit.splatEventCount, kMaxSplatEventsPerRay);
                 }
             }
 

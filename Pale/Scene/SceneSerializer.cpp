@@ -42,6 +42,38 @@ namespace Pale {
         return parse_csv_vec3(attrs(n, "value", "1,1,1"));
     }
 
+    static inline bool parseXmlBoolValue(const char* valueString, bool defaultValue) {
+        if (valueString == nullptr) return defaultValue;
+
+        std::string text = valueString;
+        for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        if (text == "true" || text == "1" || text == "yes" || text == "on")  return true;
+        if (text == "false" || text == "0" || text == "no"  || text == "off") return false;
+
+        // Fallback: allow numeric strings like "0.0" / "1.0"
+        char* endPtr = nullptr;
+        const float numericValue = std::strtof(text.c_str(), &endPtr);
+        if (endPtr != text.c_str()) return numericValue != 0.0f;
+
+        return defaultValue;
+    }
+
+    static inline bool readAdjointSourceFlag(const pugi::xml_node& sensorNode, bool defaultValue = true) {
+        // Preferred: <boolean name="adjoint_source" value="false"/>
+        if (auto booleanNode = sensorNode.find_child_by_attribute("boolean", "name", "adjoint_source")) {
+            return parseXmlBoolValue(booleanNode.attribute("value").as_string(), defaultValue);
+        }
+
+        // Back-compat: <float name="adjoint_source" value="False"/> or 0/1
+        if (auto floatNode = sensorNode.find_child_by_attribute("float", "name", "adjoint_source")) {
+            return parseXmlBoolValue(floatNode.attribute("value").as_string(), defaultValue);
+        }
+
+        return defaultValue;
+    }
+
+
     static float computeFovYDegrees(float fovDegrees, const std::string &fovAxis,
                                     int filmWidth, int filmHeight) {
         const float aspect = static_cast<float>(filmWidth) / static_cast<float>(filmHeight);
@@ -147,6 +179,9 @@ namespace Pale {
             cameraComponent.camera.width = filmWidth;
             cameraComponent.camera.height = filmHeight;
             cameraComponent.primary = true;
+            cameraComponent.useForAdjointPass = readAdjointSourceFlag(sensor, true);
+
+
             auto &transform = cameraEntity.getComponent<TransformComponent>();
             transform.setTransform(worldFromCamera);
 

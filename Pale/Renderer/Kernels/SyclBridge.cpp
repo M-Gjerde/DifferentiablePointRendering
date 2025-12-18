@@ -108,14 +108,14 @@ namespace Pale {
             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
 
                 if (pkg.settings.renderDebugGradientImages) {
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_posX, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_posY, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_posZ, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_rot, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_scale, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_opacity, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_albedo, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
-                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebuffer_beta, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosX, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosY, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosZ, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferRot, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferScale, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferOpacity, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferAlbedo, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
+                    pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferBeta, float4{0}, pkg.debugImages[cameraIndex].numPixels).wait();
                 }
 
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;

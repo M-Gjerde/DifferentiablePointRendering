@@ -31,14 +31,16 @@ namespace Pale {
 
     struct DebugImages {
         // debug
-        float4 *framebuffer_posX = nullptr; // gradient image
-        float4 *framebuffer_posY = nullptr; // gradient image
-        float4 *framebuffer_posZ = nullptr; // gradient image
-        float4 *framebuffer_rot = nullptr; // gradient image
-        float4 *framebuffer_scale = nullptr; // gradient image
-        float4 *framebuffer_opacity = nullptr; // gradient image
-        float4 *framebuffer_albedo = nullptr; // gradient image
-        float4 *framebuffer_beta = nullptr; // gradient image
+        float4 *framebufferPosX = nullptr; // gradient image
+        float4 *framebufferPosY = nullptr; // gradient image
+        float4 *framebufferPosZ = nullptr; // gradient image
+        float4 *framebufferRot = nullptr; // gradient image
+        float4 *framebufferScale = nullptr; // gradient image
+        float4 *framebufferOpacity = nullptr; // gradient image
+        float4 *framebufferAlbedo = nullptr; // gradient image
+        float4 *framebufferBeta = nullptr; // gradient image
+
+        float4 * framebufferDepthLoss = nullptr;
         uint32_t numPixels = 0;
     };
 

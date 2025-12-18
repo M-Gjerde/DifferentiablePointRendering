@@ -163,6 +163,7 @@ export namespace Pale {
 
         Camera camera;
         bool primary = true;
+        bool useForAdjointPass = true;
 
         CameraComponent() = default;
 

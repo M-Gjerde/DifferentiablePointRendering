@@ -113,10 +113,10 @@ namespace Pale {
                 float3 dAlphaDc;
             };
             constexpr float epsilon = 1e-6f;
-            LocalTerm localTerms[kMaxSplatEvents];
+            LocalTerm localTerms[kMaxSplatEventsPerRay];
             int validCount = 0;
 
-            for (int ei = 0; ei < worldHit.splatEventCount && validCount < kMaxSplatEvents; ++ei) {
+            for (int ei = 0; ei < worldHit.splatEventCount && validCount < kMaxSplatEventsPerRay; ++ei) {
                 const auto splatEvent = worldHit.splatEvents[ei];
                 const auto surfel = scene.points[splatEvent.primitiveIndex];
                 // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
@@ -486,13 +486,13 @@ namespace Pale {
             uint32_t primitiveIndex{};
         };
 
-        LocalTerm localTerms[kMaxSplatEvents];
+        LocalTerm localTerms[kMaxSplatEventsPerRay];
         int validCount = 0;
         float tau = 1.0f; // product over (1 - eta * alpha)
 
         // Build local terms and τ
         for (size_t eventIndex = 0; eventIndex < worldHit.splatEventCount; ++eventIndex) {
-            if (validCount >= kMaxSplatEvents) {
+            if (validCount >= kMaxSplatEventsPerRay) {
                 break;
             }
             const SplatEvent &splatEvent = worldHit.splatEvents[eventIndex];
@@ -699,21 +699,21 @@ namespace Pale {
                 const float dCdpRX = dot(gradPosition, parameterAxisX);
                 const float4 posScalarRGBX{dCdpRX};
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_posX[rayState.pixelIndex],
+                    &debugImage.framebufferPosX[rayState.pixelIndex],
                     posScalarRGBX
                 );
 
                 const float dCdpRY = dot(gradPosition, parameterAxisY);
                 const float4 posScalarRGBY{dCdpRY};
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_posY[rayState.pixelIndex],
+                    &debugImage.framebufferPosY[rayState.pixelIndex],
                     posScalarRGBY
                 );
 
                 const float dCdpRZ = dot(gradPosition, parameterAxisZ);
                 const float4 posScalarRGBZ{dCdpRZ};
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_posZ[rayState.pixelIndex],
+                    &debugImage.framebufferPosZ[rayState.pixelIndex],
                     posScalarRGBZ
                 );
 
@@ -734,25 +734,124 @@ namespace Pale {
                 };
 
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_rot[rayState.pixelIndex],
+                    &debugImage.framebufferRot[rayState.pixelIndex],
                     rotScalarRGB
                 );
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_scale[rayState.pixelIndex],
+                    &debugImage.framebufferScale[rayState.pixelIndex],
                     scaleScalarRGB
                 );
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_opacity[rayState.pixelIndex],
+                    &debugImage.framebufferOpacity[rayState.pixelIndex],
                     opacityScalarRGB
                 );
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_beta[rayState.pixelIndex],
+                    &debugImage.framebufferBeta[rayState.pixelIndex],
                     betaScalarRGB
                 );
             }
         }
     }
 
+// Compute depth distortion loss for ONE camera ray (one WorldHit record).
+// Squared variant:
+//   L = sum_{i<j} omega_i * omega_j * (t_i - t_j)^2
+// where:
+//   alphaEff_i = opacity_i * alphaGeom_i
+//   T_i        = prod_{k<i} (1 - alphaEff_k)   (front transmittance)
+//   omega_i    = T_i * alphaEff_i
+//
+// Notes:
+// - Uses ray parameter t (distance along ray direction) as "depth".
+// - Assumes the splatEvents are ordered front-to-back along the ray.
+// - If worldHit.splatEvents[i].tau already equals T_i, you can use it,
+//   otherwise we recompute T_i from alphaEff for correctness.
+SYCL_EXTERNAL inline float computeDepthDistortionLossForRay(
+    const GPUSceneBuffers& scene,
+    const RayState& rayState,
+    const WorldHit& worldHit)
+{
+    const uint32_t splatEventCount = worldHit.splatEventCount;
+    if (splatEventCount < 2) {
+        return 0.0f;
+    }
+
+    const uint32_t clampedEventCount =
+        (splatEventCount > kMaxSplatEventsPerRay) ? kMaxSplatEventsPerRay : splatEventCount;
+
+    const Ray& ray = rayState.ray;
+
+    // Per-hit arrays
+    float alphaEffArray[kMaxSplatEventsPerRay];
+    float transmittanceFrontArray[kMaxSplatEventsPerRay]; // T_i
+    float omegaArray[kMaxSplatEventsPerRay];
+    float depthTArray[kMaxSplatEventsPerRay];
+
+    // 1) Gather alphaEff and depth t_i
+    for (uint32_t eventIndex = 0; eventIndex < clampedEventCount; ++eventIndex) {
+        const auto& splatEvent = worldHit.splatEvents[eventIndex];
+        const uint32_t primitiveIndex = splatEvent.primitiveIndex;
+        const auto& surfel = scene.points[primitiveIndex];
+
+        const float alphaGeom = splatEvent.alpha;       // alpha(u,v,beta)
+        const float opacityEta = surfel.opacity;        // eta
+        const float alphaEff = opacityEta * alphaGeom;  // alpha^eff
+
+        // Depth along ray: t = dot((hit - origin), dir)
+        // If ray.direction is not normalized, this is still fine as a consistent "ray parameter".
+        const float depthT = dot(splatEvent.hitWorld - ray.origin, ray.direction);
+        alphaEffArray[eventIndex] = alphaEff;
+        depthTArray[eventIndex] = depthT;
+    }
+
+    // 2) Recompute T_i (front transmittance) for correctness
+    // T_0 = 1
+    // T_{i+1} = T_i * (1 - alphaEff_i)
+    float runningTransmittance = 1.0f;
+    for (uint32_t eventIndex = 0; eventIndex < clampedEventCount; ++eventIndex) {
+        transmittanceFrontArray[eventIndex] = runningTransmittance;
+        omegaArray[eventIndex] = runningTransmittance * alphaEffArray[eventIndex];
+
+        // Clamp (1 - alphaEff) away from negative to avoid weirdness if alphaEff > 1 due to bugs
+        const float oneMinusAlphaEff = sycl::fmax(0.0f, 1.0f - alphaEffArray[eventIndex]);
+        runningTransmittance *= oneMinusAlphaEff;
+    }
+
+    // 3) Pairwise sum (i<j)
+    float depthDistortionLoss = 0.0f;
+    for (uint32_t i = 0; i < clampedEventCount; ++i) {
+        const float omegaI = omegaArray[i];
+        const float depthTI = depthTArray[i];
+
+        for (uint32_t j = i + 1; j < clampedEventCount; ++j) {
+            const float omegaJ = omegaArray[j];
+            const float depthTJ = depthTArray[j];
+
+            const float depthDifference = depthTI - depthTJ;
+            const float squaredDistance = depthDifference * depthDifference;
+
+            depthDistortionLoss += omegaI * omegaJ * squaredDistance;
+        }
+    }
+
+    return depthDistortionLoss;
+}
+
+SYCL_EXTERNAL inline void accumulateDepthDistortionGradientsForRay(
+    const GPUSceneBuffers& scene,
+    const RayState& rayState,
+    const WorldHit& worldHit,
+    const PointGradients& gradients,
+    const DebugImages& debugImages)
+{
+    // For now: just compute the loss value (per your request).
+    // Later we’ll add differentiated accumulation into gradients.* buffers.
+    const float lossValue = computeDepthDistortionLossForRay(scene, rayState, worldHit);
+    // If you want to debug / log lossValue per-ray, you’ll need a buffer to accumulate it into.
+    // Example (if you add a device float* debugLossBuffer indexed by rayState.pixelIndex):
+    atomicAddFloatToImage(&debugImages.framebufferDepthLoss[rayState.pixelIndex], lossValue);
+
+}
 
     SYCL_EXTERNAL inline void accumulateBsdfGradientsAtScatterSurfel(
         const RayState &rayState,
@@ -986,27 +1085,27 @@ namespace Pale {
             const uint32_t pixelIndex = rayState.pixelIndex;
 
             atomicAddFloat4ToImage(
-                &debugImage.framebuffer_posX[pixelIndex],
+                &debugImage.framebufferPosX[pixelIndex],
                 posScalarRGB
             );
             atomicAddFloat4ToImage(
-                &debugImage.framebuffer_rot[pixelIndex],
+                &debugImage.framebufferRot[pixelIndex],
                 rotScalarRGB
             );
             atomicAddFloat4ToImage(
-                &debugImage.framebuffer_scale[pixelIndex],
+                &debugImage.framebufferScale[pixelIndex],
                 scaleScalarRGB
             );
             atomicAddFloat4ToImage(
-                &debugImage.framebuffer_opacity[pixelIndex],
+                &debugImage.framebufferOpacity[pixelIndex],
                 opacityScalarRGB
             );
             atomicAddFloat4ToImage(
-                &debugImage.framebuffer_albedo[pixelIndex],
+                &debugImage.framebufferAlbedo[pixelIndex],
                 albedoScalarRGB
             );
             atomicAddFloat4ToImage(
-                &debugImage.framebuffer_beta[pixelIndex],
+                &debugImage.framebufferBeta[pixelIndex],
                 betaScalarRGB
             );
         }
@@ -1107,7 +1206,7 @@ namespace Pale {
             uint32_t primitiveIndex{};
         };
 
-        LocalTerm localTerms[kMaxSplatEvents];
+        LocalTerm localTerms[kMaxSplatEventsPerRay];
         int validCount = 0;
         float tau = 1.0f;
 
@@ -1115,7 +1214,7 @@ namespace Pale {
         // Build local terms and τ (blockers along the ray)
         // -------------------------------------------------------------------------
         for (size_t eventIndex = 0; eventIndex < worldHit.splatEventCount; ++eventIndex) {
-            if (validCount >= kMaxSplatEvents) {
+            if (validCount >= kMaxSplatEventsPerRay) {
                 break;
             }
 
@@ -1379,23 +1478,23 @@ namespace Pale {
                 const float4 betaScalarRGB{0.0f, 0.0f, 0.0f, 0.0f};
 
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_posX[rayState.pixelIndex],
+                    &debugImage.framebufferPosX[rayState.pixelIndex],
                     posScalarRGB
                 );
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_rot[rayState.pixelIndex],
+                    &debugImage.framebufferRot[rayState.pixelIndex],
                     rotScalarRGB
                 );
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_scale[rayState.pixelIndex],
+                    &debugImage.framebufferScale[rayState.pixelIndex],
                     scaleScalarRGB
                 );
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_opacity[rayState.pixelIndex],
+                    &debugImage.framebufferOpacity[rayState.pixelIndex],
                     opacityScalarRGB
                 );
                 atomicAddFloat4ToImage(
-                    &debugImage.framebuffer_beta[rayState.pixelIndex],
+                    &debugImage.framebufferBeta[rayState.pixelIndex],
                     betaScalarRGB
                 );
             }

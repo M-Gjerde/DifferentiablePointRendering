@@ -172,6 +172,7 @@ namespace Pale {
         float fovy = 60.0f;
         
         char name[16];
+        bool useForAdjointPass = true;
     };
 
     CHECK_16(CameraGPU);
@@ -272,7 +273,10 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<RayState>);
 
 
-    constexpr int kMaxSplatEvents = 88;
+    // Maximum expected per-ray surfel intersections.
+    // Must be compile-time constant for stack arrays in SYCL device code.
+    constexpr int kMaxSplatEventsPerRay = 16;
+
 
     struct SplatEvent {
         float t = FLT_MAX; // local space t
@@ -288,7 +292,7 @@ namespace Pale {
         uint32_t primitiveIndex = UINT32_MAX; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex = UINT32_MAX; // mesh/geometry id within scene
 
-        SplatEvent splatEvents[kMaxSplatEvents];
+        SplatEvent splatEvents[kMaxSplatEventsPerRay];
         int splatEventCount = 0;
     };
 
@@ -305,7 +309,7 @@ namespace Pale {
         float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW = float3(0.0f);; // optional: fill if you have it cheaply
 
-        SplatEvent splatEvents[kMaxSplatEvents];
+        SplatEvent splatEvents[kMaxSplatEventsPerRay];
         int splatEventCount = 0;
     };
 
@@ -323,6 +327,7 @@ namespace Pale {
         uint32_t russianRouletteStart = 3; // Which bounce to start RR
 
         bool renderDebugGradientImages = false;
+        float depthDistortionWeight = 0.0f;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
