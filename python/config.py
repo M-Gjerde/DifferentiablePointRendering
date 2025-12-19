@@ -195,7 +195,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.1,
+        default=0.0001,
         help="",
     )
 
@@ -215,7 +215,7 @@ def parse_args() -> OptimizationConfig:
     factor_scale    = lr_scale * 0.01   # ~scaling_lr / position_lr
     factor_albedo   = lr_scale * 0.1    # ~feature_lr / position_lr
     factor_opacity  = lr_scale * 0.1    # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 0.001  # ~beta_lr / position_lr
+    factor_beta     = lr_scale * 0.05  # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr

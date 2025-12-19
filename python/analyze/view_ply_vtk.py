@@ -280,8 +280,8 @@ def main() -> None:
     positions = positions[ellipseMask]
     tangentU = tangentU[ellipseMask]
     tangentV = tangentV[ellipseMask]
-    su = su[ellipseMask] * 1
-    sv = sv[ellipseMask] * 1
+    su = su[ellipseMask] * 0.3
+    sv = sv[ellipseMask] * 0.3
     colors = colors[ellipseMask]
     opacities = opacities[ellipseMask]
 

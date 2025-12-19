@@ -1045,15 +1045,15 @@ SYCL_EXTERNAL inline void accumulateDepthDistortionGradientsForRay(
         // Global scaling for this ray
 
 
-        // Accumulate alphaEff path contributions
-        atomicAddFloat3(gradients.gradPosition[primitiveIndex], lossScale * dL_dAlphaEff * dAlphaEff_dPos);
-        atomicAddFloat3(gradients.gradTanU[primitiveIndex],     lossScale * dL_dAlphaEff * dAlphaEff_dTanU);
-        atomicAddFloat3(gradients.gradTanV[primitiveIndex],     lossScale * dL_dAlphaEff * dAlphaEff_dTanV);
-
-        {
-            const float2 dScale{dAlphaEff_dScale.x(), dAlphaEff_dScale.y()};
-            atomicAddFloat2(gradients.gradScale[primitiveIndex], lossScale * dL_dAlphaEff * dScale);
-        }
+        //// Accumulate alphaEff path contributions
+        //atomicAddFloat3(gradients.gradPosition[primitiveIndex], lossScale * dL_dAlphaEff * dAlphaEff_dPos);
+        //atomicAddFloat3(gradients.gradTanU[primitiveIndex],     lossScale * dL_dAlphaEff * dAlphaEff_dTanU);
+        //atomicAddFloat3(gradients.gradTanV[primitiveIndex],     lossScale * dL_dAlphaEff * dAlphaEff_dTanV);
+//
+        //{
+        //    const float2 dScale{dAlphaEff_dScale.x(), dAlphaEff_dScale.y()};
+        //    atomicAddFloat2(gradients.gradScale[primitiveIndex], lossScale * dL_dAlphaEff * dScale);
+        //}
 
         //atomicAddFloat(gradients.gradOpacity[primitiveIndex], dL_dAlphaEff * dAlphaEff_dOpacity);
         //atomicAddFloat(gradients.gradBeta[primitiveIndex],    dL_dAlphaEff * dAlphaEff_dBeta);
@@ -1299,14 +1299,14 @@ SYCL_EXTERNAL inline void accumulateNormalConsistencyGradientsForRay(
         // const float dAlphaEff_dOpacity = alphaGeom;
         // const float dAlphaEff_dBeta = alphaGeom * eta * betaExp * sycl::log(oneMinusR2);
 
-        atomicAddFloat3(gradients.gradPosition[primitiveIndex], dL_dAlphaEff * dAlphaEff_dPos);
-        atomicAddFloat3(gradients.gradTanU[primitiveIndex],     dL_dAlphaEff * dAlphaEff_dTanU);
-        atomicAddFloat3(gradients.gradTanV[primitiveIndex],     dL_dAlphaEff * dAlphaEff_dTanV);
-
-        {
-            const float2 dScale{dAlphaEff_dScale.x(), dAlphaEff_dScale.y()};
-            atomicAddFloat2(gradients.gradScale[primitiveIndex], dL_dAlphaEff * dScale);
-        }
+        //atomicAddFloat3(gradients.gradPosition[primitiveIndex], dL_dAlphaEff * dAlphaEff_dPos);
+        //atomicAddFloat3(gradients.gradTanU[primitiveIndex],     dL_dAlphaEff * dAlphaEff_dTanU);
+        //atomicAddFloat3(gradients.gradTanV[primitiveIndex],     dL_dAlphaEff * dAlphaEff_dTanV);
+//
+        //{
+        //    const float2 dScale{dAlphaEff_dScale.x(), dAlphaEff_dScale.y()};
+        //    atomicAddFloat2(gradients.gradScale[primitiveIndex], dL_dAlphaEff * dScale);
+        //}
         // atomicAddFloat(gradients.gradOpacity[primitiveIndex], dL_dAlphaEff * dAlphaEff_dOpacity);
         // atomicAddFloat(gradients.gradBeta[primitiveIndex],    dL_dAlphaEff * dAlphaEff_dBeta);
 

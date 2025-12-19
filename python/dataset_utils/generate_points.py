@@ -142,7 +142,7 @@ def generate_volume_ply(
     stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
     stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    defaultOpacity = 0.4
+    defaultOpacity = 0.3
     defaultBeta = 0.0
     defaultShape = 0.0
     defaultRGB = [0.8, 0.9, 0.9]
@@ -223,11 +223,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-y", type=float, default=-0.3)
     parser.add_argument("--max-y", type=float, default=0.3)
     parser.add_argument("--min-z", type=float, default=0.01)
-    parser.add_argument("--max-z", type=float, default=0.55)
+    parser.add_argument("--max-z", type=float, default=0.7)
 
     parser.add_argument("--scale", type=float, default=0.05)
     parser.add_argument("--position-noise-std", type=float, default=0.03)
-    parser.add_argument("--tangent-noise-std", type=float, default=90)
+    parser.add_argument("--tangent-noise-std", type=float, default=15)
     parser.add_argument("--seed", type=int, default=None)
 
     return parser.parse_args()
