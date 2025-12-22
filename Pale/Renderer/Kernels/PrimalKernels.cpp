@@ -300,6 +300,7 @@ namespace Pale {
             // Host-side (before launching kernel)
             SensorGPU sensor = pkg.sensor[cameraIndex];
 
+            // ReSharper disable once CppDFAUnreachableCode
             const std::uint32_t imageWidth = sensor.camera.width;
             const std::uint32_t imageHeight = sensor.camera.height;
             const std::uint32_t pixelCount = imageWidth * imageHeight;
@@ -331,18 +332,15 @@ namespace Pale {
                             static_cast<float>(pixelY),
                             jitterX,
                             jitterY);
-
-
-
                         int pixelYFlipped = imageHeight - 1 - pixelY;
                         bool isWatched = false;
 
-                        if (pixelX == 600 && pixelYFlipped == 800) {
+                        if (pixelX == 200 && pixelYFlipped == 250) {
                             //isWatched = true;
                             int debug = 1;
                         }
                         //if (pixelX == 200 && pixelYFlipped == 325) {
-                        if (pixelX == 600 && pixelYFlipped == 795) {
+                        if (pixelX == 220 && pixelYFlipped == 250) {
                             isWatched = true;
                             int debug = 1;
                         }

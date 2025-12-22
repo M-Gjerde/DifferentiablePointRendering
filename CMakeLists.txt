@@ -21,12 +21,24 @@ set(TINY_PLY_DIR vendor/tinyply)
 add_subdirectory(${TINY_PLY_DIR})
 include(FetchContent)
 set(SPDLOG_USE_STD_FORMAT ON)
+
 FetchContent_Declare(spdlog SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/spdlog" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/spdlog-build")
 FetchContent_Declare(glm SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/glm" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/glm-build")
 # assimp
 set(ASSIMP_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)   # internal zlib
-FetchContent_Declare(assimp SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/assimp" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/assimp-build")
+set(ASSIMP_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)
+# Avoid tools/tests to keep install/build minimal
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE) # critical: stop assimp installing anything
+
+FetchContent_Declare(assimp
+        SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/assimp"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/assimp-build")
+
 FetchContent_Declare(yaml_cpp SOURCE_DIR "${CMAKE_SOURCE_DIR}/vendor/yaml-cpp" BINARY_DIR "${CMAKE_BINARY_DIR}/vendor/yaml-cpp-build")
 FetchContent_MakeAvailable(spdlog glm assimp yaml_cpp)
 
@@ -108,7 +120,8 @@ target_link_libraries(PaleLib
         yaml-cpp
         tinyply
         PUBLIC
-        spdlog
+        spdlog::spdlog_header_only
+
 )
 
 target_include_directories(PaleLib
