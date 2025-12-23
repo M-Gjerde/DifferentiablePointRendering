@@ -241,13 +241,13 @@ int main(int argc, char **argv) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.5f, 1.0f));
-        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, -45.0f, 90.0f));
-        bunnyTransformComponent.setScale(glm::vec3(0.3f));
+        bunnyTransformComponent.setPosition(glm::vec3(0.15f, 0.1f, 0.3f));
+        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 4.0f, 0.0f));
+        bunnyTransformComponent.setScale(glm::vec3(1.3f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-                assetIndexer.importPath("meshes/rectangle.obj", Pale::AssetType::Mesh);
+                assetIndexer.importPath("meshes/bunny.ply", Pale::AssetType::Mesh);
 
         auto &bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
@@ -276,7 +276,7 @@ int main(int argc, char **argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e5;
     settings.maxBounces = 3;
-    settings.numForwardPasses = 5;
+    settings.numForwardPasses = 20;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;

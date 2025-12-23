@@ -32,7 +32,7 @@ def rotate_tangent_frame_with_noise(
     tangentNoiseStd: float,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     tu = (1.0, 0.0, 0.0)
-    tv = (0.0, 1.0, 0.0)
+    tv = (0.0, 0.0, 1.0)
 
     if tangentNoiseStd <= 0.0:
         return tu, tv
@@ -142,10 +142,11 @@ def generate_volume_ply(
     stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
     stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    defaultOpacity = 0.3
-    defaultBeta = 0.0
+    defaultOpacity = 0.7
+    defaultBeta = -2.0
     defaultShape = 0.0
-    defaultRGB = [0.8, 0.9, 0.9]
+    defaultRGB = [0.7, 0.7, 0.7]
+    color_noise = 0.5
 
     lines: list[str] = []
     lines.extend(
@@ -189,13 +190,20 @@ def generate_volume_ply(
                 (tu_x, tu_y, tu_z), (tv_x, tv_y, tv_z) = rotate_tangent_frame_with_noise(
                     tangentNoiseStd
                 )
+                
+                
+                
+                r = defaultRGB[0] + random.gauss(0.0, color_noise)
+                g = defaultRGB[1] + random.gauss(0.0, color_noise)
+                b = defaultRGB[2] + random.gauss(0.0, color_noise)
+
 
                 lines.append(
                     f"{x:.6f} {y:.6f} {z:.6f} "
                     f"{tu_x:.6f} {tu_y:.6f} {tu_z:.6f} "
                     f"{tv_x:.6f} {tv_y:.6f} {tv_z:.6f} "
                     f"{scaleValue:.6f} {scaleValue:.6f} "
-                    f"{defaultRGB[0]:.6f} {defaultRGB[1]:.6f} {defaultRGB[2]:.6f} "
+                    f"{r:.6f} {g:.6f} {b:.6f} "
                     f"{defaultOpacity:.6f} {defaultBeta:.6f} {defaultShape:.6f}"
                 )
 
@@ -218,14 +226,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--count", type=int, required=True)
 
     # ✅ DEFAULTS REQUESTED
-    parser.add_argument("--min-x", type=float, default=-0.55)
+    parser.add_argument("--min-x", type=float, default=-0.5)
     parser.add_argument("--max-x", type=float, default=0.5)
-    parser.add_argument("--min-y", type=float, default=-0.3)
-    parser.add_argument("--max-y", type=float, default=0.3)
-    parser.add_argument("--min-z", type=float, default=0.01)
-    parser.add_argument("--max-z", type=float, default=0.7)
+    parser.add_argument("--min-y", type=float, default=-0.5)
+    parser.add_argument("--max-y", type=float, default=0.5)
+    parser.add_argument("--min-z", type=float, default=0.2)
+    parser.add_argument("--max-z", type=float, default=1.2)
 
-    parser.add_argument("--scale", type=float, default=0.05)
+    parser.add_argument("--scale", type=float, default=0.02)
     parser.add_argument("--position-noise-std", type=float, default=0.03)
     parser.add_argument("--tangent-noise-std", type=float, default=15)
     parser.add_argument("--seed", type=int, default=None)
