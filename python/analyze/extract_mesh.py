@@ -136,7 +136,7 @@ def estimate_knn_spacing(pointCloud: o3d.geometry.PointCloud, knn: int) -> float
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reconstruct a mesh from surfel point cloud using Open3D.")
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--opacity-threshold", type=float, default=0.3)
+    parser.add_argument("--opacity-threshold", type=float, default=0.5)
     parser.add_argument("--area-threshold", type=float, default=0.0)
     parser.add_argument("--max-points", type=int, default=0)
 

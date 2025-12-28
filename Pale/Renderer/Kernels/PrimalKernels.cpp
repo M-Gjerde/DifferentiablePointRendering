@@ -335,12 +335,12 @@ namespace Pale {
                         int pixelYFlipped = imageHeight - 1 - pixelY;
                         bool isWatched = false;
 
-                        if (pixelX == 200 && pixelYFlipped == 250) {
-                            //isWatched = true;
+                        if (pixelX == 240 && pixelYFlipped == 250) {
+                            isWatched = true;
                             int debug = 1;
                         }
                         //if (pixelX == 200 && pixelYFlipped == 325) {
-                        if (pixelX == 220 && pixelYFlipped == 250) {
+                        if (pixelX == 260 && pixelYFlipped == 250) {
                             isWatched = true;
                             int debug = 1;
                         }
@@ -392,7 +392,7 @@ namespace Pale {
                                         primaryRay.direction,
                                         scene,
                                         photonMap,
-                                        useOneSidedScatter);
+                                        useOneSidedScatter, true, true, true);
 
                             float3 surfelRadianceBack =
                                     estimateSurfelRadianceFromPhotonMap(
@@ -400,7 +400,7 @@ namespace Pale {
                                         -primaryRay.direction,
                                         scene,
                                         photonMap,
-                                        useOneSidedScatter);
+                                        useOneSidedScatter, true, true, true);
 
 
                             float3 surfelShadedRadiance = surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f;
@@ -413,20 +413,14 @@ namespace Pale {
                             const float oneMinusTotalOpacity = 1.0f - surfelOpacity;
 
                             accumulatedRadianceRGB +=
-                                    transmittanceTau * surfelShadedRadiance * surfelOpacity;
+                                    transmittanceTau * surfelShadedRadiance;
 
                             transmittanceTau *= oneMinusTotalOpacity;
 
 
-                            if (pixelX == 600 && pixelYFlipped == 800) {
-                                isWatched = true;
+
+                            if (isWatched)
                                 int debug = 1;
-                            }
-                            //if (pixelX == 200 && pixelYFlipped == 325) {
-                            if (pixelX == 600 && pixelYFlipped == 795) {
-                                isWatched = true;
-                                int debug = 1;
-                            }
 
                             if (transmittanceTau <= 1e-4f) {
                                 // Almost fully opaque, no need to continue

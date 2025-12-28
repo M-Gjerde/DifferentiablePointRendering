@@ -811,7 +811,8 @@ namespace Pale {
         const DeviceSurfacePhotonMapGrid& photonMap,
         bool readOneSidedRadiance = false,
         bool includeBrdf = true,
-        bool includeCosine = true
+        bool includeCosine = true,
+        bool filterPrimitiveIndex = true
     ) {
         const float perHitRadiusScale = 1.0f;
         // Material (two-sided Lambert by construction; irradiance already includes cos)
@@ -857,7 +858,7 @@ namespace Pale {
                          photonIndex != kInvalidIndex;
                          photonIndex = photonMap.photonNextIndexArray[photonIndex]) {
                         const DevicePhotonSurface photon = photonMap.photons[photonIndex];
-                        if (photon.primitiveIndex != event.primitiveIndex)
+                        if (photon.primitiveIndex != event.primitiveIndex && filterPrimitiveIndex)
                             continue;
                         if (photon.sideSign != travelSideSign && readOneSidedRadiance) continue;
                         // Hemisphere gate: accept only photons from the same side we enter first

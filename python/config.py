@@ -8,7 +8,7 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e5
+    photons: float = 3e6
     bounces: int = 3
     forward_passes: int = 10
     gather_passes: int = 1
@@ -188,14 +188,14 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=1,
+        default=0.0,
         help="",
     )
     parser.add_argument(
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.0001,
+        default=0.0,
         help="",
     )
 
@@ -215,7 +215,7 @@ def parse_args() -> OptimizationConfig:
     factor_scale    = lr_scale * 0.01   # ~scaling_lr / position_lr
     factor_albedo   = lr_scale * 0.1    # ~feature_lr / position_lr
     factor_opacity  = lr_scale * 0.1    # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 0.05  # ~beta_lr / position_lr
+    factor_beta     = lr_scale * 0.01  # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr
