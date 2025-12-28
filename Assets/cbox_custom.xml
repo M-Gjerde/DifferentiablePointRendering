@@ -35,7 +35,7 @@
         <float name="fov" value="70.3077"/>
         <float name="adjoint_source" value="False"/>
         <transform name="to_world">
-            <lookat origin="1,0.5,1" target="0,0.5,1" up="0,0,1"/>
+            <lookat origin="1,0.5,1" target="0,0.1,0.4" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
@@ -59,7 +59,7 @@
         <float name="fov" value="70.3077"/>
         <float name="adjoint_source" value="False"/>
         <transform name="to_world">
-            <lookat origin="-1,0.5,1" target="0,0.5,1" up="0,0,1"/>
+            <lookat origin="-1,0.5,1" target="0,0.1,0.4" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
