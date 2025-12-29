@@ -5,6 +5,7 @@ import argparse
 import math
 import random
 from pathlib import Path
+from typing import Dict, Any
 
 
 def normalize3(x: float, y: float, z: float) -> tuple[float, float, float]:
@@ -142,8 +143,8 @@ def generate_volume_ply(
     stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
     stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    defaultOpacity = 0.7
-    defaultBeta = -0.0
+    defaultOpacity = 0.3
+    defaultBeta = -0.5
     defaultShape = 0.0
     defaultRGB = [0.7, 0.7, 0.7]
     color_noise = 0.2
@@ -217,6 +218,33 @@ def generate_volume_ply(
     )
 
 
+
+PRESETS: Dict[str, Dict[str, Any]] = {
+    "teapot": {
+        "min_x": -0.55,
+        "max_x": 0.55,
+        "min_y": -0.4,
+        "max_y": 0.4,
+        "min_z": 0.1,
+        "max_z": 0.55,
+        "scale": 0.05,
+        "position_noise_std": 0.05,
+        "tangent_noise_std": 90.0,
+    },
+    "bunny": {
+        "min_x": -0.4,
+        "max_x": 0.4,
+        "min_y": -0.35,
+        "max_y": 0.35,
+        "min_z": 0.3,
+        "max_z": 1.2,
+        "scale": 0.02,
+        "position_noise_std": 0.02,
+        "tangent_noise_std": 45.0,
+    },
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fill an axis-aligned volume with default-initialized Gaussian surfel points."
@@ -225,24 +253,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--count", type=int, required=True)
 
-    # ✅ DEFAULTS REQUESTED
-    parser.add_argument("--min-x", type=float, default=-0.5)
-    parser.add_argument("--max-x", type=float, default=0.5)
-    parser.add_argument("--min-y", type=float, default=-0.5)
-    parser.add_argument("--max-y", type=float, default=0.5)
-    parser.add_argument("--min-z", type=float, default=0.1)
-    parser.add_argument("--max-z", type=float, default=0.5)
+    parser.add_argument(
+        "--preset",
+        type=str,
+        choices=PRESETS.keys(),
+        default="teapot",
+        help="Preset that defines default volume and noise parameters",
+    )
 
-    parser.add_argument("--scale", type=float, default=0.02)
-    parser.add_argument("--position-noise-std", type=float, default=0.03)
-    parser.add_argument("--tangent-noise-std", type=float, default=90)
+    parser.add_argument("--min-x", type=float)
+    parser.add_argument("--max-x", type=float)
+    parser.add_argument("--min-y", type=float)
+    parser.add_argument("--max-y", type=float)
+    parser.add_argument("--min-z", type=float)
+    parser.add_argument("--max-z", type=float)
+
+    parser.add_argument("--scale", type=float)
+    parser.add_argument("--position-noise-std", type=float)
+    parser.add_argument("--tangent-noise-std", type=float)
     parser.add_argument("--seed", type=int, default=None)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    apply_preset_defaults(args)
+    return args
+
+
+def apply_preset_defaults(args: argparse.Namespace) -> None:
+    preset_values = PRESETS[args.preset]
+
+    for key, value in preset_values.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
 
 
 def main() -> None:
     args = parse_args()
+
     generate_volume_ply(
         outputPath=args.out,
         minX=args.min_x,

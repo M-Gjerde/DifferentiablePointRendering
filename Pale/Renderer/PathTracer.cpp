@@ -36,7 +36,7 @@ namespace Pale {
                 };
             const float Adiff = bp.diffuseSurfaceArea;
             const float N = static_cast<float>(m_settings.photonsPerLaunch);
-            const float k = 10.0f;
+            const float k = 50.0f;
             const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));
             configurePhotonGrid(sceneAabb, r0);
         }

@@ -912,15 +912,15 @@ def run_optimization(
                     print(
                         f"[Iter {iteration:04d}/{config.iterations}] "
                         f"L2 Sum={total_loss_value:.6e}, "
-                        #f"|trans| = {grad_norm:.3e}, "
-                        #f"|tu| = {grad_tanu:.3e}, "
-                        #f"|tv| = {grad_tanv:.3e}, "
-                        #f"|su,sv| = {grad_scale:.3e}, "
-                        #f"|albedo| = {grad_albedo:.3e}, "
-                        #f"|opacity| = {grad_opacity:.3e}, "
-                        #f"|beta| = {grad_beta:.3e}, "
-                        f"pts = {num_points}, "
-                        f"t = {iteration_time:.3f} s"
+                        f"|trans|={grad_norm:.3e}, "
+                        f"|tu|={grad_tanu:.3e}, "
+                        f"|tv|={grad_tanv:.3e}, "
+                        f"|su,sv|={grad_scale:.3e}, "
+                        f"|albedo|={grad_albedo:.3e}, "
+                        f"|opacity|={grad_opacity:.3e}, "
+                        f"|beta|={grad_beta:.3e}, "
+                        f"pts={num_points}, "
+                        f"t={iteration_time:.3f} s"
                     )
 
                     # Hotkey snapshot: use main camera for the image

@@ -5,7 +5,7 @@ import argparse
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -27,6 +27,33 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--cols", type=int, default=4, help="Number of tile columns.")
     parser.add_argument("--pad", type=int, default=6, help="Padding between tiles (pixels).")
     parser.add_argument("--window-scale", type=float, default=1.0, help="Resize window to scale*mosaic size.")
+
+    # New: camera folder discovery behavior
+    parser.add_argument(
+        "--startup-discovery-seconds",
+        type=float,
+        default=10.0,
+        help="For the first N seconds, poll for new camera folders to appear before starting normal loop.",
+    )
+    parser.add_argument(
+        "--startup-poll-ms",
+        type=int,
+        default=250,
+        help="Polling period during startup discovery.",
+    )
+    parser.add_argument(
+        "--startup-stable-grace-seconds",
+        type=float,
+        default=1.0,
+        help="Consider camera folder set stable if unchanged for this many seconds during startup discovery.",
+    )
+    parser.add_argument(
+        "--runtime-discovery-period-s",
+        type=float,
+        default=2.0,
+        help="During runtime, refresh camera folder list at most this often (seconds).",
+    )
+
     return parser.parse_args()
 
 
@@ -55,6 +82,49 @@ def discover_camera_dirs(run_dir: Path) -> List[Path]:
     return [p for p in sorted(run_dir.iterdir()) if p.is_dir()]
 
 
+def discover_camera_names(run_dir: Path) -> List[str]:
+    return [p.name for p in discover_camera_dirs(run_dir)]
+
+
+def wait_for_stable_camera_dirs(
+    run_dir: Path,
+    timeout_seconds: float,
+    poll_period_ms: int,
+    stable_grace_seconds: float,
+) -> List[str]:
+    """
+    Polls for camera folder creation during startup.
+    Returns the latest observed list of camera names.
+    Stability criterion: folder set unchanged for stable_grace_seconds.
+    Stops early if stable, otherwise returns after timeout.
+    """
+    start_time = time.time()
+    last_change_time = start_time
+
+    last_names: List[str] = []
+    last_set: Set[str] = set()
+
+    poll_period_seconds = max(0.01, poll_period_ms / 1000.0)
+
+    while True:
+        now = time.time()
+        names = discover_camera_names(run_dir)
+        name_set = set(names)
+
+        if name_set != last_set:
+            last_set = name_set
+            last_names = names
+            last_change_time = now
+
+        if (now - last_change_time) >= stable_grace_seconds and last_names:
+            return last_names
+
+        if (now - start_time) >= timeout_seconds:
+            return last_names
+
+        time.sleep(poll_period_seconds)
+
+
 def get_latest_png(render_directory: Path) -> Optional[Path]:
     if not render_directory.exists():
         return None
@@ -68,7 +138,6 @@ def get_latest_png(render_directory: Path) -> Optional[Path]:
         return candidates[-2]
 
     return candidates[-1]
-
 
 
 def get_latest_render_path(run_dir: Path, camera_name: str) -> Optional[Path]:
@@ -145,13 +214,6 @@ def build_mosaic(
     return mosaic
 
 
-def compute_default_view_mode(tile_index: int, cols: int, rows: int) -> str:
-    row_index = tile_index // cols
-    is_bottom_row = (row_index == rows - 1)
-    return "target" if is_bottom_row else "render"
-
-
-
 def main() -> None:
     args = parse_arguments()
     run_dir: Path = args.output_path
@@ -162,6 +224,11 @@ def main() -> None:
     cols: int = max(1, int(args.cols))
     pad: int = max(0, int(args.pad))
     window_scale: float = float(args.window_scale)
+
+    startup_discovery_seconds: float = float(args.startup_discovery_seconds)
+    startup_poll_ms: int = int(args.startup_poll_ms)
+    startup_stable_grace_seconds: float = float(args.startup_stable_grace_seconds)
+    runtime_discovery_period_s: float = max(0.05, float(args.runtime_discovery_period_s))
 
     if not run_dir.exists():
         raise RuntimeError(f"Output path '{run_dir}' does not exist.")
@@ -178,14 +245,50 @@ def main() -> None:
 
     mosaic_w = cols * tile_w + (cols + 1) * pad
     mosaic_h = rows * tile_h + (rows + 1) * pad
-    cv2.resizeWindow(window_title, max(200, int(mosaic_w * window_scale)), max(200, int(mosaic_h * window_scale)))
+    cv2.resizeWindow(
+        window_title,
+        max(200, int(mosaic_w * window_scale)),
+        max(200, int(mosaic_h * window_scale)),
+    )
+
     camera_offset = 0  # index into camera_names
 
-    time.sleep(3)
+    # Startup discovery: allow camera folders to appear for first N seconds (or until stable).
+    camera_names: List[str] = wait_for_stable_camera_dirs(
+        run_dir=run_dir,
+        timeout_seconds=startup_discovery_seconds,
+        poll_period_ms=startup_poll_ms,
+        stable_grace_seconds=startup_stable_grace_seconds,
+    )
+
+    last_discovery_time = time.time()
+
     try:
         while True:
-            camera_dirs = discover_camera_dirs(run_dir)
-            camera_names = [p.name for p in camera_dirs]
+            # Runtime discovery (throttled): refresh camera folder list occasionally.
+            now = time.time()
+            if (now - last_discovery_time) >= runtime_discovery_period_s:
+                new_camera_names = discover_camera_names(run_dir)
+                last_discovery_time = now
+
+                if new_camera_names != camera_names:
+                    camera_names = new_camera_names
+
+                    # Keep camera_offset valid.
+                    if camera_names:
+                        camera_offset %= len(camera_names)
+                    else:
+                        camera_offset = 0
+
+                    # If any selection references a camera that no longer exists, fix it.
+                    if camera_names:
+                        for i in range(tile_count):
+                            if selections[i] is None:
+                                continue
+                            if selections[i].cameraName not in camera_names:
+                                selections[i].cameraName = camera_names[0]
+                    else:
+                        selections = [None] * tile_count
 
             if not camera_names:
                 blank_tiles = [np.zeros((tile_h, tile_w, 3), dtype=np.uint8) for _ in range(tile_count)]
@@ -196,20 +299,17 @@ def main() -> None:
                     break
                 continue
 
-
-            cameras = []
+            # Choose cameras for this page (up to cols unique cameras in the header row logic you had)
+            cameras: List[str] = []
             for i in range(cols):
                 cameras.append(camera_names[(camera_offset + i) % len(camera_names)])
 
             # Initialize any unset tiles with defaults
             for i in range(tile_count):
                 if selections[i] is None:
-                    default_camera = cameras[(i) % len(cameras)]
+                    default_camera = cameras[i % len(cameras)]
                     default_mode = "target" if (i // cols) == (rows - 1) else "render"
-                    selections[i] = TileSelection(
-                        cameraName=default_camera,
-                        viewMode=default_mode
-                    )
+                    selections[i] = TileSelection(cameraName=default_camera, viewMode=default_mode)
 
             tiles: List[np.ndarray] = []
             for i in range(tile_count):
@@ -241,10 +341,6 @@ def main() -> None:
             if key in (ord("q"), 27):
                 break
 
-            # Tile selection:
-            # - 1..9 selects tiles 0..8
-            # - 0 selects tile 9 (10th tile)
-            # For >10 tiles, use arrow keys to move selection.
             if ord("1") <= key <= ord("9"):
                 requested_index = int(chr(key)) - 1
                 if requested_index < tile_count:
@@ -258,7 +354,7 @@ def main() -> None:
             # Page cameras if more cameras than tiles
             if key == ord("n") and len(camera_names) > tile_count:
                 camera_offset = (camera_offset - tile_count) % len(camera_names)
-                selections = [None] * tile_count  # reinitialize tiles
+                selections = [None] * tile_count
                 continue
 
             if key == ord("p") and len(camera_names) > tile_count:
@@ -266,22 +362,20 @@ def main() -> None:
                 selections = [None] * tile_count
                 continue
 
-            # Arrow-key navigation (works for any tile_count)
             if key in (81, 82, 83, 84):  # left, up, right, down in OpenCV waitKey
                 r = active_tile_index // cols
                 c = active_tile_index % cols
-                if key == 81:  # left
+                if key == 81:
                     c = max(0, c - 1)
-                elif key == 83:  # right
+                elif key == 83:
                     c = min(cols - 1, c + 1)
-                elif key == 82:  # up
+                elif key == 82:
                     r = max(0, r - 1)
-                elif key == 84:  # down
+                elif key == 84:
                     r = min(rows - 1, r + 1)
                 active_tile_index = r * cols + c
                 continue
 
-            # Toggle render/target on active tile
             if key == ord("r"):
                 selections[active_tile_index].viewMode = "render"
                 continue
@@ -289,7 +383,6 @@ def main() -> None:
                 selections[active_tile_index].viewMode = "target"
                 continue
 
-            # Cycle camera on active tile
             if key in (ord("["), ord("]")):
                 current_camera = selections[active_tile_index].cameraName
                 if current_camera not in camera_names:
