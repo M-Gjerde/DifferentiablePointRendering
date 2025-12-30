@@ -35,6 +35,10 @@ def main() -> None:
     if config.personal_suffix:
         safe_suffix = config.personal_suffix.strip().replace(" ", "_")
         run_folder_name += f"_{safe_suffix}"
+    # Optional custom suffix
+    if config.personal_prefix:
+        safe_prefix = config.personal_prefix.strip().replace(" ", "_")
+        run_folder_name = f"{safe_prefix}_" + run_folder_name
 
     run_output_dir = base_output_dir / run_folder_name
 

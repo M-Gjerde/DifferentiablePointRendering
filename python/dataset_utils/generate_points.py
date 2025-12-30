@@ -33,7 +33,7 @@ def rotate_tangent_frame_with_noise(
     tangentNoiseStd: float,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     tu = (1.0, 0.0, 0.0)
-    tv = (0.0, 0.0, 1.0)
+    tv = (0.0, 1.0, 0.0)
 
     if tangentNoiseStd <= 0.0:
         return tu, tv
@@ -143,8 +143,8 @@ def generate_volume_ply(
     stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
     stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    defaultOpacity = 0.3
-    defaultBeta = -0.5
+    defaultOpacity = 0.4
+    defaultBeta = -0.0
     defaultShape = 0.0
     defaultRGB = [0.7, 0.7, 0.7]
     color_noise = 0.2
@@ -227,7 +227,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "max_y": 0.4,
         "min_z": 0.1,
         "max_z": 0.55,
-        "scale": 0.05,
+        "scale": 0.01,
         "position_noise_std": 0.05,
         "tangent_noise_std": 90.0,
     },
@@ -241,6 +241,17 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "scale": 0.02,
         "position_noise_std": 0.02,
         "tangent_noise_std": 45.0,
+    },
+    "siggraph": {
+        "min_x": -0.45,
+        "max_x": 0.45,
+        "min_y": -0.45,
+        "max_y": 0.45,
+        "min_z": 0.2,
+        "max_z": 0.6,
+        "scale": 0.008,
+        "position_noise_std": 0.02,
+        "tangent_noise_std": 0.0,
     },
 }
 

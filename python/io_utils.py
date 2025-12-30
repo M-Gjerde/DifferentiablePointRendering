@@ -61,7 +61,7 @@ def load_target_image(path: Path) -> np.ndarray:
     if img.ndim != 3 or img.shape[2] != 3:
         raise RuntimeError(f"Target image must be HxWx3, got shape {img.shape}")
 
-    if img.max() > 1.0 + 1e-4:
+    if img.max() > 1.0:
         img = img / 255.0
 
     return np.ascontiguousarray(img)
