@@ -8,11 +8,11 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e6
+    photons: float = 5e6
     bounces: int = 3
-    forward_passes: int = 10
+    forward_passes: int = 5
     gather_passes: int = 1
-    adjoint_bounces: int = 2
+    adjoint_bounces: int = 1
     adjoint_passes: int = 1
     logging: int = 3  # Spdlog enums
 
@@ -38,6 +38,7 @@ class OptimizationConfig:
     dataset_path: Path
     output_dir: Path
     personal_suffix: str = ""
+    personal_prefix: str = ""
 
     iterations: int = 50000
     learning_rate: float = 1e-2  # base LR (for convenience / default)
@@ -96,6 +97,13 @@ def parse_args() -> OptimizationConfig:
 
     parser.add_argument(
         "--suffix",
+        type=str,
+        default="",
+        help="Optional string appended to the run output folder (e.g. 'no_shadows', 'debug', 'v2').",
+    )
+
+    parser.add_argument(
+        "--prefix",
         type=str,
         default="",
         help="Optional string appended to the run output folder (e.g. 'no_shadows', 'debug', 'v2').",
@@ -215,7 +223,7 @@ def parse_args() -> OptimizationConfig:
     factor_scale    = lr_scale * 0.001   # ~scaling_lr / position_lr
     factor_albedo   = lr_scale * 0.1    # ~feature_lr / position_lr
     factor_opacity  = lr_scale * 0.1    # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 0.1  # ~beta_lr / position_lr
+    factor_beta     = lr_scale * 0.05  # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr
@@ -253,4 +261,5 @@ def parse_args() -> OptimizationConfig:
         save_interval=args.save_interval,
         device=args.device,
         personal_suffix=args.suffix,
+        personal_prefix=args.prefix,
     )

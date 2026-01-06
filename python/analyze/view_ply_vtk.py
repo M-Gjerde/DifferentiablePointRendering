@@ -262,6 +262,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max-ellipses", type=int, default=0)
     parser.add_argument("--disk-resolution", type=int, default=16)
     parser.add_argument("--alpha", type=float, default=0.95)
+    parser.add_argument("--scale", type=float, default=1)
     return parser.parse_args()
 
 
@@ -280,8 +281,8 @@ def main() -> None:
     positions = positions[ellipseMask]
     tangentU = tangentU[ellipseMask]
     tangentV = tangentV[ellipseMask]
-    su = su[ellipseMask] * 0.5
-    sv = sv[ellipseMask] * 0.5
+    su = su[ellipseMask] * args.scale
+    sv = sv[ellipseMask] * args.scale
     colors = colors[ellipseMask]
     opacities = opacities[ellipseMask]
 

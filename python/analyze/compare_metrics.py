@@ -27,7 +27,7 @@ def load_metrics_from_folder(runFolder: Path) -> Tuple[List[int], List[float], L
 
     with metricsFilePath.open("r", newline="") as metricsFile:
         csvReader = csv.DictReader(metricsFile)
-        requiredColumns = {"iteration", "loss_l2", "parameter_mse"}
+        requiredColumns = {"iteration", "loss_l2_window_mean", "parameter_mse"}
         missingColumns = requiredColumns - set(csvReader.fieldnames or [])
         if missingColumns:
             raise ValueError(
@@ -37,7 +37,7 @@ def load_metrics_from_folder(runFolder: Path) -> Tuple[List[int], List[float], L
         for row in csvReader:
             try:
                 iterations.append(int(row["iteration"]))
-                lossValues.append(float(row["loss_l2"]))
+                lossValues.append(float(row["loss_l2_window_mean"]))
                 parameterMseValues.append(float(row["parameter_mse"]))
             except ValueError as valueError:
                 raise ValueError(
@@ -67,23 +67,28 @@ def cap_by_max_iterations(
             cappedValues.append(value)
 
     return cappedIterations, cappedValues
-
 def create_comparison_plot(
     seriesList: List[Dict[str, Any]],
     yLabel: str,
     title: str,
     outputPath: Path,
 ) -> None:
-    """
-    Create a high-resolution comparison plot with visual differentiation
-    for overlapping lines.
-    """
-    # High-resolution figure
-    plt.figure(figsize=(5, 5), dpi=300)
+    # SIGGRAPH-style figure
+    plt.figure(figsize=(6.0, 3.8), dpi=300)
 
-    # Define distinct styles
-    lineStyles = ["-", "--", "-.", ":"]
-    markers = ["o", "s", "D", "^"]
+    # Global style (local, not rcParams-global)
+    plt.rcParams.update({
+        "font.size": 12,
+        "axes.labelsize": 14,
+        "axes.labelweight": "bold",
+        "axes.titlesize": 14,
+        "axes.titleweight": "bold",
+        "legend.fontsize": 14,
+        "xtick.labelsize": 12,
+        "ytick.labelsize": 12,
+    })
+
+    lineStyles = ["-", "--", "-."]
     colorCycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     for i, series in enumerate(seriesList):
@@ -91,24 +96,43 @@ def create_comparison_plot(
             series["iterations"],
             series["values"],
             label=series["label"],
-            linewidth=2.0,
+            linewidth=2.4,
             linestyle=lineStyles[i % len(lineStyles)],
-            marker=markers[i % len(markers)],
-            markersize=2.0,
-            alpha=0.9,
             color=colorCycle[i % len(colorCycle)],
+            alpha=0.95,
         )
 
     plt.xlabel("Iteration")
     plt.ylabel(yLabel)
-    plt.title(title)
-    plt.grid(True, linestyle="--", alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
+    #plt.title(title)
+
+    # Subtle y-grid only (SIGGRAPH typical)
+    plt.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
+    plt.grid(axis="x", visible=False)
+
+    # Compact y-axis
+    ax = plt.gca()
+    ax.margins(y=0.05)
+
+    # Legend: large, clean, no box
+    plt.legend(
+        frameon=False,
+        loc="best",
+        handlelength=2.8,
+    )
+
+    plt.tight_layout(pad=0.6)
 
     outputPath.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(outputPath, dpi=300)
+
+    # Vector-safe font embedding
+    plt.rcParams["pdf.fonttype"] = 42
+    plt.rcParams["ps.fonttype"] = 42
+
+    plt.savefig(outputPath, bbox_inches="tight")
+    plt.show()
     plt.close()
+
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -263,7 +287,7 @@ def main() -> None:
     outputDirectory.mkdir(parents=True, exist_ok=True)
 
     # Loss comparison plot
-    lossPlotPath = outputDirectory / "comparison_loss.png"
+    lossPlotPath = outputDirectory / "comparison_loss.pdf"
     print(f"Saving loss comparison plot to: {lossPlotPath}")
     create_comparison_plot(
         seriesList=seriesLoss,
@@ -271,17 +295,6 @@ def main() -> None:
         title="Loss Comparison",
         outputPath=lossPlotPath,
     )
-
-    # Parameter MSE comparison plot
-    parameterMsePlotPath = outputDirectory / "comparison_parameter_mse.png"
-    print(f"Saving parameter MSE comparison plot to: {parameterMsePlotPath}")
-    create_comparison_plot(
-        seriesList=seriesParamMse,
-        yLabel="Parameter MSE",
-        title="Parameter MSE Comparison",
-        outputPath=parameterMsePlotPath,
-    )
-
     print("Done. Comparison plots generated.")
 
 

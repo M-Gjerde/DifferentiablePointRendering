@@ -114,7 +114,7 @@ plt.bar(
     x - groupSpacingFactor * barWidth,
     anValues,
     width=barWidth,
-    label="Analytic",
+    label="Ours",
     color=analyticColor,
     edgecolor="black",
     linewidth=0.0,
@@ -125,18 +125,19 @@ plt.bar(
     x + groupSpacingFactor * barWidth,
     fdValues,
     width=barWidth,
-    label="Finite Difference",
+    label="FD",
     color=finiteDifferenceColor,
     edgecolor="black",
     linewidth=0.0,
     alpha=0.95,
 )
 
-plt.xticks(x, labels, rotation=0, ha="center")
+plt.xticks(x, labels, rotation=0, ha="center", fontsize=22)
 plt.yscale("symlog", linthresh=1e-6)
-plt.ylabel("Gradient Magnitude")
-plt.title("FD vs Analytic gradients per parameter group")
-plt.legend()
+plt.ylabel("Gradient Value", fontsize=22)
+plt.legend(
+    fontsize=20,
+)
 plt.tight_layout()
 currentYMin, currentYMax = plt.ylim()
 plt.ylim(currentYMin, currentYMax * 1.25)  # ~15% air on top
@@ -145,7 +146,7 @@ outputPath = "finite_difference_plot.pdf"
 
 # Optional: embed fonts (avoids font substitution differences across viewers)
 plt.rcParams["pdf.fonttype"] = 42
-plt.rcParams["ps.fonttype"] = 42
+plt.rcParams["ps.fonttype"] =  42
 
 plt.savefig(outputPath, format="pdf", bbox_inches="tight")
 plt.show()

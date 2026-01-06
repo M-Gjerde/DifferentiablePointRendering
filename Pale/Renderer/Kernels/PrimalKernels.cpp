@@ -431,7 +431,7 @@ namespace Pale {
                         // -----------------------------------------------------------------
                         // 3) Shade terminal mesh (if any) with remaining transmittance
                         // -----------------------------------------------------------------
-                        if (transmittanceTau > 1e-4f && transmitWorldHit.instanceIndex != UINT32_MAX) {
+                        if (transmitWorldHit.instanceIndex != UINT32_MAX) {
                             auto &terminalInstance = scene.instances[transmitWorldHit.instanceIndex];
 
                             const GPUMaterial &material =
@@ -468,6 +468,7 @@ namespace Pale {
                             const float3 meshRadiance =
                                     estimateRadianceFromPhotonMap(
                                         transmitWorldHit, scene, photonMap) * transmittanceTau;
+
                             accumulatedRadianceRGB += meshRadiance;
                         }
                         // -----------------------------------------------------------------

@@ -25,67 +25,6 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
-    <sensor type="perspective" id="DatasetCam_001">
-        <string name="fov_axis" value="y" />
-        <float name="near_clip" value="0.01" />
-        <float name="far_clip" value="100.0" />
-        <float name="focus_distance" value="1000.0" />
-        <float name="fov" value="20.4" />
-        <transform name="to_world">
-            <lookat origin="-2.1786506175994873,3.330687999725342,0.8999999761581421" target="-1.6339880947212313,2.498015959012265,0.7999999322250856" up="0.05474064520945983,-0.08368674699026483,0.9949874321519039" />
-        </transform>
-        <sampler type="independent">
-            <integer name="sample_count" value="128" />
-        </sampler>
-        <film type="hdrfilm">
-            <integer name="width" value="500" />
-            <integer name="height" value="500" />
-            <rfilter type="tent" />
-            <string name="pixel_format" value="rgb" />
-            <string name="component_format" value="float32" />
-        </film>
-    </sensor>
-    <sensor type="perspective" id="DatasetCam_007">
-        <string name="fov_axis" value="y" />
-        <float name="near_clip" value="0.01" />
-        <float name="far_clip" value="100.0" />
-        <float name="focus_distance" value="1000.0" />
-        <float name="fov" value="20.4" />
-        <transform name="to_world">
-            <lookat origin="-2.8732481002807617,-2.7539873123168945,0.8999999761581421" target="-2.1549360575965695,-2.065490526959425,0.8000000467216958" up="0.0721930202546634,0.06919648609729227,0.9949874442113815" />
-        </transform>
-        <sampler type="independent">
-            <integer name="sample_count" value="128" />
-        </sampler>
-        <film type="hdrfilm">
-            <integer name="width" value="500" />
-            <integer name="height" value="500" />
-            <rfilter type="tent" />
-            <string name="pixel_format" value="rgb" />
-            <string name="component_format" value="float32" />
-        </film>
-    </sensor>
-
-    <sensor type="perspective" id="DatasetCam_008">
-        <string name="fov_axis" value="y" />
-        <float name="near_clip" value="0.01" />
-        <float name="far_clip" value="100.0" />
-        <float name="focus_distance" value="1000.0" />
-        <float name="fov" value="20.4" />
-        <transform name="to_world">
-            <lookat origin="0.23330610990524292,-0.205420583486557,4.487903594970703" target="0.1749795835670546,-0.15406544606758843,3.490927834891252" up="-0.7482662916205962,0.6588309512214983,0.07771315549465672" />
-        </transform>
-        <sampler type="independent">
-            <integer name="sample_count" value="128" />
-        </sampler>
-        <film type="hdrfilm">
-            <integer name="width" value="500" />
-            <integer name="height" value="500" />
-            <rfilter type="tent" />
-            <string name="pixel_format" value="rgb" />
-            <string name="component_format" value="float32" />
-        </film>
-    </sensor>
 
     <bsdf type="diffuse" id="gray">
         <rgb name="reflectance" value="0.1,0.1,0.1"/>
@@ -126,7 +65,7 @@
         </bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
-            <rgb name="radiance" value="2.3, 2.3, 2.3"/>
+            <rgb name="radiance" value="1.3, 1.3, 1.3"/>
         </emitter>
     </shape>
 
@@ -142,7 +81,7 @@
         </bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
-            <rgb name="radiance" value="2.3, 2.3, 2.3"/>
+            <rgb name="radiance" value="1.3, 1.3, 1.3"/>
         </emitter>
     </shape>
 
