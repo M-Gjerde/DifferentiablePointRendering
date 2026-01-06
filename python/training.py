@@ -609,6 +609,7 @@ def run_optimization(
                 "parameter_mse",
                 "num_points",
                 "iteration_time_sec",
+                "total_time",
             ]
         )
 
@@ -898,6 +899,7 @@ def run_optimization(
                         parameter_mse,
                         num_points,
                         iteration_time,
+                        total_time,
                     ]
                 )
                 csv_file.flush()

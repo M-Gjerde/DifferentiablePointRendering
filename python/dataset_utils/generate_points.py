@@ -221,7 +221,7 @@ def generate_volume_ply(
 
 PRESETS: Dict[str, Dict[str, Any]] = {
     "teapot": {
-        "min_x": -0.55,
+        "min_x": -0.7,
         "max_x": 0.55,
         "min_y": -0.4,
         "max_y": 0.4,
@@ -242,13 +242,13 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "position_noise_std": 0.02,
         "tangent_noise_std": 45.0,
     },
-    "siggraph": {
-        "min_x": -0.45,
-        "max_x": 0.45,
-        "min_y": -0.45,
-        "max_y": 0.45,
-        "min_z": 0.2,
-        "max_z": 0.6,
+    "dragon": {
+        "min_x": -0.5,
+        "max_x": 0.5,
+        "min_y": -0.5,
+        "max_y": 0.5,
+        "min_z": 0.05,
+        "max_z": 0.75,
         "scale": 0.008,
         "position_noise_std": 0.02,
         "tangent_noise_std": 0.0,

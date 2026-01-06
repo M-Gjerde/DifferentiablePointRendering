@@ -456,7 +456,8 @@ def parse_2dgs_binary_little_endian(
     else:
         scales_uv = np.stack([scale_0, scale_1], axis=1)
 
-    colors01 = np.clip(f_dc.astype(np.float32), 0.0, 1.0)
+    C0 = 0.28209479177387814
+    colors01 = np.clip(f_dc.astype(np.float32) * C0 + 0.5, 0.0, 1.0)
 
     quats_wxyz = rot_wxyz.astype(np.float32)
     quats_wxyz = quats_wxyz / (np.linalg.norm(quats_wxyz, axis=1, keepdims=True) + 1e-12)
@@ -465,7 +466,7 @@ def parse_2dgs_binary_little_endian(
     positions = positions[keep].astype(np.float32)
     colors01 = colors01[keep].astype(np.float32)
     opacities01 = opacities01[keep].astype(np.float32)
-    scales_uv = scales_uv[keep].astype(np.float32) * 0.5
+    scales_uv = scales_uv[keep].astype(np.float32) * 0.7
     quats_wxyz = quats_wxyz[keep].astype(np.float32)
 
     if positions.shape[0] == 0:

@@ -145,7 +145,8 @@ def parse_2dgs_binary_little_endian(
     else:
         scales_uv = np.stack([scale_0, scale_1], axis=1)
 
-    colors01 = np.clip(f_dc.astype(np.float32), 0.0, 1.0)
+    C0 = 0.28209479177387814
+    colors01 = np.clip(f_dc.astype(np.float32) * C0 + 0.5, 0.0, 1.0)
 
     # Quaternion: assume file order is (rot_0..3) = (w,x,y,z)
     quats_wxyz = rot.astype(np.float32)
