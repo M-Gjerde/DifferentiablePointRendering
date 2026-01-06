@@ -8,9 +8,9 @@ from typing import Dict
 
 @dataclass
 class RendererSettingsConfig:
-    photons: float = 1e5
+    photons: float = 1e6
     bounces: int = 3
-    forward_passes: int = 20
+    forward_passes: int = 10
     gather_passes: int = 1
     adjoint_bounces: int = 2
     adjoint_passes: int = 1
@@ -223,7 +223,7 @@ def parse_args() -> OptimizationConfig:
     #factor_scale    = lr_scale * 0  # ~scaling_lr / position_lr
     #factor_albedo   = lr_scale * 0  # ~feature_lr / position_lr
     ##factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
-    #factor_beta     = lr_scale * 0  # ~beta_lr / position_lr
+    factor_beta     = lr_scale * 0  # ~beta_lr / position_lr
 #
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)

@@ -614,6 +614,7 @@ def run_optimization(
 
         #camera_name = camera_ids[0]
         numCameras = len(camera_ids)
+        total_start_time = time.perf_counter()
 
         try:
             for iteration in range(1, config.iterations + 1):
@@ -807,6 +808,7 @@ def run_optimization(
                         betas,
                     )
 
+
                 # --------------------------------------------------------------
                 # 10. Snapshots (per-camera images)
                 # --------------------------------------------------------------
@@ -870,6 +872,7 @@ def run_optimization(
                 num_points = positions.shape[0]
                 iteration_end = time.perf_counter()
                 iteration_time = iteration_end - iteration_start
+                total_time = iteration_end - total_start_time
 
                 current_params_np = {
                     "position": positions.detach().cpu().numpy(),
@@ -920,7 +923,8 @@ def run_optimization(
                         f"|opacity|={grad_opacity:.3e}, "
                         f"|beta|={grad_beta:.3e}, "
                         f"pts={num_points}, "
-                        f"t={iteration_time:.3f} s"
+                        f"t={iteration_time:.3f} s, "
+                        f"t_total={total_time:.1f} s"
                     )
 
                     # Hotkey snapshot: use main camera for the image
@@ -958,8 +962,10 @@ def run_optimization(
                         )
 
         except KeyboardInterrupt:
+            elapsed = time.perf_counter() - total_start_time
             print(
                 f"\nCtrl+C detected at iteration {iteration:04d}. "
+                f"Total elapsed time: {elapsed:.1f} s. "
                 "Stopping optimization loop and saving current result..."
             )
 
@@ -1008,3 +1014,5 @@ def run_optimization(
     print(f"Initial loss (sum over cameras): {initial_loss:.6e}")
     print(f"Final loss   (sum over cameras): {final_loss:.6e}")
     print(f"Outputs saved in: {config.output_dir.resolve()}")
+    total_elapsed = time.perf_counter() - total_start_time
+    print(f"Total optimization wall time: {total_elapsed:.1f} s")

@@ -280,8 +280,8 @@ def main() -> None:
     positions = positions[ellipseMask]
     tangentU = tangentU[ellipseMask]
     tangentV = tangentV[ellipseMask]
-    su = su[ellipseMask] * 1.0
-    sv = sv[ellipseMask] * 1.0
+    su = su[ellipseMask] * 0.5
+    sv = sv[ellipseMask] * 0.5
     colors = colors[ellipseMask]
     opacities = opacities[ellipseMask]
 
@@ -350,7 +350,7 @@ def main() -> None:
 
     renderer = vtk.vtkRenderer()
     renderer.AddActor(actor)
-    renderer.SetBackground(0.08, 0.08, 0.10)
+    renderer.SetBackground(0.2, 0.2, 0.25)
     renderer.SetUseDepthPeeling(True)
 
     renderWindow = vtk.vtkRenderWindow()
