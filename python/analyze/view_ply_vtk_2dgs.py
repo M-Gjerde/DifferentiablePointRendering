@@ -76,26 +76,16 @@ def read_ply_header_and_get_vertex_count_and_format(ply_path: Path) -> Tuple[int
 
     return vertex_count, fmt, header_byte_length
 
-
 def parse_2dgs_binary_little_endian(
     ply_path: Path,
     opacity_threshold: float,
+    z_min = 0.0
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Reads 2DGS point_cloud.ply (binary_little_endian) with:
-      x y z
-      nx ny nz
-      f_dc_0 f_dc_1 f_dc_2
-      f_rest_0..f_rest_44 (ignored)
-      opacity
-      scale_0 scale_1
-      rot_0 rot_1 rot_2 rot_3
-    Returns:
-      positions (N,3) float32
-      colors01  (N,3) float32 in [0,1] (using f_dc as-is, clipped)
-      opacities01 (N,) float32 in [0,1]   (sigmoid if needed? see note below)
-      scales_uv (N,2) float32 (exp if log-scale, see note below)
-      quats_wxyz (N,4) float32
+    ...
+    Filters:
+      - opacity >= opacity_threshold (activated alpha space)
+      - position.z >= z_min
     """
     vertex_count, fmt, header_len = read_ply_header_and_get_vertex_count_and_format(ply_path)
     if fmt != "binary_little_endian":
@@ -116,23 +106,13 @@ def parse_2dgs_binary_little_endian(
     data = np.frombuffer(raw, dtype="<f4").reshape(vertex_count, floats_per_vertex)
 
     positions = data[:, 0:3]
-    normals = data[:, 3:6]  # not used for glyph orientation here (we use quaternion)
     f_dc = data[:, 6:9]
-    # f_rest = data[:, 9:54]  # ignored (45)
     opacity = data[:, 54]
     scale_0 = data[:, 55]
     scale_1 = data[:, 56]
     rot = data[:, 57:61]
 
     # ----- conventions handling -----
-    # Many 3DGS/2DGS pipelines store:
-    #   opacity = logit(alpha)
-    #   scales = log(s)
-    # Some store already-activated values.
-    #
-    # We provide a robust heuristic:
-    # - If opacity has values outside [0,1], treat as logit and sigmoid it.
-    # - If scales are often negative, treat as log and exp it.
     opacity_is_logit = (opacity.min() < -1e-3) or (opacity.max() > 1.0 + 1e-3)
     if opacity_is_logit:
         opacities01 = 1.0 / (1.0 + np.exp(-opacity))
@@ -148,13 +128,14 @@ def parse_2dgs_binary_little_endian(
     C0 = 0.28209479177387814
     colors01 = np.clip(f_dc.astype(np.float32) * C0 + 0.5, 0.0, 1.0)
 
-    # Quaternion: assume file order is (rot_0..3) = (w,x,y,z)
     quats_wxyz = rot.astype(np.float32)
-    quat_norm = np.linalg.norm(quats_wxyz, axis=1, keepdims=True) + 1e-12
-    quats_wxyz = quats_wxyz / quat_norm
+    quats_wxyz /= (np.linalg.norm(quats_wxyz, axis=1, keepdims=True) + 1e-12)
 
-    # Filter by opacity threshold (in activated alpha space)
-    keep = opacities01 >= float(opacity_threshold)
+    # ----- filtering -----
+    opacity_keep = opacities01 >= float(opacity_threshold)
+    z_keep = positions[:, 2] >= float(z_min)
+    keep = opacity_keep & z_keep
+
     positions = positions[keep].astype(np.float32)
     colors01 = colors01[keep].astype(np.float32)
     opacities01 = opacities01[keep].astype(np.float32)
@@ -162,14 +143,19 @@ def parse_2dgs_binary_little_endian(
     quats_wxyz = quats_wxyz[keep].astype(np.float32)
 
     if positions.shape[0] == 0:
-        raise RuntimeError("No points left after opacity filtering. Lower --opacity-threshold.")
+        raise RuntimeError(
+            "No points left after filtering. "
+            "Lower --opacity-threshold or --z-min."
+        )
 
     print(
         f"Loaded {positions.shape[0]} / {vertex_count} points from {ply_path}\n"
         f"Opacity encoding: {'logit->sigmoid' if opacity_is_logit else 'raw'}\n"
-        f"Scale encoding: {'log->exp' if scale_is_log else 'raw'}"
+        f"Scale encoding: {'log->exp' if scale_is_log else 'raw'}\n"
+        f"Z filter: z >= {z_min}"
     )
     return positions, colors01, opacities01, scales_uv, quats_wxyz
+
 
 
 def numpy_rgba_u8(name: str, rgb01: np.ndarray, alpha01: np.ndarray) -> vtk.vtkUnsignedCharArray:

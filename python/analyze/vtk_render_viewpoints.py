@@ -112,15 +112,12 @@ def parse_mitsuba_scene_sensors(xml_path: Path) -> List[ParsedSensor]:
 
 
 def _compute_vtk_view_angle_degrees(sensor: ParsedSensor) -> float:
-    if sensor.fov_axis.lower() == "y":
-        return sensor.fov_degrees
-    if sensor.fov_axis.lower() != "x":
-        return sensor.fov_degrees
 
+    print(sensor.fov_axis.lower())
     aspect = float(sensor.width) / float(sensor.height)
     half_fov_x = math.radians(sensor.fov_degrees) * 0.5
     half_fov_y = math.atan(math.tan(half_fov_x) / max(aspect, 1e-12))
-    return math.degrees(2.0 * half_fov_y)
+    return math.degrees(2.0 * half_fov_y) - 3
 
 
 def apply_sensor_to_vtk_camera(vtk_camera: vtk.vtkCamera, sensor: ParsedSensor) -> None:
@@ -457,12 +454,16 @@ def parse_2dgs_binary_little_endian(
         scales_uv = np.stack([scale_0, scale_1], axis=1)
 
     C0 = 0.28209479177387814
-    colors01 = np.clip(f_dc.astype(np.float32) * C0 + 0.5, 0.0, 1.0)
+    colors01 = np.clip(f_dc.astype(np.float32) * C0 + 0.7, 0.0, 1.0)
 
     quats_wxyz = rot_wxyz.astype(np.float32)
     quats_wxyz = quats_wxyz / (np.linalg.norm(quats_wxyz, axis=1, keepdims=True) + 1e-12)
 
-    keep = opacities01 >= float(opacity_threshold)
+    z_min = 0.23
+    opacity_keep = opacities01 >= float(opacity_threshold)
+    z_keep = positions[:, 2] >= float(z_min)
+    keep = opacity_keep & z_keep
+
     positions = positions[keep].astype(np.float32)
     colors01 = colors01[keep].astype(np.float32)
     opacities01 = opacities01[keep].astype(np.float32)
@@ -701,8 +702,11 @@ def main() -> None:
     for sensor_index, sensor in enumerate(sensors):
         sensor.fov_degrees = sensor.fov_degrees - 7
         render_window.SetSize(int(sensor.width), int(sensor.height))
+        print(sensor)
         apply_sensor_to_vtk_camera(renderer.GetActiveCamera(), sensor)
 
+        renderer.GetActiveCamera().SetExplicitAspectRatio(1.2)
+        renderer.GetActiveCamera().SetUseExplicitAspectRatio(True)
         render_window.Render()
 
         output_path = args.images_dir / f"{sensor_index:03d}_{sensor.sensor_id}.png"
