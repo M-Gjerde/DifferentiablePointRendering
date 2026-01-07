@@ -10,9 +10,9 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 3
-    forward_passes: int = 25
+    forward_passes: int = 15
     gather_passes: int = 1
-    adjoint_bounces: int = 1
+    adjoint_bounces: int = 2
     adjoint_passes: int = 1
     logging: int = 3  # Spdlog enums
 

@@ -136,16 +136,16 @@ def estimate_knn_spacing(pointCloud: o3d.geometry.PointCloud, knn: int) -> float
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reconstruct a mesh from surfel point cloud using Open3D.")
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--opacity-threshold", type=float, default=0.5)
+    parser.add_argument("--opacity-threshold", type=float, default=0.0)
     parser.add_argument("--area-threshold", type=float, default=0.0)
     parser.add_argument("--max-points", type=int, default=0)
 
     parser.add_argument("--method", choices=["poisson", "bpa"], default="poisson")
 
     # Poisson
-    parser.add_argument("--poisson-depth", type=int, default=12)
-    parser.add_argument("--poisson-scale", type=float, default=1.01)
-    parser.add_argument("--poisson-linear-fit", action="store_true", default=False)
+    parser.add_argument("--poisson-depth", type=int, default=15)
+    parser.add_argument("--poisson-scale", type=float, default=1.00)
+    parser.add_argument("--poisson-linear-fit", action="store_true", default=True)
     parser.add_argument("--poisson-density-quantile", type=float, default=0.00,
                         help="Remove low-density vertices: drop bottom q (0..1). Typical 0.01..0.05")
 
@@ -178,6 +178,13 @@ def main() -> None:
     ellipseArea = su * sv
     keepMask = ellipseArea >= float(args.area_threshold)
 
+
+    scale_metric = np.sqrt(np.abs(su * sv))
+    low = np.quantile(scale_metric, 0.01)
+    high = np.quantile(scale_metric, 0.99)
+    keepMask = keepMask & (scale_metric >= low) & (scale_metric <= high)
+
+
     positions = positions[keepMask]
     tangentU = tangentU[keepMask]
     tangentV = tangentV[keepMask]
@@ -195,6 +202,20 @@ def main() -> None:
     pointCloud.points = o3d.utility.Vector3dVector(positions.astype(np.float64))
     pointCloud.colors = o3d.utility.Vector3dVector(colors.astype(np.float64))
     pointCloud.normals = o3d.utility.Vector3dVector(normals.astype(np.float64))
+
+    # 1) Remove obvious outliers (often fixes the giant plane)
+    pointCloud, inlier_indices = pointCloud.remove_statistical_outlier(
+        nb_neighbors=20,
+        std_ratio=2.0,
+    )
+    print(f"Outlier removal: kept {np.asarray(pointCloud.points).shape[0]} / {positions.shape[0]} points")
+
+    # 2) Re-estimate normals from geometry (more stable than tangent cross products)
+    pointCloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.02, max_nn=30))
+
+    # 3) Make normals locally consistent (important for Poisson)
+    pointCloud.orient_normals_consistent_tangent_plane(k=30)
+
 
     if args.save_pointcloud is not None:
         args.save_pointcloud.parent.mkdir(parents=True, exist_ok=True)
