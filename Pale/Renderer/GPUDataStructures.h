@@ -349,6 +349,7 @@ namespace Pale {
         int    sideSign{};       // +1 or -1: hemisphere relative to canonical surfel normal
         GeometryType geometryType{GeometryType::InvalidType};       // +1 or -1: hemisphere relative to canonical surfel normal
         uint32_t primitiveIndex = UINT32_MAX;
+        std::uint32_t isValid = 0;
 
     };
 
@@ -371,7 +372,7 @@ namespace Pale {
         uint32_t *photonNextIndexArray; // [photonCapacity]
 
         // For clarity
-        float gatherRadiusWorld = 0.0f;
+        float gatherRadiusWorld = 0.08f;
         float kappa = 2.0f;
     };
 

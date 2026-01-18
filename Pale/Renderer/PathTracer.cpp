@@ -30,15 +30,27 @@ namespace Pale {
             allocatePhotonMap();
 
             auto topTLAS = bp.topLevelNodes.front();
-            AABB sceneAabb{
-                    {-1, -1, 0},
-                    {1, 1, 2},
-                };
+            AABB sceneAabb = {topTLAS.aabbMin, topTLAS.aabbMax};
+
+            const float3 sceneMin = sceneAabb.minP;
+            const float3 sceneMax = sceneAabb.maxP;
+            const float3 sceneExtent = sceneMax - sceneMin;
+
+            Log::PA_INFO(
+                "Scene AABB min = ({:.6f}, {:.6f}, {:.6f}), "
+                "max = ({:.6f}, {:.6f}, {:.6f}), "
+                "extent = ({:.6f}, {:.6f}, {:.6f})",
+                sceneMin.x(), sceneMin.y(), sceneMin.z(),
+                sceneMax.x(), sceneMax.y(), sceneMax.z(),
+                sceneExtent.x(), sceneExtent.y(), sceneExtent.z()
+            );
+
             const float Adiff = bp.diffuseSurfaceArea;
             const float N = static_cast<float>(m_settings.photonsPerLaunch);
             const float k = 10.0f;
             const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));
-            configurePhotonGrid(sceneAabb, r0);
+
+            configurePhotonGrid(sceneAabb);
         }
     }
 
@@ -149,23 +161,32 @@ namespace Pale {
         m_intermediates.map.photonCountDevicePtr = nullptr;
     }
 
-    void PathTracer::configurePhotonGrid(const AABB &sceneAabb, float gatherRadiusWorld) {
-        static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
+    void PathTracer::configurePhotonGrid(const AABB& sceneAabb)
+    {
+        auto& grid = m_intermediates.map;
+        grid.gatherRadiusWorld = 0.08;
+        const float gatherRadiusWorld = grid.gatherRadiusWorld; // your chosen r
+        const float cellSizeWorld = 0.5f * gatherRadiusWorld;   // h = r/2 (recommended)
 
-        auto &grid = m_intermediates.map;
         grid.gatherRadiusWorld = gatherRadiusWorld;
-        grid.cellSizeWorld = float3{gatherRadiusWorld, gatherRadiusWorld, gatherRadiusWorld};
+        grid.cellSizeWorld = float3{cellSizeWorld, cellSizeWorld, cellSizeWorld};
 
         const float3 pad = float3{gatherRadiusWorld, gatherRadiusWorld, gatherRadiusWorld};
         grid.gridOriginWorld = sceneAabb.minP - pad;
         const float3 gridMax = sceneAabb.maxP + pad;
 
         const float3 extent = gridMax - grid.gridOriginWorld;
-        const auto cells = [&](float e, float s) { return static_cast<int>(sycl::ceil(e / sycl::fmax(s, 1e-6f))); };
+
+        auto cell_count = [](float extent_axis, float cell_size) -> std::int32_t
+        {
+            const float safe_cell_size = sycl::fmax(cell_size, 1e-6f);
+            return static_cast<std::int32_t>(sycl::ceil(extent_axis / safe_cell_size));
+        };
+
         grid.gridResolution = sycl::int3{
-            cells(extent.x(), grid.cellSizeWorld.x()),
-            cells(extent.y(), grid.cellSizeWorld.y()),
-            cells(extent.z(), grid.cellSizeWorld.z())
+            cell_count(extent.x(), cellSizeWorld),
+            cell_count(extent.y(), cellSizeWorld),
+            cell_count(extent.z(), cellSizeWorld)
         };
 
         const std::uint64_t nx = static_cast<std::uint64_t>(grid.gridResolution.x());
@@ -185,14 +206,19 @@ namespace Pale {
         grid.photonNextIndexArray = sycl::malloc_device<std::uint32_t>(grid.photonCapacity, m_queue);
         Log::PA_TRACE("Allocated photonNextIndexArray: {}", Utils::formatBytes(sizePhotonNextIndexArrayBytes));
 
-        std::vector<uint32_t> zeroInitHost(grid.totalCellCount, 0);
+        static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
+        std::vector<uint32_t> zeroInitHost(grid.totalCellCount, kInvalidIndex);
         m_queue.memcpy(grid.cellHeadIndexArray, zeroInitHost.data(), sizeCellHeadIndexArrayBytes).wait();
+
+        std::vector<std::uint32_t> init_next(grid.photonCapacity, kInvalidIndex);
+        m_queue.memcpy(grid.photonNextIndexArray, init_next.data(), sizePhotonNextIndexArrayBytes).wait();
+
 
         // Optional: report grid-side total as part of photon map footprint
         std::size_t photonGridArraysTotalBytes =
                 sizeCellHeadIndexArrayBytes + sizePhotonNextIndexArrayBytes;
         Log::PA_INFO("Photon grid arrays total: {}", Utils::formatBytes(photonGridArraysTotalBytes));
-        Log::PA_INFO("Photon grid radius: {}", gatherRadiusWorld);
+        Log::PA_INFO("Photon grid radius: {}", grid.gatherRadiusWorld);
     }
 
 
