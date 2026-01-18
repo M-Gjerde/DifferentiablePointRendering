@@ -115,7 +115,7 @@ namespace Pale::rng {
 } // namespace pale::rng
 
 namespace Pale {
-    SYCL_EXTERNAL inline float3 safeInvDir(const float3& dir) {
+    SYCL_EXTERNAL inline float3 safeInvDir(const float3 &dir) {
         constexpr float EPS = 1e-6f; // treat anything smaller as “zero”
         constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
         float3 inv;
@@ -125,11 +125,11 @@ namespace Pale {
         return inv;
     }
 
-    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray& ray,
-                                                const TLASNode& node,
-                                                const float3& invDir,
+    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray &ray,
+                                                const TLASNode &node,
+                                                const float3 &invDir,
                                                 float tMaxLimit,
-                                                float& tEntry) {
+                                                float &tEntry) {
         float3 t0 = (node.aabbMin - ray.origin) * invDir;
         float3 t1 = (node.aabbMax - ray.origin) * invDir;
 
@@ -158,11 +158,11 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray& ray,
-                                                const BVHNode& node,
-                                                const float3& invDir,
+    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray &ray,
+                                                const BVHNode &node,
+                                                const float3 &invDir,
                                                 float tMaxLimit,
-                                                float& tEntry) {
+                                                float &tEntry) {
         float3 t0 = (node.aabbMin - ray.origin) * invDir;
         float3 t1 = (node.aabbMax - ray.origin) * invDir;
 
@@ -192,7 +192,7 @@ namespace Pale {
     }
 
     //──────────────── world → object and back ────────────────────────────────
-    SYCL_EXTERNAL inline Ray toObjectSpace(const Ray& rayW, const Transform& xf) {
+    SYCL_EXTERNAL inline Ray toObjectSpace(const Ray &rayW, const Transform &xf) {
         Ray r;
         /* 1.  Transform origin – w = 1                                      */
         float4 hO = xf.worldToObject * float4{rayW.origin, 1.f};
@@ -205,27 +205,27 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline float3 transformPoint(const float4x4& tf, const float3& p, float w = 1.0f) {
+    SYCL_EXTERNAL inline float3 transformPoint(const float4x4 &tf, const float3 &p, float w = 1.0f) {
         const float4 v = {p, w};
         float4 result = tf * v;
         float invW = 1.f / result.w();
         return float3{result.x() * invW, result.y() * invW, result.z() * invW};
     }
 
-    SYCL_EXTERNAL inline float3 transformDirection(const float4x4& tf, const float3& dir) {
+    SYCL_EXTERNAL inline float3 transformDirection(const float4x4 &tf, const float3 &dir) {
         const float4 v = {dir, 0.f};
         float4 r = tf * v;
         return normalize(float3{r.x(), r.y(), r.z()});
     }
 
-    SYCL_EXTERNAL inline float3 toWorldPoint(const float3& pO, const Transform& xf) {
+    SYCL_EXTERNAL inline float3 toWorldPoint(const float3 &pO, const Transform &xf) {
         float4 hp = xf.objectToWorld * float4{pO, 1.f};
         return float3{hp.x(), hp.y(), hp.z()} / hp.w();
     }
 
-    SYCL_EXTERNAL inline bool intersectTriangle(const Ray& ray, const float3 v0, const float3 v1, const float3 v2,
-                                                float& outT, float& outU,
-                                                float& outV, float tMin) {
+    SYCL_EXTERNAL inline bool intersectTriangle(const Ray &ray, const float3 v0, const float3 v1, const float3 v2,
+                                                float &outT, float &outU,
+                                                float &outV, float tMin) {
         const float3 e1 = v1 - v0;
         const float3 e2 = v2 - v0;
 
@@ -254,7 +254,7 @@ namespace Pale {
         return true;
     }
 
-    inline float3 buildTangentFrisvad(const float3& unitNormal) {
+    inline float3 buildTangentFrisvad(const float3 &unitNormal) {
         // Frisvad 2012: "Building an Orthonormal Basis, Revisited"
         // Handles all normals without branching issues.
         const float sign = std::copysign(1.0f, unitNormal.z());
@@ -270,84 +270,133 @@ namespace Pale {
     }
 
 
-    inline void buildOrthonormalBasis(const float3& unitNormal, float3& tangent, float3& bitangent) {
+    inline void buildOrthonormalBasis(const float3 &unitNormal, float3 &tangent, float3 &bitangent) {
         tangent = buildTangentFrisvad(unitNormal);
         bitangent = cross(unitNormal, tangent);
     }
 
-
-    SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
-        const GPUSceneBuffers& scene, // holds lights, triangles, vertices, transforms
-        rng::Xorshift128& rng128) {
-        AreaLightSample s{};
-        s.valid = false;
-
-        if (scene.lightCount == 0) return s;
-
-        // 1) pick a light uniformly
-        const float uL = rng128.nextFloat();
-        const uint32_t lightIndex = sycl::min((uint32_t)(uL * scene.lightCount), scene.lightCount - 1);
-        const GPULightRecord light = scene.lights[lightIndex];
-        s.pdfSelectLight = 1.0f / (float)scene.lightCount;
-
-        if (light.triangleCount == 0) return s;
-
-        // 2) pick a triangle uniformly within the light
-        const float uT = rng128.nextFloat();
-        const uint32_t triRel = sycl::min((uint32_t)(uT * light.triangleCount), light.triangleCount - 1);
-        const GPUEmissiveTriangle emTri = scene.emissiveTriangles[light.triangleOffset + triRel];
-
-        const Triangle tri = scene.triangles[emTri.globalTriangleIndex];
-        const Vertex v0 = scene.vertices[tri.v0];
-        const Vertex v1 = scene.vertices[tri.v1];
-        const Vertex v2 = scene.vertices[tri.v2];
-
-        // 3) triangle area and barycentric sample in object space
-        const float3 p0 = v0.pos, p1 = v1.pos, p2 = v2.pos;
-        const float3 e0 = p1 - p0, e1 = p2 - p0;
-        const float3 nObjU = float3{
-            e0.y() * e1.z() - e0.z() * e1.y(),
-            e0.z() * e1.x() - e0.x() * e1.z(),
-            e0.x() * e1.y() - e0.y() * e1.x()
-        };
-        const float triArea = 0.5f * sycl::sqrt(dot(nObjU, nObjU));
-        if (triArea <= 0.f) return s;
-
-        const float u1 = rng128.nextFloat();
-        const float u2 = rng128.nextFloat();
-        const float su1 = sycl::sqrt(u1);
-        const float b1 = 1.f - su1;
-        const float b2 = u2 * su1;
-        const float b0 = 1.f - b1 - b2;
-        const float3 xObj = p0 * b0 + p1 * b1 + p2 * b2;
-
-        // 4) transform to world and compute world normal via world vertices
-        const Transform xf = scene.transforms[light.transformIndex];
-        const float3 worldP0 = toWorldPoint(p0, xf);
-        const float3 worldP1 = toWorldPoint(p1, xf);
-        const float3 worldP2 = toWorldPoint(p2, xf);
-
-        const float3 worldE0 = worldP1 - worldP0;
-        const float3 worldE1 = worldP2 - worldP0;
-        float3 worldN = float3{
-            worldE0.y() * worldE1.z() - worldE0.z() * worldE1.y(),
-            worldE0.z() * worldE1.x() - worldE0.x() * worldE1.z(),
-            worldE0.x() * worldE1.y() - worldE0.y() * worldE1.x()
-        };
-        const float worldArea = 0.5f * sycl::sqrt(dot(worldN, worldN));
-        if (worldArea <= 0.f) return s;
-        worldN = normalize(worldN);
-
-        s.positionW = toWorldPoint(xObj, xf);
-        s.normalW = worldN;
-        s.emittedRadianceRGB = light.emissionRgb;
-        s.pdfArea = (1.0f / (float)light.triangleCount) * (1.0f / triArea); // area-domain pdf
-        s.valid = true;
-        return s;
+    SYCL_EXTERNAL inline uint32_t sampleTriangleByCdf(
+        const GPUEmissiveTriangle* emissive_triangles,
+        uint32_t offset,
+        uint32_t count,
+        float u)
+    {
+        // binary search first cdf >= u
+        uint32_t lo = 0, hi = count - 1;
+        while (lo < hi) {
+            uint32_t mid = (lo + hi) >> 1;
+            float c = emissive_triangles[offset + mid].cdf;
+            if (u <= c) hi = mid;
+            else lo = mid + 1;
+        }
+        return lo;
     }
 
 
-    SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3& unitNormal, rng::Xorshift128& rng, float& pdf) {
+SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
+    const GPUSceneBuffers& scene,
+    rng::Xorshift128& rng128)
+{
+    AreaLightSample sample{};
+    sample.valid = false;
+
+    if (scene.lightCount == 0)
+        return sample;
+
+    // 1) Pick a light (keep uniform for now; later you can switch to flux-weighted)
+    const float u_light = rng128.nextFloat();
+    const uint32_t light_index =
+        sycl::min(static_cast<uint32_t>(u_light * scene.lightCount), scene.lightCount - 1u);
+
+    const GPULightRecord light = scene.lights[light_index];
+    sample.pdfSelectLight = 1.0f / static_cast<float>(scene.lightCount);
+
+    if (light.triangleCount == 0u || light.totalAreaWorld <= 0.0f)
+        return sample;
+
+    // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
+    const float u_tri = rng128.nextFloat();
+
+    uint32_t tri_rel = 0u;
+    {
+        // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
+        uint32_t lo = 0u;
+        uint32_t hi = light.triangleCount - 1u;
+
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) >> 1u;
+            const float cdf_mid = scene.emissiveTriangles[light.triangleOffset + mid].cdf;
+            if (u_tri <= cdf_mid) {
+                hi = mid;
+            } else {
+                lo = mid + 1u;
+            }
+        }
+        tri_rel = lo;
+    }
+
+    const GPUEmissiveTriangle emissive_triangle =
+        scene.emissiveTriangles[light.triangleOffset + tri_rel];
+
+    const Triangle tri = scene.triangles[emissive_triangle.globalTriangleIndex];
+    const Vertex v0 = scene.vertices[tri.v0];
+    const Vertex v1 = scene.vertices[tri.v1];
+    const Vertex v2 = scene.vertices[tri.v2];
+
+    // 3) Uniform barycentric sample on the triangle in OBJECT space
+    const float u1 = rng128.nextFloat();
+    const float u2 = rng128.nextFloat();
+    const float sqrt_u1 = sycl::sqrt(u1);
+
+    const float b0 = 1.0f - sqrt_u1;
+    const float b1 = sqrt_u1 * (1.0f - u2);
+    const float b2 = sqrt_u1 * u2;
+
+    const float3 p0_obj = v0.pos;
+    const float3 p1_obj = v1.pos;
+    const float3 p2_obj = v2.pos;
+    const float3 x_obj = p0_obj * b0 + p1_obj * b1 + p2_obj * b2;
+
+    // 4) Transform to WORLD and compute WORLD normal using WORLD vertices
+    const Transform transform = scene.transforms[light.transformIndex];
+
+    const float3 p0_world = toWorldPoint(p0_obj, transform);
+    const float3 p1_world = toWorldPoint(p1_obj, transform);
+    const float3 p2_world = toWorldPoint(p2_obj, transform);
+
+    const float3 e0_world = p1_world - p0_world;
+    const float3 e1_world = p2_world - p0_world;
+
+    float3 normal_world = float3{
+        e0_world.y() * e1_world.z() - e0_world.z() * e1_world.y(),
+        e0_world.z() * e1_world.x() - e0_world.x() * e1_world.z(),
+        e0_world.x() * e1_world.y() - e0_world.y() * e1_world.x()
+    };
+
+    const float normal_length = sycl::sqrt(dot(normal_world, normal_world));
+    if (normal_length <= 0.0f)
+        return sample;
+
+    normal_world = normal_world / normal_length;
+
+    // 5) Fill sample
+    sample.positionW = toWorldPoint(x_obj, transform);
+    sample.normalW = normal_world;
+
+    // Must be RADIANCE (Le) already
+    sample.Le = light.power * light.color / (M_PIf * light.totalAreaWorld);
+
+    // Because we sampled proportional to triangle area, then uniformly on that triangle:
+    // pdfArea is uniform over the whole emitter area.
+    sample.pdfArea = 1.0f / light.totalAreaWorld;
+
+    sample.valid = true;
+    return sample;
+}
+
+
+
+    SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3 &unitNormal, rng::Xorshift128 &rng, float &pdf) {
         // 1) Draw two uniform variates
         const float uniformSample1 = rng.nextFloat(); // in [0,1)
         const float uniformSample2 = rng.nextFloat(); // in [0,1)
@@ -365,7 +414,7 @@ namespace Pale {
 
         // 4) Transform to world
         const float3 sampledDirectionW =
-            tangent * localX + bitangent * localY + unitNormal * localZ;
+                tangent * localX + bitangent * localY + unitNormal * localZ;
 
         // 5) Normalize for safety and compute pdf = cosTheta / pi
         const float3 unitSampledDirectionW = normalize(sampledDirectionW);
@@ -375,25 +424,24 @@ namespace Pale {
         return unitSampledDirectionW;
     }
 
-    inline void buildIntersectionNormal(const GPUSceneBuffers& scene, WorldHit& worldHit) {
+    inline void buildIntersectionNormal(const GPUSceneBuffers &scene, WorldHit &worldHit) {
         if (!worldHit.hit)
             return;
-        InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
+        InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
         if (instance.geometryType == GeometryType::Mesh) {
-            const Triangle& triangle = scene.triangles[worldHit.primitiveIndex];
-            const Transform& objectWorldTransform = scene.transforms[instance.transformIndex];
-            const Vertex& vertex0 = scene.vertices[triangle.v0];
-            const Vertex& vertex1 = scene.vertices[triangle.v1];
-            const Vertex& vertex2 = scene.vertices[triangle.v2];
+            const Triangle &triangle = scene.triangles[worldHit.primitiveIndex];
+            const Transform &objectWorldTransform = scene.transforms[instance.transformIndex];
+            const Vertex &vertex0 = scene.vertices[triangle.v0];
+            const Vertex &vertex1 = scene.vertices[triangle.v1];
+            const Vertex &vertex2 = scene.vertices[triangle.v2];
             // Canonical geometric normal (no face-forwarding)
             const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
             const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
             const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
             const float3 canonicalNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
             worldHit.geometricNormalW = canonicalNormalW;
-        }
-        else if (instance.geometryType == GeometryType::PointCloud) {
-            const auto& surfel = scene.points[worldHit.primitiveIndex];
+        } else if (instance.geometryType == GeometryType::PointCloud) {
+            const auto &surfel = scene.points[worldHit.primitiveIndex];
             // Canonical surfel normal from tangents (no face-forwarding)
             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
             worldHit.geometricNormalW = canonicalNormalW;
@@ -409,7 +457,7 @@ namespace Pale {
         return uv;
     }
 
-    inline float2 phiInverse(const float3& hitWorld, const Point& surfel) {
+    inline float2 phiInverse(const float3 &hitWorld, const Point &surfel) {
         float3 r = hitWorld - surfel.position;
         float2 uv;
         uv[0] = dot(surfel.tanU, r) / surfel.scale.x();
@@ -418,9 +466,9 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline void sampleUniformSphere(
-        rng::Xorshift128& randomNumberGenerator,
-        float3& outDirection,
-        float& outPdf
+        rng::Xorshift128 &randomNumberGenerator,
+        float3 &outDirection,
+        float &outPdf
     ) {
         const float uniformRandomOne = randomNumberGenerator.nextFloat();
         const float uniformRandomTwo = randomNumberGenerator.nextFloat();
@@ -438,8 +486,8 @@ namespace Pale {
 
 
     SYCL_EXTERNAL inline void sampleCosineHemisphere(
-        rng::Xorshift128& rng, const float3& n,
-        float3& outDir, float& outPdf) {
+        rng::Xorshift128 &rng, const float3 &n,
+        float3 &outDir, float &outPdf) {
         float u1 = rng.nextFloat();
         float u2 = rng.nextFloat();
 
@@ -460,7 +508,7 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float* outOpacity, float kSigmas = 2.2f) {
+    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float *outOpacity, float kSigmas = 2.2f) {
         const float r2 = u * u + v * v;
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 > kSigmas * kSigmas)
@@ -470,7 +518,7 @@ namespace Pale {
         return true;
     }
 
-    SYCL_EXTERNAL static bool opacityBeta(float u, float v, const Point& surfel, float* outOpacity) {
+    SYCL_EXTERNAL static bool opacityBeta(float u, float v, const Point &surfel, float *outOpacity) {
         const float r2 = u * u + v * v;
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 >= 1.0)
@@ -484,14 +532,13 @@ namespace Pale {
     }
 
 
-
-    SYCL_EXTERNAL static bool intersectSurfel(const Ray& rayObject,
-                                              const Point& surfel,
+    SYCL_EXTERNAL static bool intersectSurfel(const Ray &rayObject,
+                                              const Point &surfel,
                                               float tMin, float tMax,
-                                              float& outTHit,
-                                              float3& outHitLocal,
-                                              float& outOpacity,
-                                              const float& eps = 1e-6f) {
+                                              float &outTHit,
+                                              float3 &outHitLocal,
+                                              float &outOpacity,
+                                              const float &eps = 1e-6f) {
         // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
@@ -519,8 +566,8 @@ namespace Pale {
         return true;
     }
 
-    SYCL_EXTERNAL inline float2 computeSurfelUVAtTHit(const Ray& rayObject,
-                                                      const Point& surfel,
+    SYCL_EXTERNAL inline float2 computeSurfelUVAtTHit(const Ray &rayObject,
+                                                      const Point &surfel,
                                                       float tHit) {
         const float3 unitTangentU = normalize(surfel.tanU);
         const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));
@@ -538,11 +585,11 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline bool worldRayToPixel(const CameraGPU& camera,
-                                              const float3& rayOriginWorld,
-                                              const float3& rayDirectionWorld,
-                                              uint32_t& outPixelX,
-                                              uint32_t& outPixelY) {
+    SYCL_EXTERNAL inline bool worldRayToPixel(const CameraGPU &camera,
+                                              const float3 &rayOriginWorld,
+                                              const float3 &rayDirectionWorld,
+                                              uint32_t &outPixelX,
+                                              uint32_t &outPixelY) {
         // 1) World -> view
         const float3 rayOriginView = transformPoint(camera.view, rayOriginWorld, 1.f);
         const float3 rayDirectionView = transformDirection(camera.view, rayDirectionWorld);
@@ -578,7 +625,7 @@ namespace Pale {
     }
 
     // Generate a primary ray from pixel (uses inverse view-projection on the camera)
-    inline Ray makePrimaryRayFromPixel(const CameraGPU& camera,
+    inline Ray makePrimaryRayFromPixel(const CameraGPU &camera,
                                        std::uint32_t pixelX,
                                        std::uint32_t pixelY) {
         // 1) Pixel center → NDC in [-1,1]^2
@@ -612,7 +659,7 @@ namespace Pale {
     }
 
 
-    inline Ray makePrimaryRayFromPixelJittered(const CameraGPU& cam,
+    inline Ray makePrimaryRayFromPixelJittered(const CameraGPU &cam,
                                                float px, float py, float jx, float jy) {
         const float sx = (px + 0.5f + jx) / float(cam.width);
         float sy = (py + 0.5f + jy) / float(cam.height);
@@ -626,63 +673,52 @@ namespace Pale {
         return Ray{origin, normalize(worldFar - origin), cam.forward};
     }
 
-    // Photon map lookup helper.
-    // Assumes: float3 has + and * operators, dot(), and component-wise ops.
-    // Assumes: worldToCell(), linearCellIndex(), and kInvalidIndex are available.
 
-    inline bool isInsideGrid(const sycl::int3& cell, const sycl::int3& resolution) {
+    inline bool isInsideGrid(const sycl::int3 &cell, const sycl::int3 &resolution) {
         return (cell.x() >= 0 && cell.y() >= 0 && cell.z() >= 0 &&
-            cell.x() < resolution.x() &&
-            cell.y() < resolution.y() &&
-            cell.z() < resolution.z());
+                cell.x() < resolution.x() &&
+                cell.y() < resolution.y() &&
+                cell.z() < resolution.z());
     }
 
-    //
-    static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
-    inline sycl::int3 worldToCell(const float3& worldPosition,
-                                  const DeviceSurfacePhotonMapGrid& grid) {
-        const float3 safeCellSize = max(grid.cellSizeWorld, float3{1e-6f, 1e-6f, 1e-6f});
-        const float3 relative = worldPosition - grid.gridOriginWorld;
-        const float3 r = float3{
-            relative.x() / safeCellSize.x(),
-            relative.y() / safeCellSize.y(),
-            relative.z() / safeCellSize.z()
+    inline sycl::int3 worldToCell(const float3 &positionWorld, const DeviceSurfacePhotonMapGrid &grid) {
+        const float3 local = (positionWorld - grid.gridOriginWorld);
+        const float3 cellFloat = float3{
+            local.x() / grid.cellSizeWorld.x(),
+            local.y() / grid.cellSizeWorld.y(),
+            local.z() / grid.cellSizeWorld.z()
         };
 
-        return sycl::int3{
-            static_cast<int>(sycl::floor(r.x())),
-            static_cast<int>(sycl::floor(r.y())),
-            static_cast<int>(sycl::floor(r.z()))
+        sycl::int3 cell = sycl::int3{
+            static_cast<int>(sycl::floor(cellFloat.x())),
+            static_cast<int>(sycl::floor(cellFloat.y())),
+            static_cast<int>(sycl::floor(cellFloat.z()))
         };
+
+        // Clamp
+        cell.x() = sycl::clamp(cell.x(), 0, grid.gridResolution.x() - 1);
+        cell.y() = sycl::clamp(cell.y(), 0, grid.gridResolution.y() - 1);
+        cell.z() = sycl::clamp(cell.z(), 0, grid.gridResolution.z() - 1);
+        return cell;
     }
 
-    inline std::uint32_t linearCellIndex(const sycl::int3& cell,
-                                         const sycl::int3& resolution) {
-        const int ix = sycl::clamp(static_cast<int>(cell.x()), 0, static_cast<int>(resolution.x()) - 1);
-        const int iy = sycl::clamp(static_cast<int>(cell.y()), 0, static_cast<int>(resolution.y()) - 1);
-        const int iz = sycl::clamp(static_cast<int>(cell.z()), 0, static_cast<int>(resolution.z()) - 1);
-
-        const auto nx = static_cast<std::uint64_t>(resolution.x());
-        const auto ny = static_cast<std::uint64_t>(resolution.y());
-        const auto lix = static_cast<std::uint64_t>(ix);
-        const auto liy = static_cast<std::uint64_t>(iy);
-        const auto liz = static_cast<std::uint64_t>(iz);
-
-        const std::uint64_t linear =
-            liz * nx * ny + liy * nx + lix; // fits if totalCellCount < 2^32
-
-        return static_cast<std::uint32_t>(linear);
+    inline std::uint32_t linearCellIndex(const sycl::int3 &cell, const sycl::int3 &gridResolution) {
+        // x fastest
+        return static_cast<std::uint32_t>(
+            (cell.z() * gridResolution.y() + cell.y()) * gridResolution.x() + cell.x()
+        );
     }
 
-    inline float squaredDistanceToCellBounds(const float3& point,
-                                             const sycl::int3& cell,
-                                             const DeviceSurfacePhotonMapGrid& grid) {
+
+    inline float squaredDistanceToCellBounds(const float3 &point,
+                                             const sycl::int3 &cell,
+                                             const DeviceSurfacePhotonMapGrid &grid) {
         const float3 cellMin = grid.gridOriginWorld + float3{
-            static_cast<float>(cell.x()) * grid.cellSizeWorld.x(),
-            static_cast<float>(cell.y()) * grid.cellSizeWorld.y(),
-            static_cast<float>(cell.z()) * grid.cellSizeWorld.z()
-        };
+                                   static_cast<float>(cell.x()) * grid.cellSizeWorld.x(),
+                                   static_cast<float>(cell.y()) * grid.cellSizeWorld.y(),
+                                   static_cast<float>(cell.z()) * grid.cellSizeWorld.z()
+                               };
         const float3 cellMax = cellMin + grid.cellSizeWorld;
 
         const float dx = sycl::fmax(cellMin.x() - point.x(), point.x() - cellMax.x());
@@ -695,6 +731,79 @@ namespace Pale {
     inline int signNonZero(float x) { return (x >= 0.0f) ? 1 : -1; }
 
 
+    inline sycl::int3 worldToCellClamped(const float3 &positionWorld, const DeviceSurfacePhotonMapGrid &grid) {
+        const float3 local = positionWorld - grid.gridOriginWorld;
+        const float3 cellFloat = local / grid.cellSizeWorld;
+
+        sycl::int3 cell{
+            static_cast<int>(sycl::floor(cellFloat.x())),
+            static_cast<int>(sycl::floor(cellFloat.y())),
+            static_cast<int>(sycl::floor(cellFloat.z()))
+        };
+
+        cell.x() = sycl::clamp(cell.x(), 0, grid.gridResolution.x() - 1);
+        cell.y() = sycl::clamp(cell.y(), 0, grid.gridResolution.y() - 1);
+        cell.z() = sycl::clamp(cell.z(), 0, grid.gridResolution.z() - 1);
+        return cell;
+    }
+
+    inline float3 gatherDiffuseIrradianceAtPoint(
+        const float3 &queryPositionWorld,
+        const DeviceSurfacePhotonMapGrid &grid,
+        int travelSideSign = 0,
+        bool readOneSidedRadiance = false,
+        uint32_t primitiveIndex = UINT32_MAX,
+        bool filterPrimitiveIndex = false) {
+        static constexpr uint32_t kInvalidIndex = 0xFFFFFFFFu;
+
+        const float r = grid.gatherRadiusWorld;
+        const float r2 = r * r;
+        const float invArea = 1.0f / (M_PIf * r2);
+
+        const sycl::int3 minCell = worldToCellClamped(queryPositionWorld - float3{r, r, r}, grid);
+        const sycl::int3 maxCell = worldToCellClamped(queryPositionWorld + float3{r, r, r}, grid);
+
+        float3 flux_sum = float3{0.0f};
+
+        for (int cz = minCell.z(); cz <= maxCell.z(); ++cz)
+            for (int cy = minCell.y(); cy <= maxCell.y(); ++cy)
+                for (int cx = minCell.x(); cx <= maxCell.x(); ++cx)
+                {
+                    const uint32_t cell_id = linearCellIndex(sycl::int3{cx, cy, cz}, grid.gridResolution);
+                    const uint32_t start = grid.cellStart[cell_id];
+                    if (start == kInvalidIndex) continue;
+
+                    const uint32_t end = grid.cellEnd[cell_id];
+                    for (uint32_t j = start; j < end; ++j)
+                    {
+                        const uint32_t photon_index = grid.sortedPhotonIndex[j];
+                        const DevicePhotonSurface ph = grid.photons[photon_index];
+
+                        const float3 d = ph.position - queryPositionWorld;
+                        const float dist2 = dot(d, d);
+                        if (dist2 > r2) continue;
+
+                        flux_sum += ph.power; // must be flux-like
+                    }
+                }
+
+        return flux_sum * invArea; // irradiance estimate
+    }
+
+
+    inline float3 computeLSurfel(const Point& surfel, const float3 &direction, const SplatEvent &splatEvent,
+                                 const DeviceSurfacePhotonMapGrid &photonMap) {
+
+        const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+        int travelSideSign = signNonZero(dot(canonicalNormalW, -direction));
+        const float3 rho = surfel.albedo;
+        const float3 E_front = gatherDiffuseIrradianceAtPoint(splatEvent.hitWorld, photonMap, travelSideSign, true, splatEvent.primitiveIndex, true);
+        const float3 E_back = gatherDiffuseIrradianceAtPoint(splatEvent.hitWorld, photonMap, -travelSideSign, true, splatEvent.primitiveIndex, true);
+        float3 surfelShadedRadiance = (E_front * 0.5f + E_back * 0.5f) * (rho * M_1_PIf);
+        return surfelShadedRadiance;
+    }
+
+    /*
     inline float3 estimateRadianceFromPhotonMap(
         const WorldHit& worldHit,
         const GPUSceneBuffers& scene,
@@ -703,6 +812,7 @@ namespace Pale {
         bool includeCosine = true, // set false if power excludes cos(θ
         float perHitRadiusScale = 1.0f // tune 1–3
     ) {
+
         // 1) Material and direct emissive term
         const InstanceRecord& instanceRecord = scene.instances[worldHit.instanceIndex];
 
@@ -801,6 +911,8 @@ namespace Pale {
         const float3 radianceFromIrradianceRGB = irradianceRGB * lambertBrdfRgb;
 
         return radianceDirectRGB + radianceFromIrradianceRGB;
+
+        return float3{0.0f};
     }
 
 
@@ -814,6 +926,7 @@ namespace Pale {
         bool includeCosine = true,
         bool filterPrimitiveIndex = true
     ) {
+
         const float perHitRadiusScale = 1.0f;
         // Material (two-sided Lambert by construction; irradiance already includes cos)
         const Point surfelPoint = scene.points[event.primitiveIndex];
@@ -891,61 +1004,42 @@ namespace Pale {
             irradianceRgb *= diffuseAlbedoRgb * M_1_PIf;
 
         return irradianceRgb;
+
+        return float3{0.0f};
     }
 
-    inline float3 computeLSurfel(const GPUSceneBuffers& scene, const float3& direction, const SplatEvent& splatEvent,
-                                 const DeviceSurfacePhotonMapGrid& photonMap) {
-        // Shade surfel from photon map (front/back)
-        const bool useOneSidedScatter = true;
-        float3 surfelRadianceFront =
-            estimateSurfelRadianceFromPhotonMap(
-                splatEvent,
-                direction,
-                scene,
-                photonMap,
-                useOneSidedScatter,
-                false);
-
-        float3 surfelRadianceBack =
-            estimateSurfelRadianceFromPhotonMap(
-                splatEvent,
-                -direction,
-                scene,
-                photonMap,
-                useOneSidedScatter,
-                false);
-
-        return (surfelRadianceFront * 0.5f + surfelRadianceBack * 0.5f);
-    }
+        */
 
 
-    inline void atomicAddFloat4ToImage(float4* dst, const float4& v) {
+
+
+    inline void atomicAddFloat4ToImage(float4 *dst, const float4 &v) {
         for (int c = 0; c < 3; ++c) {
             sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                             sycl::memory_scope::device,
-                             sycl::access::address_space::global_space>
-                a(reinterpret_cast<float*>(dst)[c]);
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>
+                    a(reinterpret_cast<float *>(dst)[c]);
             a.fetch_add(v[c]);
         }
         sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                         sycl::memory_scope::device,
-                         sycl::access::address_space::global_space>
-            a(reinterpret_cast<float*>(dst)[3]);
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>
+                a(reinterpret_cast<float *>(dst)[3]);
         a.store(1.0f);
     }
 
-    inline void atomicAddFloatToImage(float4* dst, const float& v) {
+    inline void atomicAddFloatToImage(float4 *dst, const float &v) {
         for (int c = 0; c < 3; ++c) {
             sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                             sycl::memory_scope::device,
-                             sycl::access::address_space::global_space>
-                a(reinterpret_cast<float*>(dst)[c]);
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>
+                    a(reinterpret_cast<float *>(dst)[c]);
             a.fetch_add(v);
         }
         sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                         sycl::memory_scope::device,
-                         sycl::access::address_space::global_space>
-            a(reinterpret_cast<float*>(dst)[3]);
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>
+                a(reinterpret_cast<float *>(dst)[3]);
         a.store(1.0f);
     }
 
@@ -953,59 +1047,59 @@ namespace Pale {
         return surfelCenter + su * tu * u + sv * tv * v;
     }
 
-    inline float3 phiMapping(const Point& surfel, float u, float v) {
+    inline float3 phiMapping(const Point &surfel, float u, float v) {
         return surfel.position + surfel.scale.x() * surfel.tanU * u + surfel.scale.y() * surfel.tanV * v;
     }
 
-    inline float computeLuminanceRec709(const float3& inputRgbLinear) {
+    inline float computeLuminanceRec709(const float3 &inputRgbLinear) {
         const float redWeight = 0.2126f;
         const float greenWeight = 0.7152f;
         const float blueWeight = 0.0722f;
         return redWeight * inputRgbLinear[0]
-            + greenWeight * inputRgbLinear[1]
-            + blueWeight * inputRgbLinear[2];
+               + greenWeight * inputRgbLinear[1]
+               + blueWeight * inputRgbLinear[2];
     }
 
-    inline float luminance(const float3& rgb) {
+    inline float luminance(const float3 &rgb) {
         return computeLuminanceRec709(rgb);
     }
 
-    inline float luminanceGrayscale(const float3& inputRgbLinear) {
+    inline float luminanceGrayscale(const float3 &inputRgbLinear) {
         const float redWeight = 0.33f;
         const float greenWeight = 0.33f;
         const float blueWeight = 0.33f;
         return redWeight * inputRgbLinear[0]
-            + greenWeight * inputRgbLinear[1]
-            + blueWeight * inputRgbLinear[2];
+               + greenWeight * inputRgbLinear[1]
+               + blueWeight * inputRgbLinear[2];
     }
 
-    inline void breakAtMeshInstance(const WorldHit& worldHit) {
+    inline void breakAtMeshInstance(const WorldHit &worldHit) {
         switch (worldHit.instanceIndex) {
-        case 0:
-            break;
-        case 1:
-            break;
-        case 2:
-            break;
-        case 5:
-            break;
-        default:
-            break;
+            case 0:
+                break;
+            case 1:
+                break;
+            case 2:
+                break;
+            case 5:
+                break;
+            default:
+                break;
         }
     }
 
-    inline void breakAtPointCloudInstance(const WorldHit& worldHit) {
+    inline void breakAtPointCloudInstance(const WorldHit &worldHit) {
         switch (worldHit.primitiveIndex) {
-        case 0:
-            break;
-        case 1:
-            break;
-        case 2:
-            break;
-        case 7:
-            break;
-        default:
-            break;
+            case 0:
+                break;
+            case 1:
+                break;
+            case 2:
+                break;
+            case 7:
+                break;
+            default:
+                break;
         }
     }
 

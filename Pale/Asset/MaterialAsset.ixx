@@ -13,7 +13,7 @@ export namespace Pale {
         float roughness{0.5f};
         float metallic{0.0f};
         float ior{1.5f};
-        glm::vec3 emissive{0,0,0};
+        float power = 0.0f;
         float opacity{1.0f};
 
         // Texture handles (optional)

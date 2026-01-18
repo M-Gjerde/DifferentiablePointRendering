@@ -21,11 +21,13 @@ namespace Pale {
         std::mt19937_64 seedGen(pkg.settings.randomSeed); // define once before the loop
 
         if (pkg.settings.rayGenMode == RayGenMode::Emitter) {
+            pkg.queue.fill(pkg.intermediates.map.photonCountDevicePtr, 0u, 1).wait();
 
             for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
                 pkg.settings.randomSeed = seedGen(); // new high-entropy seed each pass
 
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+
                 {
                     ScopedTimer timer("launchRayGenEmitterKernel");
                     launchRayGenEmitterKernel(pkg);
@@ -61,32 +63,21 @@ namespace Pale {
                 }
             }
             uint32_t photonMapCount = 0;
-            pkg.queue.memcpy(&photonMapCount, pkg.intermediates.map.photonCountDevicePtr, sizeof(uint32_t)).wait();
+            pkg.queue.memcpy(&photonMapCount,
+                             pkg.intermediates.map.photonCountDevicePtr,
+                             sizeof(uint32_t)).wait();
+            const uint32_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity);
+
             {
-                ScopedTimer timer("clearGridHeads");
-                clearGridHeads(pkg.queue, pkg.intermediates.map);
-            }
-            {
-                ScopedTimer timer("buildPhotonGridLinkedLists", spdlog::level::debug);
-                size_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity);
-                buildPhotonGridLinkedLists(pkg.queue, pkg.intermediates.map, photonCount);
+                ScopedTimer timer("buildPhotonCellRangesAndOrdering", spdlog::level::debug);
+                buildPhotonCellRangesAndOrdering(pkg.queue, pkg.intermediates.map, photonCount);
             }
 
-            // Save photon map to disk:
-            {
-                /*
-                ScopedTimer timer("dumpPhotonMapToPLY");
-                dumpPhotonMapToPLY(pkg.queue,
-                                  pkg.intermediates.map.photons,
-                                  photonMapCount,
-                                  std::filesystem::path("Output/photon_map.ply"));
-                */
-            }
+
             {
                 ScopedTimer timer("launchCameraGatherKernel", spdlog::level::debug);
                 int cameraGatherSPP = pkg.settings.numGatherPasses;
                 for (int i = 0; i < cameraGatherSPP; i++) {
-                    ScopedTimer timer("CameraGatherSample", spdlog::level::debug);
                     launchCameraGatherKernel(pkg, cameraGatherSPP); // generate image from photon map
                 }
             }

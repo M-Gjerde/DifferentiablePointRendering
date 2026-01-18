@@ -13,7 +13,10 @@ namespace Pale {
 
     void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount);
 
-    void buildPhotonGridLinkedLists(sycl::queue &q, DeviceSurfacePhotonMapGrid g, uint32_t photonCount);
+    void computePhotonCellIdsAndPermutation(sycl::queue &q, DeviceSurfacePhotonMapGrid g, uint32_t photonCount);
+
+    void buildPhotonCellRangesAndOrdering(sycl::queue &q, DeviceSurfacePhotonMapGrid g, uint32_t photonCount);
+
     void clearGridHeads(sycl::queue &q, DeviceSurfacePhotonMapGrid &g);
 
     void launchVolumeKernel(RenderPackage &pkg, uint32_t activeRayCount);

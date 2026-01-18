@@ -20,7 +20,7 @@ export namespace Pale {
                 return { a[0].as<float>(), a[1].as<float>(), a[2].as<float>() };
             };
             m->baseColor = readVec3(n["baseColor"], m->baseColor);
-            m->emissive  = readVec3(n["emissive"],  m->emissive);
+            m->power  =    n["power"] ? n["power"].as<float>() : m->power;
             m->roughness = n["roughness"] ? n["roughness"].as<float>() : m->roughness;
             m->metallic  = n["metallic"]  ? n["metallic"].as<float>()  : m->metallic;
             m->ior       = n["ior"]       ? n["ior"].as<float>()       : m->ior;

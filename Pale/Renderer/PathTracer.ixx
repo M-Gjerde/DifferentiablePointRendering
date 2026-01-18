@@ -29,6 +29,7 @@ export namespace Pale {
 
     private:
         void ensureRayCapacity(uint32_t requiredRayQueueCapacity);
+        void ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid& grid);
         void allocateIntermediates(uint32_t newCapacity);
         void allocatePhotonMap();
         void freeIntermediates();

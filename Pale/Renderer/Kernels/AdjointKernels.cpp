@@ -148,7 +148,7 @@ namespace Pale {
         auto *raysIn = pkg.intermediates.primaryRays;
 
         auto &sensor = pkg.sensor[cameraIndex];
-        DebugImages& debugImage = pkg.debugImages[cameraIndex];
+        DebugImages &debugImage = pkg.debugImages[cameraIndex];
 
         queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<struct AdjointShadeKernelTag>(
@@ -172,10 +172,11 @@ namespace Pale {
                     // Implement depth distortion regularization
 
 
-                    const float invRayCount = 1.0f / float(activeRayCount);   // if summing over rays in-kernel
+                    const float invRayCount = 1.0f / float(activeRayCount); // if summing over rays in-kernel
 
                     if (settings.depthDistortionWeight > 0.0f) {
-                        accumulateDepthDistortionGradientsForRay(scene, rayState, whTransmit, gradients, debugImage, invRayCount, settings.depthDistortionWeight);
+                        accumulateDepthDistortionGradientsForRay(scene, rayState, whTransmit, gradients, debugImage,
+                                                                 invRayCount, settings.depthDistortionWeight);
                     }
 
                     // Normal Regularization
@@ -188,8 +189,12 @@ namespace Pale {
 
                     // Volumetric composition gradients
                     float3 L_Mesh(0.0f);
-                    if (whTransmit.instanceIndex != UINT32_MAX && scene.instances[whTransmit.instanceIndex].geometryType == GeometryType::Mesh) {
-                        L_Mesh = estimateRadianceFromPhotonMap(whTransmit, scene, photonMap);
+                    if (whTransmit.instanceIndex != UINT32_MAX && scene.instances[whTransmit.instanceIndex].geometryType
+                        == GeometryType::Mesh) {
+                        const float3 rho = scene.materials[scene.instances[whTransmit.instanceIndex].materialIndex].
+                                baseColor;
+                        const float3 E = gatherDiffuseIrradianceAtPoint(whTransmit.hitPositionW, photonMap);
+                        L_Mesh = (rho * M_1_PIf) * E;
                     }
                     // Transmission
                     // Cost weighting: photon-map radiance for this segment
@@ -274,7 +279,8 @@ namespace Pale {
                             auto &jEvent = whTransmit.splatEvents[j];
                             auto &jSurfel = scene.points[jEvent.primitiveIndex];
                             const float jAlphaEff = jEvent.alpha * jSurfel.opacity;
-                            const float3 L_surfel_j_incident = computeLSurfel(scene, ray.direction, jEvent, photonMap);
+                            const float3 L_surfel_j_incident =
+                                    computeLSurfel(jSurfel, ray.direction, jEvent, photonMap);
                             const float3 &L_o_j = L_surfel_j_incident * jSurfel.albedo * M_1_PIf;
 
                             // τ_j = Π_{k = i+1 .. j-1} (1 - α_k^eff)
@@ -297,7 +303,7 @@ namespace Pale {
                         }
                         L_bg += tau_back * L_Mesh; // Final position gradient vector:
 
-                        const float3 &L_surfel_incident = computeLSurfel(scene, ray.direction, splatEvent, photonMap);
+                        const float3 &L_surfel_incident = computeLSurfel(surfel, ray.direction, splatEvent, photonMap);
 
                         const float3 &L_o = L_surfel_incident * surfel.albedo * M_1_PIf;
 

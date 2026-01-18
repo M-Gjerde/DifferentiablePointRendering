@@ -48,9 +48,8 @@
     </bsdf>
 
     <bsdf type="diffuse" id="blender_floor">
-        <rgb name="reflectance" value="0.34, 0.15, 0.04"/>
+        <rgb name="reflectance" value="0.44, 0.24, 0.11"/>
     </bsdf>
-
 
 
     <shape type="obj" id="light1">
@@ -58,14 +57,15 @@
         <transform name="to_world">
             <rotate x="0" y="1" z="0" angle="180"/>
             <scale x="0.1" y="0.1" z="0.1"/>
-            <translate x="0.5" y="-0.8" z="2.5"/>
+            <translate x="0.5" y="-0.8" z="2.2"/>
         </transform>
         <bsdf type="diffuse">
             <rgb name="reflectance" value="0,0,0"/>
         </bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
-            <rgb name="radiance" value="2.3, 2.3, 2.3"/>
+            <rgb name="color" value="1, 1, 1"/>
+            <float name="power" value="50"/>
         </emitter>
     </shape>
 
@@ -74,17 +74,17 @@
         <transform name="to_world">
             <rotate x="0" y="1" z="0" angle="180"/>
             <scale x="0.1" y="0.1" z="0.1"/>
-            <translate x="-0.5" y="0.8" z="2.5"/>
+            <translate x="-0.5" y="0.8" z="2.2"/>
         </transform>
         <bsdf type="diffuse">
             <rgb name="reflectance" value="0,0,0"/>
         </bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
-            <rgb name="radiance" value="2.3, 2.3, 2.3"/>
+            <rgb name="color" value="1, 1, 1"/>
+            <float name="power" value="50"/>
         </emitter>
     </shape>
-
 
     <shape type="obj" id="floor">
         <string name="filename" value="meshes/rectangle.obj"/>

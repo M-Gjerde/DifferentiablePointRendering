@@ -143,8 +143,8 @@ def generate_volume_ply(
     stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
     stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    defaultOpacity = 0.4
-    defaultBeta = -0.0
+    defaultOpacity = 0.5
+    defaultBeta = -0.5
     defaultShape = 0.0
     defaultRGB = [0.7, 0.7, 0.7]
     color_noise = 0.2
@@ -227,7 +227,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "max_y": 0.4,
         "min_z": 0.1,
         "max_z": 0.55,
-        "scale": 0.01,
+        "scale": 0.02,
         "position_noise_std": 0.05,
         "tangent_noise_std": 90.0,
     },

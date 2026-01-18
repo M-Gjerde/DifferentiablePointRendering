@@ -10,7 +10,7 @@ namespace Pale {
         uint32_t width{}, height{};
 
         float gammaCorrection = 2.2f;
-        float exposureCorrection = 2.0f;
+        float exposureCorrection = 1.0f;
         float* ldrFramebuffer = nullptr;
         sycl::uchar4* outputFramebuffer = nullptr;
         char name[16];

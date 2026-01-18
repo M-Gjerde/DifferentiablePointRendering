@@ -4,7 +4,6 @@
         <integer name="max_depth" value="6"/>
     </integrator>
 
-
     <sensor type="perspective" id="DatasetCam_000">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -45,6 +44,7 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
+
     <sensor type="perspective" id="DatasetCam_007">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -65,7 +65,6 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
-
     <sensor type="perspective" id="DatasetCam_008">
         <string name="fov_axis" value="y" />
         <float name="near_clip" value="0.01" />
@@ -86,6 +85,7 @@
             <string name="component_format" value="float32" />
         </film>
     </sensor>
+
 
     <bsdf type="diffuse" id="gray">
         <rgb name="reflectance" value="0.1,0.1,0.1"/>
@@ -109,10 +109,10 @@
         <rgb name="reflectance" value="0.570068,0.0430135,0.0443706"/>
     </bsdf>
 
-    <bsdf type="diffuse" id="blender_floor">
-        <rgb name="reflectance" value="0.34, 0.15, 0.04"/>
-    </bsdf>
 
+    <bsdf type="diffuse" id="blender_floor">
+        <rgb name="reflectance" value="0.44, 0.24, 0.11"/>
+    </bsdf>
 
     <shape type="obj" id="light1">
         <string name="filename" value="meshes/rectangle.obj"/>
@@ -126,7 +126,8 @@
         </bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
-            <rgb name="radiance" value="2.3, 2.3, 2.3"/>
+            <rgb name="color" value="1, 1, 1"/>
+            <float name="power" value="500"/>
         </emitter>
     </shape>
 
@@ -142,7 +143,8 @@
         </bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
-            <rgb name="radiance" value="2.3, 2.3, 2.3"/>
+            <rgb name="color" value="1, 1, 1"/>
+            <float name="power" value="500"/>
         </emitter>
     </shape>
 

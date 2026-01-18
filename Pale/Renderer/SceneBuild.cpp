@@ -148,7 +148,7 @@ namespace Pale {
                 gpuMaterial.baseColor = materialAsset->baseColor;
                 gpuMaterial.specular = materialAsset->metallic;
                 gpuMaterial.diffuse = materialAsset->roughness;
-                gpuMaterial.emissive = materialAsset->emissive;
+                gpuMaterial.power = materialAsset->power;
                 gpuMaterial.phongExp = 16;
                 materialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
                 outBuildProducts.materials.push_back(gpuMaterial);
@@ -260,51 +260,87 @@ namespace Pale {
 
 
     void SceneBuild::collectLights(const std::shared_ptr<Pale::Scene>& scene,
-                                   IAssetAccess& assetAccess,
-                                   BuildProducts& out) {
-        out.lights.clear();
-        out.emissiveTriangles.clear();
+                               IAssetAccess& assetAccess,
+                               BuildProducts& out)
+{
+    out.lights.clear();
+    out.emissiveTriangles.clear();
 
-        for (const InstanceRecord& instanceRecord : out.instances) {
-            if (instanceRecord.geometryType == GeometryType::PointCloud) continue;
-            const GPUMaterial& gpuMaterial = out.materials[instanceRecord.materialIndex];
-            const bool isEmissive = (gpuMaterial.emissive.x() > 0.f) ||
-                (gpuMaterial.emissive.y() > 0.f) ||
-                (gpuMaterial.emissive.z() > 0.f);
-            if (!isEmissive) continue;
+    for (const InstanceRecord& instanceRecord : out.instances) {
+        if (instanceRecord.geometryType == GeometryType::PointCloud)
+            continue;
 
-            const MeshRange& meshRange = out.meshRanges[instanceRecord.geometryIndex];
-            const uint32_t triangleOffset = static_cast<uint32_t>(out.emissiveTriangles.size());
+        const GPUMaterial& gpuMaterial = out.materials[instanceRecord.materialIndex];
+        if (!gpuMaterial.isEmissive())
+            continue;
 
-            float totalArea = 0.f;
-            out.emissiveTriangles.reserve(out.emissiveTriangles.size() + meshRange.triCount);
+        const MeshRange& meshRange = out.meshRanges[instanceRecord.geometryIndex];
+        if (meshRange.triCount == 0)
+            continue;
 
-            for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
-                const uint32_t globalTriIndex = meshRange.firstTri + localTri;
-                const Triangle& tri = out.triangles[globalTriIndex];
+        const Transform& transform = out.transforms[instanceRecord.transformIndex];
 
-                const float3 p0 = out.vertices[tri.v0].pos;
-                const float3 p1 = out.vertices[tri.v1].pos;
-                const float3 p2 = out.vertices[tri.v2].pos;
+        const uint32_t triangleOffset = static_cast<uint32_t>(out.emissiveTriangles.size());
+        out.emissiveTriangles.reserve(out.emissiveTriangles.size() + meshRange.triCount);
 
-                const float area = triangleArea(p0, p1, p2);
-                totalArea += area;
+        // Compute WORLD-space triangle areas and total WORLD area
+        float totalAreaWorld = 0.0f;
 
-                out.emissiveTriangles.push_back(GPUEmissiveTriangle{globalTriIndex});
-            }
+        for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
+            const uint32_t globalTriIndex = meshRange.firstTri + localTri;
+            const Triangle& tri = out.triangles[globalTriIndex];
 
-            GPULightRecord light{};
-            light.lightType = 0u; // mesh area
-            light.geometryIndex = instanceRecord.geometryIndex;
-            light.transformIndex = instanceRecord.transformIndex;
-            light.triangleOffset = triangleOffset;
-            light.triangleCount = meshRange.triCount;
-            light.emissionRgb = gpuMaterial.emissive;
-            light.totalArea = totalArea;
+            const float3 p0_obj = out.vertices[tri.v0].pos;
+            const float3 p1_obj = out.vertices[tri.v1].pos;
+            const float3 p2_obj = out.vertices[tri.v2].pos;
 
-            out.lights.push_back(light);
+            const float3 p0_world = toWorldPoint(p0_obj, transform);
+            const float3 p1_world = toWorldPoint(p1_obj, transform);
+            const float3 p2_world = toWorldPoint(p2_obj, transform);
+
+            const float worldArea = triangleArea(p0_world, p1_world, p2_world);
+            totalAreaWorld += worldArea;
+
+            GPUEmissiveTriangle emissiveTriangle{};
+            emissiveTriangle.globalTriangleIndex = globalTriIndex;
+            emissiveTriangle.worldArea = worldArea;
+            emissiveTriangle.cdf = 0.0f; // filled below
+            out.emissiveTriangles.push_back(emissiveTriangle);
         }
+
+        if (totalAreaWorld <= 0.0f) {
+            // Degenerate (or fully collapsed) emitter after transform
+            out.emissiveTriangles.resize(triangleOffset);
+            continue;
+        }
+
+        // Build per-light CDF over WORLD areas (inclusive CDF in [0,1])
+        float runningArea = 0.0f;
+        for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
+            GPUEmissiveTriangle& emissiveTriangle = out.emissiveTriangles[triangleOffset + localTri];
+            runningArea += emissiveTriangle.worldArea;
+            emissiveTriangle.cdf = runningArea / totalAreaWorld;
+        }
+        // Ensure last entry is exactly 1 to avoid edge-case misses in binary search
+        out.emissiveTriangles[triangleOffset + meshRange.triCount - 1].cdf = 1.0f;
+
+        GPULightRecord light{};
+        light.lightType = 0u; // mesh area
+        light.geometryIndex = instanceRecord.geometryIndex;
+        light.transformIndex = instanceRecord.transformIndex;
+        light.triangleOffset = triangleOffset;
+        light.triangleCount = meshRange.triCount;
+
+        light.power = gpuMaterial.power;
+        light.color = gpuMaterial.baseColor;
+
+        // IMPORTANT: WORLD area, not object area.
+        light.totalAreaWorld = totalAreaWorld;
+
+        out.lights.push_back(light);
     }
+}
+
 
     void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
                                     BuildProducts& outBuildProducts) {
@@ -708,7 +744,7 @@ float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts &buildProdu
                 continue;
 
             const GPUMaterial& material = buildProducts.materials[instanceRecord.materialIndex];
-            if (material.emissive != float3(0.0f))
+            if (material.isEmissive())
                 continue;
 
             const MeshRange& meshRange = buildProducts.meshRanges[instanceRecord.geometryIndex];

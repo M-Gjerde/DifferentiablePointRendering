@@ -7,6 +7,7 @@
 #include "KernelHelpers.h"
 
 namespace Pale {
+
     void launchPostProcessKernel(RenderPackage& pkg) {
         auto& queue = pkg.queue;
         auto sensor = pkg.sensor;

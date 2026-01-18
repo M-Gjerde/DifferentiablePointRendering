@@ -83,13 +83,13 @@ namespace Pale {
     /*************************  Appearance ***************************/
     struct alignas(16) GPUMaterial {
         float3 baseColor{};
+        float power{};
         float diffuse{};
         float specular{};
         float phongExp{}; // 16
-        float3 emissive{};
 
         bool isEmissive() const {
-            return emissive.x() > 0.0f || emissive.y() > 0.0f || emissive.z() > 0.0f;
+            return power > 0.f;
         }
     };
 
@@ -103,54 +103,9 @@ namespace Pale {
 
     CHECK_16(Transform);
 
-    /*************************  Mesh‑area Lights *********************/
-    struct alignas(16) MeshLight {
-        static constexpr size_t MAX_TRIANGLES = 64;
-
-        float3 v0[MAX_TRIANGLES];
-        float3 edge1[MAX_TRIANGLES];
-        float3 edge2[MAX_TRIANGLES];
-        float3 normal[MAX_TRIANGLES];
-        float cdf[MAX_TRIANGLES]{};
-
-        uint32_t triangleCount{0};
-        float totalArea{0.f};
-        float flux{0.f};
-        float radiance{0.f};
-
-        Transform transform{};
-
-        void addTriangle(const float3 &p0,
-                         const float3 &e1,
-                         const float3 &e2,
-                         const float3 &n,
-                         float area) {
-            if (triangleCount >= MAX_TRIANGLES)
-                return; // (host version throws; device just skips)
-
-            v0[triangleCount] = p0;
-            edge1[triangleCount] = e1;
-            edge2[triangleCount] = e2;
-            normal[triangleCount] = n;
-
-            totalArea += area;
-            cdf[triangleCount] = totalArea;
-            ++triangleCount;
-        }
-
-        void finalize() {
-            if (totalArea == 0.f) return;
-            for (uint32_t i = 0; i < triangleCount; ++i)
-                cdf[i] /= totalArea;
-
-            radiance = flux / (std::numbers::pi_v<float> * totalArea);
-        }
-    };
-
-    CHECK_16(MeshLight);
-
     /*************************  Scene graph **************************/
-    constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
+    constexpr uint32_t kInvalidMaterialIndex     = 0xFFFFFFFFu;
+    static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
     enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1, InvalidType = UINT32_MAX };
 
@@ -184,14 +139,15 @@ namespace Pale {
         uint32_t transformIndex;
         uint32_t triangleOffset; // into emissiveTriangles[]
         uint32_t triangleCount;
-        float3 emissionRgb; // radiance scale
-        float totalArea; // sum of areas of this light’s tris
+        float3 color; // lght color
+        float power;
+        float totalAreaWorld; // sum of worldArea of its triangles
     };
 
     struct AreaLightSample {
         float3 positionW;
         float3 normalW;            // unit
-        float3 emittedRadianceRGB; // GPULightRecord::emissionRgb
+        float3 Le;
         float  pdfSelectLight;     // 1 / lightCount
         float  pdfArea;            // 1 / (triangleCount * triArea)
         bool   valid;
@@ -199,7 +155,9 @@ namespace Pale {
     CHECK_16(AreaLightSample);
 
     struct GPUEmissiveTriangle {
-        uint32_t globalTriangleIndex; // index into your global triangle pool
+        uint32_t globalTriangleIndex;
+        float worldArea;  // triangle area after transform
+        float cdf;        // inclusive CDF in [0,1] within its light’s triangle range
     };
 
     struct InstanceRecord {
@@ -344,6 +302,8 @@ namespace Pale {
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
 
+        float3 normalW;          //oriented surface normal in world space
+
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
         int    sideSign{};       // +1 or -1: hemisphere relative to canonical surfel normal
@@ -356,25 +316,41 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<DevicePhotonSurface>);
 
     // ----------------- Full surface photon map handle (device) -------------------
-    struct alignas(16) DeviceSurfacePhotonMapGrid {
-        DevicePhotonSurface *photons; // [photonCapacity]
-        uint32_t *photonCountDevicePtr; // atomic append counter on device
-        uint32_t photonCapacity; // total allocated slots
-
-        // Grid params
+    struct DeviceSurfacePhotonMapGrid
+    {
+        float gatherRadiusWorld = 0.00f;
+        float3 cellSizeWorld = 0.5f * float3{gatherRadiusWorld};
         float3 gridOriginWorld;
-        float3 cellSizeWorld; // set = gatherRadiusWorld
-        sycl::int3 gridResolution; // Nx,Ny,Nz
-        uint32_t totalCellCount;
+        sycl::int3 gridResolution;
+        std::uint32_t totalCellCount;
 
-        // Per-cell lists
-        uint32_t *cellHeadIndexArray; // [totalCellCount], init to kInvalidIndex
-        uint32_t *photonNextIndexArray; // [photonCapacity]
+        // Photon storage (written during emission)
+        DevicePhotonSurface* photons;
+        std::uint32_t photonCapacity;
+        std::uint32_t* photonCountDevicePtr;
 
-        // For clarity
-        float gatherRadiusWorld = 0.08f;
-        float kappa = 2.0f;
+        std::uint32_t allocatedCellCount = 0;
+        std::uint32_t allocatedPhotonCapacity = 0;
+        std::uint32_t allocatedBlockCount = 0;
+
+
+        // Per-photon build buffers
+        std::uint32_t* photonCellId = nullptr;        // [photonCapacity]
+        std::uint32_t* photonIndex = nullptr;         // [photonCapacity] optional if you scatter into sortedPhotonIndex
+        std::uint32_t* sortedPhotonIndex = nullptr;   // [photonCapacity]
+
+        // Per-cell build buffers
+        std::uint32_t* cellStart = nullptr;           // [totalCellCount]
+        std::uint32_t* cellEnd = nullptr;             // [totalCellCount]
+        std::uint32_t* cellCount = nullptr;           // [totalCellCount]
+        std::uint32_t* cellWriteOffset = nullptr;     // [totalCellCount]
+
+        // Scan temporaries
+        std::uint32_t* blockSums = nullptr;           // [numBlocks]
+        std::uint32_t* blockPrefix = nullptr;         // [numBlocks] (optional; can reuse blockSums if you overwrite carefully)
+
     };
+
 
     static_assert(std::is_trivially_copyable_v<DeviceSurfacePhotonMapGrid>);
 

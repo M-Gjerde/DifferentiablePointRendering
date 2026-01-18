@@ -229,6 +229,9 @@
         </transform>
         <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
-         <emitter type="area"><rgb name="radiance" value="1.1,1.1,0.9"/></emitter>
+        <emitter type="area">
+            <rgb name="color" value="1, 1, 1"/>
+            <float name="power" value="50"/>
+        </emitter>
      </shape>
  </scene>

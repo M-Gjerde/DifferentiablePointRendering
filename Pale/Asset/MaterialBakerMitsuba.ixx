@@ -40,7 +40,7 @@ export namespace Pale {
     }
 
     inline MaterialDesc descFromEmitter(const pugi::xml_node &emitter, const std::filesystem::path &sceneDir) {
-        MaterialDesc d{};
+        MaterialDesc materialDescription{};
         auto rgb = [&](const char *name, glm::vec3 def)-> glm::vec3 {
             if (auto n = emitter.find_child_by_attribute("rgb", "name", name)) {
                 float r = def.x, g = def.y, b = def.z;
@@ -50,17 +50,24 @@ export namespace Pale {
             return def;
         };
         auto flt = [&](const char *name, float def)-> float {
-            if (auto n = emitter.find_child_by_attribute("float", "name", name)) return n.attribute("value").as_float(def);
+            if (auto n = emitter.find_child_by_attribute("float", "name", name)) return n.attribute("value").
+                    as_float(def);
             return def;
         };
 
         std::string type = emitter.attribute("type").as_string("area");
         if (type == "area") {
-            d.emissive = rgb("radiance", {0.5f, 0.5f, 0.5f});
-            d.roughness = 1.0f;
-            d.metallic = 0.0f;
+            materialDescription.baseColor = rgb("color", {0.5f, 0.5f, 0.5f});
+            materialDescription.power = flt("power", 0.0f);
+
+
+            Log::PA_INFO("Material Emissive Color: {}, {}, {}", materialDescription.baseColor.x,
+                         materialDescription.baseColor.y, materialDescription.baseColor.z);
+            Log::PA_INFO("Material Emissive power: {}", materialDescription.power);
+            materialDescription.roughness = 1.0f;
+            materialDescription.metallic = 0.0f;
         }
-        return d;
+        return materialDescription;
     }
 
     // In Pale.Import.MaterialBaker.Mitsuba
@@ -76,15 +83,15 @@ export namespace Pale {
                                        IAssetIndex &assets,
                                        BakeKey keyMode = BakeKey::ByHash,
                                        bool isEmitter = false) {
-        MaterialDesc d{};
+        MaterialDesc material{};
         if (isEmitter) {
-            d = descFromEmitter(bsdf, sceneXml.parent_path());
+            material = descFromEmitter(bsdf, sceneXml.parent_path());
         } else {
-            d = descFromBsdf(bsdf, sceneXml.parent_path());
+            material = descFromBsdf(bsdf, sceneXml.parent_path());
         }
 
         std::string idAttr = bsdf.attribute("id").as_string(""); // may be empty
-        std::string h = hashDesc(d);
+        std::string h = hashDesc(material);
         auto matDir = std::filesystem::path("Materials") / sceneStem(sceneXml);
 
         std::filesystem::path out;
@@ -103,8 +110,7 @@ export namespace Pale {
                 break;
         }
 
-        if (!std::filesystem::exists(out))
-            writeYaml(out, d); // write project-relative texture paths inside
+        writeYaml(out, material); // write project-relative texture paths inside
 
         if (auto id = assets.findByPath(out)) return *id;
         return assets.importPath(out, AssetType::Material);

@@ -104,7 +104,10 @@ namespace Pale {
             const float3 segmentVector = y - x;
 
             // Cost weighting: keep RGB if your loss is RGB; else reduce at end
-            const float3 backgroundRadianceRGB = estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
+            const float3 rho = scene.materials[scene.instances[worldHit.instanceIndex].materialIndex].
+                    baseColor;
+            const float3 E = gatherDiffuseIrradianceAtPoint(worldHit.hitPositionW, photonMap);
+            float3 backgroundRadianceRGB = (rho * M_1_PIf) * E;
             const float L = luminance(backgroundRadianceRGB);
 
             // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
@@ -468,9 +471,11 @@ namespace Pale {
         }
 
         // Cost weighting: photon-map radiance for this segment
-        float3 backgroundRadianceRGB =
-                estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
 
+        const float3 rho = scene.materials[scene.instances[worldHit.instanceIndex].materialIndex].
+                baseColor;
+        const float3 E = gatherDiffuseIrradianceAtPoint(worldHit.hitPositionW, photonMap);
+        float3 backgroundRadianceRGB = (rho * M_1_PIf) * E;
 
         struct LocalTerm {
             float alpha{};
@@ -1348,8 +1353,62 @@ SYCL_EXTERNAL inline void accumulateNormalConsistencyGradientsForRay(
 }
 
 
+    inline void shadowRay(const GPUSceneBuffers &scene, const RayState &rayState, const WorldHit &worldHit,
+                          const PointGradients &gradients, const DebugImages &debugImage,
+                          const DeviceSurfacePhotonMapGrid &photonMap, rng::Xorshift128 &rng,
+                          bool renderDebugGradientImages,
+                          uint32_t numShadowRays = 1,
+                          uint32_t debugIndex = UINT32_MAX,
+                          bool debugBreakFlag = false) {
+
+        for (int i = 0; i < numShadowRays; ++i) {
+            AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng);
+            // Direction to the sampled emitter point
+            const float3 toLightVector = ls.positionW - rayState.ray.origin;
+            const float distanceToLight = length(toLightVector);
+            if (distanceToLight > 1e-6f) {
+                const float3 lightDirection = toLightVector / distanceToLight;
+                // Cosines
+                const float3 shadingNormalW = rayState.ray.normal;
+                const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
+                const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
 
 
+                if (cosThetaSurface != 0.0f && cosThetaLight != 0.0f) {
+                    const float r2 = distanceToLight * distanceToLight;
+                    const float geometryTerm = (cosThetaSurface * cosThetaLight) / r2;
+                    // PDFs from the sampler
+                    const float pdfArea = ls.pdfArea; // area-domain, world area
+                    const float pdfLight = ls.pdfSelectLight; // 1 / lightCount
+                    // Unbiased NEE estimator (area sampling):
+                    const float invPdf = 1.0f / (pdfLight * pdfArea);
+                    float oneOverNumRays = 1.0f / static_cast<float>(numShadowRays);
+
+                    RayState shadowRayState = rayState;
+                    Ray shadowRay{
+                        rayState.ray.origin + (rayState.ray.normal * 1e-4f), lightDirection
+                    };
+                    shadowRayState.ray = shadowRay;
+                    shadowRayState.pathThroughput =
+                            rayState.pathThroughput * geometryTerm * invPdf * oneOverNumRays;
+
+                    // BRDF
+                    WorldHit shadowWorldHit{};
+                    intersectScene(shadowRayState.ray, &shadowWorldHit, scene, rng,
+                                   RayIntersectMode::Transmit);
+                    buildIntersectionNormal(scene, shadowWorldHit);
+
+                    accumulateTransmittanceGradientsAlongRay(shadowRayState, shadowWorldHit, scene, photonMap,
+                                                             renderDebugGradientImages, gradients,
+                                                             debugImage, debugIndex);
+                    if (debugBreakFlag)
+                        int debug = 1;
+                }
+            }
+        }
+    }
+
+/*
     SYCL_EXTERNAL inline void accumulateBsdfGradientsAtScatterSurfel(
         const RayState &rayState,
         const WorldHit &scatterHit,
@@ -1609,60 +1668,6 @@ SYCL_EXTERNAL inline void accumulateNormalConsistencyGradientsForRay(
     }
 
 
-    inline void shadowRay(const GPUSceneBuffers &scene, const RayState &rayState, const WorldHit &worldHit,
-                          const PointGradients &gradients, const DebugImages &debugImage,
-                          const DeviceSurfacePhotonMapGrid &photonMap, rng::Xorshift128 &rng,
-                          bool renderDebugGradientImages,
-                          uint32_t numShadowRays = 1,
-                          uint32_t debugIndex = UINT32_MAX,
-                          bool debugBreakFlag = false) {
-
-        for (int i = 0; i < numShadowRays; ++i) {
-            AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng);
-            // Direction to the sampled emitter point
-            const float3 toLightVector = ls.positionW - rayState.ray.origin;
-            const float distanceToLight = length(toLightVector);
-            if (distanceToLight > 1e-6f) {
-                const float3 lightDirection = toLightVector / distanceToLight;
-                // Cosines
-                const float3 shadingNormalW = rayState.ray.normal;
-                const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
-                const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
-
-
-                if (cosThetaSurface != 0.0f && cosThetaLight != 0.0f) {
-                    const float r2 = distanceToLight * distanceToLight;
-                    const float geometryTerm = (cosThetaSurface * cosThetaLight) / r2;
-                    // PDFs from the sampler
-                    const float pdfArea = ls.pdfArea; // area-domain, world area
-                    const float pdfLight = ls.pdfSelectLight; // 1 / lightCount
-                    // Unbiased NEE estimator (area sampling):
-                    const float invPdf = 1.0f / (pdfLight * pdfArea);
-                    float oneOverNumRays = 1.0f / static_cast<float>(numShadowRays);
-
-                    RayState shadowRayState = rayState;
-                    Ray shadowRay{
-                        rayState.ray.origin + (rayState.ray.normal * 1e-4f), lightDirection
-                    };
-                    shadowRayState.ray = shadowRay;
-                    shadowRayState.pathThroughput =
-                            rayState.pathThroughput * geometryTerm * invPdf * oneOverNumRays;
-
-                    // BRDF
-                    WorldHit shadowWorldHit{};
-                    intersectScene(shadowRayState.ray, &shadowWorldHit, scene, rng,
-                                   RayIntersectMode::Transmit);
-                    buildIntersectionNormal(scene, shadowWorldHit);
-
-                    accumulateTransmittanceGradientsAlongRay(shadowRayState, shadowWorldHit, scene, photonMap,
-                                                             renderDebugGradientImages, gradients,
-                                                             debugImage, debugIndex);
-                    if (debugBreakFlag)
-                        int debug = 1;
-                }
-            }
-        }
-    }
 
     SYCL_EXTERNAL inline void accumulateTransmittanceGradientsAlongRayAttachedOriginSelf(
         const RayState &rayState,
@@ -2070,4 +2075,5 @@ SYCL_EXTERNAL inline void accumulateNormalConsistencyGradientsForRay(
             }
         }
     }
+    */
 }

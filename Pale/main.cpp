@@ -217,9 +217,9 @@ int main(int argc, char **argv) {
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
     //serializer.deserialize("scene_blender_30.xml");
-    //serializer.deserialize("scene_blender_1.xml");
+    serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    serializer.deserialize("cbox_custom.xml");
+    //serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -276,8 +276,8 @@ int main(int argc, char **argv) {
     //  cuda/rocm
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e6;
-    settings.maxBounces = 3;
-    settings.numForwardPasses = 1;
+    settings.maxBounces = 4;
+    settings.numForwardPasses = 100;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;
@@ -389,16 +389,16 @@ int main(int argc, char **argv) {
             };
 
             saveGradientSet(debugImagesHost.positionX, "posX");
-            //saveGradientSet(debugImagesHost.positionY, "posY");
-            //saveGradientSet(debugImagesHost.positionZ, "posZ");
-            //saveGradientSet(debugImagesHost.rotation, "rot");
-            //saveGradientSet(debugImagesHost.scale, "scale");
-            //saveGradientSet(debugImagesHost.opacity, "opacity");
-            //saveGradientSet(debugImagesHost.albedo, "albedo");
-            //saveGradientSet(debugImagesHost.beta, "beta");
-            saveGradientSet(debugImagesHost.depthLoss, "DepthLoss");
-            saveGradientSet(debugImagesHost.depthLossPos, "DepthLossPos");
-            saveGradientSet(debugImagesHost.normalLoss, "NormalLoss");
+            saveGradientSet(debugImagesHost.positionY, "posY");
+            saveGradientSet(debugImagesHost.positionZ, "posZ");
+            saveGradientSet(debugImagesHost.rotation, "rot");
+            saveGradientSet(debugImagesHost.scale, "scale");
+            saveGradientSet(debugImagesHost.opacity, "opacity");
+            saveGradientSet(debugImagesHost.albedo, "albedo");
+            saveGradientSet(debugImagesHost.beta, "beta");
+            //saveGradientSet(debugImagesHost.depthLoss, "DepthLoss");
+            //saveGradientSet(debugImagesHost.depthLossPos, "DepthLossPos");
+            //saveGradientSet(debugImagesHost.normalLoss, "NormalLoss");
         }
 
         // Download and log gradPosition[0]
