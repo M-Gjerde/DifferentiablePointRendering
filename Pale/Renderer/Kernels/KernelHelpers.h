@@ -803,54 +803,164 @@ namespace Pale {
         return radianceDirectRGB + radianceFromIrradianceRGB;
     }
 
+// Keep this small (typical 16..128) to bound per-hit work and registers.
+static constexpr int kMaxTargetPhotonCount = 64;
 
-    inline float3 estimateSurfelRadianceFromPhotonMap(
-        const SplatEvent& event,
-        const float3& direction,
-        const GPUSceneBuffers& scene,
-        const DeviceSurfacePhotonMapGrid& photonMap,
-        bool readOneSidedRadiance = false,
-        bool includeBrdf = true,
-        bool includeCosine = true,
-        bool filterPrimitiveIndex = true
-    ) {
-        const float perHitRadiusScale = 1.0f;
-        // Material (two-sided Lambert by construction; irradiance already includes cos)
-        const Point surfelPoint = scene.points[event.primitiveIndex];
-        const float3 diffuseAlbedoRgb = surfelPoint.albedo;
+struct GatheredPhotonSample {
+    float distSq;
+    float3 photonPowerRgb;
+};
 
-        // Canonical normal (no face-forwarding). Two-sided shading is fine.
-        const float3 canonicalNormalW = normalize(cross(surfelPoint.tanU, surfelPoint.tanV));
+// Max-heap by distSq (heap[0] is the largest distSq).
+inline void heapSwap(GatheredPhotonSample& a, GatheredPhotonSample& b) {
+    const GatheredPhotonSample tmp = a;
+    a = b;
+    b = tmp;
+}
 
-        // Side we are *entering first* this segment: dot(n, -wo)
-        const int travelSideSign = signNonZero(dot(canonicalNormalW, -direction));
+inline void maxHeapSiftUp(GatheredPhotonSample* heapArray, int heapSize, int index) {
+    while (index > 0) {
+        const int parentIndex = (index - 1) / 2;
+        if (heapArray[parentIndex].distSq >= heapArray[index].distSq) break;
+        heapSwap(heapArray[parentIndex], heapArray[index]);
+        index = parentIndex;
+    }
+}
 
-        // Gather setup
-        const float3 surfacePositionW = event.hitWorld;
-        const float baseRadius = photonMap.gatherRadiusWorld;
-        const float requestedRadius = sycl::fmax(1e-6f, perHitRadiusScale) * baseRadius;
-        const float localRadius = sycl::clamp(requestedRadius, 1e-3f * baseRadius, 4.0f * baseRadius);
-        const float localRadiusSq = localRadius * localRadius;
+inline void maxHeapSiftDown(GatheredPhotonSample* heapArray, int heapSize, int index) {
+    while (true) {
+        const int leftChildIndex = 2 * index + 1;
+        const int rightChildIndex = leftChildIndex + 1;
+        int largestIndex = index;
 
-        const float kappa = photonMap.kappa; // e.g. 2.0
-        const float inverseConeNormalization =
-            1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * M_PIf * localRadiusSq);
+        if (leftChildIndex < heapSize && heapArray[leftChildIndex].distSq > heapArray[largestIndex].distSq)
+            largestIndex = leftChildIndex;
+        if (rightChildIndex < heapSize && heapArray[rightChildIndex].distSq > heapArray[largestIndex].distSq)
+            largestIndex = rightChildIndex;
 
-        const sycl::int3 centerCell = worldToCell(surfacePositionW, photonMap);
+        if (largestIndex == index) break;
+        heapSwap(heapArray[index], heapArray[largestIndex]);
+        index = largestIndex;
+    }
+}
 
-        float3 weightedSumPhotonPowerRgb{0.f, 0.f, 0.f};
+// Insert a sample into a fixed-capacity max-heap of the K nearest items.
+// If heap not full: push.
+// If full: replace the worst (largest distSq) if the new one is better (smaller distSq).
+inline void insertNearestK(
+    GatheredPhotonSample* heapArray,
+    int& heapSize,
+    int heapCapacity,
+    const GatheredPhotonSample& candidate
+) {
+    if (heapSize < heapCapacity) {
+        heapArray[heapSize] = candidate;
+        ++heapSize;
+        maxHeapSiftUp(heapArray, heapSize, heapSize - 1);
+        return;
+    }
 
-        const float3 cellSize = photonMap.cellSizeWorld; // store this
-        const int rx = sycl::min(int(sycl::ceil(localRadius / cellSize.x())), 1 << 10);
-        const int ry = sycl::min(int(sycl::ceil(localRadius / cellSize.y())), 1 << 10);
-        const int rz = sycl::min(int(sycl::ceil(localRadius / cellSize.z())), 1 << 10);
-        for (int dz = -rz; dz <= rz; ++dz) {
-            for (int dy = -ry; dy <= ry; ++dy) {
-                for (int dx = -rx; dx <= rx; ++dx) {
+    // Heap full: root is worst (largest distSq).
+    if (candidate.distSq >= heapArray[0].distSq) return;
+
+    heapArray[0] = candidate;
+    maxHeapSiftDown(heapArray, heapSize, 0);
+}
+
+inline float estimateAdaptiveRadiusFromHeap(const GatheredPhotonSample* heapArray, int heapSize, float fallbackRadius) {
+    if (heapSize <= 0) return fallbackRadius;
+    // For a max-heap, heapArray[0] is worst (largest distSq) among kept samples.
+    return sycl::sqrt(sycl::fmax(heapArray[0].distSq, 0.0f));
+}
+
+inline float3 estimateSurfelRadianceFromPhotonMap(
+    const SplatEvent& event,
+    const float3& direction,
+    const GPUSceneBuffers& scene,
+    const DeviceSurfacePhotonMapGrid& photonMap,
+    bool readOneSidedRadiance = false,
+    bool includeBrdf = true,
+    bool includeCosine = true,
+    bool filterPrimitiveIndex = true,
+    int targetPhotonCount = 32
+) {
+    // Clamp to a compile-time max for fixed local storage on device.
+    const int clampedTargetPhotonCount = sycl::clamp(targetPhotonCount, 1, kMaxTargetPhotonCount);
+
+    // Material
+    const Point surfelPoint = scene.points[event.primitiveIndex];
+    const float3 diffuseAlbedoRgb = surfelPoint.albedo;
+
+    // Canonical normal (no face-forwarding)
+    const float3 canonicalNormalW = normalize(cross(surfelPoint.tanU, surfelPoint.tanV));
+    const int travelSideSign = signNonZero(dot(canonicalNormalW, -direction));
+
+    const float3 surfacePositionW = event.hitWorld;
+    const sycl::int3 centerCell = worldToCell(surfacePositionW, photonMap);
+
+    // Adaptive gather controls:
+    // - Start with a small radius to compute initial cell search extents.
+    // - Expand cells outward until we have K photons, or we hit a hard limit.
+    const float minRadiusWorld = 1e-4f;
+    const float maxRadiusWorld = sycl::fmax(minRadiusWorld, 1e-1f); // add this field
+    const float maxRadiusWorldSq = maxRadiusWorld * maxRadiusWorld;
+
+    const float kappa = photonMap.kappa; // e.g. 2.0
+
+    // Keep K nearest photons.
+    GatheredPhotonSample nearestPhotonHeap[kMaxTargetPhotonCount];
+    int nearestPhotonHeapSize = 0;
+
+    // We expand a cubic ring of cells. Stop once:
+    // - heap is full AND
+    // - the min distance to any not-yet-visited ring cell bounds exceeds current worst distSq
+    //   (so no future photon can enter the K-nearest set).
+    //
+    // We still enforce a hard cap on expansion for worst-case safety.
+    const float3 cellSizeWorld = photonMap.cellSizeWorld;
+    const int maxCellExpansion = 16; // add this field, e.g. 64
+
+    float currentWorstDistSq = (nearestPhotonHeapSize >= clampedTargetPhotonCount) ? nearestPhotonHeap[0].distSq : maxRadiusWorldSq;
+
+    for (int ringRadiusCells = 0; ringRadiusCells <= maxCellExpansion; ++ringRadiusCells) {
+        // Optional early-out: if heap full and even the closest point of the next ring (cell bounds)
+        // is farther than our current worst, we can stop.
+        if (nearestPhotonHeapSize >= clampedTargetPhotonCount && ringRadiusCells > 0) {
+            // Lower bound to the next ring: distance to the boundary of the cube of cells.
+            // Conservative check: use cell bounds distance for a representative cell on the ring.
+            // If you have a tighter bound, use it.
+            const sycl::int3 representativeCell{
+                centerCell.x() + ringRadiusCells,
+                centerCell.y(),
+                centerCell.z()
+            };
+            if (isInsideGrid(representativeCell, photonMap.gridResolution)) {
+                const float minDistSqToNextRing = squaredDistanceToCellBounds(surfacePositionW, representativeCell, photonMap);
+                if (minDistSqToNextRing > nearestPhotonHeap[0].distSq) {
+                    break;
+                }
+            }
+        }
+
+        // Visit all cells with Chebyshev distance == ringRadiusCells (the shell).
+        for (int dz = -ringRadiusCells; dz <= ringRadiusCells; ++dz) {
+            for (int dy = -ringRadiusCells; dy <= ringRadiusCells; ++dy) {
+                for (int dx = -ringRadiusCells; dx <= ringRadiusCells; ++dx) {
+                    const int chebyshevDistance = sycl::max(sycl::max(sycl::abs(dx), sycl::abs(dy)), sycl::abs(dz));
+                    if (chebyshevDistance != ringRadiusCells) continue;
+
                     const sycl::int3 neighborCell{centerCell.x() + dx, centerCell.y() + dy, centerCell.z() + dz};
                     if (!isInsideGrid(neighborCell, photonMap.gridResolution)) continue;
-                    if (squaredDistanceToCellBounds(surfacePositionW, neighborCell, photonMap) > localRadiusSq)
-                        continue;
+
+                    // If heap full, skip cells whose entire bounds are farther than current worst.
+                    if (nearestPhotonHeapSize >= clampedTargetPhotonCount) {
+                        const float minDistSqToCell = squaredDistanceToCellBounds(surfacePositionW, neighborCell, photonMap);
+                        if (minDistSqToCell > nearestPhotonHeap[0].distSq) continue;
+                    } else {
+                        // If heap not full, still avoid going beyond maxRadiusWorld.
+                        const float minDistSqToCell = squaredDistanceToCellBounds(surfacePositionW, neighborCell, photonMap);
+                        if (minDistSqToCell > maxRadiusWorldSq) continue;
+                    }
 
                     const std::uint32_t cellIndex = linearCellIndex(neighborCell, photonMap.gridResolution);
 
@@ -858,40 +968,72 @@ namespace Pale {
                          photonIndex != kInvalidIndex;
                          photonIndex = photonMap.photonNextIndexArray[photonIndex]) {
                         const DevicePhotonSurface photon = photonMap.photons[photonIndex];
-                        if (photon.primitiveIndex != event.primitiveIndex && filterPrimitiveIndex)
-                            continue;
-                        if (photon.sideSign != travelSideSign && readOneSidedRadiance) continue;
-                        // Hemisphere gate: accept only photons from the same side we enter first
-                        //const float nDotWi = dot(canonicalNormalW, photon.incidentDir);
-                        //if (sycl::fabs(nDotWi) < grazingEpsilon) continue; // ambiguous grazing
 
-                        // Distance + kernel
+                        if (filterPrimitiveIndex && photon.primitiveIndex != event.primitiveIndex) continue;
+
+                        if (readOneSidedRadiance && photon.sideSign != travelSideSign) continue;
+
                         const float3 displacement = photon.position - surfacePositionW;
                         const float distSq = dot(displacement, displacement);
-                        if (distSq > localRadiusSq) continue;
+                        if (distSq > maxRadiusWorldSq) continue;
 
-                        const float dist = sycl::sqrt(distSq);
-                        const float kernelWeight = sycl::fmax(0.f, 1.f - dist / (kappa * localRadius));
+                        // If heap full and candidate is worse than current worst, reject quickly.
+                        if (nearestPhotonHeapSize >= clampedTargetPhotonCount && distSq >= nearestPhotonHeap[0].distSq)
+                            continue;
 
                         const float3 photonContributionRgb =
-                            includeCosine
-                                ? (photon.power * photon.cosineIncident)
-                                : photon.power;
+                            includeCosine ? (photon.power * photon.cosineIncident) : photon.power;
 
-                        weightedSumPhotonPowerRgb = weightedSumPhotonPowerRgb + kernelWeight * photonContributionRgb;
+                        GatheredPhotonSample candidateSample;
+                        candidateSample.distSq = distSq;
+                        candidateSample.photonPowerRgb = photonContributionRgb;
+
+                        insertNearestK(
+                            nearestPhotonHeap,
+                            nearestPhotonHeapSize,
+                            clampedTargetPhotonCount,
+                            candidateSample
+                        );
                     }
                 }
             }
         }
 
-        float3 irradianceRgb = weightedSumPhotonPowerRgb * inverseConeNormalization;
-
-        // Two-sided Lambert: no extra abs(cos) on outgoing; irradiance already integrated over cos.
-        if (includeBrdf)
-            irradianceRgb *= diffuseAlbedoRgb * M_1_PIf;
-
-        return irradianceRgb;
+        if (nearestPhotonHeapSize >= clampedTargetPhotonCount) {
+            currentWorstDistSq = nearestPhotonHeap[0].distSq;
+        }
     }
+
+    // Define localRadius from K-th nearest photon (or fallback).
+    const float fallbackRadius = sycl::fmax(minRadiusWorld, photonMap.gatherRadiusWorld); // add field or reuse old gatherRadiusWorld
+    float localRadius = estimateAdaptiveRadiusFromHeap(nearestPhotonHeap, nearestPhotonHeapSize, fallbackRadius);
+    localRadius = sycl::clamp(localRadius, minRadiusWorld, maxRadiusWorld);
+    const float localRadiusSq = localRadius * localRadius;
+
+    // Cone normalization with adaptive radius.
+    const float inverseConeNormalization =
+        1.0f / ((1.0f - 2.0f / (3.0f * kappa)) * M_PIf * localRadiusSq);
+
+    // Accumulate only over selected photons (fixed count when available).
+    float3 weightedSumPhotonPowerRgb{0.f, 0.f, 0.f};
+
+    const int usedPhotonCount = nearestPhotonHeapSize;
+    for (int i = 0; i < usedPhotonCount; ++i) {
+        const float dist = sycl::sqrt(sycl::fmax(nearestPhotonHeap[i].distSq, 0.0f));
+        if (dist > localRadius) continue; // numerical safety
+        const float kernelWeight = sycl::fmax(0.f, 1.f - dist / (kappa * localRadius));
+        weightedSumPhotonPowerRgb = weightedSumPhotonPowerRgb + kernelWeight * nearestPhotonHeap[i].photonPowerRgb;
+    }
+
+    float3 irradianceRgb = weightedSumPhotonPowerRgb * inverseConeNormalization;
+
+    if (includeBrdf) {
+        irradianceRgb *= diffuseAlbedoRgb * M_1_PIf;
+    }
+
+    return irradianceRgb;
+}
+
 
     inline float3 computeLSurfel(const GPUSceneBuffers& scene, const float3& direction, const SplatEvent& splatEvent,
                                  const DeviceSurfacePhotonMapGrid& photonMap) {
