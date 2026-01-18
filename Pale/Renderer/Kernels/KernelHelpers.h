@@ -779,6 +779,12 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
                         const uint32_t photon_index = grid.sortedPhotonIndex[j];
                         const DevicePhotonSurface ph = grid.photons[photon_index];
 
+                        if (filterPrimitiveIndex && ph.primitiveIndex != primitiveIndex)
+                            continue;
+
+                        if (readOneSidedRadiance && ph.sideSign != travelSideSign)
+                            continue;
+
                         const float3 d = ph.position - queryPositionWorld;
                         const float dist2 = dot(d, d);
                         if (dist2 > r2) continue;
