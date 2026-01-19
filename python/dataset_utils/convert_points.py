@@ -146,7 +146,7 @@ def write_gaussian_ply(
     output_path,
     args,
     opacity_default=1.0,
-    beta_default=-5.0,
+    beta_default=0.0,
     shape_default=0.0,
 
     # -----------------------------------------------------------
@@ -248,9 +248,9 @@ def write_gaussian_ply(
 
         # Albedo 0..1
         albedo = np.array([
-            vertex["r"] / 255.0,
-            vertex["g"] / 255.0,
-            vertex["b"] / 255.0
+            0.05,
+            0.1,
+            0.1
         ], dtype=float)
 
         opacity = float(opacity_default)
@@ -329,7 +329,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.01,
+        default=0.035,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()

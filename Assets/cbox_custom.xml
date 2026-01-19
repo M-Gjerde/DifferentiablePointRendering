@@ -26,7 +26,7 @@
         </film>
     </sensor>
 
-    <!-- BSDFs -->
+
     <sensor type="perspective" id="camera2">
         <string name="fov_axis" value="smaller"/>
         <float name="near_clip" value="0.01"/>
@@ -50,7 +50,6 @@
     </sensor>
 
 
-    <!-- BSDFs -->
     <sensor type="perspective" id="camera3">
         <string name="fov_axis" value="smaller"/>
         <float name="near_clip" value="0.01"/>
@@ -72,7 +71,8 @@
             <string name="component_format" value="float32"/>
         </film>
     </sensor>
-    <!-- BSDFs -->
+
+
     <sensor type="perspective" id="camera4">
         <string name="fov_axis" value="smaller"/>
         <float name="near_clip" value="0.01"/>
@@ -96,7 +96,7 @@
     </sensor>
 
 
-    <!-- cameras
+   <!-- BSDFs
     <sensor type="perspective" id="camera2">
         <string name="fov_axis" value="smaller"/>
         <float name="near_clip" value="0.01"/>

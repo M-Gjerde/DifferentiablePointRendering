@@ -106,7 +106,7 @@ namespace Pale {
             // Cost weighting: keep RGB if your loss is RGB; else reduce at end
             const float3 rho = scene.materials[scene.instances[worldHit.instanceIndex].materialIndex].
                     baseColor;
-            const float3 E = gatherDiffuseIrradianceAtPoint(worldHit.hitPositionW, photonMap);
+            const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(worldHit.hitPositionW,  worldHit.geometricNormalW, photonMap);
             float3 backgroundRadianceRGB = (rho * M_1_PIf) * E;
             const float L = luminance(backgroundRadianceRGB);
 
@@ -474,7 +474,7 @@ namespace Pale {
 
         const float3 rho = scene.materials[scene.instances[worldHit.instanceIndex].materialIndex].
                 baseColor;
-        const float3 E = gatherDiffuseIrradianceAtPoint(worldHit.hitPositionW, photonMap);
+        const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(worldHit.hitPositionW,  worldHit.geometricNormalW, photonMap);
         float3 backgroundRadianceRGB = (rho * M_1_PIf) * E;
 
         struct LocalTerm {

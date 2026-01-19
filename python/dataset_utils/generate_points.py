@@ -143,7 +143,7 @@ def generate_volume_ply(
     stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
     stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    defaultOpacity = 0.4
+    defaultOpacity = 0.2
     defaultBeta = -0.0
     defaultShape = 0.0
     defaultRGB = [0.7, 0.7, 0.7]

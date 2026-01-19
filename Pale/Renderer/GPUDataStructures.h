@@ -302,7 +302,7 @@ namespace Pale {
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
 
-        float3 normalW;          //oriented surface normal in world space
+        float3 normalW{0.0f};         //oriented surface normal in world space
 
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
@@ -319,15 +319,15 @@ namespace Pale {
     struct DeviceSurfacePhotonMapGrid
     {
         float gatherRadiusWorld = 0.00f;
-        float3 cellSizeWorld = 0.5f * float3{gatherRadiusWorld};
-        float3 gridOriginWorld;
-        sycl::int3 gridResolution;
-        std::uint32_t totalCellCount;
+        float3 cellSizeWorld = float3{0};
+        float3 gridOriginWorld = float3{0};
+        sycl::int3 gridResolution = sycl::int3{0};
+        std::uint32_t totalCellCount = 0;
 
         // Photon storage (written during emission)
-        DevicePhotonSurface* photons;
-        std::uint32_t photonCapacity;
-        std::uint32_t* photonCountDevicePtr;
+        DevicePhotonSurface* photons = nullptr;
+        std::uint32_t photonCapacity = 0;
+        std::uint32_t* photonCountDevicePtr = nullptr;
 
         std::uint32_t allocatedCellCount = 0;
         std::uint32_t allocatedPhotonCapacity = 0;

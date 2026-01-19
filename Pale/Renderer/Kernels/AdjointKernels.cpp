@@ -193,7 +193,7 @@ namespace Pale {
                         == GeometryType::Mesh) {
                         const float3 rho = scene.materials[scene.instances[whTransmit.instanceIndex].materialIndex].
                                 baseColor;
-                        const float3 E = gatherDiffuseIrradianceAtPoint(whTransmit.hitPositionW, photonMap);
+                        const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(whTransmit.hitPositionW, whTransmit.geometricNormalW, photonMap);
                         L_Mesh = (rho * M_1_PIf) * E;
                     }
                     // Transmission

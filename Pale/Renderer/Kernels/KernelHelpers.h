@@ -276,11 +276,10 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline uint32_t sampleTriangleByCdf(
-        const GPUEmissiveTriangle* emissive_triangles,
+        const GPUEmissiveTriangle *emissive_triangles,
         uint32_t offset,
         uint32_t count,
-        float u)
-    {
+        float u) {
         // binary search first cdf >= u
         uint32_t lo = 0, hi = count - 1;
         while (lo < hi) {
@@ -293,107 +292,104 @@ namespace Pale {
     }
 
 
-SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
-    const GPUSceneBuffers& scene,
-    rng::Xorshift128& rng128)
-{
-    AreaLightSample sample{};
-    sample.valid = false;
+    SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
+        const GPUSceneBuffers &scene,
+        rng::Xorshift128 &rng128) {
+        AreaLightSample sample{};
+        sample.valid = false;
 
-    if (scene.lightCount == 0)
-        return sample;
+        if (scene.lightCount == 0)
+            return sample;
 
-    // 1) Pick a light (keep uniform for now; later you can switch to flux-weighted)
-    const float u_light = rng128.nextFloat();
-    const uint32_t light_index =
-        sycl::min(static_cast<uint32_t>(u_light * scene.lightCount), scene.lightCount - 1u);
+        // 1) Pick a light (keep uniform for now; later you can switch to flux-weighted)
+        const float u_light = rng128.nextFloat();
+        const uint32_t light_index =
+                sycl::min(static_cast<uint32_t>(u_light * scene.lightCount), scene.lightCount - 1u);
 
-    const GPULightRecord light = scene.lights[light_index];
-    sample.pdfSelectLight = 1.0f / static_cast<float>(scene.lightCount);
+        const GPULightRecord light = scene.lights[light_index];
+        sample.pdfSelectLight = 1.0f / static_cast<float>(scene.lightCount);
 
-    if (light.triangleCount == 0u || light.totalAreaWorld <= 0.0f)
-        return sample;
+        if (light.triangleCount == 0u || light.totalAreaWorld <= 0.0f)
+            return sample;
 
-    // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
-    const float u_tri = rng128.nextFloat();
+        // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
+        const float u_tri = rng128.nextFloat();
 
-    uint32_t tri_rel = 0u;
-    {
-        // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
-        uint32_t lo = 0u;
-        uint32_t hi = light.triangleCount - 1u;
+        uint32_t tri_rel = 0u; {
+            // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
+            uint32_t lo = 0u;
+            uint32_t hi = light.triangleCount - 1u;
 
-        while (lo < hi) {
-            const uint32_t mid = (lo + hi) >> 1u;
-            const float cdf_mid = scene.emissiveTriangles[light.triangleOffset + mid].cdf;
-            if (u_tri <= cdf_mid) {
-                hi = mid;
-            } else {
-                lo = mid + 1u;
+            while (lo < hi) {
+                const uint32_t mid = (lo + hi) >> 1u;
+                const float cdf_mid = scene.emissiveTriangles[light.triangleOffset + mid].cdf;
+                if (u_tri <= cdf_mid) {
+                    hi = mid;
+                } else {
+                    lo = mid + 1u;
+                }
             }
+            tri_rel = lo;
         }
-        tri_rel = lo;
-    }
 
-    const GPUEmissiveTriangle emissive_triangle =
-        scene.emissiveTriangles[light.triangleOffset + tri_rel];
+        const GPUEmissiveTriangle emissive_triangle =
+                scene.emissiveTriangles[light.triangleOffset + tri_rel];
 
-    const Triangle tri = scene.triangles[emissive_triangle.globalTriangleIndex];
-    const Vertex v0 = scene.vertices[tri.v0];
-    const Vertex v1 = scene.vertices[tri.v1];
-    const Vertex v2 = scene.vertices[tri.v2];
+        const Triangle tri = scene.triangles[emissive_triangle.globalTriangleIndex];
+        const Vertex v0 = scene.vertices[tri.v0];
+        const Vertex v1 = scene.vertices[tri.v1];
+        const Vertex v2 = scene.vertices[tri.v2];
 
-    // 3) Uniform barycentric sample on the triangle in OBJECT space
-    const float u1 = rng128.nextFloat();
-    const float u2 = rng128.nextFloat();
-    const float sqrt_u1 = sycl::sqrt(u1);
+        // 3) Uniform barycentric sample on the triangle in OBJECT space
+        const float u1 = rng128.nextFloat();
+        const float u2 = rng128.nextFloat();
+        const float sqrt_u1 = sycl::sqrt(u1);
 
-    const float b0 = 1.0f - sqrt_u1;
-    const float b1 = sqrt_u1 * (1.0f - u2);
-    const float b2 = sqrt_u1 * u2;
+        const float b0 = 1.0f - sqrt_u1;
+        const float b1 = sqrt_u1 * (1.0f - u2);
+        const float b2 = sqrt_u1 * u2;
 
-    const float3 p0_obj = v0.pos;
-    const float3 p1_obj = v1.pos;
-    const float3 p2_obj = v2.pos;
-    const float3 x_obj = p0_obj * b0 + p1_obj * b1 + p2_obj * b2;
+        const float3 p0_obj = v0.pos;
+        const float3 p1_obj = v1.pos;
+        const float3 p2_obj = v2.pos;
+        const float3 x_obj = p0_obj * b0 + p1_obj * b1 + p2_obj * b2;
 
-    // 4) Transform to WORLD and compute WORLD normal using WORLD vertices
-    const Transform transform = scene.transforms[light.transformIndex];
+        // 4) Transform to WORLD and compute WORLD normal using WORLD vertices
+        const Transform transform = scene.transforms[light.transformIndex];
 
-    const float3 p0_world = toWorldPoint(p0_obj, transform);
-    const float3 p1_world = toWorldPoint(p1_obj, transform);
-    const float3 p2_world = toWorldPoint(p2_obj, transform);
+        const float3 p0_world = toWorldPoint(p0_obj, transform);
+        const float3 p1_world = toWorldPoint(p1_obj, transform);
+        const float3 p2_world = toWorldPoint(p2_obj, transform);
 
-    const float3 e0_world = p1_world - p0_world;
-    const float3 e1_world = p2_world - p0_world;
+        const float3 e0_world = p1_world - p0_world;
+        const float3 e1_world = p2_world - p0_world;
 
-    float3 normal_world = float3{
-        e0_world.y() * e1_world.z() - e0_world.z() * e1_world.y(),
-        e0_world.z() * e1_world.x() - e0_world.x() * e1_world.z(),
-        e0_world.x() * e1_world.y() - e0_world.y() * e1_world.x()
-    };
+        float3 normal_world = float3{
+            e0_world.y() * e1_world.z() - e0_world.z() * e1_world.y(),
+            e0_world.z() * e1_world.x() - e0_world.x() * e1_world.z(),
+            e0_world.x() * e1_world.y() - e0_world.y() * e1_world.x()
+        };
 
-    const float normal_length = sycl::sqrt(dot(normal_world, normal_world));
-    if (normal_length <= 0.0f)
+        const float normal_length = sycl::sqrt(dot(normal_world, normal_world));
+        if (normal_length <= 0.0f)
+            return sample;
+
+        normal_world = normal_world / normal_length;
+
+        // 5) Fill sample
+        sample.positionW = toWorldPoint(x_obj, transform);
+        sample.normalW = normal_world;
+
+        // Must be RADIANCE (Le) already
+        sample.Le = light.power * light.color / (M_PIf * light.totalAreaWorld);
+
+        // Because we sampled proportional to triangle area, then uniformly on that triangle:
+        // pdfArea is uniform over the whole emitter area.
+        sample.pdfArea = 1.0f / light.totalAreaWorld;
+
+        sample.valid = true;
         return sample;
-
-    normal_world = normal_world / normal_length;
-
-    // 5) Fill sample
-    sample.positionW = toWorldPoint(x_obj, transform);
-    sample.normalW = normal_world;
-
-    // Must be RADIANCE (Le) already
-    sample.Le = light.power * light.color / (M_PIf * light.totalAreaWorld);
-
-    // Because we sampled proportional to triangle area, then uniformly on that triangle:
-    // pdfArea is uniform over the whole emitter area.
-    sample.pdfArea = 1.0f / light.totalAreaWorld;
-
-    sample.valid = true;
-    return sample;
-}
-
+    }
 
 
     SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3 &unitNormal, rng::Xorshift128 &rng, float &pdf) {
@@ -728,7 +724,32 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
         return dx * dx + dy * dy + dz * dz;
     }
 
+    inline sycl::int3 clampCell(
+        const sycl::int3 &cell,
+        const DeviceSurfacePhotonMapGrid &grid) {
+        return sycl::int3{
+            sycl::clamp(cell.x(), 0, int(grid.gridResolution.x()) - 1),
+            sycl::clamp(cell.y(), 0, int(grid.gridResolution.y()) - 1),
+            sycl::clamp(cell.z(), 0, int(grid.gridResolution.z()) - 1)
+        };
+    }
+
+
     inline int signNonZero(float x) { return (x >= 0.0f) ? 1 : -1; }
+
+    inline float3 cellToWorldCenter(
+        const sycl::int3& cellCoord,
+        const DeviceSurfacePhotonMapGrid& grid)
+    {
+        // Convert integer cell index to center position in world space
+        const float3 cellCoordFloat = float3{
+            float(cellCoord.x()) + 0.5f,
+            float(cellCoord.y()) + 0.5f,
+            float(cellCoord.z()) + 0.5f
+        };
+
+        return grid.gridOriginWorld + cellCoordFloat * grid.cellSizeWorld;
+    }
 
 
     inline sycl::int3 worldToCellClamped(const float3 &positionWorld, const DeviceSurfacePhotonMapGrid &grid) {
@@ -747,13 +768,12 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
         return cell;
     }
 
-    inline float3 gatherDiffuseIrradianceAtPoint(
-        const float3 &queryPositionWorld,
-        const DeviceSurfacePhotonMapGrid &grid,
-        int travelSideSign = 0,
-        bool readOneSidedRadiance = false,
-        uint32_t primitiveIndex = UINT32_MAX,
-        bool filterPrimitiveIndex = false) {
+    inline float3 gatherDiffuseIrradianceAtPoint2(
+    const float3 &queryPositionWorld,
+    const float3 &surfelNormalW,
+    const DeviceSurfacePhotonMapGrid &grid,
+    int travelSideSign = 0,
+    bool readOneSidedRadiance = false) {
         static constexpr uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
         const float r = grid.gatherRadiusWorld;
@@ -767,20 +787,15 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
 
         for (int cz = minCell.z(); cz <= maxCell.z(); ++cz)
             for (int cy = minCell.y(); cy <= maxCell.y(); ++cy)
-                for (int cx = minCell.x(); cx <= maxCell.x(); ++cx)
-                {
+                for (int cx = minCell.x(); cx <= maxCell.x(); ++cx) {
                     const uint32_t cell_id = linearCellIndex(sycl::int3{cx, cy, cz}, grid.gridResolution);
                     const uint32_t start = grid.cellStart[cell_id];
                     if (start == kInvalidIndex) continue;
 
                     const uint32_t end = grid.cellEnd[cell_id];
-                    for (uint32_t j = start; j < end; ++j)
-                    {
+                    for (uint32_t j = start; j < end; ++j) {
                         const uint32_t photon_index = grid.sortedPhotonIndex[j];
                         const DevicePhotonSurface ph = grid.photons[photon_index];
-
-                        if (filterPrimitiveIndex && ph.primitiveIndex != primitiveIndex)
-                            continue;
 
                         if (readOneSidedRadiance && ph.sideSign != travelSideSign)
                             continue;
@@ -796,17 +811,288 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
         return flux_sum * invArea; // irradiance estimate
     }
 
+inline float3 gatherDiffuseIrradianceAtPointNormalFiltered(
+    const float3& queryPositionWorld,
+    const float3& surfelNormalW,
+    const DeviceSurfacePhotonMapGrid& grid,
+    int travelSideSign = 0,
+    bool readOneSidedRadiance = false)
+{
+    const float r = grid.gatherRadiusWorld;
+    const float r2 = r * r;
+    const float invArea = 1.0f / (M_PIf * r2);
 
-    inline float3 computeLSurfel(const Point& surfel, const float3 &direction, const SplatEvent &splatEvent,
+    const sycl::int3 minCell = worldToCellClamped(queryPositionWorld - float3{r, r, r}, grid);
+    const sycl::int3 maxCell = worldToCellClamped(queryPositionWorld + float3{r, r, r}, grid);
+
+    float3 irradiance = float3{0.0f};
+
+    for (int cz = minCell.z(); cz <= maxCell.z(); ++cz)
+        for (int cy = minCell.y(); cy <= maxCell.y(); ++cy)
+            for (int cx = minCell.x(); cx <= maxCell.x(); ++cx)
+            {
+                const uint32_t cellId = linearCellIndex(sycl::int3{cx, cy, cz}, grid.gridResolution);
+                const uint32_t start = grid.cellStart[cellId];
+                if (start == kInvalidIndex)
+                    continue;
+
+                const uint32_t end = grid.cellEnd[cellId];
+                for (uint32_t j = start; j < end; ++j)
+                {
+                    const uint32_t photonIndex = grid.sortedPhotonIndex[j];
+                    const DevicePhotonSurface ph = grid.photons[photonIndex];
+
+                    //if (readOneSidedRadiance && ph.sideSign != travelSideSign)
+                    //    continue;
+//
+                    //if (dot(ph.normalW, surfelNormalW) <= 0.3f)
+                    //    continue;
+
+                    const float3 d = ph.position - queryPositionWorld;
+                    const float dist2 = dot(d, d);
+                    if (dist2 > r2)
+                        continue;
+
+                    irradiance += (ph.power * invArea);
+                }
+            }
+
+    return irradiance;
+}
+template<int kNumNearest>
+struct KnnBuffer
+{
+    float distanceSquared[kNumNearest];
+    uint32_t photonIndex[kNumNearest];
+
+    int count = 0;
+    int worstIndex = 0;
+    float worstDistanceSquared = FLT_MAX;
+
+    inline void clear()
+    {
+        count = 0;
+        worstIndex = 0;
+        worstDistanceSquared = FLT_MAX;
+    }
+
+    inline void recomputeWorst()
+    {
+        if (count <= 0)
+        {
+            worstIndex = 0;
+            worstDistanceSquared = FLT_MAX;
+            return;
+        }
+
+        int currentWorstIndex = 0;
+        float currentWorstDistanceSquared = distanceSquared[0];
+
+        for (int i = 1; i < count; ++i)
+        {
+            if (distanceSquared[i] > currentWorstDistanceSquared)
+            {
+                currentWorstDistanceSquared = distanceSquared[i];
+                currentWorstIndex = i;
+            }
+        }
+
+        worstIndex = currentWorstIndex;
+        worstDistanceSquared = currentWorstDistanceSquared;
+    }
+
+    inline void tryInsert(float newDistanceSquared, uint32_t newPhotonIndex)
+    {
+        // Reject NaNs early to avoid poisoning comparisons.
+        if (!(newDistanceSquared >= 0.0f) || sycl::isnan(newDistanceSquared))
+            return;
+
+        if (count < kNumNearest)
+        {
+            distanceSquared[count] = newDistanceSquared;
+            photonIndex[count] = newPhotonIndex;
+            ++count;
+
+            // Keep worstDistanceSquared valid as soon as we become full,
+            // and also correct when we just inserted the first element.
+            if (count == 1 || count == kNumNearest)
+                recomputeWorst();
+
+            return;
+        }
+
+        // Buffer full: replace current worst if better
+        if (newDistanceSquared >= worstDistanceSquared)
+            return;
+
+        distanceSquared[worstIndex] = newDistanceSquared;
+        photonIndex[worstIndex] = newPhotonIndex;
+        recomputeWorst();
+    }
+
+    inline bool isFull() const { return count == kNumNearest; }
+    inline float currentRadiusSquared() const { return worstDistanceSquared; } // valid if count>0, exact if isFull()
+};
+
+inline float3 gatherDiffuseIrradianceAtPoint(
+    const float3& queryPositionWorld,
+    const float3& surfelNormalW,
+    const DeviceSurfacePhotonMapGrid& grid,
+    int travelSideSign = 0,
+    bool readOneSidedRadiance = false)
+{
+
+    static constexpr int kNumNearest = 256;
+    KnnBuffer<kNumNearest> knn;
+
+    const float3 cellSizeWorld = grid.cellSizeWorld;
+    const sycl::int3 queryCell = worldToCellClamped(queryPositionWorld, grid);
+
+    // Must match your worldToCell mapping.
+    const float3 queryCellCenterWorld = cellToWorldCenter(queryCell, grid);
+    const float3 queryOffsetWorld = queryPositionWorld - queryCellCenterWorld;
+
+    auto processCell = [&](const sycl::int3& cellCoord)
+    {
+        const uint32_t cellId = linearCellIndex(cellCoord, grid.gridResolution);
+        const uint32_t start = grid.cellStart[cellId];
+        if (start == kInvalidIndex)
+            return;
+
+        const uint32_t end = grid.cellEnd[cellId];
+        for (uint32_t j = start; j < end; ++j)
+        {
+            const uint32_t photonArrayIndex = grid.sortedPhotonIndex[j];
+            const DevicePhotonSurface photon = grid.photons[photonArrayIndex];
+
+            // Do NOT return here; it would abort the entire cell scan.
+            if (readOneSidedRadiance && photon.sideSign != travelSideSign)
+                continue;
+
+            // Prefer weighting later. Hard-rejecting here can prevent reaching k.
+            // if (dot(photon.normalW, surfelNormalW) <= 0.3f) continue;
+
+            const float3 delta = photon.position - queryPositionWorld;
+            const float distanceSquared = dot(delta, delta);
+            knn.tryInsert(distanceSquared, photonArrayIndex);
+        }
+    };
+
+    const int maxRing = sycl::max(
+        int(grid.gridResolution.x()),
+        sycl::max(int(grid.gridResolution.y()), int(grid.gridResolution.z())));
+
+    for (int ring = 0; ring <= maxRing; ++ring)
+    {
+        const int minX = sycl::max(0, queryCell.x() - ring);
+        const int maxX = sycl::min(int(grid.gridResolution.x() - 1), queryCell.x() + ring);
+        const int minY = sycl::max(0, queryCell.y() - ring);
+        const int maxY = sycl::min(int(grid.gridResolution.y() - 1), queryCell.y() + ring);
+        const int minZ = sycl::max(0, queryCell.z() - ring);
+        const int maxZ = sycl::min(int(grid.gridResolution.z() - 1), queryCell.z() + ring);
+
+        // Shell traversal (no duplicates if the ranges collapse)
+        for (int cz = minZ; cz <= maxZ; ++cz)
+        {
+            for (int cy = minY; cy <= maxY; ++cy)
+            {
+                processCell(sycl::int3{minX, cy, cz});
+                if (maxX != minX)
+                    processCell(sycl::int3{maxX, cy, cz});
+            }
+        }
+
+        for (int cz = minZ; cz <= maxZ; ++cz)
+        {
+            for (int cx = minX + 1; cx <= maxX - 1; ++cx)
+            {
+                processCell(sycl::int3{cx, minY, cz});
+                if (maxY != minY)
+                    processCell(sycl::int3{cx, maxY, cz});
+            }
+        }
+
+        for (int cy = minY + 1; cy <= maxY - 1; ++cy)
+        {
+            for (int cx = minX + 1; cx <= maxX - 1; ++cx)
+            {
+                processCell(sycl::int3{cx, cy, minZ});
+                if (maxZ != minZ)
+                    processCell(sycl::int3{cx, cy, maxZ});
+            }
+        }
+
+        // Conservative exact stop condition for anisotropic cell sizes.
+        if (knn.isFull())
+        {
+            const float3 visitedHalfExtentWorld = (float(ring) + 0.5f) * cellSizeWorld;
+
+            float dx = visitedHalfExtentWorld.x() - sycl::fabs(queryOffsetWorld.x());
+            float dy = visitedHalfExtentWorld.y() - sycl::fabs(queryOffsetWorld.y());
+            float dz = visitedHalfExtentWorld.z() - sycl::fabs(queryOffsetWorld.z());
+
+            dx = sycl::fmax(dx, 0.0f);
+            dy = sycl::fmax(dy, 0.0f);
+            dz = sycl::fmax(dz, 0.0f);
+
+            const float minOutsideDistance = sycl::fmin(dx, sycl::fmin(dy, dz));
+            const float minOutsideDistance2 = minOutsideDistance * minOutsideDistance;
+
+            if (minOutsideDistance2 >= knn.currentRadiusSquared())
+                break;
+        }
+    }
+
+    if (knn.count == 0)
+        return float3{0.0f};
+
+    const float radiusSquared = knn.currentRadiusSquared();
+    if (!(radiusSquared > 0.0f) || sycl::isnan(radiusSquared))
+        return float3{0.0f};
+
+    const float invArea = 1.0f / (M_PIf * radiusSquared);
+
+    float3 irradiance = float3{0.0f};
+
+    for (int i = 0; i < knn.count; ++i)
+    {
+        const DevicePhotonSurface photon = grid.photons[knn.photonIndex[i]];
+
+        if (readOneSidedRadiance && photon.sideSign != travelSideSign)
+            continue;
+
+        // If you want normal filtering, do it here as weight to avoid destabilizing KNN:
+        // const float normalWeight = sycl::fmax(0.0f, dot(photon.normalW, surfelNormalW));
+        // irradiance += photon.power * (invArea * normalWeight);
+
+        irradiance += photon.power * invArea;
+    }
+
+    return irradiance;
+}
+
+
+    inline float3 computeLSurfel(const Point &surfel, const float3 &direction, const SplatEvent &splatEvent,
                                  const DeviceSurfacePhotonMapGrid &photonMap) {
 
         const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-        int travelSideSign = signNonZero(dot(canonicalNormalW, -direction));
+        const int travelSideSign = signNonZero(dot(canonicalNormalW, -direction));
+
+        const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
         const float3 rho = surfel.albedo;
-        const float3 E_front = gatherDiffuseIrradianceAtPoint(splatEvent.hitWorld, photonMap, travelSideSign, true, splatEvent.primitiveIndex, true);
-        const float3 E_back = gatherDiffuseIrradianceAtPoint(splatEvent.hitWorld, photonMap, -travelSideSign, true, splatEvent.primitiveIndex, true);
-        float3 surfelShadedRadiance = (E_front * 0.5f + E_back * 0.5f) * (rho * M_1_PIf);
+
+        const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+            splatEvent.hitWorld,
+            frontNormalW,
+            photonMap,
+            travelSideSign,
+            true
+        );
+
+        float3 surfelShadedRadiance = E * (rho * M_1_PIf);
         return surfelShadedRadiance;
+
+        return float3{0.0f};
     }
 
     /*
@@ -1015,8 +1301,6 @@ SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
     }
 
         */
-
-
 
 
     inline void atomicAddFloat4ToImage(float4 *dst, const float4 &v) {

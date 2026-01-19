@@ -629,7 +629,11 @@
 
 
     <bsdf type="diffuse" id="blender_floor">
-        <rgb name="reflectance" value="0.44, 0.24, 0.11"/>
+        <rgb name="reflectance" value="0.425, 0.225, 0.11"/>
+    </bsdf>
+
+    <bsdf type="diffuse" id="blender_teapot">
+        <rgb name="reflectance" value="0.1, 0.3, 0.3"/>
     </bsdf>
 
     <shape type="obj" id="light1">

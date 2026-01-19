@@ -111,7 +111,7 @@
 
 
     <bsdf type="diffuse" id="blender_floor">
-        <rgb name="reflectance" value="0.44, 0.24, 0.11"/>
+        <rgb name="reflectance" value="0.425, 0.225, 0.11"/>
     </bsdf>
 
     <shape type="obj" id="light1">
@@ -127,7 +127,7 @@
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
             <rgb name="color" value="1, 1, 1"/>
-            <float name="power" value="500"/>
+            <float name="power" value="50"/>
         </emitter>
     </shape>
 
@@ -144,7 +144,7 @@
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
             <rgb name="color" value="1, 1, 1"/>
-            <float name="power" value="500"/>
+            <float name="power" value="50"/>
         </emitter>
     </shape>
 
@@ -157,6 +157,7 @@
         </transform>
         <ref id="blender_floor"/>
     </shape>
+
 
 
 

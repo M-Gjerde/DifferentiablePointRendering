@@ -25,7 +25,7 @@ namespace Pale {
 
     void launchContributionKernel(RenderPackage &pkg, uint32_t activeRayCount);
 
-    void launchCameraGatherKernel(RenderPackage &pkg, int sppTotal);
+    void launchCameraGatherKernel(RenderPackage &pkg, int sppTotal, uint32_t cameraIndex);
 
     void generateNextRays(RenderPackage &pkg, uint32_t activeRayCount);
 } // Pale

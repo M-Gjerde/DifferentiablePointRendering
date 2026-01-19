@@ -147,6 +147,7 @@ namespace Pale {
                     float3 sampledOutgoingDirectionW = rayState.ray.direction;
                     float3 throughputMultiplier = float3(1.0f);
 
+                    bool chooseReflect = false;
                     // If we hit instance was a mesh do ordinary BRDF stuff.
                     if (instance.geometryType == GeometryType::Mesh) {
                         float sampledPdf = 0.0f;
@@ -156,6 +157,7 @@ namespace Pale {
                         const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, enteredSideNormalW));
                         const float3 lambertBrdf = material.baseColor * M_1_PIf;
                         throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf) * worldHit.transmissivity;
+                        chooseReflect = true;
                     }
                     // If our hit instance was a point cloud it means we hit a surfel
                     // Now we do either BRDF or BTDF
@@ -163,7 +165,7 @@ namespace Pale {
                         // SURFACE EVENT
                         // 50/50 reflect vs transmit for a symmetric diffuse sheet
                         float probReflect = 0.5f;
-                        const bool chooseReflect = (rng128.nextFloat() < probReflect);
+                        chooseReflect = (rng128.nextFloat() < probReflect);
 
                         float sampledPdf = 0.0f;
                         float cosTheta = 0.0f;
@@ -196,6 +198,7 @@ namespace Pale {
                                 photonCounter(devicePtr);
 
                         // Also deposit splatEvents
+
                         for (const auto &event: worldHit.splatEvents) {
                             if (event.t >= worldHit.t)
                                 continue;
@@ -209,7 +212,7 @@ namespace Pale {
                                 const float eta = surfel.opacity;
                                 const float alphaEff = alphaGeom * eta;
 
-                                const float depositWeight = event.tau * alphaEff;
+                                const float depositWeight = event.tau;
                                 photonEntry.power = rayState.pathThroughput * depositWeight;
 
                                 const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
@@ -228,6 +231,7 @@ namespace Pale {
                             }
                         }
                         const uint32_t slot = photonCounter.fetch_add(1u);
+
                         if (slot < intermediates.map.photonCapacity) {
                             DevicePhotonSurface photonEntry{};
                             photonEntry.position = worldHit.hitPositionW;
@@ -248,7 +252,7 @@ namespace Pale {
                                 const float alphaGeomHit = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
                                 const float etaHit       = scene.points[worldHit.primitiveIndex].opacity;
                                 const float alphaEffHit  = alphaGeomHit * etaHit;
-                                depositWeight = worldHit.transmissivity * alphaEffHit;
+                                depositWeight = worldHit.transmissivity;
                             }
 
                             const float signedCosineIncident = dot(baseNormalW, -rayState.ray.direction);
@@ -310,7 +314,7 @@ namespace Pale {
     }
 
     // ---- Kernel: Camera gather (one thread per pixel) --------------------------
-    void launchCameraGatherKernel(RenderPackage &pkg, int totalSamplesPerPixel) {
+    void launchCameraGatherKernel(RenderPackage &pkg, int totalSamplesPerPixel, uint32_t cameraIndex) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
@@ -318,7 +322,7 @@ namespace Pale {
         uint64_t baseSeed = pkg.settings.randomSeed;
 
         queue.wait();
-        for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+
             // Host-side (before launching kernel)
             SensorGPU sensor = pkg.sensor[cameraIndex];
 
@@ -406,32 +410,23 @@ namespace Pale {
                             const Point &surfel = scene.points[terminalSplatEvent.primitiveIndex];
 
 
-                            /*
-                            // Shade surfel from photon map (front/back)
-                            const bool useOneSidedScatter = true;
-                            float3 surfelRadianceFront =
-                                    estimateSurfelRadianceFromPhotonMap(
-                                        terminalSplatEvent,
-                                        primaryRay.direction,
-                                        scene,
-                                        photonMap,
-                                        useOneSidedScatter, true, true, true);
-
-                            float3 surfelRadianceBack =
-                                    estimateSurfelRadianceFromPhotonMap(
-                                        terminalSplatEvent,
-                                        -primaryRay.direction,
-                                        scene,
-                                        photonMap,
-                                        useOneSidedScatter, true, true, true);
-                            */
                             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                            int travelSideSign = signNonZero(dot(canonicalNormalW, -primaryRay.direction));
-                            const float3 rho = surfel.albedo;
-                            const float3 E_front = gatherDiffuseIrradianceAtPoint(terminalSplatEvent.hitWorld, photonMap, travelSideSign, true, terminalSplatEvent.primitiveIndex, true);
-                            const float3 E_back = gatherDiffuseIrradianceAtPoint(terminalSplatEvent.hitWorld, photonMap, -travelSideSign, true, terminalSplatEvent.primitiveIndex, true);
+                            const int travelSideSign = signNonZero(dot(canonicalNormalW, -primaryRay.direction));
 
-                            float3 surfelShadedRadiance = (E_front * 0.5f + E_back * 0.5f) * (rho * M_1_PIf);
+                            const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
+                            const float3 backNormalW  = -frontNormalW;
+
+                            const float3 rho = surfel.albedo;
+
+                            const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+                                terminalSplatEvent.hitWorld,
+                                frontNormalW,
+                                photonMap,
+                                travelSideSign,
+                                true
+                            );
+
+                            float3 surfelShadedRadiance = E * (rho * M_1_PIf);
 
 
                             const float alphaGeom = terminalSplatEvent.alpha; // α(u,v)
@@ -489,7 +484,7 @@ namespace Pale {
 
                             const float3 rho = material.baseColor;
 
-                            const float3 E = gatherDiffuseIrradianceAtPoint(transmitWorldHit.hitPositionW, photonMap);
+                            const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(transmitWorldHit.hitPositionW, transmitWorldHit.geometricNormalW, photonMap);
                             const float3 Lo = (rho * M_1_PIf) * E;
 
                             accumulatedRadianceRGB += transmittanceTau * Lo;
@@ -509,7 +504,6 @@ namespace Pale {
                         sensor.framebuffer[framebufferIndex] = previousValue + currentValue;
                     });
             }).wait();
-        }
     }
 
 

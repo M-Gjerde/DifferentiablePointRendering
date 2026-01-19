@@ -216,8 +216,9 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    serializer.deserialize("scene_blender_30.xml");
-    //serializer.deserialize("scene_blender_1.xml");
+    //serializer.deserialize("scene_blender_30.xml");
+    serializer.deserialize("scene_blender_1.xml");
+    //serializer.deserialize("scene_blender_4.xml");
     //serializer.deserialize("scene_blender_debug.xml");
     //serializer.deserialize("cbox_custom.xml");
 
@@ -242,9 +243,9 @@ int main(int argc, char **argv) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.15f, 0.1f, 0.3f));
-        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 4.0f, 0.0f));
-        bunnyTransformComponent.setScale(glm::vec3(1.3f));
+        bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.0f, 0.0f));
+        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 0.0f));
+        bunnyTransformComponent.setScale(glm::vec3(1.0f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
@@ -255,7 +256,7 @@ int main(int argc, char **argv) {
 
         // 3) Material
         Pale::AssetHandle bunnyMaterialAssetHandle =
-                assetIndexer.importPath("Materials/cbox_custom/bsdf_yellow_0.mat.yaml", Pale::AssetType::Material);
+                assetIndexer.importPath("Materials/scene_blender_30/bsdf_blender_teapot_0.mat.yaml", Pale::AssetType::Material);
 
         auto &bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
