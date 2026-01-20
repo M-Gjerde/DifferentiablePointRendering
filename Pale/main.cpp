@@ -216,8 +216,8 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    //serializer.deserialize("scene_blender_30.xml");
-    serializer.deserialize("scene_blender_1.xml");
+    serializer.deserialize("scene_blender_30.xml");
+    //serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene_blender_4.xml");
     //serializer.deserialize("scene_blender_debug.xml");
     //serializer.deserialize("cbox_custom.xml");
@@ -277,7 +277,7 @@ int main(int argc, char **argv) {
     //  cuda/rocm
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e6;
-    settings.maxBounces = 4;
+    settings.maxBounces = 3;
     settings.numForwardPasses = 10;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
@@ -293,6 +293,9 @@ int main(int argc, char **argv) {
 
     std::vector<Pale::SensorGPU> sensors =
             Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+
+    //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
+    //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
 
     tracer.renderForward(sensors); // films is span/array
 

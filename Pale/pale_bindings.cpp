@@ -106,6 +106,9 @@ public:
         sceneGpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector->getQueue());
 
         sensorsForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
+        //Pale::setBackgroundColor(deviceSelector->getQueue(), sensorsForward, color);
+
         sensorsAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts, true, true);
         debugImages.resize(sensorsForward.size());
         gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());

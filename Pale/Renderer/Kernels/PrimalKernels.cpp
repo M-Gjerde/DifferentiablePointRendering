@@ -48,13 +48,13 @@ namespace Pale {
                     const float cosTheta = sycl::fmax(0.0f, dot(sampledDirectionW, ls.normalW));
                     if (cosTheta <= 0.0f) return;
 
-                    const float pdfPos   = ls.pdfArea;        // 1/A
+                    const float pdfPos = ls.pdfArea; // 1/A
                     const float pdfLight = ls.pdfSelectLight; // 1/lightCount
                     const float pdfTotal = pdfLight * pdfPos * pdfDir;
 
                     // Correct: include cosTheta from dPhi = Le cos dA dω
                     const float3 initialThroughput =
-                        ls.Le * (cosTheta / pdfTotal) / totalPhotons;
+                            ls.Le * (cosTheta / pdfTotal) / totalPhotons;
 
                     RayState ray{};
                     ray.ray.origin = ls.positionW + ls.normalW * 1e-5f;
@@ -186,7 +186,6 @@ namespace Pale {
 
                         const float3 lambertBrdf = baseColor * M_1_PIf; // ρ/π
                         throughputMultiplier = lambertBrdf * (cosTheta / sampledPdf);
-
                     }
 
                     if (settings.rayGenMode == RayGenMode::Emitter) {
@@ -246,12 +245,12 @@ namespace Pale {
                                 primitiveIndexForDeposit = worldHit.instanceIndex;
                                 depositWeight = worldHit.transmissivity;
                             } else {
-                                const Point& surfel = scene.points[worldHit.primitiveIndex];
+                                const Point &surfel = scene.points[worldHit.primitiveIndex];
                                 baseNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                                 primitiveIndexForDeposit = worldHit.primitiveIndex;
                                 const float alphaGeomHit = worldHit.splatEvents[worldHit.splatEventCount - 1].alpha;
-                                const float etaHit       = scene.points[worldHit.primitiveIndex].opacity;
-                                const float alphaEffHit  = alphaGeomHit * etaHit;
+                                const float etaHit = scene.points[worldHit.primitiveIndex].opacity;
+                                const float alphaEffHit = alphaGeomHit * etaHit;
                                 depositWeight = worldHit.transmissivity;
                             }
 
@@ -280,8 +279,6 @@ namespace Pale {
                     nextState.ray.normal = worldHit.geometricNormalW;
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;
-                    nextState.pixelX = rayState.pixelX;
-                    nextState.pixelY = rayState.pixelY;
                     nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
 
                     // --- Russian roulette termination (after computing nextState) ---
@@ -321,189 +318,188 @@ namespace Pale {
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
         uint64_t baseSeed = pkg.settings.randomSeed;
 
-        queue.wait();
 
-            // Host-side (before launching kernel)
-            SensorGPU sensor = pkg.sensor[cameraIndex];
+        // Host-side (before launching kernel)
+        SensorGPU sensor = pkg.sensor[cameraIndex];
 
-            // ReSharper disable once CppDFAUnreachableCode
-            const std::uint32_t imageWidth = sensor.camera.width;
-            const std::uint32_t imageHeight = sensor.camera.height;
-            const std::uint32_t pixelCount = imageWidth * imageHeight;
-            pkg.queue.fill(sensor.framebuffer, float4{0}, pixelCount).wait();
+        // ReSharper disable once CppDFAUnreachableCode
+        const std::uint32_t imageWidth = sensor.camera.width;
+        const std::uint32_t imageHeight = sensor.camera.height;
+        const std::uint32_t pixelCount = imageWidth * imageHeight;
+        pkg.queue.fill(sensor.framebuffer, float4{0}, pixelCount).wait();
 
-            // Clear framebuffer before calling this, outside.
-            queue.submit([&](sycl::handler &cgh) {
-                auto samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
+        // Clear framebuffer before calling this, outside.
+        queue.submit([&](sycl::handler &cgh) {
+            auto samplesPerPixel = static_cast<float>(totalSamplesPerPixel);
 
-                cgh.parallel_for<class CameraGatherKernel>(
-                    sycl::range<1>(pixelCount),
-                    [=](sycl::id<1> tid) {
-                        const std::uint32_t pixelIndex = tid[0];
-                        const std::uint32_t pixelX = pixelIndex % imageWidth;
-                        const std::uint32_t pixelY = pixelIndex / imageWidth;
+            cgh.parallel_for<class CameraGatherKernel>(
+                sycl::range<1>(pixelCount),
+                [=](sycl::id<1> tid) {
+                    const std::uint32_t pixelIndex = tid[0];
+                    const std::uint32_t pixelX = pixelIndex % imageWidth;
+                    const std::uint32_t pixelY = pixelIndex / imageWidth;
 
-                        rng::Xorshift128 randomNumberGenerator(
-                            rng::makePerItemSeed1D(baseSeed, pixelIndex));
+                    rng::Xorshift128 randomNumberGenerator(
+                        rng::makePerItemSeed1D(baseSeed, pixelIndex));
 
-                        float3 accumulatedRadianceRGB(0.0f);
+                    float3 accumulatedRadianceRGB(0.0f);
 
-                        // Subpixel jitter
-                        const float jitterX = randomNumberGenerator.nextFloat() - 0.5f;
-                        const float jitterY = randomNumberGenerator.nextFloat() - 0.5f;
+                    // Subpixel jitter
+                    const float jitterX = randomNumberGenerator.nextFloat() - 0.5f;
+                    const float jitterY = randomNumberGenerator.nextFloat() - 0.5f;
 
-                        Ray primaryRay = makePrimaryRayFromPixelJittered(
-                            sensor.camera,
-                            static_cast<float>(pixelX),
-                            static_cast<float>(pixelY),
-                            jitterX,
-                            jitterY);
-                        int pixelYFlipped = imageHeight - 1 - pixelY;
-                        bool isWatched = false;
+                    Ray primaryRay = makePrimaryRayFromPixelJittered(
+                        sensor.camera,
+                        static_cast<float>(pixelX),
+                        static_cast<float>(pixelY),
+                        jitterX,
+                        jitterY);
+                    int pixelYFlipped = imageHeight - 1 - pixelY;
+                    bool isWatched = false;
 
-                        if (pixelX == 240 && pixelYFlipped == 250) {
-                            isWatched = true;
+                    if (pixelX == 240 && pixelYFlipped == 250) {
+                        isWatched = true;
+                        int debug = 1;
+                    }
+                    //if (pixelX == 200 && pixelYFlipped == 325) {
+                    if (pixelX == 260 && pixelYFlipped == 250) {
+                        isWatched = true;
+                        int debug = 1;
+                    }
+
+                    if (!isWatched) {
+                        //return;
+                    }
+
+                    // -----------------------------------------------------------------
+                    // 1) Transmit ray: collect all splat events + terminal mesh hit
+                    // -----------------------------------------------------------------
+                    WorldHit transmitWorldHit{};
+                    intersectScene(primaryRay,
+                                   &transmitWorldHit,
+                                   scene,
+                                   randomNumberGenerator,
+                                   RayIntersectMode::Transmit);
+
+                    if (!transmitWorldHit.hit && !transmitWorldHit.splatEventCount) {
+                        // No geometry / environment handled elsewhere
+                        return;
+                    }
+
+                    buildIntersectionNormal(scene, transmitWorldHit);
+
+                    //if (pixelX == 200 && pixelY == 325) {
+
+                    // -----------------------------------------------------------------
+                    // 2) For each surfel along the transmit segment, fire a scatter ray
+                    //    and shade that surfel from the photon map.
+                    // -----------------------------------------------------------------
+                    float transmittanceTau = 1.0f;
+                    const std::uint32_t numberOfSurfelsOnRay =
+                            static_cast<std::uint32_t>(transmitWorldHit.splatEventCount);
+
+                    for (std::uint32_t surfelEventIndex = 0;
+                         surfelEventIndex < numberOfSurfelsOnRay;
+                         ++surfelEventIndex) {
+                        const SplatEvent &terminalSplatEvent =
+                                transmitWorldHit.splatEvents[surfelEventIndex];
+                        const Point &surfel = scene.points[terminalSplatEvent.primitiveIndex];
+
+
+                        const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                        const int travelSideSign = signNonZero(dot(canonicalNormalW, -primaryRay.direction));
+
+                        const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
+                        const float3 backNormalW = -frontNormalW;
+
+                        const float3 rho = surfel.albedo;
+
+                        const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+                            terminalSplatEvent.hitWorld,
+                            frontNormalW,
+                            photonMap,
+                            travelSideSign,
+                            true
+                        );
+
+                        float3 surfelShadedRadiance = E * (rho * M_1_PIf);
+
+
+                        const float alphaGeom = terminalSplatEvent.alpha; // α(u,v)
+                        const float eta = surfel.opacity; // eta
+                        const float surfelOpacity = eta * alphaGeom; // α_eff = eta α
+
+                        const float oneMinusTotalOpacity = 1.0f - surfelOpacity;
+
+                        accumulatedRadianceRGB += transmittanceTau * surfelOpacity * surfelShadedRadiance;
+
+
+                        transmittanceTau *= oneMinusTotalOpacity;
+
+
+                        if (isWatched)
                             int debug = 1;
+
+                        if (transmittanceTau <= 1e-4f) {
+                            // Almost fully opaque, no need to continue
+                            break;
                         }
-                        //if (pixelX == 200 && pixelYFlipped == 325) {
-                        if (pixelX == 260 && pixelYFlipped == 250) {
-                            isWatched = true;
-                            int debug = 1;
-                        }
+                    }
 
-                        if (!isWatched) {
-                            //return;
-                        }
+                    // -----------------------------------------------------------------
+                    // 3) Shade terminal mesh (if any) with remaining transmittance
+                    // -----------------------------------------------------------------
+                    if (transmitWorldHit.instanceIndex != UINT32_MAX) {
+                        auto &terminalInstance = scene.instances[transmitWorldHit.instanceIndex];
 
-                        // -----------------------------------------------------------------
-                        // 1) Transmit ray: collect all splat events + terminal mesh hit
-                        // -----------------------------------------------------------------
-                        WorldHit transmitWorldHit{};
-                        intersectScene(primaryRay,
-                                       &transmitWorldHit,
-                                       scene,
-                                       randomNumberGenerator,
-                                       RayIntersectMode::Transmit);
+                        const GPUMaterial &material =
+                                scene.materials[terminalInstance.materialIndex];
 
-                        if (!transmitWorldHit.hit && !transmitWorldHit.splatEventCount) {
-                            // No geometry / environment handled elsewhere
-                            return;
-                        }
+                        if (material.isEmissive()) {
+                            const float distanceToCamera =
+                                    length(transmitWorldHit.hitPositionW - primaryRay.origin);
+                            const float surfaceCosine =
+                                    sycl::fmax(0.f, dot(transmitWorldHit.geometricNormalW,
+                                                        -primaryRay.direction));
+                            const float cameraCosine =
+                                    sycl::fmax(0.f, dot(sensor.camera.forward,
+                                                        primaryRay.direction));
 
-                        buildIntersectionNormal(scene, transmitWorldHit);
-
-                        //if (pixelX == 200 && pixelY == 325) {
-
-                        // -----------------------------------------------------------------
-                        // 2) For each surfel along the transmit segment, fire a scatter ray
-                        //    and shade that surfel from the photon map.
-                        // -----------------------------------------------------------------
-                        float transmittanceTau = 1.0f;
-                        const std::uint32_t numberOfSurfelsOnRay =
-                                static_cast<std::uint32_t>(transmitWorldHit.splatEventCount);
-
-                        for (std::uint32_t surfelEventIndex = 0;
-                             surfelEventIndex < numberOfSurfelsOnRay;
-                             ++surfelEventIndex) {
-                            const SplatEvent &terminalSplatEvent =
-                                    transmitWorldHit.splatEvents[surfelEventIndex];
-                            const Point &surfel = scene.points[terminalSplatEvent.primitiveIndex];
+                            const float geometricToCamera =
+                                    (surfaceCosine * cameraCosine) /
+                                    (distanceToCamera * distanceToCamera + 1e-8f);
 
 
-                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                            const int travelSideSign = signNonZero(dot(canonicalNormalW, -primaryRay.direction));
+                            const float3 emittedRadiance =
+                                    material.power * material.baseColor * transmittanceTau * geometricToCamera;
 
-                            const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
-                            const float3 backNormalW  = -frontNormalW;
-
-                            const float3 rho = surfel.albedo;
-
-                            const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
-                                terminalSplatEvent.hitWorld,
-                                frontNormalW,
-                                photonMap,
-                                travelSideSign,
-                                true
-                            );
-
-                            float3 surfelShadedRadiance = E * (rho * M_1_PIf);
-
-
-                            const float alphaGeom = terminalSplatEvent.alpha; // α(u,v)
-                            const float eta = surfel.opacity; // eta
-                            const float surfelOpacity = eta * alphaGeom; // α_eff = eta α
-
-                            const float oneMinusTotalOpacity = 1.0f - surfelOpacity;
-
-                            accumulatedRadianceRGB += transmittanceTau * surfelOpacity * surfelShadedRadiance;
-
-
-                            transmittanceTau *= oneMinusTotalOpacity;
-
-
-                            if (isWatched)
-                                int debug = 1;
-
-                            if (transmittanceTau <= 1e-4f) {
-                                // Almost fully opaque, no need to continue
-                                break;
-                            }
+                            accumulatedRadianceRGB += emittedRadiance;
+                        } else {
                         }
 
-                        // -----------------------------------------------------------------
-                        // 3) Shade terminal mesh (if any) with remaining transmittance
-                        // -----------------------------------------------------------------
-                        if (transmitWorldHit.instanceIndex != UINT32_MAX) {
-                            auto &terminalInstance = scene.instances[transmitWorldHit.instanceIndex];
+                        const float3 rho = material.baseColor;
 
-                            const GPUMaterial &material =
-                                    scene.materials[terminalInstance.materialIndex];
+                        const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+                            transmitWorldHit.hitPositionW, transmitWorldHit.geometricNormalW, photonMap);
+                        const float3 Lo = (rho * M_1_PIf) * E;
 
-                            if (material.isEmissive()) {
-                                const float distanceToCamera =
-                                        length(transmitWorldHit.hitPositionW - primaryRay.origin);
-                                const float surfaceCosine =
-                                        sycl::fmax(0.f, dot(transmitWorldHit.geometricNormalW,
-                                                            -primaryRay.direction));
-                                const float cameraCosine =
-                                        sycl::fmax(0.f, dot(sensor.camera.forward,
-                                                            primaryRay.direction));
+                        accumulatedRadianceRGB += transmittanceTau * Lo;
+                    }
+                    // -----------------------------------------------------------------
+                    // 4) Atomic accumulate into framebuffer
+                    // -----------------------------------------------------------------
+                    const std::uint32_t framebufferIndex =
+                            pixelY * imageWidth + pixelX;
+                    float4 previousValue = sensor.framebuffer[framebufferIndex];
+                    float4 currentValue =
+                            float4(accumulatedRadianceRGB.x(),
+                                   accumulatedRadianceRGB.y(),
+                                   accumulatedRadianceRGB.z(),
+                                   1.0f) / samplesPerPixel;
 
-                                const float geometricToCamera =
-                                        (surfaceCosine * cameraCosine) /
-                                        (distanceToCamera * distanceToCamera + 1e-8f);
-
-
-                                const float3 emittedRadiance =
-                                        material.power * material.baseColor * transmittanceTau * geometricToCamera;
-
-                                accumulatedRadianceRGB += emittedRadiance;
-
-                            } else {
-                            }
-
-                            const float3 rho = material.baseColor;
-
-                            const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(transmitWorldHit.hitPositionW, transmitWorldHit.geometricNormalW, photonMap);
-                            const float3 Lo = (rho * M_1_PIf) * E;
-
-                            accumulatedRadianceRGB += transmittanceTau * Lo;
-                        }
-                        // -----------------------------------------------------------------
-                        // 4) Atomic accumulate into framebuffer
-                        // -----------------------------------------------------------------
-                        const std::uint32_t framebufferIndex =
-                                pixelY * imageWidth + pixelX;
-                        float4 previousValue = sensor.framebuffer[framebufferIndex];
-                        float4 currentValue =
-                                float4(accumulatedRadianceRGB.x(),
-                                       accumulatedRadianceRGB.y(),
-                                       accumulatedRadianceRGB.z(),
-                                       1.0f) / samplesPerPixel;
-
-                        sensor.framebuffer[framebufferIndex] = previousValue + currentValue;
-                    });
-            }).wait();
+                    sensor.framebuffer[framebufferIndex] = previousValue + currentValue;
+                });
+        });
     }
 
 
@@ -597,7 +593,7 @@ namespace Pale {
                     grid.sortedPhotonIndex[writeIndex] = i;
                 }
             });
-        }).wait();
+        });
     }
 
     static constexpr std::uint32_t kScanBlockSize = 1024;

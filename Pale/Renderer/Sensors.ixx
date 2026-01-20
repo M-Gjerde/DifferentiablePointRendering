@@ -94,6 +94,16 @@ export namespace Pale {
         return sensorDevices;
     }
 
+    void setBackgroundColor(sycl::queue queue, std::vector<SensorGPU> sensors, float4 color) {
+
+        for (auto& sensor : sensors) {
+            queue.fill(sensor.framebuffer, color, sensor.width * sensor.height);
+            queue.wait();
+        }
+
+
+    }
+
     PointGradients
     makeGradientsForScene(sycl::queue queue,
                           const SceneBuild::BuildProducts& buildProducts, DebugImages* debugImages) {

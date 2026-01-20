@@ -10,7 +10,7 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 3
-    forward_passes: int = 10
+    forward_passes: int = 5
     gather_passes: int = 1
     adjoint_bounces: int = 2
     adjoint_passes: int = 1
@@ -219,20 +219,20 @@ def parse_args() -> OptimizationConfig:
 
     # 3DGS-inspired relative factors w.r.t. position LR
     factor_position = lr_scale * 0.005  # ~rotation_lr / position_lr
-    factor_tangent  = lr_scale * 0.1   # ~rotation_lr / position_lr
-    factor_scale    = lr_scale * 0.01   # ~scaling_lr / position_lr
+    factor_tangent  = lr_scale * 0.5    # ~rotation_lr / position_lr
+    factor_scale    = lr_scale * 0.001   # ~scaling_lr / position_lr
     factor_albedo   = lr_scale * 0.05    # ~feature_lr / position_lr
     factor_opacity  = lr_scale * 0.05    # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 0.01  # ~beta_lr / position_lr
+    factor_beta     = lr_scale * 0.005    # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr
-    factor_tangent  = lr_scale * 0  # ~rotation_lr / position_lr
+    #factor_tangent  = lr_scale * 0  # ~rotation_lr / position_lr
     #factor_scale    = lr_scale * 0  # ~scaling_lr / position_lr
     #factor_albedo   = lr_scale * 0  # ~feature_lr / position_lr
-    factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 0  # ~beta_lr / position_lr
-
+    #factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
+    #factor_beta     = lr_scale * 0  # ~beta_lr / position_lr
+#
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)
     lr_scale = args.learning_rate_scale or (factor_scale * base_lr)

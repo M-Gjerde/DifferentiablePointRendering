@@ -121,6 +121,10 @@ def load_surfels_from_ply(
             color1.append(float(parts[12]))
             color2.append(float(parts[13]))
 
+            #color0.append(float(0.7))
+            #color1.append(float(0.99))
+            #color2.append(float(0.99))
+
     if len(pkX) == 0:
         raise RuntimeError(f"No points loaded from '{plyPath}'. Try lowering --opacity-threshold.")
 

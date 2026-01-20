@@ -68,6 +68,7 @@ namespace Pale {
                 for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
                     ScopedTimer timer("launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" + std::to_string(pkg.numSensors), spdlog::level::debug);
                     launchCameraGatherKernel(pkg, cameraGatherSPP, cameraIndex); // generate image from photon map
+                    pkg.queue.wait();
                 }
             }
             // Post processing:

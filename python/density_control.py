@@ -238,7 +238,7 @@ def compute_prune_indices_by_opacity(
         threshold = float(min_opacity)
 
     # Candidates whose opacity is below threshold
-    candidate_mask = opa < threshold
+    candidate_mask = opa <= threshold
     candidate_indices = np.nonzero(candidate_mask)[0]  # int64
 
     if candidate_indices.size == 0:

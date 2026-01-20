@@ -859,6 +859,7 @@ inline float3 gatherDiffuseIrradianceAtPointNormalFiltered(
 
     return irradiance;
 }
+
 template<int kNumNearest>
 struct KnnBuffer
 {
@@ -934,7 +935,7 @@ struct KnnBuffer
     inline float currentRadiusSquared() const { return worstDistanceSquared; } // valid if count>0, exact if isFull()
 };
 
-inline float3 gatherDiffuseIrradianceAtPoint(
+inline float3 gatherDiffuseIrradianceAtPointKNN(
     const float3& queryPositionWorld,
     const float3& surfelNormalW,
     const DeviceSurfacePhotonMapGrid& grid,
@@ -942,7 +943,7 @@ inline float3 gatherDiffuseIrradianceAtPoint(
     bool readOneSidedRadiance = false)
 {
 
-    static constexpr int kNumNearest = 256;
+    static constexpr int kNumNearest = 16;
     KnnBuffer<kNumNearest> knn;
 
     const float3 cellSizeWorld = grid.cellSizeWorld;
@@ -966,8 +967,8 @@ inline float3 gatherDiffuseIrradianceAtPoint(
             const DevicePhotonSurface photon = grid.photons[photonArrayIndex];
 
             // Do NOT return here; it would abort the entire cell scan.
-            if (readOneSidedRadiance && photon.sideSign != travelSideSign)
-                continue;
+            //if (readOneSidedRadiance && photon.sideSign != travelSideSign)
+            //    continue;
 
             // Prefer weighting later. Hard-rejecting here can prevent reaching k.
             // if (dot(photon.normalW, surfelNormalW) <= 0.3f) continue;
@@ -980,7 +981,7 @@ inline float3 gatherDiffuseIrradianceAtPoint(
 
     const int maxRing = sycl::max(
         int(grid.gridResolution.x()),
-        sycl::max(int(grid.gridResolution.y()), int(grid.gridResolution.z())));
+        sycl::max(int(grid.gridResolution.y()), int(grid.gridResolution.z()))) / 5;
 
     for (int ring = 0; ring <= maxRing; ++ring)
     {
@@ -1057,9 +1058,6 @@ inline float3 gatherDiffuseIrradianceAtPoint(
     for (int i = 0; i < knn.count; ++i)
     {
         const DevicePhotonSurface photon = grid.photons[knn.photonIndex[i]];
-
-        if (readOneSidedRadiance && photon.sideSign != travelSideSign)
-            continue;
 
         // If you want normal filtering, do it here as weight to avoid destabilizing KNN:
         // const float normalWeight = sycl::fmax(0.0f, dot(photon.normalW, surfelNormalW));

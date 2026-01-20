@@ -81,8 +81,6 @@ namespace Pale {
                     rayState.pathThroughput = initialAdjointWeight;
                     rayState.bounceIndex = 0;
                     rayState.pixelIndex = pixelIndex;
-                    rayState.pixelX = pixelX;
-                    rayState.pixelY = pixelY;
 
                     if (pixelX == 200 && pixelY == (sensor.height - 1 - 325)) {
                         int debug = 1;
