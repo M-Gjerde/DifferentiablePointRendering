@@ -262,13 +262,13 @@ def load_beta_surfels_from_ply_ascii(
             sv_values.append(float(parts[10]))
 
             # Albedo at 11..13
-            #color0.append(float(parts[11]))
-            #color1.append(float(parts[12]))
-            #color2.append(float(parts[13]))
+            color0.append(float(parts[11]) * 3.2 + 0.5)
+            color1.append(float(parts[12]) * 3.2 + 0.5)
+            color2.append(float(parts[13]) * 3.2 + 0.5)
 
-            color0.append(float(0.99))
-            color1.append(float(0.99))
-            color2.append(float(0.99))
+            #color0.append(float(0.99))
+            #color1.append(float(0.99))
+            #color2.append(float(0.99))
 
     if len(pk_x) == 0:
         raise RuntimeError(f"No points loaded from '{ply_path}'. Try lowering --opacity-threshold.")
@@ -607,7 +607,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max-ellipses", type=int, default=0)
     parser.add_argument("--disk-resolution", type=int, default=16)
 
-    parser.add_argument("--scale-mult", type=float, default=0.3)
+    parser.add_argument("--scale-mult", type=float, default=0.5)
     parser.add_argument("--alpha-mult", type=float, default=1.0)
 
     parser.add_argument("--images-dir", type=Path, required=True, help="Output directory for per-camera PNGs.")
