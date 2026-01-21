@@ -56,7 +56,7 @@ static void dumpPhotonMapToPLY(sycl::queue &queue,
                                std::uint32_t devicePhotonCount,
                                const std::filesystem::path &outputFilePath,
                                float exposureScale = 0.0f,
-                               bool writeNormals = true) {
+                               bool writeNormals = false) {
     if (devicePhotonCount == 0) return;
 
     std::vector<Pale::DevicePhotonSurface> hostPhotons(devicePhotonCount);

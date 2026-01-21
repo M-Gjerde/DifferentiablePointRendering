@@ -519,6 +519,7 @@ inline Matrix<N, N> identityMatrix() {
 }
 
 inline float3x3 identity3x3() { return identityMatrix<3>(); }
+inline float4x4 identity4x4() { return identityMatrix<4>(); }
 
     // --- Matrix × float3 → float3 (3×3 case) ---
     inline float3 operator*(const float3x3 &leftMatrix, const float3 &rightVector) {

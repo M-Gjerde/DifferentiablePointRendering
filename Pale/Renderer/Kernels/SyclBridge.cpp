@@ -71,6 +71,18 @@ namespace Pale {
                     pkg.queue.wait();
                 }
             }
+            // Save photon map to disk:
+            /*
+            {
+
+                ScopedTimer timer("dumpPhotonMapToPLY");
+                dumpPhotonMapToPLY(pkg.queue,
+                                  pkg.intermediates.map.photons,
+                                  photonMapCount,
+                                  std::filesystem::path("Output/photon_map.ply"));
+
+            }
+            */
             // Post processing:
             // Gamma, exposure and rgb8 conversion
             launchPostProcessKernel(pkg);

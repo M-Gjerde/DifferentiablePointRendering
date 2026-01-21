@@ -17,11 +17,9 @@ export namespace Pale {
         AssetPtr<Mesh> load(const AssetHandle& /*id*/, const AssetMeta& meta) override {
             Assimp::Importer importer;
             const aiScene* scene = importer.ReadFile(meta.path.string(),
-            aiProcess_Triangulate |
             aiProcess_GenNormals |
-            aiProcess_ImproveCacheLocality |
-            aiProcess_CalcTangentSpace |
             aiProcess_JoinIdenticalVertices |
+            aiProcess_ImproveCacheLocality |
             aiProcess_ValidateDataStructure);
 
 

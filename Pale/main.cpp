@@ -217,10 +217,10 @@ int main(int argc, char **argv) {
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
     //serializer.deserialize("scene_blender_30.xml");
-    serializer.deserialize("scene_blender_1.xml");
+    //serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene_blender_4.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    //serializer.deserialize("cbox_custom.xml");
+    serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -231,7 +231,7 @@ int main(int argc, char **argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = true;
+    bool addPoints = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -243,9 +243,9 @@ int main(int argc, char **argv) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.0f, 0.0f));
-        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 0.0f));
-        bunnyTransformComponent.setScale(glm::vec3(1.0f));
+        bunnyTransformComponent.setPosition(glm::vec3(0.15f, 0.0f, 0.34f));
+        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 4.0f));
+        bunnyTransformComponent.setScale(glm::vec3(1.3f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e6;
     settings.maxBounces = 3;
-    settings.numForwardPasses = 1;
+    settings.numForwardPasses = 30;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;

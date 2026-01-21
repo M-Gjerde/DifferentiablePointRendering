@@ -316,7 +316,7 @@ namespace Pale {
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
-        uint64_t baseSeed = pkg.settings.randomSeed;
+        uint64_t baseSeed = pkg.settings.randomSeed * (cameraIndex + 5);
 
 
         // Host-side (before launching kernel)
@@ -495,7 +495,7 @@ namespace Pale {
                             float4(accumulatedRadianceRGB.x(),
                                    accumulatedRadianceRGB.y(),
                                    accumulatedRadianceRGB.z(),
-                                   1.0f) / samplesPerPixel;
+                                   1.0f);
 
                     sensor.framebuffer[framebufferIndex] = previousValue + currentValue;
                 });
