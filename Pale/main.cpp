@@ -216,8 +216,8 @@ int main(int argc, char **argv) {
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
     Pale::SceneSerializer serializer(scene, assetIndexer);
-    serializer.deserialize("scene_blender_30.xml");
-    //serializer.deserialize("scene_blender_1.xml");
+    //serializer.deserialize("scene_blender_30.xml");
+    serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene_blender_4.xml");
     //serializer.deserialize("scene_blender_debug.xml");
     //serializer.deserialize("cbox_custom.xml");
@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e6;
     settings.maxBounces = 3;
-    settings.numForwardPasses = 10;
+    settings.numForwardPasses = 1;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;

@@ -603,13 +603,13 @@ def analytic_rotation_grad_for_axis_deg(
 # ---------- Main driver: compute FD for all parameters ----------
 def main(args) -> None:
     renderer_settings = {
-        "photons": 5e5,
+        "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 100,
+        "forward_passes": 10,
         "gather_passes": 1,
         "adjoint_bounces": 2,
         "adjoint_passes": 1,
-        "logging": 3,
+        "logging": 2,
         "debug_images": True,
     }
 

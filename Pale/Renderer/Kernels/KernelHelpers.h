@@ -935,6 +935,11 @@ struct KnnBuffer
     inline float currentRadiusSquared() const { return worstDistanceSquared; } // valid if count>0, exact if isFull()
 };
 
+// Epanechnikov (2D) kernel for disk radius r:
+// w(u) = max(0, 1 - u), where u = d^2 / r^2
+// Normalized density uses: (2 / (pi r^2)) * sum_i w_i * flux_i
+// (Normalization constant differs by dimension; for your invArea form this is the consistent 2D one.)
+
 inline float3 gatherDiffuseIrradianceAtPointKNN(
     const float3& queryPositionWorld,
     const float3& surfelNormalW,
@@ -942,14 +947,13 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
     int travelSideSign = 0,
     bool readOneSidedRadiance = false)
 {
+    static constexpr int kNumNearest = 512;
 
-    static constexpr int kNumNearest = 16;
     KnnBuffer<kNumNearest> knn;
 
     const float3 cellSizeWorld = grid.cellSizeWorld;
     const sycl::int3 queryCell = worldToCellClamped(queryPositionWorld, grid);
 
-    // Must match your worldToCell mapping.
     const float3 queryCellCenterWorld = cellToWorldCenter(queryCell, grid);
     const float3 queryOffsetWorld = queryPositionWorld - queryCellCenterWorld;
 
@@ -966,22 +970,20 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
             const uint32_t photonArrayIndex = grid.sortedPhotonIndex[j];
             const DevicePhotonSurface photon = grid.photons[photonArrayIndex];
 
-            // Do NOT return here; it would abort the entire cell scan.
-            //if (readOneSidedRadiance && photon.sideSign != travelSideSign)
-            //    continue;
+            // Keep KNN stable: do not early-continue based on shading terms unless you can
+            // guarantee you still fill k. If you must, do it as weights later.
 
-            // Prefer weighting later. Hard-rejecting here can prevent reaching k.
-            // if (dot(photon.normalW, surfelNormalW) <= 0.3f) continue;
-
-            const float3 delta = photon.position - queryPositionWorld;
-            const float distanceSquared = dot(delta, delta);
+            const float3 deltaWorld = photon.position - queryPositionWorld;
+            const float distanceSquared = dot(deltaWorld, deltaWorld);
             knn.tryInsert(distanceSquared, photonArrayIndex);
         }
     };
 
+    // Conservative cap: you can tune this, but keep it >= enough to find k in sparse regions.
     const int maxRing = sycl::max(
-        int(grid.gridResolution.x()),
-        sycl::max(int(grid.gridResolution.y()), int(grid.gridResolution.z()))) / 5;
+                            int(grid.gridResolution.x()),
+                            sycl::max(int(grid.gridResolution.y()), int(grid.gridResolution.z())))
+                        / 5;
 
     for (int ring = 0; ring <= maxRing; ++ring)
     {
@@ -992,7 +994,7 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
         const int minZ = sycl::max(0, queryCell.z() - ring);
         const int maxZ = sycl::min(int(grid.gridResolution.z() - 1), queryCell.z() + ring);
 
-        // Shell traversal (no duplicates if the ranges collapse)
+        // Shell traversal without duplicates.
         for (int cz = minZ; cz <= maxZ; ++cz)
         {
             for (int cy = minY; cy <= maxY; ++cy)
@@ -1023,7 +1025,11 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
             }
         }
 
-        // Conservative exact stop condition for anisotropic cell sizes.
+        // Correct early-exit test:
+        // The minimum possible distance from queryPositionWorld to ANY point in any NOT-YET-VISITED cell
+        // is the distance to the nearest face of the visited AABB (centered at query cell center),
+        // which is min(dx,dy,dz) where dx = halfExtentX - |offsetX| etc.
+        // If that minimum distance is already >= current KNN radius, no unvisited cell can contain a closer photon.
         if (knn.isFull())
         {
             const float3 visitedHalfExtentWorld = (float(ring) + 0.5f) * cellSizeWorld;
@@ -1037,9 +1043,9 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
             dz = sycl::fmax(dz, 0.0f);
 
             const float minOutsideDistance = sycl::fmin(dx, sycl::fmin(dy, dz));
-            const float minOutsideDistance2 = minOutsideDistance * minOutsideDistance;
+            const float minOutsideDistanceSquared = minOutsideDistance * minOutsideDistance;
 
-            if (minOutsideDistance2 >= knn.currentRadiusSquared())
+            if (minOutsideDistanceSquared >= knn.currentRadiusSquared())
                 break;
         }
     }
@@ -1047,27 +1053,53 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
     if (knn.count == 0)
         return float3{0.0f};
 
+    // IMPORTANT: For KNN we should use the ACTUAL farthest neighbor distance among the stored photons.
+    // If the buffer is not full, worstDistanceSquared may be FLT_MAX unless recomputed.
+    // Use recomputeWorst() to make it correct for count < k.
+    knn.recomputeWorst();
+
     const float radiusSquared = knn.currentRadiusSquared();
-    if (!(radiusSquared > 0.0f) || sycl::isnan(radiusSquared))
+    if (!(radiusSquared > 0.0f) || sycl::isnan(radiusSquared) || !sycl::isfinite(radiusSquared))
         return float3{0.0f};
 
-    const float invArea = 1.0f / (M_PIf * radiusSquared);
+    // 2D Epanechnikov on a disk: K(d) = (2 / (pi r^2)) * (1 - d^2 / r^2), for d <= r.
+    const float invRadiusSquared = 1.0f / radiusSquared;
+    const float normalization = 2.0f / (M_PIf * radiusSquared);
 
-    float3 irradiance = float3{0.0f};
+    float3 weightedFluxSum = float3{0.0f};
 
     for (int i = 0; i < knn.count; ++i)
     {
         const DevicePhotonSurface photon = grid.photons[knn.photonIndex[i]];
 
-        // If you want normal filtering, do it here as weight to avoid destabilizing KNN:
-        // const float normalWeight = sycl::fmax(0.0f, dot(photon.normalW, surfelNormalW));
-        // irradiance += photon.power * (invArea * normalWeight);
+        // Apply these as weights (do not filter during KNN accumulation unless you can guarantee filling k).
+        float sideWeight = 1.0f;
+        if (readOneSidedRadiance)
+        {
+            // Assumes photon.sideSign is in {-1, +1} (or 0). Adjust if your encoding differs.
+            sideWeight = (photon.sideSign == travelSideSign) ? 1.0f : 0.0f;
+            if (sideWeight == 0.0f)
+                continue;
+        }
 
-        irradiance += photon.power * invArea;
+        const float3 deltaWorld = photon.position - queryPositionWorld;
+        const float distanceSquared = dot(deltaWorld, deltaWorld);
+
+        // Clamp for numeric safety.
+        const float u = sycl::fmin(distanceSquared * invRadiusSquared, 1.0f);
+        const float epanechnikovWeight = sycl::fmax(0.0f, 1.0f - u);
+
+        // Optional cosine / normal weighting (safe as a weight):
+        // const float cosineWeight = sycl::fmax(0.0f, dot(photon.normalW, surfelNormalW));
+
+        const float combinedWeight = epanechnikovWeight * sideWeight;
+
+        weightedFluxSum += photon.power * combinedWeight;
     }
 
-    return irradiance;
+    return weightedFluxSum * normalization;
 }
+
 
 
     inline float3 computeLSurfel(const Point &surfel, const float3 &direction, const SplatEvent &splatEvent,

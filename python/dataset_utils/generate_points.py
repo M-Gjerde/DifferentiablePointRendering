@@ -227,7 +227,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "max_y": 0.4,
         "min_z": 0.1,
         "max_z": 0.55,
-        "scale": 0.02,
+        "scale": 0.015,
         "position_noise_std": 0.05,
         "tangent_noise_std": 0.0,
     },

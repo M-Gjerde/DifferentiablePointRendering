@@ -226,9 +226,9 @@ def parse_args() -> OptimizationConfig:
     factor_beta     = lr_scale * 0.005    # ~beta_lr / position_lr
 
 
-    #factor_position = lr_scale * 0  # ~rotation_lr / position_lr
+    factor_position = lr_scale * 0  # ~rotation_lr / position_lr
     #factor_tangent  = lr_scale * 0  # ~rotation_lr / position_lr
-    #factor_scale    = lr_scale * 0  # ~scaling_lr / position_lr
+    factor_scale    = lr_scale * 0  # ~scaling_lr / position_lr
     #factor_albedo   = lr_scale * 0  # ~feature_lr / position_lr
     #factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
     #factor_beta     = lr_scale * 0  # ~beta_lr / position_lr

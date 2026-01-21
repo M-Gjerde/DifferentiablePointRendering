@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--opacity-threshold",
         type=float,
-        default=0.01,
+        default=0.05,
         help="Remove vertices with opacity < threshold.",
     )
     parser.add_argument(
