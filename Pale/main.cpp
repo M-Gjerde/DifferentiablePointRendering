@@ -256,7 +256,7 @@ int main(int argc, char **argv) {
 
         // 3) Material
         Pale::AssetHandle bunnyMaterialAssetHandle =
-                assetIndexer.importPath("Materials/scene_blender_30/bsdf_blender_teapot_0.mat.yaml", Pale::AssetType::Material);
+                assetIndexer.importPath("Materials/cbox_custom/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
 
         auto &bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
     Pale::PathTracerSettings settings;
     settings.photonsPerLaunch = 1e6;
     settings.maxBounces = 3;
-    settings.numForwardPasses = 30;
+    settings.numForwardPasses = 10;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;

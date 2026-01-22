@@ -231,7 +231,7 @@
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
         <emitter type="area">
             <rgb name="color" value="1, 1, 1"/>
-            <float name="power" value="40"/>
+            <float name="power" value="70"/>
         </emitter>
      </shape>
  </scene>
