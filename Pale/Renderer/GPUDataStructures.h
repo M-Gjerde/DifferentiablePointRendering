@@ -282,7 +282,7 @@ namespace Pale {
     };
 
     struct alignas(16) PathTracerSettings {
-        IntegratorKind integratorKind = IntegratorKind::lightTracing;
+        IntegratorKind integratorKind = IntegratorKind::photonMapping;
         uint32_t photonsPerLaunch = 1e6;
         uint64_t randomSeed = 42; // should be more than maxBounces
         RayGenMode rayGenMode = RayGenMode::Emitter;
