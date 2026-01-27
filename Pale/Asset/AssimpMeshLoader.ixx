@@ -11,16 +11,20 @@ export module Pale.Assets:AssimpMeshLoader;
 
 import Pale.Assets.Core;
 import :Mesh;
+import Pale.Log;
 
 export namespace Pale {
     struct AssimpMeshLoader : IAssetLoader<Mesh> {
-        AssetPtr<Mesh> load(const AssetHandle& /*id*/, const AssetMeta& meta) override {
+        AssetPtr<Mesh> load(const AssetHandle & /*id*/, const AssetMeta &meta) override {
             Assimp::Importer importer;
-            const aiScene* scene = importer.ReadFile(meta.path.string(),
-            aiProcess_GenNormals |
-            aiProcess_JoinIdenticalVertices |
-            aiProcess_ImproveCacheLocality |
-            aiProcess_ValidateDataStructure);
+            const aiScene *scene = importer.ReadFile(
+                meta.path.string(),
+                aiProcess_GenSmoothNormals |
+                aiProcess_CalcTangentSpace |
+                aiProcess_Triangulate |
+                aiProcess_ImproveCacheLocality |
+                aiProcess_SortByPType
+            );
 
 
             if (!scene || !scene->HasMeshes()) return {};
@@ -31,7 +35,7 @@ export namespace Pale {
 
 
             for (unsigned m = 0; m < scene->mNumMeshes; ++m) {
-                const aiMesh* am = scene->mMeshes[m];
+                const aiMesh *am = scene->mMeshes[m];
                 Submesh sm{};
                 sm.positions.reserve(am->mNumVertices);
                 sm.normals.reserve(am->mNumVertices);
@@ -54,13 +58,23 @@ export namespace Pale {
                 }
 
 
+                unsigned int nonTriangleFaceCount = 0;
                 for (unsigned f = 0; f < am->mNumFaces; ++f) {
-                    const aiFace& face = am->mFaces[f];
+                    const aiFace &face = am->mFaces[f];
+                    if (face.mNumIndices != 3) {
+                        nonTriangleFaceCount++;
+                        continue;
+                    }
+
                     if (face.mNumIndices == 3) {
                         sm.indices.push_back(face.mIndices[0]);
                         sm.indices.push_back(face.mIndices[1]);
                         sm.indices.push_back(face.mIndices[2]);
                     }
+                }
+
+                if (nonTriangleFaceCount != 0) {
+                    Log::PA_WARN("NonTriangleFaceCount nonZero: {}, Meshes might not render correctly", nonTriangleFaceCount);
                 }
                 sm.materialIndex = static_cast<int>(am->mMaterialIndex);
                 mesh->submeshes.emplace_back(std::move(sm));

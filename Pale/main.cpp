@@ -231,19 +231,20 @@ int main(int argc, char **argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = !true;
+    bool addPoints = true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
         entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
         auto &transform = entityGaussian.getComponent<Pale::TransformComponent>();
+        transform.setPosition(glm::vec3(0.0f, 0.0f, 0.4f));
     }
 
     if (!addPoints) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.15f, 0.0f, 0.34f));
+        bunnyTransformComponent.setPosition(glm::vec3(0.15f, 0.0f, 0.24f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 4.0f));
         bunnyTransformComponent.setScale(glm::vec3(1.3f));
 
@@ -269,16 +270,16 @@ int main(int argc, char **argv) {
     // Build rendering products (BLAS. TLAS, Emissive lists, etc..)
     Pale::AssetAccessFromManager assetAccessor(assetManager);
 
-    auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor,
-                                                 Pale::SceneBuild::BuildOptions());
+    auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     //  cuda/rocm
     Pale::PathTracerSettings settings;
-    settings.photonsPerLaunch = 1e6;
+    settings.integratorKind = Pale::IntegratorKind::lightTracing;
+    settings.photonsPerLaunch = 5e5;
     settings.maxBounces = 3;
-    settings.numForwardPasses = 10;
+    settings.numForwardPasses = 20;
     settings.numGatherPasses = 1;
     settings.maxAdjointBounces = 2;
     settings.adjointSamplesPerPixel = 1;
@@ -291,8 +292,7 @@ int main(int argc, char **argv) {
     tracer.setScene(gpu, buildProducts);
     Pale::Log::PA_INFO("Forward Render Pass...");
 
-    std::vector<Pale::SensorGPU> sensors =
-            Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+    std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
 
     //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
     //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
@@ -312,6 +312,8 @@ int main(int argc, char **argv) {
 
         std::filesystem::create_directories(baseDir);
         std::string fileName = sensor.name;
+        if (settings.integratorKind == Pale::IntegratorKind::lightTracing)
+            fileName += "_lightTracing";
         std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
         Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
     }

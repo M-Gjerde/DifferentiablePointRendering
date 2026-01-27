@@ -64,7 +64,7 @@ namespace Pale {
                     const float jitterY = pixelRng.nextFloat() - 0.5f;
 
 
-                    Ray primaryRay = makePrimaryRayFromPixelJittered(
+                    Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
                         sensor.camera,
                         static_cast<float>(pixelX),
                         static_cast<float>(pixelY),

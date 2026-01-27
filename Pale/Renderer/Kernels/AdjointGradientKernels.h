@@ -1362,7 +1362,7 @@ SYCL_EXTERNAL inline void accumulateNormalConsistencyGradientsForRay(
                           bool debugBreakFlag = false) {
 
         for (int i = 0; i < numShadowRays; ++i) {
-            AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng);
+            AreaLightSample ls = sampleMeshAreaLight(scene, rng);
             // Direction to the sampled emitter point
             const float3 toLightVector = ls.positionW - rayState.ray.origin;
             const float distanceToLight = length(toLightVector);

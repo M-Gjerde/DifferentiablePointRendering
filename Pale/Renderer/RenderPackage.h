@@ -4,6 +4,7 @@
 
 namespace Pale {
 
+
     struct SensorGPU {
         CameraGPU camera; // camera parameters
         float4 *framebuffer = nullptr; // device pointer

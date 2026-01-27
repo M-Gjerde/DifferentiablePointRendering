@@ -33,7 +33,12 @@ namespace Pale {
 
                 uint32_t activeCount = 0;
                 pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait(); {
-                    ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
+                    if (pkg.settings.integratorKind == IntegratorKind::lightTracing) {
+                        ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
+                        for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                            launchContributionEmitterVisibleKernel(pkg, activeCount, cameraIndex);
+                        }
+                    }
 
                     for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
                         pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
@@ -41,7 +46,13 @@ namespace Pale {
                         pkg.queue.wait(); {
                             ScopedTimer timer("launchIntersectKernel");
                             launchIntersectKernel(pkg, activeCount);
-                        } {
+                        }
+                        if (pkg.settings.integratorKind == IntegratorKind::lightTracing) {
+                            for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                                launchContributionKernel(pkg, activeCount, cameraIndex);
+                            }
+                        }
+                        {
                             ScopedTimer timer("generateNextRays");
                             generateNextRays(pkg, activeCount);
                         }
@@ -56,21 +67,24 @@ namespace Pale {
                     }
                 }
             }
-            uint32_t photonMapCount = 0;
-            pkg.queue.memcpy(&photonMapCount,
-                             pkg.intermediates.map.photonCountDevicePtr,
-                             sizeof(uint32_t)).wait();
-            const uint32_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity); {
-                ScopedTimer timer("buildPhotonCellRangesAndOrdering", spdlog::level::debug);
-                buildPhotonCellRangesAndOrdering(pkg.queue, pkg.intermediates.map, photonCount);
-            } {
-                int cameraGatherSPP = pkg.settings.numGatherPasses;
-                for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                    ScopedTimer timer("launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" + std::to_string(pkg.numSensors), spdlog::level::debug);
-                    launchCameraGatherKernel(pkg, cameraGatherSPP, cameraIndex); // generate image from photon map
-                    pkg.queue.wait();
+
+            if (pkg.settings.integratorKind == IntegratorKind::photonMapping) {
+                uint32_t photonMapCount = 0;
+                pkg.queue.memcpy(&photonMapCount,
+                                 pkg.intermediates.map.photonCountDevicePtr,
+                                 sizeof(uint32_t)).wait();
+                const uint32_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity); {
+                    ScopedTimer timer("buildPhotonCellRangesAndOrdering", spdlog::level::debug);
+                    buildPhotonCellRangesAndOrdering(pkg.queue, pkg.intermediates.map, photonCount);
+                } {
+                    for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                        ScopedTimer timer("launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" + std::to_string(pkg.numSensors), spdlog::level::debug);
+                        launchCameraGatherKernel(pkg, cameraIndex); // generate image from photon map
+                        pkg.queue.wait();
+                    }
                 }
             }
+
             // Save photon map to disk:
             /*
             {

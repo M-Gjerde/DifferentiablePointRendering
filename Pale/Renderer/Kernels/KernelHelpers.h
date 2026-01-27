@@ -3,6 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <cstdint>
 
+#include "Renderer/RenderPackage.h"
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/GPUDataTypes.h"
 
@@ -292,7 +293,31 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightReuse(
+    SYCL_EXTERNAL inline void sampleCosineHemisphere(
+        rng::Xorshift128 &rng, const float3 &n,
+        float3 &outDir, float &outPdf) {
+        float u1 = rng.nextFloat();
+        float u2 = rng.nextFloat();
+
+        float z = sycl::sqrt(1.f - u1);
+        float r = sycl::sqrt(1-(z*z));
+
+        float phi = 2.f * M_PIf * u2;
+        float x = r * sycl::cos(phi);
+        float y = r * sycl::sin(phi);
+
+        // build an ONB around n
+        float3 up = abs(n.z()) < .999f ? float3{0, 0, 1} : float3{1, 0, 0};
+        float3 tang = normalize(cross(up, n));
+        float3 bit = cross(n, tang);
+
+        outDir = normalize(x * tang + y * bit + z * n);
+        outPdf = max(0.f, dot(outDir, n)) / M_PIf; // cosθ/π
+    }
+
+
+
+    SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLight(
         const GPUSceneBuffers &scene,
         rng::Xorshift128 &rng128) {
         AreaLightSample sample{};
@@ -315,7 +340,8 @@ namespace Pale {
         // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
         const float u_tri = rng128.nextFloat();
 
-        uint32_t tri_rel = 0u; {
+        uint32_t tri_rel = 0u;
+        {
             // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
             uint32_t lo = 0u;
             uint32_t hi = light.triangleCount - 1u;
@@ -364,30 +390,40 @@ namespace Pale {
         const float3 e0_world = p1_world - p0_world;
         const float3 e1_world = p2_world - p0_world;
 
-        float3 normal_world = float3{
+        float3 normalWorld = float3{
             e0_world.y() * e1_world.z() - e0_world.z() * e1_world.y(),
             e0_world.z() * e1_world.x() - e0_world.x() * e1_world.z(),
             e0_world.x() * e1_world.y() - e0_world.y() * e1_world.x()
         };
 
-        const float normal_length = sycl::sqrt(dot(normal_world, normal_world));
+        const float normal_length = sycl::sqrt(dot(normalWorld, normalWorld));
         if (normal_length <= 0.0f)
             return sample;
 
-        normal_world = normal_world / normal_length;
+        normalWorld = normalWorld / normal_length;
+
+        // Emissive Direction
+
+        float pdfDir = 0.0f;
+        float3 sampledDirectionW;
+        sampleCosineHemisphere(rng128, normalWorld, sampledDirectionW, pdfDir);
+
 
         // 5) Fill sample
         sample.positionW = toWorldPoint(x_obj, transform);
-        sample.normalW = normal_world;
+        sample.normalW = normalWorld;
+        sample.direction = sampledDirectionW;
 
-        // Must be RADIANCE (Le) already
-        sample.Le = light.power * light.color / (M_PIf * light.totalAreaWorld);
+        // Set as Radiant Flux (WATT)
+        sample.power = light.power * light.color;
 
         // Because we sampled proportional to triangle area, then uniformly on that triangle:
         // pdfArea is uniform over the whole emitter area.
         sample.pdfArea = 1.0f / light.totalAreaWorld;
+        sample.pdfDir = pdfDir;
 
         sample.valid = true;
+        sample.lightIndex = light_index;
         return sample;
     }
 
@@ -480,28 +516,6 @@ namespace Pale {
         outPdf = 1.0f / (4.0f * M_PIf); // uniform sphere pdf
     }
 
-
-    SYCL_EXTERNAL inline void sampleCosineHemisphere(
-        rng::Xorshift128 &rng, const float3 &n,
-        float3 &outDir, float &outPdf) {
-        float u1 = rng.nextFloat();
-        float u2 = rng.nextFloat();
-
-        float r = sycl::sqrt(u1);
-        float phi = 2.f * M_PIf * u2;
-
-        float x = r * sycl::cos(phi);
-        float y = r * sycl::sin(phi);
-        float z = sycl::sqrt(1.f - u1);
-
-        // build an ONB around n
-        float3 up = abs(n.z()) < .999f ? float3{0, 0, 1} : float3{1, 0, 0};
-        float3 tang = normalize(cross(up, n));
-        float3 bit = cross(n, tang);
-
-        outDir = normalize(x * tang + y * bit + z * n);
-        outPdf = max(0.f, dot(outDir, n)) / M_PIf; // cosθ/π
-    }
 
 
     SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float *outOpacity, float kSigmas = 2.2f) {
@@ -655,18 +669,132 @@ namespace Pale {
     }
 
 
-    inline Ray makePrimaryRayFromPixelJittered(const CameraGPU &cam,
-                                               float px, float py, float jx, float jy) {
-        const float sx = (px + 0.5f + jx) / float(cam.width);
-        float sy = (py + 0.5f + jy) / float(cam.height);
-        const float ndcX = 2.f * sx - 1.f, ndcY = 2.f * sy - 1.f;
-        const float4 clipFar = float4{ndcX, ndcY, 1.f, 1.f};
-        const float4 worldFarH = cam.invView * (cam.invProj * clipFar);
-        const float invW = 1.f / worldFarH.w();
-        const float3 worldFar{worldFarH.x() * invW, worldFarH.y() * invW, worldFarH.z() * invW};
-        const float4 camPosH = cam.invView * float4{0, 0, 0, 1};
-        const float3 origin{camPosH.x(), camPosH.y(), camPosH.z()};
-        return Ray{origin, normalize(worldFar - origin), cam.forward};
+    SYCL_EXTERNAL inline Ray makePrimaryRayFromPixelJitteredFov(
+        const CameraGPU& cam,
+        float px, float py,
+        float jx, float jy)
+    {
+        const float width  = static_cast<float>(cam.width);
+        const float height = static_cast<float>(cam.height);
+
+        const float u = (px + 0.5f + jx);
+        const float v = (py + 0.5f + jy);
+
+        // If your image origin is top-left, flip v:
+        // const float v_flipped = height - v;
+        const float v_flipped = v;
+
+        const float ndcX = (2.0f * u / width  - 1.0f);
+        const float ndcY = (2.0f * v_flipped / height - 1.0f);
+
+        const float f_y = 0.5f * height / sycl::tan(0.5f * glm::radians(cam.fovy));
+        const float f_x = f_y * (width / height);
+
+        // Camera looks down -Z (OpenGL-style view space)
+        float3 dirCamera = normalize(float3{
+            ndcX * (0.5f * width)  / f_x,
+            ndcY * (0.5f * height) / f_y,
+            -1.0f
+        });
+
+        // Transform direction to world (use a direction transform, w=0)
+        const float3 dirWorld = transformDirection(cam.invView, dirCamera);
+        const float3 originWorld = transformPoint(cam.invView, float3{0,0,0});
+
+        return Ray{originWorld, dirWorld, cam.forward};
+    }
+
+
+    SYCL_EXTERNAL inline bool projectToPixelFromFovY(
+    const SensorGPU& sensor,
+    const float3& pointWorld,
+    uint32_t& outPixelIndex,
+    float3& outOmegaFromSurfaceToCamera,
+    float& outDistance)
+    {
+        const float3 cameraPositionWorld = sensor.camera.pos;
+
+        // Direction from surface point to camera (for geometry term / visibility)
+        const float3 vectorFromSurfaceToCamera = cameraPositionWorld - pointWorld;
+        const float distance = length(vectorFromSurfaceToCamera);
+        if (distance <= 0.0f)
+            return false;
+
+        outOmegaFromSurfaceToCamera = vectorFromSurfaceToCamera / distance;
+        outDistance = distance;
+
+        // Project the WORLD point into CAMERA space (this must be a point transform)
+        const float3 pointCamera = transformPoint(sensor.camera.view, pointWorld);
+
+        // check point is in front
+        if (pointCamera.z() >= 0.0f)
+            return false;
+
+        const float width  = static_cast<float>(sensor.width);
+        const float height = static_cast<float>(sensor.height);
+
+        // Derive focal lengths from fovY and aspect
+        const float f_y = 0.5f * height / sycl::tan(0.5f * glm::radians(sensor.camera.fovy));
+        const float f_x = f_y * (width / height);
+
+        const float c_x = 0.5f * width;
+        const float c_y = 0.5f * height;
+
+        const float z = -pointCamera.z(); // make depth positive
+
+        const float u = f_x * (pointCamera.x() / z) + c_x;
+        const float v = f_y * (pointCamera.y() / z) + c_y;
+
+        const int pixelX = static_cast<int>(sycl::floor(u));
+        const int pixelY = static_cast<int>(sycl::floor(v));
+
+        if (pixelX < 0 || pixelX >= static_cast<int>(sensor.width) ||
+            pixelY < 0 || pixelY >= static_cast<int>(sensor.height))
+            return false;
+
+        outPixelIndex = static_cast<uint32_t>(pixelY) * sensor.width + static_cast<uint32_t>(pixelX);
+        return true;
+    }
+
+
+    SYCL_EXTERNAL inline bool projectPinholeToPixel(
+    const SensorGPU& sensor,
+    const float3& pointWorld,
+    uint32_t& outPixelIndex,
+    float3& outOmegaFromSurfaceToCamera,
+    float& outDistance)
+    {
+        /*
+        const float3 cameraPositionWorld = sensor.camera.pos;
+
+        const float3 vectorFromSurfaceToCamera = cameraPositionWorld - pointWorld;
+        const float distance = length(vectorFromSurfaceToCamera);
+        if (distance <= 0.0f)
+            return false;
+
+        const float3 omegaSurfaceToCamera = vectorFromSurfaceToCamera / distance;
+
+        // Transform point into camera space
+        const float3 pointCamera = transformPoint(sensor.camera.invView, omegaSurfaceToCamera);
+
+        if (pointCamera.z() <= 0.0f)
+            return false;
+
+        const float u = sensor.camera.fx * (pointCamera.x() / pointCamera.z()) + sensor.camera.cx;
+        const float v = sensor.camera.fy * (pointCamera.y() / pointCamera.z()) + sensor.camera.cy;
+
+        const int pixelX = static_cast<int>(sycl::floor(u));
+        const int pixelY = static_cast<int>(sycl::floor(v));
+
+        if (pixelX < 0 || pixelX >= static_cast<int>(sensor.width) ||
+            pixelY < 0 || pixelY >= static_cast<int>(sensor.height))
+            return false;
+
+        outPixelIndex = static_cast<uint32_t>(pixelY) * sensor.width + static_cast<uint32_t>(pixelX);
+        outOmegaFromSurfaceToCamera = omegaSurfaceToCamera;
+        outDistance = distance;
+        */
+        return false;
     }
 
 
@@ -1332,6 +1460,21 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
 
 
     inline void atomicAddFloat4ToImage(float4 *dst, const float4 &v) {
+        for (int c = 0; c < 3; ++c) {
+            sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>
+                    a(reinterpret_cast<float *>(dst)[c]);
+            a.fetch_add(v[c]);
+        }
+        sycl::atomic_ref<float, sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>
+                a(reinterpret_cast<float *>(dst)[3]);
+        a.store(1.0f);
+    }
+
+    inline void atomicAddFloat3ToImage(float4 *dst, const float3 &v) {
         for (int c = 0; c < 3; ++c) {
             sycl::atomic_ref<float, sycl::memory_order::relaxed,
                         sycl::memory_scope::device,

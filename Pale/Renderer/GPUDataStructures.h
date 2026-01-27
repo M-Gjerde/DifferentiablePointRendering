@@ -104,7 +104,7 @@ namespace Pale {
     CHECK_16(Transform);
 
     /*************************  Scene graph **************************/
-    constexpr uint32_t kInvalidMaterialIndex     = 0xFFFFFFFFu;
+    constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
     enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1, InvalidType = UINT32_MAX };
@@ -124,8 +124,8 @@ namespace Pale {
         float3 pos{}; // 144
         float3 forward{}; // 160
         uint32_t width{}, height{}; // 168
-        float fovy = 60.0f;
-        
+        float fovy = 60.0f; //degrees
+
         char name[16];
         bool useForAdjointPass = true;
     };
@@ -146,18 +146,22 @@ namespace Pale {
 
     struct AreaLightSample {
         float3 positionW;
-        float3 normalW;            // unit
-        float3 Le;
-        float  pdfSelectLight;     // 1 / lightCount
-        float  pdfArea;            // 1 / (triangleCount * triArea)
-        bool   valid;
+        float3 normalW; // unit
+        float3 direction;
+        float3 power;
+        float lightIndex;
+        float pdfSelectLight; // 1 / lightCount
+        float pdfDir;
+        float pdfArea; // 1 / (triangleCount * triArea)
+        bool valid;
     };
+
     CHECK_16(AreaLightSample);
 
     struct GPUEmissiveTriangle {
         uint32_t globalTriangleIndex;
-        float worldArea;  // triangle area after transform
-        float cdf;        // inclusive CDF in [0,1] within its light’s triangle range
+        float worldArea; // triangle area after transform
+        float cdf; // inclusive CDF in [0,1] within its light’s triangle range
     };
 
     struct InstanceRecord {
@@ -208,7 +212,7 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
-    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1, Scatter = 2};
+    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1, Scatter = 2 };
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -224,6 +228,7 @@ namespace Pale {
         float3 pathThroughput{0.0f};
         uint32_t bounceIndex{0};
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
+        uint32_t lightIndex = UINT32_MAX;
     };
 
     static_assert(std::is_trivially_copyable_v<RayState>);
@@ -231,7 +236,7 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr int kMaxSplatEventsPerRay = 32;
+    constexpr int kMaxSplatEventsPerRay = 60;
 
 
     struct SplatEvent {
@@ -271,7 +276,13 @@ namespace Pale {
 
     static_assert(std::is_trivially_copyable_v<WorldHit>);
 
+    enum class IntegratorKind : uint32_t {
+        lightTracing,
+        photonMapping
+    };
+
     struct alignas(16) PathTracerSettings {
+        IntegratorKind integratorKind = IntegratorKind::lightTracing;
         uint32_t photonsPerLaunch = 1e6;
         uint64_t randomSeed = 42; // should be more than maxBounces
         RayGenMode rayGenMode = RayGenMode::Emitter;
@@ -300,22 +311,21 @@ namespace Pale {
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
 
-        float3 normalW{0.0f};         //oriented surface normal in world space
+        float3 normalW{0.0f}; //oriented surface normal in world space
 
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         float cosineIncident = 0.0f;
-        int    sideSign{};       // +1 or -1: hemisphere relative to canonical surfel normal
-        GeometryType geometryType{GeometryType::InvalidType};       // +1 or -1: hemisphere relative to canonical surfel normal
+        int sideSign{}; // +1 or -1: hemisphere relative to canonical surfel normal
+        GeometryType geometryType{GeometryType::InvalidType};
+        // +1 or -1: hemisphere relative to canonical surfel normal
         uint32_t primitiveIndex = UINT32_MAX;
         std::uint32_t isValid = 0;
-
     };
 
     static_assert(std::is_trivially_copyable_v<DevicePhotonSurface>);
 
     // ----------------- Full surface photon map handle (device) -------------------
-    struct DeviceSurfacePhotonMapGrid
-    {
+    struct DeviceSurfacePhotonMapGrid {
         float gatherRadiusWorld = 0.00f;
         float3 cellSizeWorld = float3{0};
         float3 gridOriginWorld = float3{0};
@@ -323,9 +333,9 @@ namespace Pale {
         std::uint32_t totalCellCount = 0;
 
         // Photon storage (written during emission)
-        DevicePhotonSurface* photons = nullptr;
+        DevicePhotonSurface *photons = nullptr;
         std::uint32_t photonCapacity = 0;
-        std::uint32_t* photonCountDevicePtr = nullptr;
+        std::uint32_t *photonCountDevicePtr = nullptr;
 
         std::uint32_t allocatedCellCount = 0;
         std::uint32_t allocatedPhotonCapacity = 0;
@@ -333,26 +343,23 @@ namespace Pale {
 
 
         // Per-photon build buffers
-        std::uint32_t* photonCellId = nullptr;        // [photonCapacity]
-        std::uint32_t* photonIndex = nullptr;         // [photonCapacity] optional if you scatter into sortedPhotonIndex
-        std::uint32_t* sortedPhotonIndex = nullptr;   // [photonCapacity]
+        std::uint32_t *photonCellId = nullptr; // [photonCapacity]
+        std::uint32_t *photonIndex = nullptr; // [photonCapacity] optional if you scatter into sortedPhotonIndex
+        std::uint32_t *sortedPhotonIndex = nullptr; // [photonCapacity]
 
         // Per-cell build buffers
-        std::uint32_t* cellStart = nullptr;           // [totalCellCount]
-        std::uint32_t* cellEnd = nullptr;             // [totalCellCount]
-        std::uint32_t* cellCount = nullptr;           // [totalCellCount]
-        std::uint32_t* cellWriteOffset = nullptr;     // [totalCellCount]
+        std::uint32_t *cellStart = nullptr; // [totalCellCount]
+        std::uint32_t *cellEnd = nullptr; // [totalCellCount]
+        std::uint32_t *cellCount = nullptr; // [totalCellCount]
+        std::uint32_t *cellWriteOffset = nullptr; // [totalCellCount]
 
         // Scan temporaries
-        std::uint32_t* blockSums = nullptr;           // [numBlocks]
-        std::uint32_t* blockPrefix = nullptr;         // [numBlocks] (optional; can reuse blockSums if you overwrite carefully)
-
+        std::uint32_t *blockSums = nullptr; // [numBlocks]
+        std::uint32_t *blockPrefix = nullptr; // [numBlocks] (optional; can reuse blockSums if you overwrite carefully)
     };
 
 
     static_assert(std::is_trivially_copyable_v<DeviceSurfacePhotonMapGrid>);
-
-
 
 
     struct alignas(16) RenderIntermediatesGPU {
@@ -367,6 +374,4 @@ namespace Pale {
 
     static_assert(std::is_trivially_copyable_v<RenderIntermediatesGPU>);
     static_assert(sycl::is_device_copyable<RenderIntermediatesGPU>::value);
-
-
 }
