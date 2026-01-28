@@ -232,6 +232,7 @@ int main(int argc, char **argv) {
     }
 
     bool addPoints = true;
+    bool addModel = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -240,7 +241,7 @@ int main(int argc, char **argv) {
         transform.setPosition(glm::vec3(0.0f, 0.0f, 0.4f));
     }
 
-    if (!addPoints) {
+    if (addModel) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
@@ -274,51 +275,148 @@ int main(int argc, char **argv) {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
-    //  cuda/rocm
-    Pale::PathTracerSettings settings;
-    settings.integratorKind = Pale::IntegratorKind::lightTracing;
-    settings.photonsPerLaunch = 5e5;
-    settings.maxBounces = 3;
-    settings.numForwardPasses = 20;
-    settings.numGatherPasses = 1;
-    settings.maxAdjointBounces = 2;
-    settings.adjointSamplesPerPixel = 1;
-    settings.depthDistortionWeight = 0.000;
-    settings.normalConsistencyWeight = 0.000;
-    settings.renderDebugGradientImages = false;
+    bool renderPhotonMapping = false;
+    bool renderLightTracing = true;
+    bool renderLightTracingCylinder = true;
+
+    if (renderLightTracing) {
+        //  cuda/rocm
+        Pale::PathTracerSettings settings;
+        settings.integratorKind = Pale::IntegratorKind::lightTracing;
+        settings.photonsPerLaunch = 1e6;
+        settings.maxBounces = 3;
+        settings.numForwardPasses = 20;
+        settings.numGatherPasses = 1;
+        settings.maxAdjointBounces = 2;
+        settings.adjointSamplesPerPixel = 1;
+        settings.depthDistortionWeight = 0.000;
+        settings.normalConsistencyWeight = 0.000;
+        settings.renderDebugGradientImages = false;
 
 
-    Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
-    tracer.setScene(gpu, buildProducts);
-    Pale::Log::PA_INFO("Forward Render Pass...");
+        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
+        tracer.setScene(gpu, buildProducts);
+        Pale::Log::PA_INFO("Forward Render Pass...");
 
-    std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
 
-    //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
-    //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
+        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
+        //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
 
-    tracer.renderForward(sensors); // films is span/array
+        tracer.renderForward(sensors); // films is span/array
 
-    for (const auto &sensor: sensors) {
-        std::vector<uint8_t> rgba =
-                Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-        const uint32_t imageWidth = sensor.width;
-        const uint32_t imageHeight = sensor.height;
+        for (const auto &sensor: sensors) {
+            std::vector<uint8_t> rgba =
+                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+            const uint32_t imageWidth = sensor.width;
+            const uint32_t imageHeight = sensor.height;
 
-        // Per-camera output directory: Output/<pointcloud>/<camera_name>/
-        std::filesystem::path baseDir =
-                std::filesystem::path("Output")
-                / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+            // Per-camera output directory: Output/<pointcloud>/<camera_name>/
+            std::filesystem::path baseDir =
+                    std::filesystem::path("Output")
+                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
 
-        std::filesystem::create_directories(baseDir);
-        std::string fileName = sensor.name;
-        if (settings.integratorKind == Pale::IntegratorKind::lightTracing)
-            fileName += "_lightTracing";
-        std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
-        Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+            std::filesystem::create_directories(baseDir);
+            std::string fileName = sensor.name;
+            if (settings.integratorKind == Pale::IntegratorKind::lightTracing)
+                fileName += "_lightTracing";
+            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
+            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+        }
+    }
+
+    if (renderLightTracingCylinder) {
+        //  cuda/rocm
+        Pale::PathTracerSettings settings;
+        settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
+        settings.photonsPerLaunch = 1e6;
+        settings.maxBounces = 3;
+        settings.numForwardPasses = 10;
+        settings.numGatherPasses = 1;
+        settings.maxAdjointBounces = 2;
+        settings.adjointSamplesPerPixel = 1;
+        settings.depthDistortionWeight = 0.000;
+        settings.normalConsistencyWeight = 0.000;
+        settings.renderDebugGradientImages = false;
+
+
+        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
+        tracer.setScene(gpu, buildProducts);
+        Pale::Log::PA_INFO("Forward Render Pass...");
+
+        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+
+        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
+        //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
+
+        tracer.renderForward(sensors); // films is span/array
+
+        for (const auto &sensor: sensors) {
+            std::vector<uint8_t> rgba =
+                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+            const uint32_t imageWidth = sensor.width;
+            const uint32_t imageHeight = sensor.height;
+
+            // Per-camera output directory: Output/<pointcloud>/<camera_name>/
+            std::filesystem::path baseDir =
+                    std::filesystem::path("Output")
+                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+
+            std::filesystem::create_directories(baseDir);
+            std::string fileName = sensor.name;
+            fileName += "_CylinderlightTracing";
+            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
+            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+        }
+    }
+
+    if (renderPhotonMapping) {
+        //  cuda/rocm
+        Pale::PathTracerSettings settings;
+        settings.integratorKind = Pale::IntegratorKind::photonMapping;
+        settings.photonsPerLaunch = 1e6;
+        settings.maxBounces = 3;
+        settings.numForwardPasses = 20;
+        settings.numGatherPasses = 4;
+        settings.maxAdjointBounces = 2;
+        settings.adjointSamplesPerPixel = 1;
+        settings.depthDistortionWeight = 0.000;
+        settings.normalConsistencyWeight = 0.000;
+        settings.renderDebugGradientImages = false;
+
+
+        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
+        tracer.setScene(gpu, buildProducts);
+        Pale::Log::PA_INFO("Forward Render Pass...");
+
+        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+
+        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
+        //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
+
+        tracer.renderForward(sensors); // films is span/array
+
+        for (const auto &sensor: sensors) {
+            std::vector<uint8_t> rgba =
+                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+            const uint32_t imageWidth = sensor.width;
+            const uint32_t imageHeight = sensor.height;
+
+            // Per-camera output directory: Output/<pointcloud>/<camera_name>/
+            std::filesystem::path baseDir =
+                    std::filesystem::path("Output")
+                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+
+            std::filesystem::create_directories(baseDir);
+            std::string fileName = sensor.name;
+            fileName += "_photonmap";
+            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
+            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+        }
     }
 
 
+    /*
 
     if (settings.renderDebugGradientImages) {
         std::vector<Pale::DebugImages> debugImages(sensors.size());
@@ -367,11 +465,11 @@ int main(int argc, char **argv) {
                             rgbaBuffer,
                             imageWidth,
                             imageHeight,
-                            /*channelIndex=*/channelIndex,
+                            channelIndex,
                             adjointSamplesPerPixel,
-                            /*absQuantile=*/1.0f,
-                            /*flipY=*/false,
-                            /*useSeismic=*/true)) {
+                            1.0f,
+                            false,
+                            true)) {
                             Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
                         }
 
@@ -385,11 +483,11 @@ int main(int argc, char **argv) {
                             rgbaBuffer,
                             imageWidth,
                             imageHeight,
-                            /*channelIndex=*/channelIndex,
+                            /channelIndex,
                             adjointSamplesPerPixel,
-                            /*absQuantile=*/0.99f,
-                            /*flipY=*/false,
-                            /*useSeismic=*/true);
+                            0.99f,
+                            false,
+                            true);
                     }
                 }
             };
@@ -430,6 +528,7 @@ int main(int argc, char **argv) {
             );
         }
     }
+    */
 
     // Write Registry:
     assetManager.registry().save("asset_registry.yaml");

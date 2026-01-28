@@ -164,7 +164,7 @@ namespace Pale {
     void PathTracer::configurePhotonGrid(const AABB &sceneAabb) {
         auto &grid = m_intermediates.map;
 
-        grid.gatherRadiusWorld = 0.04f;
+        grid.gatherRadiusWorld = 0.01f;
         const float gatherRadiusWorld = grid.gatherRadiusWorld;
         const float cellSizeWorld = 0.5f * gatherRadiusWorld;
 
@@ -285,7 +285,18 @@ namespace Pale {
         };
 
         Log::PA_INFO("Rendering {} point(s)", renderPackage.scene.pointCount);
-        submitKernel(renderPackage);
+
+        switch (m_settings.integratorKind) {
+            case IntegratorKind::lightTracing:
+                submitLightTracingKernel(renderPackage);
+                break;
+            case IntegratorKind::lightTracingCylinderRay:
+                submitLightTracingKernelCylinderRay(renderPackage);
+                break;
+            case IntegratorKind::photonMapping:
+                submitPhotonMappingKernel(renderPackage);
+                break;
+        }
 
         m_queue.wait();
     }
@@ -316,7 +327,7 @@ namespace Pale {
             .numSensors = static_cast<uint32_t>(sensors.size()),
         };
 
-        submitKernel(renderPackage);
+        submitAdjointKernel(renderPackage);
 
         m_queue.wait();
     }

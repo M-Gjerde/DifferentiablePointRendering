@@ -148,6 +148,7 @@ namespace Pale {
         auto &sensor = pkg.sensor[cameraIndex];
         DebugImages &debugImage = pkg.debugImages[cameraIndex];
 
+        /*
         queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<struct AdjointShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
@@ -436,6 +437,7 @@ namespace Pale {
                 }
             );
         });
+        */
         queue.wait();
     }
 
@@ -505,6 +507,7 @@ namespace Pale {
         const uint32_t perPixelRayCount = activeRayCount; // Number of rays per pixel
         const uint32_t photonsPerLaunch = settings.photonsPerLaunch;
 
+        /*
         queue.submit([&](sycl::handler &cgh) {
             const uint64_t baseSeed = settings.randomSeed;
             cgh.parallel_for<class GenerateNextAdjointRays>(
@@ -603,6 +606,7 @@ namespace Pale {
                     raysOut[outputSlot] = nextState;
                 });
         });
+        */
         queue.wait();
     }
 }

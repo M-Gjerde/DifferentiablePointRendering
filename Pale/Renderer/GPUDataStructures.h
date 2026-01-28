@@ -236,7 +236,7 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr int kMaxSplatEventsPerRay = 60;
+    constexpr int kMaxSplatEventsPerRay = 16;
 
 
     struct SplatEvent {
@@ -248,13 +248,11 @@ namespace Pale {
     };
 
     struct alignas(16) LocalHit {
+        float3 normal{0.0f};
         float t = FLT_MAX; // world-space t
         float transmissivity = FLT_MAX;
         uint32_t primitiveIndex = UINT32_MAX; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex = UINT32_MAX; // mesh/geometry id within scene
-
-        SplatEvent splatEvents[kMaxSplatEventsPerRay];
-        int splatEventCount = 0;
     };
 
     static_assert(std::is_trivially_copyable_v<LocalHit>);
@@ -270,14 +268,13 @@ namespace Pale {
         float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW = float3(0.0f);; // optional: fill if you have it cheaply
 
-        SplatEvent splatEvents[kMaxSplatEventsPerRay];
-        int splatEventCount = 0;
     };
 
     static_assert(std::is_trivially_copyable_v<WorldHit>);
 
     enum class IntegratorKind : uint32_t {
         lightTracing,
+        lightTracingCylinderRay,
         photonMapping
     };
 

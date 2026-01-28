@@ -18,22 +18,6 @@ namespace Pale {
         float tEntry;
     };
 
-    SYCL_EXTERNAL inline bool computeAabbEntry(const Ray &ray,
-                                               const BVHNode &node,
-                                               const float3 &inverseDirection,
-                                               float currentBestTHit,
-                                               float &outTEntry) {
-        return slabIntersectAABB(ray, node, inverseDirection, currentBestTHit, outTEntry);
-    }
-
-    SYCL_EXTERNAL inline bool computeAabbEntry(const Ray &ray,
-                                               const TLASNode &node,
-                                               const float3 &inverseDirection,
-                                               float currentBestTHit,
-                                               float &outTEntry) {
-        return slabIntersectAABB(ray, node, inverseDirection, currentBestTHit, outTEntry);
-    }
-
     template<typename StackT>
     SYCL_EXTERNAL inline void pushNearFar(StackT &traversalStack,
                                           int leftIndex, float leftTEntry,
@@ -82,10 +66,8 @@ namespace Pale {
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
 
-                const bool hitLeft = computeAabbEntry(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
-                                                      leftTEntry);
-                const bool hitRight = computeAabbEntry(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
-                                                       rightTEntry);
+                const bool hitLeft = computeAabbEntry(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit, leftTEntry);
+                const bool hitRight = computeAabbEntry(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit, rightTEntry);
 
                 if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
                 else if (hitLeft) traversalStack.push(leftIndex);
@@ -119,6 +101,7 @@ namespace Pale {
     // -----------------------------------------------------------------------------
     // Point-cloud BLAS with ordered Bernoulli thinning and depth grouping
     // -----------------------------------------------------------------------------
+    /*
     SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray &rayObject,
                                                       uint32_t blasRangeIndex,
                                                       LocalHit &localHitOut,
@@ -455,6 +438,135 @@ namespace Pale {
 
         return foundAcceptedScatter;
     }
+    */
+
+    // ----------------------------------------------------------------------------
+// Point-cloud BLAS without per-ray event list:
+// Repeated closest-hit queries + stochastic accept/reject.
+// - No candidate arrays
+// - No sorting
+// - Correct front-to-back behavior by construction (tMin advances)
+// ----------------------------------------------------------------------------
+SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject,
+                                                            uint32_t blasRangeIndex,
+                                                            LocalHit &localHitOut,
+                                                            const GPUSceneBuffers &scene,
+                                                            rng::Xorshift128 &rng128,
+                                                            RayIntersectMode rayIntersectMode,
+                                                            uint32_t scatterOnPrimitiveIndex) {
+    const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
+    const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
+
+    constexpr float rayEpsilon = 1e-5f;
+    constexpr float tAdvanceEpsilon = 1e-4f; // advance after a rejected hit to avoid re-hitting same surfel
+    constexpr uint32_t maxRejections = 256;  // cap work per ray (tune)
+
+    float cumulativeTransmittanceBefore = 1.0f;
+
+    // Find next closest surfel hit with t in (tMin, tMax).
+    auto findNextClosestSurfel = [&](float tMin,
+                                     float tMax,
+                                     float &outTHit,
+                                     uint32_t &outSurfelIndex,
+                                     float &outAlphaGeomAtHit) -> bool {
+        bool hitAny = false;
+        float bestTHit = tMax;
+
+        const float3 inverseDirection = safeInvDir(rayObject.direction);
+
+        SmallStack<256> traversalStack;
+        traversalStack.push(0);
+
+        while (!traversalStack.empty()) {
+            const int nodeIndex = traversalStack.pop();
+            const BVHNode &node = bvhNodes[nodeIndex];
+
+            float nodeTEntry = 0.0f;
+            if (!slabIntersectAABB(rayObject, node, inverseDirection, bestTHit, nodeTEntry))
+                continue;
+
+            if (node.triCount == 0) {
+                const int leftIndex = node.leftFirst;
+                const int rightIndex = node.leftFirst + 1;
+
+                float leftTEntry = std::numeric_limits<float>::infinity();
+                float rightTEntry = std::numeric_limits<float>::infinity();
+
+                const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit, leftTEntry);
+                const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit, rightTEntry);
+
+                if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                else if (hitLeft) traversalStack.push(leftIndex);
+                else if (hitRight) traversalStack.push(rightIndex);
+                continue;
+            }
+
+            // Leaf: test surfels
+            for (uint32_t local = 0; local < node.triCount; ++local) {
+                const uint32_t surfelIndex = node.leftFirst + local;
+                const Point &surfel = scene.points[surfelIndex];
+
+                float tHitLocal = 0.0f;
+                float alphaGeom = 0.0f;
+                float3 hitLocal{};
+                if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
+                    continue;
+
+                if (tHitLocal <= tMin)
+                    continue;
+
+                // Keep closest
+                bestTHit = tHitLocal;
+                outSurfelIndex = surfelIndex;
+                outAlphaGeomAtHit = sycl::clamp(alphaGeom, 0.0f, 1.0f);
+                hitAny = true;
+            }
+        }
+
+        if (!hitAny)
+            return false;
+
+        outTHit = bestTHit;
+        return true;
+    };
+
+    // Stochastic accept/reject loop over successive closest hits
+    float tMin = rayEpsilon;
+
+    for (uint32_t rejectionCount = 0; rejectionCount < maxRejections; ++rejectionCount) {
+        float tHit = 0.0f;
+        uint32_t surfelIndex = 0;
+        float alphaGeomAtHit = 0.0f;
+
+        if (!findNextClosestSurfel(tMin, std::numeric_limits<float>::infinity(), tHit, surfelIndex, alphaGeomAtHit)) {
+            // No more candidates: pure transmission through this BLAS
+            localHitOut.transmissivity = cumulativeTransmittanceBefore;
+            return false;
+        }
+
+        const Point &surfel = scene.points[surfelIndex];
+
+        // Effective interaction probability at this candidate
+        const float alphaEff = sycl::clamp(alphaGeomAtHit * surfel.opacity, 0.0f, 1.0f);
+
+        // Random mode: accept with probability alphaEff, otherwise transmit and continue
+         const float u = rng128.nextFloat();
+            if (u < alphaEff) {
+                localHitOut.t = tHit;
+                localHitOut.primitiveIndex = surfelIndex;
+                localHitOut.transmissivity = cumulativeTransmittanceBefore;
+                return true;
+            }
+
+            cumulativeTransmittanceBefore *= (1.0f - alphaEff);
+            tMin = tHit + tAdvanceEpsilon;
+    }
+
+    // Work cap reached: return whatever transmittance we accumulated (biases slightly if cap triggers often)
+    localHitOut.transmissivity = cumulativeTransmittanceBefore;
+    return false;
+}
+
 
     // -----------------------------------------------------------------------------
     // TLAS traversal with near-to-far ordering and multiplicative transmittance
@@ -496,9 +608,9 @@ namespace Pale {
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
 
-                const bool hitLeft = computeAabbEntry(rayWorld, tlasNodes[leftIndex], inverseDirectionWorld,
+                const bool hitLeft = slabIntersectAABB(rayWorld, tlasNodes[leftIndex], inverseDirectionWorld,
                                                       bestWorldTHit, leftTEntry);
-                const bool hitRight = computeAabbEntry(rayWorld, tlasNodes[rightIndex], inverseDirectionWorld,
+                const bool hitRight = slabIntersectAABB(rayWorld, tlasNodes[rightIndex], inverseDirectionWorld,
                                                        bestWorldTHit, rightTEntry);
 
                 if (hitLeft && hitRight) {
@@ -523,71 +635,15 @@ namespace Pale {
             if (instance.geometryType == GeometryType::Mesh) {
                 acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene);
             } else {
-                acceptedHitInInstance = intersectBLASPointCloud(
-                    rayObject,
-                    instance.blasRangeIndex,
-                    localHit,
-                    scene,
-                    rng128,
-                    transform,
-                    rayWorld,
-                    rayIntersectMode,
-                    scatterOnPrimitiveIndex);
+                acceptedHitInInstance = intersectBLASPointCloudStochastic(
+                                         rayObject,
+                                         instance.blasRangeIndex,
+                                         localHit,
+                                         scene,
+                                         rng128,
+                                         rayIntersectMode,
+                                         scatterOnPrimitiveIndex);
 
-                // For TRANSMIT mode, we want to accumulate *all* surfel events along the ray
-                // from all point-cloud instances in front of the terminal surface.
-                if (rayIntersectMode == RayIntersectMode::Transmit) {
-
-                    if (rayIntersectMode == RayIntersectMode::Transmit) {
-                        int baseEventCount = worldHitOut->splatEventCount;
-
-                        for (std::size_t i = 0; i < localHit.splatEventCount; ++i) {
-                            if (baseEventCount >= kMaxSplatEventsPerRay)
-                                break;
-
-                            const SplatEvent& src = localHit.splatEvents[i];
-
-                            const float3 hitPointWorld =
-                                toWorldPoint(rayObject.origin + src.t * rayObject.direction, transform);
-                            const float tWorld = dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
-
-                            SplatEvent& dst = worldHitOut->splatEvents[baseEventCount];
-                            dst.alpha = src.alpha;
-                            dst.primitiveIndex = src.primitiveIndex;
-                            dst.hitWorld = hitPointWorld;
-                            dst.t = tWorld;
-                            dst.tau = transmittanceProduct * src.tau;
-
-                            ++baseEventCount;
-                        }
-
-                        worldHitOut->splatEventCount =
-                            static_cast<uint32_t>(sycl::min(baseEventCount, kMaxSplatEventsPerRay));
-                    }
-
-
-
-
-                } else {
-                    // Existing behavior for RANDOM/SCATTER modes: keep only this instance’s events.
-                    for (std::size_t i = 0; i < localHit.splatEventCount && i < kMaxSplatEventsPerRay; ++i) {
-                        const SplatEvent &src = localHit.splatEvents[i];
-
-                        const float3 hitPointWorld = toWorldPoint(
-                            rayObject.origin + src.t * rayObject.direction,
-                            transform);
-                        const float tWorld =
-                                dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
-
-                        SplatEvent &dst = worldHitOut->splatEvents[i];
-                        dst.alpha = src.alpha;
-                        dst.primitiveIndex = src.primitiveIndex;
-                        dst.hitWorld = hitPointWorld;
-                        dst.t = tWorld;
-                        dst.tau = src.tau; // unchanged: used only for that instance
-                    }
-                    worldHitOut->splatEventCount = std::min(localHit.splatEventCount, kMaxSplatEventsPerRay);
-                }
             }
 
 
@@ -627,19 +683,6 @@ namespace Pale {
             worldHitOut->hit = false;
             worldHitOut->transmissivity = transmittanceProduct;
         }
-
-        const uint32_t count = worldHitOut->splatEventCount;
-        // Simple insertion sort by t for worldHitOut->splatEvents[0..count)
-        for (uint32_t i = 1; i < count; ++i) {
-            SplatEvent key = worldHitOut->splatEvents[i];
-            uint32_t j = i;
-            while (j > 0 && worldHitOut->splatEvents[j - 1].t > key.t) {
-                worldHitOut->splatEvents[j] = worldHitOut->splatEvents[j - 1];
-                --j;
-            }
-            worldHitOut->splatEvents[j] = key;
-        }
-
 
         return foundAnySurfaceHit;
     }
