@@ -37,7 +37,8 @@ namespace Pale {
     SYCL_EXTERNAL static bool intersectBLASMesh(const Ray &rayObject,
                                                 uint32_t geometryIndex,
                                                 LocalHit &localHitOut,
-                                                const GPUSceneBuffers &scene) {
+                                                const GPUSceneBuffers &scene,
+                                                const Transform &transform) {
         const BLASRange &blasRange = scene.blasRanges[geometryIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
         const Triangle *triangles = scene.triangles;
@@ -66,8 +67,8 @@ namespace Pale {
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
 
-                const bool hitLeft = computeAabbEntry(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit, leftTEntry);
-                const bool hitRight = computeAabbEntry(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit, rightTEntry);
+                const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit, leftTEntry);
+                const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit, rightTEntry);
 
                 if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
                 else if (hitLeft) traversalStack.push(leftIndex);
@@ -91,6 +92,9 @@ namespace Pale {
                     localHitOut.t = t;
                     localHitOut.primitiveIndex = triangleIndex;
                     localHitOut.transmissivity = 0.0f; // opaque triangle
+
+                    localHitOut.worldHit = toWorldPoint(rayObject.origin + t * rayObject.direction, transform);
+
                 }
             }
         }
@@ -633,7 +637,7 @@ SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject
             bool acceptedHitInInstance = false;
 
             if (instance.geometryType == GeometryType::Mesh) {
-                acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene);
+                acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene, transform);
             } else {
                 acceptedHitInInstance = intersectBLASPointCloudStochastic(
                                          rayObject,
@@ -645,7 +649,6 @@ SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject
                                          scatterOnPrimitiveIndex);
 
             }
-
 
             if (acceptedHitInInstance) {
                 // Convert to world, test depth

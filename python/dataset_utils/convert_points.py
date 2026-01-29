@@ -146,7 +146,7 @@ def write_gaussian_ply(
     output_path,
     args,
     opacity_default=1.0,
-    beta_default=0.0,
+    beta_default=-3.0,
     shape_default=0.0,
 
     # -----------------------------------------------------------
@@ -248,9 +248,9 @@ def write_gaussian_ply(
 
         # Albedo 0..1
         albedo = np.array([
-            0.05,
-            0.1,
-            0.1
+            0.25,
+            0.5,
+            0.5
         ], dtype=float)
 
         opacity = float(opacity_default)

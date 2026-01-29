@@ -231,27 +231,27 @@ int main(int argc, char **argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = true;
-    bool addModel = !true;
+    bool addPoints = !true;
+    bool addModel =  true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
         entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
         auto &transform = entityGaussian.getComponent<Pale::TransformComponent>();
-        transform.setPosition(glm::vec3(0.0f, 0.0f, 0.4f));
+        //transform.setPosition(glm::vec3(0.0f, 0.0f, 0.4f));
     }
 
     if (addModel) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.15f, 0.0f, 0.24f));
-        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 4.0f));
-        bunnyTransformComponent.setScale(glm::vec3(1.3f));
+        bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.3f, 0.6f));
+        bunnyTransformComponent.setRotationEuler(glm::vec3(75.0f, 0.0f, 0.0f));
+        bunnyTransformComponent.setScale(glm::vec3(0.6f, 0.4f, 1.0f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-                assetIndexer.importPath("meshes/bunny.ply", Pale::AssetType::Mesh);
+                assetIndexer.importPath("meshes/rectangle.obj", Pale::AssetType::Mesh);
 
         auto &bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
@@ -275,9 +275,54 @@ int main(int argc, char **argv) {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
-    bool renderPhotonMapping = false;
+    bool renderPhotonMapping = true;
     bool renderLightTracing = true;
-    bool renderLightTracingCylinder = true;
+    bool renderLightTracingCylinder = false;
+
+    if (renderLightTracingCylinder) {
+        //  cuda/rocm
+        Pale::PathTracerSettings settings;
+        settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
+        settings.photonsPerLaunch = 1e6;
+        settings.maxBounces = 3;
+        settings.numForwardPasses = 20;
+        settings.numGatherPasses = 1;
+        settings.maxAdjointBounces = 2;
+        settings.adjointSamplesPerPixel = 1;
+        settings.depthDistortionWeight = 0.000;
+        settings.normalConsistencyWeight = 0.000;
+        settings.renderDebugGradientImages = false;
+
+
+        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
+        tracer.setScene(gpu, buildProducts);
+        Pale::Log::PA_INFO("Forward Render Pass...");
+
+        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+
+        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
+        //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
+
+        tracer.renderForward(sensors); // films is span/array
+
+        for (const auto &sensor: sensors) {
+            std::vector<uint8_t> rgba =
+                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+            const uint32_t imageWidth = sensor.width;
+            const uint32_t imageHeight = sensor.height;
+
+            // Per-camera output directory: Output/<pointcloud>/<camera_name>/
+            std::filesystem::path baseDir =
+                    std::filesystem::path("Output")
+                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+
+            std::filesystem::create_directories(baseDir);
+            std::string fileName = sensor.name;
+            fileName += "_CylinderlightTracing";
+            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
+            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+        }
+    }
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -285,7 +330,7 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::lightTracing;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 3;
-        settings.numForwardPasses = 20;
+        settings.numForwardPasses = 200;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
@@ -325,50 +370,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (renderLightTracingCylinder) {
-        //  cuda/rocm
-        Pale::PathTracerSettings settings;
-        settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
-        settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 3;
-        settings.numForwardPasses = 10;
-        settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 2;
-        settings.adjointSamplesPerPixel = 1;
-        settings.depthDistortionWeight = 0.000;
-        settings.normalConsistencyWeight = 0.000;
-        settings.renderDebugGradientImages = false;
-
-
-        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
-        tracer.setScene(gpu, buildProducts);
-        Pale::Log::PA_INFO("Forward Render Pass...");
-
-        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
-
-        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
-        //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
-
-        tracer.renderForward(sensors); // films is span/array
-
-        for (const auto &sensor: sensors) {
-            std::vector<uint8_t> rgba =
-                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-            const uint32_t imageWidth = sensor.width;
-            const uint32_t imageHeight = sensor.height;
-
-            // Per-camera output directory: Output/<pointcloud>/<camera_name>/
-            std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
-
-            std::filesystem::create_directories(baseDir);
-            std::string fileName = sensor.name;
-            fileName += "_CylinderlightTracing";
-            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
-            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
-        }
-    }
 
     if (renderPhotonMapping) {
         //  cuda/rocm

@@ -246,8 +246,8 @@ namespace Pale {
         float tau = 1.0f;
         uint32_t primitiveIndex = UINT32_MAX; // primitiveIndex
     };
-
     struct alignas(16) LocalHit {
+        float3 worldHit{0.0f};
         float3 normal{0.0f};
         float t = FLT_MAX; // world-space t
         float transmissivity = FLT_MAX;
@@ -256,7 +256,6 @@ namespace Pale {
     };
 
     static_assert(std::is_trivially_copyable_v<LocalHit>);
-
 
     struct alignas(16) WorldHit {
         bool hit = false;

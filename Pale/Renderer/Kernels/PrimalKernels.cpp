@@ -344,8 +344,9 @@ namespace Pale {
                     const float shadowRayMaxT = distanceToCamera - 2e-4f;
                     Ray ray{contributionRayOrigin, contributionDirection};
                     WorldHit visibilityCheck = traceVisibility(ray, shadowRayMaxT, scene, rng128);
-                    if (visibilityCheck.hit && visibilityCheck.t <= shadowRayMaxT)
+                    if (visibilityCheck.hit && visibilityCheck.t <= shadowRayMaxT) {
                         return;
+                    }
                     // Lambertian BSDF: f = albedo / pi
 
                     const float tauDiffuse = 0.0f; // diffuse transmission

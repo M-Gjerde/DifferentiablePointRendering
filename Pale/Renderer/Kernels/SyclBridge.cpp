@@ -46,7 +46,7 @@ namespace Pale {
                         launchCylinderRayIntersectKernel(pkg, activeCount);
                     }
                         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                            launchContributionKernel(pkg, activeCount, cameraIndex);
+                            launchCylinderContributionKernel(pkg, activeCount, cameraIndex);
                         }
                      {
                         ScopedTimer timer("generateNextRays");
