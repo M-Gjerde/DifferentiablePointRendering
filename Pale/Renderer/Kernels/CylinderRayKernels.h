@@ -258,7 +258,7 @@ namespace Pale {
                 float3 worldHit = toWorldPoint(rayObject.origin + tHit * rayObject.direction, transform);
                 localHitOut.worldHit = worldHit;
 
-                float gatherSphereRadius = 0.02f;
+                float gatherSphereRadius = 0.015f;
                 bool hasCandidates = gatherNeighbours(worldHit, gatherSphereRadius);
 
                 if (hasCandidates) {
@@ -548,7 +548,7 @@ namespace Pale {
                     Ray ray{contributionRayOrigin, contributionDirection};
 
                     WorldHit visibilityCheck{};
-                    intersectScene(ray, &visibilityCheck, scene, rng128);
+                    intersectSceneCylinder(ray, &visibilityCheck, scene, rng128);
 
                     if (visibilityCheck.hit && visibilityCheck.t <= shadowRayMaxT) {
                         return;

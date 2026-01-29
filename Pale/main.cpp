@@ -231,8 +231,8 @@ int main(int argc, char **argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = !true;
-    bool addModel =  true;
+    bool addPoints =  true;
+    bool addModel =  !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -277,7 +277,7 @@ int main(int argc, char **argv) {
 
     bool renderPhotonMapping = true;
     bool renderLightTracing = true;
-    bool renderLightTracingCylinder = false;
+    bool renderLightTracingCylinder = true;
 
     if (renderLightTracingCylinder) {
         //  cuda/rocm
@@ -330,7 +330,7 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::lightTracing;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 3;
-        settings.numForwardPasses = 200;
+        settings.numForwardPasses = 20;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
