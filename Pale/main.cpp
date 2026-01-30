@@ -277,7 +277,7 @@ int main(int argc, char **argv) {
 
     bool renderPhotonMapping = true;
     bool renderLightTracing = true;
-    bool renderLightTracingCylinder = true;
+    bool renderLightTracingCylinder = false;
 
     if (renderLightTracingCylinder) {
         //  cuda/rocm
@@ -330,7 +330,7 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::lightTracing;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 3;
-        settings.numForwardPasses = 20;
+        settings.numForwardPasses = 100;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
