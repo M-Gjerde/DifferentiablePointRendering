@@ -981,7 +981,7 @@ inline float3 gatherDiffuseIrradianceAtPointNormalFiltered(
                     if (dist2 > r2)
                         continue;
 
-                    irradiance += (ph.power * invArea * ph.cosineIncident);
+                    irradiance += (ph.power * invArea);
                 }
             }
 

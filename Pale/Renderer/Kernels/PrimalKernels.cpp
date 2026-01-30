@@ -184,36 +184,6 @@ namespace Pale {
                     }
 
 
-                    float3 depositPositionW = worldHit.hitPositionW;
-                    float photonSurfelSmoothing = 1.0f;
-
-                    if (geometryType == GeometryType::PointCloud && photonSurfelSmoothing > 0.0f) {
-                        const Point point = scene.points[worldHit.primitiveIndex];
-
-                        // Tangent frame
-                        const float3 tu = normalize(point.tanU);
-                        const float3 tv = normalize(point.tanV);
-
-                        // Footprint radii (world space)
-                        const float su = point.scale.x();
-                        const float sv = point.scale.y();
-
-                        // Sample disk (uniform area)
-                        const float xi1 = rng128.nextFloat();
-                        const float xi2 = rng128.nextFloat();
-                        const float r = sycl::sqrt(xi1);
-                        const float phi = 2.0f * M_PI * xi2;
-
-                        const float u = r * sycl::cos(phi) * su;
-                        const float v = r * sycl::sin(phi) * sv;
-
-                        const float3 jitterOffsetW = u * tu + v * tv;
-
-                        // Blend between no smoothing and full smoothing
-                        depositPositionW += photonSurfelSmoothing * jitterOffsetW;
-                    }
-
-
                     if (settings.rayGenMode == RayGenMode::Emitter) {
                         auto &devicePtr = *intermediates.map.photonCountDevicePtr;
                         sycl::atomic_ref<uint32_t,
@@ -226,7 +196,7 @@ namespace Pale {
 
                         if (slot < intermediates.map.photonCapacity) {
                             DevicePhotonSurface photonEntry{};
-                            photonEntry.position = depositPositionW;
+                            photonEntry.position = worldHit.hitPositionW;
                             float3 baseNormalW = normalize(worldHit.geometricNormalW);
                             uint32_t primitiveIndexForDeposit = worldHit.instanceIndex;
                             float depositWeight = worldHit.transmissivity;
@@ -582,7 +552,7 @@ namespace Pale {
 
                             float3 surfelShadedRadiance = E * (rho * M_1_PIf);
 
-                            accumulatedRadianceRGB += surfelShadedRadiance;
+                            accumulatedRadianceRGB = surfelShadedRadiance;
 
                             /*
                             const float alphaGeom = terminalSplatEvent.alpha; // α(u,v)
@@ -623,17 +593,16 @@ namespace Pale {
                                         (material.power) * material.baseColor * worldHit.transmissivity *
                                         geometricToCamera;
 
-                                accumulatedRadianceRGB += emittedRadiance;
+                                accumulatedRadianceRGB = emittedRadiance;
                             } else {
+                                const float3 rho = material.baseColor;
+
+                                const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+                                    worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
+                                const float3 Lo = (rho * M_1_PIf) * E;
+
+                                accumulatedRadianceRGB = worldHit.transmissivity * Lo;
                             }
-
-                            const float3 rho = material.baseColor;
-
-                            const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
-                                worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
-                            const float3 Lo = (rho * M_1_PIf) * E;
-
-                            accumulatedRadianceRGB += worldHit.transmissivity * Lo;
                         }
                         // -----------------------------------------------------------------
                         // 4) Atomic accumulate into framebuffer
