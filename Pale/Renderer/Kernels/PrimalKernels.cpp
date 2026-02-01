@@ -519,7 +519,7 @@ namespace Pale {
 
                                 float alphaEff = surfel.opacity * worldHit.alpha;
 
-                                accumulatedRadianceRGB += transmittanceProduct * surfelShadedRadiance;
+                                accumulatedRadianceRGB += transmittanceProduct * alphaEff * surfelShadedRadiance;
                                 transmittanceProduct *= (1.0f - alphaEff);
 
                                 // Early out if we're nearly opqaue
