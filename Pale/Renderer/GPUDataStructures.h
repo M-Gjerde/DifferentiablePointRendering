@@ -251,6 +251,7 @@ namespace Pale {
         float3 normal{0.0f};
         float t = FLT_MAX; // world-space t
         float transmissivity = FLT_MAX;
+        float alpha = 1.0f;
         uint32_t primitiveIndex = UINT32_MAX; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex = UINT32_MAX; // mesh/geometry id within scene
     };
@@ -261,6 +262,7 @@ namespace Pale {
         bool hit = false;
         float t = FLT_MAX; // world-space t
         float transmissivity = 1.0f;
+        float alpha = 0.0f;
         // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
@@ -303,14 +305,10 @@ namespace Pale {
     struct alignas(16) DevicePhotonSurface {
         // Positions in world space
         float3 position{0.0f};
-
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
 
-        float3 normalW{0.0f}; //oriented surface normal in world space
-
         // |n · ω_i| at the hit (used to convert flux→irradiance)
-        float cosineIncident = 0.0f;
         int sideSign{}; // +1 or -1: hemisphere relative to canonical surfel normal
         GeometryType geometryType{GeometryType::InvalidType};
         // +1 or -1: hemisphere relative to canonical surfel normal

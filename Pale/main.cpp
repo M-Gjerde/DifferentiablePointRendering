@@ -378,7 +378,7 @@ int main(int argc, char **argv) {
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 3;
         settings.numForwardPasses = 20;
-        settings.numGatherPasses = 4;
+        settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
         settings.depthDistortionWeight = 0.000;

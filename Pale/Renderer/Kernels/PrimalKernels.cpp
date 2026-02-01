@@ -139,32 +139,31 @@ namespace Pale {
                         const GPUMaterial material = scene.materials[instance.materialIndex];
                         // If we hit instance was a mesh do ordinary BRDF stuff.
                         float sampledPdf = 0.0f;
-                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, sampledOutgoingDirectionW,
-                                               sampledPdf);
+                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, sampledOutgoingDirectionW, sampledPdf);
                         const float3 lambertBrdf = material.baseColor;
                         throughputMultiplier = lambertBrdf * worldHit.transmissivity;
                     }
 
                     if (geometryType == GeometryType::PointCloud) {
                         const Point point = scene.points[worldHit.primitiveIndex];
+                        // Reuse same albedo for scatter/Transmission
+                        float3 c = point.albedo;
+                        float alpha_r = 0.5f;
+                        float alpha_t = 0.5f;
 
-                        float3 rho = point.albedo; // diffuse reflectance
-                        const float tauDiffuse = 0.0f; // diffuse transmission
+                        float3 rho_r = c * alpha_r; // diffuse reflectance
+                        float3 rho_t = c * alpha_t; // diffuse transmission
+
                         const float segmentTransmittance = worldHit.transmissivity;
-
                         // Choose scalar for lobe probability
-                        const float rhoScalar = sycl::fmax(rho.x(), sycl::fmax(rho.y(), rho.z()));
-                        const float tauScalar = tauDiffuse;
-                        const float scatterScalar = rhoScalar + tauScalar;
-
-                        if (scatterScalar <= 0.0f) {
+                        const float alphaSum = alpha_r + alpha_t;
+                        if (alphaSum <= 0.0f) {
                             throughputMultiplier = float3{0.0f};
                             return;
                         }
 
-                        const float pReflect = rhoScalar / scatterScalar;
+                        const float pReflect = alpha_r / alphaSum;
                         const float uLobe = rng128.nextFloat();
-
                         const bool chooseReflection = (uLobe < pReflect);
                         const float3 lobeNormalW =
                                 chooseReflection
@@ -178,11 +177,9 @@ namespace Pale {
                             sampledOutgoingDirectionW,
                             sampledPdf
                         );
-
                         // Mixture BSDF update simplifies analytically
-                        throughputMultiplier = (rho + float3{tauDiffuse}) * segmentTransmittance;
+                        throughputMultiplier = (rho_r + rho_t) * segmentTransmittance;
                     }
-
 
                     if (settings.rayGenMode == RayGenMode::Emitter) {
                         auto &devicePtr = *intermediates.map.photonCountDevicePtr;
@@ -193,21 +190,16 @@ namespace Pale {
                                 photonCounter(devicePtr);
 
                         const uint32_t slot = photonCounter.fetch_add(1u);
-
                         if (slot < intermediates.map.photonCapacity) {
                             DevicePhotonSurface photonEntry{};
                             photonEntry.position = worldHit.hitPositionW;
                             float3 baseNormalW = normalize(worldHit.geometricNormalW);
                             uint32_t primitiveIndexForDeposit = worldHit.instanceIndex;
-                            float depositWeight = worldHit.transmissivity;
                             const float signedCosineIncident = dot(baseNormalW, -rayState.ray.direction);
                             const int sideSign = signNonZero(signedCosineIncident);
                             const float3 orientedNormalW = (sideSign >= 0) ? baseNormalW : (-baseNormalW);
-
-                            photonEntry.power = rayState.pathThroughput * depositWeight;
-                            photonEntry.normalW = orientedNormalW;
+                            photonEntry.power = rayState.pathThroughput;
                             photonEntry.sideSign = sideSign;
-                            photonEntry.cosineIncident = sycl::fabs(signedCosineIncident);
                             photonEntry.geometryType = instance.geometryType;
                             photonEntry.primitiveIndex = primitiveIndexForDeposit;
                             photonEntry.isValid = 1u;
@@ -224,9 +216,7 @@ namespace Pale {
                     nextState.bounceIndex = rayState.bounceIndex + 1;
                     nextState.pixelIndex = rayState.pixelIndex;
                     nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
-
                     // --- Russian roulette termination (after computing nextState) ---
-
                     //if (nextState.bounceIndex >= settings.russianRouletteStart) {
                     //    // Luminance-based continuation probability in [pMin, 1]
                     //    const float3 throughputRgb = nextState.pathThroughput;
@@ -239,8 +229,6 @@ namespace Pale {
                     //    }
                     //    nextState.pathThroughput = nextState.pathThroughput / continuationProbability; // unbiased
                     //}
-
-
                     // --- Enqueue ---
                     auto extensionCounter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
@@ -260,17 +248,13 @@ namespace Pale {
         auto &settings = pkg.settings;
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
         uint64_t baseSeed = pkg.settings.randomSeed * (cameraIndex + 5);
-
-
         // Host-side (before launching kernel)
         SensorGPU sensor = pkg.sensor[cameraIndex];
-
         auto &intermediates = pkg.intermediates;
         auto *hitRecords = pkg.intermediates.hitRecords;
         auto *raysIn = pkg.intermediates.primaryRays;
         auto *raysOut = pkg.intermediates.extensionRaysA;
         auto *countExtensionOut = pkg.intermediates.countExtensionOut;
-
         queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = settings.randomSeed * (static_cast<uint64_t>(cameraIndex) + 5ull);
 
@@ -320,6 +304,7 @@ namespace Pale {
                     // Lambertian BSDF: f = albedo / pi
 
                     const float tauDiffuse = 0.0f; // diffuse transmission
+
                     float3 rho{0.0f};
                     switch (instance.geometryType) {
                         case GeometryType::Mesh:
@@ -491,117 +476,98 @@ namespace Pale {
                             static_cast<float>(pixelY),
                             jitterX,
                             jitterY);
-                        int pixelYFlipped = imageHeight - 1 - pixelY;
-                        bool isWatched = false;
-
-                        if (pixelX == 240 && pixelYFlipped == 250) {
-                            isWatched = true;
-                            int debug = 1;
-                        }
-                        //if (pixelX == 200 && pixelYFlipped == 325) {
-                        if (pixelX == 260 && pixelYFlipped == 250) {
-                            isWatched = true;
-                            int debug = 1;
-                        }
-
-                        if (!isWatched) {
-                            //return;
-                        }
-
 
                         // -----------------------------------------------------------------
                         // 1) Transmit ray: collect all splat events + terminal mesh hit
                         // -----------------------------------------------------------------
-                        WorldHit worldHit{};
-                        intersectScene(primaryRay,
-                                       &worldHit,
-                                       scene,
-                                       randomNumberGenerator);
+                        // Trace up to N layers (no sorting needed if each query returns closest hit > tMin)
+                        const int maxLayers = 8;
+                        float transmittanceProduct = 1.0f;
+                        for (int layer = 0; layer < maxLayers; ++layer) {
+                            WorldHit worldHit{};
 
-                        if (!worldHit.hit) {
-                            return;
-                        }
-                        buildIntersectionNormal(scene, worldHit);
-                        auto &instance = scene.instances[worldHit.instanceIndex];
+                            intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator, RayIntersectMode::Scatter);
+                            if (!worldHit.hit) {
+                                // No more surfels/meshes: add background/environment with remaining throughput
+                                break;
+                            }
 
-                        //if (pixelX == 200 && pixelY == 325) {
+                            buildIntersectionNormal(scene, worldHit);
+                            auto &instance = scene.instances[worldHit.instanceIndex];
 
-                        // -----------------------------------------------------------------
-                        // 2) For each surfel along the transmit segment, fire a scatter ray
-                        //    and shade that surfel from the photon map.
-                        // -----------------------------------------------------------------
+                            //if (pixelX == 200 && pixelY == 325) {
 
-
-                        if (instance.geometryType == GeometryType::PointCloud) {
-                            const Point &surfel = scene.points[worldHit.primitiveIndex];
-
-
-                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                            const int travelSideSign = signNonZero(dot(canonicalNormalW, -primaryRay.direction));
-                            const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
-
-                            const float3 rho = surfel.albedo;
-
-                            const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
-                                worldHit.hitPositionW,
-                                frontNormalW,
-                                photonMap,
-                                travelSideSign,
-                                true
-                            );
-
-                            float3 surfelShadedRadiance = E * (rho * M_1_PIf);
-
-                            accumulatedRadianceRGB = surfelShadedRadiance;
-
-                            /*
-                            const float alphaGeom = terminalSplatEvent.alpha; // α(u,v)
-                            const float eta = surfel.opacity; // eta
-                            const float surfelOpacity = eta * alphaGeom; // α_eff = eta α
-
-                            const float oneMinusTotalOpacity = 1.0f - surfelOpacity;
-
-
-                            transmittanceTau *= oneMinusTotalOpacity;
-                            */
-                        }
-
-
-                        // -----------------------------------------------------------------
-                        // 3) Shade terminal mesh (if any) with remaining transmittance
-                        // -----------------------------------------------------------------
-                        if (instance.geometryType == GeometryType::Mesh) {
-                            const GPUMaterial &material =
-                                    scene.materials[instance.materialIndex];
-
-                            if (material.isEmissive()) {
-                                const float distanceToCamera =
-                                        length(worldHit.hitPositionW - primaryRay.origin);
-                                const float surfaceCosine =
-                                        sycl::fmax(0.f, dot(worldHit.geometricNormalW,
-                                                            -primaryRay.direction));
-                                const float cameraCosine =
-                                        sycl::fmax(0.f, dot(sensor.camera.forward,
-                                                            primaryRay.direction));
-
-                                const float geometricToCamera =
-                                        (surfaceCosine * cameraCosine) /
-                                        (distanceToCamera * distanceToCamera + 1e-8f);
-
-
-                                const float3 emittedRadiance =
-                                        (material.power) * material.baseColor * worldHit.transmissivity *
-                                        geometricToCamera;
-
-                                accumulatedRadianceRGB = emittedRadiance;
-                            } else {
-                                const float3 rho = material.baseColor;
-
+                            // -----------------------------------------------------------------
+                            // 2) For each surfel along the transmit segment, fire a scatter ray
+                            //    and shade that surfel from the photon map.
+                            // -----------------------------------------------------------------
+                            if (instance.geometryType == GeometryType::PointCloud) {
+                                const Point &surfel = scene.points[worldHit.primitiveIndex];
+                                const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                                const int travelSideSign = signNonZero(dot(canonicalNormalW, -primaryRay.direction));
+                                const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
+                                const float3 rho = surfel.albedo;
                                 const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
-                                    worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
-                                const float3 Lo = (rho * M_1_PIf) * E;
+                                    worldHit.hitPositionW,
+                                    frontNormalW,
+                                    photonMap,
+                                    travelSideSign,
+                                    true
+                                );
 
-                                accumulatedRadianceRGB = worldHit.transmissivity * Lo;
+                                float3 surfelShadedRadiance = E * (rho * M_1_PIf);
+
+                                float alphaEff = surfel.opacity * worldHit.alpha;
+
+                                accumulatedRadianceRGB += transmittanceProduct * surfelShadedRadiance;
+                                transmittanceProduct *= (1.0f - alphaEff);
+
+                                // Early out if we're nearly opqaue
+                                if (transmittanceProduct < 0.01f) {
+                                    break;
+                                }
+
+                                primaryRay.origin = worldHit.hitPositionW + (primaryRay.direction * 1e-5f);
+                                continue;
+                            }
+
+
+                            // -----------------------------------------------------------------
+                            // 3) Shade terminal mesh (if any) with remaining transmittance
+                            // -----------------------------------------------------------------
+                            if (instance.geometryType == GeometryType::Mesh) {
+                                const GPUMaterial &material =
+                                        scene.materials[instance.materialIndex];
+
+                                if (material.isEmissive()) {
+                                    const float distanceToCamera =
+                                            length(worldHit.hitPositionW - primaryRay.origin);
+                                    const float surfaceCosine =
+                                            sycl::fmax(0.f, dot(worldHit.geometricNormalW,
+                                                                -primaryRay.direction));
+                                    const float cameraCosine =
+                                            sycl::fmax(0.f, dot(sensor.camera.forward,
+                                                                primaryRay.direction));
+
+                                    const float geometricToCamera =
+                                            (surfaceCosine * cameraCosine) /
+                                            (distanceToCamera * distanceToCamera + 1e-8f);
+
+
+                                    const float3 emittedRadiance = material.power * material.baseColor; // L_e
+
+                            accumulatedRadianceRGB += transmittanceProduct * emittedRadiance;
+                                } else {
+                                    const float3 rho = material.baseColor;
+
+                                    const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+                                        worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
+                                    const float3 Lo = (rho * M_1_PIf) * E;
+
+                                accumulatedRadianceRGB += transmittanceProduct * Lo;
+                                }
+                                transmittanceProduct = 0.0f;
+                                break;
                             }
                         }
                         // -----------------------------------------------------------------

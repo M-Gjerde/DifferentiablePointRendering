@@ -67,8 +67,10 @@ namespace Pale {
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
 
-                const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit, leftTEntry);
-                const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit, rightTEntry);
+                const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
+                                                       leftTEntry);
+                const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
+                                                        rightTEntry);
 
                 if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
                 else if (hitLeft) traversalStack.push(leftIndex);
@@ -94,7 +96,6 @@ namespace Pale {
                     localHitOut.transmissivity = 0.0f; // opaque triangle
 
                     localHitOut.worldHit = toWorldPoint(rayObject.origin + t * rayObject.direction, transform);
-
                 }
             }
         }
@@ -445,36 +446,157 @@ namespace Pale {
     */
 
     // ----------------------------------------------------------------------------
-// Point-cloud BLAS without per-ray event list:
-// Repeated closest-hit queries + stochastic accept/reject.
-// - No candidate arrays
-// - No sorting
-// - Correct front-to-back behavior by construction (tMin advances)
-// ----------------------------------------------------------------------------
-SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject,
-                                                            uint32_t blasRangeIndex,
-                                                            LocalHit &localHitOut,
-                                                            const GPUSceneBuffers &scene,
-                                                            rng::Xorshift128 &rng128,
-                                                            RayIntersectMode rayIntersectMode,
-                                                            uint32_t scatterOnPrimitiveIndex) {
-    const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
-    const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
+    // Point-cloud BLAS without per-ray event list:
+    // Repeated closest-hit queries + stochastic accept/reject.
+    // - No candidate arrays
+    // - No sorting
+    // - Correct front-to-back behavior by construction (tMin advances)
+    // ----------------------------------------------------------------------------
+    SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject,
+                                                                uint32_t blasRangeIndex,
+                                                                LocalHit &localHitOut,
+                                                                const GPUSceneBuffers &scene,
+                                                                rng::Xorshift128 &rng128,
+                                                                RayIntersectMode rayIntersectMode,
+                                                                uint32_t scatterOnPrimitiveIndex) {
+        const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
+        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
-    constexpr float rayEpsilon = 1e-5f;
-    constexpr float tAdvanceEpsilon = 1e-4f; // advance after a rejected hit to avoid re-hitting same surfel
-    constexpr uint32_t maxRejections = 256;  // cap work per ray (tune)
+        constexpr float rayEpsilon = 1e-5f;
+        constexpr float tAdvanceEpsilon = 1e-4f; // advance after a rejected hit to avoid re-hitting same surfel
+        constexpr uint32_t maxRejections = 256; // cap work per ray (tune)
 
-    float cumulativeTransmittanceBefore = 1.0f;
+        float cumulativeTransmittanceBefore = 1.0f;
 
-    // Find next closest surfel hit with t in (tMin, tMax).
-    auto findNextClosestSurfel = [&](float tMin,
-                                     float tMax,
-                                     float &outTHit,
-                                     uint32_t &outSurfelIndex,
-                                     float &outAlphaGeomAtHit) -> bool {
+        // Find next closest surfel hit with t in (tMin, tMax).
+        auto findNextClosestSurfel = [&](float tMin,
+                                         float tMax,
+                                         float &outTHit,
+                                         uint32_t &outSurfelIndex,
+                                         float &outAlphaGeomAtHit) -> bool {
+            bool hitAny = false;
+            float bestTHit = tMax;
+
+            const float3 inverseDirection = safeInvDir(rayObject.direction);
+
+            SmallStack<256> traversalStack;
+            traversalStack.push(0);
+
+            while (!traversalStack.empty()) {
+                const int nodeIndex = traversalStack.pop();
+                const BVHNode &node = bvhNodes[nodeIndex];
+
+                float nodeTEntry = 0.0f;
+                if (!slabIntersectAABB(rayObject, node, inverseDirection, bestTHit, nodeTEntry))
+                    continue;
+
+                if (node.triCount == 0) {
+                    const int leftIndex = node.leftFirst;
+                    const int rightIndex = node.leftFirst + 1;
+
+                    float leftTEntry = std::numeric_limits<float>::infinity();
+                    float rightTEntry = std::numeric_limits<float>::infinity();
+
+                    const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
+                                                           leftTEntry);
+                    const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
+                                                            rightTEntry);
+
+                    if (hitLeft && hitRight)
+                        pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                    else if (hitLeft) traversalStack.push(leftIndex);
+                    else if (hitRight) traversalStack.push(rightIndex);
+                    continue;
+                }
+
+                // Leaf: test surfels
+                for (uint32_t local = 0; local < node.triCount; ++local) {
+                    const uint32_t surfelIndex = node.leftFirst + local;
+                    const Point &surfel = scene.points[surfelIndex];
+
+                    float tHitLocal = 0.0f;
+                    float alphaGeom = 0.0f;
+                    float3 hitLocal{};
+                    if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
+                        continue;
+
+                    if (tHitLocal <= tMin)
+                        continue;
+
+                    // Keep closest
+                    bestTHit = tHitLocal;
+                    outSurfelIndex = surfelIndex;
+                    outAlphaGeomAtHit = alphaGeom;
+                    hitAny = true;
+                }
+            }
+
+            if (!hitAny)
+                return false;
+
+            outTHit = bestTHit;
+            return true;
+        };
+
+        // Stochastic accept/reject loop over successive closest hits
+        float tMin = rayEpsilon;
+
+        for (uint32_t rejectionCount = 0; rejectionCount < maxRejections; ++rejectionCount) {
+            float tHit = 0.0f;
+            uint32_t surfelIndex = 0;
+            float alphaGeomAtHit = 0.0f;
+
+            if (!findNextClosestSurfel(tMin, std::numeric_limits<float>::infinity(), tHit, surfelIndex,
+                                       alphaGeomAtHit)) {
+                // No more candidates: pure transmission through this BLAS
+                localHitOut.transmissivity = cumulativeTransmittanceBefore;
+                return false;
+            }
+
+            const Point &surfel = scene.points[surfelIndex];
+
+            // Effective interaction probability at this candidate
+            const float alphaEff = alphaGeomAtHit * surfel.opacity;
+
+            // Random mode: accept with probability alphaEff, otherwise transmit and continue
+            const float u = rng128.nextFloat();
+            if (u < alphaEff) {
+                localHitOut.t = tHit;
+                localHitOut.primitiveIndex = surfelIndex;
+                localHitOut.transmissivity = cumulativeTransmittanceBefore;
+                return true;
+            }
+
+            cumulativeTransmittanceBefore *= (1.0f - alphaEff);
+            tMin = tHit + tAdvanceEpsilon;
+        }
+
+        // Work cap reached: return whatever transmittance we accumulated (biases slightly if cap triggers often)
+        localHitOut.transmissivity = cumulativeTransmittanceBefore;
+        return false;
+    }
+
+
+    // ----------------------------------------------------------------------------
+    // Point-cloud BLAS: single closest-hit query (no event list, no sorting).
+    // Returns the first (nearest) surfel intersection in (ray.tMin, ray.tMax).
+    // ----------------------------------------------------------------------------
+    SYCL_EXTERNAL static bool intersectBLASPointCloudFirstHit(
+        const Ray &rayObject,
+        uint32_t blasRangeIndex,
+        LocalHit &localHitOut,
+        const GPUSceneBuffers &scene) {
+        const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
+        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
+
+        constexpr float rayEpsilon = 1e-5f;
+
         bool hitAny = false;
-        float bestTHit = tMax;
+        float bestTHit = std::numeric_limits<float>::infinity();
+        uint32_t bestSurfelIndex = 0u;
+
+        float bestAlphaGeomAtHit = 0.0f;
+        float3 bestHitLocal{0.0f};
 
         const float3 inverseDirection = safeInvDir(rayObject.direction);
 
@@ -496,12 +618,18 @@ SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
 
-                const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit, leftTEntry);
-                const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit, rightTEntry);
+                const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
+                                                       leftTEntry);
+                const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
+                                                        rightTEntry);
 
-                if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                else if (hitLeft) traversalStack.push(leftIndex);
-                else if (hitRight) traversalStack.push(rightIndex);
+                if (hitLeft && hitRight) {
+                    pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                } else if (hitLeft) {
+                    traversalStack.push(leftIndex);
+                } else if (hitRight) {
+                    traversalStack.push(rightIndex);
+                }
                 continue;
             }
 
@@ -512,64 +640,38 @@ SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject
 
                 float tHitLocal = 0.0f;
                 float alphaGeom = 0.0f;
-                float3 hitLocal{};
+                float3 hitLocal{0.0f};
+
                 if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
                     continue;
 
-                if (tHitLocal <= tMin)
-                    continue;
-
                 // Keep closest
-                bestTHit = tHitLocal;
-                outSurfelIndex = surfelIndex;
-                outAlphaGeomAtHit = sycl::clamp(alphaGeom, 0.0f, 1.0f);
                 hitAny = true;
+                bestTHit = tHitLocal;
+                bestSurfelIndex = surfelIndex;
+                bestHitLocal = hitLocal;
+                bestAlphaGeomAtHit = alphaGeom;
             }
         }
 
         if (!hitAny)
             return false;
 
-        outTHit = bestTHit;
+        // Populate output hit.
+        // Note: exact field names depend on your LocalHit definition.
+        localHitOut.t = bestTHit;
+        localHitOut.primitiveIndex = bestSurfelIndex;
+
+        // For this "first hit" query there is no prior absorption handled here.
+        // If you want per-ray compositing, use alphaGeom at the caller.
+        localHitOut.transmissivity = 1.0f;
+        localHitOut.alpha = bestAlphaGeomAtHit;
+
+        localHitOut.worldHit = bestHitLocal;
+
+
         return true;
-    };
-
-    // Stochastic accept/reject loop over successive closest hits
-    float tMin = rayEpsilon;
-
-    for (uint32_t rejectionCount = 0; rejectionCount < maxRejections; ++rejectionCount) {
-        float tHit = 0.0f;
-        uint32_t surfelIndex = 0;
-        float alphaGeomAtHit = 0.0f;
-
-        if (!findNextClosestSurfel(tMin, std::numeric_limits<float>::infinity(), tHit, surfelIndex, alphaGeomAtHit)) {
-            // No more candidates: pure transmission through this BLAS
-            localHitOut.transmissivity = cumulativeTransmittanceBefore;
-            return false;
-        }
-
-        const Point &surfel = scene.points[surfelIndex];
-
-        // Effective interaction probability at this candidate
-        const float alphaEff = sycl::clamp(alphaGeomAtHit * surfel.opacity, 0.0f, 1.0f);
-
-        // Random mode: accept with probability alphaEff, otherwise transmit and continue
-         const float u = rng128.nextFloat();
-            if (u < alphaEff) {
-                localHitOut.t = tHit;
-                localHitOut.primitiveIndex = surfelIndex;
-                localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                return true;
-            }
-
-            cumulativeTransmittanceBefore *= (1.0f - alphaEff);
-            tMin = tHit + tAdvanceEpsilon;
     }
-
-    // Work cap reached: return whatever transmittance we accumulated (biases slightly if cap triggers often)
-    localHitOut.transmissivity = cumulativeTransmittanceBefore;
-    return false;
-}
 
 
     // -----------------------------------------------------------------------------
@@ -613,9 +715,9 @@ SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject
                 float rightTEntry = std::numeric_limits<float>::infinity();
 
                 const bool hitLeft = slabIntersectAABB(rayWorld, tlasNodes[leftIndex], inverseDirectionWorld,
-                                                      bestWorldTHit, leftTEntry);
+                                                       bestWorldTHit, leftTEntry);
                 const bool hitRight = slabIntersectAABB(rayWorld, tlasNodes[rightIndex], inverseDirectionWorld,
-                                                       bestWorldTHit, rightTEntry);
+                                                        bestWorldTHit, rightTEntry);
 
                 if (hitLeft && hitRight) {
                     pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
@@ -637,17 +739,30 @@ SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject
             bool acceptedHitInInstance = false;
 
             if (instance.geometryType == GeometryType::Mesh) {
-                acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene, transform);
+                acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene,
+                                                          transform);
             } else {
-                acceptedHitInInstance = intersectBLASPointCloudStochastic(
-                                         rayObject,
-                                         instance.blasRangeIndex,
-                                         localHit,
-                                         scene,
-                                         rng128,
-                                         rayIntersectMode,
-                                         scatterOnPrimitiveIndex);
-
+                switch (rayIntersectMode) {
+                    case RayIntersectMode::Random:
+                        acceptedHitInInstance = intersectBLASPointCloudStochastic(
+                            rayObject,
+                            instance.blasRangeIndex,
+                            localHit,
+                            scene,
+                            rng128,
+                            rayIntersectMode,
+                            scatterOnPrimitiveIndex);
+                        break;
+                    case RayIntersectMode::Transmit:
+                        break;
+                    case RayIntersectMode::Scatter:
+                        acceptedHitInInstance = intersectBLASPointCloudFirstHit(
+                            rayObject,
+                            instance.blasRangeIndex,
+                            localHit,
+                            scene);
+                        break;
+                }
             }
 
             if (acceptedHitInInstance) {
@@ -666,6 +781,7 @@ SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject
                 worldHitOut->hitPositionW = hitPointWorld;
                 worldHitOut->instanceIndex = instanceIndex;
                 worldHitOut->primitiveIndex = localHit.primitiveIndex;
+                worldHitOut->alpha = localHit.alpha;
 
                 // Multiply transmissions seen before entering this instance with transmission before the accepted event inside it
                 worldHitOut->transmissivity = transmittanceProduct * (instance.geometryType == GeometryType::PointCloud

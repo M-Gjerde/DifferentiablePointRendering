@@ -973,8 +973,8 @@ inline float3 gatherDiffuseIrradianceAtPointNormalFiltered(
                     //if (readOneSidedRadiance && ph.sideSign != travelSideSign)
                     //    continue;
 //
-                    if (dot(ph.normalW, surfelNormalW) <= 0.3f)
-                        continue;
+                    //if (dot(ph.normalW, surfelNormalW) <= 0.3f)
+                    //    continue;
 
                     const float3 d = ph.position - queryPositionWorld;
                     const float dist2 = dot(d, d);
