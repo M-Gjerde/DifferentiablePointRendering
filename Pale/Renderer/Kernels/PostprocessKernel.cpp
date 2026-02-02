@@ -150,56 +150,56 @@ void accumulatePhotonEnergyPerSurfelDebug(RenderPackage& renderPackage)
                 }
 
                 // Only surfel photons
-                if (photon.geometryType != GeometryType::PointCloud) {
-                    return;
-                }
+                //if (photon.geometryType != GeometryType::PointCloud) {
+                //    return;
+                //}
 
-                const uint32_t surfelIndex = photon.primitiveIndex;
-                if (surfelIndex >= deviceScene.pointCount) {
-                    return;
-                }
-
-                // --- Surfel area from GPU scene.points[] ---
-                const Point surfel = deviceScene.points[surfelIndex];
-                const float su = surfel.scale.x();
-                const float sv = surfel.scale.y();
-                const float surfelArea = su * sv; // as requested: su * sv
-
-                {
-                    sycl::atomic_ref<float,
-                                     sycl::memory_order::relaxed,
-                                     sycl::memory_scope::device,
-                                     sycl::access::address_space::global_space>
-                        atomicArea(surfelAreaDevicePtr[surfelIndex]);
-                    // su*sv is the same for all photons on this surfel, so store is fine
-                    atomicArea.store(surfelArea);
-                }
+                //const uint32_t surfelIndex = photon.primitiveIndex;
+                //if (surfelIndex >= deviceScene.pointCount) {
+                //    return;
+                //}
+//
+                //// --- Surfel area from GPU scene.points[] ---
+                //const Point surfel = deviceScene.points[surfelIndex];
+                //const float su = surfel.scale.x();
+                //const float sv = surfel.scale.y();
+                //const float surfelArea = su * sv; // as requested: su * sv
+//
+                //{
+                //    sycl::atomic_ref<float,
+                //                     sycl::memory_order::relaxed,
+                //                     sycl::memory_scope::device,
+                //                     sycl::access::address_space::global_space>
+                //        atomicArea(surfelAreaDevicePtr[surfelIndex]);
+                //    // su*sv is the same for all photons on this surfel, so store is fine
+                //    atomicArea.store(surfelArea);
+                //}
 
                 // --- Accumulate RGB energy ---
-                {
-                    sycl::atomic_ref<float,
-                                     sycl::memory_order::relaxed,
-                                     sycl::memory_scope::device,
-                                     sycl::access::address_space::global_space>
-                        atomicEnergyR(surfelEnergyDevicePtr[surfelIndex].x());
-                    atomicEnergyR.fetch_add(photon.power.x());
-                }
-                {
-                    sycl::atomic_ref<float,
-                                     sycl::memory_order::relaxed,
-                                     sycl::memory_scope::device,
-                                     sycl::access::address_space::global_space>
-                        atomicEnergyG(surfelEnergyDevicePtr[surfelIndex].y());
-                    atomicEnergyG.fetch_add(photon.power.y());
-                }
-                {
-                    sycl::atomic_ref<float,
-                                     sycl::memory_order::relaxed,
-                                     sycl::memory_scope::device,
-                                     sycl::access::address_space::global_space>
-                        atomicEnergyB(surfelEnergyDevicePtr[surfelIndex].z());
-                    atomicEnergyB.fetch_add(photon.power.z());
-                }
+                //{
+                //    sycl::atomic_ref<float,
+                //                     sycl::memory_order::relaxed,
+                //                     sycl::memory_scope::device,
+                //                     sycl::access::address_space::global_space>
+                //        atomicEnergyR(surfelEnergyDevicePtr[surfelIndex].x());
+                //    atomicEnergyR.fetch_add(photon.power.x());
+                //}
+                //{
+                //    sycl::atomic_ref<float,
+                //                     sycl::memory_order::relaxed,
+                //                     sycl::memory_scope::device,
+                //                     sycl::access::address_space::global_space>
+                //        atomicEnergyG(surfelEnergyDevicePtr[surfelIndex].y());
+                //    atomicEnergyG.fetch_add(photon.power.y());
+                //}
+                //{
+                //    sycl::atomic_ref<float,
+                //                     sycl::memory_order::relaxed,
+                //                     sycl::memory_scope::device,
+                //                     sycl::access::address_space::global_space>
+                //        atomicEnergyB(surfelEnergyDevicePtr[surfelIndex].z());
+                //    atomicEnergyB.fetch_add(photon.power.z());
+                //}
             });
     }).wait();
 

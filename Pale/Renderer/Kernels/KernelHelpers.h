@@ -710,7 +710,8 @@ namespace Pale {
     const float3& pointWorld,
     uint32_t& outPixelIndex,
     float3& outOmegaFromSurfaceToCamera,
-    float& outDistance)
+    float& outDistance,
+    bool &debug)
     {
         const float3 cameraPositionWorld = sensor.camera.pos;
 
@@ -751,6 +752,9 @@ namespace Pale {
         if (pixelX < 0 || pixelX >= static_cast<int>(sensor.width) ||
             pixelY < 0 || pixelY >= static_cast<int>(sensor.height))
             return false;
+
+        if ((pixelX == 925 && pixelY == 500) || (pixelX == 895 && pixelY == 500))
+            debug = true;
 
         outPixelIndex = static_cast<uint32_t>(pixelY) * sensor.width + static_cast<uint32_t>(pixelX);
         return true;
@@ -896,50 +900,8 @@ namespace Pale {
         return cell;
     }
 
-    inline float3 gatherDiffuseIrradianceAtPoint2(
-    const float3 &queryPositionWorld,
-    const float3 &surfelNormalW,
-    const DeviceSurfacePhotonMapGrid &grid,
-    int travelSideSign = 0,
-    bool readOneSidedRadiance = false) {
-        static constexpr uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
-        const float r = grid.gatherRadiusWorld;
-        const float r2 = r * r;
-        const float invArea = 1.0f / (M_PIf * r2);
-
-        const sycl::int3 minCell = worldToCellClamped(queryPositionWorld - float3{r, r, r}, grid);
-        const sycl::int3 maxCell = worldToCellClamped(queryPositionWorld + float3{r, r, r}, grid);
-
-        float3 flux_sum = float3{0.0f};
-
-        for (int cz = minCell.z(); cz <= maxCell.z(); ++cz)
-            for (int cy = minCell.y(); cy <= maxCell.y(); ++cy)
-                for (int cx = minCell.x(); cx <= maxCell.x(); ++cx) {
-                    const uint32_t cell_id = linearCellIndex(sycl::int3{cx, cy, cz}, grid.gridResolution);
-                    const uint32_t start = grid.cellStart[cell_id];
-                    if (start == kInvalidIndex) continue;
-
-                    const uint32_t end = grid.cellEnd[cell_id];
-                    for (uint32_t j = start; j < end; ++j) {
-                        const uint32_t photon_index = grid.sortedPhotonIndex[j];
-                        const DevicePhotonSurface ph = grid.photons[photon_index];
-
-                        if (readOneSidedRadiance && ph.sideSign != travelSideSign)
-                            continue;
-
-                        const float3 d = ph.position - queryPositionWorld;
-                        const float dist2 = dot(d, d);
-                        if (dist2 > r2) continue;
-
-                        flux_sum += ph.power; // must be flux-like
-                    }
-                }
-
-        return flux_sum * invArea; // irradiance estimate
-    }
-
-inline float3 gatherDiffuseIrradianceAtPointNormalFiltered(
+inline float3 gatherDiffuseIrradianceAtPoint(
     const float3& queryPositionWorld,
     const float3& surfelNormalW,
     const DeviceSurfacePhotonMapGrid& grid,
@@ -973,10 +935,14 @@ inline float3 gatherDiffuseIrradianceAtPointNormalFiltered(
                     //if (readOneSidedRadiance && ph.sideSign != travelSideSign)
                     //    continue;
 //
-                    //if (dot(ph.normalW, surfelNormalW) <= 0.3f)
-                    //    continue;
 
                     const float3 d = ph.position - queryPositionWorld;
+
+                    const float planeEps = 0.01f * r;          // scale dependent eps: 1% of radius
+                    //if (dot(ph.normal, surfelNormalW) <= 1.0f)
+                    //    continue;
+
+
                     const float dist2 = dot(d, d);
                     if (dist2 > r2)
                         continue;
@@ -1199,9 +1165,9 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
         float sideWeight = 1.0f;
         if (readOneSidedRadiance)
         {
-            sideWeight = (photon.sideSign == travelSideSign) ? 1.0f : 0.0f;
-            if (sideWeight == 0.0f)
-                continue;
+            //sideWeight = (photon.sideSign == travelSideSign) ? 1.0f : 0.0f;
+            //if (sideWeight == 0.0f)
+            //    continue;
         }
 
         const float3 deltaWorld = photon.position - queryPositionWorld;
@@ -1237,7 +1203,7 @@ inline float3 gatherDiffuseIrradianceAtPointKNN(
         const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
         const float3 rho = surfel.albedo;
 
-        const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+        const float3 E = gatherDiffuseIrradianceAtPoint(
             splatEvent.hitWorld,
             frontNormalW,
             photonMap,

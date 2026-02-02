@@ -531,10 +531,6 @@ namespace Pale {
                     float3 omegaSurfaceToCamera;
                     float distanceToCamera = 0.0f;
 
-                    if (!projectToPixelFromFovY(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
-                                                distanceToCamera))
-                        return;
-
                     // Backface / cosine term at surface
                     const float signedCosineToCamera = dot(surfaceNormalWorld, omegaSurfaceToCamera);
                     const float cosineAbsToCamera = sycl::fabs(signedCosineToCamera);

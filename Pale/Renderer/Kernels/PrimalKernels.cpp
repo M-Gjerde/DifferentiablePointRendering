@@ -139,9 +139,10 @@ namespace Pale {
                         const GPUMaterial material = scene.materials[instance.materialIndex];
                         // If we hit instance was a mesh do ordinary BRDF stuff.
                         float sampledPdf = 0.0f;
-                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, sampledOutgoingDirectionW, sampledPdf);
+                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, sampledOutgoingDirectionW,
+                                               sampledPdf);
                         const float3 lambertBrdf = material.baseColor;
-                        throughputMultiplier = lambertBrdf * worldHit.transmissivity;
+                        throughputMultiplier = lambertBrdf;
                     }
 
                     if (geometryType == GeometryType::PointCloud) {
@@ -197,11 +198,11 @@ namespace Pale {
                             uint32_t primitiveIndexForDeposit = worldHit.instanceIndex;
                             const float signedCosineIncident = dot(baseNormalW, -rayState.ray.direction);
                             const int sideSign = signNonZero(signedCosineIncident);
-                            const float3 orientedNormalW = (sideSign >= 0) ? baseNormalW : (-baseNormalW);
+                            //const float3 orientedNormalW = (sideSign >= 0) ? baseNormalW : (-baseNormalW);
                             photonEntry.power = rayState.pathThroughput;
-                            photonEntry.sideSign = sideSign;
-                            photonEntry.geometryType = instance.geometryType;
-                            photonEntry.primitiveIndex = primitiveIndexForDeposit;
+                            //photonEntry.normal = orientedNormalW;
+                            //photonEntry.sideSign = sideSign;
+                            //photonEntry.geometryType = instance.geometryType;
                             photonEntry.isValid = 1u;
                             intermediates.map.photons[slot] = photonEntry;
                         }
@@ -282,20 +283,32 @@ namespace Pale {
                     float3 omegaSurfaceToCamera;
                     float distanceToCamera = 0.0f;
 
+                    bool debug = false;
                     if (!projectToPixelFromFovY(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
-                                                distanceToCamera))
+                                                distanceToCamera, debug))
                         return;
+
 
                     // Backface / cosine term at surface
                     const float signedCosineToCamera = dot(surfaceNormalWorld, omegaSurfaceToCamera);
+                    const int travelSideSign = signNonZero(signedCosineToCamera);
+
                     const float cosineAbsToCamera = sycl::fabs(signedCosineToCamera);
+
+                    if (debug)
+                        int i = 1;
+
                     if (cosineAbsToCamera <= 0.0f)
                         return;
 
+                    //float cosThetaCamera = dot(sensor.camera.forward, -omegaSurfaceToCamera);
+                    //if (cosThetaCamera <= 0.0f)
+                    //    return;
+
                     // Visibility: shadow ray from surface to camera
-                    const float3 contributionRayOrigin = surfacePointWorld + surfaceNormalWorld * 1e-6f;
+                    const float3 contributionRayOrigin = surfacePointWorld + travelSideSign * surfaceNormalWorld * 1e-6f;
                     const float3 contributionDirection = omegaSurfaceToCamera;
-                    const float shadowRayMaxT = distanceToCamera - 2e-4f;
+                    const float shadowRayMaxT = distanceToCamera - 1e-4f;
                     Ray ray{contributionRayOrigin, contributionDirection};
                     WorldHit visibilityCheck = traceVisibility(ray, shadowRayMaxT, scene, rng128);
                     if (visibilityCheck.hit && visibilityCheck.t <= shadowRayMaxT) {
@@ -337,7 +350,7 @@ namespace Pale {
                     // Contribution (delta sensor, pixel binning)
                     const float3 contribution =
                             rayState.pathThroughput *
-                            (bsdfValue + float3{tauDiffuse}) * visibilityCheck.transmissivity *
+                            (bsdfValue + float3{tauDiffuse}) *
                             (cosineAbsToCamera * inverseDistanceSquared) * invPixelArea;
 
                     // Atomic accumulate to framebuffer
@@ -384,9 +397,10 @@ namespace Pale {
                     uint32_t pixelIndex = 0u;
                     float3 omegaSurfaceToCamera;
                     float distanceToCamera = 0.0f;
+                    bool debugPixelBreakpoint = false;
 
                     if (!projectToPixelFromFovY(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
-                                                distanceToCamera))
+                                                distanceToCamera, debugPixelBreakpoint))
                         return;
 
                     // Backface / cosine term at surface
@@ -486,7 +500,8 @@ namespace Pale {
                         for (int layer = 0; layer < maxLayers; ++layer) {
                             WorldHit worldHit{};
 
-                            intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator, RayIntersectMode::Scatter);
+                            intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator,
+                                           RayIntersectMode::Scatter);
                             if (!worldHit.hit) {
                                 // No more surfels/meshes: add background/environment with remaining throughput
                                 break;
@@ -507,7 +522,7 @@ namespace Pale {
                                 const int travelSideSign = signNonZero(dot(canonicalNormalW, -primaryRay.direction));
                                 const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
                                 const float3 rho = surfel.albedo;
-                                const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+                                const float3 E = gatherDiffuseIrradianceAtPoint(
                                     worldHit.hitPositionW,
                                     frontNormalW,
                                     photonMap,
@@ -519,7 +534,7 @@ namespace Pale {
 
                                 float alphaEff = surfel.opacity * worldHit.alpha;
 
-                                accumulatedRadianceRGB += transmittanceProduct * alphaEff * surfelShadedRadiance;
+                                accumulatedRadianceRGB += transmittanceProduct * surfelShadedRadiance;
                                 transmittanceProduct *= (1.0f - alphaEff);
 
                                 // Early out if we're nearly opqaue
@@ -556,15 +571,15 @@ namespace Pale {
 
                                     const float3 emittedRadiance = material.power * material.baseColor; // L_e
 
-                            accumulatedRadianceRGB += transmittanceProduct * emittedRadiance;
+                                    accumulatedRadianceRGB += transmittanceProduct * emittedRadiance;
                                 } else {
                                     const float3 rho = material.baseColor;
 
-                                    const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(
+                                    const float3 E = gatherDiffuseIrradianceAtPoint(
                                         worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
                                     const float3 Lo = (rho * M_1_PIf) * E;
 
-                                accumulatedRadianceRGB += transmittanceProduct * Lo;
+                                    accumulatedRadianceRGB += transmittanceProduct * Lo;
                                 }
                                 transmittanceProduct = 0.0f;
                                 break;

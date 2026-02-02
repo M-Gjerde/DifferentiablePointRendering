@@ -285,7 +285,7 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 3;
-        settings.numForwardPasses = 20;
+        settings.numForwardPasses = 200;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
@@ -329,8 +329,8 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::lightTracing;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 3;
-        settings.numForwardPasses = 100;
+        settings.maxBounces = 6;
+        settings.numForwardPasses = 20;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
@@ -376,8 +376,8 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 3;
-        settings.numForwardPasses = 20;
+        settings.maxBounces = 6;
+        settings.numForwardPasses = 10;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
