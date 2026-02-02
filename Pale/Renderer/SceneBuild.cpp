@@ -342,30 +342,53 @@ namespace Pale {
 }
 
 
-    void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
-                                    BuildProducts& outBuildProducts) {
-        auto view = scene->getAllEntitiesWith<TagComponent, CameraComponent, TransformComponent>();
-        for (auto [entityId,tagComponent, cameraComponent, transformComponent] : view.each()) {
-            CameraGPU gpuCam{};
-            const glm::mat4 world = transformComponent.getTransform();
-            const glm::mat4 viewMat = glm::inverse(world);
-            const glm::mat4 projMat = cameraComponent.camera.getProjectionMatrix();
-            gpuCam.view = glm2sycl(viewMat);
-            gpuCam.proj = glm2sycl(projMat);
-            gpuCam.invView = glm2sycl(world);
-            gpuCam.invProj = glm2sycl(glm::inverse(projMat));
-            const glm::vec3 pos = transformComponent.getPosition();
-            gpuCam.pos = float3{pos.x, pos.y, pos.z};
-            glm::vec3 forward = glm::mat3(world) * glm::vec3(0.0f, 0.0f, -1.0f);
-            forward = glm::normalize(forward);
-            gpuCam.forward = float3{forward.x, forward.y, forward.z};
-            gpuCam.width = cameraComponent.camera.width;
-            gpuCam.height = cameraComponent.camera.height;
-            gpuCam.useForAdjointPass = cameraComponent.useForAdjointPass;
-            copyName(gpuCam.name, tagComponent.getTag());
-            outBuildProducts.cameraGPUs.push_back(gpuCam);
+void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
+                                BuildProducts& outBuildProducts) {
+    auto view = scene->getAllEntitiesWith<TagComponent, CameraComponent, TransformComponent>();
+
+    for (auto [entityId, tagComponent, cameraComponent, transformComponent] : view.each()) {
+        CameraGPU gpuCam{};
+
+        const glm::mat4 worldFromCamera = transformComponent.getTransform();
+        const glm::mat4 viewMat = glm::inverse(worldFromCamera);
+        const glm::mat4 projMat = cameraComponent.camera.getProjectionMatrix();
+
+        gpuCam.view = glm2sycl(viewMat);
+        gpuCam.proj = glm2sycl(projMat);
+        gpuCam.invView = glm2sycl(worldFromCamera);
+        gpuCam.invProj = glm2sycl(glm::inverse(projMat));
+
+        const glm::vec3 cameraPosition = transformComponent.getPosition();
+        gpuCam.pos = float3{cameraPosition.x, cameraPosition.y, cameraPosition.z};
+
+        glm::vec3 forward = glm::mat3(worldFromCamera) * glm::vec3(0.0f, 0.0f, -1.0f);
+        forward = glm::normalize(forward);
+        gpuCam.forward = float3{forward.x, forward.y, forward.z};
+
+        gpuCam.width  = static_cast<uint32_t>(cameraComponent.camera.width);
+        gpuCam.height = static_cast<uint32_t>(cameraComponent.camera.height);
+
+        gpuCam.fovy = cameraComponent.fovy;
+
+        // New: pinhole intrinsics
+        if (cameraComponent.pinholeIntrinsics.isValid) {
+            gpuCam.hasPinholeIntrinsics = 1u;
+            gpuCam.fx = cameraComponent.pinholeIntrinsics.fx;
+            gpuCam.fy = cameraComponent.pinholeIntrinsics.fy;
+            gpuCam.cx = cameraComponent.pinholeIntrinsics.cx;
+            gpuCam.cy = cameraComponent.pinholeIntrinsics.cy;
+        } else {
+            gpuCam.hasPinholeIntrinsics = 0u;
+            gpuCam.fx = gpuCam.fy = gpuCam.cx = gpuCam.cy = 0.0f;
         }
+
+        gpuCam.useForAdjointPass = cameraComponent.useForAdjointPass ? 1u : 0u;
+
+        copyName(gpuCam.name, tagComponent.getTag());
+        outBuildProducts.cameraGPUs.push_back(gpuCam);
     }
+}
+
 
 
     inline AABB surfelObjectAabbBeta(const Point& surfel,

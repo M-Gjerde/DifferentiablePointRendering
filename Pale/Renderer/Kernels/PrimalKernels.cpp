@@ -284,7 +284,7 @@ namespace Pale {
                     float distanceToCamera = 0.0f;
 
                     bool debug = false;
-                    if (!projectToPixelFromFovY(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
+                    if (!projectToPixelFromPinhole(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
                                                 distanceToCamera, debug))
                         return;
 
@@ -399,7 +399,7 @@ namespace Pale {
                     float distanceToCamera = 0.0f;
                     bool debugPixelBreakpoint = false;
 
-                    if (!projectToPixelFromFovY(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
+                    if (!projectToPixelFromPinhole(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
                                                 distanceToCamera, debugPixelBreakpoint))
                         return;
 

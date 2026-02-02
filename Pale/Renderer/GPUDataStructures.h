@@ -117,17 +117,31 @@ namespace Pale {
     CHECK_16(MeshRange);
 
     struct alignas(16) CameraGPU {
-        float4x4 view{}; //  64
-        float4x4 proj{}; // 128
-        float4x4 invView{}; //  64
-        float4x4 invProj{}; // 128
-        float3 pos{}; // 144
-        float3 forward{}; // 160
-        uint32_t width{}, height{}; // 168
-        float fovy = 60.0f; //degrees
+        float4x4 view{};
+        float4x4 proj{};
+        float4x4 invView{};
+        float4x4 invProj{};
 
-        char name[16];
-        bool useForAdjointPass = true;
+        float3 pos{};
+        uint32_t width = 0;
+
+        float3 forward{};
+        uint32_t height = 0;
+
+        // Legacy (keep for debug / fallback)
+        float fovy = 60.0f; // degrees
+
+        // New: pinhole intrinsics in pixels
+        float fx = 0.0f;
+        float fy = 0.0f;
+        float cx = 0.0f;
+        float cy = 0.0f;
+
+        // Flags
+        uint32_t hasPinholeIntrinsics = 0;   // 0/1
+        uint32_t useForAdjointPass = 1;      // 0/1
+
+        char name[16]{};
     };
 
     CHECK_16(CameraGPU);

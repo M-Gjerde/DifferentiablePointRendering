@@ -159,14 +159,20 @@ export namespace Pale {
     struct CameraComponent {
         enum class Type { None = -1, Perspective, Orthographic };
 
-        Type projectionType;
+        Type projectionType = Type::Perspective;
 
         Camera camera;
+
         bool primary = true;
         bool useForAdjointPass = true;
 
-        CameraComponent() = default;
+        // Keep this for UI/debug; if intrinsics are present, fovy is derived from fy.
+        float fovy = 60.0f;
 
+        // New: raw pinhole intrinsics (pixels)
+        PinholeIntrinsics pinholeIntrinsics;
+
+        CameraComponent() = default;
         CameraComponent(const CameraComponent &other) = default;
 
         operator Camera &() { return camera; }

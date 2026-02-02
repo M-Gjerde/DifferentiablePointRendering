@@ -8,6 +8,7 @@ module;
 #include <optional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+
 module Pale.SceneSerializer;
 
 import Pale.Log;
@@ -38,7 +39,6 @@ namespace Pale {
     }
 
     static glm::vec3 parse_rgb(const pugi::xml_node &n) {
-        // Mitsuba rgb value="r,g,b"
         return parse_csv_vec3(attrs(n, "value", "1,1,1"));
     }
 
@@ -51,7 +51,6 @@ namespace Pale {
         if (text == "true" || text == "1" || text == "yes" || text == "on")  return true;
         if (text == "false" || text == "0" || text == "no"  || text == "off") return false;
 
-        // Fallback: allow numeric strings like "0.0" / "1.0"
         char* endPtr = nullptr;
         const float numericValue = std::strtof(text.c_str(), &endPtr);
         if (endPtr != text.c_str()) return numericValue != 0.0f;
@@ -60,19 +59,14 @@ namespace Pale {
     }
 
     static inline bool readAdjointSourceFlag(const pugi::xml_node& sensorNode, bool defaultValue = true) {
-        // Preferred: <boolean name="adjoint_source" value="false"/>
         if (auto booleanNode = sensorNode.find_child_by_attribute("boolean", "name", "adjoint_source")) {
             return parseXmlBoolValue(booleanNode.attribute("value").as_string(), defaultValue);
         }
-
-        // Back-compat: <float name="adjoint_source" value="False"/> or 0/1
         if (auto floatNode = sensorNode.find_child_by_attribute("float", "name", "adjoint_source")) {
             return parseXmlBoolValue(floatNode.attribute("value").as_string(), defaultValue);
         }
-
         return defaultValue;
     }
-
 
     static float computeFovYDegrees(float fovDegrees, const std::string &fovAxis,
                                     int filmWidth, int filmHeight) {
@@ -83,18 +77,54 @@ namespace Pale {
             const float fovYrad = 2.0f * std::atan(std::tan(fovXrad * 0.5f) / aspect);
             return glm::degrees(fovYrad);
         }
-        // "smaller": fov applies to the smaller image dimension
         if (filmWidth <= filmHeight) {
-            // smaller is width ⇒ given fov is fovX
             const float fovXrad = glm::radians(fovDegrees);
             const float fovYrad = 2.0f * std::atan(std::tan(fovXrad * 0.5f) / aspect);
             return glm::degrees(fovYrad);
-        } else {
-            // smaller is height ⇒ given fov is fovY
-            return fovDegrees;
         }
+        return fovDegrees;
     }
 
+    static std::optional<float> readFloatByName(const pugi::xml_node& parentNode,
+                                                const char* nodeTagName,
+                                                const char* nameAttribute,
+                                                const char* desiredName,
+                                                const char* valueAttribute = "value") {
+        if (auto n = parentNode.find_child_by_attribute(nodeTagName, nameAttribute, desiredName)) {
+            if (auto a = n.attribute(valueAttribute)) {
+                return a.as_float();
+            }
+        }
+        return std::nullopt;
+    }
+
+    static std::optional<std::string> readStringByName(const pugi::xml_node& parentNode,
+                                                       const char* nodeTagName,
+                                                       const char* nameAttribute,
+                                                       const char* desiredName,
+                                                       const char* valueAttribute = "value") {
+        if (auto n = parentNode.find_child_by_attribute(nodeTagName, nameAttribute, desiredName)) {
+            if (auto a = n.attribute(valueAttribute)) {
+                return std::string(a.as_string());
+            }
+        }
+        return std::nullopt;
+    }
+
+    // RH, depth 0..1, camera forward -Z (OpenGL-style view)
+    static glm::mat4 perspectiveOffCenterRH_ZO(float left, float right,
+                                              float bottom, float top,
+                                              float nearClip, float farClip) {
+        glm::mat4 m(0.0f);
+        m[0][0] = 2.0f * nearClip / (right - left);
+        m[1][1] = 2.0f * nearClip / (top - bottom);
+        m[2][0] = (right + left) / (right - left);
+        m[2][1] = (top + bottom) / (top - bottom);
+        m[2][2] = farClip / (nearClip - farClip);
+        m[2][3] = -1.0f;
+        m[3][2] = (farClip * nearClip) / (nearClip - farClip);
+        return m;
+    }
 
     bool SceneSerializer::deserialize(const std::filesystem::path &xmlPath) {
         Log::PA_INFO("Loading xml file: {}", xmlPath.string());
@@ -128,24 +158,30 @@ namespace Pale {
 
             // film
             const auto filmNode = sensor.child("film");
-            const int filmWidth = filmNode.child("integer").attribute("name").as_string() == std::string("width")
-                                      ? filmNode.child("integer").attribute("value").as_int()
-                                      : filmNode.find_child_by_attribute("integer", "name", "width").attribute("value").
-                                      as_int();
-            const int filmHeight = filmNode.find_child_by_attribute("integer", "name", "height").attribute("value").
-                    as_int();
-            const float aspectRatio = static_cast<float>(filmWidth) / static_cast<float>(filmHeight);
+            const int filmWidth =
+                filmNode.child("integer").attribute("name").as_string() == std::string("width")
+                    ? filmNode.child("integer").attribute("value").as_int()
+                    : filmNode.find_child_by_attribute("integer", "name", "width").attribute("value").as_int();
+            const int filmHeight =
+                filmNode.find_child_by_attribute("integer", "name", "height").attribute("value").as_int();
 
             // frustum
-            const float nearClip = sensor.find_child_by_attribute("float", "name", "near_clip").attribute("value").
-                    as_float(0.01f);
-            const float farClip = sensor.find_child_by_attribute("float", "name", "far_clip").attribute("value").
-                    as_float(1000.0f);
-            const float fovDegreesRaw = sensor.find_child_by_attribute("float", "name", "fov").attribute("value").
-                    as_float(45.0f);
+            const float nearClip = sensor.find_child_by_attribute("float", "name", "near_clip").attribute("value").as_float(0.01f);
+            const float farClip  = sensor.find_child_by_attribute("float", "name", "far_clip").attribute("value").as_float(1000.0f);
+
+            // Optional explicit pinhole intrinsics (pixels)
+            const std::optional<float> fxOpt = readFloatByName(sensor, "float", "name", "fx");
+            const std::optional<float> fyOpt = readFloatByName(sensor, "float", "name", "fy");
+            const std::optional<float> cxOpt = readFloatByName(sensor, "float", "name", "cx");
+            const std::optional<float> cyOpt = readFloatByName(sensor, "float", "name", "cy");
+
+            const bool hasPinholeIntrinsics = fxOpt.has_value() && fyOpt.has_value() && cxOpt.has_value() && cyOpt.has_value();
+
+            // FOV fallback (legacy)
+            const float fovDegreesRaw =
+                sensor.find_child_by_attribute("float", "name", "fov").attribute("value").as_float(45.0f);
             const std::string fovAxis =
-                    sensor.find_child_by_attribute("string", "name", "fov_axis").attribute("value").
-                    as_string("smaller");
+                sensor.find_child_by_attribute("string", "name", "fov_axis").attribute("value").as_string("smaller");
 
             const float fovYDegrees = computeFovYDegrees(fovDegreesRaw, fovAxis, filmWidth, filmHeight);
 
@@ -161,46 +197,89 @@ namespace Pale {
             const glm::vec3 cameraTarget = parseVec3(lookAt.attribute("target").as_string());
             const glm::vec3 cameraUpHint = parseVec3(lookAt.attribute("up").as_string());
 
-            // View matrix: world→camera
+            // View matrix: world→camera (RH, -Z forward)
             const glm::mat4 viewMatrix = glm::lookAt(cameraOrigin, cameraTarget, cameraUpHint);
-
-            // World transform (camera→world) is the inverse of view
             const glm::mat4 worldFromCamera = glm::inverse(viewMatrix);
 
-            // Projection matrix
-            const float fovYRadians = glm::radians(fovYDegrees);
-            glm::mat4 projectionMatrix = glm::perspectiveFovRH_ZO(fovYRadians, static_cast<float>(filmWidth), static_cast<float>(filmHeight), nearClip, farClip);
+            glm::mat4 projectionMatrix(1.0f);
 
-            // Optionally fix Vulkan's Y if your NDC expects flipped Y:
-            // projectionMatrix[1][1] *= -1.0f;
+            if (cameraComponent.projectionType == CameraComponent::Type::Perspective) {
+                if (hasPinholeIntrinsics) {
+                    const float fx = *fxOpt;
+                    const float fy = *fyOpt;
+                    const float cx = *cxOpt;
+                    const float cy = *cyOpt;
 
-            // Store
-            cameraComponent.camera.setProjectionMatrix(projectionMatrix) ;
-            cameraComponent.camera.width = filmWidth;
-            cameraComponent.camera.height = filmHeight;
+                    // Store pinhole intrinsics in component and camera
+                    cameraComponent.pinholeIntrinsics.isValid = true;
+                    cameraComponent.pinholeIntrinsics.fx = fx;
+                    cameraComponent.pinholeIntrinsics.fy = fy;
+                    cameraComponent.pinholeIntrinsics.cx = cx;
+                    cameraComponent.pinholeIntrinsics.cy = cy;
+
+                    cameraComponent.camera.setPinholeIntrinsics(fx, fy, cx, cy);
+
+                    // Off-center frustum from intrinsics:
+                    // u = fx * x / (-z) + cx
+                    // v = fy * y / (-z) + cy
+                    // Here we assume:
+                    // - camera forward is -Z
+                    // - pixel coordinates: u right, v down
+                    // - camera space: +Y up
+                    //
+                    // Convert pixel extents to camera-plane extents at near:
+                    const float left   = -(cx) * nearClip / fx;
+                    const float right  = (static_cast<float>(filmWidth) - cx) * nearClip / fx;
+
+                    // y: v grows downward; camera-space y grows upward => top uses +cy, bottom uses -(H-cy)
+                    const float top    = (cy) * nearClip / fy;
+                    const float bottom = -(static_cast<float>(filmHeight) - cy) * nearClip / fy;
+
+                    projectionMatrix = perspectiveOffCenterRH_ZO(left, right, bottom, top, nearClip, farClip);
+
+                    // For debug/legacy UI, keep a consistent fovy value too:
+                    cameraComponent.fovy = fovYDegrees;
+                } else {
+                    // Legacy symmetric projection from fov
+                    cameraComponent.pinholeIntrinsics.isValid = false;
+
+                    const float fovYRadians = glm::radians(fovYDegrees);
+                    projectionMatrix = glm::perspectiveFovRH_ZO(
+                        fovYRadians,
+                        static_cast<float>(filmWidth),
+                        static_cast<float>(filmHeight),
+                        nearClip,
+                        farClip
+                    );
+
+                    cameraComponent.fovy = fovYDegrees;
+                }
+            } else {
+                // Orthographic handling (unchanged)
+                cameraComponent.pinholeIntrinsics.isValid = false;
+            }
+
+            // Store camera state
+            cameraComponent.camera.setProjectionMatrix(projectionMatrix);
+            cameraComponent.camera.width = static_cast<float>(filmWidth);
+            cameraComponent.camera.height = static_cast<float>(filmHeight);
+
             cameraComponent.primary = true;
             cameraComponent.useForAdjointPass = readAdjointSourceFlag(sensor, true);
 
-
             auto &transform = cameraEntity.getComponent<TransformComponent>();
             transform.setTransform(worldFromCamera);
-
         }
 
-
-        // (3) shapes
         for (auto shape: scene.children("shape")) {
             std::string type = attrs(shape, "type", "");
             if (type.empty()) return false;
             std::string name = attrs(shape, "id", "");
             if (name.empty()) return false;
 
-            // Create entity per shape
             Entity entity = m_scene->createEntity(name);
-
             auto &transformComponent = entity.getComponent<TransformComponent>();
 
-            // Transform
             if (auto tw = shape.find_child_by_attribute("transform", "name", "to_world")) {
                 glm::vec3 translateVec(0.0f), scaleVec(1.0f);
                 glm::quat rotationQuat(1.0f, 0.0f, 0.0f, 0.0f);
@@ -213,12 +292,10 @@ namespace Pale {
                         glm::vec3 s(attrf(child, "x", 1), attrf(child, "y", 1), attrf(child, "z", 1));
                         scaleVec = s;
                     } else if (n == "rotate") {
-                        // axis-angle; Mitsuba uses unit axis (x,y,z) and angle in degrees
                         glm::vec3 axis(attrf(child, "x", 0), attrf(child, "y", 0), attrf(child, "z", 0));
                         float deg = attrf(child, "angle", 0);
                         float rad = glm::radians(deg);
-                        if (glm::length(axis) > 0)
-                            axis = glm::normalize(axis);
+                        if (glm::length(axis) > 0) axis = glm::normalize(axis);
                         rotationQuat = glm::quat_cast(glm::rotate(glm::mat4(1), rad, axis));
                     }
                 }
@@ -227,23 +304,15 @@ namespace Pale {
                 transformComponent.setScale(scaleVec);
             }
 
-            // MeshComponent with AssetHandle
             auto &meshComp = entity.addComponent<MeshComponent>();
 
-            // Resolve mesh AssetHandle from Mitsuba <shape>
             auto resolveMeshFromShape = [&](const pugi::xml_node &s) -> std::optional<Pale::AssetHandle> {
-                // filename is in <string name="filename" value="...">
                 auto filenameNode = s.find_child_by_attribute("string", "name", "filename");
                 if (filenameNode) {
                     std::filesystem::path path = filenameNode.attribute("value").as_string();
-
-                    // Reuse existing ID or import a new one
                     if (auto id = m_assets.findByPath(path)) return *id;
                     return m_assets.importPath(path, Pale::AssetType::Mesh);
                 }
-
-                // Built-in primitives (rectangle/sphere/etc.) — optional; stub for now
-                // You can register procedural assets later (e.g., “__primitive__/rectangle”)
                 return std::nullopt;
             };
 
@@ -253,16 +322,10 @@ namespace Pale {
             }
 
             if (meshId) {
-                meshComp.meshID = meshId.value(); // <-- your MeshComponent's AssetHandle field
-            } else {
-                // If there is no mesh for this shape, you may remove MeshComponent or keep it empty.
-                // entity.removeComponent<MeshComponent>();
+                meshComp.meshID = meshId.value();
             }
 
-
             std::unordered_map<std::string, AssetHandle> materialById;
-
-            // 1) Bake all BSDFs by id (scene-wide)
             for (auto bsdfNode: scene.children("bsdf")) {
                 std::string bsdfId = bsdfNode.attribute("id").as_string();
                 if (bsdfId.empty()) continue;
@@ -273,9 +336,7 @@ namespace Pale {
                 materialById.emplace(bsdfId, bakedMaterialHandle);
             }
 
-            // Track emissive for this specific shape
             std::optional<AssetHandle> emissiveMaterialHandle;
-
             if (auto emitterNode = shape.child("emitter")) {
                 std::string emitterType = emitterNode.attribute("type").as_string();
                 if (emitterType == "area") {
@@ -285,7 +346,6 @@ namespace Pale {
                     auto &areaLightComponent = entity.addComponent<AreaLightComponent>();
                     areaLightComponent.radiance = radianceRgb;
 
-                    // Bake an emissive material variant for the area emitter
                     AssetHandle bakedEmissiveHandle =
                             bakeFromMitsuba(emitterNode, xmlPath, m_assets,
                                             /*keyMode=*/BakeKey::ByIdThenHash,
@@ -295,11 +355,7 @@ namespace Pale {
                 }
             }
 
-            // Decide which material to attach
-            // Preference rule: if entity has the tag `UseEmitterMaterialTag` and we baked an emissive, use that.
-            // Otherwise fall back to the <ref id="..."> BSDF link if present.
             MaterialComponent &materialComponent = entity.addComponent<MaterialComponent>();
-
             const bool preferEmissiveMaterial =
                     entity.hasComponent<AreaLightComponent>() && emissiveMaterialHandle.has_value();
 
@@ -310,11 +366,9 @@ namespace Pale {
                 if (auto iterator = materialById.find(referencedId); iterator != materialById.end()) {
                     materialComponent.materialID = iterator->second;
                 } else if (emissiveMaterialHandle.has_value()) {
-                    // Fallback: if BSDF id not found but emissive exists, attach emissive
                     materialComponent.materialID = *emissiveMaterialHandle;
                 }
             } else if (emissiveMaterialHandle.has_value()) {
-                // No <ref>, but emissive exists
                 materialComponent.materialID = *emissiveMaterialHandle;
             }
         }

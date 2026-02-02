@@ -20,9 +20,5 @@ namespace Pale {
         {
         }
 
-        const glm::mat4& Camera::getProjectionMatrix() const
-        {
-            return m_projectionMatrix;
-        }
 
 }
