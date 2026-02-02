@@ -218,9 +218,9 @@ int main(int argc, char **argv) {
     Pale::SceneSerializer serializer(scene, assetIndexer);
     //serializer.deserialize("scene_blender_30.xml");
     //serializer.deserialize("scene_blender_1.xml");
-    serializer.deserialize("scene.xml");
+    //serializer.deserialize("scene.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    //serializer.deserialize("cbox_custom.xml");
+    serializer.deserialize("cbox_custom.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
