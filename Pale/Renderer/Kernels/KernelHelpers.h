@@ -722,28 +722,18 @@ namespace Pale {
         // In front (OpenGL-style: camera looks along -Z)
         if (pointCamera.z() >= 0.0f) return false;
 
-        // Choose intrinsics:
-        // - If present: use them
-        // - Else: fallback to fovy-derived centered intrinsics
-        float fx = sensor.camera.fx;
-        float fy = sensor.camera.fy;
-        float cx = sensor.camera.cx;
-        float cy = sensor.camera.cy;
-
         const float width = static_cast<float>(sensor.width);
         const float height = static_cast<float>(sensor.height);
 
-        if (sensor.camera.hasPinholeIntrinsics) {
-            const float fyFallback = 0.5f * height / sycl::tan(0.5f * glm::radians(sensor.camera.fovy));
-            const float fxFallback = fyFallback * (width / height);
-            fx = fxFallback;
-            fy = fyFallback;
-            cx = 0.5f * width;
-            cy = 0.5f * height;
-        }
+        const float fyFallback = 0.5f * height / sycl::tan(0.5f * glm::radians(sensor.camera.fovy));
+        const float fxFallback = fyFallback * (width / height);
+        float fx = fxFallback;
+        float fy = fyFallback;
+        float cx = 0.5f * width;
+        float cy = 0.5f * height;
+
 
         const float z = -pointCamera.z(); // positive depth
-
         const float u = fx * (pointCamera.x() / z) + cx;
         const float v = fy * (pointCamera.y() / z) + cy;
 

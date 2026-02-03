@@ -149,8 +149,8 @@ namespace Pale {
                         const Point point = scene.points[worldHit.primitiveIndex];
                         // Reuse same albedo for scatter/Transmission
                         float3 c = point.albedo;
-                        float alpha_r = 0.5f;
-                        float alpha_t = 0.5f;
+                        float alpha_r = point.alpha_r;
+                        float alpha_t = point.alpha_t;
 
                         float3 rho_r = c * alpha_r; // diffuse reflectance
                         float3 rho_t = c * alpha_t; // diffuse transmission
@@ -493,9 +493,9 @@ namespace Pale {
 
                         // -----------------------------------------------------------------
                         // 1) Transmit ray: collect all splat events + terminal mesh hit
-                        // -----------------------------------------------------------------
+                        // -----------------------------------------------------------------s
                         // Trace up to N layers (no sorting needed if each query returns closest hit > tMin)
-                        const int maxLayers = 8;
+                        const int maxLayers = 64;
                         float transmittanceProduct = 1.0f;
                         for (int layer = 0; layer < maxLayers; ++layer) {
                             WorldHit worldHit{};
@@ -538,11 +538,11 @@ namespace Pale {
                                 transmittanceProduct *= (1.0f - alphaEff);
 
                                 // Early out if we're nearly opqaue
-                                if (transmittanceProduct < 0.01f) {
+                                if (transmittanceProduct < 0.001f) {
                                     break;
                                 }
 
-                                primaryRay.origin = worldHit.hitPositionW + (primaryRay.direction * 1e-5f);
+                                primaryRay.origin = worldHit.hitPositionW + (primaryRay.direction * 1e-6f);
                                 continue;
                             }
 

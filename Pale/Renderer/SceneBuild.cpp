@@ -209,6 +209,8 @@ namespace Pale {
                 gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
                 gpuPoint.albedo =    glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
                 gpuPoint.opacity =   glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
+                gpuPoint.alpha_r =   0.5f;
+                gpuPoint.alpha_t =   0.5f;
                 gpuPoint.beta =     glm::clamp(pointGeometry.betas[i], -5.0f, 5.0f);
                 gpuPoint.shape =      glm::clamp(pointGeometry.shapes[i], -5.0f, 5.0f);
 
