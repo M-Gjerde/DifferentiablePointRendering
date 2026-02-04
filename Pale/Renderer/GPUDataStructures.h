@@ -228,7 +228,7 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
-    enum class RayIntersectMode : uint32_t { Random = 0, Transmit = 1, Scatter = 2 };
+    enum class RayIntersectMode : uint32_t { Random = 0, DetachedMode = 1, Scatter = 2 };
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -255,16 +255,17 @@ namespace Pale {
     constexpr int kMaxSplatEventsPerRay = 16;
 
 
-    struct SplatEvent {
+    struct SurfelEvent {
         float t = FLT_MAX; // local space t
-        float3 hitWorld = float3(0.0f); // World hit position
-        float alpha = 1.0f;
-        float tau = 1.0f;
+        float alphaGeom = 1.0f;
         uint32_t primitiveIndex = UINT32_MAX; // primitiveIndex
     };
     struct alignas(16) LocalHit {
         float3 worldHit{0.0f};
-        float3 normal{0.0f};
+
+        uint32_t numSurfelsVisited = 0;
+        SurfelEvent surfelEvents[kMaxSplatEventsPerRay];
+
         float t = FLT_MAX; // world-space t
         float transmissivity = FLT_MAX;
         float alpha = 1.0f;
@@ -276,6 +277,7 @@ namespace Pale {
 
     struct alignas(16) WorldHit {
         bool hit = false;
+        GeometryType type = GeometryType::InvalidType;
         float t = FLT_MAX; // world-space t
         float transmissivity = 1.0f;
         float alpha = 0.0f;
@@ -295,10 +297,14 @@ namespace Pale {
         photonMapping
     };
 
+    struct Random {
+        uint64_t seed = 42; // should be more than maxBounces
+        uint32_t number = 42; // should be more than maxBounces
+    };
     struct alignas(16) PathTracerSettings {
         IntegratorKind integratorKind = IntegratorKind::photonMapping;
         uint32_t photonsPerLaunch = 1e6;
-        uint64_t randomSeed = 42; // should be more than maxBounces
+        Random random{}; // should be more than maxBounces
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 6;
         uint32_t numForwardPasses = 6;

@@ -27,6 +27,7 @@ namespace Pale {
     }
 
 
+    /*
     inline float3 gradTransmissionPosition(const Ray &ray, const SplatEvent &splatEvent, const Point &surfel,
                                            const float3 &segmentVector) {
         constexpr float epsilon = 1e-6f;
@@ -204,8 +205,9 @@ namespace Pale {
         // duv/dc_pos = (u du/dc + v dv/dc)
         const float3 dUVPosition = (u * duDPk + v * dvDPk);
         return dUVPosition;
-        */
+
     }
+    */
     // ----------------- Position gradient (translation of surfel center) -----------------
     inline float3 computeDuvDPositionFull(
         const float3 &tangentUWorld,
@@ -849,7 +851,7 @@ SYCL_EXTERNAL inline bool computeRayPlaneIntersectionRtDerivatives(
                     // BRDF
                     WorldHit shadowWorldHit{};
                     intersectScene(shadowRayState.ray, &shadowWorldHit, scene, rng,
-                                   RayIntersectMode::Transmit);
+                                   RayIntersectMode::DetachedMode);
                     buildIntersectionNormal(scene, shadowWorldHit);
 
                     accumulateTransmittanceGradientsAlongRay(shadowRayState, shadowWorldHit, scene, photonMap,

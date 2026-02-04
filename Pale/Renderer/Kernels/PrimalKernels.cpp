@@ -26,13 +26,13 @@ namespace Pale {
         const float totalPhotons = photonCount * forwardPasses;
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
-            uint64_t baseSeed = settings.randomSeed;
+            uint64_t randomNumber = settings.random.number;
             float invPhotonCount = 1.f / totalPhotons; // 1/N
 
             commandGroupHandler.parallel_for<struct RayGenEmitterKernelTag>(
                 sycl::range<1>(photonCount),
                 [=](sycl::id<1> globalId) {
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, globalId[0]);
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, globalId[0]);
                     // Choose any generator you like:
                     rng::Xorshift128 rng128(perItemSeed);
 
@@ -72,7 +72,7 @@ namespace Pale {
 
         void operator()(sycl::id<1> globalId) const {
             const uint32_t rayIndex = globalId[0];
-            const uint64_t perItemSeed = rng::makePerItemSeed1D(m_settings.randomSeed, rayIndex);
+            const uint64_t perItemSeed = rng::makePerItemSeed1D(m_settings.random.number, rayIndex);
             rng::Xorshift128 rng128(perItemSeed);
 
             WorldHit worldHit{};
@@ -119,12 +119,12 @@ namespace Pale {
         auto *countExtensionOut = pkg.intermediates.countExtensionOut;
 
         queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = settings.randomSeed;
+            uint64_t randomNumber = settings.random.number;
             cgh.parallel_for<class ShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
                     const WorldHit worldHit = hitRecords[rayIndex];
                     const RayState rayState = raysIn[rayIndex];
@@ -248,7 +248,7 @@ namespace Pale {
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
-        uint64_t baseSeed = pkg.settings.randomSeed * (cameraIndex + 5);
+        uint64_t baseSeed = pkg.settings.random.number * (cameraIndex + 5);
         // Host-side (before launching kernel)
         SensorGPU sensor = pkg.sensor[cameraIndex];
         auto &intermediates = pkg.intermediates;
@@ -257,7 +257,7 @@ namespace Pale {
         auto *raysOut = pkg.intermediates.extensionRaysA;
         auto *countExtensionOut = pkg.intermediates.countExtensionOut;
         queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = settings.randomSeed * (static_cast<uint64_t>(cameraIndex) + 5ull);
+            uint64_t baseSeed = settings.random.number * (static_cast<uint64_t>(cameraIndex) + 5ull);
 
             cgh.parallel_for<class ShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
@@ -349,7 +349,7 @@ namespace Pale {
                     const float invPixelArea = 1.0f / pixelArea;
                     // Contribution (delta sensor, pixel binning)
                     const float3 contribution =
-                            rayState.pathThroughput *
+                            rayState.pathThroughput  *
                             (bsdfValue + float3{tauDiffuse}) *
                             (cosineAbsToCamera * inverseDistanceSquared) * invPixelArea;
 
@@ -366,7 +366,6 @@ namespace Pale {
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
-        uint64_t baseSeed = pkg.settings.randomSeed * (cameraIndex + 5);
 
 
         // Host-side (before launching kernel)
@@ -379,7 +378,7 @@ namespace Pale {
         auto *countExtensionOut = pkg.intermediates.countExtensionOut;
 
         queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = settings.randomSeed * (static_cast<uint64_t>(cameraIndex) + 5ull);
+            uint64_t baseSeed = settings.random.number;
 
             cgh.parallel_for<class ShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
@@ -466,7 +465,7 @@ namespace Pale {
             // Clear framebuffer before calling this, outside.
             queue.submit([&](sycl::handler &cgh) {
                 float totalSamplesPerPixel = settings.numGatherPasses;
-                uint64_t baseSeed = pkg.settings.randomSeed * random();
+                uint64_t baseSeed = pkg.settings.random.number;
 
                 cgh.parallel_for<class CameraGatherKernel>(
                     sycl::range<1>(pixelCount),
@@ -495,9 +494,10 @@ namespace Pale {
                         // 1) Transmit ray: collect all splat events + terminal mesh hit
                         // -----------------------------------------------------------------s
                         // Trace up to N layers (no sorting needed if each query returns closest hit > tMin)
+                        // Lol or jut use a while true loop
                         const int maxLayers = 64;
                         float transmittanceProduct = 1.0f;
-                        for (int layer = 0; layer < maxLayers; ++layer) {
+                        while (true) {
                             WorldHit worldHit{};
 
                             intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator,
@@ -538,7 +538,7 @@ namespace Pale {
                                 transmittanceProduct *= (1.0f - alphaEff);
 
                                 // Early out if we're nearly opqaue
-                                if (transmittanceProduct < 0.001f) {
+                                if (transmittanceProduct < 0.1f) {
                                     break;
                                 }
 

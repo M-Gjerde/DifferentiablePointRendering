@@ -291,7 +291,7 @@ namespace Pale {
                 submitLightTracingKernel(renderPackage);
                 break;
             case IntegratorKind::lightTracingCylinderRay:
-                submitLightTracingKernelCylinderRay(renderPackage);
+                //submitLightTracingKernelCylinderRay(renderPackage);
                 break;
             case IntegratorKind::photonMapping:
                 submitPhotonMappingKernel(renderPackage);

@@ -29,7 +29,7 @@ namespace Pale {
         queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
-            const uint64_t baseSeed = settings.randomSeed * static_cast<uint64_t>(spp);
+            const uint64_t randomNumber = settings.random.number;
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
                 sycl::range<1>(raysPerSet),
@@ -45,7 +45,7 @@ namespace Pale {
 
                     const uint32_t pixelIndex = index;
                     // RNG for this pixelhttps://www.chess.com/home
-                    const uint64_t perPixelSeed = rng::makePerItemSeed1D(baseSeed, pixelLinearIndexWithinImage);
+                    const uint64_t perPixelSeed = rng::makePerItemSeed1D(randomNumber, pixelLinearIndexWithinImage);
                     rng::Xorshift128 pixelRng(perPixelSeed);
 
                     // Adjoint source weight
@@ -90,6 +90,110 @@ namespace Pale {
                 });
         }).wait();
     }
+
+
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t activeCount) {
+        auto &queue = pkg.queue;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
+        auto &scene = pkg.scene;
+
+        struct ChosenScatterEvent {
+            float scalarWeight = 1.0f;
+            bool hasValue = false;
+        };
+
+        queue.submit([&](sycl::handler &commandGroupHandler) {
+            commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
+                sycl::range<1>(activeCount),
+                [=](sycl::id<1> globalId) {
+                    ChosenScatterEvent chosen;
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
+                    rng::Xorshift128 rng128(perItemSeed);
+
+
+                    RayState &rayState = intermediates.primaryRays[rayIndex];
+
+                    WorldHit worldHit{};
+                    intersectScene(rayState.ray, &worldHit, scene, rng128, RayIntersectMode::DetachedMode);
+                    if (!worldHit.hit) {
+                        intermediates.hitRecords[rayIndex] = worldHit;
+                        return;
+                    }
+                    buildIntersectionNormal(scene, worldHit);
+
+                    intermediates.hitRecords[rayIndex] = worldHit;
+                });
+        }).wait();
+    }
+
+    /*
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t activeCount) {
+        auto &queue = pkg.queue;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
+        auto &scene = pkg.scene;
+
+        struct ChosenScatterEvent {
+            float scalarWeight = 1.0f;
+            bool hasValue = false;
+        };
+
+        queue.submit([&](sycl::handler &commandGroupHandler) {
+            commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
+                sycl::range<1>(activeCount),
+                [=](sycl::id<1> globalId) {
+                    ChosenScatterEvent chosen;
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
+                    rng::Xorshift128 rng128(perItemSeed);
+                    float totalScalarScatterWeight = 0.0f;
+                    float tmin = 0.0f;
+                    uint32_t maxIntersections = 32;
+
+                    float segmentTransmittanceBeforeHit = 1.0f;
+
+                    WorldHit acceptedWorldHit{};
+                    RayState &rayState = intermediates.primaryRays[rayIndex];
+
+                    uint32_t surfelsVisited[maxIntersections];
+
+                    for (int N = 0; N < maxIntersections; N++) {
+                        WorldHit worldHit{};
+                        intersectAdjointScene(rayState.ray, &worldHit, scene, tmin);
+                        if (!worldHit.hit) {
+                            intermediates.hitRecords[rayIndex] = worldHit;
+                            break;
+                        }
+                        buildIntersectionNormal(scene, worldHit);
+                        if (worldHit.type == GeometryType::Mesh)
+                            break;
+
+                        float w = segmentTransmittanceBeforeHit * worldHit.alpha;
+                        totalScalarScatterWeight += w;
+                        float probability = w / totalScalarScatterWeight;
+                        float u = rng128.nextFloat(); // uniform in [0,1)
+                        if (!chosen.hasValue || u < probability) {
+                            chosen.hasValue = true;
+                            chosen.scalarWeight = w;
+                            acceptedWorldHit = worldHit;
+                            acceptedWorldHit.transmissivity = segmentTransmittanceBeforeHit;
+                        }
+                        surfelsVisited[N] = worldHit.primitiveIndex;
+                        tmin = worldHit.t + 1e-4f;
+
+                        segmentTransmittanceBeforeHit *= (1 - worldHit.alpha);
+                        if (segmentTransmittanceBeforeHit < 1e-4f) break;
+                    }
+                    intermediates.hitRecords[rayIndex] = acceptedWorldHit;
+                    if (chosen.hasValue && totalScalarScatterWeight > 0.0f) {
+                        rayState.pathThroughput *= totalScalarScatterWeight;
+                    }
+                });
+        }).wait();
+    }
+    */
 
     struct DebugPixel {
         uint32_t pixelY;
@@ -147,6 +251,25 @@ namespace Pale {
 
         auto &sensor = pkg.sensor[cameraIndex];
         DebugImages &debugImage = pkg.debugImages[cameraIndex];
+
+        queue.submit([&](sycl::handler &cgh) {
+            cgh.parallel_for<struct AdjointShadeKernelTag>(
+                sycl::range<1>(activeRayCount),
+                // ReSharper disable once CppDFAUnusedValue
+                [=](sycl::id<1> globalId) {
+                    const uint32_t rayIndex = globalId[0];
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
+                    rng::Xorshift128 rng128(perItemSeed);
+                    RayState &rayState = intermediates.primaryRays[rayIndex];
+
+
+                    // Transmission Gradients
+                });
+        }).wait();
+
+
+        // Generate new ray
+
 
         /*
         queue.submit([&](sycl::handler &cgh) {
@@ -475,7 +598,7 @@ namespace Pale {
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.randomSeed, rayIndex);
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
                     const RayState &rayState = raysIn[rayIndex];
                     const WorldHit &worldHit = hitRecords[rayIndex];

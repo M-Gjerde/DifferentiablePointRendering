@@ -220,7 +220,8 @@ int main(int argc, char **argv) {
     //serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    serializer.deserialize("cbox_custom.xml");
+    //serializer.deserialize("cbox_custom.xml");
+    serializer.deserialize("empty.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -276,53 +277,7 @@ int main(int argc, char **argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = true;
-    bool renderLightTracingCylinder = false;
-
-    if (renderLightTracingCylinder) {
-        //  cuda/rocm
-        Pale::PathTracerSettings settings;
-        settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
-        settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 3;
-        settings.numForwardPasses = 200;
-        settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 2;
-        settings.adjointSamplesPerPixel = 1;
-        settings.depthDistortionWeight = 0.000;
-        settings.normalConsistencyWeight = 0.000;
-        settings.renderDebugGradientImages = false;
-
-
-        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
-        tracer.setScene(gpu, buildProducts);
-        Pale::Log::PA_INFO("Forward Render Pass...");
-
-        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
-
-        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
-        //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
-
-        tracer.renderForward(sensors); // films is span/array
-
-        for (const auto &sensor: sensors) {
-            std::vector<uint8_t> rgba =
-                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-            const uint32_t imageWidth = sensor.width;
-            const uint32_t imageHeight = sensor.height;
-
-            // Per-camera output directory: Output/<pointcloud>/<camera_name>/
-            std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
-
-            std::filesystem::create_directories(baseDir);
-            std::string fileName = sensor.name;
-            fileName += "_CylinderlightTracing";
-            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
-            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
-        }
-    }
+    bool renderLightTracing = false;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -375,11 +330,11 @@ int main(int argc, char **argv) {
         //  cuda/rocm
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
-        settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 6;
+        settings.photonsPerLaunch = 1e5;
+        settings.maxBounces = 4;
         settings.numForwardPasses = 10;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 2;
+        settings.maxAdjointBounces = 1; // 1 = Projection only
         settings.adjointSamplesPerPixel = 1;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;
@@ -388,13 +343,16 @@ int main(int argc, char **argv) {
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
+
+        Pale::Log::PA_INFO("Adjoint Render Pass...");
+        std::vector<Pale::SensorGPU> adjointSensors =
+                Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+        std::vector<Pale::DebugImages> debugImages(adjointSensors.size());
+        Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,debugImages.data());
+        tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
+
         Pale::Log::PA_INFO("Forward Render Pass...");
-
         std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
-
-        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
-        //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
-
         tracer.renderForward(sensors); // films is span/array
 
         for (const auto &sensor: sensors) {
@@ -415,6 +373,8 @@ int main(int argc, char **argv) {
             Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
         }
     }
+
+
 
 
     /*
@@ -536,3 +496,4 @@ int main(int argc, char **argv) {
     deviceSelector.getQueue().wait();
     return 0;
 }
+

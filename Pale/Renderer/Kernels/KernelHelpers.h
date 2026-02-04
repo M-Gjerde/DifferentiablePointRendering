@@ -1159,7 +1159,7 @@ namespace Pale {
         return weightedFluxSum * normalization;
     }
 
-
+    /*
     inline float3 computeLSurfel(const Point &surfel, const float3 &direction, const SplatEvent &splatEvent,
                                  const DeviceSurfacePhotonMapGrid &photonMap) {
         const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
@@ -1182,7 +1182,7 @@ namespace Pale {
         return float3{0.0f};
     }
 
-    /*
+
     inline float3 estimateRadianceFromPhotonMap(
         const WorldHit& worldHit,
         const GPUSceneBuffers& scene,

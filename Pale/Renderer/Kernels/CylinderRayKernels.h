@@ -418,7 +418,6 @@ namespace Pale {
                 worldHitOut->hit = true;
                 worldHitOut->t = tWorld;
                 worldHitOut->hitPositionW = localHit.worldHit;
-                worldHitOut->geometricNormalW = localHit.normal;
                 worldHitOut->instanceIndex = instanceIndex;
                 worldHitOut->primitiveIndex = localHit.primitiveIndex;
 
@@ -462,12 +461,11 @@ namespace Pale {
         const float totalPhotons = photonCount * forwardPasses;
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
-            uint64_t baseSeed = settings.randomSeed;
 
             commandGroupHandler.parallel_for<struct RayGenEmitterKernelTag>(
                 sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, globalId[0]);
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(0, globalId[0]);
                     // Choose any generator you like:
                     rng::Xorshift128 rng128(perItemSeed);
                     const uint32_t rayIndex = globalId[0];
@@ -492,7 +490,6 @@ namespace Pale {
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
         auto &photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
-        uint64_t baseSeed = pkg.settings.randomSeed * (cameraIndex + 5);
 
 
         // Host-side (before launching kernel)
@@ -505,14 +502,13 @@ namespace Pale {
         auto *countExtensionOut = pkg.intermediates.countExtensionOut;
 
         queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = settings.randomSeed * (static_cast<uint64_t>(cameraIndex) + 5ull);
 
             cgh.parallel_for<class ShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(0, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
 
                     const WorldHit worldHit = hitRecords[rayIndex];
