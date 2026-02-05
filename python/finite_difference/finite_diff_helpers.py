@@ -211,18 +211,6 @@ def finite_difference_opacity(
     negative_opacity = -eps
     positive_opacity = +eps
 
-    rgb_minus = render_with_trs(
-        renderer,
-        translation3=(0.0, 0.0, 0.0),
-        rotation_quat4=(0.0, 0.0, 0.0, 1.0),
-        scale3=(1.0, 1.0, 1.0),
-        albedo3=(0.0, 0.0, 0.0),
-        opacity=negative_opacity,
-        beta=0.0,
-        index=index,
-        camera_name=camera_name
-
-    )
     rgb_plus = render_with_trs(
         renderer,
         translation3=(0.0, 0.0, 0.0),
@@ -235,8 +223,24 @@ def finite_difference_opacity(
         camera_name=camera_name
 
     )
-    grad = (rgb_plus - rgb_minus) / (2.0 * eps)
-    return rgb_minus, rgb_plus, grad
+
+    rgb_centered = render_with_trs(
+        renderer,
+        translation3=(0.0, 0.0, 0.0),
+        rotation_quat4=(0.0, 0.0, 0.0, 1.0),
+        scale3=(1.0, 1.0, 1.0),
+        albedo3=(0.0, 0.0, 0.0),
+        opacity=negative_opacity,
+        beta=0.0,
+        index=index,
+        camera_name=camera_name
+
+    )
+
+    grad = (rgb_plus - rgb_centered) / (2.0 * eps)
+
+
+    return rgb_centered, rgb_plus, grad
 
 
 def finite_difference_albedo(

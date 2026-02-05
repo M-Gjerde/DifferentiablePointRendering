@@ -280,7 +280,7 @@ namespace Pale {
                         true
                     );
 
-                    float3 L_p = E * (rho * M_1_PIf);
+                    float3 L_p = E * (rho * M_1_PIf) * 0.5f;
                     // If 1 we blend with background color
 
                     float grad_alpha_eta = worldHit.alpha;

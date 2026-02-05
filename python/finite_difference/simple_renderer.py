@@ -6,35 +6,12 @@ import numpy as np
 import pale
 
 
-from finite_difference.finite_diff_helpers import save_rgb_preview_png, finite_difference_opacity, write_fd_images
+from finite_difference.finite_diff_helpers import save_rgb_preview_png, finite_difference_opacity, write_fd_images, \
+    render_with_trs
 from io_utils import load_target_image
 from losses import compute_l2_grad, compute_l2_loss
 import matplotlib.pyplot as plt
 
-
-# This cell only defines a reusable plotting helper for your sweep CSV.
-# No data is plotted here.
-
-def plot_fd_linear_sweep_from_csv(csv_path: str, output_png: str = None):
-    """
-    Plot eps vs FD gradient from a sweep CSV with columns: eps,fd_grad,rel_err.
-    """
-    data = np.loadtxt(csv_path, delimiter=",", skiprows=1)
-    eps = data[:, 0]
-    fd_grad = data[:, 2]
-
-    plt.figure()
-    plt.plot(eps, fd_grad)
-    plt.xlabel("epsilon")
-    plt.ylabel("relative error")
-    plt.title("Finite-difference opacity sweep")
-
-    if output_png is not None:
-        plt.savefig(output_png, bbox_inches="tight")
-    else:
-        plt.show()
-
-print("Helper function 'plot_fd_linear_sweep_from_csv' defined.")
 
 
 def run_opacity_fd_linear_sweep(
@@ -44,10 +21,10 @@ def run_opacity_fd_linear_sweep(
     analytic_grad_scalar: float,
     index: int,
     output_dir: Path,
-    eps_low: float = 0.05,
+    eps_low: float = 0.01,
     eps_high: float = 0.5,
     num_eps: int = 50,
-    num_avg: int = 1,
+    num_avg: int = 2,
     rel_err_threshold: float = 0.05,      # 5%
     fd_variation_threshold: float = 0.02, # 2% neighbor-to-neighbor change
 ) -> None:
@@ -80,7 +57,7 @@ def run_opacity_fd_linear_sweep(
 
         print(
             f"eps={eps: .6f}  "
-            f"FD(mean)={fd_mean[i]: .8e}  "
+            f"FD(mean)={fd_mean[i]: .4}  "
             f"std={fd_std[i]: .3e}  "
             f"rel_err={rel_errs[i]: .3%}"
         )
@@ -126,10 +103,10 @@ def run_opacity_fd_linear_sweep(
     plt.plot(eps_values, fd_mean, label="FD mean")
     plt.fill_between(
         eps_values,
-        fd_mean - fd_std,
-        fd_mean + fd_std,
+        fd_mean - fd_std * 3,
+        fd_mean + fd_std * 3,
         alpha=0.25,
-        label="±1 std",
+        label="±3 std",
     )
     plt.axhline(analytic_grad_scalar, linestyle="--", linewidth=1, label="Analytic")
     plt.xlabel("epsilon")
@@ -160,10 +137,10 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 100,
+        "forward_passes": 50,
         "gather_passes": 1,
         "adjoint_bounces": 1,
-        "adjoint_passes": 100,
+        "adjoint_passes": 10,
         "logging": 3
     }
 
@@ -182,27 +159,37 @@ def main(args) -> None:
     target_image = load_target_image(output_dir / Path(camera + "_target.png"))
 
     # Render ONCE (baseline)
-    rendered_images = renderer.render_forward()
-    rendered_image = rendered_images[camera]
-    save_rgb_preview_png(rendered_image, output_dir / Path(camera + "_rendered.png"))
 
-    # Analytic gradient of scalar loss wrt opacity[index]
-    loss_grad_image = compute_l2_grad(rendered_image, target_image)
-    gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
+    iterations = 10
+    for _ in range(iterations):
 
-    analytic_opacity_grads = np.asarray(gradients["opacity"], dtype=np.float32).squeeze()
-    if np.ndim(analytic_opacity_grads) == 0:
-        analytic_grad_scalar = float(analytic_opacity_grads)
-    else:
-        analytic_grad_scalar = float(analytic_opacity_grads[args.index])
+        rendered_image = render_with_trs(
+            renderer,
+            translation3=(0.0, 0.0, 0.0),
+            rotation_quat4=(0.0, 0.0, 0.0, 1.0),
+            scale3=(1.0, 1.0, 1.0),
+            albedo3=(0.0, 0.0, 0.0),
+            opacity=0.1,
+            beta=0.0,
+            index=0,
+            camera_name=camera
 
-    print("AN Gradient:", analytic_grad_scalar)
+        )
+
+        save_rgb_preview_png(rendered_image, output_dir / Path(camera + "_rendered.png"))
+
+        # Analytic gradient of scalar loss wrt opacity[index]
+        loss_grad_image = compute_l2_grad(rendered_image, target_image)
+        gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
+        analytic_opacity_grad = np.asarray(gradients["opacity"], dtype=np.float32).squeeze()
+
+        print("AN Gradient:" ,analytic_opacity_grad)
 
     run_opacity_fd_linear_sweep(
         renderer=renderer,
         camera=camera,
         target_image=target_image,
-        analytic_grad_scalar=analytic_grad_scalar,
+        analytic_grad_scalar=analytic_opacity_grad,
         index=(args.index if args.index >= 0 else 0),
         output_dir=output_dir
     )
