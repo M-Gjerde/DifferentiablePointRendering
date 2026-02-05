@@ -4,7 +4,7 @@
         <integer name="max_depth" value="6"/>
     </integrator>
 
-    <!-- BSDFs -->
+
     <sensor type="perspective" id="camera1">
         <string name="fov_axis" value="smaller"/>
         <float name="near_clip" value="0.01"/>
@@ -26,7 +26,7 @@
         </film>
     </sensor>
 
-
+    <!--
      <sensor type="perspective" id="camera2">
          <string name="fov_axis" value="smaller"/>
          <float name="near_clip" value="0.01"/>
@@ -117,7 +117,6 @@
              <string name="component_format" value="float32"/>
          </film>
      </sensor>
-    <!-- BSDFs
 
 -->
 
@@ -148,80 +147,7 @@
         <rgb name="reflectance" value="0.2,0.1,0.4"/>
     </bsdf>
 
-    <!-- Floor:
-    <shape type="obj" id="bunny">
-        <string name="filename" value="meshes/bun_zipper_res3.ply"/>
-        <transform name="to_world">
-            <translate x="0.3" y="0.0" z="0.3"/>
-            <scale x="1.2" y="1.2" z="1.2"/>
-        </transform>
-        <ref id="light_gray"/>
-    </shape>
--->
 
-
-    <!-- Floor: z=0, normal +Z (no rotation) -->
-    <shape type="obj" id="floor">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <translate x="0" y="0" z="0"/>
-        </transform>
-        <ref id="light_gray"/>
-    </shape>
-
-
-    <!-- Ceiling: z=2, normal -Z -->
-    <shape type="obj" id="ceiling">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="1" y="0" z="0" angle="180"/>
-            <translate x="0" y="0" z="2"/>
-        </transform>
-        <ref id="light_gray"/>
-    </shape>
-
-    <!-- Back wall: y=2, normal -Y -->
-    <shape type="obj" id="back">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="1" y="0" z="0" angle="90"/>
-            <translate x="0" y="1" z="1"/>
-        </transform>
-        <ref id="light_gray"/>
-    </shape>
-
-    <!-- Left wall: x=-1, normal +X -->
-    <shape type="obj" id="left_red">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="0" y="1" z="0" angle="90"/>
-            <translate x="-1" y="0" z="1"/>
-        </transform>
-        <ref id="red"/>
-    </shape>
-
-    <!-- Right wall: x=+1, normal -X -->
-    <shape type="obj" id="right_green">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="0" y="1" z="0" angle="-90"/>
-            <translate x="1" y="0" z="1"/>
-        </transform>
-        <ref id="green"/>
-    </shape>
-
-    <!-- Ceiling light: small, facing -Z
-       FlashLight:
-            <rotate x="1" y="0" z="0" angle="-90"/>
-            <scale x="0.15" y="0.15" z="0.15"/>
-            <translate x="0.0" y="-2" z="1.5"/>
-
-            Side light
-             <rotate x="0" y="1" z="0" angle="135"/>
-            <scale x="0.1" y="0.1" z="0.1"/>
-            <translate x="-0.8" y="0.0" z="1.3"/>
-
-            -->
     <shape type="obj" id="light">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">

@@ -622,6 +622,8 @@ export namespace Pale::Utils {
         std::vector<float> replicatedRGBA(expectedSize);
         for (std::size_t i = 0; i < pixelCount; ++i) {
             const float channelValue = inputRGBA[i * 4 + channelIndex];
+            if (channelValue > 0)
+                int debug = 1;
             replicatedRGBA[i * 4 + 0] = channelValue; // R
             replicatedRGBA[i * 4 + 1] = channelValue; // G
             replicatedRGBA[i * 4 + 2] = channelValue; // B

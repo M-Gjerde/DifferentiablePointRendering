@@ -232,8 +232,8 @@ int main(int argc, char **argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints =  true;
-    bool addModel =  !true;
+    bool addPoints = true;
+    bool addModel = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -338,22 +338,24 @@ int main(int argc, char **argv) {
         settings.adjointSamplesPerPixel = 1;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;
-        settings.renderDebugGradientImages = false;
+        settings.renderDebugGradientImages = true;
 
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
 
+        Pale::Log::PA_INFO("Forward Render Pass...");
+        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+        tracer.renderForward(sensors); // films is span/array
+
+
         Pale::Log::PA_INFO("Adjoint Render Pass...");
         std::vector<Pale::SensorGPU> adjointSensors =
                 Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
         std::vector<Pale::DebugImages> debugImages(adjointSensors.size());
-        Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,debugImages.data());
+        Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
+                                                                     debugImages.data());
         tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
-
-        Pale::Log::PA_INFO("Forward Render Pass...");
-        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
-        tracer.renderForward(sensors); // films is span/array
 
         for (const auto &sensor: sensors) {
             std::vector<uint8_t> rgba =
@@ -372,9 +374,68 @@ int main(int argc, char **argv) {
             std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
             Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
         }
+
+        if (settings.renderDebugGradientImages) {
+            for (size_t i = 0; const auto &adjointSensor: adjointSensors) {
+                auto debugImagesHost = Pale::downloadDebugGradientImages(
+                    deviceSelector.getQueue(), adjointSensor, debugImages[i]);
+
+                i++;
+                const uint32_t imageWidth = adjointSensor.width;
+                const uint32_t imageHeight = adjointSensor.height;
+                const float adjointSamplesPerPixel =
+                        static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
+
+                // Per-camera base directory: Output/<pointcloud>/<camera_name>/
+                std::filesystem::path baseDir =
+                        std::filesystem::path("Output")
+                        / pointCloudPath.filename().replace_extension("")
+                        / adjointSensor.name;
+
+                std::filesystem::create_directories(baseDir);
+
+                auto saveGradientSet = [&](const std::vector<float> &rgbaBuffer,
+                                           const std::string &prefixBaseName) {
+
+                        // Full-range (absQuantile = 1.0)
+                        {
+                            std::string fileName =
+                                    prefixBaseName + "_seismic.png";
+                            std::filesystem::path filePath = baseDir / fileName;
+
+                            if (Pale::Utils::saveGradientSignPNG(
+                                filePath,
+                                rgbaBuffer,
+                                imageWidth,
+                                imageHeight,
+                                adjointSamplesPerPixel,
+                                1.0f,
+                                false,
+                                true)) {
+                                Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
+                            }
+
+                            // q=0.99
+                            std::string fileNameQuantile =
+                                    prefixBaseName + "_seismic_q099.png";
+                            std::filesystem::path filePathQuantile = baseDir / fileNameQuantile;
+
+                            Pale::Utils::saveGradientSignPNG(
+                                filePathQuantile,
+                                rgbaBuffer,
+                                imageWidth,
+                                imageHeight,
+                                adjointSamplesPerPixel,
+                                0.99f,
+                                false,
+                                true);
+                        }
+                };
+
+                saveGradientSet(debugImagesHost.opacity, "opacity");
+            }
+        }
     }
-
-
 
 
     /*
@@ -496,4 +557,3 @@ int main(int argc, char **argv) {
     deviceSelector.getQueue().wait();
     return 0;
 }
-

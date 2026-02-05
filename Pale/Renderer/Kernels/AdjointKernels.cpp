@@ -233,13 +233,6 @@ namespace Pale {
     //   • In the forward pass, the radiance emitter travels scene → camera.
     //   • In the adjoint pass, the adjoint source travels camera → scene.
     //
-    // This kernel traces adjoint rays originating at the camera, propagating
-    // adjoint through the surfels using the same
-    // **volumetric compositing model** as in the camera gather stage.
-    // The compositing uses the formulation where
-    // BRDF-like and BTDF-like contributions are handled as a single operator
-    // rather than explicitly separating surface/refraction events.
-    //
     void launchAdjointProjectionKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
@@ -261,9 +254,50 @@ namespace Pale {
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
                     RayState &rayState = intermediates.primaryRays[rayIndex];
+                    WorldHit &worldHit = intermediates.hitRecords[rayIndex];
 
-
+                    if (!worldHit.hit || !worldHit.hitSurfel) {
+                        return;
+                    }
                     // Transmission Gradients
+
+                    // Check how many surfels we have along our ray
+
+                    // Retrace the ray to get the correct attenuation?
+
+                    float3 p = rayState.pathThroughput * worldHit.transmissivity * worldHit.invChosenSurfelPdf;
+
+                    const Point &surfel = scene.points[worldHit.primitiveIndex];
+                    const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                    const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
+                    const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
+                    const float3 rho = surfel.albedo;
+                    const float3 E = gatherDiffuseIrradianceAtPoint(
+                        worldHit.hitPositionW,
+                        frontNormalW,
+                        photonMap,
+                        travelSideSign,
+                        true
+                    );
+
+                    float3 L_p = E * (rho * M_1_PIf);
+                    // If 1 we blend with background color
+
+                    float grad_alpha_eta = worldHit.alpha;
+
+                    float3 grad_cost_eta = grad_alpha_eta * p * L_p;
+                    float grad_cost_eta_sum = sum(grad_cost_eta);
+
+                    atomicAddFloat(gradients.gradOpacity[worldHit.primitiveIndex], grad_cost_eta_sum);
+
+                    if (settings.renderDebugGradientImages) {
+                        uint32_t pixelIndex = rayState.pixelIndex;
+                        atomicAddFloat4ToImage(
+                        &debugImage.framebufferOpacity[pixelIndex],
+                        float4{grad_cost_eta_sum}
+                    );
+                    }
+                    // If 2, we can get transmission gradients for first surfel.
                 });
         }).wait();
 

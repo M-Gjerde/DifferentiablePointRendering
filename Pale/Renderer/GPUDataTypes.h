@@ -320,6 +320,12 @@ namespace Pale {
         return v * invLen;
     }
 
+    inline float sum(const float3& v) {
+        float sum = 0.0f;
+        sum += v.x() + v.y() + v.z();
+        return sum;
+    }
+
     /* keep float2 as single alias once */
     using float2 = sycl::float2;
 

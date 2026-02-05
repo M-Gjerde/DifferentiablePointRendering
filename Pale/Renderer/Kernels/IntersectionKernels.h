@@ -579,15 +579,15 @@ namespace Pale {
 
 
     SYCL_EXTERNAL static bool intersectBLASPointCloudDetached(const Ray &rayObject,
-                                                                uint32_t blasRangeIndex,
-                                                                LocalHit &localHitOut,
-                                                                const GPUSceneBuffers &scene) {
+                                                              uint32_t blasRangeIndex,
+                                                              LocalHit &localHitOut,
+                                                              const GPUSceneBuffers &scene,
+                                                              rng::Xorshift128 &rng128) {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
         constexpr float rayEpsilon = 1e-5f;
         constexpr float tAdvanceEpsilon = 1e-4f; // advance after a rejected hit to avoid re-hitting same surfel
-        constexpr uint32_t maxRejections = 256; // cap work per ray (tune)
 
         float cumulativeTransmittanceBefore = 1.0f;
 
@@ -661,6 +661,9 @@ namespace Pale {
             return true;
         };
 
+
+        uint32_t numSurfelsVisited = 0;
+        SurfelEvent surfelEvents[kMaxSplatEventsPerRay];
         // Stochastic accept/reject loop over successive closest hits
         float tMin = rayEpsilon;
         while (true) {
@@ -672,7 +675,7 @@ namespace Pale {
                                        alphaGeomAtHit)) {
                 // No more candidates: pure transmission through this BLAS
                 localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                return false;
+                break;
             }
 
             SurfelEvent event;
@@ -684,26 +687,37 @@ namespace Pale {
             event.alphaGeom = alphaGeomAtHit;
             event.primitiveIndex = surfelIndex;
             event.t = tHit;
-            localHitOut.surfelEvents[localHitOut.numSurfelsVisited] = event;
-            localHitOut.numSurfelsVisited++;
+            event.transmissivity = cumulativeTransmittanceBefore;
+            surfelEvents[numSurfelsVisited] = event;
+            numSurfelsVisited++;
 
             cumulativeTransmittanceBefore *= tau;
             tMin = tHit + tAdvanceEpsilon;
 
             // stop early if we reach 0 transmittance
             if ((cumulativeTransmittanceBefore) <= 0.001f) {
-                localHitOut.t = tHit;
-                localHitOut.primitiveIndex = surfelIndex;
-                localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                return true;
+                break;
             }
 
-            if (localHitOut.numSurfelsVisited >= kMaxSplatEventsPerRay)
-                return true;
+            if (numSurfelsVisited >= kMaxSplatEventsPerRay)
+                break;
         }
-        // Work cap reached: return whatever transmittance we accumulated (biases slightly if cap triggers often)
-        localHitOut.transmissivity = cumulativeTransmittanceBefore;
-        return localHitOut.numSurfelsVisited > 0;
+
+        if (numSurfelsVisited == 0) {
+            return false;
+        }
+
+        const float u = rng128.nextFloat();                  // u in [0,1)
+        const uint32_t chosenIndex = sycl::min(
+            static_cast<uint32_t>(u * static_cast<float>(numSurfelsVisited)),
+            numSurfelsVisited - 1u
+        );
+        localHitOut.alpha = surfelEvents[chosenIndex].alphaGeom;
+        localHitOut.t = surfelEvents[chosenIndex].t;
+        localHitOut.primitiveIndex = surfelEvents[chosenIndex].primitiveIndex;
+        localHitOut.transmissivity = surfelEvents[chosenIndex].transmissivity;
+        localHitOut.invChosenSurfelPdf = numSurfelsVisited;
+        return true;
     }
 
 
@@ -888,7 +902,10 @@ namespace Pale {
                             scatterOnPrimitiveIndex);
                         break;
                     case RayIntersectMode::DetachedMode:
-                        acceptedHitInInstance = intersectBLASPointCloudDetached(rayObject, instance.blasRangeIndex, localHit, scene);
+                        acceptedHitInInstance = intersectBLASPointCloudDetached(
+                            rayObject, instance.blasRangeIndex, localHit, scene, rng128);
+                        worldHitOut->invChosenSurfelPdf = localHit.invChosenSurfelPdf;
+                        worldHitOut->hitSurfel = acceptedHitInInstance;
                         break;
                     case RayIntersectMode::Scatter:
                         acceptedHitInInstance = intersectBLASPointCloudFirstHit(

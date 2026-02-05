@@ -140,8 +140,8 @@ namespace Pale {
         float cy = 0.0f;
 
         // Flags
-        uint32_t hasPinholeIntrinsics = 0;   // 0/1
-        uint32_t useForAdjointPass = 1;      // 0/1
+        uint32_t hasPinholeIntrinsics = 0; // 0/1
+        uint32_t useForAdjointPass = 1; // 0/1
 
         char name[16]{};
     };
@@ -258,25 +258,26 @@ namespace Pale {
     struct SurfelEvent {
         float t = FLT_MAX; // local space t
         float alphaGeom = 1.0f;
+        float transmissivity = 1.0f;
         uint32_t primitiveIndex = UINT32_MAX; // primitiveIndex
     };
+
     struct alignas(16) LocalHit {
         float3 worldHit{0.0f};
-
-        uint32_t numSurfelsVisited = 0;
-        SurfelEvent surfelEvents[kMaxSplatEventsPerRay];
-
         float t = FLT_MAX; // world-space t
         float transmissivity = FLT_MAX;
-        float alpha = 1.0f;
+        float alpha = 0.0f;
         uint32_t primitiveIndex = UINT32_MAX; // triangle or prim id within the BLAS geometry
         uint32_t geometryIndex = UINT32_MAX; // mesh/geometry id within scene
+
+        uint32_t invChosenSurfelPdf = 0; // Used only for adjoint pass
     };
 
     static_assert(std::is_trivially_copyable_v<LocalHit>);
 
     struct alignas(16) WorldHit {
         bool hit = false;
+        bool hitSurfel = false;
         GeometryType type = GeometryType::InvalidType;
         float t = FLT_MAX; // world-space t
         float transmissivity = 1.0f;
@@ -285,8 +286,8 @@ namespace Pale {
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
         float3 hitPositionW = float3(0.0f);
-        float3 geometricNormalW = float3(0.0f);; // optional: fill if you have it cheaply
-
+        float3 geometricNormalW = float3(0.0f);
+        uint32_t invChosenSurfelPdf = 0; //chosen surfel PDF for adjoint pass
     };
 
     static_assert(std::is_trivially_copyable_v<WorldHit>);
@@ -301,6 +302,7 @@ namespace Pale {
         uint64_t seed = 42; // should be more than maxBounces
         uint32_t number = 42; // should be more than maxBounces
     };
+
     struct alignas(16) PathTracerSettings {
         IntegratorKind integratorKind = IntegratorKind::photonMapping;
         uint32_t photonsPerLaunch = 1e6;
