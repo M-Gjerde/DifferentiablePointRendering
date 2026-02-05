@@ -375,8 +375,8 @@ def write_fd_images(
             out_dir / f"{param_name}_{axis_or_channel}_grad_{cname}_seismic.png",
             abs_quantile=1.0,
         )
-        save_seismic_signed(
-            grad_c,
-            out_dir / f"{param_name}_{axis_or_channel}_grad_{cname}_seismic_q099.png",
-            abs_quantile=0.99,
-        )
+        #save_seismic_signed(
+        #    grad_c,
+        #    out_dir / f"{param_name}_{axis_or_channel}_grad_{cname}_seismic_q099.png",
+        #    abs_quantile=0.99,
+        #)
