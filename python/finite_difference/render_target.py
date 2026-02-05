@@ -38,10 +38,9 @@ def main(args) -> None:
     print("Parameter:", args.param)
 
     output_dir = (
-        Path(__file__).parent / "Output" / args.scene
-        if args.output == "" or args.output is None
-        else Path(__file__).parent / Path(args.output)
+        Path(__file__).parent / "Output" / args.scene / "opacity"
     )
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- init renderer ---
