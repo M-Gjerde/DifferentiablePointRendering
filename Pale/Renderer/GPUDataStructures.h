@@ -357,8 +357,6 @@ namespace Pale {
         std::uint32_t allocatedCellCount = 0;
         std::uint32_t allocatedPhotonCapacity = 0;
         std::uint32_t allocatedBlockCount = 0;
-
-
         // Per-photon build buffers
         std::uint32_t *photonCellId = nullptr; // [photonCapacity]
         std::uint32_t *photonIndex = nullptr; // [photonCapacity] optional if you scatter into sortedPhotonIndex

@@ -12,10 +12,55 @@ module;
 #include <cstring>
 #include <stb_image_write.h>
 
+#include <OpenEXR/ImfRgbaFile.h>
+
 
 export module Pale.Utils.ImageIO;
 
 export namespace Pale::Utils {
+
+    void saveRGBAFloatAsEXR(
+        const std::filesystem::path& filePath,
+        const std::vector<float>& rgbaRaw,
+        uint32_t imageWidth,
+        uint32_t imageHeight)
+    {
+        const size_t expectedSize = static_cast<size_t>(imageWidth) *
+                                    static_cast<size_t>(imageHeight) * 4ull;
+
+        if (rgbaRaw.size() != expectedSize) {
+            throw std::runtime_error("rgbaRaw size does not match width * height * 4");
+        }
+
+        // OpenEXR expects RGBA pixels in scanline order
+        std::vector<Imf::Rgba> exrPixels;
+        exrPixels.resize(imageWidth * imageHeight);
+
+        for (uint32_t y = 0; y < imageHeight; ++y) {
+            for (uint32_t x = 0; x < imageWidth; ++x) {
+                const size_t srcIndex = (static_cast<size_t>(y) * imageWidth + x) * 4ull;
+                const size_t dstIndex = static_cast<size_t>(y) * imageWidth + x;
+
+                Imf::Rgba& pixel = exrPixels[dstIndex];
+                pixel.r = rgbaRaw[srcIndex + 0];
+                pixel.g = rgbaRaw[srcIndex + 1];
+                pixel.b = rgbaRaw[srcIndex + 2];
+                pixel.a = rgbaRaw[srcIndex + 3];
+            }
+        }
+
+        Imf::RgbaOutputFile outputFile(
+            filePath.string().c_str(),
+            imageWidth,
+            imageHeight,
+            Imf::WRITE_RGBA
+        );
+
+        outputFile.setFrameBuffer(exrPixels.data(), 1, imageWidth);
+        outputFile.writePixels(imageHeight);
+    }
+
+
     inline bool savePNG(
         const std::filesystem::path &filePath,
         const std::vector<uint8_t> &inputRGBA,

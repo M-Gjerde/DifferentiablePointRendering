@@ -22,14 +22,14 @@ import Pale.Render.Sensors;
 import Pale.Scene;
 
 
-static std::string assetPathOrId(const Pale::AssetRegistry &reg, const Pale::AssetHandle &id) {
+static std::string assetPathOrId(const Pale::AssetRegistry& reg, const Pale::AssetHandle& id) {
     if (auto m = reg.meta(id)) return m->path.string();
     return std::string(id); // fallback if it's not in the registry
 }
 
-static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
-                            Pale::AssetManager &am) {
-    auto &reg = am.registry();
+static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
+                            Pale::AssetManager& am) {
+    auto& reg = am.registry();
 
     Pale::Log::PA_INFO("===== Scene Summary =====");
     size_t entityCount = 0;
@@ -37,11 +37,11 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
     size_t emissiveCount = 0;
 
     auto view = scene->getAllEntitiesWith<Pale::IDComponent>();
-    for (entt::entity entity: view) {
+    for (entt::entity entity : view) {
         Pale::Entity e(entity, scene.get());
         ++entityCount;
 
-        const char *name = e.getName().c_str();
+        const char* name = e.getName().c_str();
         bool hasMesh = e.hasComponent<Pale::MeshComponent>();
         bool hasMat = e.hasComponent<Pale::MaterialComponent>();
         bool hasEm = e.hasComponent<Pale::AreaLightComponent>();
@@ -50,14 +50,15 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 
         // Mesh
         if (hasMesh) {
-            auto &mc = e.getComponent<Pale::MeshComponent>();
+            auto& mc = e.getComponent<Pale::MeshComponent>();
             ++meshCount;
             std::string meshLabel = assetPathOrId(reg, mc.meshID);
 
             size_t submeshCount = 0;
             if (auto mesh = am.get<Pale::Mesh>(mc.meshID)) {
                 submeshCount = mesh->submeshes.size();
-            } else {
+            }
+            else {
                 Pale::Log::PA_WARN("  Mesh: {} (FAILED to load)", meshLabel);
             }
 
@@ -66,7 +67,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 
         // Material
         if (hasMat) {
-            auto &matc = e.getComponent<Pale::MaterialComponent>();
+            auto& matc = e.getComponent<Pale::MaterialComponent>();
             std::string matLabel = assetPathOrId(reg, matc.materialID);
 
             if (auto mat = am.get<Pale::Material>(matc.materialID)) {
@@ -76,7 +77,8 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
                     mat->baseColor.x, mat->baseColor.y, mat->baseColor.z,
                     mat->roughness, mat->metallic
                 );
-            } else {
+            }
+            else {
                 Pale::Log::PA_INFO("  Material: {}  (pending load)", matLabel);
             }
         }
@@ -84,7 +86,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
         // Emissive
         if (hasEm) {
             ++emissiveCount;
-            auto &em = e.getComponent<Pale::AreaLightComponent>();
+            auto& em = e.getComponent<Pale::AreaLightComponent>();
             Pale::Log::PA_INFO("  Emissive radiance=({:.3f},{:.3f},{:.3f})",
                                em.radiance.x, em.radiance.y, em.radiance.z);
         }
@@ -96,8 +98,8 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 
 
 static void debugDensifyPointAsset(
-    Pale::AssetManager &assetManager,
-    const Pale::AssetHandle &pointCloudAssetHandle,
+    Pale::AssetManager& assetManager,
+    const Pale::AssetHandle& pointCloudAssetHandle,
     uint32_t numberOfDebugCopies) {
     auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(pointCloudAssetHandle);
     if (!pointAssetSharedPtr) {
@@ -106,13 +108,13 @@ static void debugDensifyPointAsset(
         return;
     }
 
-    Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+    Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
     if (pointAsset.points.empty()) {
         Pale::Log::PA_WARN("debugDensifyPointAsset: PointAsset has no PointGeometry blocks");
         return;
     }
 
-    Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+    Pale::PointGeometry& pointGeometry = pointAsset.points.front();
     const std::size_t originalPointCount = pointGeometry.positions.size();
 
     if (originalPointCount == 0) {
@@ -128,7 +130,7 @@ static void debugDensifyPointAsset(
 
     // Reserve space for all attribute arrays
     const std::size_t newTotalPointCount = originalPointCount + numberOfDebugCopies;
-    auto reserveAttribute = [newTotalPointCount](auto &vectorAttribute) {
+    auto reserveAttribute = [newTotalPointCount](auto& vectorAttribute) {
         vectorAttribute.reserve(newTotalPointCount);
     };
 
@@ -194,7 +196,7 @@ static void debugDensifyPointAsset(
 }
 
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
@@ -220,15 +222,16 @@ int main(int argc, char **argv) {
     //serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    //serializer.deserialize("cbox_custom.xml");
-    serializer.deserialize("empty.xml");
+    serializer.deserialize("cbox_custom.xml");
+    //serializer.deserialize("empty.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
     std::filesystem::path pointCloudPath;
     if (argc > 1) {
         pointCloudPath = argv[1];
-    } else {
+    }
+    else {
         pointCloudPath = "initial.ply"; // default
     }
 
@@ -238,30 +241,30 @@ int main(int argc, char **argv) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
         entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
-        auto &transform = entityGaussian.getComponent<Pale::TransformComponent>();
+        auto& transform = entityGaussian.getComponent<Pale::TransformComponent>();
         //transform.setPosition(glm::vec3(0.0f, 0.0f, 0.4f));
     }
 
     if (addModel) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
-        auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
+        auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
         bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.3f, 0.6f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(75.0f, 0.0f, 0.0f));
         bunnyTransformComponent.setScale(glm::vec3(0.6f, 0.4f, 1.0f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-                assetIndexer.importPath("meshes/rectangle.obj", Pale::AssetType::Mesh);
+            assetIndexer.importPath("meshes/rectangle.obj", Pale::AssetType::Mesh);
 
-        auto &bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
+        auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
 
         // 3) Material
         Pale::AssetHandle bunnyMaterialAssetHandle =
-                assetIndexer.importPath("Materials/cbox_custom/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
+            assetIndexer.importPath("Materials/cbox_custom/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
 
-        auto &bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
+        auto& bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
     }
 
@@ -305,16 +308,16 @@ int main(int argc, char **argv) {
 
         tracer.renderForward(sensors); // films is span/array
 
-        for (const auto &sensor: sensors) {
+        for (const auto& sensor : sensors) {
             std::vector<uint8_t> rgba =
-                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+                Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
             const uint32_t imageWidth = sensor.width;
             const uint32_t imageHeight = sensor.height;
 
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+                std::filesystem::path("Output")
+                / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = sensor.name;
@@ -330,9 +333,9 @@ int main(int argc, char **argv) {
         //  cuda/rocm
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
-        settings.photonsPerLaunch = 1e5;
+        settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 10;
+        settings.numForwardPasses = 100;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 1; // 1 = Projection only
         settings.adjointSamplesPerPixel = 1;
@@ -351,32 +354,45 @@ int main(int argc, char **argv) {
 
         Pale::Log::PA_INFO("Adjoint Render Pass...");
         std::vector<Pale::SensorGPU> adjointSensors =
-                Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+            Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
         std::vector<Pale::DebugImages> debugImages(adjointSensors.size());
         Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
                                                                      debugImages.data());
         tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
 
-        for (const auto &sensor: sensors) {
+        for (const auto& sensor : sensors) {
             std::vector<uint8_t> rgba =
-                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+                Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
             const uint32_t imageWidth = sensor.width;
             const uint32_t imageHeight = sensor.height;
 
+            std::vector<float> rgbaRaw =
+                Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
+
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+                std::filesystem::path("Output")
+                / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = sensor.name;
             fileName += "_photonmap";
             std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
             Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+
+            std::filesystem::path rawFilePath =
+    baseDir / "images" / (fileName + "_raw.exr");
+
+            Pale::Utils::saveRGBAFloatAsEXR(
+                rawFilePath,
+                rgbaRaw,
+                imageWidth,
+                imageHeight
+            );
         }
 
         if (settings.renderDebugGradientImages) {
-            for (size_t i = 0; const auto &adjointSensor: adjointSensors) {
+            for (size_t i = 0; const auto& adjointSensor : adjointSensors) {
                 auto debugImagesHost = Pale::downloadDebugGradientImages(
                     deviceSelector.getQueue(), adjointSensor, debugImages[i]);
 
@@ -384,52 +400,51 @@ int main(int argc, char **argv) {
                 const uint32_t imageWidth = adjointSensor.width;
                 const uint32_t imageHeight = adjointSensor.height;
                 const float adjointSamplesPerPixel =
-                        static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
+                    static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
 
                 // Per-camera base directory: Output/<pointcloud>/<camera_name>/
                 std::filesystem::path baseDir =
-                        std::filesystem::path("Output")
-                        / pointCloudPath.filename().replace_extension("")
-                        / adjointSensor.name;
+                    std::filesystem::path("Output")
+                    / pointCloudPath.filename().replace_extension("")
+                    / adjointSensor.name;
 
                 std::filesystem::create_directories(baseDir);
 
-                auto saveGradientSet = [&](const std::vector<float> &rgbaBuffer,
-                                           const std::string &prefixBaseName) {
+                auto saveGradientSet = [&](const std::vector<float>& rgbaBuffer,
+                                           const std::string& prefixBaseName) {
+                    // Full-range (absQuantile = 1.0)
+                    {
+                        std::string fileName =
+                            prefixBaseName + "_seismic.png";
+                        std::filesystem::path filePath = baseDir / fileName;
 
-                        // Full-range (absQuantile = 1.0)
-                        {
-                            std::string fileName =
-                                    prefixBaseName + "_seismic.png";
-                            std::filesystem::path filePath = baseDir / fileName;
-
-                            if (Pale::Utils::saveGradientSignPNG(
-                                filePath,
-                                rgbaBuffer,
-                                imageWidth,
-                                imageHeight,
-                                adjointSamplesPerPixel,
-                                1.0f,
-                                false,
-                                true)) {
-                                Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-                            }
-
-                            // q=0.99
-                            std::string fileNameQuantile =
-                                    prefixBaseName + "_seismic_q099.png";
-                            std::filesystem::path filePathQuantile = baseDir / fileNameQuantile;
-
-                            Pale::Utils::saveGradientSignPNG(
-                                filePathQuantile,
-                                rgbaBuffer,
-                                imageWidth,
-                                imageHeight,
-                                adjointSamplesPerPixel,
-                                0.99f,
-                                false,
-                                true);
+                        if (Pale::Utils::saveGradientSignPNG(
+                            filePath,
+                            rgbaBuffer,
+                            imageWidth,
+                            imageHeight,
+                            adjointSamplesPerPixel,
+                            1.0f,
+                            false,
+                            true)) {
+                            Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
                         }
+
+                        // q=0.99
+                        std::string fileNameQuantile =
+                            prefixBaseName + "_seismic_q099.png";
+                        std::filesystem::path filePathQuantile = baseDir / fileNameQuantile;
+
+                        Pale::Utils::saveGradientSignPNG(
+                            filePathQuantile,
+                            rgbaBuffer,
+                            imageWidth,
+                            imageHeight,
+                            adjointSamplesPerPixel,
+                            0.99f,
+                            false,
+                            true);
+                    }
                 };
 
                 saveGradientSet(debugImagesHost.opacity, "opacity");

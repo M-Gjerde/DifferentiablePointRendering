@@ -220,7 +220,7 @@ namespace Pale {
                         if (bounce == 0) {
                             launchAdjointProjectionKernel(pkg, activeCount, cameraIndex);
                         } else {
-                            launchAdjointTransportKernel(pkg, activeCount, cameraIndex);
+                            //launchAdjointTransportKernel(pkg, activeCount, cameraIndex);
                         }
                     } {
                         ScopedTimer timer("generateNextRays");

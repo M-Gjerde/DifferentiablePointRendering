@@ -7,13 +7,13 @@ namespace Pale {
 
     struct SensorGPU {
         CameraGPU camera; // camera parameters
-        float4 *framebuffer = nullptr; // device pointer
+        float4 *framebuffer = nullptr; // RAW framebuffer
         uint32_t width{}, height{};
 
         float gammaCorrection = 2.2f;
         float exposureCorrection = 1.0f;
-        float* ldrFramebuffer = nullptr;
-        sycl::uchar4* outputFramebuffer = nullptr;
+        float* ldrFramebuffer = nullptr; // Low Dynamic Range framebuffer
+        sycl::uchar4* outputFramebuffer = nullptr; // uint8 converted framebuffer
         char name[16];
     };
 

@@ -7,12 +7,35 @@ import pale
 
 
 from finite_difference.finite_diff_helpers import save_rgb_preview_png, finite_difference_opacity, write_fd_images, \
-    render_with_trs
+    render_with_trs, set_point_opacity
 from io_utils import load_target_image
 from losses import compute_l2_grad, compute_l2_loss
 import matplotlib.pyplot as plt
+import csv
 
 
+def create_incremental_run_dir(base_output_dir: Path) -> Path:
+    """
+    Creates a new subfolder under base_output_dir named by incrementing integers:
+      base_output_dir/0, base_output_dir/1, ...
+    Returns the created Path.
+    """
+    base_output_dir.mkdir(parents=True, exist_ok=True)
+
+    max_run_index = -1
+    for child in base_output_dir.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            run_index = int(child.name)
+        except ValueError:
+            continue
+        max_run_index = max(max_run_index, run_index)
+
+    new_run_index = max_run_index + 1
+    run_dir = base_output_dir / str(new_run_index)
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir
 
 def run_opacity_fd_linear_sweep(
     renderer,
@@ -148,51 +171,61 @@ def main(args) -> None:
     scene_xml = args.scene + ".xml"
     pointcloud_ply = args.ply + ".ply"
 
-    output_dir = (
-        Path(__file__).parent / "Output" / args.scene / "opacity"
-    )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    base_output_dir = Path(__file__).parent / "Output" / args.scene / "opacity"
+    output_dir = create_incremental_run_dir(base_output_dir)
 
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
 
     camera = args.camera
-    target_image = load_target_image(output_dir / Path(camera + "_target.png"))
+    target_image = load_target_image(output_dir.parent / Path(camera + "_target.png"))
 
     # Render ONCE (baseline)
+    csv_path = output_dir / f"{camera}_opacity_sweep.csv"
+    fieldnames = ["iter", "opacity", "loss", "analytic_opacity_grad"]
 
     iterations = 10
-    for _ in range(iterations):
+    # Write header once (overwrite each run). Use "a" if you want to keep adding across runs.
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
 
-        rendered_image = render_with_trs(
-            renderer,
-            translation3=(0.0, 0.0, 0.0),
-            rotation_quat4=(0.0, 0.0, 0.0, 1.0),
-            scale3=(1.0, 1.0, 1.0),
-            albedo3=(0.0, 0.0, 0.0),
-            opacity=0.1,
-            beta=0.0,
-            index=0,
-            camera_name=camera
+        for iteration_index in range(iterations + 1):
+            opacity_value = iteration_index / 10.0  # 0.00, 0.02, ..., 0.10
 
-        )
+            renderer.set_point_opacity(
+                opacity=opacity_value,
+                index=0
+            )
+            image = renderer.render_forward()[camera]
+            rendered_image = np.asarray(image, dtype=np.float32)
 
-        save_rgb_preview_png(rendered_image, output_dir / Path(camera + "_rendered.png"))
+            # If you want per-iteration previews, include iteration in filename.
+            save_rgb_preview_png(rendered_image, output_dir / f"{camera}_rendered_{iteration_index:04d}.png")
 
-        # Analytic gradient of scalar loss wrt opacity[index]
-        loss_grad_image = compute_l2_grad(rendered_image, target_image)
-        gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
-        analytic_opacity_grad = np.asarray(gradients["opacity"], dtype=np.float32).squeeze()
+            loss_grad_image = compute_l2_grad(rendered_image, target_image)
+            loss_value = float(compute_l2_loss(rendered_image, target_image))
 
-        print("AN Gradient:" ,analytic_opacity_grad)
+            gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
+            analytic_opacity_grad = float(np.asarray(gradients["opacity"], dtype=np.float32).squeeze())
 
-    run_opacity_fd_linear_sweep(
-        renderer=renderer,
-        camera=camera,
-        target_image=target_image,
-        analytic_grad_scalar=analytic_opacity_grad,
-        index=(args.index if args.index >= 0 else 0),
-        output_dir=output_dir
-    )
+            writer.writerow({
+                "iter": iteration_index,
+                "opacity": opacity_value,
+                "loss": loss_value,
+                "analytic_opacity_grad": analytic_opacity_grad,
+            })
+            f.flush()  # ensures you can plot while it’s running
+
+
+    #run_opacity_fd_linear_sweep(
+    #    renderer=renderer,
+    #    camera=camera,
+    #    target_image=target_image,
+    #    analytic_grad_scalar=analytic_opacity_grad,
+    #    index=(args.index if args.index >= 0 else 0),
+    #    output_dir=output_dir
+    #)'
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Finite-difference gradient visualization for Pale renderer."

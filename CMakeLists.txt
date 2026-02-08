@@ -13,6 +13,8 @@ set(BUILD_SHARED_LIBS OFF)               # prefer static vendors we control
 
 find_package(AdaptiveCpp REQUIRED)
 
+find_package(OpenEXR REQUIRED)
+
 # -------- Vendors --------
 add_subdirectory(vendor/pugixml)
 set(ENTT_DIR vendor/entt)
@@ -121,7 +123,7 @@ target_link_libraries(PaleLib
         tinyply
         PUBLIC
         spdlog::spdlog_header_only
-
+        OpenEXR::OpenEXR
 )
 
 target_include_directories(PaleLib

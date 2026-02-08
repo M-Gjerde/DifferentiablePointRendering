@@ -357,6 +357,26 @@ export namespace Pale {
 
         return hostSideFramebuffer;
     }
+    inline std::vector<float>
+    downloadSensorRGBARAW(sycl::queue queue, const SensorGPU& sensorGpu) {
+        // Total number of float elements = width * height * 4 (RGBA channels)
+        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
+            * static_cast<size_t>(sensorGpu.height)
+            * 4u;
+        std::vector<float> hostSideFramebuffer(totalFloatCount);
+
+
+        // Allocate host-side buffer
+        queue.wait();
+        // Copy device framebuffer → host buffer
+        queue.memcpy(
+            hostSideFramebuffer.data(), // destination
+            sensorGpu.framebuffer, // source (device pointer)
+            totalFloatCount * sizeof(float) // size in bytes
+        ).wait();
+
+        return hostSideFramebuffer;
+    }
 
     struct DebugGradientImagesHost {
         // Each buffer has size: width * height * 4 (RGBA)

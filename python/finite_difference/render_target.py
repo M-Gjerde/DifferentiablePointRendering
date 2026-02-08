@@ -15,7 +15,7 @@ from losses import compute_l2_grad, compute_l2_loss
 def main(args) -> None:
     # --- settings ---
     renderer_settings = {
-        "photons": 2e6,
+        "photons": 1e6,
         "bounces": 4,
         "forward_passes": 50,
         "gather_passes": 1,

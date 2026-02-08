@@ -70,7 +70,7 @@ def render_with_trs(
         camera_name="camera1"
 ) -> np.ndarray:
     """Apply a full TRS+color+opacity+beta and render."""
-    renderer.set_gaussian_transform(
+    renderer.set_point_properties(
         translation3=translation3,
         rotation_quat4=rotation_quat4,
         scale3=scale3,
@@ -86,6 +86,16 @@ def render_with_trs(
     rgb = np.asarray(image, dtype=np.float32)
     return rgb
 
+def set_point_opacity(
+        renderer,
+        opacity,
+        index,
+) -> np.ndarray:
+    """Apply a full TRS+color+opacity+beta and render."""
+    renderer.set_point_opacity(
+        opacity=opacity,
+        index=index
+    )
 
 # ---------- Finite difference core ----------
 def finite_difference_translation(
