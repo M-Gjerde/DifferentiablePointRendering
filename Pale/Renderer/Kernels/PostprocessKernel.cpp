@@ -36,7 +36,7 @@ namespace Pale {
                         // ------------------------------------------------------------
                         // 2. Compute flipped Y coordinate for LDR output
                         // ------------------------------------------------------------
-                        const uint32_t linearIndexFlipped = flippedYLinearIndex(linearIndex, sensor.width, sensor.height);
+                        //const uint32_t linearIndexFlipped = flippedYLinearIndex(linearIndex, sensor.width, sensor.height);
 
 
                         // Read HDR color
@@ -90,13 +90,14 @@ namespace Pale {
                         );
 
                         // 3 floats per pixel, packed
-                        const uint32_t ldrBase = linearIndexFlipped * 3u;
+                        const uint32_t ldrBase = linearIndex * 4u;
                         sensor.ldrFramebuffer[ldrBase + 0u] = redLinear;
                         sensor.ldrFramebuffer[ldrBase + 1u] = greenLinear;
                         sensor.ldrFramebuffer[ldrBase + 2u] = blueLinear;
+                        sensor.ldrFramebuffer[ldrBase + 3u] = 1.0f;
 
 
-                        sensor.outputFramebuffer[linearIndexFlipped] = outputPixel;
+                        sensor.outputFramebuffer[linearIndex] = outputPixel;
                     }
                 );
             });

@@ -43,7 +43,7 @@ export namespace Pale {
 
             float* deviceLdrFramebuffer =
                 reinterpret_cast<float*>(
-                    sycl::malloc_device(pixelCount * sizeof(float) * 3, queue));
+                    sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
 
             // Optional: check allocations
             if (deviceHighDynamicRangeFramebuffer == nullptr ||
@@ -77,7 +77,7 @@ export namespace Pale {
                 // LDR framebuffer initialized to zero
                 queue.memset(deviceLdrFramebuffer,
                              0,
-                             pixelCount * 3u * sizeof(float));
+                             pixelCount * 4u * sizeof(float));
                 queue.wait();
             }
 
@@ -296,32 +296,11 @@ export namespace Pale {
     }
 
     inline std::vector<float>
-    downloadSensorRGBARaw(sycl::queue queue, const SensorGPU& sensorGpu) {
-        // Total number of float elements = width * height * 4 (RGBA channels)
+    downloadSensorLDR(sycl::queue queue, const SensorGPU& sensorGpu) {
+        // Total number of float elements = width * height * 4 (RGBa channels)
         const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
             * static_cast<size_t>(sensorGpu.height)
             * 4u;
-        std::vector<float> hostSideFramebuffer(totalFloatCount);
-
-
-        // Allocate host-side buffer
-        queue.wait();
-        // Copy device framebuffer → host buffer
-        queue.memcpy(
-            hostSideFramebuffer.data(), // destination
-            sensorGpu.framebuffer, // source (device pointer)
-            totalFloatCount * sizeof(float) // size in bytes
-        ).wait();
-
-        return hostSideFramebuffer;
-    }
-
-    inline std::vector<float>
-    downloadSensorLDR(sycl::queue queue, const SensorGPU& sensorGpu) {
-        // Total number of float elements = width * height * 3 (RGB channels)
-        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
-            * static_cast<size_t>(sensorGpu.height)
-            * 3u;
         std::vector<float> hostSideFramebuffer(totalFloatCount);
 
 

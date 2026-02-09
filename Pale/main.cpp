@@ -280,7 +280,7 @@ int main(int argc, char** argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = false;
+    bool renderLightTracing = true;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -311,6 +311,8 @@ int main(int argc, char** argv) {
         for (const auto& sensor : sensors) {
             std::vector<uint8_t> rgba =
                 Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+            std::vector<float> rgbaRaw =
+                Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
             const uint32_t imageWidth = sensor.width;
             const uint32_t imageHeight = sensor.height;
 
@@ -325,6 +327,16 @@ int main(int argc, char** argv) {
                 fileName += "_lightTracing";
             std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
             Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+
+            std::filesystem::path rawFilePath =
+            baseDir / "images" / (fileName + "_raw.exr");
+
+            Pale::Utils::saveRGBAFloatAsEXR(
+                rawFilePath,
+                rgbaRaw,
+                imageWidth,
+                imageHeight
+            );
         }
     }
 

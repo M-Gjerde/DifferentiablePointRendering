@@ -43,7 +43,7 @@ namespace Pale {
 
                     uint32_t index = flippedYLinearIndex(pixelLinearIndexWithinImage, sensor.width, sensor.height);
 
-                    const uint32_t pixelIndex = index;
+                    const uint32_t pixelIndex = pixelLinearIndexWithinImage;
                     // RNG for this pixelhttps://www.chess.com/home
                     const uint64_t perPixelSeed = rng::makePerItemSeed1D(randomNumber, pixelLinearIndexWithinImage);
                     rng::Xorshift128 pixelRng(perPixelSeed);
@@ -281,7 +281,7 @@ namespace Pale {
                     );
 
                     //float3 L_p = E * (rho * M_1_PIf);
-                    float3 L_p = float3{1.0f} * 2;
+                    float3 L_p = float3{1.0f};
                     // If 1 we blend with background color
 
                     float grad_alpha_eta = worldHit.alpha;

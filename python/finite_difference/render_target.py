@@ -8,7 +8,7 @@ from PIL import Image
 import pale
 from matplotlib import cm
 
-from finite_difference.finite_diff_helpers import save_rgb_preview_png
+from finite_difference.finite_diff_helpers import save_rgb_preview_png, save_rgb_preview_exr
 from losses import compute_l2_grad, compute_l2_loss
 
 
@@ -51,7 +51,10 @@ def main(args) -> None:
     print("Rendering from camera:", camera)
 
     renderer.render_forward()
+    rendered_image = renderer.render_forward()[camera + "_raw"]
+    save_rgb_preview_exr(rendered_image,  output_dir /  Path(camera + "_raw_target.exr"))
     rendered_image = renderer.render_forward()[camera]
+    print(rendered_image.shape)
     save_rgb_preview_png(rendered_image,  output_dir /  Path(camera + "_target.png"))
 
 

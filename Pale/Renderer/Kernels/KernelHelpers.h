@@ -678,7 +678,7 @@ namespace Pale {
 
         // If your image origin is top-left, flip v:
         // const float v_flipped = height - v;
-        const float v_flipped = v;
+        const float v_flipped = height - v;
 
         const float ndcX = (2.0f * u / width - 1.0f);
         const float ndcY = (2.0f * v_flipped / height - 1.0f);
@@ -735,7 +735,7 @@ namespace Pale {
 
         const float z = -pointCamera.z(); // positive depth
         const float u = fx * (pointCamera.x() / z) + cx;
-        const float v = fy * (pointCamera.y() / z) + cy;
+        const float v = height - (fy * (pointCamera.y() / z) + cy);
 
         const int pixelX = static_cast<int>(sycl::floor(u));
         const int pixelY = static_cast<int>(sycl::floor(v));

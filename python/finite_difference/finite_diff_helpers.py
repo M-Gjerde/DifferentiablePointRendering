@@ -4,6 +4,63 @@ from matplotlib import cm
 from PIL import Image
 from pathlib import Path
 
+import numpy as np
+from pathlib import Path
+import OpenEXR
+import Imath
+
+def save_rgb_preview_exr(
+        img_f32: np.ndarray,
+        out_path: Path,
+        exposure_stops: float = 0.0,
+) -> None:
+    """
+    Save a linear RGB/RGBA float32 image as a 16-bit (HALF) or 32-bit (FLOAT) EXR.
+
+    img_f32:       HxWx3 (RGB) or HxWx4 (RGBA), linear, usually HDR (0..+inf)
+    exposure_stops: photographic EV; +1 doubles brightness
+
+    Notes:
+    - No gamma is applied. EXR remains linear.
+    - Channels are written as R, G, B.
+    - If RGBA is provided, alpha is discarded.
+    """
+
+    img = np.asarray(img_f32, dtype=np.float32)
+
+    # --- Handle RGB vs RGBA explicitly ---
+    if img.ndim != 3 or img.shape[2] not in (3, 4):
+        raise ValueError(f"Expected HxWx3 or HxWx4 image, got {img.shape}")
+
+    if img.shape[2] == 4:
+        img = img[..., :3]  # drop alpha deterministically
+
+    if exposure_stops != 0.0:
+        img = img * (2.0 ** exposure_stops)
+
+    img = np.clip(img, 0.0, None)
+
+    height, width, _ = img.shape
+
+    # Split channels (EXR expects planar layout)
+    r = img[..., 0].astype(np.float32).tobytes()
+    g = img[..., 1].astype(np.float32).tobytes()
+    b = img[..., 2].astype(np.float32).tobytes()
+
+    header = OpenEXR.Header(width, height)
+    header["channels"] = {
+        "R": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+        "G": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+        "B": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+    }
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    exr = OpenEXR.OutputFile(str(out_path), header)
+    exr.writePixels({"R": r, "G": g, "B": b})
+    exr.close()
+
 
 def save_rgb_preview_png(
         img_f32: np.ndarray,
@@ -12,14 +69,25 @@ def save_rgb_preview_png(
         gamma: float = 1.0,
 ) -> None:
     """
-    Save a linear RGB float32 image as an 8-bit PNG.
+    Save a linear RGB/RGBA float32 image as an 8-bit PNG.
 
-    img_f32:      HxWx3, linear RGB, usually HDR (0..+inf)
+    img_f32:       HxWx3 (RGB) or HxWx4 (RGBA), linear, usually HDR (0..+inf)
     exposure_stops: photographic EV; +1 doubles brightness
-    gamma:        gamma for encoding (e.g. 2.2 for sRGB)
+    gamma:         gamma for encoding (e.g. 2.2 for sRGB)
+
+    If RGBA is provided, the alpha channel is discarded.
     """
+
     img = np.asarray(img_f32, dtype=np.float32)
 
+    # --- Handle RGB vs RGBA explicitly ---
+    if img.ndim != 3 or img.shape[2] not in (3, 4):
+        raise ValueError(f"Expected HxWx3 or HxWx4 image, got {img.shape}")
+
+    if img.shape[2] == 4:
+        img = img[..., :3]  # drop alpha deterministically
+
+    # --- Same processing as before ---
     if exposure_stops != 0.0:
         img = img * (2.0 ** exposure_stops)
 
@@ -34,9 +102,9 @@ def save_rgb_preview_png(
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # print(f"Saving RGB preview to: {out_path.absolute()}")
-    img = Image.fromarray(img_u8).convert("RGB")
-    img.save(out_path)
+
+    Image.fromarray(img_u8, mode="RGB").save(out_path)
+
 
 
 # ---------- TRS helpers ----------
@@ -338,6 +406,60 @@ def finite_difference_beta(
     grad = (rgb_plus - rgb_minus) / (2.0 * eps)
     return rgb_minus, rgb_plus, grad
 
+ # Simple seismic helper (same as earlier script)
+def save_seismic_signed(
+    scalar_or_rgb: np.ndarray,
+    out_png: Path,
+    abs_quantile: float = 1.0,
+    rgb_reduce: str = "mean",  # "mean" or "l2"
+) -> None:
+    out_png = Path(out_png)
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+
+    arr = np.asarray(scalar_or_rgb)
+
+    # If it's already uint8 RGB(A), just save it.
+    if arr.dtype == np.uint8 and arr.ndim == 3 and arr.shape[2] in (3, 4):
+        Image.fromarray(arr[..., :3]).save(out_png)
+        return
+
+    arr_f32 = np.asarray(arr, dtype=np.float32)
+
+    # Accept HxWx1
+    if arr_f32.ndim == 3 and arr_f32.shape[2] == 1:
+        arr_f32 = arr_f32[..., 0]
+
+    # If HxWx3, reduce to scalar field first.
+    if arr_f32.ndim == 3 and arr_f32.shape[2] == 3:
+        if rgb_reduce == "mean":
+            arr_f32 = arr_f32.mean(axis=2)
+        elif rgb_reduce == "l2":
+            arr_f32 = np.linalg.norm(arr_f32, axis=2)
+        else:
+            raise ValueError(f"Unknown rgb_reduce='{rgb_reduce}' (use 'mean' or 'l2')")
+
+    if arr_f32.ndim != 2:
+        raise ValueError(f"Expected HxW (or HxWx1 / HxWx3), got shape {arr_f32.shape}")
+
+    finite_mask = np.isfinite(arr_f32)
+    if not np.any(finite_mask):
+        Image.fromarray(np.zeros((*arr_f32.shape, 3), dtype=np.uint8)).save(out_png)
+        return
+
+    magnitudes = np.abs(arr_f32[finite_mask])
+    q = float(np.clip(abs_quantile, 0.0, 1.0))
+    scale_value = np.quantile(magnitudes, q) if q < 1.0 else float(magnitudes.max())
+    if not (np.isfinite(scale_value) and scale_value > 0.0):
+        scale_value = 1.0
+
+    normalized = np.clip(arr_f32 / scale_value, -1.0, 1.0)
+    t = 0.5 * (normalized + 1.0)  # [0, 1]
+
+    rgba = cm.get_cmap("seismic")(t)          # HxWx4
+    rgb = (rgba[..., :3] * 255.0 + 0.5).astype(np.uint8)  # HxWx3
+    rgb[~finite_mask] = (255, 255, 255)
+
+    Image.fromarray(rgb).save(out_png)
 
 # ---------- Visualization for one FD gradient tensor ----------
 def write_fd_images(
@@ -358,27 +480,7 @@ def write_fd_images(
     out_dir.mkdir(parents=True, exist_ok=True)
     channel_names = ["R", "G", "B"]
 
-    # Simple seismic helper (same as earlier script)
-    def save_seismic_signed(scalar: np.ndarray, out_png: Path, abs_quantile: float = 1.0) -> None:
-        scalar_array = np.asarray(scalar, dtype=np.float32)
-        finite_mask = np.isfinite(scalar_array)
-        if not np.any(finite_mask):
-            Image.fromarray(np.zeros((*scalar_array.shape, 3), dtype=np.uint8)).save(out_png)
-            return
-        magnitudes = np.abs(scalar_array[finite_mask])
-        q = np.clip(abs_quantile, 0.0, 1.0)
-        if q < 1.0:
-            scale_value = np.quantile(magnitudes, q)
-        else:
-            scale_value = magnitudes.max()
-        if not (np.isfinite(scale_value) and scale_value > 0.0):
-            scale_value = 1.0
-        normalized = np.clip(scalar_array / scale_value, -1.0, 1.0)
-        t = 0.5 * (normalized + 1.0)
-        rgba = cm.get_cmap("seismic")(t)
-        rgb = (rgba[..., :3] * 255.0 + 0.5).astype(np.uint8)
-        rgb[~finite_mask] = (255, 255, 255)
-        Image.fromarray(rgb).save(out_png)
+
 
     # Per-channel outputs
     for c_idx, cname in enumerate(channel_names):

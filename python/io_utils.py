@@ -7,7 +7,8 @@ import imageio.v3 as iio
 import matplotlib
 import numpy as np
 import torch
-
+import OpenEXR
+import Imath
 
 def save_gradient_sign_png_py(
         file_path: Path,
@@ -66,6 +67,58 @@ def load_target_image(path: Path) -> np.ndarray:
 
     return np.ascontiguousarray(img)
 
+def read_rgb_exr(
+        exr_path: Path,
+        apply_exposure_stops: float | None = None,
+) -> np.ndarray:
+    """
+    Read a linear RGB EXR into a float32 HxWx3 array.
+
+    exr_path: path to .exr file
+    apply_exposure_stops:
+        - None: return raw linear values
+        - float: multiply image by 2**stops (optional convenience)
+
+    Returns:
+        img_f32: HxWx3, dtype float32, linear RGB
+    """
+
+    exr_path = Path(exr_path)
+    exr = OpenEXR.InputFile(str(exr_path))
+    header = exr.header()
+
+    dw = header["dataWindow"]
+    width = dw.max.x - dw.min.x + 1
+    height = dw.max.y - dw.min.y + 1
+
+    # Determine pixel type (FLOAT or HALF)
+    channel_info = header["channels"]["R"]
+    pixel_type = channel_info.type
+
+    # Read planar channels
+    r_bytes = exr.channel("R", pixel_type)
+    g_bytes = exr.channel("G", pixel_type)
+    b_bytes = exr.channel("B", pixel_type)
+
+    if pixel_type == Imath.PixelType(Imath.PixelType.FLOAT):
+        np_type = np.float32
+    elif pixel_type == Imath.PixelType(Imath.PixelType.HALF):
+        np_type = np.float16
+    else:
+        raise ValueError(f"Unsupported EXR pixel type: {pixel_type}")
+
+    # Convert to numpy and reshape
+    r = np.frombuffer(r_bytes, dtype=np_type).reshape(height, width)
+    g = np.frombuffer(g_bytes, dtype=np_type).reshape(height, width)
+    b = np.frombuffer(b_bytes, dtype=np_type).reshape(height, width)
+
+    # Stack to HxWx3 and promote to float32
+    img = np.stack([r, g, b], axis=-1).astype(np.float32)
+
+    if apply_exposure_stops is not None:
+        img = img * (2.0 ** float(apply_exposure_stops))
+
+    return img
 
 def save_positions_numpy(path: Path, positions: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -571,7 +571,7 @@ namespace Pale {
 
                                     const float3 emittedRadiance = material.power * material.baseColor; // L_e
 
-                                    accumulatedRadianceRGB += transmittanceProduct * emittedRadiance;
+                                    //accumulatedRadianceRGB += transmittanceProduct * emittedRadiance;
                                 } else {
                                     const float3 rho = material.baseColor;
 

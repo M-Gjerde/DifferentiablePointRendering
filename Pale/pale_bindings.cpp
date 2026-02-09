@@ -198,7 +198,8 @@ public:
             std::string cameraName;
             std::uint32_t imageWidth;
             std::uint32_t imageHeight;
-            std::vector<float> imageData; // H * W * 3, row-major RGB
+            std::vector<float> imageData; // H * W * 4, row-major RGB
+            std::vector<float> imageDataRAW; // H * W * 4, row-major RGB
         };
 
         std::vector<HostImage> hostImages;
@@ -216,6 +217,7 @@ public:
             hostImage.imageHeight = sensor.height;
 
             hostImage.imageData = Pale::downloadSensorLDR(queue, sensor);
+            hostImage.imageDataRAW = Pale::downloadSensorRGBARAW(queue, sensor);
             hostImages.push_back(std::move(hostImage));
         }
 
@@ -228,23 +230,26 @@ public:
             const std::uint32_t imageWidth = hostImage.imageWidth;
             const std::uint32_t imageHeight = hostImage.imageHeight;
 
-            // Shape: (H, W, 3)
+            // Shape: (H, W, 4)
             std::vector<ssize_t> shape{
                 static_cast<ssize_t>(imageHeight),
                 static_cast<ssize_t>(imageWidth),
-                static_cast<ssize_t>(3)
+                static_cast<ssize_t>(4)
             };
 
             // Strides: row, col, channel (float32)
             std::vector<ssize_t> strides{
-                static_cast<ssize_t>(imageWidth * 3 * sizeof(float)),
-                static_cast<ssize_t>(3 * sizeof(float)),
+                static_cast<ssize_t>(imageWidth * 4 * sizeof(float)),
+                static_cast<ssize_t>(4 * sizeof(float)),
                 static_cast<ssize_t>(sizeof(float))
             };
 
             // Move imageData into a heap-allocated vector so NumPy can own it
             auto* ownedBuffer =
                 new std::vector<float>(std::move(hostImage.imageData));
+            // Move imageData into a heap-allocated vector so NumPy can own it
+            auto* ownedBuffer2 =
+                new std::vector<float>(std::move(hostImage.imageDataRAW));
 
             py::array_t<float> numpyImage(
                 shape,
@@ -254,8 +259,17 @@ public:
                     delete static_cast<std::vector<float>*>(ptr);
                 })
             );
+            py::array_t<float> numpyImage2(
+                shape,
+                strides,
+                ownedBuffer2->data(),
+                py::capsule(ownedBuffer2, [](void* ptr) {
+                    delete static_cast<std::vector<float>*>(ptr);
+                })
+            );
 
             result[py::str(hostImage.cameraName)] = std::move(numpyImage);
+            result[py::str(hostImage.cameraName + "_raw")] = std::move(numpyImage2);
         }
 
         return result;
@@ -461,7 +475,7 @@ public:
             hostImage.imageWidth = sensor.width;
             hostImage.imageHeight = sensor.height;
             hostImage.imageRgbaData =
-                Pale::downloadSensorRGBARaw(syclQueue, sensor);
+                Pale::downloadSensorRGBARAW(syclQueue, sensor);
 
             hostAdjointImages.push_back(std::move(hostImage));
         }
@@ -1431,6 +1445,8 @@ public:
         // Only needed if BVH / acceleration depends on opacity (often it doesn't).
         // If you can skip it, do so for performance.
         rebuild_bvh();
+        //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
+
     }
 
 

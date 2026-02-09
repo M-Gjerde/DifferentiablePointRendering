@@ -1,4 +1,5 @@
 # main.py
+import time
 from pathlib import Path
 import argparse
 
@@ -7,8 +8,8 @@ import pale
 
 
 from finite_difference.finite_diff_helpers import save_rgb_preview_png, finite_difference_opacity, write_fd_images, \
-    render_with_trs, set_point_opacity
-from io_utils import load_target_image
+    render_with_trs, set_point_opacity, save_rgb_preview_exr, save_seismic_signed
+from io_utils import load_target_image, read_rgb_exr
 from losses import compute_l2_grad, compute_l2_loss
 import matplotlib.pyplot as plt
 import csv
@@ -160,7 +161,7 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 50,
+        "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 1,
         "adjoint_passes": 10,
@@ -177,7 +178,7 @@ def main(args) -> None:
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
 
     camera = args.camera
-    target_image = load_target_image(output_dir.parent / Path(camera + "_target.png"))
+    target_image = read_rgb_exr(output_dir.parent / Path(camera + "_raw_target.exr"))
 
     # Render ONCE (baseline)
     csv_path = output_dir / f"{camera}_opacity_sweep.csv"
@@ -190,20 +191,29 @@ def main(args) -> None:
         writer.writeheader()
 
         for iteration_index in range(iterations + 1):
-            opacity_value = iteration_index / 10.0  # 0.00, 0.02, ..., 0.10
+            opacity_value = (iteration_index) / 10.0  # 0.00, 0.02, ..., 0.10
 
             renderer.set_point_opacity(
                 opacity=opacity_value,
                 index=0
             )
-            image = renderer.render_forward()[camera]
+            renderer.rebuild_bvh()
+
+            images = renderer.render_forward()
+            image = images[camera + "_raw"]
             rendered_image = np.asarray(image, dtype=np.float32)
-
-            # If you want per-iteration previews, include iteration in filename.
-            save_rgb_preview_png(rendered_image, output_dir / f"{camera}_rendered_{iteration_index:04d}.png")
-
+            rendered_image = rendered_image[..., :3] # Drop Alpha
             loss_grad_image = compute_l2_grad(rendered_image, target_image)
             loss_value = float(compute_l2_loss(rendered_image, target_image))
+
+            # If you want per-iteration previews, include iteration in filename.
+            save_rgb_preview_png(images[camera],  output_dir / "rendered" / Path(camera + f"_{opacity_value}" + ".png"), exposure_stops=0.0)
+            #save_rgb_preview_png(target_image,  output_dir / "rendered" / Path(camera + f"_{opacity_value}_target" + ".png"), exposure_stops=0.0)
+            save_rgb_preview_exr(rendered_image,  output_dir / "rendered" / Path(camera + f"_{opacity_value}" + ".exr"), exposure_stops=0.0)
+            save_rgb_preview_exr(target_image,  output_dir / "rendered" / Path(camera + f"_target" + ".exr"), exposure_stops=0.0)
+            grad_vis = (loss_grad_image - loss_grad_image.min()) / (loss_grad_image.max() - loss_grad_image.min() + 1e-8)
+
+            save_seismic_signed(loss_grad_image, output_dir / "grad" / Path(camera + f"_{opacity_value}" + ".png"), 0.99)
 
             gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
             analytic_opacity_grad = float(np.asarray(gradients["opacity"], dtype=np.float32).squeeze())
@@ -214,6 +224,7 @@ def main(args) -> None:
                 "loss": loss_value,
                 "analytic_opacity_grad": analytic_opacity_grad,
             })
+            print(f"{iteration_index}/{iterations}, Opacity: {opacity_value}, Loss: {loss_value}, AN: {analytic_opacity_grad}")
             f.flush()  # ensures you can plot while it’s running
 
 
