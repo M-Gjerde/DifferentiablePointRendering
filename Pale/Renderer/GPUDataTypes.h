@@ -278,8 +278,10 @@ namespace Pale {
 
 
     inline float3 min(float3 a, float3 b) { return sycl::min(a.v, b.v); }
+    inline float3 min(float3 a, float b) { return sycl::min(a.v, b); }
     inline float min(float a, float b) { return sycl::min(a, b); }
     inline float3 max(float3 a, float3 b) { return sycl::max(a.v, b.v); }
+    inline float3 max(float3 a, float b) { return sycl::max(a.v, b); }
     inline float max(float a, float b) { return sycl::max(a, b); }
     inline float3 cross(float3 a, float3 b) { return sycl::cross(a.v, b.v); }
     inline float dot(float3 a, float3 b) { return sycl::dot(a.v, b.v); }

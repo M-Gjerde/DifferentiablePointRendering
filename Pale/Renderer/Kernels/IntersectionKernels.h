@@ -557,7 +557,7 @@ namespace Pale {
             const Point &surfel = scene.points[surfelIndex];
 
             // Effective interaction probability at this candidate
-            const float alphaEff = alphaGeomAtHit * surfel.opacity;
+            const float alphaEff = surfel.opacity;
 
             // Random mode: accept with probability alphaEff, otherwise transmit and continue
             const float u = rng128.nextFloat();

@@ -222,8 +222,8 @@ int main(int argc, char** argv) {
     //serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    serializer.deserialize("cbox_custom.xml");
-    //serializer.deserialize("empty.xml");
+    //serializer.deserialize("cbox_custom.xml");
+    serializer.deserialize("empty.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -280,7 +280,7 @@ int main(int argc, char** argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = true;
+    bool renderLightTracing = false;
 
     if (renderLightTracing) {
         //  cuda/rocm

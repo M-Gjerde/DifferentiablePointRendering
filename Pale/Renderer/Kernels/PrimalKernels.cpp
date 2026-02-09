@@ -145,6 +145,7 @@ namespace Pale {
                         throughputMultiplier = lambertBrdf;
                     }
 
+                    float opacity = 1.0f;
                     if (geometryType == GeometryType::PointCloud) {
                         const Point point = scene.points[worldHit.primitiveIndex];
                         // Reuse same albedo for scatter/Transmission
@@ -180,6 +181,7 @@ namespace Pale {
                         );
                         // Mixture BSDF update simplifies analytically
                         throughputMultiplier = (rho_r + rho_t) * segmentTransmittance;
+                        opacity = 1.0 / point.opacity;
                     }
 
                     if (settings.rayGenMode == RayGenMode::Emitter) {
@@ -199,7 +201,7 @@ namespace Pale {
                             const float signedCosineIncident = dot(baseNormalW, -rayState.ray.direction);
                             const int sideSign = signNonZero(signedCosineIncident);
                             //const float3 orientedNormalW = (sideSign >= 0) ? baseNormalW : (-baseNormalW);
-                            photonEntry.power = rayState.pathThroughput;
+                            photonEntry.power = rayState.pathThroughput * opacity; // Multiply with opacity to avoid derive an adjoint photon map pass?
                             //photonEntry.normal = orientedNormalW;
                             //photonEntry.sideSign = sideSign;
                             //photonEntry.geometryType = instance.geometryType;
@@ -534,7 +536,7 @@ namespace Pale {
 
                                 float alphaEff = surfel.opacity * worldHit.alpha;
 
-                                accumulatedRadianceRGB += transmittanceProduct * surfelShadedRadiance;
+                                accumulatedRadianceRGB += transmittanceProduct * alphaEff * surfelShadedRadiance;
                                 transmittanceProduct *= (1.0f - alphaEff);
 
                                 // Early out if we're nearly opqaue
@@ -571,7 +573,7 @@ namespace Pale {
 
                                     const float3 emittedRadiance = material.power * material.baseColor; // L_e
 
-                                    //accumulatedRadianceRGB += transmittanceProduct * emittedRadiance;
+                                    //accumulatedRadianceRGB += transmittanceProduct * min(emittedRadiance, 1.0f); // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
                                 } else {
                                     const float3 rho = material.baseColor;
 
