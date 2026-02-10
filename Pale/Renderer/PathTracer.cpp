@@ -24,7 +24,7 @@ namespace Pale {
         uint32_t requiredCapacity = m_settings.photonsPerLaunch;
         ensureRayCapacity(requiredCapacity);
 
-        if (!m_intermediates.map.photons) {
+        if (!m_intermediates.map.photons && m_settings.integratorKind == IntegratorKind::photonMapping) {
             allocatePhotonMap();
 
             auto topTLAS = bp.topLevelNodes.front();
@@ -104,12 +104,12 @@ namespace Pale {
     void PathTracer::allocatePhotonMap() {
         freePhotonMap();
 
-        constexpr std::size_t maxPhotonBytes = 6ull * 1024ull * 1024ull * 1024ull; // 3GB
+        constexpr std::size_t maxPhotonBytes = 8ull * 1024ull * 1024ull * 1024ull; // 3GB
         std::size_t photonSize = sizeof(DevicePhotonSurface);
 
 
         // desired photon count
-        std::size_t requestedPhotons = m_rayQueueCapacity * static_cast<uint64_t>(
+        std::size_t requestedPhotons = m_settings.photonsPerLaunch * static_cast<uint64_t>(
                                            m_settings.numForwardPasses * m_settings.maxBounces);
 
 
@@ -124,10 +124,11 @@ namespace Pale {
 
         m_intermediates.map.photonCapacity = static_cast<uint32_t>(finalPhotonCount);
 
-        Log::PA_INFO("Photon map size: {}M photons (~{})",
-                     finalPhotonCount / 1e6,
-                     Utils::formatBytes(finalPhotonCount * photonSize));
+        Log::PA_INFO("Photon map max size: {}M photons (~{}). Launching {}M photons",
+                     maxPhotons / 1e6f,
+                     Utils::formatBytes(finalPhotonCount * photonSize), m_settings.numForwardPasses * m_settings.photonsPerLaunch / 1e6f);
 
+        Log::PA_INFO("Expected Storage Capacity: {}%", (m_settings.numForwardPasses * m_settings.photonsPerLaunch / static_cast<float>(finalPhotonCount))* 100.0f);
 
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.map.photons, 0,

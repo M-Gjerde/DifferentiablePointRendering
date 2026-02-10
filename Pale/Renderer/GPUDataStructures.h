@@ -228,7 +228,7 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
-    enum class RayIntersectMode : uint32_t { Random = 0, DetachedMode = 1, Scatter = 2 };
+    enum class SurfelIntersectMode : uint32_t { Bernoulli = 0, Transmit = 1, Scatter = 2 , Uniform = 3 };
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -280,9 +280,8 @@ namespace Pale {
         bool hitSurfel = false;
         GeometryType type = GeometryType::InvalidType;
         float t = FLT_MAX; // world-space t
-        float transmissivity = 1.0f;
+        float transmissivity = 1.0f;         // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
         float alpha = 0.0f;
-        // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
         float3 hitPositionW = float3(0.0f);
@@ -335,6 +334,7 @@ namespace Pale {
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         //int sideSign{}; // +1 or -1: hemisphere relative to canonical surfel normal
         //GeometryType geometryType{GeometryType::InvalidType};
+        float3 incomingDirection{0.0f};
 
         std::uint32_t isValid = 0;
     };

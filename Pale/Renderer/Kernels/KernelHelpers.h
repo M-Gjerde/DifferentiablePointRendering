@@ -116,6 +116,28 @@ namespace Pale::rng {
 } // namespace pale::rng
 
 namespace Pale {
+
+    struct DebugPixel {
+        uint32_t pixelX;
+        uint32_t pixelY;
+    };
+
+    static DebugPixel kDebugPixels[] = {
+        {200, 850},
+    };
+
+    static bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
+        bool isMatch = false;
+
+        for (uint32_t i = 0; i < 1; ++i) {
+            const DebugPixel &debugPixel = kDebugPixels[i];
+            if (pixelY == debugPixel.pixelY && pixelX == debugPixel.pixelX) {
+                isMatch = true;
+            }
+        }
+        return isMatch;
+    }
+
     SYCL_EXTERNAL inline float3 safeInvDir(const float3 &dir) {
         constexpr float EPS = 1e-6f; // treat anything smaller as “zero”
         constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
@@ -706,6 +728,8 @@ namespace Pale {
         uint32_t &outPixelIndex,
         float3 &outOmegaFromSurfaceToCamera,
         float &outDistance,
+        int &pixelX,
+        int &pixelY,
         bool &debug) {
         const float3 cameraPositionWorld = sensor.camera.pos;
 
@@ -737,8 +761,8 @@ namespace Pale {
         const float u = fx * (pointCamera.x() / z) + cx;
         const float v = height - (fy * (pointCamera.y() / z) + cy);
 
-        const int pixelX = static_cast<int>(sycl::floor(u));
-        const int pixelY = static_cast<int>(sycl::floor(v));
+        pixelX = static_cast<int>(sycl::floor(u));
+        pixelY = static_cast<int>(sycl::floor(v));
 
         if (pixelX < 0 || pixelX >= static_cast<int>(sensor.width) ||
             pixelY < 0 || pixelY >= static_cast<int>(sensor.height))
@@ -924,16 +948,14 @@ namespace Pale {
 
                         const float3 d = ph.position - queryPositionWorld;
 
-                        const float planeEps = 0.01f * r; // scale dependent eps: 1% of radius
-                        //if (dot(ph.normal, surfelNormalW) <= 1.0f)
-                        //    continue;
-
+                        const float cosine = sycl::fmax(0.0f, dot(surfelNormalW, ph.incomingDirection));
+                        if (cosine == 0.0f) continue;
 
                         const float dist2 = dot(d, d);
                         if (dist2 > r2)
                             continue;
 
-                        irradiance += (ph.power * invArea);
+                        irradiance += (ph.power * invArea * cosine);
                     }
                 }
 

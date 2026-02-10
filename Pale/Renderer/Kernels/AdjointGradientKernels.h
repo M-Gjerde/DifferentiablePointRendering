@@ -848,6 +848,7 @@ SYCL_EXTERNAL inline bool computeRayPlaneIntersectionRtDerivatives(
                     shadowRayState.pathThroughput =
                             rayState.pathThroughput * geometryTerm * invPdf * oneOverNumRays;
 
+                    /*
                     // BRDF
                     WorldHit shadowWorldHit{};
                     intersectScene(shadowRayState.ray, &shadowWorldHit, scene, rng,
@@ -859,6 +860,7 @@ SYCL_EXTERNAL inline bool computeRayPlaneIntersectionRtDerivatives(
                                                              debugImage, debugIndex);
                     if (debugBreakFlag)
                         int debug = 1;
+                    */
                 }
             }
         }

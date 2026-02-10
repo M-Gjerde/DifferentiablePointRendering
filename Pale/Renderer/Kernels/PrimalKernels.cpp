@@ -77,7 +77,7 @@ namespace Pale {
 
             WorldHit worldHit{};
             RayState rayState = m_intermediates.primaryRays[rayIndex];
-            intersectScene(rayState.ray, &worldHit, m_scene, rng128, RayIntersectMode::Random);
+            intersectScene(rayState.ray, &worldHit, m_scene, rng128, SurfelIntersectMode::Uniform);
             if (!worldHit.hit) {
                 m_intermediates.hitRecords[rayIndex] = worldHit;
                 return;
@@ -142,10 +142,9 @@ namespace Pale {
                         sampleCosineHemisphere(rng128, worldHit.geometricNormalW, sampledOutgoingDirectionW,
                                                sampledPdf);
                         const float3 lambertBrdf = material.baseColor;
-                        throughputMultiplier = lambertBrdf;
+                        throughputMultiplier = lambertBrdf * worldHit.transmissivity;
                     }
 
-                    float opacity = 1.0f;
                     if (geometryType == GeometryType::PointCloud) {
                         const Point point = scene.points[worldHit.primitiveIndex];
                         // Reuse same albedo for scatter/Transmission
@@ -181,10 +180,9 @@ namespace Pale {
                         );
                         // Mixture BSDF update simplifies analytically
                         throughputMultiplier = (rho_r + rho_t) * segmentTransmittance;
-                        opacity = 1.0 / point.opacity;
                     }
 
-                    if (settings.rayGenMode == RayGenMode::Emitter) {
+                    if (settings.integratorKind == IntegratorKind::photonMapping) {
                         auto &devicePtr = *intermediates.map.photonCountDevicePtr;
                         sycl::atomic_ref<uint32_t,
                                     sycl::memory_order::acq_rel,
@@ -201,11 +199,13 @@ namespace Pale {
                             const float signedCosineIncident = dot(baseNormalW, -rayState.ray.direction);
                             const int sideSign = signNonZero(signedCosineIncident);
                             //const float3 orientedNormalW = (sideSign >= 0) ? baseNormalW : (-baseNormalW);
-                            photonEntry.power = rayState.pathThroughput * opacity; // Multiply with opacity to avoid derive an adjoint photon map pass?
+                            photonEntry.power = rayState.pathThroughput * worldHit.transmissivity;
+                            // Multiply with opacity to avoid derive an adjoint photon map pass?
                             //photonEntry.normal = orientedNormalW;
                             //photonEntry.sideSign = sideSign;
                             //photonEntry.geometryType = instance.geometryType;
                             photonEntry.isValid = 1u;
+                            photonEntry.incomingDirection = -rayState.ray.direction;
                             intermediates.map.photons[slot] = photonEntry;
                         }
                     }
@@ -261,20 +261,19 @@ namespace Pale {
         queue.submit([&](sycl::handler &cgh) {
             uint64_t baseSeed = settings.random.number * (static_cast<uint64_t>(cameraIndex) + 5ull);
 
-            cgh.parallel_for<class ShadeKernelTag>(
+            cgh.parallel_for<class launchContributionKernel>(
                 sycl::range<1>(activeRayCount),
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
-
                     const WorldHit worldHit = hitRecords[rayIndex];
                     const RayState rayState = raysIn[rayIndex];
                     if (!worldHit.hit)
                         return;
-
                     const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+                    auto &geometryType = instance.geometryType;
 
                     const float3 &surfacePointWorld = worldHit.hitPositionW;
                     const float3 &surfaceNormalWorld = worldHit.geometricNormalW; // ensure normalized
@@ -286,8 +285,10 @@ namespace Pale {
                     float distanceToCamera = 0.0f;
 
                     bool debug = false;
+                    int pixelX = 0;
+                    int pixelY = 0;
                     if (!projectToPixelFromPinhole(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
-                                                distanceToCamera, debug))
+                                                   distanceToCamera, pixelX, pixelY, debug))
                         return;
 
 
@@ -303,36 +304,55 @@ namespace Pale {
                     if (cosineAbsToCamera <= 0.0f)
                         return;
 
+
                     //float cosThetaCamera = dot(sensor.camera.forward, -omegaSurfaceToCamera);
                     //if (cosThetaCamera <= 0.0f)
                     //    return;
 
                     // Visibility: shadow ray from surface to camera
-                    const float3 contributionRayOrigin = surfacePointWorld + travelSideSign * surfaceNormalWorld * 1e-6f;
+                    const float3 contributionRayOrigin =
+                            surfacePointWorld + travelSideSign * surfaceNormalWorld * 1e-6f;
                     const float3 contributionDirection = omegaSurfaceToCamera;
                     const float shadowRayMaxT = distanceToCamera - 1e-4f;
                     Ray ray{contributionRayOrigin, contributionDirection};
-                    WorldHit visibilityCheck = traceVisibility(ray, shadowRayMaxT, scene, rng128);
-                    if (visibilityCheck.hit && visibilityCheck.t <= shadowRayMaxT) {
+                    WorldHit visibilityCheck{};
+                    intersectScene(ray, &visibilityCheck, scene, rng128, SurfelIntersectMode::Transmit);
+
+                    if (visibilityCheck.t <= shadowRayMaxT && visibilityCheck.hit) {
                         return;
                     }
-                    // Lambertian BSDF: f = albedo / pi
 
-                    const float tauDiffuse = 0.0f; // diffuse transmission
-
+                    // DO measurement ray BSDF selection.
+                    float3 throughputMultiplier{0.0f};
                     float3 rho{0.0f};
-                    switch (instance.geometryType) {
-                        case GeometryType::Mesh:
-                            rho = scene.materials[instance.materialIndex].baseColor;
-                            break;
-                        case GeometryType::PointCloud:
-                            rho = scene.points[worldHit.primitiveIndex].albedo;
-                            break;
-                        default:
-                            break;
+
+                    if (geometryType == GeometryType::Mesh) {
+                        const GPUMaterial material = scene.materials[instance.materialIndex];
+                        // If we hit instance was a mesh do ordinary BRDF stuff.
+                        const float3 lambertBrdf = material.baseColor;
+                        rho = lambertBrdf * worldHit.transmissivity * M_1_PIf;
+                    } else if (geometryType == GeometryType::PointCloud) {
+                        const Point point = scene.points[worldHit.primitiveIndex];
+                        // Reuse same albedo for scatter/Transmission
+                        float3 c = point.albedo;
+                        float alpha_r = point.alpha_r;
+                        float alpha_t = point.alpha_t;
+
+                        float3 rho_r = c * alpha_r; // diffuse reflectance
+                        float3 rho_t = c * alpha_t; // diffuse transmission
+
+                        const float segmentTransmittance = worldHit.transmissivity;
+                        // Choose scalar for lobe probability
+                        const float alphaSum = alpha_r + alpha_t;
+
+                        const float pReflect = alpha_r / alphaSum;
+                        const float uLobe = rng128.nextFloat();
+                        const bool chooseReflection = (uLobe < pReflect);
+
+                        // Mixture BSDF update simplifies analytically
+                        rho = (rho_r + rho_t) * segmentTransmittance * M_1_PIf;
                     }
 
-                    const float3 bsdfValue = rho * M_1_PIf;
                     // Geometry term from pinhole importance (1/r^2 and cosine at surface)
                     const float inverseDistanceSquared = 1.0f / (distanceToCamera * distanceToCamera);
 
@@ -351,12 +371,15 @@ namespace Pale {
                     const float invPixelArea = 1.0f / pixelArea;
                     // Contribution (delta sensor, pixel binning)
                     const float3 contribution =
-                            rayState.pathThroughput  *
-                            (bsdfValue + float3{tauDiffuse}) *
+                            rayState.pathThroughput * rho * visibilityCheck.transmissivity *
                             (cosineAbsToCamera * inverseDistanceSquared) * invPixelArea;
 
                     // Atomic accumulate to framebuffer
                     atomicAddFloat3ToImage(&sensor.framebuffer[pixelIndex], contribution);
+
+
+                    if (isWatchedPixel(pixelX, pixelY))
+                        bool debug = true;
                 }
             );
         });
@@ -385,6 +408,7 @@ namespace Pale {
             cgh.parallel_for<class ShadeKernelTag>(
                 sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
+                    /*
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
@@ -401,7 +425,7 @@ namespace Pale {
                     bool debugPixelBreakpoint = false;
 
                     if (!projectToPixelFromPinhole(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
-                                                distanceToCamera, debugPixelBreakpoint))
+                                                   distanceToCamera, debugPixelBreakpoint))
                         return;
 
                     // Backface / cosine term at surface
@@ -441,6 +465,7 @@ namespace Pale {
 
                     // Atomic accumulate to framebuffer
                     atomicAddFloat3ToImage(&sensor.framebuffer[pixelIndex], contribution);
+                    */
                 }
             );
         });
@@ -503,7 +528,7 @@ namespace Pale {
                             WorldHit worldHit{};
 
                             intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator,
-                                           RayIntersectMode::Scatter);
+                                           SurfelIntersectMode::Scatter);
                             if (!worldHit.hit) {
                                 // No more surfels/meshes: add background/environment with remaining throughput
                                 break;
@@ -573,7 +598,8 @@ namespace Pale {
 
                                     const float3 emittedRadiance = material.power * material.baseColor; // L_e
 
-                                    //accumulatedRadianceRGB += transmittanceProduct * min(emittedRadiance, 1.0f); // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
+                                    accumulatedRadianceRGB += transmittanceProduct * min(emittedRadiance, 1.0f);
+                                    // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
                                 } else {
                                     const float3 rho = material.baseColor;
 

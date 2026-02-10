@@ -50,9 +50,10 @@ namespace Pale {
 
                     // Adjoint source weight
                     const float4 residualRgba = sensor.framebuffer[pixelIndex];
-                    float3 initialAdjointWeight = float3{
-                                                      residualRgba.x(), residualRgba.y(), residualRgba.z()
-                                                  } / raysTotal;
+                    float3 residual = float3{residualRgba.x(), residualRgba.y(), residualRgba.z()}; // (I - T)
+                    float invPixelCount = 1.0f / float(raysTotal);
+                    float3 initialAdjointWeight = residual * invPixelCount;
+
                     // Or unit weights:
                     //initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
@@ -116,7 +117,7 @@ namespace Pale {
                     RayState &rayState = intermediates.primaryRays[rayIndex];
 
                     WorldHit worldHit{};
-                    intersectScene(rayState.ray, &worldHit, scene, rng128, RayIntersectMode::DetachedMode);
+                    intersectScene(rayState.ray, &worldHit, scene, rng128, SurfelIntersectMode::Uniform);
                     if (!worldHit.hit) {
                         intermediates.hitRecords[rayIndex] = worldHit;
                         return;
@@ -187,13 +188,13 @@ namespace Pale {
                         true
                     );
 
-                    float3 L_p = E * (rho * M_1_PIf) * worldHit.alpha * 0.5f; // Heuristic. What happens when eta = 0. We must figure out this.
-                    //float3 L_p = float3{1.0f};
+                    float3 irradiance = E;
+                    //float3 irradiance = float3{1.0f};
                     // If 1 we blend with background color
 
                     float grad_alpha_eta = worldHit.alpha;
 
-                    float3 grad_cost_eta = grad_alpha_eta * p * L_p;
+                    float3 grad_cost_eta = grad_alpha_eta * p * irradiance;
                     float grad_cost_eta_sum = sum(grad_cost_eta);
 
                     atomicAddFloat(gradients.gradOpacity[worldHit.primitiveIndex], grad_cost_eta_sum);
@@ -217,31 +218,7 @@ namespace Pale {
 
 
 
-    struct DebugPixel {
-        uint32_t pixelY;
-        uint32_t pixelX;
-    };
 
-    DebugPixel kDebugPixels[] = {
-        {300, 500},
-        {301, 299},
-        // {700, 250},
-        // {700, 330},
-        // {700, 400},
-        // {700, 530},
-    };
-
-    bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
-        bool isMatch = false;
-
-        for (uint32_t i = 0; i < 2; ++i) {
-            const DebugPixel &debugPixel = kDebugPixels[i];
-            if (pixelY == debugPixel.pixelY && pixelX == debugPixel.pixelX) {
-                isMatch = true;
-            }
-        }
-        return isMatch;
-    }
 
     // -----------------------------------------------------------------------------
     // launchAdjointTransportKernel

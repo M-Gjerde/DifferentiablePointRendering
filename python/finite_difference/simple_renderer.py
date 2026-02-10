@@ -164,7 +164,7 @@ def main(args) -> None:
         "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 1,
-        "adjoint_passes": 10,
+        "adjoint_passes": 1,
         "logging": 3
     }
 

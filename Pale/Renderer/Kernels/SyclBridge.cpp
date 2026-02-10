@@ -20,7 +20,6 @@ namespace Pale {
     void submitLightTracingKernel(RenderPackage& pkg) {
         std::mt19937_64 seedGen(pkg.settings.random.seed); // define once before the loop
 
-        pkg.queue.fill(pkg.intermediates.map.photonCountDevicePtr, 0u, 1).wait();
         {
             ScopedTimer forwardTimer("Forward Pass Total", spdlog::level::debug);
             for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
@@ -51,12 +50,12 @@ namespace Pale {
                             ScopedTimer timer("launchIntersectKernel");
                             launchIntersectKernel(pkg, activeCount);
                         }
-                        if (pkg.settings.integratorKind == IntegratorKind::lightTracing) {
                             ScopedTimer timer("ContributionKernels total");
                             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                                //if (pkg.sensor[cameraIndex].name[6] != '1')
+                                //    continue;
                                 launchContributionKernel(pkg, activeCount, cameraIndex);
                             }
-                        }
                         {
                             ScopedTimer timer("generateNextRays");
                             generateNextRays(pkg, activeCount);
