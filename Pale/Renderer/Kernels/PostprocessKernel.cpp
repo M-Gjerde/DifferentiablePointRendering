@@ -10,9 +10,9 @@ namespace Pale {
 
     void launchPostProcessKernel(RenderPackage& pkg) {
         auto& queue = pkg.queue;
-        auto sensor = pkg.sensor;
+        auto sensor = pkg.sensors;
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-            SensorGPU sensor = pkg.sensor[cameraIndex];
+            SensorGPU sensor = pkg.sensors[cameraIndex];
             const uint32_t imageWidth = sensor.camera.width;
             const uint32_t imageHeight = sensor.camera.height;
             const uint32_t raysPerSet = imageWidth * imageHeight;

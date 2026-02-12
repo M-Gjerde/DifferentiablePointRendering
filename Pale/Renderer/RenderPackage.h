@@ -61,7 +61,7 @@ namespace Pale {
         GPUSceneBuffers scene{};
         RenderIntermediatesGPU intermediates{};
         PointGradients gradients{};
-        std::vector<SensorGPU> sensor{};
+        std::vector<SensorGPU> sensors{};
         DebugImages* debugImages{};
         uint32_t numSensors{};
 

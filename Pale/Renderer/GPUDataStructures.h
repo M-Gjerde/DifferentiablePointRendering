@@ -289,6 +289,17 @@ namespace Pale {
         uint32_t invChosenSurfelPdf = 0; //chosen surfel PDF for adjoint pass
     };
 
+    struct alignas(16) HitInfoContribution {
+        float3 throughput = float3(0.0f);
+        float3 hitPositionW = float3(0.0f);
+        float3 geometricNormalW = float3(0.0f);
+        uint32_t primitiveIndex = UINT32_MAX;
+        uint32_t instanceIndex = UINT32_MAX;
+        float transmissivity = 1.0f;         // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
+        GeometryType type = GeometryType::InvalidType;
+
+    };
+
     static_assert(std::is_trivially_copyable_v<WorldHit>);
 
     enum class IntegratorKind : uint32_t {
@@ -381,6 +392,8 @@ namespace Pale {
         RayState *primaryRays;
         RayState *extensionRaysA;
         WorldHit *hitRecords;
+        HitInfoContribution *hitContribution;
+        uint32_t* countContributions;
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;
 

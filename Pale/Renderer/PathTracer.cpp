@@ -82,11 +82,17 @@ namespace Pale {
         m_intermediates.hitRecords = sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated hitRecords: {}", Utils::formatBytes(sizeHitRecordsBytes));
 
+        std::size_t sizeContributionRecordsBytes = sizeof(HitInfoContribution) * m_settings.photonsPerLaunch;
+        m_intermediates.hitContribution = sycl::malloc_device<HitInfoContribution>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated contribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
+
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
 
         // --- zero init ---
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
         m_queue.wait();
 
@@ -280,7 +286,7 @@ namespace Pale {
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .gradients = {},
-            .sensor = sensor,
+            .sensors = sensor,
             .debugImages = nullptr,
             .numSensors = static_cast<uint32_t>(sensor.size())
         };
@@ -323,7 +329,7 @@ namespace Pale {
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .gradients = gradients,
-            .sensor = sensors,
+            .sensors = sensors,
             .debugImages = debugImages,
             .numSensors = static_cast<uint32_t>(sensors.size()),
         };

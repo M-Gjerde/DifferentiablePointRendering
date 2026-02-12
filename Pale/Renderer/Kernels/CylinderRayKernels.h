@@ -448,7 +448,7 @@ namespace Pale {
     void launchCylinderRayIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
         auto queue = pkg.queue;
         auto scene = pkg.scene;
-        auto sensor = pkg.sensor;
+        auto sensor = pkg.sensors;
         auto settings = pkg.settings;
 
         auto *hitRecords = pkg.intermediates.hitRecords;
@@ -493,7 +493,7 @@ namespace Pale {
 
 
         // Host-side (before launching kernel)
-        SensorGPU sensor = pkg.sensor[cameraIndex];
+        SensorGPU sensor = pkg.sensors[cameraIndex];
 
         auto &intermediates = pkg.intermediates;
         auto *hitRecords = pkg.intermediates.hitRecords;

@@ -200,7 +200,7 @@ int main(int argc, char** argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
-    Pale::Log::init(spdlog::level::level_enum::debug);
+    Pale::Log::init(spdlog::level::level_enum::trace);
 
     Pale::AssetManager assetManager{256};
     assetManager.enableHotReload(true);
@@ -235,8 +235,8 @@ int main(int argc, char** argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = true;
-    bool addModel = !true;
+    bool addPoints = !true;
+    bool addModel =  true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -249,13 +249,13 @@ int main(int argc, char** argv) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.3f, 0.6f));
-        bunnyTransformComponent.setRotationEuler(glm::vec3(75.0f, 0.0f, 0.0f));
-        bunnyTransformComponent.setScale(glm::vec3(0.6f, 0.4f, 1.0f));
+        bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.3f, 0.4f));
+        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 0.0f));
+        bunnyTransformComponent.setScale(glm::vec3(1.0f, 1.0f, 1.0f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-            assetIndexer.importPath("meshes/rectangle.obj", Pale::AssetType::Mesh);
+            assetIndexer.importPath("meshes/bunny.ply", Pale::AssetType::Mesh);
 
         auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
@@ -279,7 +279,7 @@ int main(int argc, char** argv) {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
-    bool renderPhotonMapping = true;
+    bool renderPhotonMapping = !true;
     bool renderLightTracing = true;
 
     if (renderLightTracing) {

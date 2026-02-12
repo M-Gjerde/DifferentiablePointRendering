@@ -38,28 +38,28 @@ namespace Pale {
 
                     for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
                         pkg.settings.random.number = seedGen(); // new high-entropy seed each pass
-                        launchContributionEmitterVisibleKernel(pkg, activeCount, cameraIndex);
+                        //launchContributionEmitterVisibleKernel(pkg, activeCount, cameraIndex);
                     }
 
                     for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
+                        ScopedTimer bounceTimer("Bounce: " + std::to_string(bounce));
                         pkg.settings.random.number = seedGen(); // new high-entropy seed each pass
                         pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                         pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                        pkg.queue.wait();
+                        //pkg.queue.wait();
                         {
                             ScopedTimer timer("launchIntersectKernel");
                             launchIntersectKernel(pkg, activeCount);
                         }
                             ScopedTimer timer("ContributionKernels total");
+                            uint32_t contributionCount = 0;
+                            pkg.queue.memcpy(&contributionCount, pkg.intermediates.countContributions, sizeof(uint32_t)).wait();
                             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
                                 //if (pkg.sensor[cameraIndex].name[6] != '1')
                                 //    continue;
-                                launchContributionKernel(pkg, activeCount, cameraIndex);
+                                launchContributionKernel(pkg, contributionCount, cameraIndex);
                             }
-                        {
-                            ScopedTimer timer("generateNextRays");
-                            generateNextRays(pkg, activeCount);
-                        }
+                        pkg.queue.fill(pkg.intermediates.countContributions, static_cast<uint32_t>(0), 1);
 
                         uint32_t nextCount = 0;
                         pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();

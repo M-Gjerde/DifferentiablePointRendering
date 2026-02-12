@@ -16,7 +16,7 @@ namespace Pale {
         auto &queue = pkg.queue;
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
-        auto &sensor = pkg.sensor[cameraIndex];
+        auto &sensor = pkg.sensors[cameraIndex];
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
@@ -150,7 +150,7 @@ namespace Pale {
         const auto &photonMap = pkg.intermediates.map;
         auto *raysIn = pkg.intermediates.primaryRays;
 
-        auto &sensor = pkg.sensor[cameraIndex];
+        auto &sensor = pkg.sensors[cameraIndex];
         DebugImages &debugImage = pkg.debugImages[cameraIndex];
 
         queue.submit([&](sycl::handler &cgh) {
@@ -246,7 +246,7 @@ namespace Pale {
         auto *hitRecords = pkg.intermediates.hitRecords;
         auto &debugImage = pkg.debugImages[cameraIndex];
 
-        auto &sensor = pkg.sensor[cameraIndex];
+        auto &sensor = pkg.sensors[cameraIndex];
 
         queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<struct AdjointShadeKernelTag>(
@@ -272,7 +272,7 @@ namespace Pale {
 
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount) {
         auto &queue = pkg.queue;
-        auto &sensor = pkg.sensor;
+        auto &sensor = pkg.sensors;
         auto &settings = pkg.settings;
         auto &scene = pkg.scene;
         auto &photonMap = pkg.intermediates.map;
