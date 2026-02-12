@@ -228,7 +228,7 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
-    enum class SurfelIntersectMode : uint32_t { Bernoulli = 0, Transmit = 1, Scatter = 2 , Uniform = 3 };
+    enum class SurfelIntersectMode : uint32_t { Bernoulli = 0, Transmit = 1, FirstHit = 2 , Uniform = 3 };
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {

@@ -77,7 +77,33 @@ namespace Pale {
 
             WorldHit worldHit{};
             RayState rayState = m_intermediates.primaryRays[rayIndex];
-            intersectScene(rayState.ray, &worldHit, m_scene, rng128, SurfelIntersectMode::Uniform);
+            intersectScene(rayState.ray, &worldHit, m_scene, rng128, SurfelIntersectMode::FirstHit);
+
+            // Random event
+            const float qNull = 0.5f;
+            const float qReflect = 0.25f;
+            const float qTransmit = 0.20f;
+            // qAbsorb = 1 - (qNull + qReflect + qTransmit)
+            const float u = rng128.nextFloat();
+
+            uint32_t eventType = 0; // 0=null, 1=reflect, 2=transmit, 3=absorb
+
+            if (u < qNull) {
+                // Update path throughput
+                eventType = 0;
+
+            } else if (u < qNull + qReflect) {
+                // Stream into contribution rays container
+                eventType = 1;
+            } else if (u < qNull + qReflect + qTransmit) {
+                eventType = 2;
+                // Stream into contribution rays container
+
+            } else {
+                // Absorb
+                eventType = 3;
+            }
+
             if (!worldHit.hit) {
                 m_intermediates.hitRecords[rayIndex] = worldHit;
                 return;
@@ -528,7 +554,7 @@ namespace Pale {
                             WorldHit worldHit{};
 
                             intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator,
-                                           SurfelIntersectMode::Scatter);
+                                           SurfelIntersectMode::FirstHit);
                             if (!worldHit.hit) {
                                 // No more surfels/meshes: add background/environment with remaining throughput
                                 break;

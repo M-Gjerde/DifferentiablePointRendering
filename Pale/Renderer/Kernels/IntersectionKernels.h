@@ -1036,7 +1036,7 @@ namespace Pale {
                             rayObject, instance.blasRangeIndex, localHit, scene);
                         worldHitOut->transmissivity = localHit.transmissivity;
                         break;
-                    case SurfelIntersectMode::Scatter:
+                    case SurfelIntersectMode::FirstHit:
                         acceptedHitInInstance = intersectBLASPointCloudFirstHit(
                             rayObject,
                             instance.blasRangeIndex,
