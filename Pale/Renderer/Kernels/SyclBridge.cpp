@@ -38,7 +38,7 @@ namespace Pale {
 
                     for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
                         pkg.settings.random.number = seedGen(); // new high-entropy seed each pass
-                        //launchContributionEmitterVisibleKernel(pkg, activeCount, cameraIndex);
+                        launchContributionEmitterVisibleKernel(pkg, activeCount, cameraIndex);
                     }
 
                     for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
@@ -55,7 +55,7 @@ namespace Pale {
                             uint32_t contributionCount = 0;
                             pkg.queue.memcpy(&contributionCount, pkg.intermediates.countContributions, sizeof(uint32_t)).wait();
                             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                                //if (pkg.sensors[cameraIndex].name[6] != '3')
+                                //if (pkg.sensors[cameraIndex].name[6] != '2')
                                 //    continue;
                                 launchContributionKernel(pkg, contributionCount, cameraIndex);
                             }
@@ -134,6 +134,9 @@ namespace Pale {
             ScopedTimer timer("Camera Gather for " + std::to_string(pkg.numSensors) + " cameras", spdlog::level::debug);
 
             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                //if (pkg.sensors[cameraIndex].name[6] != '1')
+                //    continue;
+
                 ScopedTimer timer(
                     "launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" +
                     std::to_string(pkg.numSensors), spdlog::level::debug);

@@ -448,6 +448,226 @@ namespace Pale {
         });
     }
 
+
+    // Check if samples from light sources connect directly to camera
+    void launchContributionEmitterVisibleKernel(RenderPackage& pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
+        auto& queue = pkg.queue;
+        auto& scene = pkg.scene;
+        auto& settings = pkg.settings;
+        auto& photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+
+
+        // Host-side (before launching kernel)
+        SensorGPU sensor = pkg.sensors[cameraIndex];
+
+        auto& intermediates = pkg.intermediates;
+        auto* hitRecords = pkg.intermediates.hitRecords;
+        auto* raysIn = pkg.intermediates.primaryRays;
+        auto* raysOut = pkg.intermediates.extensionRaysA;
+        auto* countExtensionOut = pkg.intermediates.countExtensionOut;
+
+        queue.submit([&](sycl::handler& cgh) {
+            uint64_t baseSeed = settings.random.number;
+
+            cgh.parallel_for<class ShadeKernelTag>(
+                sycl::range<1>(activeRayCount),
+                [=](sycl::id<1> globalId) {
+                    /*
+                    rng::Xorshift128 rng128(perItemSeed);
+
+                 if (scene.lightCount == 0) return;
+
+                 AreaLightSample ls = sampleMeshAreaLight(scene, rng128);
+                 if (!ls.valid) return;
+
+                 // Storing radiance as watt simplifies this line:
+                 const float3 initialThroughput = ls.power * scene.lightCount * invPhotonCount;
+
+                 RayState ray{};
+                 ray.ray.origin = ls.positionW;
+                 ray.ray.direction = ls.direction;
+                 ray.ray.normal = ls.normalW;
+                 ray.pathThroughput = initialThroughput;
+                 ray.bounceIndex = 0;
+                 ray.lightIndex = ls.lightIndex;
+                    */
+
+                }
+            );
+        });
+    }
+
+    // ---- Kernel: Camera gather (one thread per pixel) --------------------------
+    void launchCameraGatherKernel(RenderPackage& pkg, uint32_t cameraIndex) {
+        auto& queue = pkg.queue;
+        auto& scene = pkg.scene;
+        auto& settings = pkg.settings;
+        auto& photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
+
+
+        // Host-side (before launching kernel)
+        SensorGPU sensor = pkg.sensors[cameraIndex];
+
+        // ReSharper disable once CppDFAUnreachableCode
+        const std::uint32_t imageWidth = sensor.camera.width;
+        const std::uint32_t imageHeight = sensor.camera.height;
+        const std::uint32_t pixelCount = imageWidth * imageHeight;
+        pkg.queue.fill(sensor.framebuffer, float4{0}, pixelCount).wait();
+
+        for (int spp = 0; spp < settings.numGatherPasses; ++spp) {
+            // Clear framebuffer before calling this, outside.
+            queue.submit([&](sycl::handler& cgh) {
+                float totalSamplesPerPixel = settings.numGatherPasses;
+                uint64_t baseSeed = pkg.settings.random.number;
+
+                cgh.parallel_for<class CameraGatherKernel>(
+                    sycl::range<1>(pixelCount),
+                    [=](sycl::id<1> tid) {
+                        const std::uint32_t pixelIndex = tid[0];
+                        const std::uint32_t pixelX = pixelIndex % imageWidth;
+                        const std::uint32_t pixelY = pixelIndex / imageWidth;
+
+                        rng::Xorshift128 randomNumberGenerator(
+                            rng::makePerItemSeed1D(baseSeed, pixelIndex));
+
+                        float3 accumulatedRadianceRGB(0.0f);
+
+                        // Subpixel jitter
+                        const float jitterX = randomNumberGenerator.nextFloat() - 0.5f;
+                        const float jitterY = randomNumberGenerator.nextFloat() - 0.5f;
+
+                        Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
+                            sensor.camera,
+                            static_cast<float>(pixelX),
+                            static_cast<float>(pixelY),
+                            jitterX,
+                            jitterY);
+
+                        //if (!isWatchedPixel(pixelX, pixelY)) {
+                        //    return;
+                        //}
+
+                        // -----------------------------------------------------------------
+                        // 1) Transmit ray: collect all splat events + terminal mesh hit
+                        // -----------------------------------------------------------------s
+                        // Trace up to N layers (no sorting needed if each query returns closest hit > tMin)
+                        // Lol or jut use a while true loop
+                        const int maxLayers = 64;
+                        float transmittanceProduct = 1.0f;
+                        while (true) {
+                            WorldHit worldHit{};
+
+                            intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator,
+                                           SurfelIntersectMode::FirstHit);
+                            if (!worldHit.hit) {
+                                // No more surfels/meshes: add background/environment with remaining throughput
+                                break;
+                            }
+
+                            buildIntersectionNormal(scene, worldHit);
+                            auto& instance = scene.instances[worldHit.instanceIndex];
+
+                            //if (pixelX == 200 && pixelY == 325) {
+
+                            // -----------------------------------------------------------------
+                            // 2) For each surfel along the transmit segment, fire a scatter ray
+                            //    and shade that surfel from the photon map.
+                            // -----------------------------------------------------------------
+                            if (instance.geometryType == GeometryType::PointCloud) {
+                                const Point& surfel = scene.points[worldHit.primitiveIndex];
+                                const float3 rho = surfel.albedo;
+                                // Canonical surfel normal (no front/back semantics stored).
+                                float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
+                                // Make it face the incoming/view ray so the hemisphere is consistent.
+                                if (dot(normalW, -primaryRay.direction) < 0.0f) {
+                                    normalW = -normalW;
+                                }
+
+                                const float3 E = gatherDiffuseIrradianceAtPoint(
+                                    worldHit.hitPositionW,
+                                    normalW,
+                                    photonMap
+                                );
+
+                                float3 surfelShadedRadiance = E * (rho * M_1_PIf);
+
+                                float alphaEff = surfel.opacity * worldHit.alphaGeom;
+
+                                accumulatedRadianceRGB += transmittanceProduct * alphaEff * surfelShadedRadiance;
+                                transmittanceProduct *= (1.0f - alphaEff);
+
+                                // Early out if we're nearly opqaue
+                                if (transmittanceProduct < 0.001f) {
+                                    break;
+                                }
+
+                                primaryRay.origin = worldHit.hitPositionW + (primaryRay.direction * 1e-6f);
+                                continue;
+                            }
+
+
+                            // -----------------------------------------------------------------
+                            // 3) Shade terminal mesh (if any) with remaining transmittance
+                            // -----------------------------------------------------------------
+                            if (instance.geometryType == GeometryType::Mesh) {
+                                const GPUMaterial& material =
+                                    scene.materials[instance.materialIndex];
+
+                                if (material.isEmissive()) {
+                                    const float distanceToCamera =
+                                        length(worldHit.hitPositionW - primaryRay.origin);
+                                    const float surfaceCosine =
+                                        sycl::fmax(0.f, dot(worldHit.geometricNormalW,
+                                                            -primaryRay.direction));
+                                    const float cameraCosine =
+                                        sycl::fmax(0.f, dot(sensor.camera.forward,
+                                                            primaryRay.direction));
+
+                                    const float geometricToCamera =
+                                        (surfaceCosine * cameraCosine) /
+                                        (distanceToCamera * distanceToCamera + 1e-8f);
+
+
+                                    const float3 emittedRadiance = material.power * material.baseColor; // L_e
+
+                                    accumulatedRadianceRGB += transmittanceProduct * min(emittedRadiance, 1.0f);
+                                    // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
+                                }
+                                else {
+                                    const float3 rho = material.baseColor;
+
+                                    const float3 E = gatherDiffuseIrradianceAtPoint(
+                                        worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
+                                    const float3 Lo = (rho * M_1_PIf) * E;
+
+                                    accumulatedRadianceRGB += transmittanceProduct * Lo;
+                                }
+                                transmittanceProduct = 0.0f;
+                                break;
+                            }
+                        }
+                        // -----------------------------------------------------------------
+                        // 4) Atomic accumulate into framebuffer
+                        // -----------------------------------------------------------------
+                        const std::uint32_t framebufferIndex =
+                            pixelY * imageWidth + pixelX;
+
+                        float4 previousValue = sensor.framebuffer[framebufferIndex];
+
+                        float4 currentValue =
+                            float4(accumulatedRadianceRGB.x(),
+                                   accumulatedRadianceRGB.y(),
+                                   accumulatedRadianceRGB.z(),
+                                   1.0f) / totalSamplesPerPixel;
+
+                        sensor.framebuffer[framebufferIndex] = currentValue + previousValue;
+                    });
+            });
+            queue.wait();
+        }
+    }
+
+
     void generateNextRays(RenderPackage& pkg, uint32_t activeRayCount) {
         auto& queue = pkg.queue;
         auto& scene = pkg.scene;
@@ -585,260 +805,6 @@ namespace Pale {
         });
         queue.wait();
     }
-
-    // Check if samples from light sources connect directly to camera
-    void launchContributionEmitterVisibleKernel(RenderPackage& pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        auto& photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
-
-
-        // Host-side (before launching kernel)
-        SensorGPU sensor = pkg.sensors[cameraIndex];
-
-        auto& intermediates = pkg.intermediates;
-        auto* hitRecords = pkg.intermediates.hitRecords;
-        auto* raysIn = pkg.intermediates.primaryRays;
-        auto* raysOut = pkg.intermediates.extensionRaysA;
-        auto* countExtensionOut = pkg.intermediates.countExtensionOut;
-
-        queue.submit([&](sycl::handler& cgh) {
-            uint64_t baseSeed = settings.random.number;
-
-            cgh.parallel_for<class ShadeKernelTag>(
-                sycl::range<1>(activeRayCount),
-                [=](sycl::id<1> globalId) {
-                    /*
-                    const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, rayIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
-
-                    const RayState rayState = raysIn[rayIndex];
-
-                    const float3 surfacePointWorld = rayState.ray.origin;
-                    const float3 surfaceNormalWorld = rayState.ray.normal; // ensure normalized
-
-                    // Project to pixel and get omega_c (surface -> camera) and distance
-                    uint32_t pixelIndex = 0u;
-                    float3 omegaSurfaceToCamera;
-                    float distanceToCamera = 0.0f;
-                    bool debugPixelBreakpoint = false;
-
-                    if (!projectToPixelFromPinhole(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
-                                                   distanceToCamera, debugPixelBreakpoint))
-                        return;
-
-                    // Backface / cosine term at surface
-                    const float cosineSurfaceToCamera = sycl::fmax(0.0f, dot(surfaceNormalWorld, omegaSurfaceToCamera));
-                    if (cosineSurfaceToCamera <= 0.0f)
-                        return;
-
-                    // Visibility: shadow ray from surface to camera
-                    const float3 contributionRayOrigin = surfacePointWorld + surfaceNormalWorld * 1e-4f;
-                    const float3 contributionDirection = omegaSurfaceToCamera;
-                    const float shadowRayMaxT = distanceToCamera - 2e-4f;
-                    Ray ray{contributionRayOrigin, contributionDirection};
-                    WorldHit visibilityCheck = traceVisibility(ray, shadowRayMaxT, scene, rng128);
-                    if (visibilityCheck.t <= shadowRayMaxT)
-                        return;
-
-                    // Geometry term from pinhole importance (1/r^2 and cosine at surface)
-                    const float inverseDistanceSquared = 1.0f / (distanceToCamera * distanceToCamera);
-
-                    const float width = float(sensor.width);
-                    const float height = float(sensor.height);
-
-                    const float fovYRad = glm::radians(sensor.camera.fovy);
-                    const float tanHalfFovY = sycl::tan(0.5f * fovYRad);
-                    const float tanHalfFovX = tanHalfFovY * (width / height);
-
-                    // film plane at z=1 has size: 2*tanHalfFovX by 2*tanHalfFovY
-                    const float filmWidth = 2.0f * tanHalfFovX;
-                    const float filmHeight = 2.0f * tanHalfFovY;
-
-                    const float pixelArea = (filmWidth / width) * (filmHeight / height);
-                    const float invPixelArea = 1.0f / pixelArea;
-                    // Contribution (delta sensor, pixel binning)
-                    const float3 contribution =
-                            rayState.pathThroughput *
-                            (cosineSurfaceToCamera * inverseDistanceSquared) * invPixelArea;
-
-                    // Atomic accumulate to framebuffer
-                    atomicAddFloat3ToImage(&sensor.framebuffer[pixelIndex], contribution);
-                    */
-                }
-            );
-        });
-    }
-
-    // ---- Kernel: Camera gather (one thread per pixel) --------------------------
-    void launchCameraGatherKernel(RenderPackage& pkg, uint32_t cameraIndex) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        auto& photonMap = pkg.intermediates.map; // DeviceSurfacePhotonMapGrid
-
-
-        // Host-side (before launching kernel)
-        SensorGPU sensor = pkg.sensors[cameraIndex];
-
-        // ReSharper disable once CppDFAUnreachableCode
-        const std::uint32_t imageWidth = sensor.camera.width;
-        const std::uint32_t imageHeight = sensor.camera.height;
-        const std::uint32_t pixelCount = imageWidth * imageHeight;
-        pkg.queue.fill(sensor.framebuffer, float4{0}, pixelCount).wait();
-
-        for (int spp = 0; spp < settings.numGatherPasses; ++spp) {
-            // Clear framebuffer before calling this, outside.
-            queue.submit([&](sycl::handler& cgh) {
-                float totalSamplesPerPixel = settings.numGatherPasses;
-                uint64_t baseSeed = pkg.settings.random.number;
-
-                cgh.parallel_for<class CameraGatherKernel>(
-                    sycl::range<1>(pixelCount),
-                    [=](sycl::id<1> tid) {
-                        const std::uint32_t pixelIndex = tid[0];
-                        const std::uint32_t pixelX = pixelIndex % imageWidth;
-                        const std::uint32_t pixelY = pixelIndex / imageWidth;
-
-                        rng::Xorshift128 randomNumberGenerator(
-                            rng::makePerItemSeed1D(baseSeed, pixelIndex));
-
-                        float3 accumulatedRadianceRGB(0.0f);
-
-                        // Subpixel jitter
-                        const float jitterX = randomNumberGenerator.nextFloat() - 0.5f;
-                        const float jitterY = randomNumberGenerator.nextFloat() - 0.5f;
-
-                        Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
-                            sensor.camera,
-                            static_cast<float>(pixelX),
-                            static_cast<float>(pixelY),
-                            jitterX,
-                            jitterY);
-
-                        // -----------------------------------------------------------------
-                        // 1) Transmit ray: collect all splat events + terminal mesh hit
-                        // -----------------------------------------------------------------s
-                        // Trace up to N layers (no sorting needed if each query returns closest hit > tMin)
-                        // Lol or jut use a while true loop
-                        const int maxLayers = 64;
-                        float transmittanceProduct = 1.0f;
-                        while (true) {
-                            WorldHit worldHit{};
-
-                            intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator,
-                                           SurfelIntersectMode::FirstHit);
-                            if (!worldHit.hit) {
-                                // No more surfels/meshes: add background/environment with remaining throughput
-                                break;
-                            }
-
-                            buildIntersectionNormal(scene, worldHit);
-                            auto& instance = scene.instances[worldHit.instanceIndex];
-
-                            //if (pixelX == 200 && pixelY == 325) {
-
-                            // -----------------------------------------------------------------
-                            // 2) For each surfel along the transmit segment, fire a scatter ray
-                            //    and shade that surfel from the photon map.
-                            // -----------------------------------------------------------------
-                            if (instance.geometryType == GeometryType::PointCloud) {
-                                const Point& surfel = scene.points[worldHit.primitiveIndex];
-                                const float3 rho = surfel.albedo;
-                                // Canonical surfel normal (no front/back semantics stored).
-                                float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
-                                // Make it face the incoming/view ray so the hemisphere is consistent.
-                                if (dot(normalW, -primaryRay.direction) < 0.0f) {
-                                    normalW = -normalW;
-                                }
-
-                                const float3 E = gatherDiffuseIrradianceAtPoint(
-                                    worldHit.hitPositionW,
-                                    normalW,
-                                    photonMap
-                                );
-
-                                float3 surfelShadedRadiance = E * (rho * M_1_PIf);
-
-                                float alphaEff = surfel.opacity * worldHit.alphaGeom;
-
-                                accumulatedRadianceRGB += transmittanceProduct * alphaEff * surfelShadedRadiance;
-                                transmittanceProduct *= (1.0f - alphaEff);
-
-                                // Early out if we're nearly opqaue
-                                if (transmittanceProduct < 0.001f) {
-                                    break;
-                                }
-
-                                primaryRay.origin = worldHit.hitPositionW + (primaryRay.direction * 1e-6f);
-                                continue;
-                            }
-
-
-                            // -----------------------------------------------------------------
-                            // 3) Shade terminal mesh (if any) with remaining transmittance
-                            // -----------------------------------------------------------------
-                            if (instance.geometryType == GeometryType::Mesh) {
-                                const GPUMaterial& material =
-                                    scene.materials[instance.materialIndex];
-
-                                if (material.isEmissive()) {
-                                    const float distanceToCamera =
-                                        length(worldHit.hitPositionW - primaryRay.origin);
-                                    const float surfaceCosine =
-                                        sycl::fmax(0.f, dot(worldHit.geometricNormalW,
-                                                            -primaryRay.direction));
-                                    const float cameraCosine =
-                                        sycl::fmax(0.f, dot(sensor.camera.forward,
-                                                            primaryRay.direction));
-
-                                    const float geometricToCamera =
-                                        (surfaceCosine * cameraCosine) /
-                                        (distanceToCamera * distanceToCamera + 1e-8f);
-
-
-                                    const float3 emittedRadiance = material.power * material.baseColor; // L_e
-
-                                    accumulatedRadianceRGB += transmittanceProduct * min(emittedRadiance, 1.0f);
-                                    // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
-                                }
-                                else {
-                                    const float3 rho = material.baseColor;
-
-                                    const float3 E = gatherDiffuseIrradianceAtPoint(
-                                        worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
-                                    const float3 Lo = (rho * M_1_PIf) * E;
-
-                                    accumulatedRadianceRGB += transmittanceProduct * Lo;
-                                }
-                                transmittanceProduct = 0.0f;
-                                break;
-                            }
-                        }
-                        // -----------------------------------------------------------------
-                        // 4) Atomic accumulate into framebuffer
-                        // -----------------------------------------------------------------
-                        const std::uint32_t framebufferIndex =
-                            pixelY * imageWidth + pixelX;
-
-                        float4 previousValue = sensor.framebuffer[framebufferIndex];
-
-                        float4 currentValue =
-                            float4(accumulatedRadianceRGB.x(),
-                                   accumulatedRadianceRGB.y(),
-                                   accumulatedRadianceRGB.z(),
-                                   1.0f) / totalSamplesPerPixel;
-
-                        sensor.framebuffer[framebufferIndex] = currentValue + previousValue;
-                    });
-            });
-            queue.wait();
-        }
-    }
-
-
     void computePhotonCellIdsAndPermutation(
         sycl::queue& queue,
         DeviceSurfacePhotonMapGrid grid,

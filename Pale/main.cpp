@@ -275,7 +275,8 @@ int main(int argc, char** argv) {
     // Build rendering products (BLAS. TLAS, Emissive lists, etc..)
     Pale::AssetAccessFromManager assetAccessor(assetManager);
 
-    auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
+    auto options =  Pale::SceneBuild::BuildOptions();
+    auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, options);
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
@@ -346,7 +347,7 @@ int main(int argc, char** argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 6;
+        settings.maxBounces = 4;
         settings.numForwardPasses = 20;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 1; // 1 = Projection only

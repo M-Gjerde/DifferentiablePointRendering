@@ -23,39 +23,37 @@ import Pale.Render.BVH;
 import Pale.Log;
 
 namespace Pale {
-    SceneBuild::BuildProducts SceneBuild::build(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
-        const BuildOptions &buildOptions) {
+    SceneBuild::BuildProducts SceneBuild::build(const std::shared_ptr<Scene>& scene, IAssetAccess& assetAccess,
+                                                const BuildOptions& buildOptions) {
+        BuildProducts buildProducts;
 
-            BuildProducts buildProducts;
+        collectGeometry(scene, assetAccess, buildProducts);
+        collectInstances(scene,
+                         assetAccess,
+                         buildProducts.meshIndexById,
+                         buildProducts);
+        collectPointCloudGeometry(scene, assetAccess, buildProducts);
+        collectPointCloudInstances(scene, buildProducts);
+        collectLights(scene, assetAccess, buildProducts);
+        collectCameras(scene, buildProducts);
 
-            collectGeometry(scene, assetAccess, buildProducts);
-            collectInstances(scene,
-                             assetAccess,
-                             buildProducts.meshIndexById,
-                             buildProducts);
-            collectPointCloudGeometry(scene, assetAccess, buildProducts);
-            collectPointCloudInstances(scene, buildProducts);
-            collectLights(scene, assetAccess, buildProducts);
-            collectCameras(scene, buildProducts);
+        buildBottomLevelBVHs(buildProducts, buildOptions);
+        buildTopLevelBVH(buildProducts, buildOptions);
 
-            buildBottomLevelBVHs(buildProducts, buildOptions);
-            buildTopLevelBVH(buildProducts, buildOptions);
+        buildProducts.diffuseSurfaceArea = computeDiffuseSurfaceAreaWorld(buildProducts);
 
-            buildProducts.diffuseSurfaceArea = computeDiffuseSurfaceAreaWorld(buildProducts);
-
-            return buildProducts;
-
+        return buildProducts;
     }
 
-    void SceneBuild::rebuildBVHs(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess, BuildProducts& buildProducts,
+    void SceneBuild::rebuildBVHs(const std::shared_ptr<Scene>& scene, IAssetAccess& assetAccess,
+                                 BuildProducts& buildProducts,
                                  const BuildOptions& buildOptions) {
-
         buildProducts.instances = {};
 
         collectInstances(scene,
-                 assetAccess,
-                 buildProducts.meshIndexById,
-                 buildProducts);
+                         assetAccess,
+                         buildProducts.meshIndexById,
+                         buildProducts);
 
         collectPointCloudInstances(scene, buildProducts);
 
@@ -70,6 +68,7 @@ namespace Pale {
 
         buildProducts.diffuseSurfaceArea = computeDiffuseSurfaceAreaWorld(buildProducts);
     }
+
     // ==== Geometry collector ====
     void SceneBuild::collectGeometry(const std::shared_ptr<Scene>& scene,
                                      IAssetAccess& assetAccess,
@@ -184,7 +183,7 @@ namespace Pale {
                                                BuildProducts& outBuildProducts) {
         std::vector<Point> collectedPoints;
         std::vector<UUID> uniquePointCloudIds;
-        {    
+        {
             // de-dup assets
             std::unordered_set<UUID> seen;
             for (auto [e, pc] : scene->getAllEntitiesWith<PointCloudComponent>().each()) {
@@ -203,16 +202,16 @@ namespace Pale {
 
             for (size_t i = 0; i < pointGeometry.positions.size(); ++i) {
                 Point gpuPoint{};
-                gpuPoint.position =  pointGeometry.positions[i];
-                gpuPoint.tanU =      normalize(pointGeometry.tanU[i]);
-                gpuPoint.tanV =      normalize(pointGeometry.tanV[i]); // assume orthonormal input
-                gpuPoint.scale =  {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
-                gpuPoint.albedo =    glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
-                gpuPoint.opacity =   glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
-                gpuPoint.alpha_r =   0.9f;
-                gpuPoint.alpha_t =   0.1f;
-                gpuPoint.beta =       pointGeometry.betas[i];
-                gpuPoint.shape =      glm::clamp(pointGeometry.shapes[i], -5.0f, 5.0f);
+                gpuPoint.position = pointGeometry.positions[i];
+                gpuPoint.tanU = normalize(pointGeometry.tanU[i]);
+                gpuPoint.tanV = normalize(pointGeometry.tanV[i]); // assume orthonormal input
+                gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
+                gpuPoint.albedo = glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
+                gpuPoint.opacity = glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
+                gpuPoint.alpha_r = 0.9f;
+                gpuPoint.alpha_t = 0.1f;
+                gpuPoint.beta = pointGeometry.betas[i];
+                gpuPoint.shape = glm::clamp(pointGeometry.shapes[i], -5.0f, 5.0f);
 
                 //Log::PA_INFO("Point [{}]: {}, {}, {}", i, gpuPoint.position.x(), gpuPoint.position.y(), gpuPoint.position.z());
                 collectedPoints.push_back(gpuPoint);
@@ -262,141 +261,139 @@ namespace Pale {
 
 
     void SceneBuild::collectLights(const std::shared_ptr<Pale::Scene>& scene,
-                               IAssetAccess& assetAccess,
-                               BuildProducts& out)
-{
-    out.lights.clear();
-    out.emissiveTriangles.clear();
+                                   IAssetAccess& assetAccess,
+                                   BuildProducts& out) {
+        out.lights.clear();
+        out.emissiveTriangles.clear();
 
-    for (const InstanceRecord& instanceRecord : out.instances) {
-        if (instanceRecord.geometryType == GeometryType::PointCloud)
-            continue;
+        for (const InstanceRecord& instanceRecord : out.instances) {
+            if (instanceRecord.geometryType == GeometryType::PointCloud)
+                continue;
 
-        const GPUMaterial& gpuMaterial = out.materials[instanceRecord.materialIndex];
-        if (!gpuMaterial.isEmissive())
-            continue;
+            const GPUMaterial& gpuMaterial = out.materials[instanceRecord.materialIndex];
+            if (!gpuMaterial.isEmissive())
+                continue;
 
-        const MeshRange& meshRange = out.meshRanges[instanceRecord.geometryIndex];
-        if (meshRange.triCount == 0)
-            continue;
+            const MeshRange& meshRange = out.meshRanges[instanceRecord.geometryIndex];
+            if (meshRange.triCount == 0)
+                continue;
 
-        const Transform& transform = out.transforms[instanceRecord.transformIndex];
+            const Transform& transform = out.transforms[instanceRecord.transformIndex];
 
-        const uint32_t triangleOffset = static_cast<uint32_t>(out.emissiveTriangles.size());
-        out.emissiveTriangles.reserve(out.emissiveTriangles.size() + meshRange.triCount);
+            const uint32_t triangleOffset = static_cast<uint32_t>(out.emissiveTriangles.size());
+            out.emissiveTriangles.reserve(out.emissiveTriangles.size() + meshRange.triCount);
 
-        // Compute WORLD-space triangle areas and total WORLD area
-        float totalAreaWorld = 0.0f;
+            // Compute WORLD-space triangle areas and total WORLD area
+            float totalAreaWorld = 0.0f;
 
-        for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
-            const uint32_t globalTriIndex = meshRange.firstTri + localTri;
-            const Triangle& tri = out.triangles[globalTriIndex];
+            for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
+                const uint32_t globalTriIndex = meshRange.firstTri + localTri;
+                const Triangle& tri = out.triangles[globalTriIndex];
 
-            const float3 p0_obj = out.vertices[tri.v0].pos;
-            const float3 p1_obj = out.vertices[tri.v1].pos;
-            const float3 p2_obj = out.vertices[tri.v2].pos;
+                const float3 p0_obj = out.vertices[tri.v0].pos;
+                const float3 p1_obj = out.vertices[tri.v1].pos;
+                const float3 p2_obj = out.vertices[tri.v2].pos;
 
-            const float3 p0_world = toWorldPoint(p0_obj, transform);
-            const float3 p1_world = toWorldPoint(p1_obj, transform);
-            const float3 p2_world = toWorldPoint(p2_obj, transform);
+                const float3 p0_world = toWorldPoint(p0_obj, transform);
+                const float3 p1_world = toWorldPoint(p1_obj, transform);
+                const float3 p2_world = toWorldPoint(p2_obj, transform);
 
-            const float worldArea = triangleArea(p0_world, p1_world, p2_world);
-            totalAreaWorld += worldArea;
+                const float worldArea = triangleArea(p0_world, p1_world, p2_world);
+                totalAreaWorld += worldArea;
 
-            GPUEmissiveTriangle emissiveTriangle{};
-            emissiveTriangle.globalTriangleIndex = globalTriIndex;
-            emissiveTriangle.worldArea = worldArea;
-            emissiveTriangle.cdf = 0.0f; // filled below
-            out.emissiveTriangles.push_back(emissiveTriangle);
+                GPUEmissiveTriangle emissiveTriangle{};
+                emissiveTriangle.globalTriangleIndex = globalTriIndex;
+                emissiveTriangle.worldArea = worldArea;
+                emissiveTriangle.cdf = 0.0f; // filled below
+                out.emissiveTriangles.push_back(emissiveTriangle);
+            }
+
+            if (totalAreaWorld <= 0.0f) {
+                // Degenerate (or fully collapsed) emitter after transform
+                out.emissiveTriangles.resize(triangleOffset);
+                continue;
+            }
+
+            // Build per-light CDF over WORLD areas (inclusive CDF in [0,1])
+            float runningArea = 0.0f;
+            for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
+                GPUEmissiveTriangle& emissiveTriangle = out.emissiveTriangles[triangleOffset + localTri];
+                runningArea += emissiveTriangle.worldArea;
+                emissiveTriangle.cdf = runningArea / totalAreaWorld;
+            }
+            // Ensure last entry is exactly 1 to avoid edge-case misses in binary search
+            out.emissiveTriangles[triangleOffset + meshRange.triCount - 1].cdf = 1.0f;
+
+            GPULightRecord light{};
+            light.lightType = 0u; // mesh area
+            light.geometryIndex = instanceRecord.geometryIndex;
+            light.transformIndex = instanceRecord.transformIndex;
+            light.triangleOffset = triangleOffset;
+            light.triangleCount = meshRange.triCount;
+
+            light.power = gpuMaterial.power;
+            light.color = gpuMaterial.baseColor;
+
+            // IMPORTANT: WORLD area, not object area.
+            light.totalAreaWorld = totalAreaWorld;
+
+            out.lights.push_back(light);
         }
-
-        if (totalAreaWorld <= 0.0f) {
-            // Degenerate (or fully collapsed) emitter after transform
-            out.emissiveTriangles.resize(triangleOffset);
-            continue;
-        }
-
-        // Build per-light CDF over WORLD areas (inclusive CDF in [0,1])
-        float runningArea = 0.0f;
-        for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
-            GPUEmissiveTriangle& emissiveTriangle = out.emissiveTriangles[triangleOffset + localTri];
-            runningArea += emissiveTriangle.worldArea;
-            emissiveTriangle.cdf = runningArea / totalAreaWorld;
-        }
-        // Ensure last entry is exactly 1 to avoid edge-case misses in binary search
-        out.emissiveTriangles[triangleOffset + meshRange.triCount - 1].cdf = 1.0f;
-
-        GPULightRecord light{};
-        light.lightType = 0u; // mesh area
-        light.geometryIndex = instanceRecord.geometryIndex;
-        light.transformIndex = instanceRecord.transformIndex;
-        light.triangleOffset = triangleOffset;
-        light.triangleCount = meshRange.triCount;
-
-        light.power = gpuMaterial.power;
-        light.color = gpuMaterial.baseColor;
-
-        // IMPORTANT: WORLD area, not object area.
-        light.totalAreaWorld = totalAreaWorld;
-
-        out.lights.push_back(light);
     }
-}
 
 
-void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
-                                BuildProducts& outBuildProducts) {
-    auto view = scene->getAllEntitiesWith<TagComponent, CameraComponent, TransformComponent>();
+    void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
+                                    BuildProducts& outBuildProducts) {
+        auto view = scene->getAllEntitiesWith<TagComponent, CameraComponent, TransformComponent>();
 
-    for (auto [entityId, tagComponent, cameraComponent, transformComponent] : view.each()) {
-        CameraGPU gpuCam{};
+        for (auto [entityId, tagComponent, cameraComponent, transformComponent] : view.each()) {
+            CameraGPU gpuCam{};
 
-        const glm::mat4 worldFromCamera = transformComponent.getTransform();
-        const glm::mat4 viewMat = glm::inverse(worldFromCamera);
-        const glm::mat4 projMat = cameraComponent.camera.getProjectionMatrix();
+            const glm::mat4 worldFromCamera = transformComponent.getTransform();
+            const glm::mat4 viewMat = glm::inverse(worldFromCamera);
+            const glm::mat4 projMat = cameraComponent.camera.getProjectionMatrix();
 
-        gpuCam.view = glm2sycl(viewMat);
-        gpuCam.proj = glm2sycl(projMat);
-        gpuCam.invView = glm2sycl(worldFromCamera);
-        gpuCam.invProj = glm2sycl(glm::inverse(projMat));
+            gpuCam.view = glm2sycl(viewMat);
+            gpuCam.proj = glm2sycl(projMat);
+            gpuCam.invView = glm2sycl(worldFromCamera);
+            gpuCam.invProj = glm2sycl(glm::inverse(projMat));
 
-        const glm::vec3 cameraPosition = transformComponent.getPosition();
-        gpuCam.pos = float3{cameraPosition.x, cameraPosition.y, cameraPosition.z};
+            const glm::vec3 cameraPosition = transformComponent.getPosition();
+            gpuCam.pos = float3{cameraPosition.x, cameraPosition.y, cameraPosition.z};
 
-        glm::vec3 forward = glm::mat3(worldFromCamera) * glm::vec3(0.0f, 0.0f, -1.0f);
-        forward = glm::normalize(forward);
-        gpuCam.forward = float3{forward.x, forward.y, forward.z};
+            glm::vec3 forward = glm::mat3(worldFromCamera) * glm::vec3(0.0f, 0.0f, -1.0f);
+            forward = glm::normalize(forward);
+            gpuCam.forward = float3{forward.x, forward.y, forward.z};
 
-        gpuCam.width  = static_cast<uint32_t>(cameraComponent.camera.width);
-        gpuCam.height = static_cast<uint32_t>(cameraComponent.camera.height);
+            gpuCam.width = static_cast<uint32_t>(cameraComponent.camera.width);
+            gpuCam.height = static_cast<uint32_t>(cameraComponent.camera.height);
 
-        gpuCam.fovy = cameraComponent.fovy;
+            gpuCam.fovy = cameraComponent.fovy;
 
-        // New: pinhole intrinsics
-        if (cameraComponent.pinholeIntrinsics.isValid) {
-            gpuCam.hasPinholeIntrinsics = 1u;
-            gpuCam.fx = cameraComponent.pinholeIntrinsics.fx;
-            gpuCam.fy = cameraComponent.pinholeIntrinsics.fy;
-            gpuCam.cx = cameraComponent.pinholeIntrinsics.cx;
-            gpuCam.cy = cameraComponent.pinholeIntrinsics.cy;
-        } else {
-            gpuCam.hasPinholeIntrinsics = 0u;
-            gpuCam.fx = gpuCam.fy = gpuCam.cx = gpuCam.cy = 0.0f;
+            // New: pinhole intrinsics
+            if (cameraComponent.pinholeIntrinsics.isValid) {
+                gpuCam.hasPinholeIntrinsics = 1u;
+                gpuCam.fx = cameraComponent.pinholeIntrinsics.fx;
+                gpuCam.fy = cameraComponent.pinholeIntrinsics.fy;
+                gpuCam.cx = cameraComponent.pinholeIntrinsics.cx;
+                gpuCam.cy = cameraComponent.pinholeIntrinsics.cy;
+            }
+            else {
+                gpuCam.hasPinholeIntrinsics = 0u;
+                gpuCam.fx = gpuCam.fy = gpuCam.cx = gpuCam.cy = 0.0f;
+            }
+
+            gpuCam.useForAdjointPass = cameraComponent.useForAdjointPass ? 1u : 0u;
+
+            copyName(gpuCam.name, tagComponent.getTag());
+            outBuildProducts.cameraGPUs.push_back(gpuCam);
         }
-
-        gpuCam.useForAdjointPass = cameraComponent.useForAdjointPass ? 1u : 0u;
-
-        copyName(gpuCam.name, tagComponent.getTag());
-        outBuildProducts.cameraGPUs.push_back(gpuCam);
     }
-}
-
 
 
     inline AABB surfelObjectAabbBeta(const Point& surfel,
-                                     float supportRadiusScale = 1.000f,
-                                     float normalThickness     = 0.001f)
-    {
+                                     float supportRadiusScale = 1.20f,
+                                     float normalThickness = 0.001f) {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
         const float3 normalDirection = normalize(cross(tangentU, tangentV));
@@ -405,27 +402,33 @@ void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
         // are just scale.x() and scale.y(), times an optional safety factor.
         const float supportRadiusU = supportRadiusScale * surfel.scale.x();
         const float supportRadiusV = supportRadiusScale * surfel.scale.y();
-        const float normalExtent   = normalThickness;
+        const float normalExtent = normalThickness;
 
         auto computeAxisExtent = [&](int axisIndex) -> float {
             const float tangentUComponent =
-                (axisIndex == 0) ? tangentU.x()
-              : (axisIndex == 1) ? tangentU.y()
-                                 : tangentU.z();
+                (axisIndex == 0)
+                    ? tangentU.x()
+                    : (axisIndex == 1)
+                    ? tangentU.y()
+                    : tangentU.z();
 
             const float tangentVComponent =
-                (axisIndex == 0) ? tangentV.x()
-              : (axisIndex == 1) ? tangentV.y()
-                                 : tangentV.z();
+                (axisIndex == 0)
+                    ? tangentV.x()
+                    : (axisIndex == 1)
+                    ? tangentV.y()
+                    : tangentV.z();
 
             const float normalComponent =
-                (axisIndex == 0) ? std::fabs(normalDirection.x())
-              : (axisIndex == 1) ? std::fabs(normalDirection.y())
-                                 : std::fabs(normalDirection.z());
+                (axisIndex == 0)
+                    ? std::fabs(normalDirection.x())
+                    : (axisIndex == 1)
+                    ? std::fabs(normalDirection.y())
+                    : std::fabs(normalDirection.z());
 
             const float projectedInPlane =
                 std::sqrt((supportRadiusU * tangentUComponent) * (supportRadiusU * tangentUComponent) +
-                          (supportRadiusV * tangentVComponent) * (supportRadiusV * tangentVComponent));
+                    (supportRadiusV * tangentVComponent) * (supportRadiusV * tangentVComponent));
 
             return projectedInPlane + normalExtent * normalComponent;
         };
@@ -436,13 +439,13 @@ void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
             computeAxisExtent(2)
         };
 
-        return { surfel.position - halfExtent, surfel.position + halfExtent };
+        return {surfel.position - halfExtent, surfel.position + halfExtent};
     }
 
 
     inline AABB surfelObjectAabb(const Point& surfel,
-                                  float kStdDevs = 2.8f, // Should be similar to the same kSigmas as in intersect surfels
-                                  float sigmaNormal = 0.1f) // set >0 model thickness
+                                 float kStdDevs = 2.8f, // Should be similar to the same kSigmas as in intersect surfels
+                                 float sigmaNormal = 0.1f) // set >0 model thickness
     {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
@@ -452,23 +455,27 @@ void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
         const float svK = kStdDevs * std::fmax(surfel.scale.y(), 1e-8f);
         const float snK = kStdDevs * std::fmax(sigmaNormal, 0.0f);
 
-        auto axisExtent = [&](int axis)->float {
-            const float tu = axis==0? tangentU.x(): axis==1? tangentU.y(): tangentU.z();
-            const float tv = axis==0? tangentV.x(): axis==1? tangentV.y(): tangentV.z();
-            const float nn = axis==0? std::fabs(normalObject.x()): axis==1? std::fabs(normalObject.y()): std::fabs(normalObject.z());
-            const float projInPlane = sycl::sqrt((suK*tu)*(suK*tu) + (svK*tv)*(svK*tv));
+        auto axisExtent = [&](int axis)-> float {
+            const float tu = axis == 0 ? tangentU.x() : axis == 1 ? tangentU.y() : tangentU.z();
+            const float tv = axis == 0 ? tangentV.x() : axis == 1 ? tangentV.y() : tangentV.z();
+            const float nn = axis == 0
+                                 ? std::fabs(normalObject.x())
+                                 : axis == 1
+                                 ? std::fabs(normalObject.y())
+                                 : std::fabs(normalObject.z());
+            const float projInPlane = sycl::sqrt((suK * tu) * (suK * tu) + (svK * tv) * (svK * tv));
             return projInPlane + snK * nn; // add normal thickness if used
         };
 
-        const float3 halfExtent{ axisExtent(0), axisExtent(1), axisExtent(2) };
-        return { surfel.position - halfExtent, surfel.position + halfExtent };
+        const float3 halfExtent{axisExtent(0), axisExtent(1), axisExtent(2)};
+        return {surfel.position - halfExtent, surfel.position + halfExtent};
     }
 
     // ---- BLAS build: localize -> build -> return nodes + permutation ----
     SceneBuild::BLASResult SceneBuild::buildPointCloudBLAS(uint32_t pointCloudIndex,
-                                               const PointCloudRange& pointCloudRange,
-                                               const std::vector<Point>& allPoints,
-                                               const BuildOptions& buildOptions) {
+                                                           const PointCloudRange& pointCloudRange,
+                                                           const std::vector<Point>& allPoints,
+                                                           const BuildOptions& buildOptions) {
         // 1) Localize points
         std::vector<Point> localPoints;
         localPoints.reserve(pointCloudRange.pointCount);
@@ -476,12 +483,12 @@ void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
             localPoints.push_back(allPoints[pointCloudRange.firstPoint + i]);
 
         // 2) Build AABBs and centroids
-        std::vector<AABB>   localAabbs(localPoints.size());
+        std::vector<AABB> localAabbs(localPoints.size());
         std::vector<float3> localCentroids(localPoints.size());
         for (uint32_t i = 0; i < localPoints.size(); ++i) {
             const AABB aabb = surfelObjectAabbBeta(localPoints[i]);
-            localAabbs[i]   = aabb;
-                localCentroids[i] = localPoints[i].position;
+            localAabbs[i] = aabb;
+            localCentroids[i] = localPoints[i].position;
         }
 
         // 3) Build BVH over boxes
@@ -495,11 +502,11 @@ void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
 
         // 4) Package
         BLASResult result{};
-        result.localPoints        = std::move(localPoints);
-        result.pointPermutation   = std::move(localPointOrder);
-        result.nodes              = std::move(localNodes);
-        result.range              = {0u, 0u}; // filled when appended
-        result.pointCloudIndex    = pointCloudIndex;
+        result.localPoints = std::move(localPoints);
+        result.pointPermutation = std::move(localPointOrder);
+        result.nodes = std::move(localNodes);
+        result.range = {0u, 0u}; // filled when appended
+        result.pointCloudIndex = pointCloudIndex;
         return result;
     }
 
@@ -542,7 +549,6 @@ void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
         result.meshIndex = meshIndex;
         return result;
     }
-
 
 
     SceneBuild::TLASResult
@@ -631,118 +637,119 @@ void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
         return R;
     }
 
-void SceneBuild::buildBottomLevelBVHs(BuildProducts& buildProducts,
-                                      const BuildOptions& buildOptions) {
-    const std::size_t meshCount = buildProducts.meshRanges.size();
-    const std::size_t pointCloudCount = buildProducts.pointCloudRanges.size();
+    void SceneBuild::buildBottomLevelBVHs(BuildProducts& buildProducts,
+                                          const BuildOptions& buildOptions) {
+        const std::size_t meshCount = buildProducts.meshRanges.size();
+        const std::size_t pointCloudCount = buildProducts.pointCloudRanges.size();
 
-    std::vector<uint32_t> meshRangeToBlasRange(meshCount, UINT32_MAX);
-    std::vector<uint32_t> pointRangeToBlasRange(pointCloudCount, UINT32_MAX);
+        std::vector<uint32_t> meshRangeToBlasRange(meshCount, UINT32_MAX);
+        std::vector<uint32_t> pointRangeToBlasRange(pointCloudCount, UINT32_MAX);
 
-    // Mesh BLAS
-    for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
-        const MeshRange& meshRange = buildProducts.meshRanges[meshIndex];
+        // Mesh BLAS
+        for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+            const MeshRange& meshRange = buildProducts.meshRanges[meshIndex];
 
-        BLASResult blasResult = buildMeshBLAS(
-            meshIndex,
-            meshRange,
-            buildProducts.triangles,
-            buildProducts.vertices,
-            buildOptions
-        );
+            BLASResult blasResult = buildMeshBLAS(
+                meshIndex,
+                meshRange,
+                buildProducts.triangles,
+                buildProducts.vertices,
+                buildOptions
+            );
 
-        const uint32_t globalTriStart = meshRange.firstTri;
+            const uint32_t globalTriStart = meshRange.firstTri;
 
-        // Reorder triangles into BVH order
-        std::vector<Triangle> reorderedTriangles;
-        reorderedTriangles.reserve(blasResult.localTriangles.size());
+            // Reorder triangles into BVH order
+            std::vector<Triangle> reorderedTriangles;
+            reorderedTriangles.reserve(blasResult.localTriangles.size());
 
-        for (uint32_t localTriangleIndex : blasResult.triPermutation) {
-            Triangle triangle = blasResult.localTriangles[localTriangleIndex];
-            // Convert vertex indices back to global space
-            triangle.v0 += meshRange.firstVert;
-            triangle.v1 += meshRange.firstVert;
-            triangle.v2 += meshRange.firstVert;
-            reorderedTriangles.push_back(triangle);
+            for (uint32_t localTriangleIndex : blasResult.triPermutation) {
+                Triangle triangle = blasResult.localTriangles[localTriangleIndex];
+                // Convert vertex indices back to global space
+                triangle.v0 += meshRange.firstVert;
+                triangle.v1 += meshRange.firstVert;
+                triangle.v2 += meshRange.firstVert;
+                reorderedTriangles.push_back(triangle);
+            }
+
+            std::copy(reorderedTriangles.begin(), reorderedTriangles.end(),
+                      buildProducts.triangles.begin() + globalTriStart);
+
+            const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
+
+            // Patch leaf node triangle indices into global space
+            for (BVHNode& node : blasResult.nodes) {
+                if (node.isLeaf()) {
+                    node.leftFirst += globalTriStart;
+                }
+            }
+
+            // Append nodes and record BLAS range
+            buildProducts.bottomLevelNodes.insert(buildProducts.bottomLevelNodes.end(),
+                                                  blasResult.nodes.begin(),
+                                                  blasResult.nodes.end());
+
+            const uint32_t nodeCount = static_cast<uint32_t>(blasResult.nodes.size());
+            const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
+
+            buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
+            meshRangeToBlasRange[meshIndex] = blasRangeIndex;
         }
 
-        std::copy(reorderedTriangles.begin(), reorderedTriangles.end(),
-                  buildProducts.triangles.begin() + globalTriStart);
+        // Point cloud BLAS
+        for (uint32_t pointCloudIndex = 0; pointCloudIndex < pointCloudCount; ++pointCloudIndex) {
+            const PointCloudRange& pointCloudRange = buildProducts.pointCloudRanges[pointCloudIndex];
 
-        const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
+            BLASResult blasResult = buildPointCloudBLAS(
+                pointCloudIndex,
+                pointCloudRange,
+                buildProducts.points,
+                buildOptions
+            );
 
-        // Patch leaf node triangle indices into global space
-        for (BVHNode& node : blasResult.nodes) {
-            if (node.isLeaf()) {
-                node.leftFirst += globalTriStart;
+            const uint32_t globalPointStart = pointCloudRange.firstPoint;
+
+            // Reorder points into BVH order
+            std::vector<Point> reorderedPoints;
+            reorderedPoints.reserve(blasResult.localPoints.size());
+            for (uint32_t localPointIndex : blasResult.pointPermutation) {
+                reorderedPoints.push_back(blasResult.localPoints[localPointIndex]);
+            }
+
+            std::copy(reorderedPoints.begin(), reorderedPoints.end(),
+                      buildProducts.points.begin() + globalPointStart);
+
+            const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
+
+            // Patch leaf node ranges from local to global indices
+            for (BVHNode& node : blasResult.nodes) {
+                if (node.isLeaf()) {
+                    node.leftFirst += globalPointStart;
+                }
+            }
+
+            // Append nodes and record BLAS range
+            buildProducts.bottomLevelNodes.insert(buildProducts.bottomLevelNodes.end(),
+                                                  blasResult.nodes.begin(),
+                                                  blasResult.nodes.end());
+
+            const uint32_t nodeCount = static_cast<uint32_t>(blasResult.nodes.size());
+            const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
+
+            buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
+            pointRangeToBlasRange[pointCloudIndex] = blasRangeIndex;
+        }
+
+        // Map instances to BLAS ranges
+        for (InstanceRecord& instanceRecord : buildProducts.instances) {
+            if (instanceRecord.geometryType == GeometryType::Mesh) {
+                instanceRecord.blasRangeIndex = meshRangeToBlasRange[instanceRecord.geometryIndex];
+            }
+            else {
+                instanceRecord.blasRangeIndex = pointRangeToBlasRange[instanceRecord.geometryIndex];
             }
         }
-
-        // Append nodes and record BLAS range
-        buildProducts.bottomLevelNodes.insert(buildProducts.bottomLevelNodes.end(),
-                                              blasResult.nodes.begin(),
-                                              blasResult.nodes.end());
-
-        const uint32_t nodeCount = static_cast<uint32_t>(blasResult.nodes.size());
-        const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
-
-        buildProducts.bottomLevelRanges.push_back({ firstNode, nodeCount });
-        meshRangeToBlasRange[meshIndex] = blasRangeIndex;
     }
-
-    // Point cloud BLAS
-    for (uint32_t pointCloudIndex = 0; pointCloudIndex < pointCloudCount; ++pointCloudIndex) {
-        const PointCloudRange& pointCloudRange = buildProducts.pointCloudRanges[pointCloudIndex];
-
-        BLASResult blasResult = buildPointCloudBLAS(
-            pointCloudIndex,
-            pointCloudRange,
-            buildProducts.points,
-            buildOptions
-        );
-
-        const uint32_t globalPointStart = pointCloudRange.firstPoint;
-
-        // Reorder points into BVH order
-        std::vector<Point> reorderedPoints;
-        reorderedPoints.reserve(blasResult.localPoints.size());
-        for (uint32_t localPointIndex : blasResult.pointPermutation) {
-            reorderedPoints.push_back(blasResult.localPoints[localPointIndex]);
-        }
-
-        std::copy(reorderedPoints.begin(), reorderedPoints.end(),
-                  buildProducts.points.begin() + globalPointStart);
-
-        const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
-
-        // Patch leaf node ranges from local to global indices
-        for (BVHNode& node : blasResult.nodes) {
-            if (node.isLeaf()) {
-                node.leftFirst += globalPointStart;
-            }
-        }
-
-        // Append nodes and record BLAS range
-        buildProducts.bottomLevelNodes.insert(buildProducts.bottomLevelNodes.end(),
-                                              blasResult.nodes.begin(),
-                                              blasResult.nodes.end());
-
-        const uint32_t nodeCount = static_cast<uint32_t>(blasResult.nodes.size());
-        const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
-
-        buildProducts.bottomLevelRanges.push_back({ firstNode, nodeCount });
-        pointRangeToBlasRange[pointCloudIndex] = blasRangeIndex;
-    }
-
-    // Map instances to BLAS ranges
-    for (InstanceRecord& instanceRecord : buildProducts.instances) {
-        if (instanceRecord.geometryType == GeometryType::Mesh) {
-            instanceRecord.blasRangeIndex = meshRangeToBlasRange[instanceRecord.geometryIndex];
-        } else {
-            instanceRecord.blasRangeIndex = pointRangeToBlasRange[instanceRecord.geometryIndex];
-        }
-    }
-}
 
     void SceneBuild::buildTopLevelBVH(BuildProducts& buildProducts,
                                       const BuildOptions& buildOptions) {
@@ -761,7 +768,7 @@ void SceneBuild::buildBottomLevelBVHs(BuildProducts& buildProducts,
         // write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
     }
 
-float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts &buildProducts) {
+    float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts& buildProducts) {
         float totalDiffuseArea = 0.0f;
 
         for (const InstanceRecord& instanceRecord : buildProducts.instances) {
@@ -773,11 +780,11 @@ float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts &buildProdu
                 continue;
 
             const MeshRange& meshRange = buildProducts.meshRanges[instanceRecord.geometryIndex];
-            const Transform& xf        = buildProducts.transforms[instanceRecord.transformIndex];
+            const Transform& xf = buildProducts.transforms[instanceRecord.transformIndex];
 
             for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
                 const uint32_t triIndex = meshRange.firstTri + localTri;
-                const Triangle& tri     = buildProducts.triangles[triIndex];
+                const Triangle& tri = buildProducts.triangles[triIndex];
 
                 const float3 p0W = toWorldPoint(buildProducts.vertices[tri.v0].pos, xf);
                 const float3 p1W = toWorldPoint(buildProducts.vertices[tri.v1].pos, xf);

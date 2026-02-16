@@ -123,7 +123,7 @@ namespace Pale {
     };
 
     static DebugPixel kDebugPixels[] = {
-        {805, 820},
+        {250, 400},
     };
 
     static bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
@@ -947,13 +947,14 @@ namespace Pale {
                         const float3 d = ph.position - queryPositionWorld;
 
                         const float cosine = sycl::fmax(0.0f, dot(surfelNormalW, ph.incomingDirection));
-                        if (cosine == 0.0f) continue;
+                        float cosineAbs = fabs(dot(surfelNormalW, ph.incomingDirection));
+                        //if (cosine == 0.0f) continue;
 
                         const float dist2 = dot(d, d);
                         if (dist2 > r2)
                             continue;
 
-                        irradiance += (ph.power * invArea * cosine);
+                        irradiance += (ph.power * invArea * cosineAbs);
                     }
                 }
 
