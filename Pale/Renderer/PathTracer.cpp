@@ -82,9 +82,10 @@ namespace Pale {
         m_intermediates.hitRecords = sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated hitRecords: {}", Utils::formatBytes(sizeHitRecordsBytes));
 
-        std::size_t sizeContributionRecordsBytes = sizeof(HitInfoContribution) * m_settings.photonsPerLaunch;
+        std::size_t sizeContributionRecordsBytes = sizeof(HitInfoContribution) * m_rayQueueCapacity;
         m_intermediates.hitContribution = sycl::malloc_device<HitInfoContribution>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated contribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
+        m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
 
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
@@ -171,7 +172,7 @@ namespace Pale {
     void PathTracer::configurePhotonGrid(const AABB &sceneAabb) {
         auto &grid = m_intermediates.map;
 
-        grid.gatherRadiusWorld = 0.01f;
+        grid.gatherRadiusWorld = 0.02f;
         const float gatherRadiusWorld = grid.gatherRadiusWorld;
         const float cellSizeWorld = 0.5f * gatherRadiusWorld;
 

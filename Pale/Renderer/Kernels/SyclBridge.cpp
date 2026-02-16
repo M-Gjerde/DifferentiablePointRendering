@@ -45,8 +45,8 @@ namespace Pale {
                         ScopedTimer bounceTimer("Bounce: " + std::to_string(bounce));
                         pkg.settings.random.number = seedGen(); // new high-entropy seed each pass
                         pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
-                        pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                        //pkg.queue.wait();
+                        //pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
+                        pkg.queue.wait();
                         {
                             ScopedTimer timer("launchIntersectKernel");
                             launchIntersectKernel(pkg, activeCount);
@@ -55,7 +55,7 @@ namespace Pale {
                             uint32_t contributionCount = 0;
                             pkg.queue.memcpy(&contributionCount, pkg.intermediates.countContributions, sizeof(uint32_t)).wait();
                             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                                //if (pkg.sensor[cameraIndex].name[6] != '1')
+                                //if (pkg.sensors[cameraIndex].name[6] != '3')
                                 //    continue;
                                 launchContributionKernel(pkg, contributionCount, cameraIndex);
                             }
@@ -108,10 +108,6 @@ namespace Pale {
                         {
                             ScopedTimer timer("launchIntersectKernel");
                             launchIntersectKernel(pkg, activeCount);
-                        }
-                        {
-                            ScopedTimer timer("generateNextRays");
-                            generateNextRays(pkg, activeCount);
                         }
 
                         uint32_t nextCount = 0;

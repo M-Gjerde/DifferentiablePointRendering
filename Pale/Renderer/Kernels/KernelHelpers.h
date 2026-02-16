@@ -123,7 +123,7 @@ namespace Pale {
     };
 
     static DebugPixel kDebugPixels[] = {
-        {200, 850},
+        {805, 820},
     };
 
     static bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
@@ -917,9 +917,7 @@ namespace Pale {
     inline float3 gatherDiffuseIrradianceAtPoint(
         const float3 &queryPositionWorld,
         const float3 &surfelNormalW,
-        const DeviceSurfacePhotonMapGrid &grid,
-        int travelSideSign = 0,
-        bool readOneSidedRadiance = false) {
+        const DeviceSurfacePhotonMapGrid &grid) {
         const float r = grid.gatherRadiusWorld;
         const float r2 = r * r;
         const float invArea = 1.0f / (M_PIf * r2);
@@ -1533,4 +1531,78 @@ namespace Pale {
         const uint32_t flippedLinearIndex = flippedY * W + pixelX;
         return flippedLinearIndex;
     }
+
+
+    SYCL_EXTERNAL inline bool applyRussianRoulette(
+        rng::Xorshift128& rng128,
+        uint32_t bounceIndex,
+        float3& pathThroughput,
+        uint32_t rrStartBounce,
+        float rrMinProbability = 0.00f,
+        float rrMaxProbability = 0.99f,
+        float maxCompensationFactor = 10.0f) // set <= 0 to disable capping
+    {
+        if (bounceIndex < rrStartBounce) {
+            return true;
+        }
+
+        // Reject invalid throughput early (prevents NaN fireflies).
+        const float tx = pathThroughput.x();
+        const float ty = pathThroughput.y();
+        const float tz = pathThroughput.z();
+
+        const bool throughputIsFinite =
+            sycl::isfinite(tx) && sycl::isfinite(ty) && sycl::isfinite(tz);
+
+        if (!throughputIsFinite) {
+            return false;
+        }
+
+        // Luminance-based continuation probability (more stable than max).
+        // Clamp also prevents huge 1/p factors.
+        const float luminance =
+            0.2126f * tx + 0.7152f * ty + 0.0722f * tz;
+
+        float continuationProbability = sycl::clamp(luminance, rrMinProbability, rrMaxProbability);
+
+        if (rng128.nextFloat() > continuationProbability) {
+            return false;
+        }
+
+        float compensationFactor = 1.0f / continuationProbability;
+
+        // Optional biased clamp to prevent rare massive weights.
+        if (maxCompensationFactor > 0.0f) {
+            compensationFactor = sycl::fmin(compensationFactor, maxCompensationFactor);
+        }
+
+        pathThroughput *= compensationFactor;
+        return true;
+    }
+
+    template<typename ContributionType>
+    SYCL_EXTERNAL inline void appendContributionAtomic(
+        uint32_t* globalContributionCounter,
+        ContributionType* globalContributionBuffer,
+        uint32_t maxContributionCapacity,
+
+        const ContributionType& contributionValue)
+    {
+        sycl::atomic_ref<
+            uint32_t,
+            sycl::memory_order::relaxed,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space
+        > contributionsCounter(*globalContributionCounter);
+
+        const uint32_t insertionIndex = contributionsCounter.fetch_add(1);
+
+        if (insertionIndex >= maxContributionCapacity) {
+            // Counter may now exceed capacity; caller can reset each frame/pass if desired.
+            return;
+        }
+
+        globalContributionBuffer[insertionIndex] = contributionValue;
+    }
+
 }

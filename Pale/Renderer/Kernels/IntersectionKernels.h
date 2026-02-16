@@ -1034,7 +1034,6 @@ namespace Pale {
                     case SurfelIntersectMode::Transmit:
                         acceptedHitInInstance = intersectBLASPointCloudTransmit(
                             rayObject, instance.blasRangeIndex, localHit, scene);
-                        worldHitOut->transmissivity = localHit.transmissivity;
                         break;
                     case SurfelIntersectMode::FirstHit:
                         acceptedHitInInstance = intersectBLASPointCloudFirstHit(
@@ -1072,19 +1071,12 @@ namespace Pale {
                 worldHitOut->hitPositionW = hitPointWorld;
                 worldHitOut->instanceIndex = instanceIndex;
                 worldHitOut->primitiveIndex = localHit.primitiveIndex;
-                worldHitOut->alpha = localHit.alpha;
+                worldHitOut->alphaGeom = localHit.alpha;
 
                 if (instance.geometryType == GeometryType::PointCloud){
-                    worldHitOut->transmissivity =  transmittanceProduct * localHit.transmissivity;
-                } else {
-                    worldHitOut->transmissivity = 1.0f;
+                    transmittanceProduct *= localHit.transmissivity;
                 }
-                // Multiply transmissions seen before entering this instance with transmission before the accepted event inside it
-                /*
-                worldHitOut->transmissivity = transmittanceProduct * (instance.geometryType == GeometryType::PointCloud
-                                                                          ? localHit.transmissivity
-                                                                          : 1.0f);
-                */
+
                 // Stop traversal because we found the nearest accepted hit
                 break;
             }
@@ -1098,8 +1090,9 @@ namespace Pale {
         // If no surface hit at all, expose total transmission accumulated
         if (!foundAnySurfaceHit) {
             worldHitOut->hit = false;
-            worldHitOut->transmissivity = transmittanceProduct;
         }
+
+        worldHitOut->transmissivity = transmittanceProduct;
 
         return foundAnySurfaceHit;
     }

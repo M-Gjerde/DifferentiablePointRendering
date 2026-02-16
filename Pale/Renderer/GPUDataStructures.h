@@ -229,6 +229,7 @@ namespace Pale {
     enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
     enum class SurfelIntersectMode : uint32_t { Bernoulli = 0, Transmit = 1, FirstHit = 2 , Uniform = 3 };
+    enum class EventType : uint32_t { Null = 0, Reflect = 1, Transmit = 2 , Absorb = 2 };
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -281,7 +282,7 @@ namespace Pale {
         GeometryType type = GeometryType::InvalidType;
         float t = FLT_MAX; // world-space t
         float transmissivity = 1.0f;         // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
-        float alpha = 0.0f;
+        float alphaGeom = 0.0f;
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
         float3 hitPositionW = float3(0.0f);
@@ -295,9 +296,8 @@ namespace Pale {
         float3 geometricNormalW = float3(0.0f);
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
-        float transmissivity = 1.0f;         // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
         GeometryType type = GeometryType::InvalidType;
-
+        EventType eventType = EventType::Absorb;
     };
 
     static_assert(std::is_trivially_copyable_v<WorldHit>);
@@ -323,7 +323,7 @@ namespace Pale {
         uint32_t numGatherPasses = 6; // Which bounce to start RR
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
-        uint32_t russianRouletteStart = 3; // Which bounce to start RR
+        uint32_t russianRouletteStart = 2; // Which bounce to start RR
         bool renderDebugGradientImages = false;
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
@@ -393,6 +393,7 @@ namespace Pale {
         RayState *extensionRaysA;
         WorldHit *hitRecords;
         HitInfoContribution *hitContribution;
+        uint32_t maxHitContributionCount = 0;
         uint32_t* countContributions;
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;

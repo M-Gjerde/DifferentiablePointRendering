@@ -180,6 +180,8 @@ namespace Pale {
                     const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
                     const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
                     const float3 rho = surfel.albedo;
+                    float3 E = float3{0.0f};
+                    /*
                     const float3 E = gatherDiffuseIrradianceAtPoint(
                         worldHit.hitPositionW,
                         frontNormalW,
@@ -187,12 +189,13 @@ namespace Pale {
                         travelSideSign,
                         true
                     );
+                    */
 
                     float3 irradiance = E;
                     //float3 irradiance = float3{1.0f};
                     // If 1 we blend with background color
 
-                    float grad_alpha_eta = worldHit.alpha;
+                    float grad_alpha_eta = worldHit.alphaGeom;
 
                     float3 grad_cost_eta = grad_alpha_eta * p * irradiance;
                     float grad_cost_eta_sum = sum(grad_cost_eta);

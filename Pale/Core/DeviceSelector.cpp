@@ -13,7 +13,7 @@ namespace Pale {
 
     DeviceSelector::DeviceSelector() {
         try {
-            m_device = sycl::device(sycl::gpu_selector{});
+            m_device = sycl::device(sycl::default_selector{});
         } catch (const sycl::exception& exception_object) {
             Log::PA_ERROR("Cannot select a GPU: {}", exception_object.what());
             Log::PA_WARN("Falling back to CPU device. Execution will be slow..");
@@ -30,12 +30,14 @@ namespace Pale {
         Log::PA_WARN("Using {}", m_device.get_info<sycl::info::device::name>());
 
 
-        /*
+
         Log::PA_INFO("Warmup kernel Test: {}", m_device.get_info<sycl::info::device::name>());
         m_queue.submit([&](sycl::handler& commandGroupHandler){
             commandGroupHandler.single_task<class WarmupKernel>([](){});
-        }).wait();
-        */
+        });
+
+        m_queue.wait();
+
 
     }
 

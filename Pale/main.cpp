@@ -200,7 +200,7 @@ int main(int argc, char** argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
-    Pale::Log::init(spdlog::level::level_enum::trace);
+    Pale::Log::init(spdlog::level::level_enum::debug);
 
     Pale::AssetManager assetManager{256};
     assetManager.enableHotReload(true);
@@ -235,8 +235,8 @@ int main(int argc, char** argv) {
         pointCloudPath = "initial.ply"; // default
     }
 
-    bool addPoints = !true;
-    bool addModel =  true;
+    bool addPoints = true;
+    bool addModel = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -279,16 +279,16 @@ int main(int argc, char** argv) {
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
-    bool renderPhotonMapping = !true;
-    bool renderLightTracing = true;
+    bool renderPhotonMapping = true;
+    bool renderLightTracing =  true;
 
     if (renderLightTracing) {
         //  cuda/rocm
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::lightTracing;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 4;
-        settings.numForwardPasses = 20;
+        settings.maxBounces = 6;
+        settings.numForwardPasses = 100;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
@@ -329,7 +329,7 @@ int main(int argc, char** argv) {
             Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
 
             std::filesystem::path rawFilePath =
-            baseDir / "images" / (fileName + "_raw.exr");
+                baseDir / "images" / (fileName + "_raw.exr");
 
             Pale::Utils::saveRGBAFloatAsEXR(
                 rawFilePath,
@@ -347,13 +347,13 @@ int main(int argc, char** argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 6;
-        settings.numForwardPasses = 100;
+        settings.numForwardPasses = 20;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 1; // 1 = Projection only
         settings.adjointSamplesPerPixel = 1;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;
-        settings.renderDebugGradientImages = true;
+        settings.renderDebugGradientImages = false;
 
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
@@ -363,14 +363,6 @@ int main(int argc, char** argv) {
         std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
         tracer.renderForward(sensors); // films is span/array
 
-
-        Pale::Log::PA_INFO("Adjoint Render Pass...");
-        std::vector<Pale::SensorGPU> adjointSensors =
-            Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
-        std::vector<Pale::DebugImages> debugImages(adjointSensors.size());
-        Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
-                                                                     debugImages.data());
-        tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
 
         for (const auto& sensor : sensors) {
             std::vector<uint8_t> rgba =
@@ -393,7 +385,7 @@ int main(int argc, char** argv) {
             Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
 
             std::filesystem::path rawFilePath =
-    baseDir / "images" / (fileName + "_raw.exr");
+                baseDir / "images" / (fileName + "_raw.exr");
 
             Pale::Utils::saveRGBAFloatAsEXR(
                 rawFilePath,
@@ -402,8 +394,14 @@ int main(int argc, char** argv) {
                 imageHeight
             );
         }
-
         if (settings.renderDebugGradientImages) {
+            Pale::Log::PA_INFO("Adjoint Render Pass...");
+            std::vector<Pale::SensorGPU> adjointSensors =
+                Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+            std::vector<Pale::DebugImages> debugImages(adjointSensors.size());
+            Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
+                                                                         debugImages.data());
+            tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
             for (size_t i = 0; const auto& adjointSensor : adjointSensors) {
                 auto debugImagesHost = Pale::downloadDebugGradientImages(
                     deviceSelector.getQueue(), adjointSensor, debugImages[i]);

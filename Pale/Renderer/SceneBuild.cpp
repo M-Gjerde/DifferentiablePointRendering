@@ -206,12 +206,12 @@ namespace Pale {
                 gpuPoint.position =  pointGeometry.positions[i];
                 gpuPoint.tanU =      normalize(pointGeometry.tanU[i]);
                 gpuPoint.tanV =      normalize(pointGeometry.tanV[i]); // assume orthonormal input
-                gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
+                gpuPoint.scale =  {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
                 gpuPoint.albedo =    glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
                 gpuPoint.opacity =   glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
                 gpuPoint.alpha_r =   0.9f;
                 gpuPoint.alpha_t =   0.1f;
-                gpuPoint.beta =     glm::clamp(pointGeometry.betas[i], -5.0f, 5.0f);
+                gpuPoint.beta =       pointGeometry.betas[i];
                 gpuPoint.shape =      glm::clamp(pointGeometry.shapes[i], -5.0f, 5.0f);
 
                 //Log::PA_INFO("Point [{}]: {}, {}, {}", i, gpuPoint.position.x(), gpuPoint.position.y(), gpuPoint.position.z());
