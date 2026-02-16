@@ -222,8 +222,8 @@ int main(int argc, char** argv) {
     //serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    serializer.deserialize("cbox_custom.xml");
-    //serializer.deserialize("empty.xml");
+    //serializer.deserialize("cbox_custom.xml");
+    serializer.deserialize("empty.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
@@ -288,8 +288,8 @@ int main(int argc, char** argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::lightTracing;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 6;
-        settings.numForwardPasses = 100;
+        settings.maxBounces = 4;
+        settings.numForwardPasses = 1000;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
         settings.adjointSamplesPerPixel = 1;
@@ -348,7 +348,7 @@ int main(int argc, char** argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 20;
+        settings.numForwardPasses = 200;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 1; // 1 = Projection only
         settings.adjointSamplesPerPixel = 1;

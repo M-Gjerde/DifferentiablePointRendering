@@ -940,21 +940,16 @@ namespace Pale {
                         const uint32_t photonIndex = grid.sortedPhotonIndex[j];
                         const DevicePhotonSurface ph = grid.photons[photonIndex];
 
-                        //if (readOneSidedRadiance && ph.sideSign != travelSideSign)
-                        //    continue;
-                        //
-
                         const float3 d = ph.position - queryPositionWorld;
 
-                        const float cosine = sycl::fmax(0.0f, dot(surfelNormalW, ph.incomingDirection));
-                        float cosineAbs = fabs(dot(surfelNormalW, ph.incomingDirection));
-                        //if (cosine == 0.0f) continue;
+                        //const float cosine = dot(surfelNormalW, ph.normal);
+                        //if (cosine < 0.3f) continue;
 
                         const float dist2 = dot(d, d);
                         if (dist2 > r2)
                             continue;
 
-                        irradiance += (ph.power * invArea * cosineAbs);
+                        irradiance += (ph.power * invArea);
                     }
                 }
 
@@ -1605,5 +1600,44 @@ namespace Pale {
 
         globalContributionBuffer[insertionIndex] = contributionValue;
     }
+
+    SYCL_EXTERNAL inline void depositPhotonSurface(
+    const WorldHit& worldHit,
+    const float3& normal,
+    const float3& flux,
+    const DeviceSurfacePhotonMapGrid& photonMap)
+    {
+        // Atomic counter for photon slots
+        auto photonCounter = sycl::atomic_ref<
+            uint32_t,
+            sycl::memory_order::acq_rel,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space>(
+                *photonMap.photonCountDevicePtr);
+
+        const uint32_t slot = photonCounter.fetch_add(1u);
+
+        // Capacity guard
+        if (slot >= photonMap.photonCapacity) {
+            return;
+        }
+
+        DevicePhotonSurface photonEntry{};
+        photonEntry.position = worldHit.hitPositionW;
+
+        // Geometric normal (unoriented by design)
+        photonEntry.normal = normal;
+
+        // Incoming direction (towards surface)
+        //photonEntry.incomingDirection = -rayState.ray.direction;
+
+        // Power carried by the photon
+        photonEntry.power = flux;
+
+        photonEntry.isValid = 1u;
+
+        photonMap.photons[slot] = photonEntry;
+    }
+
 
 }

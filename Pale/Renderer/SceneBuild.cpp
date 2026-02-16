@@ -328,6 +328,7 @@ namespace Pale {
             light.lightType = 0u; // mesh area
             light.geometryIndex = instanceRecord.geometryIndex;
             light.transformIndex = instanceRecord.transformIndex;
+            light.materialIndex = instanceRecord.materialIndex;
             light.triangleOffset = triangleOffset;
             light.triangleCount = meshRange.triCount;
 

@@ -229,8 +229,10 @@
             <scale x="0.3" y="0.3" z="0.1"/>
             <translate x="0.0" y="0.0" z="1.98"/>
         </transform>
-        <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
-        <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->
+        <ref id="blue"/>
+
+        <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->         <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
+
         <emitter type="area">
             <rgb name="color" value="1, 1, 1"/>
             <float name="power" value="25"/>

@@ -153,6 +153,7 @@ namespace Pale {
         uint32_t lightType; // 0 = mesh area
         uint32_t geometryIndex;
         uint32_t transformIndex;
+        uint32_t materialIndex;
         uint32_t triangleOffset; // into emissiveTriangles[]
         uint32_t triangleCount;
         float3 color; // lght color
@@ -165,7 +166,7 @@ namespace Pale {
         float3 normalW; // unit
         float3 direction;
         float3 power;
-        float lightIndex;
+        uint32_t lightIndex;
         float pdfSelectLight; // 1 / lightCount
         float pdfDir;
         float pdfArea; // 1 / (triangleCount * triArea)
@@ -340,12 +341,12 @@ namespace Pale {
         float3 position{0.0f};
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
-        //float3 normal{0.0f};
+        float3 normal{0.0f};
 
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         //int sideSign{}; // +1 or -1: hemisphere relative to canonical surfel normal
         //GeometryType geometryType{GeometryType::InvalidType};
-        float3 incomingDirection{0.0f};
+        //float3 incomingDirection{0.0f};
 
         std::uint32_t isValid = 0;
     };
