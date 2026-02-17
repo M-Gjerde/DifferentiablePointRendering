@@ -214,7 +214,8 @@ namespace Pale {
                             contribution.hitPositionW = worldHit.hitPositionW;
                             contribution.geometricNormalW = orientedNormal;
                             contribution.instanceIndex = worldHit.instanceIndex;
-                            contribution.pathThroughput = rayState.pathThroughput;
+                            contribution.pathThroughput = rayState.pathThroughput / qReflect;
+                            contribution.rayIndex = rayIndex;
                             contribution.type = instance.geometryType;
                             contribution.primitiveIndex = worldHit.primitiveIndex;
                             contribution.alphaGeom = worldHit.alphaGeom;
@@ -340,8 +341,13 @@ namespace Pale {
                     const uint32_t contributionIndex = globalId[0];
                     const HitInfoContribution &contribution = contributionRecords[contributionIndex];
                     const Point &surfel = scene.points[contribution.primitiveIndex];
+                    const RayState &rayState = raysIn[contribution.rayIndex];
 
-                    float3 p = contribution.pathThroughput * surfel.alpha_r;
+                    float cosine = dot(-rayState.ray.direction, contribution.geometricNormalW);
+
+                    if (cosine <= 0.0f)
+                        return;
+                    float3 p = contribution.pathThroughput * M_1_PIf;
 
                     const float3 rho = surfel.albedo;
 
@@ -350,7 +356,7 @@ namespace Pale {
                         contribution.geometricNormalW,
                         photonMap
                     );
-                    const float3 f_r = surfel.alpha_r * rho * M_1_PIf;
+                    const float3 f_r = rho * M_1_PIf;
                     const float3 Lo = f_r * E;
 
                     float grad_alpha_eta = contribution.alphaGeom;
@@ -366,7 +372,6 @@ namespace Pale {
                             float4{grad_cost_eta_sum}
                         );
                     }
-                    // If 2, we can get transmission gradients for first surfel.
                 });
         }).wait();
 

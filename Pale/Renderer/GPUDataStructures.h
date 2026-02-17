@@ -297,6 +297,7 @@ namespace Pale {
         GeometryType type = GeometryType::InvalidType;
         EventType eventType = EventType::Absorb;
         uint32_t pixelIndex;
+        uint32_t rayIndex;
         float alphaGeom;
     };
 
