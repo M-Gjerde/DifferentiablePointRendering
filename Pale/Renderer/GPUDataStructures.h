@@ -289,13 +289,15 @@ namespace Pale {
     };
 
     struct alignas(16) HitInfoContribution {
-        float3 throughput = float3(0.0f);
+        float3 pathThroughput = float3(0.0f);
         float3 hitPositionW = float3(0.0f);
         float3 geometricNormalW = float3(0.0f);
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
         GeometryType type = GeometryType::InvalidType;
         EventType eventType = EventType::Absorb;
+        uint32_t pixelIndex;
+        float alphaGeom;
     };
 
     static_assert(std::is_trivially_copyable_v<WorldHit>);
@@ -339,7 +341,6 @@ namespace Pale {
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
         float3 normal{0.0f};
-
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         //int sideSign{}; // +1 or -1: hemisphere relative to canonical surfel normal
         //GeometryType geometryType{GeometryType::InvalidType};

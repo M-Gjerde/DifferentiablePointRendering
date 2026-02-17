@@ -89,7 +89,7 @@ namespace Pale {
     }
 
 
-    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t activeCount) {
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
         auto &queue = pkg.queue;
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
@@ -100,29 +100,208 @@ namespace Pale {
             bool hasValue = false;
         };
 
-        queue.submit([&](sycl::handler &commandGroupHandler) {
-            commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
-                sycl::range<1>(activeCount),
+        queue.submit([&](sycl::handler &cgh) {
+            uint64_t randomNumber = settings.random.number;
+            cgh.parallel_for<class launchIntersectKernel>(
+                sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
-                    ChosenScatterEvent chosen;
                     const uint32_t rayIndex = globalId[0];
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
 
-
-                    RayState &rayState = intermediates.primaryRays[rayIndex];
-
                     WorldHit worldHit{};
-                    intersectScene(rayState.ray, &worldHit, scene, rng128, SurfelIntersectMode::Uniform);
+                    RayState rayState = intermediates.primaryRays[rayIndex];
+                    intersectScene(rayState.ray, &worldHit, scene, rng128, SurfelIntersectMode::FirstHit);
+
                     if (!worldHit.hit) {
-                        intermediates.hitRecords[rayIndex] = worldHit;
                         return;
                     }
                     buildIntersectionNormal(scene, worldHit);
 
-                    intermediates.hitRecords[rayIndex] = worldHit;
+
+                    // Hitting mesh events
+                    const auto &instance = scene.instances[worldHit.instanceIndex];
+                    if (instance.geometryType == GeometryType::Mesh) {
+                        // determine if we should make contributions from this position:
+
+                        // Generate next ray
+                        float3 throughputMultiplier{0.0f};
+                        float3 sampledOutgoingDirectionW = rayState.ray.direction;
+                        const GPUMaterial material = scene.materials[instance.materialIndex];
+                        // If we hit instance was a mesh do ordinary BRDF stuff.
+                        float sampledPdf = 0.0f;
+                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, sampledOutgoingDirectionW,
+                                               sampledPdf);
+                        const float3 lambertBrdf = material.baseColor;
+
+                        throughputMultiplier = lambertBrdf;
+
+
+                        RayState nextState{};
+                        // Spawn next ray
+                        nextState.ray.origin = worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-6f);
+                        nextState.ray.direction = sampledOutgoingDirectionW;
+                        nextState.ray.normal = worldHit.geometricNormalW;
+                        nextState.bounceIndex = rayState.bounceIndex + 1;
+                        nextState.pixelIndex = rayState.pixelIndex;
+                        nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
+
+                        if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                                                  settings.russianRouletteStart))
+                            return;
+
+                        auto extensionCounter = sycl::atomic_ref<uint32_t,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(
+                            *intermediates.countExtensionOut);
+                        const uint32_t outIndex = extensionCounter.fetch_add(1);
+                        intermediates.extensionRaysA[outIndex] = nextState;
+                    } else {
+                        // Random event
+                        const float qNull = 0.5f;
+                        const float qReflect = 0.5f;
+                        const float qTransmit = 0.0f;
+                        // qAbsorb = 1 - (qNull + qReflect + qTransmit)
+                        const float u = rng128.nextFloat();
+
+                        uint32_t eventType = 0; // 0=null, 1=reflect, 2=transmit, 3=absorb
+
+                        if (u < qNull) {
+                            /*
+                            // Update path throughput
+                            eventType = 0;
+
+                            const Point &surfel = scene.points[worldHit.primitiveIndex];
+
+                            float attenuation = 1.0f - worldHit.alphaGeom * surfel.opacity;
+                            float weight = attenuation / qNull;
+                            RayState nextState{};
+                            // Spawn next ray
+                            nextState.ray.origin = worldHit.hitPositionW + (rayState.ray.direction * 1e-5f);
+                            nextState.ray.direction = rayState.ray.direction;
+                            nextState.ray.normal = worldHit.geometricNormalW;
+                            nextState.bounceIndex = rayState.bounceIndex + 1;
+                            nextState.pixelIndex = rayState.pixelIndex;
+                            nextState.pathThroughput = rayState.pathThroughput * weight;
+
+                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                                                      settings.russianRouletteStart))
+                                return;
+
+                            auto extensionCounter = sycl::atomic_ref<uint32_t,
+                                sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space>(
+                                *intermediates.countExtensionOut);
+                            const uint32_t outIndex = extensionCounter.fetch_add(1);
+                            intermediates.extensionRaysA[outIndex] = nextState;
+                            */
+                        } else if (u < qNull + qReflect) {
+                            // Generate next ray
+                            const auto &surfel = scene.points[worldHit.primitiveIndex];
+                            float alpha = worldHit.alphaGeom * surfel.opacity;
+                            float weight = (alpha * surfel.alpha_r) / qReflect;
+                            float3 throughput = rayState.pathThroughput * weight;
+                            // Find which side we hit the surfel:
+                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                            const float signedCosineIncident = dot(canonicalNormalW, -rayState.ray.direction);
+                            const int sideSign = signNonZero(signedCosineIncident);
+                            // If positive we hit the front side if negative we hit the backside
+                            float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
+
+                            HitInfoContribution contribution{};
+                            contribution.hitPositionW = worldHit.hitPositionW;
+                            contribution.geometricNormalW = orientedNormal;
+                            contribution.instanceIndex = worldHit.instanceIndex;
+                            contribution.pathThroughput = rayState.pathThroughput;
+                            contribution.type = instance.geometryType;
+                            contribution.primitiveIndex = worldHit.primitiveIndex;
+                            contribution.alphaGeom = worldHit.alphaGeom;
+                            contribution.pixelIndex = rayState.pixelIndex;
+                            contribution.eventType = EventType::Reflect;
+                            appendContributionAtomic(
+                                intermediates.countContributions,
+                                intermediates.hitContribution,
+                                intermediates.maxHitContributionCount,
+                                contribution);
+
+                            //Generate next ry
+                            float3 sampledOutgoingDirectionW = rayState.ray.direction;
+                            const float3 &lambertBrdf = surfel.albedo;
+                            // If we hit instance was a mesh do ordinary BRDF stuff.
+                            float sampledPdf = 0.0f;
+                            sampleCosineHemisphere(rng128, orientedNormal, sampledOutgoingDirectionW,
+                                                   sampledPdf);
+                            RayState nextState{};
+                            // Spawn next ray
+                            nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-5f);
+                            nextState.ray.direction = sampledOutgoingDirectionW;
+                            nextState.ray.normal = orientedNormal;
+                            nextState.bounceIndex = rayState.bounceIndex + 1;
+                            nextState.pixelIndex = rayState.pixelIndex;
+                            nextState.pathThroughput = throughput * lambertBrdf;
+                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                                                      settings.russianRouletteStart))
+                                return;
+
+                            auto extensionCounter = sycl::atomic_ref<uint32_t,
+                                sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space>(
+                                *intermediates.countExtensionOut);
+                            const uint32_t outIndex = extensionCounter.fetch_add(1);
+                            intermediates.extensionRaysA[outIndex] = nextState;
+                        } else if (u < qNull + qReflect + qTransmit) {
+                            /*
+                            const auto &surfel = scene.points[worldHit.primitiveIndex];
+                            float alpha = worldHit.alphaGeom * surfel.opacity;
+                            float weight = (alpha * surfel.alpha_t) / qTransmit;
+                            float3 throughput = rayState.pathThroughput * weight;
+                            // Find which side we hit the surfel:
+                            const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                            const float signedCosineIncident = dot(canonicalNormalW, -rayState.ray.direction);
+                            const int sideSign = signNonZero(signedCosineIncident);
+                            // If positive we hit the front side if negative we hit the backside
+                            float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
+
+
+                            float3 sampledOutgoingDirectionW = rayState.ray.direction;
+                            const float3 &lambertBrdf = surfel.albedo;
+
+                            // If we hit instance was a mesh do ordinary BRDF stuff.
+                            float sampledPdf = 0.0f;
+                            sampleCosineHemisphere(rng128, -orientedNormal, sampledOutgoingDirectionW,
+                                                   sampledPdf);
+                            RayState nextState{};
+                            // Spawn next ray
+                            nextState.ray.origin = worldHit.hitPositionW + (-orientedNormal * 1e-5f);
+                            nextState.ray.direction = sampledOutgoingDirectionW;
+                            nextState.ray.normal = -orientedNormal; // optional, but keep consistent
+                            nextState.bounceIndex = rayState.bounceIndex + 1;
+                            nextState.pixelIndex = rayState.pixelIndex;
+                            nextState.pathThroughput = throughput * lambertBrdf;
+
+                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                                                      settings.russianRouletteStart))
+                                return;
+
+                            auto extensionCounter = sycl::atomic_ref<uint32_t,
+                                sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space>(
+                                *intermediates.countExtensionOut);
+                            const uint32_t outIndex = extensionCounter.fetch_add(1);
+                            intermediates.extensionRaysA[outIndex] = nextState;
+                            */
+                        } else {
+                            // Absorb: do not enqueue nextState, do not enqueue contribution.
+                            return;
+                        }
+                    }
                 });
-        }).wait();
+        });
+        queue.wait(); // DEBUG: ensure the thread blocks here
     }
 
 
@@ -137,71 +316,55 @@ namespace Pale {
     //   • In the forward pass, the radiance emitter travels scene → camera.
     //   • In the adjoint pass, the adjoint source travels camera → scene.
     //
-    void launchAdjointProjectionKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
+    void launchAdjointProjectionKernel(RenderPackage &pkg, uint32_t contributionCount, uint32_t cameraIndex) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
-        auto &intermediates = pkg.intermediates;
+        // Host-side (before launching kernel)
+        SensorGPU &sensor = pkg.sensors[cameraIndex];
+        auto *contributionRecords = pkg.intermediates.hitContribution;
+
         auto &gradients = pkg.gradients;
         const auto &photonMap = pkg.intermediates.map;
         auto *raysIn = pkg.intermediates.primaryRays;
 
-        auto &sensor = pkg.sensors[cameraIndex];
         DebugImages &debugImage = pkg.debugImages[cameraIndex];
 
         queue.submit([&](sycl::handler &cgh) {
-            cgh.parallel_for<struct AdjointShadeKernelTag>(
-                sycl::range<1>(activeRayCount),
+            uint64_t baseSeed = settings.random.number * (static_cast<uint64_t>(cameraIndex) + 5ull);
+
+            cgh.parallel_for<class launchContributionKernel>(
+                sycl::range<1>(contributionCount),
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
-                    const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
-                    RayState &rayState = intermediates.primaryRays[rayIndex];
-                    WorldHit &worldHit = intermediates.hitRecords[rayIndex];
+                    const uint32_t contributionIndex = globalId[0];
+                    const HitInfoContribution &contribution = contributionRecords[contributionIndex];
+                    const Point &surfel = scene.points[contribution.primitiveIndex];
 
-                    if (!worldHit.hit || !worldHit.hitSurfel) {
-                        return;
-                    }
-                    // Transmission Gradients
+                    float3 p = contribution.pathThroughput * surfel.alpha_r;
 
-                    // Check how many surfels we have along our ray
-
-                    // Retrace the ray to get the correct attenuation?
-
-                    float3 p = rayState.pathThroughput * worldHit.transmissivity * worldHit.invChosenSurfelPdf;
-
-                    const Point &surfel = scene.points[worldHit.primitiveIndex];
-                    const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                    const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
-                    const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
                     const float3 rho = surfel.albedo;
 
                     const float3 E = gatherDiffuseIrradianceAtPoint(
-                        worldHit.hitPositionW,
-                        frontNormalW,
+                        contribution.hitPositionW,
+                        contribution.geometricNormalW,
                         photonMap
                     );
-
                     const float3 f_r = surfel.alpha_r * rho * M_1_PIf;
                     const float3 Lo = f_r * E;
 
-                    //float3 irradiance = float3{1.0f};
-                    // If 1 we blend with background color
-
-                    float grad_alpha_eta = worldHit.alphaGeom;
+                    float grad_alpha_eta = contribution.alphaGeom;
 
                     float3 grad_cost_eta = grad_alpha_eta * p * Lo;
                     float grad_cost_eta_sum = sum(grad_cost_eta);
-
-                    atomicAddFloat(gradients.gradOpacity[worldHit.primitiveIndex], grad_cost_eta_sum);
+                    atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
 
                     if (settings.renderDebugGradientImages) {
-                        uint32_t pixelIndex = rayState.pixelIndex;
+                        uint32_t pixelIndex = contribution.pixelIndex;
                         atomicAddFloat4ToImage(
-                        &debugImage.framebufferOpacity[pixelIndex],
-                        float4{grad_cost_eta_sum}
-                    );
+                            &debugImage.framebufferOpacity[pixelIndex],
+                            float4{grad_cost_eta_sum}
+                        );
                     }
                     // If 2, we can get transmission gradients for first surfel.
                 });
@@ -212,9 +375,6 @@ namespace Pale {
 
 
     // Generate new ray
-
-
-
 
 
     // -----------------------------------------------------------------------------

@@ -98,20 +98,21 @@ namespace Pale {
                     if (instance.geometryType == GeometryType::Mesh) {
                         // determine if we should make contributions from this position:
 
-                        HitInfoContribution contribution{};
-                        contribution.geometricNormalW = worldHit.geometricNormalW;
-                        contribution.hitPositionW = worldHit.hitPositionW;
-                        contribution.instanceIndex = worldHit.instanceIndex;
-                        contribution.throughput = rayState.pathThroughput;
-                        contribution.type = instance.geometryType;
-                        contribution.primitiveIndex = worldHit.primitiveIndex;
+                        if (settings.integratorKind == IntegratorKind::lightTracing) {
+                            HitInfoContribution contribution{};
+                            contribution.geometricNormalW = worldHit.geometricNormalW;
+                            contribution.hitPositionW = worldHit.hitPositionW;
+                            contribution.instanceIndex = worldHit.instanceIndex;
+                            contribution.pathThroughput = rayState.pathThroughput;
+                            contribution.type = instance.geometryType;
+                            contribution.primitiveIndex = worldHit.primitiveIndex;
+                            appendContributionAtomic(
+                                intermediates.countContributions,
+                                intermediates.hitContribution,
+                                intermediates.maxHitContributionCount,
+                                contribution);
+                        }
 
-
-                        appendContributionAtomic(
-                            intermediates.countContributions,
-                            intermediates.hitContribution,
-                            intermediates.maxHitContributionCount,
-                            contribution);
 
                         // Deposit Irradiance to photon map independent of surface interaction
                         if (settings.integratorKind == IntegratorKind::photonMapping) {
@@ -155,8 +156,8 @@ namespace Pale {
                     } else {
                         // Random event
                         const float qNull = 0.5f;
-                        const float qReflect = 0.5f;
-                        const float qTransmit = 0.0f;
+                        const float qReflect = 0.3f;
+                        const float qTransmit = 0.2f;
                         // qAbsorb = 1 - (qNull + qReflect + qTransmit)
                         const float u = rng128.nextFloat();
 
@@ -203,19 +204,21 @@ namespace Pale {
                             // If positive we hit the front side if negative we hit the backside
                             float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
 
-                            HitInfoContribution contribution{};
-                            contribution.hitPositionW = worldHit.hitPositionW;
-                            contribution.geometricNormalW = orientedNormal;
-                            contribution.instanceIndex = worldHit.instanceIndex;
-                            contribution.throughput = throughput;
-                            contribution.type = instance.geometryType;
-                            contribution.primitiveIndex = worldHit.primitiveIndex;
-                            contribution.eventType = EventType::Reflect;
-                            appendContributionAtomic(
-                                intermediates.countContributions,
-                                intermediates.hitContribution,
-                                intermediates.maxHitContributionCount,
-                                contribution);
+                            if (settings.integratorKind == IntegratorKind::lightTracing) {
+                                HitInfoContribution contribution{};
+                                contribution.hitPositionW = worldHit.hitPositionW;
+                                contribution.geometricNormalW = orientedNormal;
+                                contribution.instanceIndex = worldHit.instanceIndex;
+                                contribution.pathThroughput = throughput;
+                                contribution.type = instance.geometryType;
+                                contribution.primitiveIndex = worldHit.primitiveIndex;
+                                contribution.eventType = EventType::Reflect;
+                                appendContributionAtomic(
+                                    intermediates.countContributions,
+                                    intermediates.hitContribution,
+                                    intermediates.maxHitContributionCount,
+                                    contribution);
+                            }
 
                             // Deposit Irradiance to photon map independent of surface interaction
                             if (settings.integratorKind == IntegratorKind::photonMapping) {
@@ -399,7 +402,7 @@ namespace Pale {
                     const float invPixelSolidAngle =
                             invPixelArea / (cosThetaCamera * cosThetaCamera * cosThetaCamera);
                     const float3 flux =
-                            contribution.throughput * rho * visibilityCheck.transmissivity *
+                            contribution.pathThroughput * rho * visibilityCheck.transmissivity *
                             (cosineToCamera * inverseDistanceSquared) * invPixelSolidAngle;
                     // Atomic accumulate to framebuffer
                     atomicAddFloat3ToImage(&sensor.framebuffer[pixelIndex], flux);

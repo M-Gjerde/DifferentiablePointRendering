@@ -178,6 +178,7 @@ namespace Pale {
         pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints).wait();
 
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+
             if (pkg.settings.renderDebugGradientImages) {
                 pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosX, float4{0},
                                pkg.debugImages[cameraIndex].numPixels).wait();
@@ -221,13 +222,19 @@ namespace Pale {
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                     pkg.queue.wait();
                     {
+                        pkg.queue.fill(pkg.intermediates.countContributions, 0u, 1).wait();
                         ScopedTimer timer("launchAdjointIntersectKernel");
                         launchAdjointIntersectKernel(pkg, activeCount);
                     }
                     {
+                        uint32_t contributionCount = 0;
+                        pkg.queue.memcpy(&contributionCount, pkg.intermediates.countContributions, sizeof(uint32_t)).wait();
+                        contributionCount =
+                            sycl::min(contributionCount, pkg.intermediates.maxHitContributionCount);
+
                         ScopedTimer timer("launchAdjointKernel");
                         if (bounce == 0) {
-                            launchAdjointProjectionKernel(pkg, activeCount, cameraIndex);
+                            launchAdjointProjectionKernel(pkg, contributionCount, cameraIndex);
                         }
                         else {
                             //launchAdjointTransportKernel(pkg, activeCount, cameraIndex);

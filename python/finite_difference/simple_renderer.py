@@ -36,124 +36,8 @@ def create_incremental_run_dir(base_output_dir: Path) -> Path:
     new_run_index = max_run_index + 1
     run_dir = base_output_dir / str(new_run_index)
     run_dir.mkdir(parents=True, exist_ok=False)
+    print(f"Created run_dir: {run_dir}")
     return run_dir
-
-def run_opacity_fd_linear_sweep(
-    renderer,
-    camera: str,
-    target_image: np.ndarray,
-    analytic_grad_scalar: float,
-    index: int,
-    output_dir: Path,
-    eps_low: float = 0.01,
-    eps_high: float = 0.5,
-    num_eps: int = 50,
-    num_avg: int = 2,
-    rel_err_threshold: float = 0.05,      # 5%
-    fd_variation_threshold: float = 0.02, # 2% neighbor-to-neighbor change
-) -> None:
-
-    eps_values = np.linspace(eps_low, eps_high, num_eps, dtype=np.float64)
-
-    fd_mean = np.zeros(num_eps, dtype=np.float64)
-    fd_std  = np.zeros(num_eps, dtype=np.float64)
-    rel_errs = np.zeros(num_eps, dtype=np.float64)
-
-    for i, eps in enumerate(eps_values):
-        fd_samples = np.zeros(num_avg, dtype=np.float64)
-
-        for k in range(num_avg):
-            rgb_minus, rgb_plus, _ = finite_difference_opacity(
-                renderer, index, float(eps), camera
-            )
-
-            loss_minus = compute_l2_loss(rgb_minus, target_image)
-            loss_plus  = compute_l2_loss(rgb_plus, target_image)
-
-            fd_samples[k] = (loss_plus - loss_minus) / (2.0 * float(eps))
-
-        fd_mean[i] = float(fd_samples.mean())
-        fd_std[i]  = float(fd_samples.std(ddof=1))
-
-        rel_errs[i] = np.abs(fd_mean[i] - analytic_grad_scalar) / (
-            np.abs(analytic_grad_scalar) + 1e-12
-        )
-
-        print(
-            f"eps={eps: .6f}  "
-            f"FD(mean)={fd_mean[i]: .4}  "
-            f"std={fd_std[i]: .3e}  "
-            f"rel_err={rel_errs[i]: .3%}"
-        )
-
-    # ---- Plateau detection (on the mean) ----
-    denom = np.maximum(np.abs(fd_mean[:-1]), 1e-12)
-    neighbor_change = np.abs(fd_mean[1:] - fd_mean[:-1]) / denom
-
-    stable = np.hstack([neighbor_change < fd_variation_threshold, False])
-    good = (rel_errs < rel_err_threshold)
-    plateau_mask = good & stable
-
-    # find longest contiguous plateau segment
-    best_len = 0
-    best_start = None
-    best_end = None
-
-    start = None
-    for i, ok in enumerate(plateau_mask):
-        if ok and start is None:
-            start = i
-        if (not ok or i == len(plateau_mask) - 1) and start is not None:
-            end = i if ok and i == len(plateau_mask) - 1 else i - 1
-            length = end - start + 1
-            if length > best_len:
-                best_len = length
-                best_start, best_end = start, end
-            start = None
-
-    # ---- Save CSV (now includes std) ----
-    csv_path = output_dir / "fd_opacity_linear_sweep.csv"
-    with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("eps,fd_mean,fd_std,rel_err\n")
-        for eps, m, s, r in zip(eps_values, fd_mean, fd_std, rel_errs):
-            f.write(f"{eps},{m},{s},{r}\n")
-
-    # ---- Plot (mean curve + 1σ band) ----
-    png_path = output_dir / "fd_opacity_linear_sweep.png"
-
-    import matplotlib.pyplot as plt
-
-    plt.figure()
-    plt.plot(eps_values, fd_mean, label="FD mean")
-    plt.fill_between(
-        eps_values,
-        fd_mean - fd_std * 3,
-        fd_mean + fd_std * 3,
-        alpha=0.25,
-        label="±3 std",
-    )
-    plt.axhline(analytic_grad_scalar, linestyle="--", linewidth=1, label="Analytic")
-    plt.xlabel("epsilon")
-    plt.ylabel("FD gradient")
-    plt.title("Finite-difference opacity sweep (averaged)")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(png_path, bbox_inches="tight")
-    plt.close()
-
-    if best_start is not None:
-        eps_a = eps_values[best_start]
-        eps_b = eps_values[best_end]
-        print(f"\nPlateau candidate: eps in [{eps_a:.6f}, {eps_b:.6f}]")
-        print(f"Suggested eps: {(0.5*(eps_a+eps_b)):.6f}")
-    else:
-        print("\nNo clear plateau found in [0.005, 0.5].")
-        print("If so, increase samples or enforce common random numbers.")
-
-    print(f"\nWrote:")
-    print(f"  {csv_path}")
-    print(f"  {png_path}")
-
 
 
 
@@ -161,10 +45,10 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 100,
+        "forward_passes": 50,
         "gather_passes": 1,
         "adjoint_bounces": 1,
-        "adjoint_passes": 128,
+        "adjoint_passes": 1,
         "logging": 3
     }
 
@@ -191,7 +75,7 @@ def main(args) -> None:
         writer.writeheader()
 
         for iteration_index in range(iterations + 1):
-            opacity_value = (iteration_index) / 100.0  # 0.00, 0.02, ..., 0.10
+            opacity_value = (iteration_index) / 10.0  # 0.00, 0.02, ..., 0.10
 
             renderer.set_point_opacity(
                 opacity=opacity_value,
@@ -227,6 +111,7 @@ def main(args) -> None:
             print(f"{iteration_index}/{iterations}, Opacity: {opacity_value}, Loss: {loss_value}, AN: {analytic_opacity_grad}")
             f.flush()  # ensures you can plot while it’s running
 
+    print(f"Saved to run_dir: {output_dir}")
 
     #run_opacity_fd_linear_sweep(
     #    renderer=renderer,
