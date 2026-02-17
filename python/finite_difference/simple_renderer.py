@@ -164,7 +164,7 @@ def main(args) -> None:
         "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 1,
-        "adjoint_passes": 1,
+        "adjoint_passes": 128,
         "logging": 3
     }
 
@@ -191,7 +191,7 @@ def main(args) -> None:
         writer.writeheader()
 
         for iteration_index in range(iterations + 1):
-            opacity_value = (iteration_index) / 10.0  # 0.00, 0.02, ..., 0.10
+            opacity_value = (iteration_index) / 100.0  # 0.00, 0.02, ..., 0.10
 
             renderer.set_point_opacity(
                 opacity=opacity_value,

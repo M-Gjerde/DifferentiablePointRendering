@@ -281,7 +281,7 @@ int main(int argc, char** argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing =  true;
+    bool renderLightTracing = !true;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -289,14 +289,9 @@ int main(int argc, char** argv) {
         settings.integratorKind = Pale::IntegratorKind::lightTracing;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 1000;
+        settings.numForwardPasses = 100;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2;
-        settings.adjointSamplesPerPixel = 1;
-        settings.depthDistortionWeight = 0.000;
-        settings.normalConsistencyWeight = 0.000;
-        settings.renderDebugGradientImages = false;
-
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
@@ -348,13 +343,13 @@ int main(int argc, char** argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 200;
+        settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 1; // 1 = Projection only
-        settings.adjointSamplesPerPixel = 1;
+        settings.adjointSamplesPerPixel = 8;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;
-        settings.renderDebugGradientImages = false;
+        settings.renderDebugGradientImages = true;
 
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);

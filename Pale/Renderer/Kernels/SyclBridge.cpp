@@ -212,8 +212,8 @@ namespace Pale {
                     launchRayGenAdjointKernel(pkg, spp, cameraIndex);
                 }
 
-                uint32_t activeCount = 0;
-                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
+                uint32_t raysPerFrame = pkg.sensors[cameraIndex].width * pkg.sensors[cameraIndex].height;
+                uint32_t activeCount = raysPerFrame;
 
                 for (uint32_t bounce = 0; bounce < pkg.settings.maxAdjointBounces && activeCount > 0; ++bounce) {
                     pkg.settings.random.number = seedGen();
@@ -248,8 +248,6 @@ namespace Pale {
                     pkg.queue.wait();
                 }
             }
-            break;
-
             /*
             {
                 Point point;

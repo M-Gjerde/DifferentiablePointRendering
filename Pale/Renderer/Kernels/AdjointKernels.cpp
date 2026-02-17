@@ -21,12 +21,8 @@ namespace Pale {
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
         uint32_t raysPerSet = imageWidth * imageHeight;
-
-        //raysPerSet = 1;
         float raysTotal = settings.adjointSamplesPerPixel * raysPerSet;
 
-        const uint32_t perPassRayCount = raysPerSet;
-        queue.memcpy(pkg.intermediates.countPrimary, &perPassRayCount, sizeof(uint32_t)).wait();
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t randomNumber = settings.random.number;
@@ -180,24 +176,22 @@ namespace Pale {
                     const int travelSideSign = signNonZero(dot(canonicalNormalW, -rayState.ray.direction));
                     const float3 frontNormalW = canonicalNormalW * float(travelSideSign);
                     const float3 rho = surfel.albedo;
-                    float3 E = float3{0.0f};
-                    /*
+
                     const float3 E = gatherDiffuseIrradianceAtPoint(
                         worldHit.hitPositionW,
                         frontNormalW,
-                        photonMap,
-                        travelSideSign,
-                        true
+                        photonMap
                     );
-                    */
 
-                    float3 irradiance = E;
+                    const float3 f_r = surfel.alpha_r * rho * M_1_PIf;
+                    const float3 Lo = f_r * E;
+
                     //float3 irradiance = float3{1.0f};
                     // If 1 we blend with background color
 
                     float grad_alpha_eta = worldHit.alphaGeom;
 
-                    float3 grad_cost_eta = grad_alpha_eta * p * irradiance;
+                    float3 grad_cost_eta = grad_alpha_eta * p * Lo;
                     float grad_cost_eta_sum = sum(grad_cost_eta);
 
                     atomicAddFloat(gradients.gradOpacity[worldHit.primitiveIndex], grad_cost_eta_sum);
