@@ -65,8 +65,6 @@ namespace Pale {
     struct alignas(16) BLASRange {
         uint32_t firstNode{};
         uint32_t nodeCount{};
-        uint32_t _pad0{};
-        uint32_t _pad1{}; // 16
     };
 
     CHECK_16(BLASRange);
@@ -77,7 +75,6 @@ namespace Pale {
         uint32_t leftChild{}; // 36
         uint32_t count{}; // 40
         uint32_t rightChild{}; // 44
-        uint32_t _pad0{}; // 48
     };
 
     CHECK_16(TLASNode);

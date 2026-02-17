@@ -208,8 +208,8 @@ namespace Pale {
                 gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
                 gpuPoint.albedo = glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
                 gpuPoint.opacity = glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
-                gpuPoint.alpha_r = 0.9f;
-                gpuPoint.alpha_t = 0.1f;
+                gpuPoint.alpha_r = 1.0f;
+                gpuPoint.alpha_t = 0.0f;
                 gpuPoint.beta = pointGeometry.betas[i];
                 gpuPoint.shape = glm::clamp(pointGeometry.shapes[i], -5.0f, 5.0f);
 
@@ -393,7 +393,7 @@ namespace Pale {
 
 
     inline AABB surfelObjectAabbBeta(const Point& surfel,
-                                     float supportRadiusScale = 1.20f,
+                                     float supportRadiusScale = 1.0001f,
                                      float normalThickness = 0.001f) {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
@@ -590,7 +590,8 @@ namespace Pale {
         TLASResult R{};
         R.nodes.clear();
         R.nodes.reserve(std::max<size_t>(1, boxes.size() * 2));
-        std::function<uint32_t(uint32_t, uint32_t)> build = [&](uint32_t start, uint32_t end)-> uint32_t {
+        std::function<uint32_t(uint32_t, uint32_t)>
+        build = [&](uint32_t start, uint32_t end)-> uint32_t {
             const uint32_t n = static_cast<uint32_t>(R.nodes.size());
             R.nodes.emplace_back();
             TLASNode& N = R.nodes.back();
@@ -695,6 +696,15 @@ namespace Pale {
 
             buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
             meshRangeToBlasRange[meshIndex] = blasRangeIndex;
+
+            {
+                // One file per mesh BLAS (by mesh index)
+                std::string meshBlasPath = "mesh_blas_" + std::to_string(meshIndex) + ".csv";
+                write_blas_csv(buildProducts.bottomLevelNodes,
+                               buildProducts.bottomLevelRanges[blasRangeIndex],
+                               meshBlasPath.c_str());
+            }
+
         }
 
         // Point cloud BLAS
@@ -739,6 +749,15 @@ namespace Pale {
 
             buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
             pointRangeToBlasRange[pointCloudIndex] = blasRangeIndex;
+            {
+                // One file per point cloud BLAS (by point cloud index)
+                std::string pointCloudBlasPath =
+                    "pointcloud_blas_" + std::to_string(pointCloudIndex) + ".csv";
+                write_blas_csv(buildProducts.bottomLevelNodes,
+                               buildProducts.bottomLevelRanges[blasRangeIndex],
+                               pointCloudBlasPath.c_str());
+            }
+
         }
 
         // Map instances to BLAS ranges
@@ -765,8 +784,8 @@ namespace Pale {
         buildProducts.topLevelNodes = std::move(tlasResult.nodes);
 
         // Optional debug:
-        // write_tlas_dot(buildProducts.topLevelNodes, "tlas.dot");
-        // write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
+        //write_tlas_dot(buildProducts.topLevelNodes, "tlas.dot");
+        write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
     }
 
     float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts& buildProducts) {

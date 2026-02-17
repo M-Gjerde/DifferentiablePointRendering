@@ -123,7 +123,7 @@ namespace Pale {
     };
 
     static DebugPixel kDebugPixels[] = {
-        {250, 400},
+        {430, 320},
     };
 
     static bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
@@ -942,8 +942,8 @@ namespace Pale {
 
                         const float3 d = ph.position - queryPositionWorld;
 
-                        //const float cosine = dot(surfelNormalW, ph.normal);
-                        //if (cosine < 0.3f) continue;
+                        const float cosine = dot(surfelNormalW, ph.normal);
+                        if (cosine < 0.1f) continue;
 
                         const float dist2 = dot(d, d);
                         if (dist2 > r2)

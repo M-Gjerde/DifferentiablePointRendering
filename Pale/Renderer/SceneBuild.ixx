@@ -91,17 +91,80 @@ export namespace Pale {
             }
             f << "}\n";
         }
+        static void write_blas_csv(const std::vector<BVHNode>& allNodes,
+                                   BLASRange range,
+                                   const char* path) {
+            std::ofstream f(path);
+
+            f << "left right primitiveIdx aabb_min_x aabb_min_y aabb_min_z "
+                 "aabb_max_x aabb_max_y aabb_max_z\n";
+
+            const uint32_t first = range.firstNode;
+            const uint32_t end = range.firstNode + range.nodeCount;
+
+            for (uint32_t globalNodeIndex = first; globalNodeIndex < end; ++globalNodeIndex) {
+                const BVHNode& node = allNodes[globalNodeIndex];
+                const bool isLeaf = node.isLeaf();
+
+                // Use indices local to this BLAS for readability in external tools
+                const int localNodeIndex = static_cast<int>(globalNodeIndex - first);
+
+                int left = -1;
+                int right = -1;
+                int primitiveIdx = -1;
+
+                if (isLeaf) {
+                    // leftFirst is already patched to global primitive base (triangles or points)
+                    primitiveIdx = static_cast<int>(node.leftFirst);
+                } else {
+                    // Assumption: right child is implicit
+                    // leftFirst stores the *global* index of the left child node.
+                    left  = static_cast<int>(node.leftFirst - first);
+                    right = static_cast<int>(node.leftFirst + 1u - first);
+                }
+
+                f << left << " "
+                  << right << " "
+                  << primitiveIdx << " "
+                  << node.aabbMin.x() << " "
+                  << node.aabbMin.y() << " "
+                  << node.aabbMin.z() << " "
+                  << node.aabbMax.x() << " "
+                  << node.aabbMax.y() << " "
+                  << node.aabbMax.z() << "\n";
+            }
+        }
 
         static void write_tlas_csv(const std::vector<TLASNode>& nodes, const char* path) {
             std::ofstream f(path);
-            f << "node,left,right,count,minx,miny,minz,maxx,maxy,maxz\n";
+
+            // Exact header required
+            f << "left right primitiveIdx aabb_min_x aabb_min_y aabb_min_z "
+                 "aabb_max_x aabb_max_y aabb_max_z\n";
+
             for (size_t i = 0; i < nodes.size(); ++i) {
-                const auto& n = nodes[i];
-                f << i << "," << n.leftChild << "," << n.rightChild << "," << n.count << ","
-                    << n.aabbMin.x() << "," << n.aabbMin.y() << "," << n.aabbMin.z() << ","
-                    << n.aabbMax.x() << "," << n.aabbMax.y() << "," << n.aabbMax.z() << "\n";
+                const TLASNode& n = nodes[i];
+
+                const bool isLeaf = (n.count == 1);
+
+                const int left  = isLeaf ? -1 : static_cast<int>(n.leftChild);
+                const int right = isLeaf ? -1 : static_cast<int>(n.rightChild);
+
+                // For TLAS: primitiveIdx = instance index for leaf, -1 otherwise
+                const int primitiveIdx = isLeaf ? static_cast<int>(n.leftChild) : -1;
+
+                f << left << " "
+                  << right << " "
+                  << primitiveIdx << " "
+                  << n.aabbMin.x() << " "
+                  << n.aabbMin.y() << " "
+                  << n.aabbMin.z() << " "
+                  << n.aabbMax.x() << " "
+                  << n.aabbMax.y() << " "
+                  << n.aabbMax.z() << "\n";
             }
         }
+
 
         // Existing top-level builder (now a thin wrapper)
         static BuildProducts build(const std::shared_ptr<Scene>& scene,

@@ -586,8 +586,7 @@ namespace Pale {
         const Ray &rayObject,
         uint32_t blasRangeIndex,
         LocalHit &localHitOut,
-        const GPUSceneBuffers &scene,
-        float tmin = 0.0f) {
+        const GPUSceneBuffers &scene) {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
@@ -647,9 +646,6 @@ namespace Pale {
                 if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
                     continue;
 
-                if (tmin > tHitLocal) {
-                    continue;
-                }
                 // Keep closest
                 hitAny = true;
                 bestTHit = tHitLocal;
@@ -1057,30 +1053,33 @@ namespace Pale {
 
             if (acceptedHitInInstance) {
                 // Convert to world, test depth
-                const float3 hitPointWorld = toWorldPoint(rayObject.origin + localHit.t * rayObject.direction,
-                                                          transform);
-                const float tWorld = dot(hitPointWorld - rayWorld.origin, rayWorld.direction);
-                // assumes normalized direction
-                if (tWorld < 0.0f || tWorld >= bestWorldTHit) continue;
 
-                bestWorldTHit = tWorld;
-                foundAnySurfaceHit = true;
 
-                worldHitOut->hit = true;
-                worldHitOut->t = tWorld;
-                worldHitOut->hitPositionW = hitPointWorld;
-                worldHitOut->instanceIndex = instanceIndex;
-                worldHitOut->primitiveIndex = localHit.primitiveIndex;
-                worldHitOut->alphaGeom = localHit.alpha;
+                const float3 hitWorld = localHit.worldHit; // you already compute this in BLAS
+                const float3 toHitWorld = hitWorld - rayWorld.origin;
 
-                if (instance.geometryType == GeometryType::PointCloud){
-                    transmittanceProduct *= localHit.transmissivity;
+                // If rayWorld.direction normalized:
+                const float tWorld = dot(toHitWorld, rayWorld.direction);
+
+                // If NOT normalized:
+
+                if (tWorld > 0.0f && tWorld < bestWorldTHit) {
+
+                    bestWorldTHit = tWorld;
+                    foundAnySurfaceHit = true;
+
+                    worldHitOut->hit = true;
+                    worldHitOut->t = tWorld;
+                    worldHitOut->hitPositionW = hitWorld;
+                    worldHitOut->instanceIndex = instanceIndex;
+                    worldHitOut->primitiveIndex = localHit.primitiveIndex;
+                    worldHitOut->alphaGeom = localHit.alpha;
+
+                    if (instance.geometryType == GeometryType::PointCloud){
+                        transmittanceProduct *= localHit.transmissivity;
+                    }
                 }
-
-                // Stop traversal because we found the nearest accepted hit
-                break;
             }
-
             // No accepted hit, but if this was a splat field we may have partial transmission through it
             if (!acceptedHitInInstance && instance.geometryType == GeometryType::PointCloud) {
                 transmittanceProduct *= localHit.transmissivity;

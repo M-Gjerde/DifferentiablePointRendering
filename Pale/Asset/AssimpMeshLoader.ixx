@@ -32,7 +32,7 @@ export namespace Pale {
 
             auto mesh = std::make_shared<Mesh>();
             mesh->submeshes.reserve(scene->mNumMeshes);
-
+            mesh->name = meta.path.filename().replace_extension("");
 
             for (unsigned m = 0; m < scene->mNumMeshes; ++m) {
                 const aiMesh *am = scene->mMeshes[m];

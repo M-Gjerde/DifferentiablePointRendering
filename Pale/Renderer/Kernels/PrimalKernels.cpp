@@ -155,8 +155,8 @@ namespace Pale {
                     } else {
                         // Random event
                         const float qNull = 0.5f;
-                        const float qReflect = 0.25f;
-                        const float qTransmit = 0.20f;
+                        const float qReflect = 0.5f;
+                        const float qTransmit = 0.0f;
                         // qAbsorb = 1 - (qNull + qReflect + qTransmit)
                         const float u = rng128.nextFloat();
 
@@ -219,7 +219,8 @@ namespace Pale {
 
                             // Deposit Irradiance to photon map independent of surface interaction
                             if (settings.integratorKind == IntegratorKind::photonMapping) {
-                                depositPhotonSurface(worldHit, orientedNormal,  rayState.pathThroughput / qReflect, intermediates.map);
+                                depositPhotonSurface(worldHit, orientedNormal, rayState.pathThroughput / qReflect,
+                                                     intermediates.map);
                             }
 
                             //Generate next ry
@@ -260,19 +261,19 @@ namespace Pale {
                             // If positive we hit the front side if negative we hit the backside
                             float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
 
-                            HitInfoContribution contribution{};
-                            contribution.hitPositionW = worldHit.hitPositionW;
-                            contribution.geometricNormalW = orientedNormal;
-                            contribution.instanceIndex = worldHit.instanceIndex;
-                            contribution.throughput = throughput;
-                            contribution.type = instance.geometryType;
-                            contribution.primitiveIndex = worldHit.primitiveIndex;
-                            contribution.eventType = EventType::Transmit;
-                            appendContributionAtomic(
-                                intermediates.countContributions,
-                                intermediates.hitContribution,
-                                intermediates.maxHitContributionCount,
-                                contribution);
+                            //HitInfoContribution contribution{};
+                            //contribution.hitPositionW = worldHit.hitPositionW;
+                            //contribution.geometricNormalW = orientedNormal;
+                            //contribution.instanceIndex = worldHit.instanceIndex;
+                            //contribution.throughput = throughput;
+                            //contribution.type = instance.geometryType;
+                            //contribution.primitiveIndex = worldHit.primitiveIndex;
+                            //contribution.eventType = EventType::Transmit;
+                            //appendContributionAtomic(
+                            //    intermediates.countContributions,
+                            //    intermediates.hitContribution,
+                            //    intermediates.maxHitContributionCount,
+                            //    contribution);
 
                             // Deposit Irradiance to photon map independent of surface interaction
                             //if (settings.integratorKind == IntegratorKind::photonMapping) {
@@ -336,50 +337,37 @@ namespace Pale {
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, contributionIndex);
                     rng::Xorshift128 rng128(perItemSeed);
                     const HitInfoContribution &contribution = hitRecords[contributionIndex];
-
                     const InstanceRecord &instance = scene.instances[contribution.instanceIndex];
                     auto &geometryType = instance.geometryType;
-
                     const float3 &surfacePointWorld = contribution.hitPositionW;
                     const float3 &surfaceNormalWorld = contribution.geometricNormalW; // ensure normalized
-
                     // Project to pixel and get omega_c (surface -> camera) and distance
                     uint32_t pixelIndex = 0u;
                     float3 omegaSurfaceToCamera;
                     float distanceToCamera = 0.0f;
-
                     bool debug = false;
                     int pixelX = 0;
                     int pixelY = 0;
                     if (!projectToPixelFromPinhole(sensor, surfacePointWorld, pixelIndex, omegaSurfaceToCamera,
                                                    distanceToCamera, pixelX, pixelY, debug))
                         return;
-
-
                     // Backface / cosine term at surface
-                    const float signedCosineToCamera = dot(surfaceNormalWorld, omegaSurfaceToCamera);
-                    const float cosineAbsToCamera = sycl::fabs(signedCosineToCamera);
-                    if (cosineAbsToCamera <= 0.0f)
+                    const float cosineToCamera = dot(surfaceNormalWorld, omegaSurfaceToCamera);
+                    if (cosineToCamera <= 0.0f)
                         return;
-
                     float cosThetaCamera = dot(sensor.camera.forward, -omegaSurfaceToCamera);
                     if (cosThetaCamera <= 0.0f)
                         return;
-
                     // Visibility: shadow ray from surface to camera
                     const float shadowRayMaxT = distanceToCamera - 1e-4f;
                     Ray ray{surfacePointWorld, omegaSurfaceToCamera};
                     WorldHit visibilityCheck{};
                     intersectScene(ray, &visibilityCheck, scene, rng128, SurfelIntersectMode::Transmit);
-
                     if (visibilityCheck.t <= shadowRayMaxT && visibilityCheck.hit) {
                         return;
                     }
-
                     // DO measurement ray BSDF selection.
-                    float3 throughputMultiplier{0.0f};
                     float3 rho{0.0f};
-
                     if (geometryType == GeometryType::Mesh) {
                         const GPUMaterial material = scene.materials[instance.materialIndex];
                         // If we hit instance was a mesh do ordinary BRDF stuff.
@@ -389,50 +377,32 @@ namespace Pale {
                         const Point point = scene.points[contribution.primitiveIndex];
                         // Mixture BSDF update simplifies analytically
                         if (contribution.eventType == EventType::Reflect) {
-                            if (signedCosineToCamera <= 0.0f) return;
                             rho = (point.albedo) * M_1_PIf;
                         } else if (contribution.eventType == EventType::Transmit) {
-                            if (signedCosineToCamera >= 0.0f) return;
                             rho = (point.albedo) * M_1_PIf;
                         }
                     }
-
                     // Geometry term from pinhole importance (1/r^2 and cosine at surface)
                     const float inverseDistanceSquared = 1.0f / (distanceToCamera * distanceToCamera);
-
                     const float width = float(sensor.width);
                     const float height = float(sensor.height);
-
                     const float fovYRad = glm::radians(sensor.camera.fovy);
                     const float tanHalfFovY = sycl::tan(0.5f * fovYRad);
                     const float tanHalfFovX = tanHalfFovY * (width / height);
-
                     // film plane at z=1 has size: 2*tanHalfFovX by 2*tanHalfFovY
                     const float filmWidth = 2.0f * tanHalfFovX;
                     const float filmHeight = 2.0f * tanHalfFovY;
-
                     const float pixelArea = (filmWidth / width) * (filmHeight / height);
                     const float invPixelArea = 1.0f / pixelArea;
-
                     // Convert film pixel area to solid angle of that pixel (pinhole, film plane at z=1):
                     // dω = cos^3(θc) dA  =>  1/Ωpixel = 1/(Apixel cos^3)
-                    const float cosThetaCameraClamped = sycl::fmax(cosThetaCamera, 1e-6f);
                     const float invPixelSolidAngle =
-                            invPixelArea / (cosThetaCameraClamped * cosThetaCameraClamped * cosThetaCameraClamped);
-
+                            invPixelArea / (cosThetaCamera * cosThetaCamera * cosThetaCamera);
                     const float3 flux =
                             contribution.throughput * rho * visibilityCheck.transmissivity *
-                            (cosineAbsToCamera * inverseDistanceSquared) * invPixelSolidAngle;
-
-
+                            (cosineToCamera * inverseDistanceSquared) * invPixelSolidAngle;
                     // Atomic accumulate to framebuffer
                     atomicAddFloat3ToImage(&sensor.framebuffer[pixelIndex], flux);
-
-
-                    if (isWatchedPixel(pixelX, pixelY) && geometryType == GeometryType::Mesh) {
-                        intersectScene(ray, &visibilityCheck, scene, rng128, SurfelIntersectMode::Transmit);
-                        bool debug = true;
-                    }
                 }
             );
         });
@@ -570,9 +540,6 @@ namespace Pale {
                             jitterX,
                             jitterY);
 
-                        //if (!isWatchedPixel(pixelX, pixelY)) {
-                        //    return;
-                        //}
 
                         // -----------------------------------------------------------------
                         // 1) Transmit ray: collect all splat events + terminal mesh hit
@@ -581,11 +548,15 @@ namespace Pale {
                         // Lol or jut use a while true loop
                         const int maxLayers = 64;
                         float transmittanceProduct = 1.0f;
+                        float tValues[5] = {0};
+
+
                         while (true) {
                             WorldHit worldHit{};
 
                             intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator,
                                            SurfelIntersectMode::FirstHit);
+
                             if (!worldHit.hit) {
                                 // No more surfels/meshes: add background/environment with remaining throughput
                                 break;
@@ -628,7 +599,7 @@ namespace Pale {
                                     break;
                                 }
 
-                                primaryRay.origin = worldHit.hitPositionW + (primaryRay.direction * 1e-6f);
+                                primaryRay.origin = worldHit.hitPositionW + (primaryRay.direction * 1e-4f);
                                 continue;
                             }
 

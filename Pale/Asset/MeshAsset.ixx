@@ -1,12 +1,13 @@
 module;
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
-
+#include <string>
 
 export module Pale.Assets:Mesh;
 
 
 import Pale.Assets.Core;
+
 
 
 export namespace Pale {
@@ -22,6 +23,7 @@ export namespace Pale {
 
 
     struct Mesh : IAsset {
+        std::string name;
         std::vector<Submesh> submeshes{};
     };
 

@@ -214,6 +214,17 @@ int main(int argc, char** argv) {
 
     assetManager.registry().load("asset_registry.yaml");
 
+    std::filesystem::path sceneName;
+    std::filesystem::path pointCloudPath;
+    pointCloudPath = "initial.ply"; // default
+    sceneName = "cbox_custom.xml";
+    if (argc > 1) {
+        pointCloudPath = argv[1];
+    }
+    if (argc > 2) {
+        sceneName = argv[2];
+        sceneName.replace_extension(".xml");
+    }
     // Load in xml file and Create Scene from xml
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
@@ -222,21 +233,15 @@ int main(int argc, char** argv) {
     //serializer.deserialize("scene_blender_1.xml");
     //serializer.deserialize("scene.xml");
     //serializer.deserialize("scene_blender_debug.xml");
-    //serializer.deserialize("cbox_custom.xml");
-    serializer.deserialize("empty.xml");
+    serializer.deserialize(sceneName);
+    //serializer.deserialize("empty.xml");
 
     // Add Single Gaussian
     // Check CLI input for point cloud file
-    std::filesystem::path pointCloudPath;
-    if (argc > 1) {
-        pointCloudPath = argv[1];
-    }
-    else {
-        pointCloudPath = "initial.ply"; // default
-    }
+
 
     bool addPoints = true;
-    bool addModel = !true;
+    bool addModel =  true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -249,13 +254,13 @@ int main(int argc, char** argv) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.0f, 0.3f, 0.4f));
+        bunnyTransformComponent.setPosition(glm::vec3(-0.7f, 0.0f, 1.8f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 0.0f));
-        bunnyTransformComponent.setScale(glm::vec3(1.0f, 1.0f, 1.0f));
+        bunnyTransformComponent.setScale(glm::vec3(0.5f, 0.1f, 0.001f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-            assetIndexer.importPath("meshes/bunny.ply", Pale::AssetType::Mesh);
+            assetIndexer.importPath("meshes/cube.ply", Pale::AssetType::Mesh);
 
         auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
@@ -281,7 +286,7 @@ int main(int argc, char** argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = !true;
+    bool renderLightTracing =  true;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -343,13 +348,13 @@ int main(int argc, char** argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 5;
+        settings.numForwardPasses = 50;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 1; // 1 = Projection only
-        settings.adjointSamplesPerPixel = 8;
+        settings.adjointSamplesPerPixel = 1;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;
-        settings.renderDebugGradientImages = true;
+        settings.renderDebugGradientImages = false;
 
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
