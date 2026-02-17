@@ -347,7 +347,7 @@ namespace Pale {
 
                     if (cosine <= 0.0f)
                         return;
-                    float3 p = contribution.pathThroughput * M_1_PIf;
+                    float3 p = contribution.pathThroughput * surfel.alpha_r * surfel.albedo * M_1_PIf * cosine;
 
                     const float3 rho = surfel.albedo;
 
