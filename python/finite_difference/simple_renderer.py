@@ -45,7 +45,7 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 5,
+        "forward_passes": 50,
         "gather_passes": 1,
         "adjoint_bounces": 1,
         "adjoint_passes": 1,
@@ -69,21 +69,22 @@ def main(args) -> None:
     csv_path = output_dir / f"{camera}_{args.parameter}_sweep.csv"
     fieldnames = ["iter", args.parameter, "loss", "analytic_grad"]
 
-    iterations = 20
+    iterations = int(args.iterations)
     # Write header once (overwrite each run). Use "a" if you want to keep adding across runs.
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
         for iteration_index in range(iterations + 1):
-            value = 3 - (iteration_index * 6) / iterations  # 0.00, 0.02, ..., 0.10
 
             if args.parameter == "opacity":
+                value = (iteration_index) / iterations  # 0.00, 0.02, ..., 0.10
                 renderer.set_point_opacity(
                     opacity=value,
                     index=0
                 )
             elif args.parameter == "beta":
+                value = 6 - (iteration_index * 12) / iterations  # 0.00, 0.02, ..., 0.10
                 renderer.set_point_beta(
                     beta=value,
                     index = 0
@@ -173,6 +174,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Where to output files",
         default="output"
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=20,
     )
     parser.add_argument(
         "--camera",
