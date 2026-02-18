@@ -43,7 +43,7 @@ def create_incremental_run_dir(base_output_dir: Path) -> Path:
 
 def main(args) -> None:
     renderer_settings = {
-        "photons": 1e6,
+        "photons": 3e6,
         "bounces": 4,
         "forward_passes": 50,
         "gather_passes": 1,
