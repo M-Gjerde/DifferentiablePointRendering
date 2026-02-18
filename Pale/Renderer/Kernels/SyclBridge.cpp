@@ -176,6 +176,7 @@ namespace Pale {
         pkg.queue.fill(pkg.gradients.gradScale, float2{0, 0}, pkg.gradients.numPoints).wait();
         pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0}, pkg.gradients.numPoints).wait();
         pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints).wait();
+        pkg.queue.fill(pkg.gradients.gradBeta, 0.0f, pkg.gradients.numPoints).wait();
 
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
 

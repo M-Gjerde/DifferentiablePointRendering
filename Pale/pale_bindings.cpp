@@ -1450,6 +1450,38 @@ public:
     }
 
 
+    void set_point_beta(float newBeta, int index) {
+        if (!assetManager) {
+            throw std::runtime_error("set_point_beta: assetManager is null");
+        }
+
+        auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
+        if (!pointAssetSharedPtr) {
+            throw std::runtime_error("set_point_beta: failed to get PointAsset for dynamic point cloud");
+        }
+
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty()) {
+            throw std::runtime_error("set_point_beta: PointAsset has no PointGeometry blocks");
+        }
+
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
+
+        const int pointCount = static_cast<int>(pointGeometry.opacities.size());
+        if (index < 0 || index >= pointCount) {
+            throw std::runtime_error("set_point_beta: index out of range");
+        }
+
+        pointGeometry.betas[index] = newBeta;
+
+        // Only needed if BVH / acceleration depends on opacity (often it doesn't).
+        // If you can skip it, do so for performance.
+        rebuild_bvh();
+        //Pale::Log::PA_ERROR("Beta: {}/{}", pointGeometry.betas[index], buildProducts.points[index].beta);
+
+    }
+
+
     void set_point_properties(py::tuple translation3,
                               py::tuple rotationQuat4,
                               py::tuple scale3,
@@ -1610,5 +1642,8 @@ PYBIND11_MODULE(pale, m) {
              py::arg("index") = -1)
         .def("set_point_opacity",
              &PythonRenderer::set_point_opacity, py::arg("opacity"),
+             py::arg("index"))
+        .def("set_point_beta",
+             &PythonRenderer::set_point_beta, py::arg("beta"),
              py::arg("index"));
 }

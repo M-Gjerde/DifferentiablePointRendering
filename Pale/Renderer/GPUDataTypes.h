@@ -265,6 +265,7 @@ namespace Pale {
         return {a.x() * s, a.y() * s, a.z() * s};
     }
 
+
     inline float3 operator*(float s, float3 a) { return a * s; }
 
     inline float3 operator/(float3 a, float s) {
@@ -302,7 +303,10 @@ namespace Pale {
         };
     }
 
-
+    /* scalar products */
+    inline float4 operator*(float4 a, float s) {
+        return {a.x() * s, a.y() * s, a.z() * s, a.w() * s};
+    }
 
     /*
     // --- Normalize vector ---

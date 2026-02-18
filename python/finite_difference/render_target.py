@@ -35,10 +35,10 @@ def main(args) -> None:
     print("Scene:", args.scene)
     print("Ply:", args.ply)
     print("Index:", args.index)
-    print("Parameter:", args.param)
+    print("Parameter:", args.parameter)
 
     output_dir = (
-        Path(__file__).parent / "Output" / args.scene / "opacity"
+        Path(__file__).parent / "Output" / args.scene / args.parameter
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -84,9 +84,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--param",
+        "--parameter","--param",
         type=str,
-        choices=["translation", "rotation", "scale", "translation_rotation", "opacity"],
+        choices=["translation", "rotation", "scale", "translation_rotation", "opacity", "beta"],
         default="translation",
     )
 

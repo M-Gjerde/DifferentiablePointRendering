@@ -47,19 +47,14 @@ namespace Pale {
                     // Adjoint source weight
                     const float4 residualRgba = sensor.framebuffer[pixelIndex];
                     float3 residual = float3{residualRgba.x(), residualRgba.y(), residualRgba.z()}; // (I - T)
-                    float invPixelCount = 1.0f / float(raysTotal);
+                    float invPixelCount = 1.0f / float(raysPerSet); // W*H
                     float3 initialAdjointWeight = residual * invPixelCount;
-
-                    // Or unit weights:
-                    //initialAdjointWeight = float3(1.0f, 1.0f, 1.0f);
 
                     // Base slot for this pixel’s N samples
                     const uint32_t baseOutputSlot = pixelIndex;
-
                     // --- Sample 0: forced Transmit (background path) ---
                     const float jitterX = pixelRng.nextFloat() - 0.5f;
                     const float jitterY = pixelRng.nextFloat() - 0.5f;
-
 
                     Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
                         sensor.camera,
@@ -200,9 +195,6 @@ namespace Pale {
                         } else if (u < qNull + qReflect) {
                             // Generate next ray
                             const auto &surfel = scene.points[worldHit.primitiveIndex];
-                            float alpha = worldHit.alphaGeom * surfel.opacity;
-                            float weight = (alpha * surfel.alpha_r) / qReflect;
-                            float3 throughput = rayState.pathThroughput * weight;
                             // Find which side we hit the surfel:
                             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                             const float signedCosineIncident = dot(canonicalNormalW, -rayState.ray.direction);
@@ -232,8 +224,11 @@ namespace Pale {
                             const float3 &lambertBrdf = surfel.albedo;
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
-                            sampleCosineHemisphere(rng128, orientedNormal, sampledOutgoingDirectionW,
+                            sampleUniformSphere(rng128, sampledOutgoingDirectionW,
                                                    sampledPdf);
+                            if (dot(sampledOutgoingDirectionW, orientedNormal) < 0.0f) {
+                                sampledOutgoingDirectionW = -sampledOutgoingDirectionW;
+                            }
                             RayState nextState{};
                             // Spawn next ray
                             nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-5f);
@@ -241,7 +236,7 @@ namespace Pale {
                             nextState.ray.normal = orientedNormal;
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
-                            nextState.pathThroughput = throughput * lambertBrdf;
+                            nextState.pathThroughput = rayState.pathThroughput / qReflect * surfel.albedo * surfel.alpha_r * M_1_PIf;
                             if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
@@ -329,6 +324,8 @@ namespace Pale {
         const auto &photonMap = pkg.intermediates.map;
         auto *raysIn = pkg.intermediates.primaryRays;
 
+        float invSpp = 1.0f / settings.adjointSamplesPerPixel;
+
         DebugImages &debugImage = pkg.debugImages[cameraIndex];
 
         queue.submit([&](sycl::handler &cgh) {
@@ -347,7 +344,6 @@ namespace Pale {
 
                     if (cosine <= 0.0f)
                         return;
-                    float3 p = contribution.pathThroughput * surfel.alpha_r * surfel.albedo * M_1_PIf * cosine;
 
                     const float3 rho = surfel.albedo;
 
@@ -356,14 +352,34 @@ namespace Pale {
                         contribution.geometricNormalW,
                         photonMap
                     );
-                    const float3 f_r = rho * M_1_PIf;
+                    const float3 f_r = surfel.alpha_r * rho * M_1_PIf * M_1_PIf;
                     const float3 Lo = f_r * E;
+
+                    float3 p = contribution.pathThroughput * f_r;
 
                     float grad_alpha_eta = contribution.alphaGeom;
 
-                    float3 grad_cost_eta = grad_alpha_eta * p * Lo;
-                    float grad_cost_eta_sum = sum(grad_cost_eta);
+                    float3 grad_cost_eta = grad_alpha_eta * p * E;
+                    float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
                     atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+
+
+                    const float2 uv = phiInverse(contribution.hitPositionW, surfel);
+                    const float u = uv.x();
+                    const float v = uv.y();
+                    const float r2 = u * u + v * v;
+
+                    const float oneMinusR2 = sycl::max(1e-6f, 1.0f - r2);
+                    if (oneMinusR2 <= 0.0f) return; // or clamp; see note below
+                    const float betaValue = 4.0f * sycl::exp(surfel.beta); // beta(b)
+                    const float dAlphaGeomDb = contribution.alphaGeom * sycl::log(oneMinusR2) * betaValue;
+                    const float grad_alpha_beta = dAlphaGeomDb * surfel.opacity; // because alpha = alphaGeom * eta
+
+
+                    float3 grad_cost_beta = grad_alpha_beta * p * E;
+                    float grad_cost_beta_sum = sum(grad_cost_beta) * invSpp;
+
+                    atomicAddFloat(gradients.gradBeta[contribution.primitiveIndex], grad_cost_beta_sum);
 
                     if (settings.renderDebugGradientImages) {
                         uint32_t pixelIndex = contribution.pixelIndex;
@@ -371,11 +387,14 @@ namespace Pale {
                             &debugImage.framebufferOpacity[pixelIndex],
                             float4{grad_cost_eta_sum}
                         );
+                        atomicAddFloat4ToImage(
+                            &debugImage.framebufferBeta[pixelIndex],
+                            float4{grad_cost_beta_sum}
+                        );
                     }
                 });
         }).wait();
 
-        queue.wait();
     }
 
 

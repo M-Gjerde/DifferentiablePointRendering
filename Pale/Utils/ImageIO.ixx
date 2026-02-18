@@ -17,7 +17,89 @@ module;
 
 export module Pale.Utils.ImageIO;
 
+
 export namespace Pale::Utils {
+
+    std::vector<float> computeL2ImageGradientRGBA(
+    const std::vector<float>& renderedRgba,
+    const std::vector<float>& targetRgba,
+    std::uint32_t imageWidth,
+    std::uint32_t imageHeight)
+    {
+        const std::size_t expectedSize =
+            static_cast<std::size_t>(imageWidth) * static_cast<std::size_t>(imageHeight) * 4ull;
+
+        if (renderedRgba.size() != expectedSize) {
+            throw std::runtime_error("renderedRgba size does not match width * height * 4");
+        }
+        if (targetRgba.size() != expectedSize) {
+            throw std::runtime_error("targetRgba size does not match width * height * 4");
+        }
+
+        std::vector<float> gradientRgba(expectedSize);
+
+        for (std::size_t elementIndex = 0; elementIndex < expectedSize; ++elementIndex) {
+            gradientRgba[elementIndex] = renderedRgba[elementIndex] - targetRgba[elementIndex];
+        }
+
+        return gradientRgba;
+    }
+
+
+void loadEXRAsRGBAFloat(
+    const std::filesystem::path& filePath,
+    std::vector<float>& rgbaOut,
+    std::uint32_t& imageWidthOut,
+    std::uint32_t& imageHeightOut)
+{
+    Imf::RgbaInputFile inputFile(filePath.string().c_str());
+
+    const Imath::Box2i dataWindow = inputFile.dataWindow();
+    const int dataMinX = dataWindow.min.x;
+    const int dataMinY = dataWindow.min.y;
+    const int dataMaxX = dataWindow.max.x;
+    const int dataMaxY = dataWindow.max.y;
+
+    if (dataMaxX < dataMinX || dataMaxY < dataMinY) {
+        throw std::runtime_error("Invalid EXR dataWindow.");
+    }
+
+    const std::uint32_t imageWidth = static_cast<std::uint32_t>(dataMaxX - dataMinX + 1);
+    const std::uint32_t imageHeight = static_cast<std::uint32_t>(dataMaxY - dataMinY + 1);
+
+    const std::size_t pixelCount = static_cast<std::size_t>(imageWidth) * static_cast<std::size_t>(imageHeight);
+
+    std::vector<Imf::Rgba> exrPixels;
+    exrPixels.resize(pixelCount);
+
+    // OpenEXR's dataWindow may not start at (0,0). The framebuffer base pointer must be adjusted.
+    // This makes pixel (dataMinX, dataMinY) map to exrPixels[0].
+    Imf::Rgba* frameBufferBasePointer =
+        exrPixels.data() - static_cast<std::ptrdiff_t>(dataMinX) - static_cast<std::ptrdiff_t>(dataMinY) * static_cast<std::ptrdiff_t>(imageWidth);
+
+    inputFile.setFrameBuffer(frameBufferBasePointer, 1, static_cast<int>(imageWidth));
+    inputFile.readPixels(dataMinY, dataMaxY);
+
+    rgbaOut.resize(pixelCount * 4ull);
+
+    for (std::uint32_t y = 0; y < imageHeight; ++y) {
+        for (std::uint32_t x = 0; x < imageWidth; ++x) {
+            const std::size_t pixelIndex = static_cast<std::size_t>(y) * imageWidth + x;
+            const std::size_t dstIndex = pixelIndex * 4ull;
+
+            const Imf::Rgba& pixel = exrPixels[pixelIndex];
+
+            // Imf::Rgba stores half by default; implicit conversion to float is fine.
+            rgbaOut[dstIndex + 0] = static_cast<float>(pixel.r);
+            rgbaOut[dstIndex + 1] = static_cast<float>(pixel.g);
+            rgbaOut[dstIndex + 2] = static_cast<float>(pixel.b);
+            rgbaOut[dstIndex + 3] = static_cast<float>(pixel.a);
+        }
+    }
+
+    imageWidthOut = imageWidth;
+    imageHeightOut = imageHeight;
+}
 
     void saveRGBAFloatAsEXR(
         const std::filesystem::path& filePath,

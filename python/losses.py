@@ -22,15 +22,18 @@ def compute_l2_loss(rendered: np.ndarray, target: np.ndarray) -> float:
     loss = 0.5 * np.mean(diff * diff)              # 1/2 * mean(r^2)
     return float(loss)
 
+import numpy as np
+
 
 def compute_l2_grad(rendered: np.ndarray, target: np.ndarray) -> np.ndarray:
     """
-    Gradient of the L2 loss w.r.t. rendered image.
+    Maple loss per element:
+        J = 1/2 * (rendered_i - target_i)^2
 
-        dL/d(rendered_i) = (rendered_i - target_i) / N
+    Gradient per element:
+        dJ/d(rendered_i) = (rendered_i - target_i)
 
-    Returns:
-        grad: same shape as rendered.
+    Note: This returns the per-element gradient of J (no normalization by N).
     """
     if rendered.shape != target.shape:
         raise RuntimeError(
@@ -38,7 +41,6 @@ def compute_l2_grad(rendered: np.ndarray, target: np.ndarray) -> np.ndarray:
         )
 
     diff = rendered - target
-    #grad = diff / diff.size   # We do this in the renderer
     grad = diff
     return grad.astype(np.float32)
 
@@ -49,31 +51,31 @@ def compute_l2_loss_and_grad(
     return_loss_image: bool = False,
 ):
     """
-    L2 loss and gradient w.r.t. rendered image.
+    Discrete approximation using mean over all elements (pixels * channels):
 
-        C = mean((rendered - target)^2)
-        dC/d(rendered) = 2 * (rendered - target) / (H * W * 3)
+        C = mean( 1/2 * (rendered - target)^2 )
+        dC/d(rendered) = (rendered - target) / N
 
     If return_loss_image=True:
-        Also returns an (H,W,3) per-pixel loss image: (rendered - target)^2
+        loss_image is per-element: 1/2 * (rendered - target)^2
     """
-
     if rendered.shape != target.shape:
         raise RuntimeError(
             f"Shape mismatch: rendered {rendered.shape}, target {target.shape}"
         )
 
     diff = rendered - target
-    loss_image = diff * diff
+
+    loss_image = 0.5 * diff * diff
     loss = float(np.mean(loss_image))
 
     num_elements = diff.size
-    grad_image = (2.0 / float(num_elements)) * diff
+    grad_image = diff / float(num_elements)
 
     if return_loss_image:
-        return loss, grad_image, loss_image
+        return loss, grad_image.astype(np.float32), loss_image.astype(np.float32)
 
-    return loss, grad_image
+    return loss, grad_image.astype(np.float32)
 
 
 def compute_parameter_mse(current_params: dict[str, np.ndarray],
