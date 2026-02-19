@@ -17,18 +17,19 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 50,
+        "forward_passes": 20,
         "gather_passes": 1,
         "adjoint_bounces": 1,
         "adjoint_passes": 10,
         "logging": 3
     }
 
-    axis = args.axis  # x, y, or z
+    assets_root = Path(__file__).resolve().parents[2] / "Assets"
 
-    assets_root = Path(__file__).parent.parent.parent / "Assets"
-    scene_xml = args.scene + ".xml"
-    pointcloud_ply = args.ply + ".ply"
+    scene_path = Path(args.scene).parent
+
+    scene_xml = assets_root / "GradientTests" / f"{args.scene}.xml"
+    pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.ply}.ply"
 
 
     print("Assets root:", assets_root)
@@ -38,13 +39,13 @@ def main(args) -> None:
     print("Parameter:", args.parameter)
 
     output_dir = (
-        Path(__file__).parent / "Output" / args.scene / args.parameter
+        Path(__file__).parent / "Output" / scene_path / args.parameter
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- init renderer ---
-    renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
+    renderer = pale.Renderer(str(assets_root), scene_xml.__str__(), pointcloud_ply.__str__(), renderer_settings)
     cameras = renderer.get_camera_names()
     camera = args.camera
     print("Cameras:", cameras)
@@ -88,14 +89,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         choices=["translation", "rotation", "scale", "translation_rotation", "opacity", "beta"],
         default="translation",
-    )
-
-    parser.add_argument(
-        "--axis",
-        type=str,
-        choices=["x", "y", "z"],
-        default="axis of choice",
-        help="Which axis to finite-difference: 'translation', 'rotation', or 'scale'.",
     )
 
     parser.add_argument(

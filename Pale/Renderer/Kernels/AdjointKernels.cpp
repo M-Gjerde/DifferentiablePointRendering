@@ -163,12 +163,9 @@ namespace Pale {
                         uint32_t eventType = 0; // 0=null, 1=reflect, 2=transmit, 3=absorb
 
                         if (u < qNull) {
-                            /*
                             // Update path throughput
                             eventType = 0;
-
                             const Point &surfel = scene.points[worldHit.primitiveIndex];
-
                             float attenuation = 1.0f - worldHit.alphaGeom * surfel.opacity;
                             float weight = attenuation / qNull;
                             RayState nextState{};
@@ -179,7 +176,6 @@ namespace Pale {
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
-
                             if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
@@ -191,7 +187,9 @@ namespace Pale {
                                 *intermediates.countExtensionOut);
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
-                            */
+
+
+
                         } else if (u < qNull + qReflect) {
                             // Generate next ray
                             const auto &surfel = scene.points[worldHit.primitiveIndex];

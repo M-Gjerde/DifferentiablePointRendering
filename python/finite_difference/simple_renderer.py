@@ -43,23 +43,34 @@ def create_incremental_run_dir(base_output_dir: Path) -> Path:
 
 def main(args) -> None:
     renderer_settings = {
-        "photons": 3e6,
+        "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 50,
+        "forward_passes": 20,
         "gather_passes": 1,
         "adjoint_bounces": 1,
         "adjoint_passes": 1,
         "logging": 3
     }
 
-    assets_root = Path(__file__).parent.parent.parent / "Assets"
-    scene_xml = args.scene + ".xml"
-    pointcloud_ply = args.ply + ".ply"
+    assets_root = Path(__file__).resolve().parents[2] / "Assets"
 
-    base_output_dir = Path(__file__).parent / "Output" / args.scene / args.parameter
-    output_dir = create_incremental_run_dir(base_output_dir)
+    scene_path = Path(args.scene).parent
+    scene_xml = assets_root / "GradientTests" / f"{args.scene}.xml"
+    pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.ply}.ply"
 
-    renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
+    print("Assets root:", assets_root)
+    print("Scene:", args.scene)
+    print("Ply:", args.ply)
+    print("Index:", args.index)
+    print("Parameter:", args.parameter)
+
+    output_dir = (
+        Path(__file__).parent / "Output" / scene_path / args.parameter
+    )
+
+    output_dir = create_incremental_run_dir(output_dir)
+
+    renderer = pale.Renderer(str(assets_root), str(scene_xml), str(pointcloud_ply), renderer_settings)
 
     camera = args.camera
     target_image = read_rgb_exr(output_dir.parent / Path(camera + "_raw_target.exr"))
