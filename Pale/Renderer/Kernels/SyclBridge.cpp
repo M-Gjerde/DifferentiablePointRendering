@@ -224,6 +224,7 @@ namespace Pale {
                     pkg.queue.wait();
                     {
                         pkg.queue.fill(pkg.intermediates.countContributions, 0u, 1).wait();
+                        //pkg.queue.fill(pkg.intermediates.countTransmittanceContributions, 0u, 1).wait();
                         ScopedTimer timer("launchAdjointIntersectKernel");
                         launchAdjointIntersectKernel(pkg, activeCount);
                     }
@@ -233,18 +234,23 @@ namespace Pale {
                         contributionCount =
                             sycl::min(contributionCount, pkg.intermediates.maxHitContributionCount);
 
+
+                        uint32_t contributionTransmittanceCount = 0;
+                        pkg.queue.memcpy(&contributionTransmittanceCount, pkg.intermediates.countTransmittanceContributions, sizeof(uint32_t)).wait();
+                        contributionTransmittanceCount = sycl::min(contributionTransmittanceCount, pkg.intermediates.maxHitTransmittanceContributionCount);
+
                         ScopedTimer timer("launchAdjointKernel");
                         if (bounce == 0) {
                             launchAdjointProjectionKernel(pkg, contributionCount, cameraIndex);
                         }
                         else {
-                            //launchAdjointTransportKernel(pkg, activeCount, cameraIndex);
+                            launchAdjointTransportKernel(pkg, contributionTransmittanceCount, cameraIndex);
                         }
                     }
                     {
-                        ScopedTimer timer("generateNextRays");
-                        //generateNextAdjointRays(pkg, activeCount);
-                        generateNextRays(pkg, activeCount);
+                        //ScopedTimer timer("generateNextRays");
+                        ////generateNextAdjointRays(pkg, activeCount);
+                        ////generateNextRays(pkg, activeCount);
                     }
 
                     uint32_t nextCount = 0;

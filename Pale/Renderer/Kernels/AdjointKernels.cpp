@@ -90,18 +90,13 @@ namespace Pale {
         auto &intermediates = pkg.intermediates;
         auto &scene = pkg.scene;
 
-        struct ChosenScatterEvent {
-            float scalarWeight = 1.0f;
-            bool hasValue = false;
-        };
-
         queue.submit([&](sycl::handler &cgh) {
             uint64_t randomNumber = settings.random.number;
             cgh.parallel_for<class launchIntersectKernel>(
                 sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, rayIndex);
                     rng::Xorshift128 rng128(perItemSeed);
 
                     WorldHit worldHit{};
@@ -118,6 +113,20 @@ namespace Pale {
                     const auto &instance = scene.instances[worldHit.instanceIndex];
                     if (instance.geometryType == GeometryType::Mesh) {
                         // determine if we should make contributions from this position:
+
+                        if (rayState.hasTrackedParameter != UINT32_MAX) {
+                            // This means the ray just passed from a null event and we should accumulate transmittance gradients.
+                            // Add this to a contribution struct.
+                            HitTransmittanceContribution &transmittanceContribution = intermediates.
+                                    hitTransmittanceContribution[rayState.hasTrackedParameter];
+                            // populate with necessary info
+                            transmittanceContribution.connected = true;
+                            transmittanceContribution.instanceIndex = worldHit.instanceIndex;
+                            transmittanceContribution.hitPositionEnd = worldHit.hitPositionW;
+                            transmittanceContribution.geometricNormalEndW = worldHit.geometricNormalW;
+                            transmittanceContribution.pixelIndex = rayState.pixelIndex;
+                        }
+
 
                         // Generate next ray
                         float3 throughputMultiplier{0.0f};
@@ -155,8 +164,8 @@ namespace Pale {
                     } else {
                         // Random event
                         const float qNull = 0.5f;
-                        const float qReflect = 0.5f;
-                        const float qTransmit = 0.0f;
+                        const float qReflect = 0.3f;
+                        const float qTransmit = 0.2f;
                         // qAbsorb = 1 - (qNull + qReflect + qTransmit)
                         const float u = rng128.nextFloat();
 
@@ -165,7 +174,9 @@ namespace Pale {
                         if (u < qNull) {
                             // Update path throughput
                             eventType = 0;
+
                             const Point &surfel = scene.points[worldHit.primitiveIndex];
+
                             float attenuation = 1.0f - worldHit.alphaGeom * surfel.opacity;
                             float weight = attenuation / qNull;
                             RayState nextState{};
@@ -176,6 +187,27 @@ namespace Pale {
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
+
+                            HitTransmittanceContribution transmittanceContribution{};
+                            transmittanceContribution.alphaGeom = worldHit.alphaGeom;
+                            transmittanceContribution.pathThroughput = rayState.pathThroughput;
+                            transmittanceContribution.primitiveIndex = worldHit.primitiveIndex;
+                            transmittanceContribution.hitPositionSurfel = worldHit.hitPositionW;
+
+                            sycl::atomic_ref<
+                                uint32_t,
+                                sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space
+                            > contributionsCounter(*intermediates.countTransmittanceContributions);
+                            const uint32_t insertionIndex = contributionsCounter.fetch_add(1);
+                            if (insertionIndex < intermediates.maxHitTransmittanceContributionCount) {
+                                // Counter may now exceed capacity; caller can reset each frame/pass if desired.
+                                nextState.hasTrackedParameter = insertionIndex;
+                                intermediates.hitTransmittanceContribution[insertionIndex] = transmittanceContribution;
+                            }
+
+
                             if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
@@ -187,12 +219,12 @@ namespace Pale {
                                 *intermediates.countExtensionOut);
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
-
-
-
                         } else if (u < qNull + qReflect) {
                             // Generate next ray
                             const auto &surfel = scene.points[worldHit.primitiveIndex];
+                            float alpha = worldHit.alphaGeom * surfel.opacity;
+                            float weight = (alpha * surfel.alpha_r) / qReflect;
+                            float3 throughput = rayState.pathThroughput * weight;
                             // Find which side we hit the surfel:
                             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                             const float signedCosineIncident = dot(canonicalNormalW, -rayState.ray.direction);
@@ -223,7 +255,7 @@ namespace Pale {
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
                             sampleUniformSphere(rng128, sampledOutgoingDirectionW,
-                                                   sampledPdf);
+                                                sampledPdf);
                             if (dot(sampledOutgoingDirectionW, orientedNormal) < 0.0f) {
                                 sampledOutgoingDirectionW = -sampledOutgoingDirectionW;
                             }
@@ -234,7 +266,8 @@ namespace Pale {
                             nextState.ray.normal = orientedNormal;
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
-                            nextState.pathThroughput = rayState.pathThroughput / qReflect * surfel.albedo * surfel.alpha_r * M_1_PIf;
+                            nextState.pathThroughput =
+                                    rayState.pathThroughput / qReflect * surfel.albedo * surfel.alpha_r * M_1_PIf;
                             if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
@@ -247,7 +280,6 @@ namespace Pale {
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
                         } else if (u < qNull + qReflect + qTransmit) {
-                            /*
                             const auto &surfel = scene.points[worldHit.primitiveIndex];
                             float alpha = worldHit.alphaGeom * surfel.opacity;
                             float weight = (alpha * surfel.alpha_t) / qTransmit;
@@ -258,7 +290,6 @@ namespace Pale {
                             const int sideSign = signNonZero(signedCosineIncident);
                             // If positive we hit the front side if negative we hit the backside
                             float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
-
 
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;
                             const float3 &lambertBrdf = surfel.albedo;
@@ -287,7 +318,6 @@ namespace Pale {
                                 *intermediates.countExtensionOut);
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
-                            */
                         } else {
                             // Absorb: do not enqueue nextState, do not enqueue contribution.
                             return;
@@ -359,7 +389,7 @@ namespace Pale {
 
                     float3 grad_cost_eta = grad_alpha_eta * p * E;
                     float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
-                    atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                    //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
 
 
                     const float2 uv = phiInverse(contribution.hitPositionW, surfel);
@@ -379,20 +409,19 @@ namespace Pale {
 
                     atomicAddFloat(gradients.gradBeta[contribution.primitiveIndex], grad_cost_beta_sum);
 
-                    if (settings.renderDebugGradientImages) {
-                        uint32_t pixelIndex = contribution.pixelIndex;
-                        atomicAddFloat4ToImage(
-                            &debugImage.framebufferOpacity[pixelIndex],
-                            float4{grad_cost_eta_sum}
-                        );
-                        atomicAddFloat4ToImage(
-                            &debugImage.framebufferBeta[pixelIndex],
-                            float4{grad_cost_beta_sum}
-                        );
-                    }
+                    //if (settings.renderDebugGradientImages) {
+                    //    uint32_t pixelIndex = contribution.pixelIndex;
+                    //    atomicAddFloat4ToImage(
+                    //        &debugImage.framebufferOpacity[pixelIndex],
+                    //        float4{grad_cost_eta_sum}
+                    //    );
+                    //    atomicAddFloat4ToImage(
+                    //        &debugImage.framebufferBeta[pixelIndex],
+                    //        float4{grad_cost_beta_sum}
+                    //    );
+                    //}
                 });
         }).wait();
-
     }
 
 
@@ -415,38 +444,101 @@ namespace Pale {
     //   • Derivatives from both the scatter leg and the shadow/light leg are
     //     included, following the unified treatment where transmittance τ(Pi)
 
-    void launchAdjointTransportKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex) {
+    void launchAdjointTransportKernel(RenderPackage &pkg, uint32_t contributionTransmittanceCount,
+                                      uint32_t cameraIndex) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
-        auto &gradients = pkg.gradients;
-        auto &photonMap = pkg.intermediates.map;
-        auto *raysIn = pkg.intermediates.primaryRays;
-        auto *hitRecords = pkg.intermediates.hitRecords;
-        auto &debugImage = pkg.debugImages[cameraIndex];
+        // Host-side (before launching kernel)
+        SensorGPU &sensor = pkg.sensors[cameraIndex];
+        auto *contributionRecords = pkg.intermediates.hitTransmittanceContribution;
 
-        auto &sensor = pkg.sensors[cameraIndex];
+        auto &gradients = pkg.gradients;
+        const auto &photonMap = pkg.intermediates.map;
+        auto *raysIn = pkg.intermediates.primaryRays;
+
+        float invSpp = 1.0f / settings.adjointSamplesPerPixel;
+
+        DebugImages &debugImage = pkg.debugImages[cameraIndex];
 
         queue.submit([&](sycl::handler &cgh) {
-            cgh.parallel_for<struct AdjointShadeKernelTag>(
-                sycl::range<1>(activeRayCount),
+            uint64_t baseSeed = settings.random.number * (static_cast<uint64_t>(cameraIndex) + 5ull);
+
+            cgh.parallel_for<class launchContributionKernel>(
+                sycl::range<1>(contributionTransmittanceCount),
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
-                    const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(settings.random.number, rayIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
-                    const RayState &rayState = raysIn[rayIndex];
-                    const WorldHit &worldHit = hitRecords[rayIndex];
-                    // Shoot one transmit ray. The amount intersected here will tell us how many scatter rays we will transmit.
-                    if (!worldHit.hit) {
-                        return;
+                    const uint32_t contributionIndex = globalId[0];
+                    const HitTransmittanceContribution &contribution = contributionRecords[contributionIndex];
+
+                    if (contribution.connected) {
+                        const Point &surfel = scene.points[contribution.primitiveIndex];
+
+                        //float cosine = dot(-rayState.ray.direction, contribution.geometricNormalEndW);
+                        //
+                        //if (cosine <= 0.0f)
+                        //    return;
+                        // Get color from mesh hit
+                        const auto& instance = scene.instances[contribution.instanceIndex];
+                        const GPUMaterial material = scene.materials[instance.materialIndex];
+
+                        float3 rho = material.baseColor;
+
+                        const float3 E = gatherDiffuseIrradianceAtPoint(
+                            contribution.hitPositionEnd,
+                            contribution.geometricNormalEndW,
+                            photonMap
+                        );
+                        const float3 f_r = rho * M_1_PIf * M_1_PIf;
+                        float3 Lo = f_r * E;
+                        if (material.isEmissive())
+                            Lo += float3{material.power} * material.baseColor * M_1_PIf;
+
+                        float qNull = 0.5f;
+                        float grad_tau_eta = -contribution.alphaGeom / qNull;
+
+                        float attenuation = 1.0f - contribution.alphaGeom * surfel.opacity;
+
+
+                        float3 p = contribution.pathThroughput;
+
+
+                        float3 grad_cost_eta = grad_tau_eta * p * Lo;
+                        float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
+                        atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+
+
+                        const float2 uv = phiInverse(contribution.hitPositionSurfel, surfel);
+                        const float u = uv.x();
+                        const float v = uv.y();
+                        const float r2 = u * u + v * v;
+
+
+                        const float oneMinusR2 = sycl::max(1e-6f, 1.0f - r2);
+                        if (oneMinusR2 <= 0.0f) return; // or clamp; see note below
+                        const float betaValue = 4.0f * sycl::exp(surfel.beta); // beta(b)
+                        const float dAlphaGeomDb = contribution.alphaGeom * sycl::log(oneMinusR2) * betaValue;
+                        const float grad_alpha_beta = dAlphaGeomDb * surfel.opacity; // because alpha = alphaGeom * eta
+
+                        float3 grad_cost_beta = grad_alpha_beta * p * E;
+                        float grad_cost_beta_sum = sum(grad_cost_beta) * invSpp;
+
+                        atomicAddFloat(gradients.gradBeta[contribution.primitiveIndex], grad_cost_beta_sum);
+
+                        if (settings.renderDebugGradientImages) {
+                            uint32_t pixelIndex = contribution.pixelIndex;
+                            atomicAddFloat4ToImage(
+                                &debugImage.framebufferOpacity[pixelIndex],
+                                float4{grad_cost_eta_sum}
+                            );
+                            atomicAddFloat4ToImage(
+                                &debugImage.framebufferBeta[pixelIndex],
+                                float4{grad_cost_beta_sum}
+                            );
+                        }
                     }
-                    uint32_t numShadowRays = 1;
-                    shadowRay(scene, rayState, worldHit, gradients, debugImage, photonMap, rng128,
-                              settings.renderDebugGradientImages, numShadowRays);
                 });
-        });
-        queue.wait();
+        }).wait();
     }
 
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount) {
@@ -564,7 +656,8 @@ namespace Pale {
                     raysOut[outputSlot] = nextState;
                 });
         });
-        */
+
         queue.wait();
+        */
     }
 }

@@ -1576,13 +1576,11 @@ namespace Pale {
         return true;
     }
 
-    template<typename ContributionType>
     SYCL_EXTERNAL inline void appendContributionAtomic(
         uint32_t* globalContributionCounter,
-        ContributionType* globalContributionBuffer,
+        HitInfoContribution* globalContributionBuffer,
         uint32_t maxContributionCapacity,
-
-        const ContributionType& contributionValue)
+        const HitInfoContribution& contributionValue)
     {
         sycl::atomic_ref<
             uint32_t,
@@ -1599,6 +1597,15 @@ namespace Pale {
         }
 
         globalContributionBuffer[insertionIndex] = contributionValue;
+    }
+
+    SYCL_EXTERNAL inline void appendTransmittanceContributionAtomic(
+        uint32_t* globalContributionCounter,
+        HitTransmittanceContribution* globalContributionBuffer,
+        uint32_t maxContributionCapacity,
+        const HitTransmittanceContribution& contributionValue)
+    {
+
     }
 
     SYCL_EXTERNAL inline void depositPhotonSurface(

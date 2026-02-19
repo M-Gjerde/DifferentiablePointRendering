@@ -17,10 +17,10 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 20,
+        "forward_passes": 5,
         "gather_passes": 1,
-        "adjoint_bounces": 1,
-        "adjoint_passes": 10,
+        "adjoint_bounces": 0,
+        "adjoint_passes": 0,
         "logging": 3
     }
 

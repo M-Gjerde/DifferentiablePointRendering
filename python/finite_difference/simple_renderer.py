@@ -45,10 +45,10 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 20,
+        "forward_passes": 5,
         "gather_passes": 1,
-        "adjoint_bounces": 1,
-        "adjoint_passes": 1,
+        "adjoint_bounces": 3,
+        "adjoint_passes": 2,
         "logging": 3
     }
 
@@ -189,7 +189,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--iterations",
         type=int,
-        default=20,
+        default=10,
     )
     parser.add_argument(
         "--camera",

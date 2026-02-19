@@ -84,16 +84,23 @@ namespace Pale {
 
         std::size_t sizeContributionRecordsBytes = sizeof(HitInfoContribution) * m_rayQueueCapacity;
         m_intermediates.hitContribution = sycl::malloc_device<HitInfoContribution>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated contribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
+        Log::PA_TRACE("Allocated hitContribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
         m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
+
+        std::size_t sizeTransmittanceContributionRecordsBytes = sizeof(HitTransmittanceContribution) * m_rayQueueCapacity / 2.0f;
+        m_intermediates.hitTransmittanceContribution = sycl::malloc_device<HitTransmittanceContribution>(m_rayQueueCapacity / 2.0f, m_queue);
+        Log::PA_TRACE("Allocated hitTransmittanceContribution records: {}", Utils::formatBytes(sizeTransmittanceContributionRecordsBytes));
+        m_intermediates.maxHitTransmittanceContributionCount = m_rayQueueCapacity / 2.0f;
 
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countTransmittanceContributions = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
 
         // --- zero init ---
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countTransmittanceContributions, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
         m_queue.wait();
 

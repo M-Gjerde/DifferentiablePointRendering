@@ -348,8 +348,8 @@ int main(int argc, char **argv) {
         settings.maxBounces = 4;
         settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 1; // 1 = Projection only
-        settings.adjointSamplesPerPixel = 1;
+        settings.maxAdjointBounces = 3; // 1 = Projection only // 3 starts including transmittance
+        settings.adjointSamplesPerPixel = 16;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;
         settings.renderDebugGradientImages = true;
@@ -430,6 +430,17 @@ int main(int argc, char **argv) {
             Pale::Log::PA_INFO(
                 "grad Beta = ({})",
                 hostGradientBeta
+            );
+            float hostGradientOpacity{};
+            deviceSelector.getQueue()
+                    .memcpy(&hostGradientOpacity,
+                            gradients.gradOpacity,
+                            sizeof(float))
+                    .wait();
+
+            Pale::Log::PA_INFO(
+                "grad Opacity = ({})",
+                hostGradientOpacity
             );
 
             for (size_t i = 0; const auto &adjointSensor: adjointSensors) {

@@ -227,7 +227,7 @@ namespace Pale {
     enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
     enum class SurfelIntersectMode : uint32_t { Bernoulli = 0, Transmit = 1, FirstHit = 2 , Uniform = 3 };
-    enum class EventType : uint32_t { Null = 0, Reflect = 1, Transmit = 2 , Absorb = 2 };
+    enum class EventType : uint32_t { Null = 0, Reflect = 1, Transmit = 2 , Absorb = 3, TransmittanceGradient = 4 };
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -244,6 +244,7 @@ namespace Pale {
         uint32_t bounceIndex{0};
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
         uint32_t lightIndex = UINT32_MAX;
+        uint32_t hasTrackedParameter = UINT32_MAX;
     };
 
     static_assert(std::is_trivially_copyable_v<RayState>);
@@ -301,6 +302,19 @@ namespace Pale {
         float alphaGeom;
     };
 
+    struct alignas(16) HitTransmittanceContribution {
+        float3 pathThroughput = float3(0.0f);
+        float3 hitPositionSurfel = float3(0.0f);
+        float3 hitPositionEnd = float3(0.0f);
+        float3 geometricNormalEndW = float3(0.0f);
+        uint32_t primitiveIndex = UINT32_MAX;
+        uint32_t instanceIndex = UINT32_MAX;
+        uint32_t pixelIndex;
+        uint32_t rayIndex;
+        float alphaGeom;
+        bool connected = false;
+    };
+
     static_assert(std::is_trivially_copyable_v<WorldHit>);
 
     enum class IntegratorKind : uint32_t {
@@ -324,7 +338,7 @@ namespace Pale {
         uint32_t numGatherPasses = 6; // Which bounce to start RR
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
-        uint32_t russianRouletteStart = 2; // Which bounce to start RR
+        uint32_t russianRouletteStart = 6; // Which bounce to start RR
         bool renderDebugGradientImages = false;
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
@@ -392,9 +406,15 @@ namespace Pale {
         RayState *primaryRays;
         RayState *extensionRaysA;
         WorldHit *hitRecords;
+
         HitInfoContribution *hitContribution;
         uint32_t maxHitContributionCount = 0;
         uint32_t* countContributions;
+
+        HitTransmittanceContribution *hitTransmittanceContribution;
+        uint32_t maxHitTransmittanceContributionCount = 0;
+        uint32_t* countTransmittanceContributions;
+
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;
 
