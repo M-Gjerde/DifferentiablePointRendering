@@ -48,7 +48,7 @@ def main(args) -> None:
         "forward_passes": 5,
         "gather_passes": 1,
         "adjoint_bounces": 3,
-        "adjoint_passes": 2,
+        "adjoint_passes": 1,
         "logging": 3
     }
 
@@ -127,7 +127,7 @@ def main(args) -> None:
                 "loss": loss_value,
                 "analytic_grad": analytic_grad,
             })
-            print(f"{iteration_index}/{iterations}, {args.parameter}: {value}, Loss: {loss_value}, AN: {analytic_grad}")
+            print(f"{iteration_index}/{iterations}, {args.parameter}: {value:.2f}, Loss: {loss_value:.5f}, AN: {analytic_grad:.5f}")
             f.flush()  # ensures you can plot while it’s running
 
     print(f"Saved to run_dir: {output_dir}")

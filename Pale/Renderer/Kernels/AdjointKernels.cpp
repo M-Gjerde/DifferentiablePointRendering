@@ -125,6 +125,7 @@ namespace Pale {
                             transmittanceContribution.hitPositionEnd = worldHit.hitPositionW;
                             transmittanceContribution.geometricNormalEndW = worldHit.geometricNormalW;
                             transmittanceContribution.pixelIndex = rayState.pixelIndex;
+                            transmittanceContribution.rayIndex = rayIndex;
                         }
 
 
@@ -469,11 +470,13 @@ namespace Pale {
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
                     const uint32_t contributionIndex = globalId[0];
-                    const HitTransmittanceContribution &contribution = contributionRecords[contributionIndex];
+                    HitTransmittanceContribution &contribution = contributionRecords[contributionIndex];
 
                     if (contribution.connected) {
                         const Point &surfel = scene.points[contribution.primitiveIndex];
 
+                        raysIn[contribution.rayIndex].hasTrackedParameter = UINT32_MAX;
+                        contribution.connected = false;
                         //float cosine = dot(-rayState.ray.direction, contribution.geometricNormalEndW);
                         //
                         //if (cosine <= 0.0f)
