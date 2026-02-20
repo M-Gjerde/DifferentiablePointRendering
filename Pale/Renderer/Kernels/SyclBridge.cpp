@@ -224,9 +224,10 @@ namespace Pale {
                     pkg.queue.wait();
                     {
                         pkg.queue.fill(pkg.intermediates.countContributions, 0u, 1).wait();
-                        //pkg.queue.fill(pkg.intermediates.countTransmittanceContributions, 0u, 1).wait();
+                        pkg.queue.fill(pkg.intermediates.countTransmittanceContributions, 0u, 1).wait();
                         ScopedTimer timer("launchAdjointIntersectKernel");
                         launchAdjointIntersectKernel(pkg, activeCount);
+
                     }
                     {
                         uint32_t contributionCount = 0;
@@ -245,7 +246,12 @@ namespace Pale {
                         }
                         else {
                             launchAdjointTransportKernel(pkg, contributionTransmittanceCount, cameraIndex);
+
                         }
+
+                        //float opacityGrad = 0;
+                        //pkg.queue.memcpy(&opacityGrad, pkg.gradients.gradOpacity, sizeof(float)).wait();
+                        //Log::PA_ERROR("OpacityGrad: {}", opacityGrad);
                     }
                     {
                         //ScopedTimer timer("generateNextRays");
