@@ -245,7 +245,7 @@ namespace Pale {
                             launchAdjointProjectionKernel(pkg, contributionCount, cameraIndex);
                         }
                         else {
-                            launchAdjointTransportKernel(pkg, contributionTransmittanceCount, cameraIndex);
+                            launchAdjointTransportKernel(pkg, activeCount, cameraIndex);
 
                         }
 

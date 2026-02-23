@@ -245,6 +245,7 @@ namespace Pale {
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
         uint32_t lightIndex = UINT32_MAX;
         uint32_t hasTrackedParameter = UINT32_MAX;
+        uint32_t pathId;
     };
 
     static_assert(std::is_trivially_copyable_v<RayState>);
@@ -312,7 +313,9 @@ namespace Pale {
         uint32_t pixelIndex;
         uint32_t rayIndex;
         float alphaGeom;
-        bool connected = false;
+        bool valid = false;
+        bool validEnd = false;
+        float cosine = 0.0f;
     };
 
     static_assert(std::is_trivially_copyable_v<WorldHit>);

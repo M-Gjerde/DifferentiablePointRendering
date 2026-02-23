@@ -346,9 +346,9 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 5;
+        settings.numForwardPasses = 25;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 3; // 1 = Projection only // 3 starts including transmittance
+        settings.maxAdjointBounces = 2; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 16;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;

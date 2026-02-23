@@ -73,7 +73,7 @@ namespace Pale {
                     rayState.pathThroughput = initialAdjointWeight;
                     rayState.bounceIndex = 0;
                     rayState.pixelIndex = pixelIndex;
-
+                    rayState.pathId = pixelLinearIndexWithinImage; // 0 .. (W*H-1)
                     if (pixelX == 200 && pixelY == (sensor.height - 1 - 325)) {
                         int debug = 1;
                     }
@@ -114,18 +114,16 @@ namespace Pale {
                     if (instance.geometryType == GeometryType::Mesh) {
                         // determine if we should make contributions from this position:
 
-                        if (rayState.hasTrackedParameter != UINT32_MAX) {
-                            // This means the ray just passed from a null event and we should accumulate transmittance gradients.
-                            // Add this to a contribution struct.
-                            HitTransmittanceContribution &transmittanceContribution = intermediates.
-                                    hitTransmittanceContribution[rayState.hasTrackedParameter];
+                        HitTransmittanceContribution &transmittanceContribution = intermediates.
+                                hitTransmittanceContribution[rayState.pathId];
+
+                        if (transmittanceContribution.valid) {
                             // populate with necessary info
-                            transmittanceContribution.connected = true;
+                            transmittanceContribution.validEnd = true;
                             transmittanceContribution.instanceIndex = worldHit.instanceIndex;
                             transmittanceContribution.hitPositionEnd = worldHit.hitPositionW;
                             transmittanceContribution.geometricNormalEndW = worldHit.geometricNormalW;
-                            transmittanceContribution.pixelIndex = rayState.pixelIndex;
-                            transmittanceContribution.rayIndex = rayIndex;
+                            transmittanceContribution.cosine = dot(-rayState.ray.direction, worldHit.geometricNormalW);
                         }
 
 
@@ -149,6 +147,7 @@ namespace Pale {
                         nextState.ray.normal = worldHit.geometricNormalW;
                         nextState.bounceIndex = rayState.bounceIndex + 1;
                         nextState.pixelIndex = rayState.pixelIndex;
+                        nextState.pathId = rayState.pathId;
                         nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
 
                         if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
@@ -188,30 +187,22 @@ namespace Pale {
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
-
-                            HitTransmittanceContribution transmittanceContribution{};
-                            transmittanceContribution.alphaGeom = worldHit.alphaGeom;
-                            transmittanceContribution.pathThroughput = rayState.pathThroughput;
-                            transmittanceContribution.primitiveIndex = worldHit.primitiveIndex;
-                            transmittanceContribution.hitPositionSurfel = worldHit.hitPositionW;
-
-                            sycl::atomic_ref<
-                                uint32_t,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space
-                            > contributionsCounter(*intermediates.countTransmittanceContributions);
-                            const uint32_t insertionIndex = contributionsCounter.fetch_add(1);
-                            if (insertionIndex < intermediates.maxHitTransmittanceContributionCount) {
-                                // Counter may now exceed capacity; caller can reset each frame/pass if desired.
-                                nextState.hasTrackedParameter = insertionIndex;
-                                intermediates.hitTransmittanceContribution[insertionIndex] = transmittanceContribution;
-                            }
+                            nextState.pathId = rayState.pathId;
 
 
                             if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
+
+                            HitTransmittanceContribution transmittanceContribution{};
+                            transmittanceContribution.alphaGeom = worldHit.alphaGeom;
+                            transmittanceContribution.pathThroughput = rayState.pathThroughput / qNull;
+                            transmittanceContribution.primitiveIndex = worldHit.primitiveIndex;
+                            transmittanceContribution.pixelIndex = rayState.pixelIndex;
+                            transmittanceContribution.hitPositionSurfel = worldHit.hitPositionW;
+                            transmittanceContribution.valid = true;
+                            intermediates.hitTransmittanceContribution[rayState.pathId] = transmittanceContribution;
+
 
                             auto extensionCounter = sycl::atomic_ref<uint32_t,
                                 sycl::memory_order::relaxed,
@@ -267,6 +258,8 @@ namespace Pale {
                             nextState.ray.normal = orientedNormal;
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
+                            nextState.pathId = rayState.pathId;
+
                             nextState.pathThroughput =
                                     rayState.pathThroughput / qReflect * surfel.albedo * surfel.alpha_r * M_1_PIf;
                             if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
@@ -306,6 +299,7 @@ namespace Pale {
                             nextState.ray.normal = -orientedNormal; // optional, but keep consistent
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
+                            nextState.pathId = rayState.pathId;
                             nextState.pathThroughput = throughput * lambertBrdf;
 
                             if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
@@ -472,17 +466,17 @@ namespace Pale {
                     const uint32_t contributionIndex = globalId[0];
                     HitTransmittanceContribution &contribution = contributionRecords[contributionIndex];
 
-                    if (contribution.connected) {
+                    if (contribution.validEnd) {
                         const Point &surfel = scene.points[contribution.primitiveIndex];
 
-                        raysIn[contribution.rayIndex].hasTrackedParameter = UINT32_MAX;
-                        contribution.connected = false;
-                        //float cosine = dot(-rayState.ray.direction, contribution.geometricNormalEndW);
+                        contribution.valid = false;
+                        contribution.validEnd = false;
+                        float cosine = contribution.cosine;
                         //
                         //if (cosine <= 0.0f)
                         //    return;
                         // Get color from mesh hit
-                        const auto& instance = scene.instances[contribution.instanceIndex];
+                        const auto &instance = scene.instances[contribution.instanceIndex];
                         const GPUMaterial material = scene.materials[instance.materialIndex];
 
                         float3 rho = material.baseColor;
@@ -492,21 +486,15 @@ namespace Pale {
                             contribution.geometricNormalEndW,
                             photonMap
                         );
-                        const float3 f_r = rho * M_1_PIf * M_1_PIf;
-                        float3 Lo = f_r * E;
-                        if (material.isEmissive())
-                            Lo += float3{material.power} * material.baseColor * M_1_PIf;
+                        const float3 f_r = rho * M_1_PIf;
+                        //if (material.isEmissive())
+                        //    Lo += float3{material.power} * material.baseColor * M_1_PIf;
 
-                        float qNull = 0.5f;
-                        float grad_tau_eta = -contribution.alphaGeom / qNull;
-
-                        float attenuation = 1.0f - contribution.alphaGeom * surfel.opacity;
+                        float grad_tau_eta = -contribution.alphaGeom;
 
 
-                        float3 p = contribution.pathThroughput;
-
-
-                        float3 grad_cost_eta = grad_tau_eta * p * Lo;
+                        float3 p = contribution.pathThroughput * cosine * f_r;
+                        float3 grad_cost_eta = grad_tau_eta * p * E;
                         float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
                         atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
 

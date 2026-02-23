@@ -87,10 +87,10 @@ namespace Pale {
         Log::PA_TRACE("Allocated hitContribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
         m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
 
-        std::size_t sizeTransmittanceContributionRecordsBytes = sizeof(HitTransmittanceContribution) * m_rayQueueCapacity / 2.0f;
-        m_intermediates.hitTransmittanceContribution = sycl::malloc_device<HitTransmittanceContribution>(m_rayQueueCapacity / 2.0f, m_queue);
+        std::size_t sizeTransmittanceContributionRecordsBytes = sizeof(HitTransmittanceContribution) * m_rayQueueCapacity;
+        m_intermediates.hitTransmittanceContribution = sycl::malloc_device<HitTransmittanceContribution>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated hitTransmittanceContribution records: {}", Utils::formatBytes(sizeTransmittanceContributionRecordsBytes));
-        m_intermediates.maxHitTransmittanceContributionCount = m_rayQueueCapacity / 2.0f;
+        m_intermediates.maxHitTransmittanceContributionCount = m_rayQueueCapacity;
 
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
