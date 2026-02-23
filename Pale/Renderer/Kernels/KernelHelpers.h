@@ -123,7 +123,7 @@ namespace Pale {
     };
 
     static DebugPixel kDebugPixels[] = {
-        {430, 320},
+        {800, 500},
     };
 
     static bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
@@ -1644,6 +1644,41 @@ namespace Pale {
         photonEntry.isValid = 1u;
 
         photonMap.photons[slot] = photonEntry;
+    }
+
+    SYCL_EXTERNAL inline void appendCompletedGradientEventAtomic(
+    uint32_t* globalCompletedCounter,
+    CompletedGradientEvent* globalCompletedBuffer,
+    uint32_t maxCompletedCapacity,
+    const CompletedGradientEvent& eventValue)
+    {
+        sycl::atomic_ref<
+            uint32_t,
+            sycl::memory_order::relaxed,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space
+        > counter(*globalCompletedCounter);
+
+        const uint32_t insertionIndex = counter.fetch_add(1);
+
+        if (insertionIndex >= maxCompletedCapacity) {
+            return;
+        }
+
+        globalCompletedBuffer[insertionIndex] = eventValue;
+    }
+
+    SYCL_EXTERNAL inline void clearPendingAdjointState(PendingAdjointState& pending) {
+        pending.kind = PendingAdjointKind::None;
+        pending.primitiveIndex = UINT32_MAX;
+        pending.alphaGeom = 0.0f;
+        pending.hitPosition = float3{0.0f};
+        pending.pathThroughput = float3{0.0f};
+        pending.pixelIndex = 0;
+    }
+
+    SYCL_EXTERNAL inline float computeEndpointCosine(const Ray& incomingRay, const float3& endpointNormalW) {
+        return dot(-incomingRay.direction, endpointNormalW);
     }
 
 

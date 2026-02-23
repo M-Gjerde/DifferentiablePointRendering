@@ -87,20 +87,25 @@ namespace Pale {
         Log::PA_TRACE("Allocated hitContribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
         m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
 
-        std::size_t sizeTransmittanceContributionRecordsBytes = sizeof(HitTransmittanceContribution) * m_rayQueueCapacity;
-        m_intermediates.hitTransmittanceContribution = sycl::malloc_device<HitTransmittanceContribution>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated hitTransmittanceContribution records: {}", Utils::formatBytes(sizeTransmittanceContributionRecordsBytes));
-        m_intermediates.maxHitTransmittanceContributionCount = m_rayQueueCapacity;
+        std::size_t sizeCompletedGradientEvents = sizeof(CompletedGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.completedGradientEvents = sycl::malloc_device<CompletedGradientEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated completedGradientEvent records: {}", Utils::formatBytes(sizeCompletedGradientEvents));
+        m_intermediates.maxCompletedGradientEventCount = m_rayQueueCapacity;
+
+        std::size_t sizePendingAjointStates = sizeof(PendingAdjointState) * m_rayQueueCapacity;
+        m_intermediates.pendingAdjointStates = sycl::malloc_device<PendingAdjointState>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated pendingAdjointStates records: {}", Utils::formatBytes(sizePendingAjointStates));
+        m_intermediates.maxPendingAdjointStateCount = m_rayQueueCapacity;
 
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countTransmittanceContributions = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countCompletedGradientEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
 
         // --- zero init ---
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countTransmittanceContributions, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countCompletedGradientEvents, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
         m_queue.wait();
 
@@ -328,6 +333,7 @@ namespace Pale {
 
 
         m_settings.rayGenMode = RayGenMode::Adjoint;
+        Log::PA_DEBUG("Submitting Adjoint rendering pass");
 
         ScopedTimer adjointTimer("Adjoint pass total", spdlog::level::debug);
 

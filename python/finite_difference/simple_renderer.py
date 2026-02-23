@@ -48,7 +48,7 @@ def main(args) -> None:
         "forward_passes": 25,
         "gather_passes": 1,
         "adjoint_bounces": 3,
-        "adjoint_passes": 1,
+        "adjoint_passes": 4,
         "logging": 3
     }
 

@@ -241,7 +241,7 @@ int main(int argc, char **argv) {
     bool addPoints = true;
     bool addModel = true;
     if (addPoints) {
-        auto assetHandle = assetIndexer.importPath("PointClouds" / pointCloudPath, Pale::AssetType::PointCloud);
+        auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
         entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
         auto &transform = entityGaussian.getComponent<Pale::TransformComponent>();
@@ -252,7 +252,7 @@ int main(int argc, char **argv) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(-0.7f, 0.0f, 1.8f));
+        bunnyTransformComponent.setPosition(glm::vec3(0.7f, 0.0f, 1.8f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 0.0f));
         bunnyTransformComponent.setScale(glm::vec3(0.5f, 0.1f, 0.001f));
 
@@ -348,8 +348,8 @@ int main(int argc, char **argv) {
         settings.maxBounces = 4;
         settings.numForwardPasses = 25;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 2; // 1 = Projection only // 2 starts including transmittance
-        settings.adjointSamplesPerPixel = 16;
+        settings.maxAdjointBounces = 3; // 1 = Projection only // 2 starts including transmittance
+        settings.adjointSamplesPerPixel = 4;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;
         settings.renderDebugGradientImages = true;
@@ -361,7 +361,6 @@ int main(int argc, char **argv) {
         Pale::Log::PA_INFO("Forward Render Pass...");
         std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
         tracer.renderForward(sensors); // films is span/array
-
 
         for (const auto &sensor: sensors) {
             std::vector<uint8_t> rgba =
@@ -415,7 +414,8 @@ int main(int argc, char **argv) {
 
 
             std::vector<float> rgba =
-                    Pale::uploadSensorRGBA(deviceSelector.getQueue(), adjointSensors.front(), rgbaHostAdjointSource);
+                    Pale::uploadSensorRGBA(deviceSelector.getQueue(), adjointSensors.front(),
+                                           rgbaHostAdjointSource);
 
 
             tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
@@ -457,10 +457,9 @@ int main(int argc, char **argv) {
                 std::filesystem::path baseDir =
                         std::filesystem::path("Output")
                         / pointCloudPath.filename().replace_extension("")
-                        / adjointSensor.name;
-                {
+                        / adjointSensor.name; {
                     std::filesystem::path pngPath =
-                        baseDir / "adjoint_source_l2_gradient_seismic.png";
+                            baseDir / "adjoint_source_l2_gradient_seismic.png";
 
                     Pale::Utils::saveGradientSignPNG(
                         pngPath,
@@ -468,12 +467,12 @@ int main(int argc, char **argv) {
                         width,
                         height,
                         adjointSamplesPerPixel,
-                        1.0f,   // full range
+                        1.0f, // full range
                         false,
                         true);
 
                     std::filesystem::path pngQ99Path =
-                        baseDir / "adjoint_source_l2_gradient_seismic_q099.png";
+                            baseDir / "adjoint_source_l2_gradient_seismic_q099.png";
 
                     Pale::Utils::saveGradientSignPNG(
                         pngQ99Path,

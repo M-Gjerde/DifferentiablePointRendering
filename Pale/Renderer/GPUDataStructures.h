@@ -226,8 +226,9 @@ namespace Pale {
     // ---- Config -------------------------------------------------------------
     enum class RayGenMode : uint32_t { Emitter = 1, Adjoint = 3 };
 
-    enum class SurfelIntersectMode : uint32_t { Bernoulli = 0, Transmit = 1, FirstHit = 2 , Uniform = 3 };
-    enum class EventType : uint32_t { Null = 0, Reflect = 1, Transmit = 2 , Absorb = 3, TransmittanceGradient = 4 };
+    enum class SurfelIntersectMode : uint32_t { Bernoulli = 0, Transmit = 1, FirstHit = 2, Uniform = 3 };
+
+    enum class EventType : uint32_t { Null = 0, Reflect = 1, Transmit = 2, Absorb = 3, TransmittanceGradient = 4 };
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -281,7 +282,8 @@ namespace Pale {
         bool hitSurfel = false;
         GeometryType type = GeometryType::InvalidType;
         float t = FLT_MAX; // world-space t
-        float transmissivity = 1.0f;         // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
+        float transmissivity = 1.0f;
+        // 0.0 = No transmission. 1.0 Full transmission (I.e. default until we interact with someething)
         float alphaGeom = 0.0f;
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
@@ -302,6 +304,69 @@ namespace Pale {
         uint32_t rayIndex;
         float alphaGeom;
     };
+
+    enum class PendingAdjointKind : uint8_t {
+        None = 0,
+        // Light transport
+        NullTransmittance,
+        ReflectScatter,
+        TransmitScatter,
+
+        // Projection states
+        ProjectionScatter,
+    };
+
+    struct PendingAdjointState {
+        PendingAdjointKind kind = PendingAdjointKind::None;
+
+        // --- surfel identity ---
+        uint32_t primitiveIndex = UINT32_MAX;
+        uint32_t instanceIndex = UINT32_MAX;
+
+        // --- local interaction data ---
+        float alphaGeom = 0.0f; // α_geom at surfel
+        float3 hitPosition{}; // world position on surfel
+
+        // --- adjoint transport ---
+        float3 pathThroughput{}; // p BEFORE this interaction
+
+        // Optional bookkeeping (cheap, useful later)
+        uint32_t pixelIndex = 0;
+        uint32_t pathId;  //for debugging
+    };
+
+    struct CompletedGradientEvent {
+        // --- interaction identity ---
+        PendingAdjointKind kind = PendingAdjointKind::None;
+        uint32_t pathId{}; //for debugging
+
+        // Require next path intersection or not
+        bool hasEndpoint = false;
+
+        // --- local surfel/mesh data ---
+        float alphaGeom{};
+        float3 hitPositionSurfel;
+        float3 hitNormalSurfel{};
+        float cosineSurfel{}; // dot(-wi, n_end)
+        uint32_t instanceIndex{};
+        uint32_t primitiveIndex{};
+
+        // --- adjoint transport ---
+        float3 pathThroughput; // p BEFORE interaction
+        uint32_t pixelIndex{};
+
+        // --- endpoint (next hit) ---
+        GeometryType endpointType = GeometryType::InvalidType;
+        uint32_t endpointInstanceIndex{};
+        uint32_t endpointPrimitiveIndex{};
+        uint32_t endpointLightIndex{};
+        float endPointAlphaGeom{};
+
+        float3 endpointPosition;
+        float3 endpointNormal;
+        float endpointCosine{}; // dot(-wi, n_end)
+    };
+
 
     struct alignas(16) HitTransmittanceContribution {
         float3 pathThroughput = float3(0.0f);
@@ -412,11 +477,14 @@ namespace Pale {
 
         HitInfoContribution *hitContribution;
         uint32_t maxHitContributionCount = 0;
-        uint32_t* countContributions;
+        uint32_t *countContributions;
 
-        HitTransmittanceContribution *hitTransmittanceContribution;
-        uint32_t maxHitTransmittanceContributionCount = 0;
-        uint32_t* countTransmittanceContributions;
+        CompletedGradientEvent *completedGradientEvents = nullptr;
+        uint32_t maxCompletedGradientEventCount = 0;
+        uint32_t *countCompletedGradientEvents = nullptr;
+
+        PendingAdjointState *pendingAdjointStates = nullptr;
+        uint32_t maxPendingAdjointStateCount = 0;
 
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;

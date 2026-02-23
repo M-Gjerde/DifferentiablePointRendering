@@ -327,9 +327,7 @@ namespace Pale {
     }
 
     inline float sum(const float3& v) {
-        float sum = 0.0f;
-        sum += v.x() + v.y() + v.z();
-        return sum;
+        return v.x() + v.y() + v.z();
     }
 
     /* keep float2 as single alias once */

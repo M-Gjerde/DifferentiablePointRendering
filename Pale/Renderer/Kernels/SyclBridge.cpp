@@ -203,6 +203,7 @@ namespace Pale {
                                pkg.debugImages[cameraIndex].numPixels).wait();
             }
 
+
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
             for (int spp = 0; spp < samplesPerPixel; ++spp) {
                 pkg.settings.random.number = seedGen();
@@ -210,49 +211,46 @@ namespace Pale {
 
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
                 {
-                    ScopedTimer timer("launchRayGenAdjointKernel");
+                    ScopedTimer timer("Lauching: LaunchRayGenAdjointKernel");
+                    Log::PA_TRACE("Generating Adjoint Rays");
                     launchRayGenAdjointKernel(pkg, spp, cameraIndex);
                 }
 
                 uint32_t raysPerFrame = pkg.sensors[cameraIndex].width * pkg.sensors[cameraIndex].height;
                 uint32_t activeCount = raysPerFrame;
 
+                pkg.queue.fill(pkg.intermediates.pendingAdjointStates, PendingAdjointState(), activeCount);
+                pkg.queue.fill(pkg.intermediates.completedGradientEvents, CompletedGradientEvent(), activeCount);
+
+
                 for (uint32_t bounce = 0; bounce < pkg.settings.maxAdjointBounces && activeCount > 0; ++bounce) {
                     pkg.settings.random.number = seedGen();
                     pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countCompletedGradientEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                     pkg.queue.wait();
                     {
-                        pkg.queue.fill(pkg.intermediates.countContributions, 0u, 1).wait();
-                        pkg.queue.fill(pkg.intermediates.countTransmittanceContributions, 0u, 1).wait();
+                        Log::PA_TRACE("Lauching: LaunchAdjointIntersectKernel");
                         ScopedTimer timer("launchAdjointIntersectKernel");
-                        launchAdjointIntersectKernel(pkg, activeCount);
+                        launchAdjointIntersectKernel(pkg, activeCount, bounce);
 
                     }
-                    {
-                        uint32_t contributionCount = 0;
-                        pkg.queue.memcpy(&contributionCount, pkg.intermediates.countContributions, sizeof(uint32_t)).wait();
-                        contributionCount =
-                            sycl::min(contributionCount, pkg.intermediates.maxHitContributionCount);
 
-
-                        uint32_t contributionTransmittanceCount = 0;
-                        pkg.queue.memcpy(&contributionTransmittanceCount, pkg.intermediates.countTransmittanceContributions, sizeof(uint32_t)).wait();
-                        contributionTransmittanceCount = sycl::min(contributionTransmittanceCount, pkg.intermediates.maxHitTransmittanceContributionCount);
-
+                        uint32_t completedGradientContributions = 0;
+                        pkg.queue.memcpy(&completedGradientContributions, pkg.intermediates.countCompletedGradientEvents, sizeof(uint32_t)).wait();
+                        completedGradientContributions = sycl::min(completedGradientContributions, pkg.intermediates.maxPendingAdjointStateCount);
                         ScopedTimer timer("launchAdjointKernel");
-                        if (bounce == 0) {
-                            launchAdjointProjectionKernel(pkg, contributionCount, cameraIndex);
+                        if (completedGradientContributions) {
+                            launchAdjointTransportKernel(pkg, completedGradientContributions, cameraIndex);
                         }
-                        else {
-                            launchAdjointTransportKernel(pkg, activeCount, cameraIndex);
 
-                        }
+                        // Count stats:
+
 
                         //float opacityGrad = 0;
                         //pkg.queue.memcpy(&opacityGrad, pkg.gradients.gradOpacity, sizeof(float)).wait();
                         //Log::PA_ERROR("OpacityGrad: {}", opacityGrad);
-                    }
+
                     {
                         //ScopedTimer timer("generateNextRays");
                         ////generateNextAdjointRays(pkg, activeCount);
