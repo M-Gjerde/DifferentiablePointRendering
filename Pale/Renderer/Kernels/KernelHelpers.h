@@ -1015,8 +1015,8 @@ namespace Pale {
 
                         const float3 d = ph.position - queryPositionWorld;
 
-                        const float cosine = dot(surfelNormalW, ph.normal);
-                        if (cosine < 0.3f) continue;
+                        const float cosine = dot(surfelNormalW, -ph.incomingDirection);
+                        if (cosine < 0.0f) continue;
 
                         const float dist2 = dot(d, d);
                         if (dist2 > r2)
@@ -1680,7 +1680,7 @@ namespace Pale {
 
     SYCL_EXTERNAL inline void depositPhotonSurface(
         const WorldHit& worldHit,
-        const float3& normal,
+        const float3& incomingDirection,
         const float3& flux,
         const DeviceSurfacePhotonMapGrid& photonMap) {
         // Atomic counter for photon slots
@@ -1702,7 +1702,7 @@ namespace Pale {
         photonEntry.position = worldHit.hitPositionW;
 
         // Geometric normal (unoriented by design)
-        photonEntry.normal = normal;
+        photonEntry.incomingDirection = incomingDirection;
 
         // Incoming direction (towards surface)
         //photonEntry.incomingDirection = -rayState.ray.direction;

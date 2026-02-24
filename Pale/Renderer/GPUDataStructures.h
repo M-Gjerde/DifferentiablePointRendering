@@ -424,7 +424,7 @@ namespace Pale {
         float3 position{0.0f};
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
-        float3 normal{0.0f};
+        float3 incomingDirection{0.0f};
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         //int sideSign{}; // +1 or -1: hemisphere relative to canonical surfel normal
         //GeometryType geometryType{GeometryType::InvalidType};

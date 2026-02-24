@@ -284,7 +284,7 @@ int main(int argc, char **argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = true;
+    bool renderLightTracing = !true;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -352,7 +352,7 @@ int main(int argc, char **argv) {
         settings.adjointSamplesPerPixel = 4;
         settings.depthDistortionWeight = 0.000;
         settings.normalConsistencyWeight = 0.000;
-        settings.renderDebugGradientImages = !true;
+        settings.renderDebugGradientImages =  true;
 
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);

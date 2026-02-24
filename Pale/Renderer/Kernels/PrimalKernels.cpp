@@ -116,7 +116,7 @@ namespace Pale {
 
                         // Deposit Irradiance to photon map independent of surface interaction
                         if (settings.integratorKind == IntegratorKind::photonMapping) {
-                            depositPhotonSurface(worldHit, worldHit.geometricNormalW, rayState.pathThroughput,
+                            depositPhotonSurface(worldHit, rayState.ray.direction, rayState.pathThroughput,
                                                  intermediates.map);
                         }
 
@@ -201,7 +201,7 @@ namespace Pale {
 
                             // Deposit Irradiance to photon map independent of surface interaction
                             if (settings.integratorKind == IntegratorKind::photonMapping) {
-                                depositPhotonSurface(worldHit, orientedNormal, rayState.pathThroughput / qReflect,
+                                depositPhotonSurface(worldHit,  rayState.ray.direction, rayState.pathThroughput / qReflect,
                                                      intermediates.map);
                             }
 
