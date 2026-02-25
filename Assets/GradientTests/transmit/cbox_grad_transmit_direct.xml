@@ -12,7 +12,7 @@
         <float name="fov" value="70.3077"/>
         <float name="adjoint_source" value="True"/>
         <transform name="to_world">
-            <lookat origin="0.5,0.0,0.01" target="0.5,0.0,2.0" up="0,1,0"/>
+            <lookat origin="0,0.0,1" target="0,0.0,0" up="0,1,0"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>

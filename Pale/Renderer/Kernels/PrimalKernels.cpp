@@ -551,6 +551,8 @@ namespace Pale {
                             jitterX,
                             jitterY);
 
+                        //if (!isWatchedPixel(pixelX, pixelY))
+                        //    return;
 
                         // -----------------------------------------------------------------
                         // 1) Transmit ray: collect all splat events + terminal mesh hit
@@ -592,9 +594,9 @@ namespace Pale {
                                 accumulatedRadianceRGB += transmittance * alphaEff * Lo;
                                 transmittance *= (1.0f - alphaEff);
                                 // Early out if we're nearly opqaue
-                                if (transmittance < 0.001f) {
-                                    break;
-                                }
+                                //if (transmittance < 0.001f) {
+                                //    break;
+                                //}
                                 primaryRay.origin = worldHit.hitPositionW + (primaryRay.direction * 1e-4f);
                                 continue;
                             }
@@ -633,8 +635,6 @@ namespace Pale {
                                     const float3 E = gatherDiffuseIrradianceAtPoint(
                                         worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
                                     const float3 Lo = (rho * M_1_PIf) * E;
-
-                                    const float ndotv = dot(worldHit.geometricNormalW, -primaryRay.direction);
 
                                     accumulatedRadianceRGB += transmittance * Lo;
                                 }

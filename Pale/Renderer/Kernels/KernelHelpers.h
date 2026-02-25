@@ -122,7 +122,7 @@ namespace Pale {
     };
 
     static DebugPixel kDebugPixels[] = {
-        {800, 500},
+        {250, 250},
     };
 
     static bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {

@@ -397,6 +397,13 @@ namespace Pale {
         uint32_t number = 42; // should be more than maxBounces
     };
 
+    struct AdjointSampleSettings {
+        float qNull = 0.5f;
+        float qReflect = 0.5f;
+        float qTransmit = 0.0f;
+        float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
+    };
+
     struct alignas(16) PathTracerSettings {
         IntegratorKind integratorKind = IntegratorKind::photonMapping;
         uint32_t photonsPerLaunch = 1e6;
@@ -411,6 +418,7 @@ namespace Pale {
         bool renderDebugGradientImages = false;
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
+        AdjointSampleSettings sampling;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

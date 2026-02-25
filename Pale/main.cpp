@@ -223,6 +223,7 @@ int main(int argc, char **argv) {
         sceneName = argv[2];
         sceneName.replace_extension(".xml");
     }
+    Pale::Log::PA_INFO("Scene file path: {}", sceneName.string());
     // Load in xml file and Create Scene from xml
     std::shared_ptr<Pale::Scene> scene = std::make_shared<Pale::Scene>();
     Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
@@ -346,7 +347,7 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 25;
+        settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 3; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 4;
