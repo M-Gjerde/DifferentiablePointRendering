@@ -79,9 +79,9 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
 
 
 def _render_loss(
-    renderer: "pale.Renderer",
-    camera: str,
-    target_image: np.ndarray,
+        renderer: "pale.Renderer",
+        camera: str,
+        target_image: np.ndarray,
 ) -> tuple[float, np.ndarray, dict]:
     """
     Returns (loss_value, rendered_rgb, images_dict).
@@ -95,14 +95,14 @@ def _render_loss(
 
 
 def _finite_difference_loss(
-    renderer: "pale.Renderer",
-    parameter: str,
-    base_value: float,
-    eps: float,
-    index: int,
-    camera: str,
-    target_image: np.ndarray,
-    clamp_01: bool = True,
+        renderer: "pale.Renderer",
+        parameter: str,
+        base_value: float,
+        eps: float,
+        index: int,
+        camera: str,
+        target_image: np.ndarray,
+        clamp_01: bool = True,
 ) -> tuple[float, float, float]:
     """
     Computes L(base), and a finite-difference derivative dL/dparam at base_value.
@@ -169,20 +169,19 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 1000,
+        "forward_passes": 10,
         "gather_passes": 1,
         "adjoint_bounces": 1,
-        "adjoint_passes": 16,
-        "logging": 3,
+        "adjoint_passes": 8,
+        "logging": 5,
         "seed": 42
     }
 
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
 
     scene_path = Path(args.scene).parent
-    scene_xml = assets_root / "GradientTests" / f"{args.scene}.xml"
-    pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.ply}.ply"
-
+    scene_xml = assets_root / "GradientTests" / f"{args.scene}" / f"{args.scene}.xml"
+    pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.scene}" / f"{args.ply}.ply"
     print("Assets root:", assets_root)
     print("Scene:", args.scene)
     print("Ply:", args.ply)
@@ -190,7 +189,7 @@ def main(args) -> None:
     print("Parameter:", args.parameter)
     print("FD epsilon:", args.fd_epsilon)
 
-    output_dir = Path(__file__).parent / "Output" / scene_path / args.parameter
+    output_dir = Path(__file__).parent / "Output" / scene_path / f"{args.scene}" / args.parameter
     output_dir = create_latest_run_dir(output_dir)
 
     # Create subfolders
@@ -354,7 +353,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=5e-3,
+        default=1e-3,
         help="Finite difference epsilon. Default 1e-3.",
     )
     return parser.parse_args()

@@ -1,0 +1,7 @@
+{
+  "common_args": ["--iterations", "10", "--fd_epsilon", "5e-3", "--ply", "initial", "--index", "0"],
+  "cases": [
+    {"scene": "empty", "camera": "camera1", "parameter": "opacity"},
+    {"scene": "simple_1", "camera": "camera1", "parameter": "opacity"}
+  ]
+}

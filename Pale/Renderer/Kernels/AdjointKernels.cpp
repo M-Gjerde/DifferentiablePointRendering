@@ -449,6 +449,7 @@ namespace Pale {
                                             contribution.endpointNormal,
                                             photonMap
                                         ) * material.baseColor * M_1_PIf;
+
                             float3 Le = {0.0f, 0.0f, 0.0f};
                             if (material.isEmissive()) {
                                 float cosine = contribution.endpointCosine;
@@ -485,12 +486,8 @@ namespace Pale {
                                             photonMap
                                         ) * material.baseColor * M_1_PIf;
 
-                            const float3 f_s = surfel.alpha_r * surfel.albedo * M_1_PIf;
                             const float cosTheta =contribution.endpointCosine;
-
-                            const float3 p = contribution.pathThroughput
-                                             * f_s * cosTheta / contribution.endPointPDF;
-
+                            const float3 p = contribution.pathThroughput / contribution.endPointPDF;
                             const float3 grad_cost_eta = p * Lo * contribution.endPointAlphaGeom;
 
                             float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;

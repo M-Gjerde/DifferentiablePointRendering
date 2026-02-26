@@ -17,11 +17,11 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 1000,
+        "forward_passes": 10,
         "gather_passes": 1,
         "adjoint_bounces": 0,
         "adjoint_passes": 0,
-        "logging": 3,
+        "logging": 5,
         "seed": 42
     }
 
@@ -29,8 +29,8 @@ def main(args) -> None:
 
     scene_path = Path(args.scene).parent
 
-    scene_xml = assets_root / "GradientTests" / f"{args.scene}.xml"
-    pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.ply}.ply"
+    scene_xml = assets_root / "GradientTests" / f"{args.scene}" / f"{args.scene}.xml"
+    pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.scene}" / f"{args.ply}.ply"
 
 
     print("Assets root:", assets_root)
@@ -39,9 +39,8 @@ def main(args) -> None:
     print("Index:", args.index)
     print("Parameter:", args.parameter)
 
-    output_dir = (
-        Path(__file__).parent / "Output" / scene_path / args.parameter
-    )
+    output_dir = Path(__file__).parent / "Output" / scene_path / f"{args.scene}" / args.parameter
+
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
