@@ -33,7 +33,7 @@ def compute_l2_grad(rendered: np.ndarray, target: np.ndarray) -> np.ndarray:
     Gradient per element:
         dJ/d(rendered_i) = (rendered_i - target_i)
 
-    Note: This returns the per-element gradient of J (no normalization by N).
+    Note: This returns the per-element gradient of J (with normalization by N).
     """
     if rendered.shape != target.shape:
         raise RuntimeError(
@@ -41,7 +41,7 @@ def compute_l2_grad(rendered: np.ndarray, target: np.ndarray) -> np.ndarray:
         )
 
     diff = rendered - target
-    grad = diff
+    grad = diff / diff.size
     return grad.astype(np.float32)
 
 

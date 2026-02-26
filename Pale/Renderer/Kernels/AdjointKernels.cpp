@@ -21,7 +21,6 @@ namespace Pale {
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
         uint32_t raysPerSet = imageWidth * imageHeight;
-        float raysTotal = settings.adjointSamplesPerPixel * raysPerSet;
 
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
@@ -43,10 +42,9 @@ namespace Pale {
                     rng::Xorshift128 pixelRng(perPixelSeed);
 
                     // Adjoint source weight
-                    const float4 residualRgba = sensor.framebuffer[pixelIndex];
-                    float3 residual = float3{residualRgba.x(), residualRgba.y(), residualRgba.z()}; // (I - T)
-                    float invPixelCount = 1.0f / float(raysPerSet); // W*H
-                    float3 initialAdjointWeight = residual * invPixelCount;
+                    const float4 dLoss_dI = sensor.framebuffer[pixelIndex];
+                    float3 dLoss_dI3 = float3{dLoss_dI.x(), dLoss_dI.y(), dLoss_dI.z()}; // (I - T)
+                    float3 initialAdjointWeight = dLoss_dI3;
 
                     // Base slot for this pixel’s N samples
                     const uint32_t baseOutputSlot = pixelIndex;
@@ -419,13 +417,18 @@ namespace Pale {
                                 contribution.hitNormalSurfel,
                                 photonMap
                             );
-                            const float3 f_r = surfel.alpha_r * surfel.albedo * M_1_PIf ;
 
+                            // Evaluate surfel outgoing radiance (direct/indirect via photon map)
+                            const float3 f_r = surfel.alpha_r * surfel.albedo * M_1_PIf; // Lambert BRDF
                             const float3 Lr = f_r * E;
-                            float3 p = contribution.pathThroughput * f_r;
-                            float grad_alpha_eta = contribution.alphaGeom;
-                            float3 grad_cost_eta = grad_alpha_eta * p * Lr;
-                            float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
+                            // If you also include emissive term at that surfel, add it here (Le)
+                            const float3 Lo = Lr; // + Le if applicable
+                            // opacity alpha = alphaGeom * eta  => dLo/deta = alphaGeom * Lo
+                            const float grad_alpha_eta = contribution.alphaGeom;
+                            // p should be the adjoint weight carried from the camera (residual etc.)
+                            // DO NOT multiply p by f_r again.
+                            const float3 grad_rgb = grad_alpha_eta * contribution.pathThroughput * Lo;
+                            const float grad_cost_eta_sum = sum(grad_rgb) * invSpp; // only if you truly have spp samples
                             atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;

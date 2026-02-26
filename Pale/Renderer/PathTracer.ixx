@@ -41,6 +41,7 @@ export namespace Pale {
         RenderIntermediatesGPU m_intermediates{};
         PathTracerSettings m_settings{};
         uint64_t m_rayQueueCapacity = 0;
+        uint64_t m_sessionSeed = 42;
     };
 
 }

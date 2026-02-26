@@ -128,6 +128,7 @@ public:
             settings.numGatherPasses = get_i(settingsDict, "gather_passes", settings.numGatherPasses);
             settings.maxAdjointBounces = get_i(settingsDict, "adjoint_bounces", settings.maxAdjointBounces);
             settings.adjointSamplesPerPixel = get_i(settingsDict, "adjoint_passes", settings.adjointSamplesPerPixel);
+            settings.random.seed = get_i(settingsDict, "seed", settings.random.seed);
             settings.renderDebugGradientImages =
                 get_b(settingsDict, "debug_images", settings.renderDebugGradientImages);
             settings.depthDistortionWeight =

@@ -58,6 +58,7 @@ namespace Pale {
     struct RenderPackage {
         sycl::queue queue;
         PathTracerSettings settings{};
+        Random random;
         GPUSceneBuffers scene{};
         RenderIntermediatesGPU intermediates{};
         PointGradients gradients{};

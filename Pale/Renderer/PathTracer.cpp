@@ -16,7 +16,7 @@ import Pale.Log;
 import Pale.Render.BVH;
 
 namespace Pale {
-    PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings) {
+    PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings), m_sessionSeed(settings.random.seed) {
     }
 
     void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
@@ -293,9 +293,11 @@ namespace Pale {
         ScopedTimer forwardTimer("Rendering time", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
+
         RenderPackage renderPackage{
             .queue = m_queue,
             .settings = m_settings,
+            .random.seed = m_sessionSeed,
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .gradients = {},

@@ -17,11 +17,12 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 25,
+        "forward_passes": 1000,
         "gather_passes": 1,
         "adjoint_bounces": 0,
         "adjoint_passes": 0,
-        "logging": 3
+        "logging": 3,
+        "seed": 42
     }
 
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
@@ -51,12 +52,10 @@ def main(args) -> None:
     print("Cameras:", cameras)
     print("Rendering from camera:", camera)
 
-    renderer.render_forward()
-    rendered_image = renderer.render_forward()[camera + "_raw"]
-    save_rgb_preview_exr(rendered_image,  output_dir /  Path(camera + "_raw_target.exr"))
-    rendered_image = renderer.render_forward()[camera]
-    print(rendered_image.shape)
-    save_rgb_preview_png(rendered_image,  output_dir /  Path(camera + "_target.png"))
+    rendered_images = renderer.render_forward()
+    save_rgb_preview_exr(rendered_images[camera + "_raw"],  output_dir /  Path(camera + "_raw_target.exr"))
+    print(rendered_images[camera].shape)
+    save_rgb_preview_png(rendered_images[camera],  output_dir /  Path(camera + "_target.png"))
 
 
 
