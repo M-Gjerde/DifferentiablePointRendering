@@ -156,16 +156,13 @@ namespace Pale {
                     }
                     else {
                         // Random event
-                        const float qNull = 0.5f;
-                        const float qReflect = 0.5f;
-                        const float qTransmit = 0.2f;
                         // qAbsorb = 1 - (qNull + qReflect + qTransmit)
                         const float u = rng128.nextFloat();
-                        if (u < qNull) {
+                        if (u < settings.sampling.qNull) {
                             // Update path throughput
                             const Point& surfel = scene.points[worldHit.primitiveIndex];
                             float attenuation = 1.0f - worldHit.alphaGeom * surfel.opacity;
-                            float weight = attenuation / qNull;
+                            float weight = attenuation / settings.sampling.qNull;
                             RayState nextState{};
                             // Spawn next ray
                             nextState.ray.origin = worldHit.hitPositionW + (rayState.ray.direction * 1e-5f);
@@ -187,7 +184,7 @@ namespace Pale {
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
                         }
-                        else if (u < qNull + qReflect) {
+                        else if (u < settings.sampling.qNull + settings.sampling.qReflect) {
                             // Generate next ray
                             const auto& surfel = scene.points[worldHit.primitiveIndex];
 
@@ -201,7 +198,7 @@ namespace Pale {
 
                             // Deposit Irradiance to photon map independent of surface interaction
                             if (settings.integratorKind == IntegratorKind::photonMapping) {
-                                depositPhotonSurface(worldHit,  rayState.ray.direction, rayState.pathThroughput / qReflect,
+                                depositPhotonSurface(worldHit,  rayState.ray.direction, rayState.pathThroughput / settings.sampling.qReflect,
                                                      intermediates.map);
                             }
 
@@ -215,7 +212,7 @@ namespace Pale {
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
                             float3 f_s = surfel.alpha_r * surfel.albedo * M_1_PIf;
                             float alpha = worldHit.alphaGeom * surfel.opacity;
-                            float3 weight = ((alpha / qReflect) * f_s * cosTheta / sampledPdf);
+                            float3 weight = ((alpha / settings.sampling.qReflect) * f_s * cosTheta / sampledPdf);
                             float3 throughput = rayState.pathThroughput * weight;
 
                             if (settings.integratorKind == IntegratorKind::lightTracing) {
@@ -255,7 +252,7 @@ namespace Pale {
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
                         }
-                        else if (u < qNull + qReflect + qTransmit) {
+                        else if (u < settings.sampling.qNull + settings.sampling.qReflect + settings.sampling.qTransmit) {
                             const auto& surfel = scene.points[worldHit.primitiveIndex];
                             // Find which side we hit the surfel:
                             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
@@ -293,7 +290,7 @@ namespace Pale {
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
                             float3 f_s = surfel.alpha_t * surfel.albedo * M_1_PIf;
                             float alpha = worldHit.alphaGeom * surfel.opacity;
-                            float3 weight = ((alpha / qReflect) * f_s * cosTheta / sampledPdf);
+                            float3 weight = ((alpha / settings.sampling.qReflect) * f_s * cosTheta / sampledPdf);
                             float3 throughput = rayState.pathThroughput * weight;
 
                             RayState nextState{};
@@ -576,7 +573,6 @@ namespace Pale {
                             // -----------------------------------------------------------------
                             if (instance.geometryType == GeometryType::PointCloud) {
                                 const Point& surfel = scene.points[worldHit.primitiveIndex];
-                                const float3 rho = surfel.albedo;
                                 // Canonical surfel normal (no front/back semantics stored).
                                 float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
                                 // Make it face the incoming/view ray so the hemisphere is consistent.
@@ -589,7 +585,7 @@ namespace Pale {
                                     photonMap
                                 );
 
-                                float3 Lo = E * (rho * M_1_PIf);
+                                float3 Lo = E * (surfel.alpha_r * surfel.albedo * M_1_PIf);
                                 float alphaEff = surfel.opacity * worldHit.alphaGeom;
                                 accumulatedRadianceRGB += transmittance * alphaEff * Lo;
                                 transmittance *= (1.0f - alphaEff);
@@ -630,11 +626,10 @@ namespace Pale {
                                     // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
                                 }
                                 else {
-                                    const float3 rho = material.baseColor;
 
                                     const float3 E = gatherDiffuseIrradianceAtPoint(
                                         worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
-                                    const float3 Lo = (rho * M_1_PIf) * E;
+                                    const float3 Lo = (material.baseColor * M_1_PIf) * E;
 
                                     accumulatedRadianceRGB += transmittance * Lo;
                                 }

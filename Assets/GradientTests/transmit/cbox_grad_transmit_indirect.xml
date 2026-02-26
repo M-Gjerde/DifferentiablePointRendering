@@ -12,7 +12,7 @@
         <float name="fov" value="70.3077"/>
         <float name="adjoint_source" value="True"/>
         <transform name="to_world">
-            <lookat origin="-1,0.0,1" target="0,0.0,0.35" up="0,0,1"/>
+            <lookat origin="0,0.0,1" target="0,0.0,0" up="0,1,0"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
@@ -81,45 +81,6 @@
     </shape>
 
 
-    <!-- Ceiling: z=2, normal -Z -->
-    <shape type="obj" id="ceiling">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="1" y="0" z="0" angle="180"/>
-            <translate x="0" y="0" z="2"/>
-        </transform>
-        <ref id="light_gray"/>
-    </shape>
-
-    <!-- Back wall: y=2, normal -Y -->
-    <shape type="obj" id="back">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="1" y="0" z="0" angle="90"/>
-            <translate x="0" y="1" z="1"/>
-        </transform>
-        <ref id="light_gray"/>
-    </shape>
-
-    <!-- Left wall: x=-1, normal +X -->
-    <shape type="obj" id="left_red">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="0" y="1" z="0" angle="90"/>
-            <translate x="-1" y="0" z="1"/>
-        </transform>
-        <ref id="red"/>
-    </shape>
-
-    <!-- Right wall: x=+1, normal -X -->
-    <shape type="obj" id="right_green">
-        <string name="filename" value="meshes/rectangle.obj"/>
-        <transform name="to_world">
-            <rotate x="0" y="1" z="0" angle="-90"/>
-            <translate x="1" y="0" z="1"/>
-        </transform>
-        <ref id="green"/>
-    </shape>
 
     <!-- Ceiling light: small, facing -Z
        FlashLight:
