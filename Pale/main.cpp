@@ -347,8 +347,8 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 4;
-        settings.numForwardPasses = 20;
+        settings.maxBounces = 5;
+        settings.numForwardPasses = 50;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 3; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 4;

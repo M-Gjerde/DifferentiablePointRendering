@@ -214,7 +214,7 @@ def compute_check(
 def main() -> None:
     ap = argparse.ArgumentParser("Batch FD vs analytic gradient checker (robust)")
     ap.add_argument("--tests", type=str, required=True)
-    ap.add_argument("--script", type=str, default="./finite_difference/finite_difference_test.py")
+    ap.add_argument("--script", type=str, default="./finite_difference/fd_test.py")
     ap.add_argument("--workspace", type=str, default="./finite_difference/")
     ap.add_argument("--python", type=str, default=sys.executable)
     ap.add_argument(

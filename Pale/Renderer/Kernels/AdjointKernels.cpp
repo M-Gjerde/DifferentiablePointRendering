@@ -415,7 +415,8 @@ namespace Pale {
                             const float3 E = gatherDiffuseIrradianceAtPoint(
                                 contribution.hitPositionSurfel,
                                 contribution.hitNormalSurfel,
-                                photonMap
+                                photonMap,
+                                settings.numForwardPasses * settings.photonsPerLaunch
                             );
 
                             // Evaluate surfel outgoing radiance (direct/indirect via photon map)
@@ -447,7 +448,8 @@ namespace Pale {
                             float3 Lr = gatherDiffuseIrradianceAtPoint(
                                             contribution.endpointPosition,
                                             contribution.endpointNormal,
-                                            photonMap
+                                            photonMap,
+                                            settings.numForwardPasses * settings.photonsPerLaunch
                                         ) * material.baseColor * M_1_PIf;
 
                             float3 Le = {0.0f, 0.0f, 0.0f};
@@ -483,7 +485,8 @@ namespace Pale {
                             float3 Lo = gatherDiffuseIrradianceAtPoint(
                                             contribution.endpointPosition,
                                             contribution.endpointNormal,
-                                            photonMap
+                                            photonMap,
+                                            settings.numForwardPasses * settings.photonsPerLaunch
                                         ) * material.baseColor * M_1_PIf;
 
                             const float cosTheta =contribution.endpointCosine;

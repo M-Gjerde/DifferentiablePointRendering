@@ -123,7 +123,7 @@ namespace Pale {
     void PathTracer::allocatePhotonMap() {
         freePhotonMap();
 
-        constexpr std::size_t maxPhotonBytes = 8ull * 1024ull * 1024ull * 1024ull; // 3GB
+        constexpr std::size_t maxPhotonBytes = 10ull * 1024ull * 1024ull * 1024ull; // 10GB
         std::size_t photonSize = sizeof(DevicePhotonSurface);
 
 
@@ -147,7 +147,7 @@ namespace Pale {
                      maxPhotons / 1e6f,
                      Utils::formatBytes(finalPhotonCount * photonSize), m_settings.numForwardPasses * m_settings.photonsPerLaunch / 1e6f);
 
-        Log::PA_INFO("Expected Storage Capacity: {}%", (m_settings.numForwardPasses * m_settings.photonsPerLaunch / static_cast<float>(finalPhotonCount))* 100.0f);
+        Log::PA_INFO("Expected Storage Capacity: {}%", (m_settings.numForwardPasses * m_settings.photonsPerLaunch * (m_settings.maxBounces / 2.0f)/ static_cast<float>(finalPhotonCount))* 100.0f);
 
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.map.photons, 0,

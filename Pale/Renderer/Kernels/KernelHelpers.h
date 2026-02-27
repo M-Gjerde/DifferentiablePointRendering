@@ -990,7 +990,8 @@ namespace Pale {
     inline float3 gatherDiffuseIrradianceAtPoint(
         const float3& queryPositionWorld,
         const float3& surfelNormalW,
-        const DeviceSurfacePhotonMapGrid& grid) {
+        const DeviceSurfacePhotonMapGrid& grid,
+        uint32_t emittedCount) {
         const float r = grid.gatherRadiusWorld;
         const float r2 = r * r;
         const float invArea = 1.0f / (M_PIf * r2);
@@ -1026,7 +1027,13 @@ namespace Pale {
                     }
                 }
 
-        return irradiance;
+        uint32_t T = *grid.photonCountDevicePtr;              // attempted deposits
+        uint32_t D = sycl::min(T, grid.photonCapacity);       // stored deposits
+
+        if (D == 0u) return float3{0.0f};
+
+        const float truncationScale = float(T) / float(D);
+        return irradiance * truncationScale;
     }
 
     template <int kNumNearest>
@@ -1682,8 +1689,9 @@ namespace Pale {
         const WorldHit& worldHit,
         const float3& incomingDirection,
         const float3& flux,
-        const DeviceSurfacePhotonMapGrid& photonMap) {
-        // Atomic counter for photon slots
+        const DeviceSurfacePhotonMapGrid& photonMap,
+        rng::Xorshift128& rng)
+    {
         auto photonCounter = sycl::atomic_ref<
             uint32_t,
             sycl::memory_order::acq_rel,
@@ -1691,26 +1699,29 @@ namespace Pale {
             sycl::access::address_space::global_space>(
             *photonMap.photonCountDevicePtr);
 
-        const uint32_t slot = photonCounter.fetch_add(1u);
+        const uint32_t attemptIndex = photonCounter.fetch_add(1u);
 
-        // Capacity guard
-        if (slot >= photonMap.photonCapacity) {
-            return;
+        uint32_t slot;
+        if (attemptIndex < photonMap.photonCapacity) {
+            slot = attemptIndex;
+        } else {
+            // Reservoir sampling if full
+            const float u = rng.nextFloat(); // uniform in [0,1)
+            const float acceptProb =
+                float(photonMap.photonCapacity) / float(attemptIndex + 1u);
+
+            if (u >= acceptProb) {
+                return;
+            }
+
+            slot = rng.nextUint() % photonMap.photonCapacity;
         }
 
         DevicePhotonSurface photonEntry{};
         photonEntry.position = worldHit.hitPositionW;
-
-        // Geometric normal (unoriented by design)
         photonEntry.incomingDirection = incomingDirection;
-
-        // Incoming direction (towards surface)
-        //photonEntry.incomingDirection = -rayState.ray.direction;
-
-        // Power carried by the photon
-        photonEntry.power = flux;
-
         photonEntry.isValid = 1u;
+        photonEntry.power = flux;
 
         photonMap.photons[slot] = photonEntry;
     }
