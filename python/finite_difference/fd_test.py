@@ -168,11 +168,11 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 5,
-        "forward_passes": 50,
+        "bounces": 4,
+        "forward_passes": 40,
         "gather_passes": 1,
-        "adjoint_bounces": 1,
-        "adjoint_passes": 8,
+        "adjoint_bounces": 3,
+        "adjoint_passes": 4,
         "logging": 4,
         "seed": 42
     }
@@ -183,8 +183,8 @@ def main(args) -> None:
     scene_xml = assets_root / "GradientTests" / f"{args.scene}" / f"{args.scene}.xml"
     pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.scene}" / f"{args.ply}.ply"
     print("Assets root:", assets_root)
-    print("Scene:", args.scene)
-    print("Ply:", args.ply)
+    print("Scene:", scene_xml)
+    print("Ply:", pointcloud_ply)
     print("Index:", args.index)
     print("Parameter:", args.parameter)
     print("FD epsilon:", args.fd_epsilon)
@@ -353,8 +353,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-2,
-        help="Finite difference epsilon. Default 1e-3.",
+        default=1e-3,
+        help="Finite difference epsilon.",
     )
     return parser.parse_args()
 

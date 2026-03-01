@@ -30,6 +30,7 @@ namespace Pale {
             commandGroupHandler.parallel_for<struct RayGenEmitterKernelTag>(
                 sycl::range<1>(settings.photonsPerLaunch),
                 [=](sycl::id<1> globalId) {
+
                     const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, globalId[0]);
                     // Choose any generator you like:
                     rng::Xorshift128 rng128(perItemSeed);
@@ -49,6 +50,7 @@ namespace Pale {
                     ray.pathThroughput = initialThroughput;
                     ray.bounceIndex = 0;
                     ray.lightIndex = ls.lightIndex;
+                    ray.pathId = globalId[0];
 
                     auto counter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
@@ -78,11 +80,12 @@ namespace Pale {
                 sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, rayIndex);
+                    RayState rayState = intermediates.primaryRays[rayIndex];
+
+                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, rayState.pathId);
                     rng::Xorshift128 rng128(perItemSeed);
 
                     WorldHit worldHit{};
-                    RayState rayState = intermediates.primaryRays[rayIndex];
                     intersectScene(rayState.ray, &worldHit, scene, rng128, SurfelIntersectMode::FirstHit);
 
                     if (!worldHit.hit) {
@@ -203,7 +206,7 @@ namespace Pale {
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
-                            sampleUniformHemisphereAroundNormal(rng128, orientedNormal, sampledOutgoingDirectionW,
+                            sampleCosineHemisphere(rng128, orientedNormal, sampledOutgoingDirectionW,
                                                                 sampledPdf);
 
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, orientedNormal));

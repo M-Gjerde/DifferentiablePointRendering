@@ -16,8 +16,8 @@ def main(args) -> None:
     # --- settings ---
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 5,
-        "forward_passes": 50,
+        "bounces": 4,
+        "forward_passes": 40,
         "gather_passes": 1,
         "adjoint_bounces": 0,
         "adjoint_passes": 0,

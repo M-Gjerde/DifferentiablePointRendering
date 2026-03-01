@@ -333,6 +333,7 @@ namespace Pale {
         // Optional bookkeeping (cheap, useful later)
         uint32_t pixelIndex = 0;
         uint32_t pathId;  //for debugging
+        float cosine;
     };
 
     struct CompletedGradientEvent {
@@ -347,7 +348,7 @@ namespace Pale {
         float alphaGeom{};
         float3 hitPositionSurfel;
         float3 hitNormalSurfel{};
-        float cosineSurfel{}; // dot(-wi, n_end)
+        float cosineHitPoint{}; // dot(-wi, n_end)
         uint32_t instanceIndex{};
         uint32_t primitiveIndex{};
 
@@ -411,7 +412,7 @@ namespace Pale {
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 6;
         uint32_t numForwardPasses = 6;
-        uint32_t numGatherPasses = 6; // Which bounce to start RR
+        uint32_t numGatherPasses = 1;
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
         uint32_t russianRouletteStart = 6; // Which bounce to start RR

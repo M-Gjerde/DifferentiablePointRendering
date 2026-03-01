@@ -146,7 +146,7 @@ namespace Pale {
                             completed.hitPositionSurfel = pending.hitPosition;
                             completed.pathThroughput = pending.pathThroughput * settings.sampling.qReflect; // Match the expected value only qReflect paths will actually scatter, some might transmit or attenuate
                             completed.pixelIndex = pending.pixelIndex;
-                            completed.cosineSurfel = dot(orientedNormal, -rayState.ray.direction);
+                            completed.cosineHitPoint = pending.cosine;
 
                             completed.endPointAlphaGeom = worldHit.alphaGeom;
                             completed.endpointInstanceIndex = worldHit.instanceIndex;
@@ -180,7 +180,7 @@ namespace Pale {
                             completed.hitPositionSurfel = pending.hitPosition;
                             completed.pathThroughput = pending.pathThroughput * settings.sampling.qNull; // Match the expected value only qReflect paths will actually scatter, some might transmit or attenuate
                             completed.pixelIndex = pending.pixelIndex;
-                            completed.cosineSurfel = dot(orientedNormal, -rayState.ray.direction);
+                            completed.cosineHitPoint = dot(orientedNormal, -rayState.ray.direction);
                             completed.endPointAlphaGeom = worldHit.alphaGeom;
                             completed.endpointInstanceIndex = worldHit.instanceIndex;
                             completed.endpointPrimitiveIndex = worldHit.primitiveIndex;
@@ -237,6 +237,7 @@ namespace Pale {
                             pending.pathThroughput = rayState.pathThroughput * throughputMultiplier;
                             pending.pixelIndex = rayState.pixelIndex;
                             pending.pathId = rayState.pathId;
+                            pending.cosine = dot(-rayState.ray.direction, orientedNormal);
                             intermediates.pendingAdjointStates[rayState.pathId] = pending;
                         }
 
@@ -315,7 +316,7 @@ namespace Pale {
                                 completed.alphaGeom = worldHit.alphaGeom;
                                 completed.hitPositionSurfel = worldHit.hitPositionW;
                                 completed.hitNormalSurfel = orientedNormal; // important
-                                completed.cosineSurfel = dot(-rayState.ray.direction, orientedNormal); // important
+                                completed.cosineHitPoint = dot(-rayState.ray.direction, orientedNormal); // important
                                 completed.pathThroughput = rayState.pathThroughput / settings.sampling.qReflect;
                                 completed.pixelIndex = rayState.pixelIndex;
                                 completed.hasEndpoint = false;
@@ -421,16 +422,13 @@ namespace Pale {
 
                             // Evaluate surfel outgoing radiance (direct/indirect via photon map)
                             const float3 f_r = surfel.alpha_r * surfel.albedo * M_1_PIf; // Lambert BRDF
-                            const float3 Lr = f_r * E;
-                            // If you also include emissive term at that surfel, add it here (Le)
-                            const float3 Lo = Lr; // + Le if applicable
+                            const float3 Lo = f_r * E;
                             // opacity alpha = alphaGeom * eta  => dLo/deta = alphaGeom * Lo
                             const float grad_alpha_eta = contribution.alphaGeom;
                             // p should be the adjoint weight carried from the camera (residual etc.)
-                            // DO NOT multiply p by f_r again.
-                            const float3 grad_rgb = grad_alpha_eta * contribution.pathThroughput * Lo;
-                            const float grad_cost_eta_sum = sum(grad_rgb) * invSpp; // only if you truly have spp samples
-                            atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                            float3 grad_cost_eta = grad_alpha_eta * contribution.pathThroughput * Lo;
+                            const float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp; // only if you truly have spp samples
+                            //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
                                 atomicAddFloat4ToImage(
@@ -450,24 +448,24 @@ namespace Pale {
                                             contribution.endpointNormal,
                                             photonMap,
                                             settings.numForwardPasses * settings.photonsPerLaunch
-                                        ) * material.baseColor * M_1_PIf;
+                                        ) * material.baseColor;
 
                             float3 Le = {0.0f, 0.0f, 0.0f};
                             if (material.isEmissive()) {
-                                float cosine = contribution.endpointCosine;
                                 GPULightRecord emitter = scene.lights[0];
                                 const float3 flux = material.baseColor * material.power;
                                 const float invArea = 1.0f / emitter.totalAreaWorld;
-                                Le = flux * (invArea * M_1_PIf);
-                                Le = material.baseColor * (material.power / (M_PIf * emitter.totalAreaWorld)) * cosine;
+                                Le = material.baseColor * (material.power / (M_PIf * emitter.totalAreaWorld));
                             }
+
                             const float3 Lo = Le + Lr;
                             float grad_tau_eta = -contribution.alphaGeom;
                             float3 p = contribution.pathThroughput;
                             float3 grad_cost_eta = grad_tau_eta * p * Lo;
 
                             float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
-                            atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                            //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
                                 atomicAddFloat4ToImage(
@@ -479,21 +477,23 @@ namespace Pale {
 
                         if (contribution.kind == PendingAdjointKind::ReflectScatter) {
                             const Point &surfel = scene.points[contribution.endpointPrimitiveIndex];
-                            const auto &instance = scene.instances[contribution.instanceIndex];
-                            const GPUMaterial material = scene.materials[instance.materialIndex];
-
-                            float3 Lo = gatherDiffuseIrradianceAtPoint(
+                            //const auto &instance = scene.instances[contribution.instanceIndex];
+                            //const GPUMaterial material = scene.materials[instance.materialIndex];
+                            float3 surfelIrradiance = gatherDiffuseIrradianceAtPoint(
                                             contribution.endpointPosition,
                                             contribution.endpointNormal,
                                             photonMap,
                                             settings.numForwardPasses * settings.photonsPerLaunch
-                                        ) * material.baseColor * M_1_PIf;
+                                        );
 
-                            const float cosTheta =contribution.endpointCosine;
-                            const float3 p = contribution.pathThroughput / contribution.endPointPDF;
-                            const float3 grad_cost_eta = p * Lo * contribution.endPointAlphaGeom;
+                            const float cosTheta = contribution.endpointCosine;
+                            const float3 Lo_surfel = surfelIrradiance * surfel.albedo * M_1_PIf;
+                            const float3 p = contribution.pathThroughput; // p_mesh_exitance
+                            float3 grad_cost_eta = contribution.endPointAlphaGeom * Lo_surfel * p;
+
 
                             float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
+
                             atomicAddFloat(gradients.gradOpacity[contribution.endpointPrimitiveIndex], grad_cost_eta_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;

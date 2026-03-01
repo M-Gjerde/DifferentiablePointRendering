@@ -21,30 +21,38 @@ export module Pale.Utils.ImageIO;
 export namespace Pale::Utils {
 
     std::vector<float> computeL2ImageGradientRGBA(
-    const std::vector<float>& renderedRgba,
-    const std::vector<float>& targetRgba,
-    std::uint32_t imageWidth,
-    std::uint32_t imageHeight)
+        const std::vector<float>& renderedRgba,
+        const std::vector<float>& targetRgba,
+        std::uint32_t imageWidth,
+        std::uint32_t imageHeight)
     {
-        const std::size_t expectedSize =
-            static_cast<std::size_t>(imageWidth) * static_cast<std::size_t>(imageHeight) * 4ull;
-
-        if (renderedRgba.size() != expectedSize) {
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(imageWidth) *
+            static_cast<std::size_t>(imageHeight);
+        const std::size_t rgbaElementCount = pixelCount * 4ull;
+        if (renderedRgba.size() != rgbaElementCount) {
             throw std::runtime_error("renderedRgba size does not match width * height * 4");
         }
-        if (targetRgba.size() != expectedSize) {
+        if (targetRgba.size() != rgbaElementCount) {
             throw std::runtime_error("targetRgba size does not match width * height * 4");
         }
+        // Loss is defined over RGB only
+        const float invRgbElementCount =
+            1.0f / static_cast<float>(pixelCount * 3ull);
+        std::vector<float> gradientRgba(rgbaElementCount);
+        for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4ull;
+            gradientRgba[baseIndex + 0] =
+                (renderedRgba[baseIndex + 0] - targetRgba[baseIndex + 0]) * invRgbElementCount;
+            gradientRgba[baseIndex + 1] =
+                (renderedRgba[baseIndex + 1] - targetRgba[baseIndex + 1]) * invRgbElementCount;
+            gradientRgba[baseIndex + 2] =
+                (renderedRgba[baseIndex + 2] - targetRgba[baseIndex + 2]) * invRgbElementCount;
 
-        std::vector<float> gradientRgba(expectedSize);
-
-        for (std::size_t elementIndex = 0; elementIndex < expectedSize; ++elementIndex) {
-            gradientRgba[elementIndex] = renderedRgba[elementIndex] - targetRgba[elementIndex];
+            gradientRgba[baseIndex + 3] = 0.0f; // alpha not part of loss
         }
-
         return gradientRgba;
     }
-
 
 void loadEXRAsRGBAFloat(
     const std::filesystem::path& filePath,
