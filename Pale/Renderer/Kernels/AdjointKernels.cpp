@@ -24,7 +24,7 @@ namespace Pale {
 
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
-            const uint64_t randomNumber = settings.random.number;
+            const uint64_t renderSeed = settings.random.seed;
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
                 sycl::range<1>(raysPerSet),
@@ -38,8 +38,9 @@ namespace Pale {
 
                     const uint32_t pixelIndex = pixelLinearIndexWithinImage;
                     // RNG for this pixelhttps://www.chess.com/home
-                    const uint64_t perPixelSeed = rng::makePerItemSeed1D(randomNumber, pixelLinearIndexWithinImage);
-                    rng::Xorshift128 pixelRng(perPixelSeed);
+                    const uint64_t seed =
+                            rng::makeSeed(renderSeed, globalRayIndex, 0u, rng::kStreamRayGen, 0u);
+                    rng::Xorshift128 rng128(seed);
 
                     // Adjoint source weight
                     const float4 dLoss_dI = sensor.framebuffer[pixelIndex];
@@ -49,8 +50,8 @@ namespace Pale {
                     // Base slot for this pixel’s N samples
                     const uint32_t baseOutputSlot = pixelIndex;
                     // --- Sample 0: forced Transmit (background path) ---
-                    const float jitterX = pixelRng.nextFloat() - 0.5f;
-                    const float jitterY = pixelRng.nextFloat() - 0.5f;
+                    const float jitterX = rng128.nextFloat() - 0.5f;
+                    const float jitterY = rng128.nextFloat() - 0.5f;
 
                     Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
                         sensor.camera,
@@ -91,17 +92,28 @@ namespace Pale {
         auto &scene = pkg.scene;
 
         queue.submit([&](sycl::handler &cgh) {
-            uint64_t randomNumber = settings.random.number;
+            uint64_t renderSeed = settings.random.seed;
             cgh.parallel_for<class launchIntersectKernel>(
                 sycl::range<1>(activeRayCount),
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, rayIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
-                    WorldHit worldHit{};
                     RayState rayState = intermediates.primaryRays[rayIndex];
-                    intersectScene(rayState.ray, &worldHit, scene, rng128, SurfelIntersectMode::FirstHit);
+
+                    const uint64_t traversalSeed =
+                        rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamTraversal, 0u);
+                    rng::Xorshift128 traversalRng(traversalSeed);
+
+                    const uint64_t directionSeed =
+                    rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamDirection, 0u);
+                rng::Xorshift128 directionRng(directionSeed);
+
+                                    const uint64_t rouletteSeed =
+                    rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamRoulette, 0u);
+                rng::Xorshift128 rouletteRng(rouletteSeed);
+
+                    WorldHit worldHit{};
+                    intersectScene(rayState.ray, &worldHit, scene, traversalRng, SurfelIntersectMode::FirstHit);
                     if (!worldHit.hit) {
                         return;
                     }
@@ -116,7 +128,7 @@ namespace Pale {
                     const InstanceRecord &endpointInstance = scene.instances[worldHit.instanceIndex];
                     if (endpointInstance.geometryType == GeometryType::Mesh) {
                         // Cosine sampling
-                    sampleCosineHemisphere(rng128, worldHit.geometricNormalW, sampledOutgoingDirectionW,
+                    sampleCosineHemisphere(directionRng, worldHit.geometricNormalW, sampledOutgoingDirectionW,
                        sampledOutgoingDirectionPDF);
                         orientedNormal = worldHit.geometricNormalW;
                     } else if (endpointInstance.geometryType == GeometryType::PointCloud) {
@@ -129,7 +141,7 @@ namespace Pale {
                         // If positive we hit the front side if negative we hit the backside
                         orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
                         // If we hit instance was a mesh do ordinary BRDF stuff.
-                        sampleUniformHemisphereAroundNormal(rng128, orientedNormal, sampledOutgoingDirectionW,
+                        sampleUniformHemisphereAroundNormal(directionRng, orientedNormal, sampledOutgoingDirectionW,
                                                             sampledOutgoingDirectionPDF);
                     }
 
@@ -144,7 +156,7 @@ namespace Pale {
                             completed.instanceIndex = pending.instanceIndex;
                             completed.alphaGeom = pending.alphaGeom;
                             completed.hitPositionSurfel = pending.hitPosition;
-                            completed.pathThroughput = pending.pathThroughput * settings.sampling.qReflect; // Match the expected value only qReflect paths will actually scatter, some might transmit or attenuate
+                            completed.pathThroughput = pending.pathThroughput;
                             completed.pixelIndex = pending.pixelIndex;
                             completed.cosineHitPoint = pending.cosine;
 
@@ -223,7 +235,7 @@ namespace Pale {
                         nextState.pixelIndex = rayState.pixelIndex;
                         nextState.pathId = rayState.pathId;
                         nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
-                        if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                        if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
                                                   settings.russianRouletteStart))
                             return;
 
@@ -252,7 +264,10 @@ namespace Pale {
                     } else {
                         // Random event
                         // qAbsorb = 1 - (qNull + qReflect + qTransmit)
-                        const float u = rng128.nextFloat();
+                        const uint64_t eventSeed =
+                        rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamEvent, 0u);
+                    rng::Xorshift128 eventRng(eventSeed);
+                    const float u = eventRng.nextFloat();
                         if (u < settings.sampling.qNull) {
                             const Point &surfel = scene.points[worldHit.primitiveIndex];
                             float attenuation = 1.0f - worldHit.alphaGeom * surfel.opacity;
@@ -266,7 +281,7 @@ namespace Pale {
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
                             nextState.pathId = rayState.pathId;
-                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
                             // Populate pending (now that the path survives)
@@ -304,7 +319,7 @@ namespace Pale {
                             nextState.pathId = rayState.pathId;
                             nextState.pathThroughput =
                                     rayState.pathThroughput * throughputMultiplier;
-                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
@@ -353,7 +368,7 @@ namespace Pale {
 
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
-                            sampleUniformHemisphereAroundNormal(rng128, orientedNormal, sampledOutgoingDirectionW,
+                            sampleUniformHemisphereAroundNormal(directionRng, orientedNormal, sampledOutgoingDirectionW,
                                                                 sampledPdf);
                             RayState nextState{};
                             // Spawn next ray
@@ -365,7 +380,7 @@ namespace Pale {
                             nextState.pathId = rayState.pathId;
                             nextState.pathThroughput = throughput * lambertBrdf;
 
-                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
@@ -405,7 +420,7 @@ namespace Pale {
         DebugImages &debugImage = pkg.debugImages[cameraIndex];
 
         queue.submit([&](sycl::handler &cgh) {
-                uint64_t baseSeed = settings.random.number * (static_cast<uint64_t>(cameraIndex) + 5ull);
+                uint64_t baseSeed = settings.random.seed * (static_cast<uint64_t>(cameraIndex) + 5ull);
                 cgh.parallel_for<class launchContributionKernel>(
                     sycl::range<1>(contributionTransmittanceCount),
                     [=](sycl::id<1> globalId) {
@@ -416,9 +431,7 @@ namespace Pale {
                             const float3 E = gatherDiffuseIrradianceAtPoint(
                                 contribution.hitPositionSurfel,
                                 contribution.hitNormalSurfel,
-                                photonMap,
-                                settings.numForwardPasses * settings.photonsPerLaunch
-                            );
+                                photonMap);
 
                             // Evaluate surfel outgoing radiance (direct/indirect via photon map)
                             const float3 f_r = surfel.alpha_r * surfel.albedo * M_1_PIf; // Lambert BRDF
@@ -428,7 +441,7 @@ namespace Pale {
                             // p should be the adjoint weight carried from the camera (residual etc.)
                             float3 grad_cost_eta = grad_alpha_eta * contribution.pathThroughput * Lo;
                             const float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp; // only if you truly have spp samples
-                            //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                            atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
                                 atomicAddFloat4ToImage(
@@ -446,9 +459,7 @@ namespace Pale {
                             float3 Lr = gatherDiffuseIrradianceAtPoint(
                                             contribution.endpointPosition,
                                             contribution.endpointNormal,
-                                            photonMap,
-                                            settings.numForwardPasses * settings.photonsPerLaunch
-                                        ) * material.baseColor;
+                                            photonMap) * material.baseColor;
 
                             float3 Le = {0.0f, 0.0f, 0.0f};
                             if (material.isEmissive()) {
@@ -464,7 +475,7 @@ namespace Pale {
                             float3 grad_cost_eta = grad_tau_eta * p * Lo;
 
                             float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
-                            //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                            atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
 
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
@@ -482,14 +493,15 @@ namespace Pale {
                             float3 surfelIrradiance = gatherDiffuseIrradianceAtPoint(
                                             contribution.endpointPosition,
                                             contribution.endpointNormal,
-                                            photonMap,
-                                            settings.numForwardPasses * settings.photonsPerLaunch
-                                        );
+                                            photonMap);
 
                             const float cosTheta = contribution.endpointCosine;
-                            const float3 Lo_surfel = surfelIrradiance * surfel.albedo * M_1_PIf;
-                            const float3 p = contribution.pathThroughput; // p_mesh_exitance
-                            float3 grad_cost_eta = contribution.endPointAlphaGeom * Lo_surfel * p;
+                            const float3 Lo_surfel = surfelIrradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
+
+                            const float3 p_surfel_exit = contribution.pathThroughput * surfel.alpha_r * surfel.albedo * M_1_PIf * cosTheta / contribution.endPointPDF;
+                            const float3 p = contribution.pathThroughput;
+
+                            float3 grad_cost_eta = contribution.endPointAlphaGeom * p * Lo_surfel;
 
 
                             float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;

@@ -1,33 +1,27 @@
 // SyclWarmup.cpp (no imports of your modules)
 #include <sycl/sycl.hpp>
-#include "Renderer/Kernels/SyclBridge.h"
 
 #include "PostprocessKernel.h"
-#include "Renderer/Kernels/AdjointKernels.h"
-
 #include "Core/ScopedTimer.h"
-
 #include "Renderer/GPUDataStructures.h"
-
 #include "Renderer/Kernels/Utils.h"
 #include "Renderer/Kernels/KernelHelpers.h"
 #include "Renderer/Kernels/PrimalKernels.h"
-#include "Renderer/Kernels/CylinderRayKernels.h"
+#include "Renderer/Kernels/AdjointKernels.h"
+#include "Renderer/Kernels/SyclBridge.h"
 
 import Pale.Log;
 
 namespace Pale {
     void submitLightTracingKernel(RenderPackage &pkg) {
-        std::mt19937_64 seedGen(pkg.random.seed); // define once before the loop
 
         {
             ScopedTimer forwardTimer("Forward Pass Total", spdlog::level::debug);
-            for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
-                pkg.random.number = seedGen(); // new high-entropy seed each pass
+            for (uint32_t forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
 
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
                     ScopedTimer timer("launchRayGenEmitterKernel");
-                    launchRayGenEmitterKernel(pkg);
+                    launchRayGenEmitterKernel(pkg, forwardPass);
                 }
 
                 uint32_t activeCount = 0;
@@ -35,13 +29,11 @@ namespace Pale {
                     ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
 
                     for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                        pkg.random.number = seedGen(); // new high-entropy seed each pass
                         launchContributionEmitterVisibleKernel(pkg, activeCount, cameraIndex);
                     }
 
                     for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
                         ScopedTimer bounceTimer("Bounce: " + std::to_string(bounce));
-                        pkg.random.number = seedGen(); // new high-entropy seed each pass
                         pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                         //pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
                         pkg.queue.wait(); {
@@ -78,16 +70,15 @@ namespace Pale {
     }
 
     void submitPhotonMappingKernel(RenderPackage &pkg) {
-        std::mt19937_64 seedGen(pkg.random.seed); // define once before the loop
+        const uint64_t renderSeed = pkg.random.seed; // capture value
 
         pkg.queue.fill(pkg.intermediates.map.photonCountDevicePtr, 0u, 1).wait(); {
             ScopedTimer forwardTimer("Forward Pass Total", spdlog::level::debug);
             for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
-                pkg.random.number = seedGen(); // new high-entropy seed each pass
 
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
                     ScopedTimer timer("launchRayGenEmitterKernel");
-                    launchRayGenEmitterKernel(pkg);
+                    launchRayGenEmitterKernel(pkg, forwardPass);
                 }
 
                 uint32_t activeCount = 0;
@@ -95,15 +86,14 @@ namespace Pale {
                     ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
 
                     for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces; ++bounce) {
-                        pkg.random.number = seedGen();
                         if (activeCount > 0) {
                             pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                             pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                            pkg.queue.wait(); {
+                            pkg.queue.wait();
+                            {
                                 ScopedTimer timer("launchIntersectKernel");
                                 launchIntersectKernel(pkg, activeCount);
                             }
-
                             uint32_t nextCount = 0;
                             pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
                             pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
@@ -133,7 +123,6 @@ namespace Pale {
                 ScopedTimer timer(
                     "launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" +
                     std::to_string(pkg.numSensors), spdlog::level::debug);
-                pkg.random.number = seedGen();
                 launchCameraGatherKernel(pkg, cameraIndex); // generate image from photon map
                 pkg.queue.wait();
             }
@@ -198,7 +187,6 @@ namespace Pale {
 
             int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
             for (int spp = 0; spp < samplesPerPixel; ++spp) {
-                pkg.random.number = seedGen();
                 ScopedTimer forwardTimer("Traced adjoint pass", spdlog::level::debug);
 
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
@@ -215,7 +203,6 @@ namespace Pale {
 
 
                 for (uint32_t bounce = 0; bounce < pkg.settings.maxAdjointBounces && activeCount > 0; ++bounce) {
-                    pkg.random.number = seedGen();
                     pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countCompletedGradientEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);

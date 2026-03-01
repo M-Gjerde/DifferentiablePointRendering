@@ -10,37 +10,42 @@
 #include "IntersectionKernels.h"
 
 namespace Pale {
-    void launchRayGenEmitterKernel(RenderPackage &pkg) {
+    void launchRayGenEmitterKernel(RenderPackage &pkg, uint32_t forwardPass) {
         auto queue = pkg.queue;
         auto scene = pkg.scene;
-        auto sensor = pkg.sensors;
         auto settings = pkg.settings;
 
-        auto *hitRecords = pkg.intermediates.hitRecords;
         auto *raysIn = pkg.intermediates.primaryRays;
-        auto *raysOut = pkg.intermediates.extensionRaysA;
         auto *countPrimary = pkg.intermediates.countPrimary;
 
         const uint32_t emittedCount = settings.photonsPerLaunch * settings.numForwardPasses;
+        const float invEmittedCount = 1.0f / float(emittedCount);
+
+        // One invariant seed for the whole render (stable noise across reruns)
+        const uint64_t renderSeed = pkg.random.seed;
+
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
-            uint64_t randomNumber = pkg.random.number;
-            float invEmittedCount = 1.0f / emittedCount;
+            const uint64_t forwardPassIndex = uint64_t(forwardPass);
 
             commandGroupHandler.parallel_for<struct RayGenEmitterKernelTag>(
                 sycl::range<1>(settings.photonsPerLaunch),
                 [=](sycl::id<1> globalId) {
+                    const uint64_t photonIndex = uint64_t(globalId[0]);
+                    const uint64_t pathId = (forwardPassIndex << 32) | photonIndex;
+                    const uint64_t seed =
+                            rng::makeSeed(renderSeed, pathId, 0u, rng::kStreamRayGen, 0u);
+                    rng::Xorshift128 rng128(seed);
 
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, globalId[0]);
-                    // Choose any generator you like:
-                    rng::Xorshift128 rng128(perItemSeed);
-
-                    if (scene.lightCount == 0) return;
+                    if (scene.lightCount == 0) {
+                        return;
+                    }
 
                     AreaLightSample ls = sampleMeshAreaLight(scene, rng128);
-                    if (!ls.valid) return;
+                    if (!ls.valid) {
+                        return;
+                    }
 
-                    // Storing radiance as watt simplifies this line:
                     const float3 initialThroughput = ls.power * scene.lightCount * invEmittedCount;
 
                     RayState ray{};
@@ -50,16 +55,19 @@ namespace Pale {
                     ray.pathThroughput = initialThroughput;
                     ray.bounceIndex = 0;
                     ray.lightIndex = ls.lightIndex;
-                    ray.pathId = globalId[0];
+                    ray.pathId = pathId;
 
                     auto counter = sycl::atomic_ref<uint32_t,
                         sycl::memory_order::relaxed,
                         sycl::memory_scope::device,
                         sycl::access::address_space::global_space>(*countPrimary);
-                    const uint32_t slot = counter.fetch_add(1);
+
+                    const uint32_t slot = counter.fetch_add(1u);
                     raysIn[slot] = ray;
-                });
+                }
+            );
         });
+
         queue.wait();
     }
 
@@ -75,18 +83,32 @@ namespace Pale {
 
 
         queue.submit([&](sycl::handler &cgh) {
-            uint64_t randomNumber = pkg.random.number;
+            uint64_t renderSeed = pkg.random.seed;
             cgh.parallel_for<class launchIntersectKernel>(
                 sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
                     RayState rayState = intermediates.primaryRays[rayIndex];
 
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, rayState.pathId);
-                    rng::Xorshift128 rng128(perItemSeed);
+                    const uint64_t traversalSeed =
+                            rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamTraversal, 0u);
+                    rng::Xorshift128 traversalRng(traversalSeed);
+
+                    const uint64_t directionSeed =
+                            rng::makeSeed(renderSeed, rayState.pathId + rayIndex, rayState.bounceIndex, rng::kStreamDirection, 0u);
+                    rng::Xorshift128 directionRng(directionSeed);
+
+                    const uint64_t eventSeed =
+                            rng::makeSeed(renderSeed, rayState.pathId + rayIndex, rayState.bounceIndex, rng::kStreamEvent, 0u);
+                    rng::Xorshift128 eventRng(eventSeed);
+
+                    const uint64_t rouletteSeed =
+                            rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamRoulette, 0u);
+                    rng::Xorshift128 rouletteRng(rouletteSeed);
+
 
                     WorldHit worldHit{};
-                    intersectScene(rayState.ray, &worldHit, scene, rng128, SurfelIntersectMode::FirstHit);
+                    intersectScene(rayState.ray, &worldHit, scene, traversalRng, SurfelIntersectMode::FirstHit);
 
                     if (!worldHit.hit) {
                         return;
@@ -118,7 +140,7 @@ namespace Pale {
                         // Deposit Irradiance to photon map independent of surface interaction
                         if (settings.integratorKind == IntegratorKind::photonMapping) {
                             depositPhotonSurface(worldHit, rayState.ray.direction, rayState.pathThroughput,
-                                                 intermediates.map, rng128);
+                                                 intermediates.map);
                         }
 
                         // Generate next ray
@@ -127,7 +149,7 @@ namespace Pale {
                         const GPUMaterial material = scene.materials[instance.materialIndex];
                         // If we hit instance was a mesh do ordinary BRDF stuff.
                         float sampledPdf = 0.0f;
-                        sampleCosineHemisphere(rng128, worldHit.geometricNormalW, sampledOutgoingDirectionW,
+                        sampleCosineHemisphere(directionRng, worldHit.geometricNormalW, sampledOutgoingDirectionW,
                                                sampledPdf);
                         const float3 lambertBrdf = material.baseColor;
 
@@ -143,7 +165,7 @@ namespace Pale {
                         nextState.pixelIndex = rayState.pixelIndex;
                         nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
 
-                        if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                        if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
                                                   settings.russianRouletteStart))
                             return;
 
@@ -155,9 +177,8 @@ namespace Pale {
                         const uint32_t outIndex = extensionCounter.fetch_add(1);
                         intermediates.extensionRaysA[outIndex] = nextState;
                     } else {
-                        // Random event
-                        // qAbsorb = 1 - (qNull + qReflect + qTransmit)
-                        const float u = rng128.nextFloat();
+
+                        const float u = eventRng.nextFloat();
                         if (u < settings.sampling.qNull) {
                             // Update path throughput
                             const Point &surfel = scene.points[worldHit.primitiveIndex];
@@ -172,7 +193,7 @@ namespace Pale {
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
 
-                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
@@ -199,14 +220,14 @@ namespace Pale {
                             if (settings.integratorKind == IntegratorKind::photonMapping) {
                                 depositPhotonSurface(worldHit, rayState.ray.direction,
                                                      rayState.pathThroughput / settings.sampling.qReflect,
-                                                     intermediates.map, rng128);
+                                                     intermediates.map);
                             }
 
                             //Generate next ry
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
-                            sampleCosineHemisphere(rng128, orientedNormal, sampledOutgoingDirectionW,
+                            sampleUniformHemisphereAroundNormal(directionRng, orientedNormal, sampledOutgoingDirectionW,
                                                                 sampledPdf);
 
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
@@ -240,7 +261,7 @@ namespace Pale {
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = throughput;
-                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
@@ -284,7 +305,7 @@ namespace Pale {
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
-                            sampleUniformHemisphereAroundNormal(rng128, orientedNormal, sampledOutgoingDirectionW,
+                            sampleUniformHemisphereAroundNormal(directionRng, orientedNormal, sampledOutgoingDirectionW,
                                                                 sampledPdf);
 
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
@@ -302,7 +323,7 @@ namespace Pale {
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = throughput;
 
-                            if (!applyRussianRoulette(rng128, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
@@ -333,15 +354,17 @@ namespace Pale {
         auto *hitRecords = pkg.intermediates.hitContribution;
 
         queue.submit([&](sycl::handler &cgh) {
-            uint64_t baseSeed = pkg.random.number * (static_cast<uint64_t>(cameraIndex) + 5ull);
+            uint64_t renderSeed = pkg.random.seed;
 
             cgh.parallel_for<class launchContributionKernel>(
                 sycl::range<1>(contributionCount),
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
                     const uint32_t contributionIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(baseSeed, contributionIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
+                    const uint64_t seed =
+                            rng::makeSeed(renderSeed, contributionIndex, cameraIndex, rng::kStreamDeposit, 0u);
+
+                    rng::Xorshift128 rng128(seed);
                     const HitInfoContribution &contribution = hitRecords[contributionIndex];
                     const InstanceRecord &instance = scene.instances[contribution.instanceIndex];
                     auto &geometryType = instance.geometryType;
@@ -424,14 +447,16 @@ namespace Pale {
         SensorGPU sensor = pkg.sensors[cameraIndex];
         const uint32_t photonCount = settings.photonsPerLaunch;
         queue.submit([&](sycl::handler &commandGroupHandler) {
-            uint64_t randomNumber = pkg.random.number;
+            uint64_t renderSeed = pkg.random.seed;
             float invPhotonCount = 1.f / photonCount; // 1/N
 
             commandGroupHandler.parallel_for<class ShadeKernelTag>(
                 sycl::range<1>(photonCount),
                 [=](sycl::id<1> globalId) {
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(randomNumber, globalId);
-                    rng::Xorshift128 rng128(perItemSeed);
+                    const uint64_t seed =
+                            rng::makeSeed(renderSeed, globalId[0], cameraIndex, rng::kStreamDeposit, 0u);
+
+                    rng::Xorshift128 rng128(seed);
 
                     if (scene.lightCount == 0) return;
                     AreaLightSample ls = sampleMeshAreaLight(scene, rng128);
@@ -520,7 +545,7 @@ namespace Pale {
             // Clear framebuffer before calling this, outside.
             queue.submit([&](sycl::handler &cgh) {
                 float totalSamplesPerPixel = settings.numGatherPasses;
-                uint64_t baseSeed = pkg.random.number;
+                uint64_t baseSeed = pkg.random.seed;
 
                 cgh.parallel_for<class CameraGatherKernel>(
                     sycl::range<1>(pixelCount),
@@ -529,14 +554,15 @@ namespace Pale {
                         const std::uint32_t pixelX = pixelIndex % imageWidth;
                         const std::uint32_t pixelY = pixelIndex / imageWidth;
 
-                        rng::Xorshift128 randomNumberGenerator(
-                            rng::makePerItemSeed1D(baseSeed, pixelIndex));
+                        const uint64_t directionSeed =
+                                rng::makeSeed(baseSeed, pixelIndex, cameraIndex, rng::kStreamGather, 0u);
+                        rng::Xorshift128 rng(directionSeed);
 
                         float3 accumulatedRadianceRGB(0.0f);
 
                         // Subpixel jitter
-                        const float jitterX = randomNumberGenerator.nextFloat() - 0.5f;
-                        const float jitterY = randomNumberGenerator.nextFloat() - 0.5f;
+                        const float jitterX = rng.nextFloat() - 0.5f;
+                        const float jitterY = rng.nextFloat() - 0.5f;
 
                         Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
                             sensor.camera,
@@ -556,7 +582,7 @@ namespace Pale {
                         float transmittance = 1.0f;
                         while (true) {
                             WorldHit worldHit{};
-                            intersectScene(primaryRay, &worldHit, scene, randomNumberGenerator,
+                            intersectScene(primaryRay, &worldHit, scene, rng,
                                            SurfelIntersectMode::FirstHit);
                             if (!worldHit.hit) {
                                 // No more surfels/meshes: add background/environment with remaining throughput
@@ -579,9 +605,7 @@ namespace Pale {
                                 const float3 E = gatherDiffuseIrradianceAtPoint(
                                     worldHit.hitPositionW,
                                     normalW,
-                                    photonMap,
-                                    settings.numForwardPasses * settings.photonsPerLaunch
-                                );
+                                    photonMap);
 
                                 float3 Lo = E * (surfel.alpha_r * surfel.albedo * M_1_PIf);
                                 float alphaEff = surfel.opacity * worldHit.alphaGeom;
@@ -624,8 +648,7 @@ namespace Pale {
                                     // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
                                 } else {
                                     const float3 E = gatherDiffuseIrradianceAtPoint(
-                                        worldHit.hitPositionW, worldHit.geometricNormalW, photonMap,
-                                        settings.numForwardPasses * settings.photonsPerLaunch);
+                                        worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
                                     const float3 Lo = (material.baseColor * M_1_PIf) * E;
 
                                     accumulatedRadianceRGB += transmittance * Lo;

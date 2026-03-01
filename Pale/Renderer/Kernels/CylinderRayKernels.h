@@ -465,14 +465,11 @@ namespace Pale {
             commandGroupHandler.parallel_for<struct RayGenEmitterKernelTag>(
                 sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(0, globalId[0]);
                     // Choose any generator you like:
-                    rng::Xorshift128 rng128(perItemSeed);
                     const uint32_t rayIndex = globalId[0];
 
                     WorldHit worldHit{};
                     RayState rayState = raysIn[rayIndex];
-                    intersectSceneCylinder(rayState.ray, &worldHit, scene, rng128);
                     if (!worldHit.hit) {
                         hitRecords[rayIndex] = worldHit;
                         return;
@@ -508,8 +505,6 @@ namespace Pale {
                 // ReSharper disable once CppDFAUnusedValue
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
-                    const uint64_t perItemSeed = rng::makePerItemSeed1D(0, rayIndex);
-                    rng::Xorshift128 rng128(perItemSeed);
 
                     const WorldHit worldHit = hitRecords[rayIndex];
                     const RayState rayState = raysIn[rayIndex];
@@ -540,7 +535,6 @@ namespace Pale {
                     Ray ray{contributionRayOrigin, contributionDirection};
 
                     WorldHit visibilityCheck{};
-                    intersectSceneCylinder(ray, &visibilityCheck, scene, rng128);
 
                     if (visibilityCheck.hit && visibilityCheck.t <= shadowRayMaxT) {
                         return;

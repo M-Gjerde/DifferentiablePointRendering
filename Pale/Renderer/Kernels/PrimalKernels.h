@@ -9,7 +9,7 @@
 
 
 namespace Pale {
-    void launchRayGenEmitterKernel(RenderPackage& pkg);
+    void launchRayGenEmitterKernel(RenderPackage& pkg, uint32_t forwardPass);
 
     void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount);
 

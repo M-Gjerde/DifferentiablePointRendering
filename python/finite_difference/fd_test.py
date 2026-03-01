@@ -353,7 +353,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-3,
+        default=1e-2,
         help="Finite difference epsilon.",
     )
     return parser.parse_args()
