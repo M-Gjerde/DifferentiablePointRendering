@@ -104,7 +104,9 @@ namespace Pale::rng {
             stateY = stateZ;
             stateZ = stateW;
             stateW = (stateW ^ (stateW >> 19)) ^ (t ^ (t >> 8));
-            return stateW;
+
+            // output scrambling (one multiply)
+            return stateW * 0x9E3779B1u;
         }
 
         float nextFloat() {
@@ -113,25 +115,44 @@ namespace Pale::rng {
         }
     };
 
-        SYCL_EXTERNAL inline uint64_t hash64(uint64_t x) {
-            SplitMix64 sm(x);
-            return sm.nextUint64();
-        }
+    SYCL_EXTERNAL inline uint64_t mix64(uint64_t x) {
+        // SplitMix64 finalizer (good 64-bit avalanche)
+        x += 0x9E3779B97F4A7C15ull;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+        return x ^ (x >> 31);
+    }
 
-        SYCL_EXTERNAL inline uint64_t makeSeed(
-            uint64_t renderSeed,
-            uint64_t pathId,
-            uint32_t bounceIndex,
-            uint32_t streamTag,
-            uint32_t dimension)
-        {
-            uint64_t s = 0;
-            s ^= hash64(renderSeed ^ 0xA0761D6478BD642Full);
-            s ^= hash64(pathId     ^ 0xE7037ED1A0B428DBull);
-            s ^= hash64(uint64_t(bounceIndex) ^ 0x8EBC6AF09C88C6E3ull);
-            s ^= hash64(uint64_t(streamTag)   ^ 0x589965CC75374CC3ull);
-            s ^= hash64(uint64_t(dimension)   ^ 0x1D8E4E27C47D124Full);
-            return hash64(s);
+    SYCL_EXTERNAL inline uint64_t hashCombine64(uint64_t state, uint64_t v) {
+        // Similar spirit to boost hash combine, but with strong mixer
+        return mix64(state ^ mix64(v));
+    }
+
+    SYCL_EXTERNAL inline uint64_t makeSeed(
+        uint64_t renderSeed,
+        uint64_t pathId,
+        uint32_t bounceIndex,
+        uint32_t streamTag,
+        uint32_t dimension)
+    {
+        uint64_t s = mix64(renderSeed ^ 0xA0761D6478BD642Full);
+        s = hashCombine64(s, pathId       ^ 0xE7037ED1A0B428DBull);
+        s = hashCombine64(s, uint64_t(bounceIndex) ^ 0x8EBC6AF09C88C6E3ull);
+        s = hashCombine64(s, uint64_t(streamTag)   ^ 0x589965CC75374CC3ull);
+        s = hashCombine64(s, uint64_t(dimension)   ^ 0x1D8E4E27C47D124Full);
+        return s;
+    }
+
+    SYCL_EXTERNAL inline float rand01(
+    uint64_t renderSeed,
+    uint64_t pathId,
+    uint32_t bounceIndex,
+    uint32_t streamTag,
+    uint32_t dimension)
+    {
+        const uint64_t s = rng::makeSeed(renderSeed, pathId, bounceIndex, streamTag, dimension);
+        const uint32_t u = static_cast<uint32_t>(s >> 40);  // top 24 bits
+        return float(u) * 0x1.0p-24f;
     }
 } // namespace pale::rng
 
@@ -339,6 +360,25 @@ namespace Pale {
         float3 &outDir, float &outPdf) {
         float u1 = rng.nextFloat();
         float u2 = rng.nextFloat();
+
+        float z = sycl::sqrt(1.f - u1);
+        float r = sycl::sqrt(1 - (z * z));
+
+        float phi = 2.f * M_PIf * u2;
+        float x = r * sycl::cos(phi);
+        float y = r * sycl::sin(phi);
+
+        // build an ONB around n
+        float3 up = abs(n.z()) < .999f ? float3{0, 0, 1} : float3{1, 0, 0};
+        float3 tang = normalize(cross(up, n));
+        float3 bit = cross(n, tang);
+
+        outDir = normalize(x * tang + y * bit + z * n);
+        outPdf = max(0.f, dot(outDir, n)) / M_PIf; // cosθ/π
+    }
+    SYCL_EXTERNAL inline void sampleCosineHemisphereRandom(
+        float u1, float u2, const float3 &n,
+        float3 &outDir, float &outPdf) {
 
         float z = sycl::sqrt(1.f - u1);
         float r = sycl::sqrt(1 - (z * z));

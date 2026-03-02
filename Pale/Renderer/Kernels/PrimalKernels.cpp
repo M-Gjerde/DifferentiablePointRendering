@@ -90,25 +90,12 @@ namespace Pale {
                     const uint32_t rayIndex = globalId[0];
                     RayState rayState = intermediates.primaryRays[rayIndex];
 
-                    const uint64_t traversalSeed =
-                            rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamTraversal, 0u);
-                    rng::Xorshift128 traversalRng(traversalSeed);
-
-                    const uint64_t directionSeed =
-                            rng::makeSeed(renderSeed, rayState.pathId + rayIndex, rayState.bounceIndex, rng::kStreamDirection, 0u);
-                    rng::Xorshift128 directionRng(directionSeed);
-
-                    const uint64_t eventSeed =
-                            rng::makeSeed(renderSeed, rayState.pathId + rayIndex, rayState.bounceIndex, rng::kStreamEvent, 0u);
-                    rng::Xorshift128 eventRng(eventSeed);
-
-                    const uint64_t rouletteSeed =
-                            rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamRoulette, 0u);
-                    rng::Xorshift128 rouletteRng(rouletteSeed);
-
+                    const uint64_t seed =
+                            rng::makeSeed(renderSeed, rayState.pathId + rayIndex, rayState.bounceIndex, rng::kStreamTraversal, 107u);
+                    rng::Xorshift128 rng(seed);
 
                     WorldHit worldHit{};
-                    intersectScene(rayState.ray, &worldHit, scene, traversalRng, SurfelIntersectMode::FirstHit);
+                    intersectScene(rayState.ray, &worldHit, scene, rng, SurfelIntersectMode::FirstHit);
 
                     if (!worldHit.hit) {
                         return;
@@ -149,7 +136,7 @@ namespace Pale {
                         const GPUMaterial material = scene.materials[instance.materialIndex];
                         // If we hit instance was a mesh do ordinary BRDF stuff.
                         float sampledPdf = 0.0f;
-                        sampleCosineHemisphere(directionRng, worldHit.geometricNormalW, sampledOutgoingDirectionW,
+                        sampleCosineHemisphere(rng, worldHit.geometricNormalW, sampledOutgoingDirectionW,
                                                sampledPdf);
                         const float3 lambertBrdf = material.baseColor;
 
@@ -165,7 +152,7 @@ namespace Pale {
                         nextState.pixelIndex = rayState.pixelIndex;
                         nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
 
-                        if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
+                        if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                   settings.russianRouletteStart))
                             return;
 
@@ -177,8 +164,7 @@ namespace Pale {
                         const uint32_t outIndex = extensionCounter.fetch_add(1);
                         intermediates.extensionRaysA[outIndex] = nextState;
                     } else {
-
-                        const float u = eventRng.nextFloat();
+                        const float u = rng.nextFloat();
                         if (u < settings.sampling.qNull) {
                             // Update path throughput
                             const Point &surfel = scene.points[worldHit.primitiveIndex];
@@ -193,7 +179,7 @@ namespace Pale {
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
 
-                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
@@ -227,7 +213,7 @@ namespace Pale {
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
-                            sampleUniformHemisphereAroundNormal(directionRng, orientedNormal, sampledOutgoingDirectionW,
+                            sampleUniformHemisphereAroundNormal(rng, orientedNormal, sampledOutgoingDirectionW,
                                                                 sampledPdf);
 
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
@@ -261,7 +247,7 @@ namespace Pale {
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = throughput;
-                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
@@ -305,7 +291,7 @@ namespace Pale {
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
-                            sampleUniformHemisphereAroundNormal(directionRng, orientedNormal, sampledOutgoingDirectionW,
+                            sampleUniformHemisphereAroundNormal(rng, orientedNormal, sampledOutgoingDirectionW,
                                                                 sampledPdf);
 
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
@@ -323,7 +309,7 @@ namespace Pale {
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = throughput;
 
-                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 

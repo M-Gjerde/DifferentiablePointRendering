@@ -12,18 +12,18 @@
 
 
 namespace Pale {
-    void launchRayGenAdjointKernel(RenderPackage &pkg, int spp, uint32_t cameraIndex) {
-        auto &queue = pkg.queue;
-        auto &settings = pkg.settings;
-        auto &intermediates = pkg.intermediates;
-        auto &sensor = pkg.sensors[cameraIndex];
+    void launchRayGenAdjointKernel(RenderPackage& pkg, int spp, uint32_t cameraIndex) {
+        auto& queue = pkg.queue;
+        auto& settings = pkg.settings;
+        auto& intermediates = pkg.intermediates;
+        auto& sensor = pkg.sensors[cameraIndex];
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
         uint32_t raysPerSet = imageWidth * imageHeight;
 
 
-        queue.submit([&](sycl::handler &commandGroupHandler) {
+        queue.submit([&](sycl::handler& commandGroupHandler) {
             const uint64_t renderSeed = settings.random.seed;
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
@@ -39,7 +39,7 @@ namespace Pale {
                     const uint32_t pixelIndex = pixelLinearIndexWithinImage;
                     // RNG for this pixelhttps://www.chess.com/home
                     const uint64_t seed =
-                            rng::makeSeed(renderSeed, globalRayIndex, 0u, rng::kStreamRayGen, 0u);
+                        rng::makeSeed(renderSeed, globalRayIndex, 0u, rng::kStreamRayGen, 0u);
                     rng::Xorshift128 rng128(seed);
 
                     // Adjoint source weight
@@ -85,13 +85,13 @@ namespace Pale {
     }
 
 
-    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t bounceIndex) {
-        auto &queue = pkg.queue;
-        auto &settings = pkg.settings;
-        auto &intermediates = pkg.intermediates;
-        auto &scene = pkg.scene;
+    void launchAdjointIntersectKernel(RenderPackage& pkg, uint32_t activeRayCount, uint32_t bounceIndex) {
+        auto& queue = pkg.queue;
+        auto& settings = pkg.settings;
+        auto& intermediates = pkg.intermediates;
+        auto& scene = pkg.scene;
 
-        queue.submit([&](sycl::handler &cgh) {
+        queue.submit([&](sycl::handler& cgh) {
             uint64_t renderSeed = settings.random.seed;
             cgh.parallel_for<class launchIntersectKernel>(
                 sycl::range<1>(activeRayCount),
@@ -100,20 +100,13 @@ namespace Pale {
                     const uint32_t rayIndex = globalId[0];
                     RayState rayState = intermediates.primaryRays[rayIndex];
 
-                    const uint64_t traversalSeed =
-                        rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamTraversal, 0u);
-                    rng::Xorshift128 traversalRng(traversalSeed);
-
-                    const uint64_t directionSeed =
-                    rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamDirection, 0u);
-                rng::Xorshift128 directionRng(directionSeed);
-
-                                    const uint64_t rouletteSeed =
-                    rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamRoulette, 0u);
-                rng::Xorshift128 rouletteRng(rouletteSeed);
+                    const uint64_t seed =
+                        rng::makeSeed(renderSeed, rayState.pathId + rayIndex, rayState.bounceIndex,
+                                      rng::kStreamTraversal, 107u);
+                    rng::Xorshift128 rng(seed);
 
                     WorldHit worldHit{};
-                    intersectScene(rayState.ray, &worldHit, scene, traversalRng, SurfelIntersectMode::FirstHit);
+                    intersectScene(rayState.ray, &worldHit, scene, rng, SurfelIntersectMode::FirstHit);
                     if (!worldHit.hit) {
                         return;
                     }
@@ -125,15 +118,16 @@ namespace Pale {
                     float3 orientedNormal{0.0f};
                     float sampledOutgoingDirectionPDF{0.0f};
                     float3 sampledOutgoingDirectionW{0.0f};
-                    const InstanceRecord &endpointInstance = scene.instances[worldHit.instanceIndex];
+                    const InstanceRecord& endpointInstance = scene.instances[worldHit.instanceIndex];
                     if (endpointInstance.geometryType == GeometryType::Mesh) {
                         // Cosine sampling
-                    sampleCosineHemisphere(directionRng, worldHit.geometricNormalW, sampledOutgoingDirectionW,
-                       sampledOutgoingDirectionPDF);
+                        sampleCosineHemisphere(rng, worldHit.geometricNormalW, sampledOutgoingDirectionW,
+                                               sampledOutgoingDirectionPDF);
                         orientedNormal = worldHit.geometricNormalW;
-                    } else if (endpointInstance.geometryType == GeometryType::PointCloud) {
+                    }
+                    else if (endpointInstance.geometryType == GeometryType::PointCloud) {
                         // Hemisphere sampling
-                        const auto &surfel = scene.points[worldHit.primitiveIndex];
+                        const auto& surfel = scene.points[worldHit.primitiveIndex];
                         // Find which side we hit the surfel:
                         const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                         const float signedCosineIncident = dot(canonicalNormalW, -rayState.ray.direction);
@@ -141,13 +135,14 @@ namespace Pale {
                         // If positive we hit the front side if negative we hit the backside
                         orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
                         // If we hit instance was a mesh do ordinary BRDF stuff.
-                        sampleUniformHemisphereAroundNormal(directionRng, orientedNormal, sampledOutgoingDirectionW,
+                        sampleUniformHemisphereAroundNormal(rng, orientedNormal, sampledOutgoingDirectionW,
                                                             sampledOutgoingDirectionPDF);
                     }
 
                     if (rayState.pathId < intermediates.maxPendingAdjointStateCount) {
                         PendingAdjointState pending = intermediates.pendingAdjointStates[rayState.pathId];
-                        if (pending.kind == PendingAdjointKind::ReflectScatter && endpointInstance.geometryType == GeometryType::PointCloud) {
+                        if (pending.kind == PendingAdjointKind::ReflectScatter && endpointInstance.geometryType ==
+                            GeometryType::PointCloud) {
                             // Obtain normal:
                             CompletedGradientEvent completed{};
                             completed.pathId = pending.pathId;
@@ -190,7 +185,7 @@ namespace Pale {
                             completed.instanceIndex = pending.instanceIndex;
                             completed.alphaGeom = pending.alphaGeom;
                             completed.hitPositionSurfel = pending.hitPosition;
-                            completed.pathThroughput = pending.pathThroughput * settings.sampling.qNull; // Match the expected value only qReflect paths will actually scatter, some might transmit or attenuate
+                            completed.pathThroughput = pending.pathThroughput;
                             completed.pixelIndex = pending.pixelIndex;
                             completed.cosineHitPoint = dot(orientedNormal, -rayState.ray.direction);
                             completed.endPointAlphaGeom = worldHit.alphaGeom;
@@ -217,7 +212,7 @@ namespace Pale {
                     }
 
                     // Hitting mesh events
-                    const auto &instance = scene.instances[worldHit.instanceIndex];
+                    const auto& instance = scene.instances[worldHit.instanceIndex];
                     if (instance.geometryType == GeometryType::Mesh) {
                         // determine if we should make contributions from this position:
                         // Generate next ray
@@ -235,7 +230,7 @@ namespace Pale {
                         nextState.pixelIndex = rayState.pixelIndex;
                         nextState.pathId = rayState.pathId;
                         nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
-                        if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
+                        if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                   settings.russianRouletteStart))
                             return;
 
@@ -253,23 +248,59 @@ namespace Pale {
                             intermediates.pendingAdjointStates[rayState.pathId] = pending;
                         }
 
+                        if (rayState.pathId < intermediates.maxPendingAdjointStateCount) {
+                            PendingAdjointState pending = intermediates.pendingAdjointStates[rayState.pathId];
+                            if (pending.kind == PendingAdjointKind::NullTransmittance) {
+                                // Obtain normal:
+                                CompletedGradientEvent completed{};
+                                completed.pathId = pending.pathId;
+                                completed.kind = pending.kind;
+                                completed.primitiveIndex = pending.primitiveIndex;
+                                completed.instanceIndex = pending.instanceIndex;
+                                completed.alphaGeom = pending.alphaGeom;
+                                completed.hitPositionSurfel = pending.hitPosition;
+                                completed.pathThroughput = pending.pathThroughput;
+                                completed.pixelIndex = pending.pixelIndex;
+                                completed.cosineHitPoint = dot(orientedNormal, -rayState.ray.direction);
+                                completed.endPointAlphaGeom = worldHit.alphaGeom;
+                                completed.endpointInstanceIndex = worldHit.instanceIndex;
+                                completed.endpointPrimitiveIndex = worldHit.primitiveIndex;
+                                completed.endpointPosition = worldHit.hitPositionW;
+                                completed.endpointNormal = orientedNormal;
+                                completed.endPointPDF = sampledOutgoingDirectionPDF;
+                                completed.endpointType = endpointInstance.geometryType;
+                                // check endpoint cosine
+                                const float cosThetaOut = sycl::fmax(
+                                    0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
+                                completed.endpointCosine = cosThetaOut;
+                                completed.endpointLightIndex = endpointInstance.geometryIndex;
+
+                                appendCompletedGradientEventAtomic(
+                                    intermediates.countCompletedGradientEvents,
+                                    intermediates.completedGradientEvents,
+                                    intermediates.maxCompletedGradientEventCount,
+                                    completed);
+                                // Clear pending in global memory
+                                clearPendingAdjointState(intermediates.pendingAdjointStates[rayState.pathId]);
+                            }
+                        }
+
                         // Scatter calculations
                         auto extensionCounter = sycl::atomic_ref<uint32_t,
-                            sycl::memory_order::relaxed,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(
+                                                                 sycl::memory_order::relaxed,
+                                                                 sycl::memory_scope::device,
+                                                                 sycl::access::address_space::global_space>(
                             *intermediates.countExtensionOut);
                         const uint32_t outIndex = extensionCounter.fetch_add(1);
                         intermediates.extensionRaysA[outIndex] = nextState;
-                    } else {
+                    }
+                    else {
                         // Random event
                         // qAbsorb = 1 - (qNull + qReflect + qTransmit)
-                        const uint64_t eventSeed =
-                        rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamEvent, 0u);
-                    rng::Xorshift128 eventRng(eventSeed);
-                    const float u = eventRng.nextFloat();
+
+                        const float u = rng.nextFloat();
                         if (u < settings.sampling.qNull) {
-                            const Point &surfel = scene.points[worldHit.primitiveIndex];
+                            const Point& surfel = scene.points[worldHit.primitiveIndex];
                             float attenuation = 1.0f - worldHit.alphaGeom * surfel.opacity;
                             float weight = attenuation / settings.sampling.qNull;
                             // Spawn next ray
@@ -281,7 +312,7 @@ namespace Pale {
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
                             nextState.pathId = rayState.pathId;
-                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
                             // Populate pending (now that the path survives)
@@ -296,19 +327,21 @@ namespace Pale {
                                 intermediates.pendingAdjointStates[rayState.pathId] = pending;
                             }
                             auto extensionCounter = sycl::atomic_ref<uint32_t,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(
+                                                                     sycl::memory_order::relaxed,
+                                                                     sycl::memory_scope::device,
+                                                                     sycl::access::address_space::global_space>(
                                 *intermediates.countExtensionOut);
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
-                        } else if (u < settings.sampling.qNull + settings.sampling.qReflect) {
+                        }
+                        else if (u < settings.sampling.qNull + settings.sampling.qReflect) {
                             // Generate next ray
-                            const auto &surfel = scene.points[worldHit.primitiveIndex];
+                            const auto& surfel = scene.points[worldHit.primitiveIndex];
                             const float3 f_s = surfel.alpha_r * surfel.albedo * M_1_PIf; // ρ/π
                             const float cosTheta = sycl::fmax(0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
                             float alpha = worldHit.alphaGeom * surfel.opacity;
-                            const float3 &throughputMultiplier = ((alpha / settings.sampling.qReflect) * (f_s * cosTheta)) / sampledOutgoingDirectionPDF;
+                            const float3& throughputMultiplier = ((alpha / settings.sampling.qReflect) * (f_s *
+                                cosTheta)) / sampledOutgoingDirectionPDF;
                             RayState nextState{};
                             // Spawn next ray
                             nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-5f);
@@ -318,8 +351,8 @@ namespace Pale {
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathId = rayState.pathId;
                             nextState.pathThroughput =
-                                    rayState.pathThroughput * throughputMultiplier;
-                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
+                                rayState.pathThroughput * throughputMultiplier;
+                            if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
@@ -343,16 +376,16 @@ namespace Pale {
                             }
 
                             auto extensionCounter = sycl::atomic_ref<uint32_t,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(
+                                                                     sycl::memory_order::relaxed,
+                                                                     sycl::memory_scope::device,
+                                                                     sycl::access::address_space::global_space>(
                                 *intermediates.countExtensionOut);
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
-
-
-                        } else if (u < settings.sampling.qNull + settings.sampling.qReflect + settings.sampling.qTransmit) {
-                            const auto &surfel = scene.points[worldHit.primitiveIndex];
+                        }
+                        else if (u < settings.sampling.qNull + settings.sampling.qReflect + settings.sampling.
+                            qTransmit) {
+                            const auto& surfel = scene.points[worldHit.primitiveIndex];
                             float alpha = worldHit.alphaGeom * surfel.opacity;
                             float weight = (alpha * surfel.alpha_t) / settings.sampling.qTransmit;
                             float3 throughput = rayState.pathThroughput * weight;
@@ -364,11 +397,11 @@ namespace Pale {
                             float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
 
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;
-                            const float3 &lambertBrdf = surfel.albedo;
+                            const float3& lambertBrdf = surfel.albedo;
 
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
-                            sampleUniformHemisphereAroundNormal(directionRng, orientedNormal, sampledOutgoingDirectionW,
+                            sampleUniformHemisphereAroundNormal(rng, orientedNormal, sampledOutgoingDirectionW,
                                                                 sampledPdf);
                             RayState nextState{};
                             // Spawn next ray
@@ -380,18 +413,19 @@ namespace Pale {
                             nextState.pathId = rayState.pathId;
                             nextState.pathThroughput = throughput * lambertBrdf;
 
-                            if (!applyRussianRoulette(rouletteRng, nextState.bounceIndex, nextState.pathThroughput,
+                            if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
 
                             auto extensionCounter = sycl::atomic_ref<uint32_t,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(
+                                                                     sycl::memory_order::relaxed,
+                                                                     sycl::memory_scope::device,
+                                                                     sycl::access::address_space::global_space>(
                                 *intermediates.countExtensionOut);
                             const uint32_t outIndex = extensionCounter.fetch_add(1);
                             intermediates.extensionRaysA[outIndex] = nextState;
-                        } else {
+                        }
+                        else {
                             // Absorb: do not enqueue nextState, do not enqueue contribution.
                             return;
                         }
@@ -402,32 +436,32 @@ namespace Pale {
     }
 
 
-    void launchAdjointTransportKernel(RenderPackage &pkg, uint32_t contributionTransmittanceCount,
+    void launchAdjointTransportKernel(RenderPackage& pkg, uint32_t contributionTransmittanceCount,
                                       uint32_t cameraIndex) {
-        auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
-        auto &settings = pkg.settings;
+        auto& queue = pkg.queue;
+        auto& scene = pkg.scene;
+        auto& settings = pkg.settings;
         // Host-side (before launching kernel)
-        SensorGPU &sensor = pkg.sensors[cameraIndex];
-        auto *contributionRecords = pkg.intermediates.completedGradientEvents;
+        SensorGPU& sensor = pkg.sensors[cameraIndex];
+        auto* contributionRecords = pkg.intermediates.completedGradientEvents;
 
-        auto &gradients = pkg.gradients;
-        const auto &photonMap = pkg.intermediates.map;
-        auto *raysIn = pkg.intermediates.primaryRays;
+        auto& gradients = pkg.gradients;
+        const auto& photonMap = pkg.intermediates.map;
+        auto* raysIn = pkg.intermediates.primaryRays;
 
         float invSpp = 1.0f / settings.adjointSamplesPerPixel;
 
-        DebugImages &debugImage = pkg.debugImages[cameraIndex];
+        DebugImages& debugImage = pkg.debugImages[cameraIndex];
 
-        queue.submit([&](sycl::handler &cgh) {
+        queue.submit([&](sycl::handler& cgh) {
                 uint64_t baseSeed = settings.random.seed * (static_cast<uint64_t>(cameraIndex) + 5ull);
                 cgh.parallel_for<class launchContributionKernel>(
                     sycl::range<1>(contributionTransmittanceCount),
                     [=](sycl::id<1> globalId) {
                         const uint32_t contributionIndex = globalId[0];
-                        CompletedGradientEvent &contribution = contributionRecords[contributionIndex];
+                        CompletedGradientEvent& contribution = contributionRecords[contributionIndex];
                         if (contribution.kind == PendingAdjointKind::ProjectionScatter) {
-                            const Point &surfel = scene.points[contribution.primitiveIndex];
+                            const Point& surfel = scene.points[contribution.primitiveIndex];
                             const float3 E = gatherDiffuseIrradianceAtPoint(
                                 contribution.hitPositionSurfel,
                                 contribution.hitNormalSurfel,
@@ -440,7 +474,8 @@ namespace Pale {
                             const float grad_alpha_eta = contribution.alphaGeom;
                             // p should be the adjoint weight carried from the camera (residual etc.)
                             float3 grad_cost_eta = grad_alpha_eta * contribution.pathThroughput * Lo;
-                            const float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp; // only if you truly have spp samples
+                            const float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
+                            // only if you truly have spp samples
                             atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
@@ -453,13 +488,13 @@ namespace Pale {
 
 
                         if (contribution.kind == PendingAdjointKind::NullTransmittance) {
-                            const Point &surfel = scene.points[contribution.primitiveIndex];
-                            const auto &instance = scene.instances[contribution.endpointInstanceIndex];
+                            const Point& surfel = scene.points[contribution.primitiveIndex];
+                            const auto& instance = scene.instances[contribution.endpointInstanceIndex];
                             const GPUMaterial material = scene.materials[instance.materialIndex];
                             float3 Lr = gatherDiffuseIrradianceAtPoint(
-                                            contribution.endpointPosition,
-                                            contribution.endpointNormal,
-                                            photonMap) * material.baseColor;
+                                contribution.endpointPosition,
+                                contribution.endpointNormal,
+                                photonMap) * material.baseColor * M_1_PIf;
 
                             float3 Le = {0.0f, 0.0f, 0.0f};
                             if (material.isEmissive()) {
@@ -487,18 +522,19 @@ namespace Pale {
                         }
 
                         if (contribution.kind == PendingAdjointKind::ReflectScatter) {
-                            const Point &surfel = scene.points[contribution.endpointPrimitiveIndex];
+                            const Point& surfel = scene.points[contribution.endpointPrimitiveIndex];
                             //const auto &instance = scene.instances[contribution.instanceIndex];
                             //const GPUMaterial material = scene.materials[instance.materialIndex];
                             float3 surfelIrradiance = gatherDiffuseIrradianceAtPoint(
-                                            contribution.endpointPosition,
-                                            contribution.endpointNormal,
-                                            photonMap);
+                                contribution.endpointPosition,
+                                contribution.endpointNormal,
+                                photonMap);
 
                             const float cosTheta = contribution.endpointCosine;
                             const float3 Lo_surfel = surfelIrradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
 
-                            const float3 p_surfel_exit = contribution.pathThroughput * surfel.alpha_r * surfel.albedo * M_1_PIf * cosTheta / contribution.endPointPDF;
+                            const float3 p_surfel_exit = contribution.pathThroughput * surfel.alpha_r * surfel.albedo *
+                                M_1_PIf * cosTheta / contribution.endPointPDF;
                             const float3 p = contribution.pathThroughput;
 
                             float3 grad_cost_eta = contribution.endPointAlphaGeom * p * Lo_surfel;
