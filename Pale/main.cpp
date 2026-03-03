@@ -241,7 +241,7 @@ int main(int argc, char **argv) {
 
 
     bool addPoints = true;
-    bool addModel = true;
+    bool addModel = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -341,18 +341,15 @@ int main(int argc, char **argv) {
 
 
     if (renderPhotonMapping) {
-        //  cuda/rocm
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
         settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 3; // 1 = Projection only // 2 starts including transmittance
+        settings.maxAdjointBounces = 4; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 4;
         settings.renderDebugGradientImages = !true;
-
-
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
 
@@ -398,7 +395,6 @@ int main(int argc, char **argv) {
                 std::vector<Pale::DebugImages> debugImages(adjointSensors.size());
                 Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
                                                                              debugImages.data());
-
                 std::vector<float> rgbaHostAdjointTarget;
                 std::filesystem::path targetImagePath =
                         std::filesystem::path("Output") / "target" / "images" / "camera1_photonmap_raw.exr";

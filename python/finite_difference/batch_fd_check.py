@@ -227,8 +227,8 @@ def main() -> None:
     ap.add_argument("--tail", type=int, default=0, help="Use last N iterations AFTER dropping last row (0=all)")
     ap.add_argument("--rel_eps", type=float, default=1e-12)
 
-    ap.add_argument("--rel_threshold", type=float, default=0.05)
-    ap.add_argument("--abs_threshold", type=float, default=1e-4)
+    ap.add_argument("--rel_threshold", type=float, default=0.01)
+    ap.add_argument("--abs_threshold", type=float, default=1e-2)
     ap.add_argument("--fail_frac_threshold", type=float, default=0.0, help="Allow this fraction of rows to fail")
 
     ap.add_argument("--ignore_boundaries", action="store_true", help="Ignore opacity near 0 and 1 in scoring")

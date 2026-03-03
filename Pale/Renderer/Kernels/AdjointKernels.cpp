@@ -154,6 +154,7 @@ namespace Pale {
                             completed.pathThroughput = pending.pathThroughput;
                             completed.pixelIndex = pending.pixelIndex;
                             completed.cosineHitPoint = pending.cosine;
+                            completed.geometryType = pending.geometryType;
 
                             completed.endPointAlphaGeom = worldHit.alphaGeom;
                             completed.endpointInstanceIndex = worldHit.instanceIndex;
@@ -161,7 +162,7 @@ namespace Pale {
                             completed.endpointPosition = worldHit.hitPositionW;
                             completed.endpointNormal = orientedNormal;
                             completed.endPointPDF = sampledOutgoingDirectionPDF;
-                            completed.endpointType = endpointInstance.geometryType;
+                            completed.endpointGeometryType = endpointInstance.geometryType;
                             // check endpoint cosine
                             const float cosThetaOut = sycl::fmax(
                                 0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
@@ -194,7 +195,7 @@ namespace Pale {
                             completed.endpointPosition = worldHit.hitPositionW;
                             completed.endpointNormal = orientedNormal;
                             completed.endPointPDF = sampledOutgoingDirectionPDF;
-                            completed.endpointType = endpointInstance.geometryType;
+                            completed.endpointGeometryType = endpointInstance.geometryType;
                             // check endpoint cosine
                             const float cosThetaOut = sycl::fmax(
                                 0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
@@ -244,6 +245,7 @@ namespace Pale {
                             pending.pathThroughput = rayState.pathThroughput * throughputMultiplier;
                             pending.pixelIndex = rayState.pixelIndex;
                             pending.pathId = rayState.pathId;
+                            pending.geometryType = instance.geometryType;
                             pending.cosine = dot(-rayState.ray.direction, orientedNormal);
                             intermediates.pendingAdjointStates[rayState.pathId] = pending;
                         }
@@ -268,7 +270,7 @@ namespace Pale {
                                 completed.endpointPosition = worldHit.hitPositionW;
                                 completed.endpointNormal = orientedNormal;
                                 completed.endPointPDF = sampledOutgoingDirectionPDF;
-                                completed.endpointType = endpointInstance.geometryType;
+                                completed.endpointGeometryType = endpointInstance.geometryType;
                                 // check endpoint cosine
                                 const float cosThetaOut = sycl::fmax(
                                     0.0f, dot(sampledOutgoingDirectionW, orientedNormal));
@@ -375,6 +377,21 @@ namespace Pale {
                                     completed);
                             }
 
+                            if (rayState.pathId < intermediates.maxPendingAdjointStateCount) {
+                                PendingAdjointState pending{};
+                                pending.kind = PendingAdjointKind::ReflectScatter;
+                                pending.primitiveIndex = worldHit.primitiveIndex;
+                                pending.hitPosition = worldHit.hitPositionW;
+                                pending.pathThroughput = rayState.pathThroughput * throughputMultiplier;
+                                pending.pixelIndex = rayState.pixelIndex;
+                                pending.alphaGeom = worldHit.alphaGeom;
+                                pending.pathId = rayState.pathId;
+                                pending.cosine = dot(-rayState.ray.direction, orientedNormal);
+                                pending.geometryType = instance.geometryType;
+
+                                intermediates.pendingAdjointStates[rayState.pathId] = pending;
+                            }
+
                             auto extensionCounter = sycl::atomic_ref<uint32_t,
                                                                      sycl::memory_order::relaxed,
                                                                      sycl::memory_scope::device,
@@ -398,7 +415,6 @@ namespace Pale {
 
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;
                             const float3& lambertBrdf = surfel.albedo;
-
                             // If we hit instance was a mesh do ordinary BRDF stuff.
                             float sampledPdf = 0.0f;
                             sampleUniformHemisphereAroundNormal(rng, orientedNormal, sampledOutgoingDirectionW,
@@ -490,23 +506,30 @@ namespace Pale {
 
 
                         if (contribution.kind == PendingAdjointKind::NullTransmittance) {
-                            const Point& surfel = scene.points[contribution.primitiveIndex];
-                            const auto& instance = scene.instances[contribution.endpointInstanceIndex];
-                            const GPUMaterial material = scene.materials[instance.materialIndex];
-                            float3 Lr = gatherDiffuseIrradianceAtPoint(
-                                contribution.endpointPosition,
-                                contribution.endpointNormal,
-                                photonMap) * material.baseColor * M_1_PIf;
-
-                            float3 Le = {0.0f, 0.0f, 0.0f};
-                            if (material.isEmissive()) {
-                                GPULightRecord emitter = scene.lights[0];
-                                const float3 flux = material.baseColor * material.power;
-                                const float invArea = 1.0f / emitter.totalAreaWorld;
-                                Le = material.baseColor * (material.power / (M_PIf * emitter.totalAreaWorld));
+                            float3 Lo;
+                            if (contribution.endpointGeometryType == GeometryType::Mesh) {
+                                const auto& instance = scene.instances[contribution.endpointInstanceIndex];
+                                const GPUMaterial material = scene.materials[instance.materialIndex];
+                                float3 Lr = gatherDiffuseIrradianceAtPoint(
+                                    contribution.endpointPosition,
+                                    contribution.endpointNormal,
+                                    photonMap) * material.baseColor * M_1_PIf;
+                                float3 Le = {0.0f, 0.0f, 0.0f};
+                                if (material.isEmissive()) {
+                                    GPULightRecord emitter = scene.lights[0];
+                                    Le = material.baseColor * (material.power / (M_PIf * emitter.totalAreaWorld));
+                                }
+                                Lo = Le + Lr;
+                            }
+                            else if (contribution.endpointGeometryType == GeometryType::PointCloud) {
+                                const Point& surfel = scene.points[contribution.primitiveIndex];
+                                float3 Lr = gatherDiffuseIrradianceAtPoint(
+                                    contribution.endpointPosition,
+                                    contribution.endpointNormal,
+                                    photonMap) * surfel.albedo * M_1_PIf;
+                                Lo = Lr;
                             }
 
-                            const float3 Lo = Le + Lr;
                             float grad_tau_eta = -contribution.alphaGeom;
                             float3 p = contribution.pathThroughput;
                             float3 grad_cost_eta = grad_tau_eta * p * Lo;
@@ -524,33 +547,49 @@ namespace Pale {
                         }
 
                         if (contribution.kind == PendingAdjointKind::ReflectScatter) {
-                            const Point& surfel = scene.points[contribution.endpointPrimitiveIndex];
-                            //const auto &instance = scene.instances[contribution.instanceIndex];
-                            //const GPUMaterial material = scene.materials[instance.materialIndex];
-                            float3 surfelIrradiance = gatherDiffuseIrradianceAtPoint(
-                                contribution.endpointPosition,
-                                contribution.endpointNormal,
-                                photonMap);
+                            if (contribution.endpointGeometryType == GeometryType::PointCloud &&
+                                contribution.geometryType == GeometryType::PointCloud
+                                ) {
+                                const Point& surfel = scene.points[contribution.endpointPrimitiveIndex];
+                                float3 surfelIrradiance = gatherDiffuseIrradianceAtPoint(
+                                    contribution.endpointPosition,
+                                    contribution.endpointNormal,
+                                    photonMap);
 
-                            const float cosTheta = contribution.endpointCosine;
-                            const float3 Lo_surfel = surfelIrradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
+                                const float3 Lo_surfel = surfelIrradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
+                                const float3 p = contribution.pathThroughput;
+                                float3 grad_cost_eta = contribution.endPointAlphaGeom * p * Lo_surfel;
+                                float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
+                                atomicAddFloat(gradients.gradOpacity[contribution.endpointPrimitiveIndex],
+                                               grad_cost_eta_sum);
+                                if (settings.renderDebugGradientImages) {
+                                    uint32_t pixelIndex = contribution.pixelIndex;
+                                    atomicAddFloat4ToImage(
+                                        &debugImage.framebufferOpacity[pixelIndex],
+                                        float4{grad_cost_eta_sum}
+                                    );
+                                }
+                            }
+                            if (contribution.endpointGeometryType == GeometryType::PointCloud && contribution.
+                                geometryType == GeometryType::Mesh) {
+                                const Point& surfel = scene.points[contribution.endpointPrimitiveIndex];
+                                float3 surfelIrradiance = gatherDiffuseIrradianceAtPoint(
+                                    contribution.endpointPosition,
+                                    contribution.endpointNormal,
+                                    photonMap);
 
-                            const float3 p_surfel_exit = contribution.pathThroughput * surfel.alpha_r * surfel.albedo *
-                                M_1_PIf * cosTheta / contribution.endPointPDF;
-                            const float3 p = contribution.pathThroughput;
-
-                            float3 grad_cost_eta = contribution.endPointAlphaGeom * p * Lo_surfel;
-
-
-                            float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
-
-                            atomicAddFloat(gradients.gradOpacity[contribution.endpointPrimitiveIndex], grad_cost_eta_sum);
-                            if (settings.renderDebugGradientImages) {
-                                uint32_t pixelIndex = contribution.pixelIndex;
-                                atomicAddFloat4ToImage(
-                                    &debugImage.framebufferOpacity[pixelIndex],
-                                    float4{grad_cost_eta_sum}
-                                );
+                                const float3 Lo_surfel = surfelIrradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
+                                const float3 p = contribution.pathThroughput;
+                                float3 grad_cost_eta = contribution.endPointAlphaGeom * p * Lo_surfel;
+                                float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
+                                atomicAddFloat(gradients.gradOpacity[contribution.endpointPrimitiveIndex], grad_cost_eta_sum);
+                                if (settings.renderDebugGradientImages) {
+                                    uint32_t pixelIndex = contribution.pixelIndex;
+                                    atomicAddFloat4ToImage(
+                                        &debugImage.framebufferOpacity[pixelIndex],
+                                        float4{grad_cost_eta_sum}
+                                    );
+                                }
                             }
                         }
                     });

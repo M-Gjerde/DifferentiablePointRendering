@@ -275,14 +275,14 @@ def main(args) -> None:
 
             # Adjoint / analytic gradient
             gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
-            analytic_grad = float(np.asarray(gradients[args.parameter], dtype=np.float32).squeeze())
-
+            param_gradients = gradients[args.parameter]
+            param_gradient = param_gradients[args.index]
             writer.writerow(
                 {
                     "iter": iteration_index,
                     args.parameter: value,
                     "loss": float(loss_value),
-                    "analytic_grad": analytic_grad,
+                    "analytic_grad": param_gradient,
                     "fd_grad": float(fd_grad),
                     "fd_kind": int(fd_kind),
                     "fd_epsilon": float(args.fd_epsilon),
@@ -291,7 +291,7 @@ def main(args) -> None:
 
             print(
                 f"{iteration_index}/{iterations}, {args.parameter}: {value:.2f}, "
-                f"Loss: {loss_value:.5f}, AN: {analytic_grad:.5f}, FD: {fd_grad:.5f} (kind={int(fd_kind)})"
+                f"Loss: {loss_value:.5f}, AN: {param_gradient:.5f}, FD: {fd_grad:.5f} (kind={int(fd_kind)})"
             )
             f.flush()
 

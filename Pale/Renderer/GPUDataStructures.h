@@ -318,6 +318,7 @@ namespace Pale {
 
     struct PendingAdjointState {
         PendingAdjointKind kind = PendingAdjointKind::None;
+        GeometryType geometryType = GeometryType::InvalidType;
 
         // --- surfel identity ---
         uint32_t primitiveIndex = UINT32_MAX;
@@ -351,13 +352,13 @@ namespace Pale {
         float cosineHitPoint{}; // dot(-wi, n_end)
         uint32_t instanceIndex{};
         uint32_t primitiveIndex{};
+        GeometryType geometryType = GeometryType::InvalidType;
 
         // --- adjoint transport ---
         float3 pathThroughput; // p BEFORE interaction
         uint32_t pixelIndex{};
-
         // --- endpoint (next hit) ---
-        GeometryType endpointType = GeometryType::InvalidType;
+        GeometryType endpointGeometryType = GeometryType::InvalidType;
         uint32_t endpointInstanceIndex{};
         uint32_t endpointPrimitiveIndex{};
         uint32_t endpointLightIndex{};
