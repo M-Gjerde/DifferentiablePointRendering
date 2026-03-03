@@ -697,13 +697,13 @@ namespace Pale {
             buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
             meshRangeToBlasRange[meshIndex] = blasRangeIndex;
 
-            {
-                // One file per mesh BLAS (by mesh index)
-                std::string meshBlasPath = "mesh_blas_" + std::to_string(meshIndex) + ".csv";
-                write_blas_csv(buildProducts.bottomLevelNodes,
-                               buildProducts.bottomLevelRanges[blasRangeIndex],
-                               meshBlasPath.c_str());
-            }
+            //{
+            //    // One file per mesh BLAS (by mesh index)
+            //    std::string meshBlasPath = "mesh_blas_" + std::to_string(meshIndex) + ".csv";
+            //    write_blas_csv(buildProducts.bottomLevelNodes,
+            //                   buildProducts.bottomLevelRanges[blasRangeIndex],
+            //                   meshBlasPath.c_str());
+            //}
 
         }
 
@@ -749,14 +749,14 @@ namespace Pale {
 
             buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
             pointRangeToBlasRange[pointCloudIndex] = blasRangeIndex;
-            {
-                // One file per point cloud BLAS (by point cloud index)
-                std::string pointCloudBlasPath =
-                    "pointcloud_blas_" + std::to_string(pointCloudIndex) + ".csv";
-                write_blas_csv(buildProducts.bottomLevelNodes,
-                               buildProducts.bottomLevelRanges[blasRangeIndex],
-                               pointCloudBlasPath.c_str());
-            }
+            //{
+            //    // One file per point cloud BLAS (by point cloud index)
+            //    std::string pointCloudBlasPath =
+            //        "pointcloud_blas_" + std::to_string(pointCloudIndex) + ".csv";
+            //    write_blas_csv(buildProducts.bottomLevelNodes,
+            //                   buildProducts.bottomLevelRanges[blasRangeIndex],
+            //                   pointCloudBlasPath.c_str());
+            //}
 
         }
 
@@ -785,7 +785,7 @@ namespace Pale {
 
         // Optional debug:
         //write_tlas_dot(buildProducts.topLevelNodes, "tlas.dot");
-        write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
+        //write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
     }
 
     float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts& buildProducts) {

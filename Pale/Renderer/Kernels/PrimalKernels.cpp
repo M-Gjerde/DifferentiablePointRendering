@@ -107,6 +107,9 @@ namespace Pale {
                     const auto &instance = scene.instances[worldHit.instanceIndex];
                     if (instance.geometryType == GeometryType::Mesh) {
                         // determine if we should make contributions from this position:
+                        const bool isBackfaceHit = dot( rayState.ray.direction, worldHit.geometricNormalW) > 0.0f;
+                        if (isBackfaceHit)
+                            worldHit.geometricNormalW *= -1.0f;
 
                         if (settings.integratorKind == IntegratorKind::lightTracing) {
                             HitInfoContribution contribution{};
@@ -622,19 +625,22 @@ namespace Pale {
                                     const float cameraCosine =
                                             sycl::fmax(0.f, dot(sensor.camera.forward,
                                                                 primaryRay.direction));
-
                                     const float geometricToCamera =
                                             (surfaceCosine * cameraCosine) /
                                             (distanceToCamera * distanceToCamera + 1e-8f);
 
-
-                                    const float3 emittedRadiance = material.power * material.baseColor; // L_e
+                                    const float3 emittedRadiance = material.power * material.baseColor * surfaceCosine; // L_e
 
                                     accumulatedRadianceRGB += transmittance * min(emittedRadiance, 1.0f);
                                     // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
                                 } else {
+
+                                    buildIntersectionNormal(scene, worldHit);
+                                    const bool isBackfaceHit = dot( primaryRay.direction, worldHit.geometricNormalW) > 0.0f;
+                                    const float3 normal = isBackfaceHit ? -worldHit.geometricNormalW : worldHit.geometricNormalW;
+
                                     const float3 E = gatherDiffuseIrradianceAtPoint(
-                                        worldHit.hitPositionW, worldHit.geometricNormalW, photonMap);
+                                        worldHit.hitPositionW, normal, photonMap);
                                     const float3 Lo = (material.baseColor * M_1_PIf) * E;
 
                                     accumulatedRadianceRGB += transmittance * Lo;
