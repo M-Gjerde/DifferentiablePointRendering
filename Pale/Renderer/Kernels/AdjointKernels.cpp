@@ -469,11 +469,13 @@ namespace Pale {
 
                             // Evaluate surfel outgoing radiance (direct/indirect via photon map)
                             const float3 f_r = surfel.alpha_r * surfel.albedo * M_1_PIf; // Lambert BRDF
-                            const float3 Lo = f_r * E;
+                            const float3 Lo =  f_r * E;
                             // opacity alpha = alphaGeom * eta  => dLo/deta = alphaGeom * Lo
                             const float grad_alpha_eta = contribution.alphaGeom;
+                            const float3 p_e = contribution.pathThroughput;
+
                             // p should be the adjoint weight carried from the camera (residual etc.)
-                            float3 grad_cost_eta = grad_alpha_eta * contribution.pathThroughput * Lo;
+                            float3 grad_cost_eta = grad_alpha_eta * p_e * Lo;
                             const float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
                             // only if you truly have spp samples
                             atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
