@@ -101,7 +101,7 @@ namespace Pale {
                     RayState rayState = intermediates.primaryRays[rayIndex];
 
                     const uint64_t seed =
-                        rng::makeSeed(renderSeed, rayState.pathId + rayIndex, rayState.bounceIndex,
+                        rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex,
                                       rng::kStreamTraversal, 107u);
                     rng::Xorshift128 rng(seed);
 

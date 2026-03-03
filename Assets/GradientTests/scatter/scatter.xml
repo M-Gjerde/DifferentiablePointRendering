@@ -32,8 +32,9 @@
         <float name="far_clip" value="100.0"/>
         <float name="focus_distance" value="100"/>
         <float name="fov" value="40.3077"/>
+        <float name="adjoint_source" value="False"/>
         <transform name="to_world">
-            <lookat origin="0,-3.0, 1.9" target="0,0,2" up="0,0,1"/>
+            <lookat origin="0,-3.0, 1" target="0,0,2" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>

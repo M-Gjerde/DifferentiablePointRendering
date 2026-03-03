@@ -32,7 +32,7 @@ namespace Pale {
                 sycl::range<1>(settings.photonsPerLaunch),
                 [=](sycl::id<1> globalId) {
                     const uint64_t photonIndex = uint64_t(globalId[0]);
-                    const uint64_t pathId = (forwardPassIndex << 32) | photonIndex;
+                    const uint64_t pathId = forwardPassIndex * uint64_t(settings.photonsPerLaunch) + photonIndex;
                     const uint64_t seed =
                             rng::makeSeed(renderSeed, pathId, 0u, rng::kStreamRayGen, 0u);
                     rng::Xorshift128 rng128(seed);
@@ -78,10 +78,6 @@ namespace Pale {
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
 
-        uint32_t cameraCount = pkg.sensors.size();
-        auto &sensors = pkg.sensors;
-
-
         queue.submit([&](sycl::handler &cgh) {
             uint64_t renderSeed = pkg.random.seed;
             cgh.parallel_for<class launchIntersectKernel>(
@@ -91,7 +87,7 @@ namespace Pale {
                     RayState rayState = intermediates.primaryRays[rayIndex];
 
                     const uint64_t seed =
-                            rng::makeSeed(renderSeed, rayState.pathId + rayIndex, rayState.bounceIndex, rng::kStreamTraversal, 107u);
+                            rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamTraversal, 107u);
                     rng::Xorshift128 rng(seed);
 
                     WorldHit worldHit{};
@@ -107,7 +103,7 @@ namespace Pale {
                     const auto &instance = scene.instances[worldHit.instanceIndex];
                     if (instance.geometryType == GeometryType::Mesh) {
                         // determine if we should make contributions from this position:
-                        const bool isBackfaceHit = dot( rayState.ray.direction, worldHit.geometricNormalW) > 0.0f;
+                        const bool isBackfaceHit = dot(rayState.ray.direction, worldHit.geometricNormalW) > 0.0f;
                         if (isBackfaceHit)
                             worldHit.geometricNormalW *= -1.0f;
 
@@ -154,6 +150,7 @@ namespace Pale {
                         nextState.bounceIndex = rayState.bounceIndex + 1;
                         nextState.pixelIndex = rayState.pixelIndex;
                         nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
+                        nextState.pathId = rayState.pathId;
 
                         if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                   settings.russianRouletteStart))
@@ -181,6 +178,7 @@ namespace Pale {
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
+                            nextState.pathId = rayState.pathId;
 
                             if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
@@ -250,6 +248,8 @@ namespace Pale {
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = throughput;
+                            nextState.pathId = rayState.pathId;
+
                             if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
                                 return;
@@ -311,6 +311,7 @@ namespace Pale {
                             nextState.bounceIndex = rayState.bounceIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = throughput;
+                            nextState.pathId = rayState.pathId;
 
                             if (!applyRussianRoulette(rng, nextState.bounceIndex, nextState.pathThroughput,
                                                       settings.russianRouletteStart))
@@ -629,15 +630,18 @@ namespace Pale {
                                             (surfaceCosine * cameraCosine) /
                                             (distanceToCamera * distanceToCamera + 1e-8f);
 
-                                    const float3 emittedRadiance = material.power * material.baseColor * surfaceCosine; // L_e
+                                    const float3 emittedRadiance = material.power * material.baseColor * surfaceCosine;
+                                    // L_e
 
                                     accumulatedRadianceRGB += transmittance * min(emittedRadiance, 1.0f);
                                     // CAP at 1, to avoid anti aliasing issues with very high values for the loss fucntion
                                 } else {
-
                                     buildIntersectionNormal(scene, worldHit);
-                                    const bool isBackfaceHit = dot( primaryRay.direction, worldHit.geometricNormalW) > 0.0f;
-                                    const float3 normal = isBackfaceHit ? -worldHit.geometricNormalW : worldHit.geometricNormalW;
+                                    const bool isBackfaceHit =
+                                            dot(primaryRay.direction, worldHit.geometricNormalW) > 0.0f;
+                                    const float3 normal = isBackfaceHit
+                                                              ? -worldHit.geometricNormalW
+                                                              : worldHit.geometricNormalW;
 
                                     const float3 E = gatherDiffuseIrradianceAtPoint(
                                         worldHit.hitPositionW, normal, photonMap);
