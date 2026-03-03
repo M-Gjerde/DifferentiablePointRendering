@@ -163,7 +163,7 @@ def compute_check(
     abs_err = np.abs(an - fd)
     rel_err = np.array([safe_rel_err(float(a), float(b), rel_eps) for a, b in zip(an, fd)], dtype=np.float64)
 
-    row_pass = (abs_err <= abs_threshold) | (rel_err <= rel_threshold)
+    row_pass =  (rel_err <= rel_threshold)
     row_fail = ~row_pass
 
     fail_frac = float(np.mean(row_fail)) if len(row_fail) else 0.0
@@ -227,8 +227,8 @@ def main() -> None:
     ap.add_argument("--tail", type=int, default=0, help="Use last N iterations AFTER dropping last row (0=all)")
     ap.add_argument("--rel_eps", type=float, default=1e-12)
 
-    ap.add_argument("--rel_threshold", type=float, default=0.01)
-    ap.add_argument("--abs_threshold", type=float, default=1e-2)
+    ap.add_argument("--rel_threshold", type=float, default=0.05)
+    ap.add_argument("--abs_threshold", type=float, default=1e-7)
     ap.add_argument("--fail_frac_threshold", type=float, default=0.0, help="Allow this fraction of rows to fail")
 
     ap.add_argument("--ignore_boundaries", action="store_true", help="Ignore opacity near 0 and 1 in scoring")

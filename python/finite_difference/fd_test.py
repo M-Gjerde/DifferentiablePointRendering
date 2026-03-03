@@ -168,11 +168,11 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 4,
+        "bounces": 6,
         "forward_passes": 40,
         "gather_passes": 1,
-        "adjoint_bounces": 4,
-        "adjoint_passes": 4,
+        "adjoint_bounces": 6,
+        "adjoint_passes": 8,
         "logging": 4,
         "seed": 42
     }
@@ -353,7 +353,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-4,
+        default=1e-5,
         help="Finite difference epsilon.",
     )
     return parser.parse_args()

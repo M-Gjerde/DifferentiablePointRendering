@@ -5,6 +5,8 @@
     {"scene": "transmit", "camera": "camera1", "parameter": "opacity"},
     {"scene": "scatter", "camera": "camera1", "parameter": "opacity"},
     {"scene": "simple_1", "camera": "camera1", "parameter": "opacity"},
-    {"scene": "simple_2", "camera": "camera1", "parameter": "opacity"}
+    {"scene": "simple_2", "camera": "camera1", "parameter": "opacity"},
+    {"scene": "simple_3", "camera": "camera1", "parameter": "opacity"},
+    {"scene": "simple_4", "camera": "camera1", "parameter": "opacity"}
   ]
 }
