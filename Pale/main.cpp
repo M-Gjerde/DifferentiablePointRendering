@@ -241,7 +241,7 @@ int main(int argc, char **argv) {
 
 
     bool addPoints = true;
-    bool addModel = true;
+    bool addModel = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
         auto entityGaussian = scene->createEntity("Gaussian");
@@ -286,7 +286,7 @@ int main(int argc, char **argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing =  true;
+    bool renderLightTracing =  !true;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -345,11 +345,11 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 40;
+        settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 4; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 4;
-        settings.renderDebugGradientImages = !true;
+        settings.renderDebugGradientImages = true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
 
@@ -397,7 +397,7 @@ int main(int argc, char **argv) {
                                                                              debugImages.data());
                 std::vector<float> rgbaHostAdjointTarget;
                 std::filesystem::path targetImagePath =
-                        std::filesystem::path("Output") / "target" / "images" / "camera1_photonmap_raw.exr";
+                        std::filesystem::path("Output") / "pointcloud" / "images" / "camera1_photonmap_raw.exr";
                 uint32_t width, height;
                 Pale::Utils::loadEXRAsRGBAFloat(targetImagePath, rgbaHostAdjointTarget, width, height);
 
@@ -436,6 +436,18 @@ int main(int argc, char **argv) {
                 Pale::Log::PA_INFO(
                     "grad Opacity = ({})",
                     hostGradientOpacity
+                );
+
+                Pale::float3 hostPosition{};
+                deviceSelector.getQueue()
+                        .memcpy(&hostPosition,
+                                gradients.gradPosition,
+                                sizeof(float))
+                        .wait();
+
+                Pale::Log::PA_INFO(
+                    "grad Position = ({}, {}, {})",
+                    hostPosition.x(), hostPosition.y(), hostPosition.z()
                 );
 
                 for (size_t i = 0; const auto &adjointSensor: adjointSensors) {

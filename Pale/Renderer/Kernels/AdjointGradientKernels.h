@@ -228,7 +228,7 @@ namespace Pale {
         const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
         */
         // Direction from camera (x) to surfel (y)
-        float3 d = x - y;
+        float3 d = y - x;
         const float rayLen = length(d);
         d = d / rayLen;
 
@@ -266,9 +266,41 @@ namespace Pale {
         const float3 dvDpk = 1 / sv * tangentVWorld * (grad_z - I);
 
         // duv/dc_pos = (u du/dc + v dv/dc)
-        const float3 dUVPosition = u * duDpk + v * dvDpk;
+        const float3 dUVPosition = -(u * duDpk + v * dvDpk);
 
         return dUVPosition;
+    }
+
+    inline float3 computeDuvDPositionDetached(
+    const float3& tangentUWorld,
+    const float3& tangentVWorld,
+    const float3& canonicalNormalWorld,
+    const float3& y,
+    const float3& x,
+    float u, float v,
+    float su, float sv)
+    {
+        // Use a consistent direction convention. Here: camera -> hit
+        float3 rayDirection = y - x;
+        const float rayLen = length(rayDirection);
+        rayDirection = rayDirection / rayLen;
+
+        const float denom = dot(canonicalNormalWorld, rayDirection);
+
+        if (fabs(denom) < 1e-8f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float tangentUDotRay = dot(tangentUWorld, rayDirection);
+        const float tangentVDotRay = dot(tangentVWorld, rayDirection);
+
+        const float3 duDpk =
+            ((tangentUDotRay / denom) * canonicalNormalWorld - tangentUWorld) / su;
+
+        const float3 dvDpk =
+            ((tangentVDotRay / denom) * canonicalNormalWorld - tangentVWorld) / sv;
+
+        return u * duDpk + v * dvDpk;
     }
 
 

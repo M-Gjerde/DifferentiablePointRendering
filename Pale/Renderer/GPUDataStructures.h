@@ -341,6 +341,7 @@ namespace Pale {
         // --- interaction identity ---
         PendingAdjointKind kind = PendingAdjointKind::None;
         uint32_t pathId{}; //for debugging
+        Ray ray{};
 
         // Require next path intersection or not
         bool hasEndpoint = false;

@@ -365,6 +365,7 @@ namespace Pale {
                                 completed.primitiveIndex = worldHit.primitiveIndex;
                                 completed.alphaGeom = worldHit.alphaGeom;
                                 completed.hitPositionSurfel = worldHit.hitPositionW;
+                                completed.ray = rayState.ray;
                                 completed.hitNormalSurfel = orientedNormal; // important
                                 completed.cosineHitPoint = dot(-rayState.ray.direction, orientedNormal); // important
                                 completed.pathThroughput = rayState.pathThroughput / settings.sampling.qReflect;
@@ -493,8 +494,39 @@ namespace Pale {
                             // p should be the adjoint weight carried from the camera (residual etc.)
                             float3 grad_cost_eta = grad_alpha_eta * p_e * Lo;
                             const float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
+
+
+                            float3 canonicalNormalWorld = contribution.hitNormalSurfel;
+                            float2 uv = phiInverse(contribution.hitPositionSurfel, surfel);
+                            float u = uv.x();
+                            float v = uv.y();
+                            float r2 = u * u + v * v;
+                            float su = surfel.scale.x();
+                            float sv = surfel.scale.y();
+                            float3 DuvDPosition = computeDuvDPositionFull(
+                                surfel.tanU,
+                                surfel.tanV,
+                                canonicalNormalWorld,
+                                contribution.hitPositionSurfel,
+                                contribution.ray.origin,
+                                surfel.position,
+                                u, v,
+                                su, sv);
+
+                            float beta = 4.0f * sycl::exp(surfel.beta);
+                            float factor = (-2.0f * beta * contribution.alphaGeom) / (1.0f - r2);
+                            float3 dAlpha_dPos = factor * DuvDPosition;
+                            float3 dAlphaEff_dPos = surfel.opacity * dAlpha_dPos;
+
+                            float3 gradPosition_R = p_e[0] * dAlphaEff_dPos * Lo[0];
+                            float3 gradPosition_G = p_e[1] * dAlphaEff_dPos * Lo[1];
+                            float3 gradPosition_B = p_e[2] * dAlphaEff_dPos * Lo[2];
+
+                            const float3 grad_cost_sp_sum = (gradPosition_R + gradPosition_G + gradPosition_B) * invSpp;
+
                             // only if you truly have spp samples
                             atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                            atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
                                 atomicAddFloat4ToImage(
@@ -502,6 +534,7 @@ namespace Pale {
                                     float4{grad_cost_eta_sum}
                                 );
                             }
+
                         }
 
 

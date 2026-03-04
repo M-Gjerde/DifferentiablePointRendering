@@ -74,8 +74,10 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
         renderer.set_point_opacity(opacity=float(value), index=int(index))
     elif parameter == "beta":
         renderer.set_point_beta(beta=float(value), index=int(index))
+    elif parameter == "translation_x":
+        renderer.set_point_translation(translation=float(value), axis=0, index=int(index))
     else:
-        raise RuntimeError(f"FD currently implemented only for opacity/beta, got '{parameter}'.")
+        raise RuntimeError(f"FD currently not implemented for'{parameter}'.")
 
 
 def _render_loss(
@@ -225,8 +227,10 @@ def main(args) -> None:
                 value = (iteration_index) / iterations  # 0..1
             elif args.parameter == "beta":
                 value = 6 - (iteration_index * 12) / iterations
+            elif args.parameter == "translation_x":
+                value = -0.5 + (iteration_index) / iterations  # -0.5..0.5
             else:
-                raise RuntimeError("This script currently supports opacity/beta sweeps only.")
+                raise RuntimeError("This script doesn't support parameter: " + args.parameter)
 
             # --- Finite difference derivative of LOSS at 'value' ---
             # Note: this renders multiple times per iteration (central = 3 total renders).
@@ -254,12 +258,12 @@ def main(args) -> None:
             # Save previews
             save_rgb_preview_png(
                 images[camera],
-                output_dir / "rendered" / Path(camera + f"_{value}" + ".png"),
+                output_dir / "rendered" / Path(camera + f"_{round(value, 2)}" + ".png"),
                 exposure_stops=0.0,
             )
             save_rgb_preview_exr(
                 rendered_image,
-                output_dir / "rendered" / Path(camera + f"_{value}" + ".exr"),
+                output_dir / "rendered" / Path(camera + f"_{round(value, 2)}" + ".exr"),
                 exposure_stops=0.0,
             )
             save_rgb_preview_exr(
@@ -269,14 +273,18 @@ def main(args) -> None:
             )
             save_seismic_signed(
                 loss_grad_image,
-                output_dir / "grad" / Path(camera + f"_{value}" + ".png"),
+                output_dir / "grad" / Path(camera + f"_{round(value, 2)}" + ".png"),
                 0.99,
             )
 
             # Adjoint / analytic gradient
             gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
-            param_gradients = gradients[args.parameter]
-            param_gradient = param_gradients[args.index]
+            if args.parameter == "translation_x":
+                param_gradients = gradients["position"]
+                param_gradient = param_gradients[args.index][0]
+            else:
+                param_gradients = gradients[args.parameter]
+                param_gradient = param_gradients[args.index]
             writer.writerow(
                 {
                     "iter": iteration_index,
@@ -305,7 +313,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ply",
         type=str,
-        default="initial",
+        default="pointcloud",
         help="Points (PLY without extension). Default: 'initial'.",
     )
     parser.add_argument(
@@ -323,7 +331,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--parameter",
         type=str,
-        choices=["translation", "rotation", "scale", "opacity", "beta"],
+        choices=["translation_x", "rotation", "scale", "opacity", "beta"],
         default="opacity",
     )
     parser.add_argument(

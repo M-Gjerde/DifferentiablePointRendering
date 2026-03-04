@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ply",
         type=str,
-        default="target",
+        default="pointcloud",
         help="Points (PLY without extension). Default: 'initial'.",
     )
 
@@ -84,9 +84,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--parameter","--param",
-        type=str,
-        choices=["translation", "rotation", "scale", "translation_rotation", "opacity", "beta"],
-        default="translation",
+        type=str
     )
 
     parser.add_argument(
