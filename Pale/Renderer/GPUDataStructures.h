@@ -345,7 +345,6 @@ namespace Pale {
 
         // Require next path intersection or not
         bool hasEndpoint = false;
-
         // --- local surfel/mesh data ---
         float alphaGeom{};
         float3 hitPositionSurfel;

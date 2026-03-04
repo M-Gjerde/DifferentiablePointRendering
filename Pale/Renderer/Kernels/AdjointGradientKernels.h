@@ -179,7 +179,7 @@ namespace Pale {
     }
 
     // Assuming float3, float2, dot(), cross(), etc. are defined as in your codebase.
-
+    */
     // ----------------- Position gradient (translation of surfel center) -----------------
     inline float3 computeDuvDPosition(
         const float3 &tangentUWorld,
@@ -207,7 +207,7 @@ namespace Pale {
         return dUVPosition;
 
     }
-    */
+
     // ----------------- Position gradient (translation of surfel center) -----------------
     inline float3 computeDuvDPositionFull(
         const float3 &tangentUWorld,

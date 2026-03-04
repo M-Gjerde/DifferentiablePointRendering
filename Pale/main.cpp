@@ -95,103 +95,25 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
 }
 
 
-static void debugDensifyPointAsset(
-    Pale::AssetManager &assetManager,
-    const Pale::AssetHandle &pointCloudAssetHandle,
-    uint32_t numberOfDebugCopies) {
-    auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(pointCloudAssetHandle);
-    if (!pointAssetSharedPtr) {
-        Pale::Log::PA_ERROR("debugDensifyPointAsset: failed to get PointAsset for handle {}",
-                            std::string(pointCloudAssetHandle));
-        return;
-    }
+void rebuild_bvh(Pale::PathTracer* pathTracer, std::shared_ptr<Pale::Scene> &scene, Pale::SceneBuild::BuildProducts& buildProducts, Pale::AssetManager *assetManager, Pale::DeviceSelector& deviceSelector,     Pale::GPUSceneBuffers& sceneGpu) {
+    Pale::AssetAccessFromManager assetAccessor(*assetManager);
 
-    Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-    if (pointAsset.points.empty()) {
-        Pale::Log::PA_WARN("debugDensifyPointAsset: PointAsset has no PointGeometry blocks");
-        return;
-    }
-
-    Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-    const std::size_t originalPointCount = pointGeometry.positions.size();
-
-    if (originalPointCount == 0) {
-        Pale::Log::PA_WARN("debugDensifyPointAsset: original point count is zero, nothing to duplicate");
-        return;
-    }
-
-    Pale::Log::PA_INFO(
-        "debugDensifyPointAsset: original point count = {}, creating {} debug copies",
-        originalPointCount,
-        numberOfDebugCopies
+    buildProducts = Pale::SceneBuild::build(
+        scene,
+        assetAccessor,
+        Pale::SceneBuild::BuildOptions()
     );
 
-    // Reserve space for all attribute arrays
-    const std::size_t newTotalPointCount = originalPointCount + numberOfDebugCopies;
-    auto reserveAttribute = [newTotalPointCount](auto &vectorAttribute) {
-        vectorAttribute.reserve(newTotalPointCount);
-    };
 
-    reserveAttribute(pointGeometry.positions);
-    reserveAttribute(pointGeometry.tanU);
-    reserveAttribute(pointGeometry.tanV);
-    reserveAttribute(pointGeometry.scales);
-    reserveAttribute(pointGeometry.albedos);
-    reserveAttribute(pointGeometry.opacities);
-    reserveAttribute(pointGeometry.shapes);
-    reserveAttribute(pointGeometry.betas);
+    Pale::SceneUpload::uploadOrReallocate(
+        buildProducts,
+        sceneGpu,
+        deviceSelector.getQueue()
+    );
 
-    // Base point to duplicate
-    const std::size_t baseIndex = 0; // duplicate first point for simplicity
-    const glm::vec3 basePosition = pointGeometry.positions[baseIndex];
-    const glm::vec3 baseTanU = pointGeometry.tanU[baseIndex];
-    const glm::vec3 baseTanV = pointGeometry.tanV[baseIndex];
-    const glm::vec2 baseScale = pointGeometry.scales[baseIndex];
-    const glm::vec3 baseColor = pointGeometry.albedos[baseIndex];
-    const float baseOpacity = pointGeometry.opacities[baseIndex];
-    const float baseShape = pointGeometry.shapes[baseIndex];
-    const float baseBeta = pointGeometry.betas[baseIndex];
-
-
-    std::mt19937_64 rng;
-
-    for (uint32_t debugCopyIndex = 0; debugCopyIndex < numberOfDebugCopies; ++debugCopyIndex) {
-        glm::vec3 debugPosition = basePosition;
-
-        std::uniform_real_distribution<float> unif(-0.66, 0.66);
-        std::uniform_real_distribution<float> unif2(0, 1);
-
-        debugPosition.x += unif(rng);
-        debugPosition.y += unif(rng);
-        debugPosition.z += unif(rng);
-
-        glm::vec3 debugColor = baseColor;
-        debugColor.x = unif2(rng);
-        debugColor.y = unif2(rng);
-        debugColor.z = unif2(rng);
-
-        glm::vec2 debugScale = baseScale * (1.0f + 0.05f * static_cast<float>(debugCopyIndex));
-
-        pointGeometry.positions.push_back(debugPosition);
-        pointGeometry.tanU.push_back(baseTanU);
-        pointGeometry.tanV.push_back(baseTanV);
-        pointGeometry.scales.push_back(debugScale);
-        pointGeometry.albedos.push_back(debugColor);
-        pointGeometry.opacities.push_back(baseOpacity);
-        pointGeometry.shapes.push_back(baseShape);
-        pointGeometry.betas.push_back(baseBeta);
-
-        Pale::Log::PA_INFO(
-            "debugDensifyPointAsset: created debug point {} at position=({}, {}, {}), color=({}, {}, {})",
-            originalPointCount + debugCopyIndex,
-            debugPosition.x, debugPosition.y, debugPosition.z,
-            debugColor.x, debugColor.y, debugColor.z
-        );
-    }
-
-    Pale::Log::PA_INFO("debugDensifyPointAsset: new point count = {}",
-                       pointGeometry.positions.size());
+    pathTracer->setScene(sceneGpu, buildProducts);
 }
+
 
 
 int main(int argc, char **argv) {
@@ -244,9 +166,9 @@ int main(int argc, char **argv) {
     bool addModel = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
-        auto entityGaussian = scene->createEntity("Gaussian");
-        entityGaussian.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
-        auto &transform = entityGaussian.getComponent<Pale::TransformComponent>();
+        auto entityPointCloud = scene->createEntity("PointCloud");
+        entityPointCloud.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
+        auto &transform = entityPointCloud.getComponent<Pale::TransformComponent>();
         //transform.setPosition(glm::vec3(0.0f, 0.0f, 0.4f));
     }
 
@@ -355,8 +277,9 @@ int main(int argc, char **argv) {
 
         Pale::Log::PA_INFO("Forward Render Pass...");
         std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
-        tracer.renderForward(sensors); // films is span/array
+        tracer.renderForward(sensors);
 
+        // Save target image
         for (const auto &sensor: sensors) {
             std::vector<uint8_t> rgba =
                     Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
@@ -387,6 +310,58 @@ int main(int argc, char **argv) {
                 imageHeight
             );
         }
+
+        {
+            auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
+            Pale::Entity entity(entities.front(), (scene.get()));
+            auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(entity.getComponent<Pale::PointCloudComponent>().pointCloudID);
+            if (!pointAssetSharedPtr) {
+                throw std::runtime_error("set_gaussian_opacity: failed to get PointAsset for dynamic point cloud");
+            }
+            Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+            Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+            pointGeometry.positions[0].x = -0.5f;
+            rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
+        }
+
+        Pale::Log::PA_INFO("Forward Render Pass...");
+        tracer.renderForward(sensors); // films is span/array
+
+
+        // Render with pertubation
+        // Save target image
+        for (const auto &sensor: sensors) {
+            std::vector<uint8_t> rgba =
+                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+            const uint32_t imageWidth = sensor.width;
+            const uint32_t imageHeight = sensor.height;
+
+            std::vector<float> rgbaRaw =
+                    Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
+
+            // Per-camera output directory: Output/<pointcloud>/<camera_name>/
+            std::filesystem::path baseDir =
+                    std::filesystem::path("Output")
+                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+
+            std::filesystem::create_directories(baseDir);
+            std::string fileName = "rendered_" + std::string(sensor.name);
+            fileName += "_photonmap";
+            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
+            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+
+            std::filesystem::path rawFilePath =
+                    baseDir / "images" / (fileName + "_raw.exr");
+
+            Pale::Utils::saveRGBAFloatAsEXR(
+                rawFilePath,
+                rgbaRaw,
+                imageWidth,
+                imageHeight
+            );
+        }
+
+
         for (int i = 0; i < 1; ++i) {
             if (settings.renderDebugGradientImages) {
                 Pale::Log::PA_INFO("Adjoint Render Pass...");
@@ -532,6 +507,7 @@ int main(int argc, char **argv) {
                         }
                     };
 
+                    saveGradientSet(debugImagesHost.positionX, "translation_x");
                     saveGradientSet(debugImagesHost.opacity, "opacity");
                     saveGradientSet(debugImagesHost.beta, "beta");
                 }

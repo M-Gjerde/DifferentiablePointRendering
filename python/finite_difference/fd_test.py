@@ -170,10 +170,10 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 6,
+        "bounces": 4,
         "forward_passes": 40,
         "gather_passes": 1,
-        "adjoint_bounces": 6,
+        "adjoint_bounces": 4,
         "adjoint_passes": 8,
         "logging": 4,
         "seed": 42
@@ -228,7 +228,7 @@ def main(args) -> None:
             elif args.parameter == "beta":
                 value = 6 - (iteration_index * 12) / iterations
             elif args.parameter == "translation_x":
-                value = -0.5 + (iteration_index) / iterations  # -0.5..0.5
+                value = -0.05 + (iteration_index) / (iterations * 10)  # -0.5..0.5
             else:
                 raise RuntimeError("This script doesn't support parameter: " + args.parameter)
 
@@ -361,7 +361,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-5,
+        default=1e-4,
         help="Finite difference epsilon.",
     )
     return parser.parse_args()

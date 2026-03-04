@@ -503,13 +503,11 @@ namespace Pale {
                             float r2 = u * u + v * v;
                             float su = surfel.scale.x();
                             float sv = surfel.scale.y();
-                            float3 DuvDPosition = computeDuvDPositionFull(
+                            float3 DuvDPosition = computeDuvDPosition(
                                 surfel.tanU,
                                 surfel.tanV,
                                 canonicalNormalWorld,
-                                contribution.hitPositionSurfel,
-                                contribution.ray.origin,
-                                surfel.position,
+                                contribution.ray.direction,
                                 u, v,
                                 su, sv);
 
@@ -518,11 +516,18 @@ namespace Pale {
                             float3 dAlpha_dPos = factor * DuvDPosition;
                             float3 dAlphaEff_dPos = surfel.opacity * dAlpha_dPos;
 
+                            // Missing area measure:
+                            float3 d = contribution.hitPositionSurfel - contribution.ray.origin;
+                            const float rayLen = length(d);
+                            d = d / rayLen;
+                            float areaSamplingMeasure = contribution.cosineHitPoint / (rayLen * rayLen) * su * sv;
+
                             float3 gradPosition_R = p_e[0] * dAlphaEff_dPos * Lo[0];
                             float3 gradPosition_G = p_e[1] * dAlphaEff_dPos * Lo[1];
                             float3 gradPosition_B = p_e[2] * dAlphaEff_dPos * Lo[2];
-
                             const float3 grad_cost_sp_sum = (gradPosition_R + gradPosition_G + gradPosition_B) * invSpp;
+
+
 
                             // only if you truly have spp samples
                             atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
