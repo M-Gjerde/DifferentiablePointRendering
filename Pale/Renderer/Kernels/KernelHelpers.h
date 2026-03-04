@@ -163,7 +163,7 @@ namespace Pale {
     };
 
     static DebugPixel kDebugPixels[] = {
-        {250, 250},
+        {300, 225},
     };
 
     static bool isWatchedPixel(uint32_t pixelX, uint32_t pixelY) {
@@ -824,8 +824,8 @@ namespace Pale {
         const float width = static_cast<float>(cam.width);
         const float height = static_cast<float>(cam.height);
 
-        const float u = (px + 0.5f + jx);
-        const float v = (py + 0.5f + jy);
+        const float u = (px + jx);
+        const float v = (py + jy);
 
         // If your image origin is top-left, flip v:
         // const float v_flipped = height - v;

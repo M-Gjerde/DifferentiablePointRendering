@@ -181,6 +181,8 @@ namespace Pale {
     // Assuming float3, float2, dot(), cross(), etc. are defined as in your codebase.
     */
     // ----------------- Position gradient (translation of surfel center) -----------------
+
+
     inline float3 computeDuvDPosition(
         const float3 &tangentUWorld,
         const float3 &tangentVWorld,
@@ -205,6 +207,36 @@ namespace Pale {
         // duv/dc_pos = (u du/dc + v dv/dc)
         const float3 dUVPosition = (u * duDPk + v * dvDPk);
         return dUVPosition;
+
+    }
+
+
+    struct UVPositionJacobian {
+        float3 du_d_position;
+        float3 dv_d_position;
+    };
+
+    inline UVPositionJacobian computeDuvDPositionJacobian(
+        const float3 &tangentUWorld,
+        const float3 &tangentVWorld,
+        const float3 &canonicalNormalWorld,
+        const float3 &rayDirection,
+        float u, float v,
+        float su, float sv) {
+
+        const float denom = dot(canonicalNormalWorld, rayDirection);
+        if (sycl::fabs(denom) <= 1e-4f) {
+            return {};
+        }
+
+        const float tuDotD = dot(tangentUWorld, rayDirection);
+        const float tvDotD = dot(tangentVWorld, rayDirection);
+
+        // du/dp_k and dv/dp_k (3x1 each), from your analytic expression
+        const float3 duDPk = ((tuDotD / denom) * canonicalNormalWorld - tangentUWorld) / su;
+        const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
+\
+        return {duDPk, dvDPk};
 
     }
 

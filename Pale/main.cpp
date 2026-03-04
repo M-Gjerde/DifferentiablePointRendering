@@ -270,7 +270,7 @@ int main(int argc, char **argv) {
         settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 4; // 1 = Projection only // 2 starts including transmittance
-        settings.adjointSamplesPerPixel = 4;
+        settings.adjointSamplesPerPixel = 1;
         settings.renderDebugGradientImages = true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
@@ -320,7 +320,7 @@ int main(int argc, char **argv) {
             }
             Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
             Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-            pointGeometry.positions[0].x = -0.5f;
+            pointGeometry.positions[0].x = 0.4f;
             rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
         }
 
@@ -365,9 +365,27 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 1; ++i) {
             if (settings.renderDebugGradientImages) {
                 Pale::Log::PA_INFO("Adjoint Render Pass...");
-                std::vector<Pale::SensorGPU> adjointSensors =
+                std::vector<Pale::SensorGPU> availableSensors =
                         Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
-                std::vector<Pale::DebugImages> debugImages(adjointSensors.size());
+
+                std::vector<Pale::SensorGPU> selectedAdjointSensors;
+                Pale::SensorGPU selectedSensor;
+                for (int i = 0; const auto &sensor: availableSensors) {
+                    if (sensor.camera.useForAdjointPass) {
+                        selectedAdjointSensors.push_back(sensor);
+                        for (const auto& forwardSensor : sensors) {
+                            if (std::string(sensor.camera.name) == std::string(forwardSensor.camera.name))
+                                selectedSensor = forwardSensor;
+
+                        }
+                        break;
+                    }
+
+                    i++;
+                }
+
+
+                std::vector<Pale::DebugImages> debugImages(selectedAdjointSensors.size());
                 Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
                                                                              debugImages.data());
                 std::vector<float> rgbaHostAdjointTarget;
@@ -377,18 +395,18 @@ int main(int argc, char **argv) {
                 Pale::Utils::loadEXRAsRGBAFloat(targetImagePath, rgbaHostAdjointTarget, width, height);
 
                 std::vector<float> rgbaHostRendered =
-                        Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensors.front());
+                        Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), selectedSensor);
 
                 std::vector<float> rgbaHostAdjointSource =
                         Pale::Utils::computeL2ImageGradientRGBA(rgbaHostRendered, rgbaHostAdjointTarget, width, height);
 
 
                 std::vector<float> rgba =
-                        Pale::uploadSensorRGBA(deviceSelector.getQueue(), adjointSensors.front(),
+                        Pale::uploadSensorRGBA(deviceSelector.getQueue(), selectedAdjointSensors.front(),
                                                rgbaHostAdjointSource);
 
 
-                tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
+                tracer.renderBackward(selectedAdjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
 
                 float hostGradientBeta{};
                 deviceSelector.getQueue()
@@ -425,7 +443,7 @@ int main(int argc, char **argv) {
                     hostPosition.x(), hostPosition.y(), hostPosition.z()
                 );
 
-                for (size_t i = 0; const auto &adjointSensor: adjointSensors) {
+                for (size_t i = 0; const auto &adjointSensor: selectedAdjointSensors) {
                     auto debugImagesHost = Pale::downloadDebugGradientImages(
                         deviceSelector.getQueue(), adjointSensor, debugImages[i]);
 

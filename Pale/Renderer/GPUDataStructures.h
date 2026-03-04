@@ -327,6 +327,7 @@ namespace Pale {
         // --- local interaction data ---
         float alphaGeom = 0.0f; // α_geom at surfel
         float3 hitPosition{}; // world position on surfel
+        float3 hitNormal;
 
         // --- adjoint transport ---
         float3 pathThroughput{}; // p BEFORE this interaction
@@ -347,8 +348,8 @@ namespace Pale {
         bool hasEndpoint = false;
         // --- local surfel/mesh data ---
         float alphaGeom{};
-        float3 hitPositionSurfel;
-        float3 hitNormalSurfel{};
+        float3 hitPosition;
+        float3 hitNormal{};
         float cosineHitPoint{}; // dot(-wi, n_end)
         uint32_t instanceIndex{};
         uint32_t primitiveIndex{};

@@ -24,6 +24,10 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
     Before creating a new 0, it rotates old runs:
       0 -> 1, 1 -> 2, 2 -> 3, ...
 
+    Important behavior:
+    - Old run 0 is COPIED to 1 (not renamed away first), so the watched folder `0`
+      gets explicit file removals/creation and file viewers refresh more reliably.
+
     Returns the (new) Path base_output_dir/0.
     """
     base_output_dir.mkdir(parents=True, exist_ok=True)
@@ -41,28 +45,28 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
     if 0 in run_indices:
         run0 = base_output_dir / "0"
 
-        # Move 0 aside to avoid collisions
-        tmp = base_output_dir / f".tmp_run0_{uuid.uuid4().hex}"
-        run0.rename(tmp)
-
-        # Shift N -> N+1 (descending)
+        # Shift N -> N+1 for N>=1 (descending to avoid collisions)
         for idx in sorted((i for i in run_indices if i != 0), reverse=True):
             src = base_output_dir / str(idx)
             dst = base_output_dir / str(idx + 1)
-            # dst shouldn't exist if we shift descending, but be safe
             if dst.exists():
                 shutil.rmtree(dst)
             src.rename(dst)
 
-        # Put old 0 into 1
-        (base_output_dir / "1").mkdir(parents=True, exist_ok=True)  # ensure parent exists
-        tmp.rename(base_output_dir / "1")
+        # Copy old 0 -> 1 (instead of rename), then remove old 0 contents/path.
+        run1 = base_output_dir / "1"
+        if run1.exists():
+            shutil.rmtree(run1)
+        shutil.copytree(run0, run1)
+
+        # Remove old 0 so we can recreate a fresh one
+        #shutil.rmtree(run0)
 
     # Create a fresh 0
     run_dir = base_output_dir / "0"
-    if run_dir.exists():
-        shutil.rmtree(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=False)
+    #if run_dir.exists():
+    #    shutil.rmtree(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Using latest run_dir: {run_dir}")
     return run_dir
@@ -76,6 +80,8 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
         renderer.set_point_beta(beta=float(value), index=int(index))
     elif parameter == "translation_x":
         renderer.set_point_translation(translation=float(value), axis=0, index=int(index))
+    elif parameter == "translation_y":
+        renderer.set_point_translation(translation=float(value), axis=1, index=int(index))
     else:
         raise RuntimeError(f"FD currently not implemented for'{parameter}'.")
 
@@ -171,7 +177,7 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 4,
-        "forward_passes": 40,
+        "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 4,
         "adjoint_passes": 8,
@@ -189,7 +195,12 @@ def main(args) -> None:
     print("Ply:", pointcloud_ply)
     print("Index:", args.index)
     print("Parameter:", args.parameter)
-    print("FD epsilon:", args.fd_epsilon)
+    fd_epsilon = args.fd_epsilon
+
+    if args.parameter == "translation_y":
+        fd_epsilon = 1e-2
+
+    print("FD epsilon:", fd_epsilon)
 
     output_dir = Path(__file__).parent / "Output" / scene_path / f"{args.scene}" / args.parameter
     output_dir = create_latest_run_dir(output_dir)
@@ -228,7 +239,9 @@ def main(args) -> None:
             elif args.parameter == "beta":
                 value = 6 - (iteration_index * 12) / iterations
             elif args.parameter == "translation_x":
-                value = -0.05 + (iteration_index) / (iterations * 10)  # -0.5..0.5
+                value = -0.25 + (iteration_index) / (iterations * 2)  # -0.5..0.5
+            elif args.parameter == "translation_y":
+                value = 1.0 - (iteration_index) / (iterations * 1)  # -0.5..0.5
             else:
                 raise RuntimeError("This script doesn't support parameter: " + args.parameter)
 
@@ -238,7 +251,7 @@ def main(args) -> None:
                 renderer=renderer,
                 parameter=args.parameter,
                 base_value=float(value),
-                eps=float(args.fd_epsilon),
+                eps=float(fd_epsilon),
                 index=index,
                 camera=camera,
                 target_image=target_image,
@@ -258,22 +271,22 @@ def main(args) -> None:
             # Save previews
             save_rgb_preview_png(
                 images[camera],
-                output_dir / "rendered" / Path(camera + f"_{round(value, 2)}" + ".png"),
+                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".png"),
                 exposure_stops=0.0,
             )
             save_rgb_preview_exr(
                 rendered_image,
-                output_dir / "rendered" / Path(camera + f"_{round(value, 2)}" + ".exr"),
+                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".exr"),
                 exposure_stops=0.0,
             )
             save_rgb_preview_exr(
                 target_image,
-                output_dir / "rendered" / Path(camera + f"_target" + ".exr"),
+                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + f"_target" + ".exr"),
                 exposure_stops=0.0,
             )
             save_seismic_signed(
                 loss_grad_image,
-                output_dir / "grad" / Path(camera + f"_{round(value, 2)}" + ".png"),
+                output_dir / "grad" / Path(f"{iteration_index}_" + camera + ".png"),
                 0.99,
             )
 
@@ -282,6 +295,9 @@ def main(args) -> None:
             if args.parameter == "translation_x":
                 param_gradients = gradients["position"]
                 param_gradient = param_gradients[args.index][0]
+            elif args.parameter == "translation_y":
+                param_gradients = gradients["position"]
+                param_gradient = param_gradients[args.index][1]
             else:
                 param_gradients = gradients[args.parameter]
                 param_gradient = param_gradients[args.index]
@@ -293,7 +309,7 @@ def main(args) -> None:
                     "analytic_grad": param_gradient,
                     "fd_grad": float(fd_grad),
                     "fd_kind": int(fd_kind),
-                    "fd_epsilon": float(args.fd_epsilon),
+                    "fd_epsilon": float(fd_epsilon),
                 }
             )
 
@@ -331,7 +347,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--parameter",
         type=str,
-        choices=["translation_x", "rotation", "scale", "opacity", "beta"],
+        choices=["translation_x", "translation_y", "rotation", "scale", "opacity", "beta"],
         default="opacity",
     )
     parser.add_argument(
@@ -361,7 +377,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-4,
+        default=1e-5,
         help="Finite difference epsilon.",
     )
     return parser.parse_args()
