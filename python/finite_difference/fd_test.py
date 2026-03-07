@@ -241,7 +241,7 @@ def main(args) -> None:
             elif args.parameter == "translation_x":
                 value = -0.25 + (iteration_index) / (iterations * 2)  # -0.5..0.5
             elif args.parameter == "translation_y":
-                value = 1.0 - (iteration_index) / (iterations * 1)  # -0.5..0.5
+                value = -0.5 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
             else:
                 raise RuntimeError("This script doesn't support parameter: " + args.parameter)
 

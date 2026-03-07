@@ -53,11 +53,11 @@ namespace Pale {
                     const float jitterX = rng128.nextFloat() - 0.5f;
                     const float jitterY = rng128.nextFloat() - 0.5f;
 
-                    if (isWatchedPixel(pixelX, pixelY)) {
-                        int debug = 1;
-                    } else {
-                        return;
-                    }
+                    //if (isWatchedPixel(pixelX, pixelY)) {
+                    //    int debug = 1;
+                    //} else {
+                    //    return;
+                    //}
 
 
                     Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
@@ -70,7 +70,6 @@ namespace Pale {
                     //primaryRay.direction = normalize(float3{-0.001, 0.982122211, 0.277827293});    // a
                     //primaryRay.direction = normalize(float3{-0.01, 1.0, 0.04}); // b
                     //primaryRay.origin = float3{0.0, -4.0, 1.0};
-
 
 
                     RayState rayState{};
@@ -141,8 +140,7 @@ namespace Pale {
 
                     if (rayState.pathId < intermediates.maxPendingAdjointStateCount) {
                         PendingAdjointState pending = intermediates.pendingAdjointStates[rayState.pathId];
-                        if (pending.kind == PendingAdjointKind::ReflectScatter && endpointInstance.geometryType ==
-                            GeometryType::PointCloud) {
+                        if (pending.kind == PendingAdjointKind::ReflectScatter) {
                             // Obtain normal:
                             CompletedGradientEvent completed{};
                             completed.pathId = pending.pathId;
@@ -151,6 +149,7 @@ namespace Pale {
                             completed.instanceIndex = pending.instanceIndex;
                             completed.alphaGeom = pending.alphaGeom;
                             completed.hitPosition = pending.hitPosition;
+                            completed.hitNormal = pending.hitNormal;
                             completed.pathThroughput = pending.pathThroughput;
                             completed.pixelIndex = pending.pixelIndex;
                             completed.cosineHitPoint = pending.cosine;
@@ -349,6 +348,7 @@ namespace Pale {
                                 pending.kind = PendingAdjointKind::ReflectScatter;
                                 pending.primitiveIndex = worldHit.primitiveIndex;
                                 pending.hitPosition = worldHit.hitPositionW;
+                                pending.hitNormal = orientedNormal;
                                 pending.pathThroughput = rayState.pathThroughput * throughputMultiplier;
                                 pending.pixelIndex = rayState.pixelIndex;
                                 pending.alphaGeom = worldHit.alphaGeom;
@@ -475,7 +475,8 @@ namespace Pale {
                                 u, v,
                                 su, sv);
 
-                            float3 DuvDPosition = u * DuvDPositionJacobian.du_d_position + v * DuvDPositionJacobian.dv_d_position;
+                            float3 DuvDPosition =
+                                    u * DuvDPositionJacobian.du_d_position + v * DuvDPositionJacobian.dv_d_position;
                             float beta = 4.0f * sycl::exp(surfel.beta);
                             float factor = (-2.0f * beta * contribution.alphaGeom) / (1.0f - r2);
                             float3 dAlpha_dPos = factor * DuvDPosition;
@@ -489,8 +490,8 @@ namespace Pale {
                             float y_grad = grad_cost_sp_sum.y();
 
                             // only if you truly have spp samples
-                            atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
-                            atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
+                            //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                            //atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
                                 atomicAddFloat4ToImage(
@@ -555,10 +556,10 @@ namespace Pale {
                                 float3 gradPosition_B = p[2] * dAlphaEff_dPos * Lo[2];
                                 const float3 grad_cost_sp_sum =
                                         (gradPosition_R + gradPosition_G + gradPosition_B) * invSpp;
-                                atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
+                                //atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
                             }
                             float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
-                            atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                            //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
 
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
@@ -566,6 +567,50 @@ namespace Pale {
                                     &debugImage.framebufferOpacity[pixelIndex],
                                     float4{grad_cost_eta_sum}
                                 );
+                            }
+                        }
+
+                        if (contribution.kind == PendingAdjointKind::ReflectScatter) {
+                            if (contribution.endpointGeometryType == GeometryType::Mesh &&
+                                contribution.geometryType == GeometryType::PointCloud
+                            ) {
+                                const auto &instance = scene.instances[contribution.endpointInstanceIndex];
+                                const GPUMaterial material = scene.materials[instance.materialIndex];
+                                float3 Lr = gatherDiffuseIrradianceAtPoint(
+                                                contribution.endpointPosition,
+                                                contribution.endpointNormal,
+                                                photonMap) * material.baseColor * M_1_PIf;
+                                float3 Le = {0.0f, 0.0f, 0.0f};
+                                if (material.isEmissive()) {
+                                    GPULightRecord emitter = scene.lights[0];
+                                    Le = material.baseColor * (material.power / (M_PIf * emitter.totalAreaWorld));
+                                }
+                                const float3 Lo = Le + Lr;
+
+                                const float3& x = contribution.hitPosition;
+                                const float3& y = contribution.endpointPosition;
+                                const float3& nx = contribution.hitNormal;
+                                const float3& ny = contribution.endpointNormal;
+
+                                const float3 G_grad_sp = computeGeometricTermGradientWrtX(x, y, nx, ny);
+                                const float3 p = contribution.pathThroughput / (contribution.endPointPDF * contribution.endpointCosine);
+
+                                float3 gradPosition_R = p[0] * G_grad_sp * Lo[0];
+                                float3 gradPosition_G = p[1] * G_grad_sp * Lo[1];
+                                float3 gradPosition_B = p[2] * G_grad_sp * Lo[2];
+                                const float3 grad_cost_sp_sum =
+                                        (gradPosition_R + gradPosition_G + gradPosition_B) * invSpp;
+
+                                atomicAddFloat3(gradients.gradPosition[contribution.endpointPrimitiveIndex],
+                                                grad_cost_sp_sum);
+
+                                if (settings.renderDebugGradientImages) {
+                                    uint32_t pixelIndex = contribution.pixelIndex;
+                                    atomicAddFloat4ToImage(
+                                        &debugImage.framebufferPosX[pixelIndex],
+                                        float4{grad_cost_sp_sum.x()}
+                                    );
+                                }
                             }
                         }
 

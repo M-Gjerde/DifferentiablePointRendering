@@ -105,7 +105,6 @@ namespace Pale {
     /*************************  Scene graph **************************/
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-
     enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1, InvalidType = UINT32_MAX };
 
     struct alignas(16) MeshRange {
