@@ -327,10 +327,10 @@ namespace Pale {
         float alphaGeom = 0.0f; // α_geom at surfel
         float3 hitPosition{}; // world position on surfel
         float3 hitNormal;
+        Ray ray;
 
         // --- adjoint transport ---
         float3 pathThroughput{}; // p BEFORE this interaction
-
         // Optional bookkeeping (cheap, useful later)
         uint32_t pixelIndex = 0;
         uint32_t pathId;  //for debugging
@@ -342,7 +342,7 @@ namespace Pale {
         PendingAdjointKind kind = PendingAdjointKind::None;
         uint32_t pathId{}; //for debugging
         Ray ray{};
-
+        Ray endpointRay{};
         // Require next path intersection or not
         bool hasEndpoint = false;
         // --- local surfel/mesh data ---
@@ -355,7 +355,8 @@ namespace Pale {
         GeometryType geometryType = GeometryType::InvalidType;
 
         // --- adjoint transport ---
-        float3 pathThroughput; // p BEFORE interaction
+        float3 pathThroughput; // p BEFORE current hit point interaction
+        float3 endPathThroughput; // p BEFORE current hit point interaction
         uint32_t pixelIndex{};
         // --- endpoint (next hit) ---
         GeometryType endpointGeometryType = GeometryType::InvalidType;

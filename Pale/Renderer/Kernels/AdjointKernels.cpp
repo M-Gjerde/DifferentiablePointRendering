@@ -154,8 +154,10 @@ namespace Pale {
                             completed.pixelIndex = pending.pixelIndex;
                             completed.cosineHitPoint = pending.cosine;
                             completed.geometryType = pending.geometryType;
-                            completed.ray = rayState.ray;
+                            completed.ray = pending.ray;
 
+                            completed.endPathThroughput = rayState.pathThroughput;
+                            completed.endpointRay = rayState.ray;
                             completed.endPointAlphaGeom = worldHit.alphaGeom;
                             completed.endpointInstanceIndex = worldHit.instanceIndex;
                             completed.endpointPrimitiveIndex = worldHit.primitiveIndex;
@@ -349,7 +351,8 @@ namespace Pale {
                                 pending.primitiveIndex = worldHit.primitiveIndex;
                                 pending.hitPosition = worldHit.hitPositionW;
                                 pending.hitNormal = orientedNormal;
-                                pending.pathThroughput = rayState.pathThroughput * throughputMultiplier;
+                                pending.ray = rayState.ray;
+                                pending.pathThroughput = rayState.pathThroughput / settings.sampling.qReflect;
                                 pending.pixelIndex = rayState.pixelIndex;
                                 pending.alphaGeom = worldHit.alphaGeom;
                                 pending.pathId = rayState.pathId;
@@ -447,7 +450,6 @@ namespace Pale {
                                 contribution.hitPosition,
                                 contribution.hitNormal,
                                 photonMap);
-
                             // Evaluate surfel outgoing radiance (direct/indirect via photon map)
                             const float3 f_r = surfel.alpha_r * surfel.albedo * M_1_PIf; // Lambert BRDF
                             const float3 Lo = f_r * E;
@@ -491,7 +493,7 @@ namespace Pale {
 
                             // only if you truly have spp samples
                             //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
-                            //atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
+                            atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
                                 atomicAddFloat4ToImage(
@@ -587,22 +589,31 @@ namespace Pale {
                                 }
                                 const float3 Lo = Le + Lr;
 
-                                const float3& x = contribution.hitPosition;
-                                const float3& y = contribution.endpointPosition;
-                                const float3& nx = contribution.hitNormal;
-                                const float3& ny = contribution.endpointNormal;
+                                // Geometric contribution
+                                const float3 &x = contribution.hitPosition; // surfel
+                                const float3 &y = contribution.endpointPosition; // Mesh
+                                const float3 &nx = contribution.hitNormal;
+                                const float3 &ny = contribution.endpointNormal;
+                                float dist = length(x - y);
 
+                                float cosine = fmax(dot(ny, -contribution.endpointRay.direction), 1e-6f);
                                 const float3 G_grad_sp = computeGeometricTermGradientWrtX(x, y, nx, ny);
-                                const float3 p = contribution.pathThroughput / (contribution.endPointPDF * contribution.endpointCosine);
+                                float combinedPDF = (contribution.endPointPDF * cosine / (dist * dist));
 
-                                float3 gradPosition_R = p[0] * G_grad_sp * Lo[0];
-                                float3 gradPosition_G = p[1] * G_grad_sp * Lo[1];
-                                float3 gradPosition_B = p[2] * G_grad_sp * Lo[2];
-                                const float3 grad_cost_sp_sum =
-                                        (gradPosition_R + gradPosition_G + gradPosition_B) * invSpp;
+                                const auto &surfel = scene.points[contribution.primitiveIndex];
+                                const float3 f_s = surfel.alpha_r * surfel.albedo * M_1_PIf; // ρ/π
+                                float alpha = contribution.alphaGeom * surfel.opacity;
+                                const float3 &throughputMultiplier = (alpha * (f_s));
+                                const float3 p = (contribution.pathThroughput * throughputMultiplier) / combinedPDF;
 
-                                atomicAddFloat3(gradients.gradPosition[contribution.endpointPrimitiveIndex],
-                                                grad_cost_sp_sum);
+                                float3 gradPosition_geometric_R = p[0] * G_grad_sp * Lo[0];
+                                float3 gradPosition_geometric_G = p[1] * G_grad_sp * Lo[1];
+                                float3 gradPosition_geometric_B = p[2] * G_grad_sp * Lo[2];
+                                float3 grad_cost_sp_sum =
+                                        (gradPosition_geometric_R + gradPosition_geometric_G + gradPosition_geometric_B) * invSpp;
+
+                                float grad_y = grad_cost_sp_sum.y();
+                                atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
 
                                 if (settings.renderDebugGradientImages) {
                                     uint32_t pixelIndex = contribution.pixelIndex;

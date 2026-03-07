@@ -197,9 +197,6 @@ def main(args) -> None:
     print("Parameter:", args.parameter)
     fd_epsilon = args.fd_epsilon
 
-    if args.parameter == "translation_y":
-        fd_epsilon = 1e-2
-
     print("FD epsilon:", fd_epsilon)
 
     output_dir = Path(__file__).parent / "Output" / scene_path / f"{args.scene}" / args.parameter
@@ -241,7 +238,7 @@ def main(args) -> None:
             elif args.parameter == "translation_x":
                 value = -0.25 + (iteration_index) / (iterations * 2)  # -0.5..0.5
             elif args.parameter == "translation_y":
-                value = -0.5 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
+                value = -0.8 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
             else:
                 raise RuntimeError("This script doesn't support parameter: " + args.parameter)
 
@@ -377,7 +374,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-5,
+        default=1e-3,
         help="Finite difference epsilon.",
     )
     return parser.parse_args()
