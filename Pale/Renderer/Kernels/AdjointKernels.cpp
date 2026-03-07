@@ -163,7 +163,7 @@ namespace Pale {
                             completed.endpointPrimitiveIndex = worldHit.primitiveIndex;
                             completed.endpointPosition = worldHit.hitPositionW;
                             completed.endpointNormal = orientedNormal;
-                            completed.endPointPDF = sampledOutgoingDirectionPDF;
+                            completed.uniformHemispherePDF = sampledOutgoingDirectionPDF;
                             completed.endpointGeometryType = endpointInstance.geometryType;
                             // check endpoint cosine
                             const float cosThetaOut = sycl::fmax(
@@ -199,7 +199,7 @@ namespace Pale {
                             completed.endpointPrimitiveIndex = worldHit.primitiveIndex;
                             completed.endpointPosition = worldHit.hitPositionW;
                             completed.endpointNormal = orientedNormal;
-                            completed.endPointPDF = sampledOutgoingDirectionPDF;
+                            completed.uniformHemispherePDF = sampledOutgoingDirectionPDF;
                             completed.endpointGeometryType = endpointInstance.geometryType;
                             // check endpoint cosine
                             const float cosThetaOut = sycl::fmax(
@@ -492,7 +492,7 @@ namespace Pale {
                             float y_grad = grad_cost_sp_sum.y();
 
                             // only if you truly have spp samples
-                            //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
+                            atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
                             atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
@@ -598,7 +598,7 @@ namespace Pale {
 
                                 float cosine = fmax(dot(ny, -contribution.endpointRay.direction), 1e-6f);
                                 const float3 G_grad_sp = computeGeometricTermGradientWrtX(x, y, nx, ny);
-                                float combinedPDF = (contribution.endPointPDF * cosine / (dist * dist));
+                                float combinedPDF = (contribution.uniformHemispherePDF * cosine / (dist * dist));
 
                                 const auto &surfel = scene.points[contribution.primitiveIndex];
                                 const float3 f_s = surfel.alpha_r * surfel.albedo * M_1_PIf; // ρ/π

@@ -1474,6 +1474,36 @@ public:
         //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
     }
 
+    void set_point_scale(float newScale, float axis, int index) {
+        if (!assetManager) {
+            throw std::runtime_error("set_gaussian_opacity: assetManager is null");
+        }
+
+        auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
+        if (!pointAssetSharedPtr) {
+            throw std::runtime_error("set_gaussian_opacity: failed to get PointAsset for dynamic point cloud");
+        }
+
+        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty()) {
+            throw std::runtime_error("set_gaussian_opacity: PointAsset has no PointGeometry blocks");
+        }
+
+        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+
+        const int pointCount = static_cast<int>(pointGeometry.positions.size());
+        if (index < 0 || index >= pointCount) {
+            throw std::runtime_error("set_gaussian_opacity: index out of range");
+        }
+
+        pointGeometry.scales[index][axis] = newScale;
+
+        // Only needed if BVH / acceleration depends on opacity (often it doesn't).
+        // If you can skip it, do so for performance.
+        rebuild_bvh();
+        //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
+    }
+
 
     void set_point_beta(float newBeta, int index) {
         if (!assetManager) {
@@ -1668,6 +1698,9 @@ PYBIND11_MODULE(pale, m) {
                  py::arg("index"))
             .def("set_point_translation",
                  &PythonRenderer::set_point_translation, py::arg("translation"), py::arg("axis"),
+                 py::arg("index"))
+            .def("set_point_scale",
+                 &PythonRenderer::set_point_scale, py::arg("scale"), py::arg("axis"),
                  py::arg("index"))
             .def("set_point_beta",
                  &PythonRenderer::set_point_beta, py::arg("beta"),

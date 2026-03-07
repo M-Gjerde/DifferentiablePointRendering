@@ -364,7 +364,7 @@ namespace Pale {
         uint32_t endpointPrimitiveIndex{};
         uint32_t endpointLightIndex{};
         float endPointAlphaGeom{};
-        float endPointPDF{};
+        float uniformHemispherePDF{};
 
         float3 endpointPosition;
         float3 endpointNormal;

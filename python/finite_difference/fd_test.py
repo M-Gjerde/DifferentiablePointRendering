@@ -82,6 +82,8 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
         renderer.set_point_translation(translation=float(value), axis=0, index=int(index))
     elif parameter == "translation_y":
         renderer.set_point_translation(translation=float(value), axis=1, index=int(index))
+    elif parameter == "scale_u":
+        renderer.set_point_scale(scale=float(value), axis=0, index=int(index))
     else:
         raise RuntimeError(f"FD currently not implemented for'{parameter}'.")
 
@@ -128,7 +130,7 @@ def _finite_difference_loss(
     L0, _, _ = _render_loss(renderer, camera, target_image)
 
     # Decide stencil
-    if clamp_01 and parameter == "opacity":
+    if clamp_01 and parameter == "opacity" or parameter == "scale":
         lo = 0.0
         hi = 1.0
     else:
@@ -239,6 +241,8 @@ def main(args) -> None:
                 value = -0.25 + (iteration_index) / (iterations * 2)  # -0.5..0.5
             elif args.parameter == "translation_y":
                 value = -0.8 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
+            elif args.parameter == "scale_u":
+                value = (iteration_index) / (iterations * 1)  # -0.5..0.5
             else:
                 raise RuntimeError("This script doesn't support parameter: " + args.parameter)
 
@@ -295,6 +299,15 @@ def main(args) -> None:
             elif args.parameter == "translation_y":
                 param_gradients = gradients["position"]
                 param_gradient = param_gradients[args.index][1]
+            elif args.parameter == "translation_z":
+                param_gradients = gradients["position"]
+                param_gradient = param_gradients[args.index][2]
+            elif args.parameter == "scale_u":
+                param_gradients = gradients["scale"]
+                param_gradient = param_gradients[args.index][0]
+            elif args.parameter == "scale_v":
+                param_gradients = gradients["scale"]
+                param_gradient = param_gradients[args.index][1]
             else:
                 param_gradients = gradients[args.parameter]
                 param_gradient = param_gradients[args.index]
@@ -344,7 +357,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--parameter",
         type=str,
-        choices=["translation_x", "translation_y", "rotation", "scale", "opacity", "beta"],
+        choices=["translation_x", "translation_y", "scale_u", "opacity"],
         default="opacity",
     )
     parser.add_argument(
