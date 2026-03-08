@@ -494,6 +494,19 @@ namespace Pale {
                             // only if you truly have spp samples
                             atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
                             atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
+
+                            float d_alpha_geom_d_scale_u =
+                                computeGeometricAlphaDerivativeWrtScaleU(surfel, contribution.hitPosition);
+
+                            float d_alpha_d_scale_u = surfel.opacity * d_alpha_geom_d_scale_u;
+
+                            float3 d_Lo_d_scale_u = Lo * d_alpha_d_scale_u * p_e;
+
+                            const float grad_scale_alpha_u_sum = sum(d_Lo_d_scale_u) * invSpp;
+
+                            atomicAddFloat(
+                                gradients.gradScale[contribution.primitiveIndex].x(),
+                                grad_scale_alpha_u_sum);
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
                                 atomicAddFloat4ToImage(
@@ -503,6 +516,7 @@ namespace Pale {
                             }
                         }
 
+                        /*
 
                         if (contribution.kind == PendingAdjointKind::NullTransmittance) {
                             float3 Lo;
@@ -563,6 +577,7 @@ namespace Pale {
                             float grad_cost_eta_sum = sum(grad_cost_eta) * invSpp;
                             //atomicAddFloat(gradients.gradOpacity[contribution.primitiveIndex], grad_cost_eta_sum);
 
+
                             if (settings.renderDebugGradientImages) {
                                 uint32_t pixelIndex = contribution.pixelIndex;
                                 atomicAddFloat4ToImage(
@@ -571,6 +586,7 @@ namespace Pale {
                                 );
                             }
                         }
+                        */
 
                         if (contribution.kind == PendingAdjointKind::ReflectScatter) {
                             if (contribution.endpointGeometryType == GeometryType::Mesh &&
@@ -612,8 +628,36 @@ namespace Pale {
                                 float3 grad_cost_sp_sum =
                                         (gradPosition_geometric_R + gradPosition_geometric_G + gradPosition_geometric_B) * invSpp;
 
+                                float2 uv = phiInverse(contribution.hitPosition, surfel);
+                                float u = uv.x();
+                                float v = uv.y();
+                                float grad_G_scale_u = dot(G_grad_sp, surfel.tanU * u);
+                                float gradScale_geometric_R = p[0] * grad_G_scale_u * Lo[0];
+                                float gradScale_geometric_G = p[1] * grad_G_scale_u * Lo[1];
+                                float gradScale_geometric_B = p[2] * grad_G_scale_u * Lo[2];
+                                float grad_cost_scale_u_sum =
+                                        (gradScale_geometric_R + gradScale_geometric_G + gradScale_geometric_B) * invSpp;
+
                                 float grad_y = grad_cost_sp_sum.y();
                                 atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_cost_sp_sum);
+
+                                const float d_alpha_geom_d_scale_u =
+                                computeGeometricAlphaDerivativeWrtScaleU(surfel, x);
+
+                                const float G_value = computeGeometricTermValue(x, y, nx, ny);
+
+                                const float3 throughput_multiplier_alpha =
+                                          surfel.opacity * f_s;
+
+                                const float3 p_alpha =
+                                    (contribution.pathThroughput * throughput_multiplier_alpha) / combinedPDF;
+
+                                const float grad_scale_alpha_u_sum =
+                                    (p_alpha[0] * G_value * d_alpha_geom_d_scale_u * Lo[0] +
+                                     p_alpha[1] * G_value * d_alpha_geom_d_scale_u * Lo[1] +
+                                     p_alpha[2] * G_value * d_alpha_geom_d_scale_u * Lo[2]) * invSpp;
+
+                                //atomicAddFloat(gradients.gradScale[contribution.primitiveIndex].x(), grad_scale_alpha_u_sum);
 
                                 if (settings.renderDebugGradientImages) {
                                     uint32_t pixelIndex = contribution.pixelIndex;
