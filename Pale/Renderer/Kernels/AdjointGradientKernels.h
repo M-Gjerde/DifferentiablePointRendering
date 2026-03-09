@@ -211,7 +211,14 @@ namespace Pale {
                 + cosineAtX * projectedYNormal
                 + 2.0f * cosineAtX * cosineAtY * directionFromXToY) * inverseDistanceCubed;
     }
-
+    inline float3 computeGeometricTermGradientWrtY(
+        const float3& xPosition,
+        const float3& yPosition,
+        const float3& xNormal,
+        const float3& yNormal) {
+        return -computeGeometricTermGradientWrtX(
+            xPosition, yPosition, xNormal, yNormal);
+    }
 
     inline float3 computeDuvDPosition(
         const float3 &tangentUWorld,
@@ -306,7 +313,7 @@ namespace Pale {
             return 0.0f;
         }
 
-        const float beta = surfel.beta; // or 4.0f * sycl::exp(surfel.betaParameter)
+        const float beta = 4.0f * sycl::exp(surfel.beta);
         const float base = sycl::fmax(1.0f - radius_squared, 1e-8f);
 
         return (2.0f * beta * v * v / s_v) * sycl::pow(base, beta - 1.0f);

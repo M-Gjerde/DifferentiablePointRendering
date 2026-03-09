@@ -82,8 +82,12 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
         renderer.set_point_translation(translation=float(value), axis=0, index=int(index))
     elif parameter == "translation_y":
         renderer.set_point_translation(translation=float(value), axis=1, index=int(index))
+    elif parameter == "translation_z":
+        renderer.set_point_translation(translation=float(value), axis=2, index=int(index))
     elif parameter == "scale_u":
         renderer.set_point_scale(scale=float(value), axis=0, index=int(index))
+    elif parameter == "scale_v":
+        renderer.set_point_scale(scale=float(value), axis=1, index=int(index))
     else:
         raise RuntimeError(f"FD currently not implemented for'{parameter}'.")
 
@@ -182,7 +186,7 @@ def main(args) -> None:
         "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 4,
-        "adjoint_passes": 8,
+        "adjoint_passes": 4,
         "logging": 4,
         "seed": 42
     }
@@ -233,18 +237,40 @@ def main(args) -> None:
         writer.writeheader()
 
         for iteration_index in range(iterations + 1):
-            if args.parameter == "opacity":
-                value = (iteration_index) / iterations  # 0..1
-            elif args.parameter == "beta":
-                value = 6 - (iteration_index * 12) / iterations
-            elif args.parameter == "translation_x":
-                value = -0.25 + (iteration_index) / (iterations * 2)  # -0.5..0.5
-            elif args.parameter == "translation_y":
-                value = -0.8 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
-            elif args.parameter == "scale_u":
-                value = (iteration_index) / (iterations * 1)  # -0.5..0.5
+            if args.scene == "empty":
+                if args.parameter == "opacity":
+                    value = (iteration_index) / iterations  # 0..1
+                elif args.parameter == "beta":
+                    value = 6 - (iteration_index * 12) / iterations
+                elif args.parameter == "translation_x":
+                    value = -0.25 + (iteration_index) / (iterations * 2)  # -0.5..0.5
+                elif args.parameter == "translation_y":
+                    value = -0.8 + (iteration_index) / (iterations * 1) * 3  # -0.5..0.5
+                elif args.parameter == "translation_z":
+                    value = -0.2 + (iteration_index) / (iterations * 1) * 1  # -0.5..0.5
+                elif args.parameter == "scale_u":
+                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
+                elif args.parameter == "scale_v":
+                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
+                else:
+                    raise RuntimeError("This script doesn't support parameter: " + args.parameter)
             else:
-                raise RuntimeError("This script doesn't support parameter: " + args.parameter)
+                if args.parameter == "opacity":
+                    value = (iteration_index) / iterations  # 0..1
+                elif args.parameter == "beta":
+                    value = 6 - (iteration_index * 12) / iterations
+                elif args.parameter == "translation_x":
+                    value = -0.5 + (iteration_index) / (iterations) * 2  # -0.5..0.5
+                elif args.parameter == "translation_y":
+                    value = -0.8 + (iteration_index) / (iterations * 1) * 3  # -0.5..0.5
+                elif args.parameter == "translation_z":
+                    value = -0.2 + (iteration_index) / (iterations * 1) * 1  # -0.5..0.5
+                elif args.parameter == "scale_u":
+                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
+                elif args.parameter == "scale_v":
+                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
+                else:
+                    raise RuntimeError("This script doesn't support parameter: " + args.parameter)
 
             # --- Finite difference derivative of LOSS at 'value' ---
             # Note: this renders multiple times per iteration (central = 3 total renders).
@@ -325,7 +351,7 @@ def main(args) -> None:
 
             print(
                 f"{iteration_index}/{iterations}, {args.parameter}: {value:.2f}, "
-                f"Loss: {loss_value:.5f}, AN: {param_gradient:.5f}, FD: {fd_grad:.5f} (kind={int(fd_kind)})"
+                f"Loss: {loss_value:.6f}, AN: {param_gradient:.6f}, FD: {fd_grad:.6f} (kind={int(fd_kind)})"
             )
             f.flush()
 
@@ -351,13 +377,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--index",
         type=int,
-        default=-1,
+        default=0,
         help="Gaussian index to perturb (>=0 for single, -1 for all). Default: -1.",
     )
     parser.add_argument(
         "--parameter",
         type=str,
-        choices=["translation_x", "translation_y", "scale_u", "opacity"],
+        choices=["translation_x", "translation_y", "translation_z", "scale_u",  "scale_v", "opacity"],
         default="opacity",
     )
     parser.add_argument(

@@ -322,13 +322,11 @@ namespace Pale {
         // --- surfel identity ---
         uint32_t primitiveIndex = UINT32_MAX;
         uint32_t instanceIndex = UINT32_MAX;
-
         // --- local interaction data ---
         float alphaGeom = 0.0f; // α_geom at surfel
         float3 hitPosition{}; // world position on surfel
         float3 hitNormal;
         Ray ray;
-
         // --- adjoint transport ---
         float3 pathThroughput{}; // p BEFORE this interaction
         // Optional bookkeeping (cheap, useful later)

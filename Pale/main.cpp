@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 4; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 1;
-        settings.renderDebugGradientImages = true;
+        settings.renderDebugGradientImages = !true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
 
