@@ -629,7 +629,8 @@ namespace Pale {
         const float3 unitNormal = normalize(normal);
 
         // Sample in local frame: +Z hemisphere
-        float3 localDirection; {
+        float3 localDirection;
+        {
             const float uniformRandomOne = randomNumberGenerator.nextFloat();
             const float uniformRandomTwo = randomNumberGenerator.nextFloat();
 
@@ -663,7 +664,7 @@ namespace Pale {
         outPdf = 1.0f / (2.0f * M_PIf);
 
         // Optional: enforce hemisphere (should already be true)
-        // if (dot(outDirectionWorld, unitNormal) < 0.0f) outDirectionWorld = -outDirectionWorld;
+        if (dot(outDirectionWorld, unitNormal) < 0.0f) outDirectionWorld = -outDirectionWorld;
     }
 
     SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float *outOpacity, float kSigmas = 2.2f) {

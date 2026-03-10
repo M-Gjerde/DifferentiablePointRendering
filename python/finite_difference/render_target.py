@@ -32,7 +32,6 @@ def main(args) -> None:
     scene_xml = assets_root / "GradientTests" / f"{args.scene}" / f"{args.scene}.xml"
     pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.scene}" / f"{args.ply}.ply"
 
-
     print("Assets root:", assets_root)
     print("Scene:", args.scene)
     print("Ply:", args.ply)
@@ -40,22 +39,48 @@ def main(args) -> None:
     print("Parameter:", args.parameter)
 
     output_dir = Path(__file__).parent / "Output" / scene_path / f"{args.scene}" / args.parameter
-
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- init renderer ---
-    renderer = pale.Renderer(str(assets_root), scene_xml.__str__(), pointcloud_ply.__str__(), renderer_settings)
-    cameras = renderer.get_camera_names()
-    camera = args.camera
-    print("Cameras:", cameras)
-    print("Rendering from camera:", camera)
+    renderer = pale.Renderer(
+        str(assets_root),
+        str(scene_xml),
+        str(pointcloud_ply),
+        renderer_settings
+    )
+
+    camera_names = renderer.get_camera_names()
+    print("Cameras:", camera_names)
 
     rendered_images = renderer.render_forward()
-    save_rgb_preview_exr(rendered_images[camera + "_raw"],  output_dir /  Path(camera + "_raw_target.exr"))
-    print(rendered_images[camera].shape)
-    save_rgb_preview_png(rendered_images[camera],  output_dir /  Path(camera + "_target.png"))
 
+    if args.camera is None:
+        cameras_to_render = camera_names
+        print("Rendering from all cameras")
+    else:
+        if args.camera not in camera_names:
+            raise ValueError(
+                f"Camera '{args.camera}' not found. Available cameras: {camera_names}"
+            )
+        cameras_to_render = [args.camera]
+        print("Rendering from camera:", args.camera)
+
+    for camera_name in cameras_to_render:
+        raw_key = f"{camera_name}_raw"
+        png_key = camera_name
+
+        if raw_key in rendered_images:
+            save_rgb_preview_exr(
+                rendered_images[raw_key],
+                output_dir / f"{camera_name}_raw_target.exr"
+            )
+
+        if png_key in rendered_images:
+            print(rendered_images[png_key].shape)
+            save_rgb_preview_png(
+                rendered_images[png_key],
+                output_dir / f"{camera_name}_target.png"
+            )
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--parameter","--param",
+        "--parameter", "--param",
         type=str
     )
 
@@ -96,8 +121,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--camera",
         type=str,
-        help="Which camera (In the xml file) to render from",
-        default="camera1"
+        default=None,
+        help="Which camera (in the xml file) to render from. If omitted, render all cameras.",
     )
     return parser.parse_args()
 

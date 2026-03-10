@@ -342,7 +342,6 @@ namespace Pale {
         // du/dp_k and dv/dp_k (3x1 each), from your analytic expression
         const float3 duDPk = ((tuDotD / denom) * canonicalNormalWorld - tangentUWorld) / su;
         const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
-\
         return {duDPk, dvDPk};
     }
 
@@ -1701,4 +1700,51 @@ namespace Pale {
             }
         }
         */
+
+    struct RGBPositionGradient {
+        float3 red;
+        float3 green;
+        float3 blue;
+    };
+
+
+    inline RGBPositionGradient gather_diffuse_irradiance_gradient_wrt_position(
+    const float3 &query_position,
+    const float3 &query_normal,
+    const DeviceSurfacePhotonMapGrid &photon_map,
+    float epsilon)
+    {
+        const float3 ex{epsilon, 0.0f, 0.0f};
+        const float3 ey{0.0f, epsilon, 0.0f};
+        const float3 ez{0.0f, 0.0f, epsilon};
+
+        const float3 e_px = gatherDiffuseIrradianceAtPoint(query_position + ex, query_normal, photon_map);
+        const float3 e_mx = gatherDiffuseIrradianceAtPoint(query_position - ex, query_normal, photon_map);
+
+        const float3 e_py = gatherDiffuseIrradianceAtPoint(query_position + ey, query_normal, photon_map);
+        const float3 e_my = gatherDiffuseIrradianceAtPoint(query_position - ey, query_normal, photon_map);
+
+        const float3 e_pz = gatherDiffuseIrradianceAtPoint(query_position + ez, query_normal, photon_map);
+        const float3 e_mz = gatherDiffuseIrradianceAtPoint(query_position - ez, query_normal, photon_map);
+
+        const float inverse_two_epsilon = 0.5f / epsilon;
+
+        RGBPositionGradient result{};
+        result.red = float3{
+            (e_px.x() - e_mx.x()) * inverse_two_epsilon,
+            (e_py.x() - e_my.x()) * inverse_two_epsilon,
+            (e_pz.x() - e_mz.x()) * inverse_two_epsilon
+        };
+        result.green = float3{
+            (e_px.y() - e_mx.y()) * inverse_two_epsilon,
+            (e_py.y() - e_my.y()) * inverse_two_epsilon,
+            (e_pz.y() - e_mz.y()) * inverse_two_epsilon
+        };
+        result.blue = float3{
+            (e_px.z() - e_mx.z()) * inverse_two_epsilon,
+            (e_py.z() - e_my.z()) * inverse_two_epsilon,
+            (e_pz.z() - e_mz.z()) * inverse_two_epsilon
+        };
+        return result;
+    }
 }

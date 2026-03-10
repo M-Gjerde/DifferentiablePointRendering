@@ -630,7 +630,7 @@ namespace Pale {
                                             (surfaceCosine * cameraCosine) /
                                             (distanceToCamera * distanceToCamera + 1e-8f);
 
-                                    const float3 emittedRadiance = material.power * material.baseColor * surfaceCosine;
+                                    const float3 emittedRadiance = material.power * material.baseColor;
                                     // L_e
 
                                     accumulatedRadianceRGB += transmittance * min(emittedRadiance, 1.0f);

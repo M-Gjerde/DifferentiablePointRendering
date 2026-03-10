@@ -363,6 +363,7 @@ namespace Pale {
         uint32_t endpointLightIndex{};
         float endPointAlphaGeom{};
         float uniformHemispherePDF{};
+        float cosineHemispherePDF{};
 
         float3 endpointPosition;
         float3 endpointNormal;
