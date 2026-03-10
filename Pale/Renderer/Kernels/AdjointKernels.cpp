@@ -571,8 +571,8 @@ namespace Pale {
                                 float3 grad_cost_sp_geometric_sum =
                                         (gradPosition_geometric_R + gradPosition_geometric_G + gradPosition_geometric_B)
                                         * invSpp;
-                                //atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
-                                //                grad_cost_sp_geometric_sum);
+                                atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
+                                                grad_cost_sp_geometric_sum);
                             }
 
 
