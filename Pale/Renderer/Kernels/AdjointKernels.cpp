@@ -34,12 +34,11 @@ namespace Pale {
                     const uint32_t pixelLinearIndexWithinImage = globalRayIndex; // 0..raysPerSet-1
                     uint32_t pixelX = pixelLinearIndexWithinImage % imageWidth;
                     uint32_t pixelY = pixelLinearIndexWithinImage / imageWidth;
-                    uint32_t index = flippedYLinearIndex(pixelLinearIndexWithinImage, sensor.width, sensor.height);
 
                     const uint32_t pixelIndex = pixelLinearIndexWithinImage;
                     // RNG for this pixelhttps://www.chess.com/home
                     const uint64_t seed =
-                            rng::makeSeed(renderSeed, globalRayIndex, 0u, rng::kStreamRayGen, 0u);
+                            rng::makeSeed(renderSeed, globalRayIndex, spp, rng::kStreamRayGen, 0u);
                     rng::Xorshift128 rng128(seed);
 
                     // Adjoint source weight
@@ -85,7 +84,7 @@ namespace Pale {
     }
 
 
-    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t bounceIndex) {
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t bounceIndex) {
         auto &queue = pkg.queue;
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
@@ -101,8 +100,11 @@ namespace Pale {
                     RayState rayState = intermediates.primaryRays[rayIndex];
 
                     const uint64_t seed =
-                            rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex,
-                                          rng::kStreamTraversal, 107u);
+                            rng::makeSeed(renderSeed,
+                                          rayState.pathId,
+                                          spp,
+                                          rng::kStreamTraversal,
+                                          rayState.bounceIndex);
                     rng::Xorshift128 rng(seed);
 
                     WorldHit worldHit{};
@@ -151,38 +153,39 @@ namespace Pale {
                                 int debug = 1;
                             }
                             // Obtain normal:
-                            CompletedGradientEvent completed{};
-                            completed.pathId = pending.pathId;
-                            completed.kind = pending.kind;
-                            completed.primitiveIndex = pending.primitiveIndex;
-                            completed.instanceIndex = pending.instanceIndex;
-                            completed.alphaGeom = pending.alphaGeom;
-                            completed.hitPosition = pending.hitPosition;
-                            completed.hitNormal = pending.hitNormal;
-                            completed.pathThroughput = pending.pathThroughput;
-                            completed.pixelIndex = pending.pixelIndex;
-                            completed.cosineHitPoint = pending.cosine;
-                            completed.geometryType = pending.geometryType;
-                            completed.ray = pending.ray;
+                            CompletedGradientEvent contribution{};
+                            contribution.pathId = pending.pathId;
+                            contribution.kind = pending.kind;
+                            contribution.primitiveIndex = pending.primitiveIndex;
+                            contribution.instanceIndex = pending.instanceIndex;
+                            contribution.alphaGeom = pending.alphaGeom;
+                            contribution.hitPosition = pending.hitPosition;
+                            contribution.hitNormal = pending.hitNormal;
+                            contribution.pathThroughput = pending.pathThroughput;
+                            contribution.pixelIndex = pending.pixelIndex;
+                            contribution.cosineHitPoint = pending.cosine;
+                            contribution.geometryType = pending.geometryType;
+                            contribution.ray = pending.ray;
 
-                            completed.endPathThroughput = rayState.pathThroughput;
-                            completed.endpointRay = rayState.ray;
-                            completed.endPointAlphaGeom = worldHit.alphaGeom;
-                            completed.endpointInstanceIndex = worldHit.instanceIndex;
-                            completed.endpointPrimitiveIndex = worldHit.primitiveIndex;
-                            completed.endpointPosition = worldHit.hitPositionW;
-                            completed.endpointNormal = orientedNormal;
-                            completed.uniformHemispherePDF = uniformDirectionPDF;
-                            completed.cosineHemispherePDF = cosineDirectionPDF;
-                            completed.endpointGeometryType = endpointInstance.geometryType;
+                            contribution.endPathThroughput = rayState.pathThroughput;
+                            contribution.endpointRay = rayState.ray;
+                            contribution.endPointAlphaGeom = worldHit.alphaGeom;
+                            contribution.endpointInstanceIndex = worldHit.instanceIndex;
+                            contribution.endpointPrimitiveIndex = worldHit.primitiveIndex;
+                            contribution.endpointPosition = worldHit.hitPositionW;
+                            contribution.endpointNormal = orientedNormal;
+                            contribution.uniformHemispherePDF = uniformDirectionPDF;
+                            contribution.cosineHemispherePDF = cosineDirectionPDF;
+                            contribution.endpointGeometryType = endpointInstance.geometryType;
                             // check endpoint cosine
-                            completed.endpointCosine = sycl::fmax(dot(orientedNormal, -rayState.ray.direction), 1e-6f);
-                            completed.endpointLightIndex = endpointInstance.geometryIndex;
+                            contribution.endpointCosine = sycl::fmax(dot(orientedNormal, -rayState.ray.direction),
+                                                                     1e-6f);
+                            contribution.endpointLightIndex = endpointInstance.geometryIndex;
                             appendCompletedGradientEventAtomic(
                                 intermediates.countCompletedGradientEvents,
                                 intermediates.completedGradientEvents,
                                 intermediates.maxCompletedGradientEventCount,
-                                completed);
+                                contribution);
                             // Clear pending in global memory
                             clearPendingAdjointState(intermediates.pendingAdjointStates[rayState.pathId]);
                         }
@@ -427,8 +430,8 @@ namespace Pale {
     }
 
 
-    void launchAdjointTransportKernel(RenderPackage &pkg, uint32_t contributionTransmittanceCount,
-                                      uint32_t cameraIndex) {
+    void adjointContributionKernels(RenderPackage &pkg, uint32_t contributionTransmittanceCount,
+                                    uint32_t cameraIndex) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
@@ -450,10 +453,6 @@ namespace Pale {
                     sycl::range<1>(contributionTransmittanceCount),
                     [=](sycl::id<1> globalId) {
                         const uint32_t contributionIndex = globalId[0];
-                        const uint64_t seed =
-                                rng::makeSeed(baseSeed, contributionIndex, 0,
-                                              rng::kStreamTraversal, 107u);
-                        rng::Xorshift128 rng(seed);
 
                         CompletedGradientEvent &contribution = contributionRecords[contributionIndex];
                         if (contribution.kind == PendingAdjointKind::ProjectionScatter) {
@@ -501,47 +500,48 @@ namespace Pale {
 
                             // reflection gradient
                             // Sample a point on a light source:
-                            AreaLightSample lightSample = sampleMeshAreaLight(scene, rng);
-                            const float3 x_position = contribution.hitPosition;
-                            const float3 y_position = lightSample.positionW;
-                            const float3 x_normal = contribution.hitNormal;
-                            const float3 y_normal = lightSample.normalW;
-                            const float3 direction_x_to_y = normalize(y_position - x_position);
-                            const float cosine_at_y = dot(y_normal, -direction_x_to_y);
-                            if (cosine_at_y <= 1e-6f) {
-                                return;
-                            }
-                            // Optional: visibility / transmittance for the simplified test
-                            const float visibility = 1.0f;
-                            const float transmittance = 1.0f;
-                            // Emitter radiance should be independent of sampling pdf
-                            const float3 Le =
-                                lightSample.power / (M_PIf * lightSample.totalAreaWorld);                            // or compute from power/area if that is your convention
-                            const float alpha = contribution.alphaGeom * surfel.opacity;
-                            const float3 brdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
-                            const float3 dG_dHitPosition = computeGeometricTermGradientWrtX(
-                            x_position, y_position, x_normal, y_normal);
+                            /*
+                                                        AreaLightSample lightSample = sampleMeshAreaLight(scene, rng);
+                                                        const float3 x_position = contribution.hitPosition;
+                                                        const float3 y_position = lightSample.positionW;
+                                                        const float3 x_normal = contribution.hitNormal;
+                                                        const float3 y_normal = lightSample.normalW;
+                                                        const float3 direction_x_to_y = normalize(y_position - x_position);
+                                                        const float cosine_at_y = dot(y_normal, -direction_x_to_y);
+                                                        if (cosine_at_y <= 1e-6f) {
+                                                            return;
+                                                        }
+                                                        // Optional: visibility / transmittance for the simplified test
+                                                        const float visibility = 1.0f;
+                                                        const float transmittance = 1.0f;
+                                                        // Emitter radiance should be independent of sampling pdf
+                                                        const float3 Le =
+                                                            lightSample.power / (M_PIf * lightSample.totalAreaWorld);                            // or compute from power/area if that is your convention
+                                                        const float alpha = contribution.alphaGeom * surfel.opacity;
+                                                        const float3 brdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
+                                                        const float3 dG_dHitPosition = computeGeometricTermGradientWrtX(
+                                                        x_position, y_position, x_normal, y_normal);
 
-                            // This is the transport factor multiplying G(x, y).
-                            const float3 transportWithoutG =
-                                    Le * alpha * brdf * visibility * transmittance / lightSample.pdfArea;
+                                                        // This is the transport factor multiplying G(x, y).
+                                                        const float3 transportWithoutG =
+                                                                Le * alpha * brdf * visibility * transmittance / lightSample.pdfArea;
 
-                            // Adjoint-weighted scalar multiplier for the local derivative insertion.
-                            const float scalarWeight =
-                                    contribution.pathThroughput[0] * transportWithoutG[0] +
-                                    contribution.pathThroughput[1] * transportWithoutG[1] +
-                                    contribution.pathThroughput[2] * transportWithoutG[2];
+                                                        // Adjoint-weighted scalar multiplier for the local derivative insertion.
+                                                        const float scalarWeight =
+                                                                contribution.pathThroughput[0] * transportWithoutG[0] +
+                                                                contribution.pathThroughput[1] * transportWithoutG[1] +
+                                                                contribution.pathThroughput[2] * transportWithoutG[2];
 
-                            // First form the gradient with respect to the observed world-space hit point x.
-                            const float3 gradientWrtHitPosition = scalarWeight * dG_dHitPosition;
+                                                        // First form the gradient with respect to the observed world-space hit point x.
+                                                        const float3 gradientWrtHitPosition = scalarWeight * dG_dHitPosition;
 
-                            // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
-                            const float3 gradientWrtSurfelTranslation = mapHitPointGradientToSurfelTranslation(
-                                gradientWrtHitPosition,
-                                contribution.ray.direction,
-                                contribution.hitNormal);
-
-                            atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], gradientWrtSurfelTranslation * invSpp);
+                                                        // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
+                                                        const float3 gradientWrtSurfelTranslation = mapHitPointGradientToSurfelTranslation(
+                                                            gradientWrtHitPosition,
+                                                            contribution.ray.direction,
+                                                            contribution.hitNormal);
+                                                        atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], gradientWrtSurfelTranslation * invSpp);
+                                                        */
 
 
                             float d_alpha_geom_d_scale_u =
@@ -572,7 +572,7 @@ namespace Pale {
                             }
                         }
 
-                        /*
+
                         if (contribution.kind == PendingAdjointKind::ReflectScatter) {
                             if (contribution.endpointGeometryType == GeometryType::Mesh &&
                                 contribution.geometryType == GeometryType::PointCloud
@@ -589,91 +589,121 @@ namespace Pale {
                                     GPULightRecord emitter = scene.lights[0];
                                     Le = material.baseColor * (material.power / (M_PIf * emitter.totalAreaWorld));
                                 }
-                                const float3 LoMesh = Le;
+                                const float3 Lo = Le + Lr;
 
 
                                 const float3 x = contribution.hitPosition;
                                 const float3 y = contribution.endpointPosition;
                                 const float3 nx = contribution.hitNormal;
                                 const float3 ny = contribution.endpointNormal;
+                                const float3 vectorXToY = y - x;
+                                const float distanceSquared = dot(vectorXToY, vectorXToY);
+                                if (distanceSquared <= 1e-12f) {
+                                    return;
+                                }
+                                const float distance = sycl::sqrt(distanceSquared);
+                                const float3 directionXToY = vectorXToY / distance;
+                                const float cosineAtY = dot(ny, -directionXToY);
+                                if (cosineAtY <= 1e-6f) return;
 
-                                const float3 direction_x_to_y = normalize(y - x);
-                                const float distance = length(y - x);
-                                const float cosine_at_y = dot(ny, -direction_x_to_y);
-                                if (cosine_at_y <= 1e-6f) return;
                                 const float pA =
-                                        contribution.uniformHemispherePDF * cosine_at_y / (distance * distance);
+                                        contribution.uniformHemispherePDF * cosineAtY / distanceSquared;
 
                                 const Point &surfel = scene.points[contribution.primitiveIndex];
                                 const float alpha = contribution.alphaGeom * surfel.opacity;
-                                const float3 f_s = surfel.alpha_r * surfel.albedo * M_1_PIf;
+                                const float3 brdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
                                 const float3 dG_dPos = computeGeometricTermGradientWrtX(x, y, nx, ny);
-                                const float G = computeGeometricTermValue(x, y, nx, ny);
-                                const float3 LoMeshAtX = LoMesh * f_s * alpha * dG_dPos;
-
-                                const float scalar_projection =
-                                (contribution.pathThroughput[0] * LoMeshAtX[0] +
-                                 contribution.pathThroughput[1] * LoMeshAtX[1] +
-                                 contribution.pathThroughput[2] * LoMeshAtX[2]);
-
-                                float3 grad_scatter = scalar_projection * dG_dPos;
-
-                                float3 grad_total = (grad_scatter) * invSpp;
-
-                                //atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex], grad_total);
+                                float visibility = 1.0f;
+                                float transmittance = 1.0f;
+                                // This is the transport factor multiplying G(x, y).
+                                const float3 transportWithoutG =
+                                        Lo * alpha * brdf * visibility * transmittance;
+                                // Adjoint-weighted scalar multiplier for the local derivative insertion.
+                                const float scalarWeight =
+                                (contribution.pathThroughput[0] * transportWithoutG[0] +
+                                 contribution.pathThroughput[1] * transportWithoutG[1] +
+                                 contribution.pathThroughput[2] * transportWithoutG[2]) / pA;
+                                // First form the gradient with respect to the observed world-space hit point x.
+                                const float3 gradientWrtHitPosition = scalarWeight * dG_dPos;
+                                // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
+                                /*
+                                const float3 gradientWrtSurfelTranslation = mapHitPointGradientToSurfelTranslation(
+                                    gradientWrtHitPosition,
+                                    contribution.ray.direction,
+                                    contribution.hitNormal);
+                                */
+                                float3x3 intersectionJacobian = planeHitPointIntersectionJacobian(
+                                    contribution.ray.direction, contribution.hitNormal);
+                                float3 gradientWrtSurfelTranslation =
+                                        transpose(intersectionJacobian) * gradientWrtHitPosition;
+                                //atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
+                                //                gradientWrtSurfelTranslation * invSpp);
                             }
+                        }
 
 
+                        if (contribution.kind == PendingAdjointKind::ReflectScatter) {
                             if (contribution.endpointGeometryType == GeometryType::PointCloud &&
-                                contribution.geometryType == GeometryType::PointCloud) {
-                                {
-                                    const auto &surfelEndpoint = scene.points[contribution.endpointPrimitiveIndex];
-                                    // surfel y
-                                    const float alphaEndpoint =
-                                            contribution.endPointAlphaGeom * surfelEndpoint.opacity;
-
-                                    const float3 Lsurfel =
-                                            gatherDiffuseIrradianceAtPoint(
+                                contribution.geometryType == GeometryType::PointCloud
+                            ) {
+                                const auto &endPointSurfel = scene.points[contribution.endpointPrimitiveIndex];
+                                float3 Lr = gatherDiffuseIrradianceAtPoint(
                                                 contribution.endpointPosition,
                                                 contribution.endpointNormal,
-                                                photonMap) * surfelEndpoint.albedo * M_1_PIf;
-                                    // If opacity multiplies reflected radiance:
-                                    const float3 Lo = alphaEndpoint * Lsurfel;
+                                                photonMap) * endPointSurfel.albedo * M_1_PIf;
 
-                                    // Geometric contribution
-                                    const float3 &x = contribution.hitPosition; // surfel x
-                                    const float3 &y = contribution.endpointPosition; // surfel y
-                                    const float3 &nx = contribution.hitNormal;
-                                    const float3 &ny = contribution.endpointNormal;
-                                    float dist = length(x - y);
+                                float3 Le = {0.0f, 0.0f, 0.0f};
+                                const float3 Lo = Le + Lr;
 
-                                    float cosine = fmax(dot(ny, -contribution.endpointRay.direction), 1e-6f);
-                                    const float3 G_grad_sp = computeGeometricTermGradientWrtX(x, y, nx, ny);
-                                    float pA = (contribution.uniformHemispherePDF * cosine / (dist * dist));
-                                    float J = surfelEndpoint.scale.x() * surfelEndpoint.scale.y();
-                                    float P_uv = pA * J;
 
-                                    const auto &surfel = scene.points[contribution.primitiveIndex]; // x surfel
-                                    const float3 f_s = surfel.alpha_r * surfel.albedo * M_1_PIf; // ρ/π
-                                    float alpha = contribution.alphaGeom * surfel.opacity;
-                                    const float3 &throughputMultiplier = (alpha * (f_s));
-                                    const float3 p =
-                                            (contribution.pathThroughput * throughputMultiplier * J) / P_uv;
-
-                                    float3 gradPosition_geometric_R = p[0] * G_grad_sp * Lo[0];
-                                    float3 gradPosition_geometric_G = p[1] * G_grad_sp * Lo[1];
-                                    float3 gradPosition_geometric_B = p[2] * G_grad_sp * Lo[2];
-                                    float3 grad_cost_sp_geometric_sum =
-                                            (gradPosition_geometric_R + gradPosition_geometric_G +
-                                             gradPosition_geometric_B)
-                                            * invSpp;
-
-                                    atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
-                                                    grad_cost_sp_geometric_sum);
+                                const float3 x = contribution.hitPosition;
+                                const float3 y = contribution.endpointPosition;
+                                const float3 nx = contribution.hitNormal;
+                                const float3 ny = contribution.endpointNormal;
+                                const float3 vectorXToY = y - x;
+                                const float distanceSquared = dot(vectorXToY, vectorXToY);
+                                if (distanceSquared <= 1e-12f) {
+                                    return;
                                 }
-                            }
+                                const float distance = sycl::sqrt(distanceSquared);
+                                const float3 directionXToY = vectorXToY / distance;
+                                const float cosineAtY = dot(ny, -directionXToY);
+                                if (cosineAtY <= 1e-6f) return;
 
-                        }*/
+                                const float pA =
+                                        contribution.uniformHemispherePDF * cosineAtY / distanceSquared;
+
+                                const Point &surfel = scene.points[contribution.primitiveIndex];
+                                const float alpha = contribution.alphaGeom * surfel.opacity;
+                                const float3 brdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
+                                const float3 dG_dPos = computeGeometricTermGradientWrtX(x, y, nx, ny);
+                                float visibility = 1.0f;
+                                float transmittance = 1.0f;
+                                // This is the transport factor multiplying G(x, y).
+                                const float3 transportWithoutG =
+                                        Lo * alpha * brdf * visibility * transmittance;
+                                // Adjoint-weighted scalar multiplier for the local derivative insertion.
+                                const float scalarWeight =
+                                (contribution.pathThroughput[0] * transportWithoutG[0] +
+                                 contribution.pathThroughput[1] * transportWithoutG[1] +
+                                 contribution.pathThroughput[2] * transportWithoutG[2]) / pA;
+                                // First form the gradient with respect to the observed world-space hit point x.
+                                const float3 gradientWrtHitPosition = scalarWeight * dG_dPos;
+                                // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
+                                /*
+                                const float3 gradientWrtSurfelTranslation = mapHitPointGradientToSurfelTranslation(
+                                    gradientWrtHitPosition,
+                                    contribution.ray.direction,
+                                    contribution.hitNormal);
+                                */
+                                float3x3 intersectionJacobian = planeHitPointIntersectionJacobian(
+                                    contribution.ray.direction, contribution.hitNormal);
+                                float3 gradientWrtSurfelTranslation =
+                                        transpose(intersectionJacobian) * gradientWrtHitPosition;
+                                atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
+                                                gradientWrtSurfelTranslation * invSpp);
+                            }
+                        }
                     }
                 );
             }

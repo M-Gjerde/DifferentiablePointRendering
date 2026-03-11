@@ -13,10 +13,10 @@ namespace Pale {
 
     void launchAdjointProjectionKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex);
 
-    void launchAdjointTransportKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex);
+    void adjointContributionKernels(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex);
 
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
-    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t bounceIndex);
+    void launchAdjointIntersectKernel(RenderPackage &pkg,  uint32_t spp,uint32_t activeRayCount, uint32_t bounceIndex);
 
 }
 

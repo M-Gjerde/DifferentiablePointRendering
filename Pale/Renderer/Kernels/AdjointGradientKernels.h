@@ -199,6 +199,16 @@ namespace Pale {
         return surfelNormal * (numerator / denominator);
     }
 
+    SYCL_EXTERNAL inline float3x3 planeHitPointIntersectionJacobian(
+    const float3& rayDirection,
+    const float3& planeNormal)
+    {
+
+        float3x3 numerator = outerProduct(rayDirection, planeNormal);
+        float denom = dot(rayDirection, planeNormal);
+        return numerator / denom;
+    }
+
     inline float3 computeGeometricTermGradientWrtX(
         const float3 &xPosition,
         const float3 &yPosition,

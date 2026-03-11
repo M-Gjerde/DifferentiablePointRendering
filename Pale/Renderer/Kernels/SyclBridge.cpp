@@ -209,7 +209,7 @@ namespace Pale {
                     pkg.queue.wait(); {
                         Log::PA_TRACE("Lauching: LaunchAdjointIntersectKernel");
                         ScopedTimer timer("launchAdjointIntersectKernel");
-                        launchAdjointIntersectKernel(pkg, activeCount, bounce);
+                        launchAdjointIntersectKernel(pkg, spp, activeCount, bounce);
                     }
 
                     uint32_t completedGradientContributions = 0;
@@ -219,7 +219,7 @@ namespace Pale {
                                                                pkg.intermediates.maxPendingAdjointStateCount);
                     ScopedTimer timer("launchAdjointKernel");
                     if (completedGradientContributions) {
-                        launchAdjointTransportKernel(pkg, completedGradientContributions, cameraIndex);
+                        adjointContributionKernels(pkg, completedGradientContributions, cameraIndex);
                     }
 
                     // Count stats:
