@@ -166,6 +166,7 @@ namespace Pale {
         float pdfSelectLight; // 1 / lightCount
         float pdfDir;
         float pdfArea; // 1 / (triangleCount * triArea)
+        float totalAreaWorld;
         bool valid;
     };
 

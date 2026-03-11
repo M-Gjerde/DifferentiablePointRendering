@@ -499,6 +499,7 @@ namespace Pale {
         // Because we sampled proportional to triangle area, then uniformly on that triangle:
         // pdfArea is uniform over the whole emitter area.
         sample.pdfArea = 1.0f / light.totalAreaWorld;
+        sample.totalAreaWorld =  light.totalAreaWorld;
         sample.pdfDir = pdfDir;
 
         sample.valid = true;

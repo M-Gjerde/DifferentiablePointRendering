@@ -182,6 +182,23 @@ namespace Pale {
     */
     // ----------------- Position gradient (translation of surfel center) -----------------
 
+    SYCL_EXTERNAL inline float3 mapHitPointGradientToSurfelTranslation(
+    const float3 &gradientWrtHitPosition,
+    const float3 &cameraRayDirection,
+    const float3 &surfelNormal)
+    {
+        const float denominator = dot(surfelNormal, cameraRayDirection);
+
+        if (sycl::fabs(denominator) <= 1e-6f) {
+            return float3{0.0f};
+        }
+
+        const float numerator = dot(cameraRayDirection, gradientWrtHitPosition);
+
+        // J^T * g_x = n * (w · g_x) / (n · w)
+        return surfelNormal * (numerator / denominator);
+    }
+
     inline float3 computeGeometricTermGradientWrtX(
         const float3 &xPosition,
         const float3 &yPosition,
@@ -201,6 +218,13 @@ namespace Pale {
 
         const float cosineAtX = dot(xNormal, directionFromXToY);
         const float cosineAtY = dot(yNormal, -directionFromXToY);
+
+
+        auto directionOuter = outerProduct(directionFromXToY, directionFromXToY);
+        float3x3 tmp1 = identity3x3() - directionOuter;
+        float3 tmp2 =(-cosineAtY * (tmp1 * xNormal)) + (cosineAtX * (tmp1 * yNormal)) + (2 * cosineAtX * cosineAtY * directionFromXToY);
+
+        return inverseDistanceCubed * tmp2;
 
         const float3 projectedXNormal =
                 xNormal - directionFromXToY * dot(directionFromXToY, xNormal);
