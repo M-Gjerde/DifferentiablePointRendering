@@ -186,7 +186,7 @@ def main(args) -> None:
         "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 2,
-        "adjoint_passes": 64,
+        "adjoint_passes": 32,
         "logging": 4,
         "seed": 42
     }
@@ -262,7 +262,7 @@ def main(args) -> None:
                 elif args.parameter == "translation_x":
                     value = -0.5 + (iteration_index) / (iterations) * 2  # -0.5..0.5
                 elif args.parameter == "translation_y":
-                    value = -1 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
+                    value = -1 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
                 elif args.parameter == "translation_z":
                     value = -0.2 + (iteration_index) / (iterations * 1) * 1  # -0.5..0.5
                 elif args.parameter == "scale_u":
@@ -413,7 +413,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-3,
+        default=5e-5,
         help="Finite difference epsilon.",
     )
     return parser.parse_args()

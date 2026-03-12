@@ -608,7 +608,6 @@ namespace Pale {
 
                                 const float pA =
                                         contribution.uniformHemispherePDF * cosineAtY / distanceSquared;
-
                                 const Point &surfel = scene.points[contribution.primitiveIndex];
                                 const float alpha = contribution.alphaGeom * surfel.opacity;
                                 const float3 brdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
@@ -626,18 +625,13 @@ namespace Pale {
                                 // First form the gradient with respect to the observed world-space hit point x.
                                 const float3 gradientWrtHitPosition = scalarWeight * dG_dPos;
                                 // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
-                                /*
-                                const float3 gradientWrtSurfelTranslation = mapHitPointGradientToSurfelTranslation(
-                                    gradientWrtHitPosition,
-                                    contribution.ray.direction,
-                                    contribution.hitNormal);
-                                */
+
                                 float3x3 intersectionJacobian = planeHitPointIntersectionJacobian(
                                     contribution.ray.direction, contribution.hitNormal);
                                 float3 gradientWrtSurfelTranslation =
                                         transpose(intersectionJacobian) * gradientWrtHitPosition;
-                                //atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
-                                //                gradientWrtSurfelTranslation * invSpp);
+                                atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
+                                                gradientWrtSurfelTranslation * invSpp);
                             }
                         }
 
@@ -650,7 +644,7 @@ namespace Pale {
                                 float3 Lr = gatherDiffuseIrradianceAtPoint(
                                                 contribution.endpointPosition,
                                                 contribution.endpointNormal,
-                                                photonMap) * endPointSurfel.albedo * M_1_PIf;
+                                                photonMap) * endPointSurfel.alpha_r * endPointSurfel.albedo * M_1_PIf;
 
                                 float3 Le = {0.0f, 0.0f, 0.0f};
                                 const float3 Lo = Le + Lr;
@@ -690,18 +684,28 @@ namespace Pale {
                                 // First form the gradient with respect to the observed world-space hit point x.
                                 const float3 gradientWrtHitPosition = scalarWeight * dG_dPos;
                                 // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
-                                /*
-                                const float3 gradientWrtSurfelTranslation = mapHitPointGradientToSurfelTranslation(
-                                    gradientWrtHitPosition,
-                                    contribution.ray.direction,
-                                    contribution.hitNormal);
-                                */
                                 float3x3 intersectionJacobian = planeHitPointIntersectionJacobian(
                                     contribution.ray.direction, contribution.hitNormal);
                                 float3 gradientWrtSurfelTranslation =
                                         transpose(intersectionJacobian) * gradientWrtHitPosition;
                                 atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
                                                 gradientWrtSurfelTranslation * invSpp);
+
+                                // Y: opacity derivative
+                                const float G = computeGeometricTermValue(x, y, nx, ny);
+                                const float d_eta_opacity_grad = contribution.endPointAlphaGeom;
+                                const float3 transport =
+                                          Lo * alpha * brdf * visibility * transmittance * G;
+
+                                const float scalarWeight2 =
+                                (contribution.pathThroughput[0] * transport[0] +
+                                 contribution.pathThroughput[1] * transport[1] +
+                                 contribution.pathThroughput[2] * transport[2]) / pA;
+
+                                const float gradientWrtHitEta = scalarWeight2 * d_eta_opacity_grad;
+
+                                atomicAddFloat(gradients.gradOpacity[contribution.endpointPrimitiveIndex], gradientWrtHitEta * invSpp);
+
                             }
                         }
                     }
