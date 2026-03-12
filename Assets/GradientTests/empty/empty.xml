@@ -9,9 +9,9 @@
         <float name="near_clip" value="0.01"/>
         <float name="far_clip" value="100.0"/>
         <float name="focus_distance" value="100"/>
-        <float name="fov" value="40.3077"/>
+        <float name="fov" value="70.3077"/>
         <transform name="to_world">
-            <lookat origin="0,-4.0,1" target="0,0,1" up="0,0,1"/>
+            <lookat origin="0,-1.0,2" target="0,0,1" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
@@ -127,7 +127,7 @@
         <transform name="to_world">
             <rotate x="0" y="1" z="0" angle="180"/>d
             <scale x="1.5" y="1.5" z="0.1"/>
-            <translate x="0.0" y="0.0" z="1.98"/>
+            <translate x="0.0" y="0.0" z="2.1"/>
         </transform>
         <bsdf type="diffuse"><rgb name="reflectance" value="0,0,0"/></bsdf>
         <!--  <emitter type="area"><rgb name="radiance" value="800000,600000,390000"/></emitter> -->

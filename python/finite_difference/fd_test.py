@@ -183,12 +183,12 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 2,
-        "forward_passes": 100,
+        "forward_passes": 1000,
         "gather_passes": 1,
         "adjoint_bounces": 2,
-        "adjoint_passes": 32,
+        "adjoint_passes": 16,
         "logging": 4,
-        "seed": 42
+        "seed": args.seed
     }
 
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
@@ -247,7 +247,7 @@ def main(args) -> None:
                 elif args.parameter == "translation_y":
                     value = -0.5 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = -1.2 + (iteration_index) / (iterations * 2) * 4
+                    value = -1.2 + (iteration_index) / (iterations * 2) * 6
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
@@ -260,11 +260,11 @@ def main(args) -> None:
                 elif args.parameter == "beta":
                     value = 6 - (iteration_index * 12) / iterations
                 elif args.parameter == "translation_x":
-                    value = -0.5 + (iteration_index) / (iterations) * 2  # -0.5..0.5
+                    value = -2.0 + (iteration_index) / (iterations) * 4  # -0.5..0.5
                 elif args.parameter == "translation_y":
                     value = -1 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = -0.2 + (iteration_index) / (iterations * 1) * 1  # -0.5..0.5
+                    value = 2.45 - (iteration_index) / (iterations * 1) * 1   # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
@@ -413,8 +413,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=5e-5,
+        default=1e-2,
         help="Finite difference epsilon.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="random seed for renderer",
     )
     return parser.parse_args()
 

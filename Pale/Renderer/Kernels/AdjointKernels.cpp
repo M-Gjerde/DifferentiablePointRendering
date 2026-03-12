@@ -151,6 +151,8 @@ namespace Pale {
                         if (pending.kind == PendingAdjointKind::ReflectScatter) {
                             if (endpointInstance.geometryType == GeometryType::Mesh) {
                                 int debug = 1;
+                            } else {
+                                int debug = 1;
                             }
                             // Obtain normal:
                             CompletedGradientEvent contribution{};
@@ -668,44 +670,117 @@ namespace Pale {
                                         contribution.uniformHemispherePDF * cosineAtY / distanceSquared;
 
                                 const Point &surfel = scene.points[contribution.primitiveIndex];
-                                const float alpha = contribution.alphaGeom * surfel.opacity;
+                                const float alphaX = contribution.alphaGeom * surfel.opacity;
                                 const float3 brdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
                                 const float3 dG_dPos = computeGeometricTermGradientWrtX(x, y, nx, ny);
                                 float visibility = 1.0f;
                                 float transmittance = 1.0f;
                                 // This is the transport factor multiplying G(x, y).
                                 const float3 transportWithoutG =
-                                        Lo * alpha * brdf * visibility * transmittance;
+                                        Lo * alphaX * brdf * visibility * transmittance;
                                 // Adjoint-weighted scalar multiplier for the local derivative insertion.
-                                const float scalarWeight =
-                                (contribution.pathThroughput[0] * transportWithoutG[0] +
-                                 contribution.pathThroughput[1] * transportWithoutG[1] +
-                                 contribution.pathThroughput[2] * transportWithoutG[2]) / pA;
-                                // First form the gradient with respect to the observed world-space hit point x.
-                                const float3 gradientWrtHitPosition = scalarWeight * dG_dPos;
-                                // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
-                                float3x3 intersectionJacobian = planeHitPointIntersectionJacobian(
-                                    contribution.ray.direction, contribution.hitNormal);
-                                float3 gradientWrtSurfelTranslation =
-                                        transpose(intersectionJacobian) * gradientWrtHitPosition;
-                                atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
-                                                gradientWrtSurfelTranslation * invSpp);
+                                {
+                                    const float scalarWeight =
+                                    (contribution.pathThroughput[0] * transportWithoutG[0] +
+                                     contribution.pathThroughput[1] * transportWithoutG[1] +
+                                     contribution.pathThroughput[2] * transportWithoutG[2]) / pA;
+                                    // First form the gradient with respect to the observed world-space hit point x.
+                                    const float3 gradientWrtHitPosition = scalarWeight * dG_dPos;
+                                    // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
+                                    float3x3 intersectionJacobian = planeHitPointIntersectionJacobian(
+                                        contribution.ray.direction, contribution.hitNormal);
 
-                                // Y: opacity derivative
-                                const float G = computeGeometricTermValue(x, y, nx, ny);
-                                const float d_eta_opacity_grad = contribution.endPointAlphaGeom;
-                                const float3 transport =
-                                          Lo * alpha * brdf * visibility * transmittance * G;
+                                    float3 gradientWrtSurfelTranslation =
+                                            transpose(intersectionJacobian) * gradientWrtHitPosition;
+                                    atomicAddFloat3(gradients.gradPosition[contribution.primitiveIndex],
+                                                    gradientWrtSurfelTranslation * invSpp);
+                                    // Y: opacity derivative
+                                    const float G = computeGeometricTermValue(x, y, nx, ny);
+                                    const float d_eta_opacity_grad = contribution.endPointAlphaGeom;
+                                    const float3 transport =
+                                            Lo * alphaX * brdf * visibility * transmittance * G;
+                                    const float scalarWeight2 =
+                                    (contribution.pathThroughput[0] * transport[0] +
+                                     contribution.pathThroughput[1] * transport[1] +
+                                     contribution.pathThroughput[2] * transport[2]) / pA;
+                                    const float gradientWrtHitEta = scalarWeight2 * d_eta_opacity_grad;
+                                    atomicAddFloat(gradients.gradOpacity[contribution.endpointPrimitiveIndex],
+                                                   gradientWrtHitEta * invSpp);
+                                } {
+                                    // Y: Alpha geom derivative:
+                                    float3 canonicalNormalWorld = contribution.endpointNormal;
+                                    float2 uv = phiInverse(contribution.endpointPosition, endPointSurfel);
 
-                                const float scalarWeight2 =
-                                (contribution.pathThroughput[0] * transport[0] +
-                                 contribution.pathThroughput[1] * transport[1] +
-                                 contribution.pathThroughput[2] * transport[2]) / pA;
+                                    float u = uv.x();
+                                    float v = uv.y();
+                                    float r2 = u * u + v * v;
+                                    float su = endPointSurfel.scale.x();
+                                    float sv = endPointSurfel.scale.y();
+                                    auto DuvDPositionJacobian = computeDuvDPositionJacobian(
+                                        endPointSurfel.tanU,
+                                        endPointSurfel.tanV,
+                                        canonicalNormalWorld,
+                                        -contribution.endpointRay.direction,
+                                        u, v,
+                                        su, sv);
+                                    float3 DuvDPosition =
+                                    (u * DuvDPositionJacobian.du_d_position + v * DuvDPositionJacobian.
+                                     dv_d_position);
 
-                                const float gradientWrtHitEta = scalarWeight2 * d_eta_opacity_grad;
 
-                                atomicAddFloat(gradients.gradOpacity[contribution.endpointPrimitiveIndex], gradientWrtHitEta * invSpp);
+                                    float beta = 4.0f * sycl::exp(endPointSurfel.beta);
+                                    float factor = (-2.0f * beta * contribution.endPointAlphaGeom) / (1.0f - r2);
+                                    float3 dAlpha_dPos = factor * DuvDPosition;
+                                    float3 dAlphaEff_dPos = endPointSurfel.opacity * dAlpha_dPos;
 
+                                    const float G = computeGeometricTermValue(x, y, nx, ny);
+
+                                    const float3 transport =
+                                            Lo * alphaX * brdf * visibility * transmittance * G;
+
+                                    const float scalarWeight2 =
+                                    (contribution.pathThroughput[0] * transport[0] +
+                                     contribution.pathThroughput[1] * transport[1] +
+                                     contribution.pathThroughput[2] * transport[2]) / pA;
+                                    const float3 gradientWrtHitAlphaGeom = scalarWeight2 * dAlphaEff_dPos;
+                                    atomicAddFloat3(gradients.gradPosition[contribution.endpointPrimitiveIndex],
+                                                    gradientWrtHitAlphaGeom * invSpp);
+                                } {
+                                    const float3 dG_d_hit_position_y =
+                                            computeGeometricTermGradientWrtY(x, y, nx, ny);
+
+                                    const float alphaY =
+                                            endPointSurfel.opacity * contribution.endPointAlphaGeom;
+
+                                    const float3 transportWithoutG =
+                                            Lo * alphaX * alphaY * brdf * visibility * transmittance;
+
+                                    const float scalarWeightG =
+                                    (contribution.pathThroughput[0] * transportWithoutG[0] +
+                                     contribution.pathThroughput[1] * transportWithoutG[1] +
+                                     contribution.pathThroughput[2] * transportWithoutG[2]) / pA;
+
+                                    // Gradient wrt observed world-space hitpoint y
+                                    const float3 gradientWrtEndpointHitPosition =
+                                            scalarWeightG * dG_d_hit_position_y;
+
+                                    // Fixed ray from x -> y
+                                    const float3 fixedRayDirection = contribution.endpointRay.direction;
+                                    const float3 endpointNormal = contribution.endpointNormal;
+
+                                    const float rayNormalDenominator = dot(endpointNormal, fixedRayDirection);
+                                    if (sycl::fabs(rayNormalDenominator) > 1e-6f) {
+                                        // dy/ds_p = d n^T / (n·d)
+                                        // grad_s_p = (dy/ds_p)^T grad_y = n * dot(d, grad_y)/(n·d)
+                                        const float projectedGradientAlongRay =
+                                                dot(fixedRayDirection, gradientWrtEndpointHitPosition);
+
+                                        const float3 gradientWrtEndpointTranslation =
+                                                endpointNormal * (projectedGradientAlongRay / rayNormalDenominator);
+
+                                        //atomicAddFloat3(gradients.gradPosition[contribution.endpointPrimitiveIndex],gradientWrtEndpointTranslation * invSpp);
+                                    }
+                                }
                             }
                         }
                     }

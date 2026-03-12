@@ -176,6 +176,7 @@ namespace Pale {
         uint32_t globalTriangleIndex;
         float worldArea; // triangle area after transform
         float cdf; // inclusive CDF in [0,1] within its light’s triangle range
+
     };
 
     struct InstanceRecord {

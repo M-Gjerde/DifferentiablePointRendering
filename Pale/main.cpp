@@ -269,8 +269,8 @@ int main(int argc, char **argv) {
         settings.maxBounces = 4;
         settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 1; // 1 = Projection only // 2 starts including transmittance
-        settings.adjointSamplesPerPixel = 1;
+        settings.maxAdjointBounces = 2; // 1 = Projection only // 2 starts including transmittance
+        settings.adjointSamplesPerPixel = 8;
         settings.renderDebugGradientImages = true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
@@ -320,7 +320,7 @@ int main(int argc, char **argv) {
             }
             Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
             Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-            pointGeometry.positions[0].z = -0.4f;
+            pointGeometry.positions[0].z = 2.3f;
             rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
         }
 
