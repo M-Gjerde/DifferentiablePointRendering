@@ -198,7 +198,8 @@ namespace Pale {
                 uint32_t raysPerFrame = pkg.sensors[cameraIndex].width * pkg.sensors[cameraIndex].height;
                 uint32_t activeCount = raysPerFrame;
 
-                pkg.queue.fill(pkg.intermediates.pendingAdjointStates, PendingAdjointState(), activeCount);
+                pkg.queue.fill(pkg.intermediates.pendingStageX, PendingAdjointStageX(), activeCount);
+                pkg.queue.fill(pkg.intermediates.pendingStageXY, PendingAdjointStageXY(), activeCount);
                 pkg.queue.fill(pkg.intermediates.completedGradientEvents, CompletedGradientEvent(), activeCount);
 
 

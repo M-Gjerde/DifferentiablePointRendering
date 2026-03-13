@@ -92,9 +92,12 @@ namespace Pale {
         Log::PA_TRACE("Allocated completedGradientEvent records: {}", Utils::formatBytes(sizeCompletedGradientEvents));
         m_intermediates.maxCompletedGradientEventCount = m_rayQueueCapacity;
 
-        std::size_t sizePendingAjointStates = sizeof(PendingAdjointState) * m_rayQueueCapacity;
-        m_intermediates.pendingAdjointStates = sycl::malloc_device<PendingAdjointState>(m_rayQueueCapacity, m_queue);
+        std::size_t sizePendingAjointStates = sizeof(PendingAdjointStageX) * m_rayQueueCapacity;
+        m_intermediates.pendingStageX = sycl::malloc_device<PendingAdjointStageX>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated pendingAdjointStates records: {}", Utils::formatBytes(sizePendingAjointStates));
+        std::size_t sizePendingAjointStatesXY = sizeof(PendingAdjointStageXY) * m_rayQueueCapacity;
+        m_intermediates.pendingStageXY = sycl::malloc_device<PendingAdjointStageXY>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated pendingAdjointStates records: {}", Utils::formatBytes(sizePendingAjointStatesXY));
         m_intermediates.maxPendingAdjointStateCount = m_rayQueueCapacity;
 
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);

@@ -315,61 +315,103 @@ namespace Pale {
 
         // Projection states
         ProjectionScatter,
+        Projection,
     };
 
-    struct PendingAdjointState {
-        PendingAdjointKind kind = PendingAdjointKind::None;
-        GeometryType geometryType = GeometryType::InvalidType;
+    struct PendingAdjointStageX {
+        bool valid = false;
 
-        // --- surfel identity ---
-        uint32_t primitiveIndex = UINT32_MAX;
-        uint32_t instanceIndex = UINT32_MAX;
-        // --- local interaction data ---
-        float alphaGeom = 0.0f; // α_geom at surfel
-        float3 hitPosition{}; // world position on surfel
-        float3 hitNormal;
-        Ray ray;
-        // --- adjoint transport ---
-        float3 pathThroughput{}; // p BEFORE this interaction
-        // Optional bookkeeping (cheap, useful later)
+        uint32_t pathId = 0;
         uint32_t pixelIndex = 0;
-        uint32_t pathId;  //for debugging
-        float cosine;
+
+        uint32_t xInstanceIndex = 0;
+        uint32_t xPrimitiveIndex = 0;
+        GeometryType xGeometryType = GeometryType::PointCloud;
+
+        float xAlphaGeom = 0.0f;
+        float xCosine = 0.0f;
+
+        float3 xPosition{0.0f};
+        float3 xNormal{0.0f};
+
+        Ray xIncomingRay{};
+        float3 xPathThroughput{0.0f};
+    };
+
+    struct PendingAdjointStageXY {
+        bool valid = false;
+
+        uint32_t pathId = 0;
+        uint32_t pixelIndex = 0;
+
+        // X
+        uint32_t xInstanceIndex = 0;
+        uint32_t xPrimitiveIndex = 0;
+        GeometryType xGeometryType = GeometryType::PointCloud;
+
+        float xAlphaGeom = 0.0f;
+        float xCosine = 0.0f;
+
+        float3 xPosition{0.0f};
+        float3 xNormal{0.0f};
+
+        Ray xIncomingRay{};
+        float3 xPathThroughput{0.0f};
+
+        // Y
+        uint32_t yInstanceIndex = 0;
+        uint32_t yPrimitiveIndex = 0;
+        GeometryType yGeometryType = GeometryType::PointCloud;
+
+        float yAlphaGeom = 0.0f;
+        float yCosine = 0.0f;
+
+        float3 yPosition{0.0f};
+        float3 yNormal{0.0f};
+
+        Ray yIncomingRay{};
+        float3 yPathThroughput{0.0f};
     };
 
     struct CompletedGradientEvent {
-        // --- interaction identity ---
-        PendingAdjointKind kind = PendingAdjointKind::None;
-        uint32_t pathId{}; //for debugging
-        Ray ray{};
-        Ray endpointRay{};
-        // Require next path intersection or not
-        bool hasEndpoint = false;
-        // --- local surfel/mesh data ---
-        float alphaGeom{};
-        float3 hitPosition;
-        float3 hitNormal{};
-        float cosineHitPoint{}; // dot(-wi, n_end)
-        uint32_t instanceIndex{};
-        uint32_t primitiveIndex{};
-        GeometryType geometryType = GeometryType::InvalidType;
+        bool valid = false;
 
-        // --- adjoint transport ---
-        float3 pathThroughput; // p BEFORE current hit point interaction
-        float3 endPathThroughput; // p BEFORE current hit point interaction
-        uint32_t pixelIndex{};
-        // --- endpoint (next hit) ---
-        GeometryType endpointGeometryType = GeometryType::InvalidType;
-        uint32_t endpointInstanceIndex{};
-        uint32_t endpointPrimitiveIndex{};
-        uint32_t endpointLightIndex{};
-        float endPointAlphaGeom{};
-        float uniformHemispherePDF{};
-        float cosineHemispherePDF{};
+        uint32_t pathId = 0;
+        uint32_t pixelIndex = 0;
+        PendingAdjointKind kind = PendingAdjointKind::ReflectScatter;
 
-        float3 endpointPosition;
-        float3 endpointNormal;
-        float endpointCosine{}; // dot(-wi, n_end)
+        // X = first surfel
+        uint32_t xInstanceIndex = 0;
+        uint32_t xPrimitiveIndex = 0;
+        GeometryType xGeometryType = GeometryType::PointCloud;
+        float xAlphaGeom = 0.0f;
+        float xCosine = 0.0f;
+        float3 xPosition{0.0f};
+        float3 xNormal{0.0f};
+        Ray xIncomingRay{};
+        float3 xPathThroughput{0.0f};
+
+        // Y = second surfel
+        uint32_t yInstanceIndex = 0;
+        uint32_t yPrimitiveIndex = 0;
+        GeometryType yGeometryType = GeometryType::PointCloud;
+        float yAlphaGeom = 0.0f;
+        float yCosine = 0.0f;
+        float3 yPosition{0.0f};
+        float3 yNormal{0.0f};
+        Ray yIncomingRay{};
+        float3 yPathThroughput{0.0f};
+
+        // Z = final mesh hit
+        uint32_t zInstanceIndex = 0;
+        uint32_t zPrimitiveIndex = 0;
+        GeometryType zGeometryType = GeometryType::Mesh;
+        float zAlphaGeom = 0.0f;
+        float zCosine = 0.0f;
+        float3 zPosition{0.0f};
+        float3 zNormal{0.0f};
+        Ray zIncomingRay{};
+        float3 zPathThroughput{0.0f};
     };
 
 
@@ -496,12 +538,12 @@ namespace Pale {
         uint32_t maxCompletedGradientEventCount = 0;
         uint32_t *countCompletedGradientEvents = nullptr;
 
-        PendingAdjointState *pendingAdjointStates = nullptr;
+        PendingAdjointStageX* pendingStageX;
+        PendingAdjointStageXY* pendingStageXY;
         uint32_t maxPendingAdjointStateCount = 0;
 
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;
-
         DeviceSurfacePhotonMapGrid map;
     };
 

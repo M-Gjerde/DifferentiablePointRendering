@@ -1794,13 +1794,192 @@ namespace Pale {
         globalCompletedBuffer[insertionIndex] = eventValue;
     }
 
-    SYCL_EXTERNAL inline void clearPendingAdjointState(PendingAdjointState &pending) {
-        pending.kind = PendingAdjointKind::None;
-        pending.primitiveIndex = UINT32_MAX;
-        pending.alphaGeom = 0.0f;
-        pending.hitPosition = float3{0.0f};
-        pending.pathThroughput = float3{0.0f};
-        pending.pixelIndex = 0;
+    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX& state) {
+        state.valid = false;
+    }
+
+    SYCL_EXTERNAL inline void clearPendingAdjointStageXY(PendingAdjointStageXY& state) {
+        state.valid = false;
+    }
+
+    SYCL_EXTERNAL inline PendingAdjointStageX makePendingStageX(
+    uint32_t pathId,
+    uint32_t pixelIndex,
+    const WorldHit& worldHit,
+    const RayState& rayState,
+    const float3& orientedNormal,
+    GeometryType geometryType)
+    {
+        PendingAdjointStageX pending{};
+        pending.valid = true;
+        pending.pathId = pathId;
+        pending.pixelIndex = pixelIndex;
+
+        pending.xInstanceIndex = worldHit.instanceIndex;
+        pending.xPrimitiveIndex = worldHit.primitiveIndex;
+        pending.xGeometryType = geometryType;
+
+        pending.xAlphaGeom = worldHit.alphaGeom;
+        pending.xCosine = dot(-rayState.ray.direction, orientedNormal);
+        pending.xPosition = worldHit.hitPositionW;
+        pending.xNormal = orientedNormal;
+        pending.xIncomingRay = rayState.ray;
+        pending.xPathThroughput = rayState.pathThroughput;
+
+        return pending;
+    }
+
+    SYCL_EXTERNAL inline PendingAdjointStageXY makePendingStageXY(
+    const PendingAdjointStageX& stageX,
+    const WorldHit& worldHit,
+    const RayState& rayState,
+    const float3& orientedNormal,
+    GeometryType geometryType)
+    {
+        PendingAdjointStageXY pending{};
+        pending.valid = true;
+
+        pending.pathId = stageX.pathId;
+        pending.pixelIndex = stageX.pixelIndex;
+
+        // Copy X
+        pending.xInstanceIndex = stageX.xInstanceIndex;
+        pending.xPrimitiveIndex = stageX.xPrimitiveIndex;
+        pending.xGeometryType = stageX.xGeometryType;
+        pending.xAlphaGeom = stageX.xAlphaGeom;
+        pending.xCosine = stageX.xCosine;
+        pending.xPosition = stageX.xPosition;
+        pending.xNormal = stageX.xNormal;
+        pending.xIncomingRay = stageX.xIncomingRay;
+        pending.xPathThroughput = stageX.xPathThroughput;
+
+        // Fill Y
+        pending.yInstanceIndex = worldHit.instanceIndex;
+        pending.yPrimitiveIndex = worldHit.primitiveIndex;
+        pending.yGeometryType = geometryType;
+        pending.yAlphaGeom = worldHit.alphaGeom;
+        pending.yCosine = dot(-rayState.ray.direction, orientedNormal);
+        pending.yPosition = worldHit.hitPositionW;
+        pending.yNormal = orientedNormal;
+        pending.yIncomingRay = rayState.ray;
+        pending.yPathThroughput = rayState.pathThroughput;
+
+        return pending;
+    }
+
+    SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventXYZ(
+    const PendingAdjointStageXY& stageXY,
+    const WorldHit& worldHit,
+    const RayState& rayState,
+    const float3& orientedNormal,
+    GeometryType geometryType)
+    {
+        CompletedGradientEvent completed{};
+        completed.valid = true;
+
+        completed.pathId = stageXY.pathId;
+        completed.pixelIndex = stageXY.pixelIndex;
+
+        // X
+        completed.xInstanceIndex = stageXY.xInstanceIndex;
+        completed.xPrimitiveIndex = stageXY.xPrimitiveIndex;
+        completed.xGeometryType = stageXY.xGeometryType;
+        completed.xAlphaGeom = stageXY.xAlphaGeom;
+        completed.xCosine = stageXY.xCosine;
+        completed.xPosition = stageXY.xPosition;
+        completed.xNormal = stageXY.xNormal;
+        completed.xIncomingRay = stageXY.xIncomingRay;
+        completed.xPathThroughput = stageXY.xPathThroughput;
+
+        // Y
+        completed.yInstanceIndex = stageXY.yInstanceIndex;
+        completed.yPrimitiveIndex = stageXY.yPrimitiveIndex;
+        completed.yGeometryType = stageXY.yGeometryType;
+        completed.yAlphaGeom = stageXY.yAlphaGeom;
+        completed.yCosine = stageXY.yCosine;
+        completed.yPosition = stageXY.yPosition;
+        completed.yNormal = stageXY.yNormal;
+        completed.yIncomingRay = stageXY.yIncomingRay;
+        completed.yPathThroughput = stageXY.yPathThroughput;
+
+        // Z
+        completed.zInstanceIndex = worldHit.instanceIndex;
+        completed.zPrimitiveIndex = worldHit.primitiveIndex;
+        completed.zGeometryType = geometryType;
+        completed.zAlphaGeom = worldHit.alphaGeom;
+        completed.zCosine = dot(-rayState.ray.direction, orientedNormal);
+        completed.zPosition = worldHit.hitPositionW;
+        completed.zNormal = orientedNormal;
+        completed.zIncomingRay = rayState.ray;
+        completed.zPathThroughput = rayState.pathThroughput;
+
+        return completed;
+    }
+
+    SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventXY(
+    const PendingAdjointStageX& stageX,
+    const WorldHit& worldHit,
+    const RayState& rayState,
+    const float3& throughput,
+    const float3& orientedNormal,
+    GeometryType geometryType)
+    {
+        CompletedGradientEvent completed{};
+        completed.valid = true;
+
+        completed.pathId = stageX.pathId;
+        completed.pixelIndex = stageX.pixelIndex;
+        completed.kind = PendingAdjointKind::ProjectionScatter;
+
+        // X
+        completed.xInstanceIndex = stageX.xInstanceIndex;
+        completed.xPrimitiveIndex = stageX.xPrimitiveIndex;
+        completed.xGeometryType = stageX.xGeometryType;
+        completed.xAlphaGeom = stageX.xAlphaGeom;
+        completed.xCosine = stageX.xCosine;
+        completed.xPosition = stageX.xPosition;
+        completed.xNormal = stageX.xNormal;
+        completed.xIncomingRay = stageX.xIncomingRay;
+        completed.xPathThroughput = throughput;
+
+        // y
+        completed.yInstanceIndex = worldHit.instanceIndex;
+        completed.yPrimitiveIndex = worldHit.primitiveIndex;
+        completed.yGeometryType = geometryType;
+        completed.yAlphaGeom = worldHit.alphaGeom;
+        completed.yCosine = dot(-rayState.ray.direction, orientedNormal);
+        completed.yPosition = worldHit.hitPositionW;
+        completed.yNormal = orientedNormal;
+        completed.yIncomingRay = rayState.ray;
+        return completed;
+    }
+
+    SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventX(
+    const WorldHit& worldHit,
+    const RayState& rayState,
+    const float3& throughput,
+    const float3& orientedNormal,
+    GeometryType geometryType)
+    {
+        CompletedGradientEvent completed{};
+        completed.valid = true;
+
+        completed.pathId = rayState.pathId;
+        completed.pixelIndex = rayState.pixelIndex;
+        completed.kind = PendingAdjointKind::Projection;
+
+        // y
+        completed.xInstanceIndex = worldHit.instanceIndex;
+        completed.xPrimitiveIndex = worldHit.primitiveIndex;
+        completed.xGeometryType = geometryType;
+        completed.xAlphaGeom = worldHit.alphaGeom;
+        completed.xCosine = dot(-rayState.ray.direction, orientedNormal);
+        completed.xPosition = worldHit.hitPositionW;
+        completed.xNormal = orientedNormal;
+        completed.xIncomingRay = rayState.ray;
+        completed.xPathThroughput = throughput;
+
+        return completed;
     }
 
     SYCL_EXTERNAL inline float computeEndpointCosine(const Ray &incomingRay, const float3 &endpointNormalW) {

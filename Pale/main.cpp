@@ -320,7 +320,7 @@ int main(int argc, char **argv) {
             }
             Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
             Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-            pointGeometry.positions[0].z = 2.3f;
+            pointGeometry.positions[0].x = -0.25f;
             rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
         }
 
@@ -434,8 +434,8 @@ int main(int argc, char **argv) {
                 Pale::float3 hostPosition{};
                 deviceSelector.getQueue()
                         .memcpy(&hostPosition,
-                                gradients.gradPosition,
-                                sizeof(float))
+                                &gradients.gradPosition[1],
+                                 3 * sizeof(float))
                         .wait();
 
                 Pale::Log::PA_INFO(
