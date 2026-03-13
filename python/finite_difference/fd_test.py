@@ -247,7 +247,7 @@ def main(args) -> None:
                 elif args.parameter == "translation_y":
                     value = -0.5 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = -1.2 + (iteration_index) / (iterations * 2) * 6
+                    value = 1.35 + (iteration_index) / (iterations * 2)
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
@@ -413,7 +413,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-4,
+        default=1e-3,
         help="Finite difference epsilon.",
     )
     parser.add_argument(

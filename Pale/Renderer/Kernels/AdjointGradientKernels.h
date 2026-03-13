@@ -354,11 +354,11 @@ namespace Pale {
     }
 
     struct UVPositionJacobian {
-        float3 du_d_position;
-        float3 dv_d_position;
+        float3 du_d_surfel_translation;
+        float3 dv_d_surfel_translation;
     };
 
-    inline UVPositionJacobian computeDuvDPositionJacobian(
+    inline UVPositionJacobian computeDuvDSurfelTranslationJacobian(
         const float3 &tangentUWorld,
         const float3 &tangentVWorld,
         const float3 &canonicalNormalWorld,
@@ -377,6 +377,41 @@ namespace Pale {
         const float3 duDPk = ((tuDotD / denom) * canonicalNormalWorld - tangentUWorld) / su;
         const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
         return {duDPk, dvDPk};
+    }
+
+    inline float3 computeAreaPdfGradientWrtX(
+    const float3 &xPosition,
+    const float3 &yPosition,
+    const float3 &yNormal,
+    float directionPdf) {
+
+        const float3 vectorFromXToY = yPosition - xPosition;
+        const float squaredDistance = dot(vectorFromXToY, vectorFromXToY);
+        if (squaredDistance <= 1e-12f) {
+            return float3{0.0f};
+        }
+
+        const float distance = sycl::sqrt(squaredDistance);
+        const float inverseDistance = 1.0f / distance;
+        const float inverseDistanceCubed =
+            inverseDistance * inverseDistance * inverseDistance;
+
+        const float3 directionXToY = vectorFromXToY * inverseDistance;
+        const float cosineAtY = dot(yNormal, -directionXToY);
+
+        if (cosineAtY <= 1e-6f) {
+            return float3{0.0f};
+        }
+
+        // p_A(x -> y) = p_omega * cosineAtY / r^2
+        //
+        // d cosineAtY / d x = (yNormal + cosineAtY * directionXToY) / r
+        // d (1 / r^2) / d x = 2 * directionXToY / r^3
+        //
+        // Therefore:
+        // d p_A / d x = p_omega / r^3 * (yNormal + 3 * cosineAtY * directionXToY)
+        return directionPdf * inverseDistanceCubed *
+               (yNormal + 3.0f * cosineAtY * directionXToY);
     }
 
     // ----------------- Position gradient (translation of surfel center) -----------------

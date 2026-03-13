@@ -1807,6 +1807,7 @@ namespace Pale {
     uint32_t pixelIndex,
     const WorldHit& worldHit,
     const RayState& rayState,
+    const float3& throughput,
     const float3& orientedNormal,
     GeometryType geometryType)
     {
@@ -1824,7 +1825,7 @@ namespace Pale {
         pending.xPosition = worldHit.hitPositionW;
         pending.xNormal = orientedNormal;
         pending.xIncomingRay = rayState.ray;
-        pending.xPathThroughput = rayState.pathThroughput;
+        pending.xPathThroughput = throughput;
 
         return pending;
     }
