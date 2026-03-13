@@ -151,7 +151,7 @@ namespace Pale {
                     if (pathId < intermediates.maxPendingAdjointStateCount) {
                         const GeometryType currentGeometryType = endpointInstance.geometryType;
                         if (bounceIndex == 0) {
-                            float3 throughput = rayState.pathThroughput;
+                            float3 throughput = rayState.pathThroughput * settings.sampling.qReflect;
                             CompletedGradientEvent completedProjection = makeCompletedGradientEventX(
                                 worldHit,
                                 rayState,
