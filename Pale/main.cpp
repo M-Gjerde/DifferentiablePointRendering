@@ -266,10 +266,10 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 4;
+        settings.maxBounces = 2;
         settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 2; // 1 = Projection only // 2 starts including transmittance
+        settings.maxAdjointBounces = 3; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 8;
         settings.renderDebugGradientImages = true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
@@ -320,7 +320,7 @@ int main(int argc, char **argv) {
             }
             Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
             Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-            pointGeometry.positions[0].y = -1.0f;
+            //pointGeometry.positions[0].z = 1.75f;
             rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
         }
 

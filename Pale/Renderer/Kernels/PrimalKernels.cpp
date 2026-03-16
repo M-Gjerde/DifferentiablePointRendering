@@ -49,7 +49,7 @@ namespace Pale {
                     const float3 initialThroughput = ls.power * scene.lightCount * invEmittedCount;
 
                     RayState ray{};
-                    ray.ray.origin = ls.positionW;
+                    ray.ray.origin = ls.positionW + ls.normalW * 1e-5f;
                     ray.ray.direction = ls.direction;
                     ray.ray.normal = ls.normalW;
                     ray.pathThroughput = initialThroughput;
@@ -97,7 +97,6 @@ namespace Pale {
                         return;
                     }
                     buildIntersectionNormal(scene, worldHit);
-
 
                     // Hitting mesh events
                     const auto &instance = scene.instances[worldHit.instanceIndex];
@@ -163,7 +162,7 @@ namespace Pale {
                             *intermediates.countExtensionOut);
                         const uint32_t outIndex = extensionCounter.fetch_add(1);
                         intermediates.extensionRaysA[outIndex] = nextState;
-                    } else {
+                    } else if (instance.geometryType == GeometryType::PointCloud) {
                         const float u = rng.nextFloat();
                         if (u < settings.sampling.qNull) {
                             // Update path throughput

@@ -209,7 +209,7 @@ namespace Pale {
         return numerator / denom;
     }
 
-    inline float3 computeGeometricTermGradientWrtX(
+    inline float3 computeGeometricTermGradientWrtStartpoint(
         const float3 &xPosition,
         const float3 &yPosition,
         const float3 &xNormal,
@@ -245,12 +245,12 @@ namespace Pale {
                 + cosineAtX * projectedYNormal
                 + 2.0f * cosineAtX * cosineAtY * directionFromXToY) * inverseDistanceCubed;
     }
-    inline float3 computeGeometricTermGradientWrtY(
+    inline float3 computeGeometricTermGradientWrtEndpoint(
         const float3& xPosition,
         const float3& yPosition,
         const float3& xNormal,
         const float3& yNormal) {
-        return -computeGeometricTermGradientWrtX(
+        return -computeGeometricTermGradientWrtStartpoint(
             xPosition, yPosition, xNormal, yNormal);
     }
 
