@@ -44,6 +44,7 @@ namespace Pale {
         float opacity{0.0f};
         float beta{0.0f};
         float shape{0.0f};
+        float power{0.0f};
 
         uint64_t pointId{0};
     };
@@ -145,8 +146,10 @@ namespace Pale {
     CHECK_16(CameraGPU);
 
 
+    enum class LightType : uint32_t { Mesh = 0, Surfel = 1 };
+
     struct GPULightRecord {
-        uint32_t lightType; // 0 = mesh area
+        LightType lightType; // 0 = mesh area
         uint32_t geometryIndex;
         uint32_t transformIndex;
         uint32_t materialIndex;
@@ -155,6 +158,10 @@ namespace Pale {
         float3 color; // lght color
         float power;
         float totalAreaWorld; // sum of worldArea of its triangles
+
+        // Surfel
+        uint32_t primitiveIndex;
+
     };
 
     struct AreaLightSample {

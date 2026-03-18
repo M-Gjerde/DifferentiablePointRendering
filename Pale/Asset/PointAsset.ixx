@@ -21,6 +21,7 @@ export namespace Pale {
         std::vector<float>     opacities{};
         std::vector<float>     betas{};
         std::vector<float>     shapes{};
+        std::vector<float>     powers{};
     };
 
 

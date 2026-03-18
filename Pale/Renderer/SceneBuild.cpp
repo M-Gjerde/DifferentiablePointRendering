@@ -23,8 +23,8 @@ import Pale.Render.BVH;
 import Pale.Log;
 
 namespace Pale {
-    SceneBuild::BuildProducts SceneBuild::build(const std::shared_ptr<Scene>& scene, IAssetAccess& assetAccess,
-                                                const BuildOptions& buildOptions) {
+    SceneBuild::BuildProducts SceneBuild::build(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
+                                                const BuildOptions &buildOptions) {
         BuildProducts buildProducts;
 
         collectGeometry(scene, assetAccess, buildProducts);
@@ -45,9 +45,9 @@ namespace Pale {
         return buildProducts;
     }
 
-    void SceneBuild::rebuildBVHs(const std::shared_ptr<Scene>& scene, IAssetAccess& assetAccess,
-                                 BuildProducts& buildProducts,
-                                 const BuildOptions& buildOptions) {
+    void SceneBuild::rebuildBVHs(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
+                                 BuildProducts &buildProducts,
+                                 const BuildOptions &buildOptions) {
         buildProducts.instances = {};
 
         collectInstances(scene,
@@ -70,21 +70,20 @@ namespace Pale {
     }
 
     // ==== Geometry collector ====
-    void SceneBuild::collectGeometry(const std::shared_ptr<Scene>& scene,
-                                     IAssetAccess& assetAccess,
-                                     BuildProducts& outBuildProducts) {
+    void SceneBuild::collectGeometry(const std::shared_ptr<Scene> &scene,
+                                     IAssetAccess &assetAccess,
+                                     BuildProducts &outBuildProducts) {
         std::vector<Vertex> vertices;
         std::vector<Triangle> triangles;
         // 1) Gather unique mesh IDs in scene order
-        std::vector<UUID> uniqueMeshIds;
-        {
+        std::vector<UUID> uniqueMeshIds; {
             std::unordered_set<UUID> seen;
-            for (auto [e, mesh] : scene->getAllEntitiesWith<MeshComponent>().each()) {
+            for (auto [e, mesh]: scene->getAllEntitiesWith<MeshComponent>().each()) {
                 if (seen.insert(mesh.meshID).second) uniqueMeshIds.push_back(mesh.meshID);
             }
         }
         // 2) For each unique mesh, append geometry once and record ALL ranges
-        for (const UUID& meshId : uniqueMeshIds) {
+        for (const UUID &meshId: uniqueMeshIds) {
             const auto meshAsset = assetAccess.getMesh(meshId);
             Submesh mesh = meshAsset->submeshes.front();
             const uint32_t vertexBaseIndex = static_cast<uint32_t>(vertices.size());
@@ -123,13 +122,13 @@ namespace Pale {
         outBuildProducts.triangles = std::move(triangles);
     }
 
-    void SceneBuild::collectInstances(const std::shared_ptr<Pale::Scene>& scene,
-                                      IAssetAccess& assetAccess,
-                                      const std::unordered_map<UUID, uint32_t>& meshIndexById,
-                                      BuildProducts& outBuildProducts) {
+    void SceneBuild::collectInstances(const std::shared_ptr<Pale::Scene> &scene,
+                                      IAssetAccess &assetAccess,
+                                      const std::unordered_map<UUID, uint32_t> &meshIndexById,
+                                      BuildProducts &outBuildProducts) {
         std::unordered_map<UUID, uint32_t> materialIndexByUuid;
         auto view = scene->getAllEntitiesWith<MeshComponent, MaterialComponent, TransformComponent, TagComponent>();
-        for (auto [entityId, meshComponent, materialComponent, transformComponent, tagComponent] : view.each()) {
+        for (auto [entityId, meshComponent, materialComponent, transformComponent, tagComponent]: view.each()) {
             auto it = meshIndexById.find(meshComponent.meshID);
             if (it == meshIndexById.end()) continue;
             const uint32_t geometryIndex = it->second;
@@ -137,8 +136,7 @@ namespace Pale {
             uint32_t materialIndex;
             if (auto mit = materialIndexByUuid.find(materialComponent.materialID); mit != materialIndexByUuid.end()) {
                 materialIndex = mit->second;
-            }
-            else {
+            } else {
                 const auto materialAsset = assetAccess.getMaterial(materialComponent.materialID);
                 if (!materialAsset) {
                     throw std::runtime_error("Material does not exist");
@@ -178,24 +176,23 @@ namespace Pale {
         }
     }
 
-    void SceneBuild::collectPointCloudGeometry(const std::shared_ptr<Scene>& scene,
-                                               IAssetAccess& assetAccess,
-                                               BuildProducts& outBuildProducts) {
+    void SceneBuild::collectPointCloudGeometry(const std::shared_ptr<Scene> &scene,
+                                               IAssetAccess &assetAccess,
+                                               BuildProducts &outBuildProducts) {
         std::vector<Point> collectedPoints;
-        std::vector<UUID> uniquePointCloudIds;
-        {
+        std::vector<UUID> uniquePointCloudIds; {
             // de-dup assets
             std::unordered_set<UUID> seen;
-            for (auto [e, pc] : scene->getAllEntitiesWith<PointCloudComponent>().each()) {
+            for (auto [e, pc]: scene->getAllEntitiesWith<PointCloudComponent>().each()) {
                 if (seen.insert(pc.pointCloudID).second)
                     uniquePointCloudIds.push_back(pc.pointCloudID);
             }
         }
 
-        for (const UUID& pointCloudID : uniquePointCloudIds) {
+        for (const UUID &pointCloudID: uniquePointCloudIds) {
             const auto pointCloudAsset = assetAccess.getPointCloud(pointCloudID);
             // assuming one geometry block per asset for now
-            const PointGeometry& pointGeometry = pointCloudAsset->points.front();
+            const PointGeometry &pointGeometry = pointCloudAsset->points.front();
 
             const uint32_t firstPointIndex = static_cast<uint32_t>(collectedPoints.size());
             collectedPoints.reserve(firstPointIndex + static_cast<uint32_t>(pointGeometry.positions.size()));
@@ -212,6 +209,7 @@ namespace Pale {
                 gpuPoint.alpha_t = 0.0f;
                 gpuPoint.beta = pointGeometry.betas[i];
                 gpuPoint.shape = glm::clamp(pointGeometry.shapes[i], -5.0f, 5.0f);
+                gpuPoint.power = pointGeometry.powers[i];
 
                 //Log::PA_INFO("Point [{}]: {}, {}, {}", i, gpuPoint.position.x(), gpuPoint.position.y(), gpuPoint.position.z());
                 collectedPoints.push_back(gpuPoint);
@@ -226,10 +224,10 @@ namespace Pale {
         outBuildProducts.points = std::move(collectedPoints);
     }
 
-    void SceneBuild::collectPointCloudInstances(const std::shared_ptr<Scene>& scene,
-                                                BuildProducts& outBuildProducts) {
+    void SceneBuild::collectPointCloudInstances(const std::shared_ptr<Scene> &scene,
+                                                BuildProducts &outBuildProducts) {
         auto view = scene->getAllEntitiesWith<PointCloudComponent, TransformComponent, TagComponent>();
-        for (auto [entityId, pointCloudComponent, transformComponent, tagComponent] : view.each()) {
+        for (auto [entityId, pointCloudComponent, transformComponent, tagComponent]: view.each()) {
             auto it = outBuildProducts.pointCloudIndexById.find(pointCloudComponent.pointCloudID);
             if (it == outBuildProducts.pointCloudIndexById.end()) continue;
 
@@ -251,34 +249,34 @@ namespace Pale {
         }
     }
 
-    inline float SceneBuild::triangleArea(const float3& p0,
-                                          const float3& p1,
-                                          const float3& p2) {
+    inline float SceneBuild::triangleArea(const float3 &p0,
+                                          const float3 &p1,
+                                          const float3 &p2) {
         const float3 e0 = p1 - p0;
         const float3 e1 = p2 - p0;
         return 0.5f * length(cross(e0, e1));
     }
 
 
-    void SceneBuild::collectLights(const std::shared_ptr<Pale::Scene>& scene,
-                                   IAssetAccess& assetAccess,
-                                   BuildProducts& out) {
+    void SceneBuild::collectLights(const std::shared_ptr<Pale::Scene> &scene,
+                                   IAssetAccess &assetAccess,
+                                   BuildProducts &out) {
         out.lights.clear();
         out.emissiveTriangles.clear();
 
-        for (const InstanceRecord& instanceRecord : out.instances) {
+        for (const InstanceRecord &instanceRecord: out.instances) {
             if (instanceRecord.geometryType == GeometryType::PointCloud)
                 continue;
 
-            const GPUMaterial& gpuMaterial = out.materials[instanceRecord.materialIndex];
+            const GPUMaterial &gpuMaterial = out.materials[instanceRecord.materialIndex];
             if (!gpuMaterial.isEmissive())
                 continue;
 
-            const MeshRange& meshRange = out.meshRanges[instanceRecord.geometryIndex];
+            const MeshRange &meshRange = out.meshRanges[instanceRecord.geometryIndex];
             if (meshRange.triCount == 0)
                 continue;
 
-            const Transform& transform = out.transforms[instanceRecord.transformIndex];
+            const Transform &transform = out.transforms[instanceRecord.transformIndex];
 
             const uint32_t triangleOffset = static_cast<uint32_t>(out.emissiveTriangles.size());
             out.emissiveTriangles.reserve(out.emissiveTriangles.size() + meshRange.triCount);
@@ -288,7 +286,7 @@ namespace Pale {
 
             for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
                 const uint32_t globalTriIndex = meshRange.firstTri + localTri;
-                const Triangle& tri = out.triangles[globalTriIndex];
+                const Triangle &tri = out.triangles[globalTriIndex];
 
                 const float3 p0_obj = out.vertices[tri.v0].pos;
                 const float3 p1_obj = out.vertices[tri.v1].pos;
@@ -317,7 +315,7 @@ namespace Pale {
             // Build per-light CDF over WORLD areas (inclusive CDF in [0,1])
             float runningArea = 0.0f;
             for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
-                GPUEmissiveTriangle& emissiveTriangle = out.emissiveTriangles[triangleOffset + localTri];
+                GPUEmissiveTriangle &emissiveTriangle = out.emissiveTriangles[triangleOffset + localTri];
                 runningArea += emissiveTriangle.worldArea;
                 emissiveTriangle.cdf = runningArea / totalAreaWorld;
             }
@@ -325,7 +323,7 @@ namespace Pale {
             out.emissiveTriangles[triangleOffset + meshRange.triCount - 1].cdf = 1.0f;
 
             GPULightRecord light{};
-            light.lightType = 0u; // mesh area
+            light.lightType = LightType::Mesh; // mesh area
             light.geometryIndex = instanceRecord.geometryIndex;
             light.transformIndex = instanceRecord.transformIndex;
             light.materialIndex = instanceRecord.materialIndex;
@@ -340,14 +338,46 @@ namespace Pale {
 
             out.lights.push_back(light);
         }
+
+        // Loop over points and find emissive gaussians
+        std::vector<Point> collectedPoints;
+        std::vector<UUID> uniquePointCloudIds; {
+            // de-dup assets
+            std::unordered_set<UUID> seen;
+            for (auto [e, pc]: scene->getAllEntitiesWith<PointCloudComponent>().each()) {
+                if (seen.insert(pc.pointCloudID).second)
+                    uniquePointCloudIds.push_back(pc.pointCloudID);
+            }
+        }
+
+        for (const UUID &pointCloudID: uniquePointCloudIds) {
+            const auto pointCloudAsset = assetAccess.getPointCloud(pointCloudID);
+            // assuming one geometry block per asset for now
+            const PointGeometry &pointGeometry = pointCloudAsset->points.front();
+
+            const uint32_t firstPointIndex = static_cast<uint32_t>(collectedPoints.size());
+            collectedPoints.reserve(firstPointIndex + static_cast<uint32_t>(pointGeometry.positions.size()));
+
+            for (size_t i = 0; i < pointGeometry.positions.size(); ++i) {
+                if (pointGeometry.powers[i] > 0.0f) {
+                    GPULightRecord light{};
+                    light.lightType = LightType::Surfel; // mesh area
+                    light.primitiveIndex = firstPointIndex  + i;
+                    light.power = pointGeometry.powers[i];
+                    light.color = pointGeometry.albedos[i];
+                    light.totalAreaWorld = M_PIf * pointGeometry.scales[i].x * pointGeometry.scales[i].y;
+                    out.lights.push_back(light);
+                }
+            }
+        }
     }
 
 
-    void SceneBuild::collectCameras(const std::shared_ptr<Scene>& scene,
-                                    BuildProducts& outBuildProducts) {
+    void SceneBuild::collectCameras(const std::shared_ptr<Scene> &scene,
+                                    BuildProducts &outBuildProducts) {
         auto view = scene->getAllEntitiesWith<TagComponent, CameraComponent, TransformComponent>();
 
-        for (auto [entityId, tagComponent, cameraComponent, transformComponent] : view.each()) {
+        for (auto [entityId, tagComponent, cameraComponent, transformComponent]: view.each()) {
             CameraGPU gpuCam{};
 
             const glm::mat4 worldFromCamera = transformComponent.getTransform();
@@ -378,8 +408,7 @@ namespace Pale {
                 gpuCam.fy = cameraComponent.pinholeIntrinsics.fy;
                 gpuCam.cx = cameraComponent.pinholeIntrinsics.cx;
                 gpuCam.cy = cameraComponent.pinholeIntrinsics.cy;
-            }
-            else {
+            } else {
                 gpuCam.hasPinholeIntrinsics = 0u;
                 gpuCam.fx = gpuCam.fy = gpuCam.cx = gpuCam.cy = 0.0f;
             }
@@ -392,7 +421,7 @@ namespace Pale {
     }
 
 
-    inline AABB surfelObjectAabbBeta(const Point& surfel,
+    inline AABB surfelObjectAabbBeta(const Point &surfel,
                                      float supportRadiusScale = 1.0001f,
                                      float normalThickness = 0.001f) {
         const float3 tangentU = normalize(surfel.tanU);
@@ -407,29 +436,29 @@ namespace Pale {
 
         auto computeAxisExtent = [&](int axisIndex) -> float {
             const float tangentUComponent =
-                (axisIndex == 0)
-                    ? tangentU.x()
-                    : (axisIndex == 1)
-                    ? tangentU.y()
-                    : tangentU.z();
+                    (axisIndex == 0)
+                        ? tangentU.x()
+                        : (axisIndex == 1)
+                              ? tangentU.y()
+                              : tangentU.z();
 
             const float tangentVComponent =
-                (axisIndex == 0)
-                    ? tangentV.x()
-                    : (axisIndex == 1)
-                    ? tangentV.y()
-                    : tangentV.z();
+                    (axisIndex == 0)
+                        ? tangentV.x()
+                        : (axisIndex == 1)
+                              ? tangentV.y()
+                              : tangentV.z();
 
             const float normalComponent =
-                (axisIndex == 0)
-                    ? std::fabs(normalDirection.x())
-                    : (axisIndex == 1)
-                    ? std::fabs(normalDirection.y())
-                    : std::fabs(normalDirection.z());
+                    (axisIndex == 0)
+                        ? std::fabs(normalDirection.x())
+                        : (axisIndex == 1)
+                              ? std::fabs(normalDirection.y())
+                              : std::fabs(normalDirection.z());
 
             const float projectedInPlane =
-                std::sqrt((supportRadiusU * tangentUComponent) * (supportRadiusU * tangentUComponent) +
-                    (supportRadiusV * tangentVComponent) * (supportRadiusV * tangentVComponent));
+                    std::sqrt((supportRadiusU * tangentUComponent) * (supportRadiusU * tangentUComponent) +
+                              (supportRadiusV * tangentVComponent) * (supportRadiusV * tangentVComponent));
 
             return projectedInPlane + normalExtent * normalComponent;
         };
@@ -444,7 +473,7 @@ namespace Pale {
     }
 
 
-    inline AABB surfelObjectAabb(const Point& surfel,
+    inline AABB surfelObjectAabb(const Point &surfel,
                                  float kStdDevs = 2.8f, // Should be similar to the same kSigmas as in intersect surfels
                                  float sigmaNormal = 0.1f) // set >0 model thickness
     {
@@ -462,8 +491,8 @@ namespace Pale {
             const float nn = axis == 0
                                  ? std::fabs(normalObject.x())
                                  : axis == 1
-                                 ? std::fabs(normalObject.y())
-                                 : std::fabs(normalObject.z());
+                                       ? std::fabs(normalObject.y())
+                                       : std::fabs(normalObject.z());
             const float projInPlane = sycl::sqrt((suK * tu) * (suK * tu) + (svK * tv) * (svK * tv));
             return projInPlane + snK * nn; // add normal thickness if used
         };
@@ -474,9 +503,9 @@ namespace Pale {
 
     // ---- BLAS build: localize -> build -> return nodes + permutation ----
     SceneBuild::BLASResult SceneBuild::buildPointCloudBLAS(uint32_t pointCloudIndex,
-                                                           const PointCloudRange& pointCloudRange,
-                                                           const std::vector<Point>& allPoints,
-                                                           const BuildOptions& buildOptions) {
+                                                           const PointCloudRange &pointCloudRange,
+                                                           const std::vector<Point> &allPoints,
+                                                           const BuildOptions &buildOptions) {
         // 1) Localize points
         std::vector<Point> localPoints;
         localPoints.reserve(pointCloudRange.pointCount);
@@ -514,10 +543,10 @@ namespace Pale {
     // ---- BLAS build: localize -> build -> return nodes + permutation ----
     SceneBuild::BLASResult
     SceneBuild::buildMeshBLAS(uint32_t meshIndex,
-                              const MeshRange& meshRange,
-                              const std::vector<Triangle>& allTriangles,
-                              const std::vector<Vertex>& allVertices,
-                              const BuildOptions& buildOptions) {
+                              const MeshRange &meshRange,
+                              const std::vector<Triangle> &allTriangles,
+                              const std::vector<Vertex> &allVertices,
+                              const BuildOptions &buildOptions) {
         // 1) local vertices
         std::vector<Vertex> localVertices;
         localVertices.reserve(meshRange.vertCount);
@@ -553,11 +582,11 @@ namespace Pale {
 
 
     SceneBuild::TLASResult
-    SceneBuild::buildTLAS(const std::vector<InstanceRecord>& instances,
-                          const std::vector<BLASRange>& blasRanges,
-                          const std::vector<BVHNode>& blasNodes,
-                          const std::vector<Transform>& transforms,
-                          const BuildOptions& opts) {
+    SceneBuild::buildTLAS(const std::vector<InstanceRecord> &instances,
+                          const std::vector<BLASRange> &blasRanges,
+                          const std::vector<BVHNode> &blasNodes,
+                          const std::vector<Transform> &transforms,
+                          const BuildOptions &opts) {
         struct Box {
             float3 bmin, bmax;
             uint32_t inst;
@@ -566,11 +595,11 @@ namespace Pale {
         boxes.reserve(instances.size());
         // 1) gather world-space AABBs per instance
         for (uint32_t i = 0; i < instances.size(); ++i) {
-            const auto& inst = instances[i];
-            const auto& xf = transforms[inst.transformIndex];
+            const auto &inst = instances[i];
+            const auto &xf = transforms[inst.transformIndex];
             uint32_t blasRangeIndex = inst.blasRangeIndex;
             const BLASRange br = blasRanges[blasRangeIndex];
-            const BVHNode& root = blasNodes[br.firstNode];
+            const BVHNode &root = blasNodes[br.firstNode];
             float3 wmin{FLT_MAX, FLT_MAX, FLT_MAX};
             float3 wmax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
             for (int c = 0; c < 8; ++c) {
@@ -591,56 +620,55 @@ namespace Pale {
         R.nodes.clear();
         R.nodes.reserve(std::max<size_t>(1, boxes.size() * 2));
         std::function<uint32_t(uint32_t, uint32_t)>
-        build = [&](uint32_t start, uint32_t end)-> uint32_t {
-            const uint32_t n = static_cast<uint32_t>(R.nodes.size());
-            R.nodes.emplace_back();
-            TLASNode& N = R.nodes.back();
-            float3 bmin{FLT_MAX, FLT_MAX, FLT_MAX}, bmax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
-            for (uint32_t i = start; i < end; ++i) {
-                bmin = min(bmin, boxes[i].bmin);
-                bmax = max(bmax, boxes[i].bmax);
-            }
-            N.aabbMin = bmin;
-            N.aabbMax = bmax;
-            const uint32_t count = end - start;
-            if (count == 1) {
-                N.count = 1; // leaf
-                N.leftChild = boxes[start].inst; // points to Instance index
-                N.rightChild = 0;
-            }
-            else {
-                N.count = 0; // internal
+                build = [&](uint32_t start, uint32_t end)-> uint32_t {
+                    const uint32_t n = static_cast<uint32_t>(R.nodes.size());
+                    R.nodes.emplace_back();
+                    TLASNode &N = R.nodes.back();
+                    float3 bmin{FLT_MAX, FLT_MAX, FLT_MAX}, bmax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+                    for (uint32_t i = start; i < end; ++i) {
+                        bmin = min(bmin, boxes[i].bmin);
+                        bmax = max(bmax, boxes[i].bmax);
+                    }
+                    N.aabbMin = bmin;
+                    N.aabbMax = bmax;
+                    const uint32_t count = end - start;
+                    if (count == 1) {
+                        N.count = 1; // leaf
+                        N.leftChild = boxes[start].inst; // points to Instance index
+                        N.rightChild = 0;
+                    } else {
+                        N.count = 0; // internal
 
-                float3 cmin{FLT_MAX, FLT_MAX, FLT_MAX}, cmax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
-                for (uint32_t i = start; i < end; ++i) {
-                    float3 cent = (boxes[i].bmin + boxes[i].bmax) * 0.5f;
+                        float3 cmin{FLT_MAX, FLT_MAX, FLT_MAX}, cmax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+                        for (uint32_t i = start; i < end; ++i) {
+                            float3 cent = (boxes[i].bmin + boxes[i].bmax) * 0.5f;
 
-                    cmin = min(cmin, cent);
-                    cmax = max(cmax, cent);
-                }
-                float3 ext = cmax - cmin;
-                int axis = (ext.x() > ext.y() && ext.x() > ext.z()) ? 0 : (ext.y() > ext.z()) ? 1 : 2;
-                float pivot = (cmin[axis] + cmax[axis]) * 0.5f;
+                            cmin = min(cmin, cent);
+                            cmax = max(cmax, cent);
+                        }
+                        float3 ext = cmax - cmin;
+                        int axis = (ext.x() > ext.y() && ext.x() > ext.z()) ? 0 : (ext.y() > ext.z()) ? 1 : 2;
+                        float pivot = (cmin[axis] + cmax[axis]) * 0.5f;
 
-                auto midIter = std::partition(boxes.begin() + start, boxes.begin() + end,
-                                              [&](const Box& b) {
-                                                  float3 cc = (b.bmin + b.bmax) * 0.5f;
-                                                  return cc[axis] < pivot;
-                                              });
-                int mid = int(midIter - boxes.begin());
-                if (mid == start || mid == end) mid = start + count / 2;
+                        auto midIter = std::partition(boxes.begin() + start, boxes.begin() + end,
+                                                      [&](const Box &b) {
+                                                          float3 cc = (b.bmin + b.bmax) * 0.5f;
+                                                          return cc[axis] < pivot;
+                                                      });
+                        int mid = int(midIter - boxes.begin());
+                        if (mid == start || mid == end) mid = start + count / 2;
 
-                N.leftChild = build(start, mid);
-                N.rightChild = build(mid, end);
-            }
-            return n;
-        };
+                        N.leftChild = build(start, mid);
+                        N.rightChild = build(mid, end);
+                    }
+                    return n;
+                };
         R.rootIndex = boxes.empty() ? UINT32_MAX : build(0, static_cast<uint32_t>(boxes.size()));
         return R;
     }
 
-    void SceneBuild::buildBottomLevelBVHs(BuildProducts& buildProducts,
-                                          const BuildOptions& buildOptions) {
+    void SceneBuild::buildBottomLevelBVHs(BuildProducts &buildProducts,
+                                          const BuildOptions &buildOptions) {
         const std::size_t meshCount = buildProducts.meshRanges.size();
         const std::size_t pointCloudCount = buildProducts.pointCloudRanges.size();
 
@@ -649,7 +677,7 @@ namespace Pale {
 
         // Mesh BLAS
         for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
-            const MeshRange& meshRange = buildProducts.meshRanges[meshIndex];
+            const MeshRange &meshRange = buildProducts.meshRanges[meshIndex];
 
             BLASResult blasResult = buildMeshBLAS(
                 meshIndex,
@@ -665,7 +693,7 @@ namespace Pale {
             std::vector<Triangle> reorderedTriangles;
             reorderedTriangles.reserve(blasResult.localTriangles.size());
 
-            for (uint32_t localTriangleIndex : blasResult.triPermutation) {
+            for (uint32_t localTriangleIndex: blasResult.triPermutation) {
                 Triangle triangle = blasResult.localTriangles[localTriangleIndex];
                 // Convert vertex indices back to global space
                 triangle.v0 += meshRange.firstVert;
@@ -680,7 +708,7 @@ namespace Pale {
             const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
 
             // Patch leaf node triangle indices into global space
-            for (BVHNode& node : blasResult.nodes) {
+            for (BVHNode &node: blasResult.nodes) {
                 if (node.isLeaf()) {
                     node.leftFirst += globalTriStart;
                 }
@@ -704,12 +732,11 @@ namespace Pale {
             //                   buildProducts.bottomLevelRanges[blasRangeIndex],
             //                   meshBlasPath.c_str());
             //}
-
         }
 
         // Point cloud BLAS
         for (uint32_t pointCloudIndex = 0; pointCloudIndex < pointCloudCount; ++pointCloudIndex) {
-            const PointCloudRange& pointCloudRange = buildProducts.pointCloudRanges[pointCloudIndex];
+            const PointCloudRange &pointCloudRange = buildProducts.pointCloudRanges[pointCloudIndex];
 
             BLASResult blasResult = buildPointCloudBLAS(
                 pointCloudIndex,
@@ -720,20 +747,45 @@ namespace Pale {
 
             const uint32_t globalPointStart = pointCloudRange.firstPoint;
 
+            // Build inverse permutation: oldLocalIndex -> newLocalIndex
+            std::vector<uint32_t> inversePermutation(blasResult.pointPermutation.size(), UINT32_MAX);
+            for (uint32_t newLocalIndex = 0; newLocalIndex < blasResult.pointPermutation.size(); ++newLocalIndex) {
+                const uint32_t oldLocalIndex = blasResult.pointPermutation[newLocalIndex];
+                inversePermutation[oldLocalIndex] = newLocalIndex;
+            }
+
             // Reorder points into BVH order
             std::vector<Point> reorderedPoints;
             reorderedPoints.reserve(blasResult.localPoints.size());
-            for (uint32_t localPointIndex : blasResult.pointPermutation) {
+            for (uint32_t localPointIndex: blasResult.pointPermutation) {
                 reorderedPoints.push_back(blasResult.localPoints[localPointIndex]);
             }
 
             std::copy(reorderedPoints.begin(), reorderedPoints.end(),
                       buildProducts.points.begin() + globalPointStart);
 
+            // Remap surfel-light primitive indices for this point cloud
+            for (GPULightRecord &light : buildProducts.lights) {
+                if (light.lightType != LightType::Surfel) {
+                    continue;
+                }
+
+                const uint32_t oldPrimitiveIndex = light.primitiveIndex;
+                if (oldPrimitiveIndex < globalPointStart ||
+                    oldPrimitiveIndex >= globalPointStart + pointCloudRange.pointCount) {
+                    continue;
+                    }
+
+                const uint32_t oldLocalIndex = oldPrimitiveIndex - globalPointStart;
+                const uint32_t newLocalIndex = inversePermutation[oldLocalIndex];
+                light.primitiveIndex = globalPointStart + newLocalIndex;
+            }
+
+
             const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
 
             // Patch leaf node ranges from local to global indices
-            for (BVHNode& node : blasResult.nodes) {
+            for (BVHNode &node: blasResult.nodes) {
                 if (node.isLeaf()) {
                     node.leftFirst += globalPointStart;
                 }
@@ -757,22 +809,20 @@ namespace Pale {
             //                   buildProducts.bottomLevelRanges[blasRangeIndex],
             //                   pointCloudBlasPath.c_str());
             //}
-
         }
 
         // Map instances to BLAS ranges
-        for (InstanceRecord& instanceRecord : buildProducts.instances) {
+        for (InstanceRecord &instanceRecord: buildProducts.instances) {
             if (instanceRecord.geometryType == GeometryType::Mesh) {
                 instanceRecord.blasRangeIndex = meshRangeToBlasRange[instanceRecord.geometryIndex];
-            }
-            else {
+            } else {
                 instanceRecord.blasRangeIndex = pointRangeToBlasRange[instanceRecord.geometryIndex];
             }
         }
     }
 
-    void SceneBuild::buildTopLevelBVH(BuildProducts& buildProducts,
-                                      const BuildOptions& buildOptions) {
+    void SceneBuild::buildTopLevelBVH(BuildProducts &buildProducts,
+                                      const BuildOptions &buildOptions) {
         TLASResult tlasResult = buildTLAS(
             buildProducts.instances,
             buildProducts.bottomLevelRanges,
@@ -788,23 +838,23 @@ namespace Pale {
         //write_tlas_csv(buildProducts.topLevelNodes, "tlas.csv");
     }
 
-    float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts& buildProducts) {
+    float SceneBuild::computeDiffuseSurfaceAreaWorld(const BuildProducts &buildProducts) {
         float totalDiffuseArea = 0.0f;
 
-        for (const InstanceRecord& instanceRecord : buildProducts.instances) {
+        for (const InstanceRecord &instanceRecord: buildProducts.instances) {
             if (instanceRecord.geometryType != GeometryType::Mesh)
                 continue;
 
-            const GPUMaterial& material = buildProducts.materials[instanceRecord.materialIndex];
+            const GPUMaterial &material = buildProducts.materials[instanceRecord.materialIndex];
             if (material.isEmissive())
                 continue;
 
-            const MeshRange& meshRange = buildProducts.meshRanges[instanceRecord.geometryIndex];
-            const Transform& xf = buildProducts.transforms[instanceRecord.transformIndex];
+            const MeshRange &meshRange = buildProducts.meshRanges[instanceRecord.geometryIndex];
+            const Transform &xf = buildProducts.transforms[instanceRecord.transformIndex];
 
             for (uint32_t localTri = 0; localTri < meshRange.triCount; ++localTri) {
                 const uint32_t triIndex = meshRange.firstTri + localTri;
-                const Triangle& tri = buildProducts.triangles[triIndex];
+                const Triangle &tri = buildProducts.triangles[triIndex];
 
                 const float3 p0W = toWorldPoint(buildProducts.vertices[tri.v0].pos, xf);
                 const float3 p1W = toWorldPoint(buildProducts.vertices[tri.v1].pos, xf);

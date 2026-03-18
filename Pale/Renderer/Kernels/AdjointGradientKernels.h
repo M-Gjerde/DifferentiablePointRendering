@@ -183,10 +183,9 @@ namespace Pale {
     // ----------------- Position gradient (translation of surfel center) -----------------
 
     SYCL_EXTERNAL inline float3 mapHitPointGradientToSurfelTranslation(
-    const float3 &gradientWrtHitPosition,
-    const float3 &cameraRayDirection,
-    const float3 &surfelNormal)
-    {
+        const float3 &gradientWrtHitPosition,
+        const float3 &cameraRayDirection,
+        const float3 &surfelNormal) {
         const float denominator = dot(surfelNormal, cameraRayDirection);
 
         if (sycl::fabs(denominator) <= 1e-6f) {
@@ -200,10 +199,8 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline float3x3 planeHitPointIntersectionJacobian(
-    const float3& rayDirection,
-    const float3& planeNormal)
-    {
-
+        const float3 &rayDirection,
+        const float3 &planeNormal) {
         float3x3 numerator = outerProduct(rayDirection, planeNormal);
         float denom = dot(rayDirection, planeNormal);
         return numerator / denom;
@@ -232,7 +229,8 @@ namespace Pale {
 
         auto directionOuter = outerProduct(directionFromXToY, directionFromXToY);
         float3x3 tmp1 = identity3x3() - directionOuter;
-        float3 tmp2 =(-cosineAtY * (tmp1 * xNormal)) + (cosineAtX * (tmp1 * yNormal)) + (2 * cosineAtX * cosineAtY * directionFromXToY);
+        float3 tmp2 = (-cosineAtY * (tmp1 * xNormal)) + (cosineAtX * (tmp1 * yNormal)) + (
+                          2 * cosineAtX * cosineAtY * directionFromXToY);
 
         return inverseDistanceCubed * tmp2;
 
@@ -245,13 +243,107 @@ namespace Pale {
                 + cosineAtX * projectedYNormal
                 + 2.0f * cosineAtX * cosineAtY * directionFromXToY) * inverseDistanceCubed;
     }
+
     inline float3 computeGeometricTermGradientWrtEndpoint(
-        const float3& xPosition,
-        const float3& yPosition,
-        const float3& xNormal,
-        const float3& yNormal) {
+        const float3 &xPosition,
+        const float3 &yPosition,
+        const float3 &xNormal,
+        const float3 &yNormal) {
         return -computeGeometricTermGradientWrtStartpoint(
             xPosition, yPosition, xNormal, yNormal);
+    }
+
+    float3 computeLogDGradientWrtX(
+    const float3& x,
+    const float3& y,
+    const float3& ny)
+    {
+        float3 d = y - x;
+        float dist2 = dot(d, d);
+        float dist = sycl::sqrt(dist2);
+        float3 phi = d / dist;
+
+        float cosY = dot(ny, -phi);
+        if (cosY <= 1e-6f) return float3{0};
+
+        float3 projectedNy = ny - phi * dot(ny, phi);
+
+        return projectedNy / (cosY * dist)
+             + (2.0f / dist) * phi;
+    }
+
+    inline float computeGeometryOverAreaPdfFromUniformHemisphereSample(
+        const float3 &startPosition,
+        const float3 &endPosition,
+        const float3 &startNormal) {
+        const float3 vectorToEnd = endPosition - startPosition;
+        const float distanceSquared = dot(vectorToEnd, vectorToEnd);
+        if (distanceSquared <= 1e-12f) {
+            return 0.0f;
+        }
+
+        const float distance = sycl::sqrt(distanceSquared);
+        const float3 directionToEnd = vectorToEnd / distance;
+
+        const float cosineAtStart = dot(startNormal, directionToEnd);
+        if (cosineAtStart <= 1e-6f) {
+            return 0.0f;
+        }
+
+        const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
+        return cosineAtStart / uniformHemispherePdf;
+    }
+
+    inline float3 computeGeometryOverAreaPdfGradientWrtEndpointFromUniformHemisphereSample(
+        const float3 &startPosition,
+        const float3 &endPosition,
+        const float3 &startNormal) {
+        const float3 vectorToEnd = endPosition - startPosition;
+        const float distanceSquared = dot(vectorToEnd, vectorToEnd);
+        if (distanceSquared <= 1e-12f) {
+            return float3{0.0f};
+        }
+
+        const float distance = sycl::sqrt(distanceSquared);
+        const float3 directionToEnd = vectorToEnd / distance;
+
+        const float cosineAtStart = dot(startNormal, directionToEnd);
+        if (cosineAtStart <= 1e-6f) {
+            return float3{0.0f};
+        }
+
+        const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
+
+        const float3 projectedStartNormal =
+                startNormal - directionToEnd * dot(startNormal, directionToEnd);
+
+        return projectedStartNormal * (1.0f / (uniformHemispherePdf * distance));
+    }
+
+    inline float3 computeGeometryOverAreaPdfGradientWrtStartpointFromUniformHemisphereSample(
+        const float3 &startPosition,
+        const float3 &endPosition,
+        const float3 &startNormal) {
+        const float3 vectorToEnd = endPosition - startPosition;
+        const float distanceSquared = dot(vectorToEnd, vectorToEnd);
+        if (distanceSquared <= 1e-12f) {
+            return float3{0.0f};
+        }
+
+        const float distance = sycl::sqrt(distanceSquared);
+        const float3 directionToEnd = vectorToEnd / distance;
+
+        const float cosineAtStart = dot(startNormal, directionToEnd);
+        if (cosineAtStart <= 1e-6f) {
+            return float3{0.0f};
+        }
+
+        const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
+
+        const float3 projectedStartNormal =
+                startNormal - directionToEnd * dot(startNormal, directionToEnd);
+
+        return -projectedStartNormal * (1.0f / (uniformHemispherePdf * distance));
     }
 
     inline float3 computeDuvDPosition(
@@ -301,9 +393,8 @@ namespace Pale {
     }
 
     inline float computeGeometricAlphaDerivativeWrtScaleU(
-        const Point& surfel,
-        const float3& worldPosition)
-    {
+        const Point &surfel,
+        const float3 &worldPosition) {
         const float3 offset_from_center = worldPosition - surfel.position;
 
         const float s_u = surfel.scale.x();
@@ -380,11 +471,10 @@ namespace Pale {
     }
 
     inline float3 computeAreaPdfGradientWrtX(
-    const float3 &xPosition,
-    const float3 &yPosition,
-    const float3 &yNormal,
-    float directionPdf) {
-
+        const float3 &xPosition,
+        const float3 &yPosition,
+        const float3 &yNormal,
+        float directionPdf) {
         const float3 vectorFromXToY = yPosition - xPosition;
         const float squaredDistance = dot(vectorFromXToY, vectorFromXToY);
         if (squaredDistance <= 1e-12f) {
@@ -394,7 +484,7 @@ namespace Pale {
         const float distance = sycl::sqrt(squaredDistance);
         const float inverseDistance = 1.0f / distance;
         const float inverseDistanceCubed =
-            inverseDistance * inverseDistance * inverseDistance;
+                inverseDistance * inverseDistance * inverseDistance;
 
         const float3 directionXToY = vectorFromXToY * inverseDistance;
         const float cosineAtY = dot(yNormal, -directionXToY);
@@ -1778,11 +1868,10 @@ namespace Pale {
 
 
     inline RGBPositionGradient gather_diffuse_irradiance_gradient_wrt_position(
-    const float3 &query_position,
-    const float3 &query_normal,
-    const DeviceSurfacePhotonMapGrid &photon_map,
-    float epsilon)
-    {
+        const float3 &query_position,
+        const float3 &query_normal,
+        const DeviceSurfacePhotonMapGrid &photon_map,
+        float epsilon) {
         const float3 ex{epsilon, 0.0f, 0.0f};
         const float3 ey{0.0f, epsilon, 0.0f};
         const float3 ez{0.0f, 0.0f, epsilon};

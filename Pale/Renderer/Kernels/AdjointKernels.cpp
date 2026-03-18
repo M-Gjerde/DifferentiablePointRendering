@@ -433,7 +433,7 @@ namespace Pale {
                         const auto &event = settings.sampling;
 
                         if (contribution.valid) {
-                            if (contribution.kind == PendingAdjointKind::Projection) {
+                             if (contribution.kind == PendingAdjointKind::Projection) {
                                 const Point &surfel = scene.points[contribution.xPrimitiveIndex];
                                 const float3 E = gatherDiffuseIrradianceAtPoint(
                                     contribution.xPosition,
@@ -661,142 +661,8 @@ namespace Pale {
                                 const float3 yNormal = contribution.yNormal;
                                 const float3 zNormal = contribution.zNormal;
 
-                                const float areaPdfXY =
-                                        computeAreaPdfFromUniformHemisphereSample(xPosition, yPosition, yNormal);
-                                if (areaPdfXY <= 0.0f) {
-                                    return;
-                                }
+                                float3 gradientWrtYPosition{1.0f};
 
-                                const float areaPdfYZ =
-                                        computeAreaPdfFromUniformHemisphereSample(yPosition, zPosition, zNormal);
-                                if (areaPdfYZ <= 0.0f) {
-                                    return;
-                                }
-                                const float inverseAreaPdfXY = 1.0f / areaPdfXY;
-                                const float inverseAreaPdfYZ = 1.0f / areaPdfYZ;
-                                const float visibilityXY = 1.0f;
-                                const float visibilityYZ = 1.0f;
-                                const float transmittanceXY = 1.0f;
-                                const float transmittanceYZ = 1.0f;
-                                const float geometricTermXY =
-                                        computeGeometricTermValue(xPosition, yPosition, xNormal, yNormal);
-                                const float geometricTermYZ =
-                                        computeGeometricTermValue(yPosition, zPosition, yNormal, zNormal);
-                                const float3 gradientOfGeometricTermYZWrtY =
-                                        computeGeometricTermGradientWrtStartpoint(
-                                            yPosition, zPosition, yNormal, zNormal);
-                                const float3 gradientOfGeometricTermXYWrtY =
-                                        computeGeometricTermGradientWrtEndpoint(xPosition, yPosition, xNormal, yNormal);
-
-                                const float3 brdfAtX = evaluateLambertianBrdf(
-                                    contribution.xGeometryType,
-                                    contribution.xInstanceIndex,
-                                    contribution.xPrimitiveIndex);
-
-                                const float3 brdfAtY = evaluateLambertianBrdf(
-                                    contribution.yGeometryType,
-                                    contribution.yInstanceIndex,
-                                    contribution.yPrimitiveIndex);
-
-                                const Point &surfelX = scene.points[contribution.xPrimitiveIndex];
-                                const Point &surfelY = scene.points[contribution.yPrimitiveIndex];
-
-                                const float alphaX = contribution.xAlphaGeom * surfelX.opacity;
-                                const float alphaY = contribution.yAlphaGeom * surfelY.opacity;
-
-                                // d alpha_eff(y) / d position_y
-                                const float2 uv = phiInverse(contribution.yPosition, surfelY);
-                                const float u = uv.x();
-                                const float v = uv.y();
-                                const float radiusSquared = u * u + v * v;
-
-                                const float scaleU = surfelY.scale.x();
-                                const float scaleV = surfelY.scale.y();
-
-                                const auto uvJacobian = computeDuvDSurfelTranslationJacobian(
-                                    surfelY.tanU,
-                                    surfelY.tanV,
-                                    contribution.yNormal,
-                                    contribution.yIncomingRay.direction,
-                                    u,
-                                    v,
-                                    scaleU,
-                                    scaleV);
-
-                                const float3 radiusSquaredGradientWrtPosition =
-                                        u * uvJacobian.du_d_surfel_translation +
-                                        v * uvJacobian.dv_d_surfel_translation;
-
-                                const float beta = 4.0f * sycl::exp(surfelY.beta);
-                                const float alphaGeomDerivativeFactor =
-                                        (-2.0f * beta * contribution.yAlphaGeom) / (1.0f - radiusSquared);
-
-                                const float3 alphaGeomGradientWrtPosition =
-                                        alphaGeomDerivativeFactor * radiusSquaredGradientWrtPosition;
-
-                                const float3 alphaEffectiveGradientWrtPosition =
-                                        surfelY.opacity * alphaGeomGradientWrtPosition;
-
-                                float3 gradientWrtYPosition = float3{0.0f};
-
-                                const float3 adjointWeightAtX = contribution.xPathThroughput * alphaX / event.qReflect;
-
-                                for (int colorChannel = 0; colorChannel < 3; ++colorChannel) {
-                                    // Outer kernel K(x <- y), excluding alpha(x), with area-form MC weight.
-                                    const float outerTransportWeight =
-                                            brdfAtX[colorChannel] *
-                                            visibilityXY *
-                                            transmittanceXY *
-                                            geometricTermXY *
-                                            inverseAreaPdfXY;
-
-                                    // Inner integral at y, excluding alpha(y), estimated in area form.
-                                    const float innerTransportWithoutAlphaY =
-                                            outgoingRadianceAtZ[colorChannel] *
-                                            brdfAtY[colorChannel] *
-                                            visibilityYZ *
-                                            transmittanceYZ *
-                                            geometricTermYZ *
-                                            inverseAreaPdfYZ;
-
-                                    // Term A:
-                                    // d alpha(y) / d position_y * [inner integral without alpha(y)] * outer kernel
-                                    const float alphaGradientScalarWeight =
-                                            adjointWeightAtX[colorChannel] *
-                                            innerTransportWithoutAlphaY *
-                                            outerTransportWeight;
-
-                                    // Term B:
-                                    // alpha(y) * d G(y,z) / d position_y * remaining scalar factors
-                                    const float innerGeometricScalarWeight =
-                                            adjointWeightAtX[colorChannel] *
-                                            outgoingRadianceAtZ[colorChannel] *
-                                            brdfAtY[colorChannel] *
-                                            visibilityYZ *
-                                            transmittanceYZ *
-                                            alphaY *
-                                            brdfAtX[colorChannel] *
-                                            visibilityXY *
-                                            transmittanceXY *
-                                            geometricTermXY *
-                                            inverseAreaPdfYZ *
-                                            inverseAreaPdfXY;
-
-                                    // Term C:
-                                    // L_o(y) * d G(x,y) / d position_y * outer remaining factors
-                                    const float outerGeometricScalarWeight =
-                                            adjointWeightAtX[colorChannel] *
-                                            outgoingRadianceAtY[colorChannel] *
-                                            brdfAtX[colorChannel] *
-                                            visibilityXY *
-                                            transmittanceXY *
-                                            inverseAreaPdfXY;
-
-                                    gradientWrtYPosition +=
-                                            alphaEffectiveGradientWrtPosition * alphaGradientScalarWeight +
-                                            gradientOfGeometricTermYZWrtY * innerGeometricScalarWeight +
-                                            gradientOfGeometricTermXYWrtY * outerGeometricScalarWeight;
-                                }
 
                                 atomicAddFloat3(
                                     gradients.gradPosition[contribution.yPrimitiveIndex],

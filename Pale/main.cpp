@@ -168,8 +168,14 @@ int main(int argc, char **argv) {
         auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
         auto entityPointCloud = scene->createEntity("PointCloud");
         entityPointCloud.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
-        auto &transform = entityPointCloud.getComponent<Pale::TransformComponent>();
-        //transform.setPosition(glm::vec3(0.0f, 0.0f, 0.4f));
+        auto &transform = entityPointCloud.getComponent<Pale::PointCloudComponent>();
+
+        Pale::AssetAccessFromManager assetAccessor(assetManager);
+
+        const auto pointCloudAsset = assetAccessor.getPointCloud(assetHandle);
+        // assuming one geometry block per asset for now
+        const Pale::PointGeometry& pointGeometry = pointCloudAsset->points.front();
+
     }
 
     if (addModel) {
@@ -239,8 +245,7 @@ int main(int argc, char **argv) {
 
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+                    std::filesystem::path("Output") / sceneName; // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = sensor.name;
@@ -271,7 +276,7 @@ int main(int argc, char **argv) {
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 3; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 8;
-        settings.renderDebugGradientImages = true;
+        settings.renderDebugGradientImages = !true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
 
@@ -291,8 +296,7 @@ int main(int argc, char **argv) {
 
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+                    std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = sensor.name;
@@ -341,8 +345,7 @@ int main(int argc, char **argv) {
 
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                    std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension(""); // assumes sensor.name is std::string
+                    std::filesystem::path("Output") / sceneName; // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = "rendered_" + std::string(sensor.name);
@@ -455,8 +458,7 @@ int main(int argc, char **argv) {
 
                     // Per-camera base directory: Output/<pointcloud>/<camera_name>/
                     std::filesystem::path baseDir =
-                            std::filesystem::path("Output")
-                            / pointCloudPath.filename().replace_extension("")
+                            std::filesystem::path("Output") / sceneName
                             / adjointSensor.name; {
                         std::filesystem::path pngPath =
                                 baseDir / "adjoint_source_l2_gradient_seismic.png";
@@ -560,7 +562,7 @@ int main(int argc, char **argv) {
             // Per-camera base directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
                     std::filesystem::path("Output")
-                    / pointCloudPath.filename().replace_extension("")
+
                     / adjointSensor.name;
 
             std::filesystem::create_directories(baseDir);

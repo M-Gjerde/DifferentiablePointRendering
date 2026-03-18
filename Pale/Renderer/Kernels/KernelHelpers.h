@@ -69,13 +69,13 @@ namespace Pale::rng {
         }
     };
 
-    static constexpr uint32_t kStreamRayGen      = 10u;
-    static constexpr uint32_t kStreamTraversal   = 1u;
-    static constexpr uint32_t kStreamEvent       = 2u;
-    static constexpr uint32_t kStreamDirection   = 3u;
-    static constexpr uint32_t kStreamRoulette    = 4u;
-    static constexpr uint32_t kStreamDeposit     = 5u;
-    static constexpr uint32_t kStreamGather     = 6u;
+    static constexpr uint32_t kStreamRayGen = 10u;
+    static constexpr uint32_t kStreamTraversal = 1u;
+    static constexpr uint32_t kStreamEvent = 2u;
+    static constexpr uint32_t kStreamDirection = 3u;
+    static constexpr uint32_t kStreamRoulette = 4u;
+    static constexpr uint32_t kStreamDeposit = 5u;
+    static constexpr uint32_t kStreamGather = 6u;
 
     // ---------- Xorshift128 (32-bit state, very fast) ----------
     struct Xorshift128 {
@@ -133,25 +133,23 @@ namespace Pale::rng {
         uint64_t pathId,
         uint32_t bounceIndex,
         uint32_t streamTag,
-        uint32_t dimension)
-    {
+        uint32_t dimension) {
         uint64_t s = mix64(renderSeed ^ 0xA0761D6478BD642Full);
-        s = hashCombine64(s, pathId       ^ 0xE7037ED1A0B428DBull);
+        s = hashCombine64(s, pathId ^ 0xE7037ED1A0B428DBull);
         s = hashCombine64(s, uint64_t(bounceIndex) ^ 0x8EBC6AF09C88C6E3ull);
-        s = hashCombine64(s, uint64_t(streamTag)   ^ 0x589965CC75374CC3ull);
-        s = hashCombine64(s, uint64_t(dimension)   ^ 0x1D8E4E27C47D124Full);
+        s = hashCombine64(s, uint64_t(streamTag) ^ 0x589965CC75374CC3ull);
+        s = hashCombine64(s, uint64_t(dimension) ^ 0x1D8E4E27C47D124Full);
         return s;
     }
 
     SYCL_EXTERNAL inline float rand01(
-    uint64_t renderSeed,
-    uint64_t pathId,
-    uint32_t bounceIndex,
-    uint32_t streamTag,
-    uint32_t dimension)
-    {
+        uint64_t renderSeed,
+        uint64_t pathId,
+        uint32_t bounceIndex,
+        uint32_t streamTag,
+        uint32_t dimension) {
         const uint64_t s = rng::makeSeed(renderSeed, pathId, bounceIndex, streamTag, dimension);
-        const uint32_t u = static_cast<uint32_t>(s >> 40);  // top 24 bits
+        const uint32_t u = static_cast<uint32_t>(s >> 40); // top 24 bits
         return float(u) * 0x1.0p-24f;
     }
 } // namespace pale::rng
@@ -355,6 +353,10 @@ namespace Pale {
     }
 
 
+    inline float3 phiMapping(const Point &surfel, float u, float v) {
+        return surfel.position + surfel.scale.x() * surfel.tanU * u + surfel.scale.y() * surfel.tanV * v;
+    }
+
     SYCL_EXTERNAL inline void sampleCosineHemisphere(
         rng::Xorshift128 &rng, const float3 &n,
         float3 &outDir, float &outPdf) {
@@ -376,10 +378,10 @@ namespace Pale {
         outDir = normalize(x * tang + y * bit + z * n);
         outPdf = max(0.f, dot(outDir, n)) / M_PIf; // cosθ/π
     }
+
     SYCL_EXTERNAL inline void sampleCosineHemisphereRandom(
         float u1, float u2, const float3 &n,
         float3 &outDir, float &outPdf) {
-
         float z = sycl::sqrt(1.f - u1);
         float r = sycl::sqrt(1 - (z * z));
 
@@ -414,96 +416,116 @@ namespace Pale {
         const GPULightRecord light = scene.lights[light_index];
         sample.pdfSelectLight = 1.0f / static_cast<float>(scene.lightCount);
 
-        if (light.triangleCount == 0u || light.totalAreaWorld <= 0.0f)
-            return sample;
+        if (light.lightType == LightType::Mesh) {
+            if (light.triangleCount == 0u || light.totalAreaWorld <= 0.0f)
+                return sample;
 
-        // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
-        const float u_tri = rng128.nextFloat();
+            // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
+            const float u_tri = rng128.nextFloat();
 
-        uint32_t tri_rel = 0u; {
-            // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
-            uint32_t lo = 0u;
-            uint32_t hi = light.triangleCount - 1u;
+            uint32_t tri_rel = 0u; {
+                // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
+                uint32_t lo = 0u;
+                uint32_t hi = light.triangleCount - 1u;
 
-            while (lo < hi) {
-                const uint32_t mid = (lo + hi) >> 1u;
-                const float cdf_mid = scene.emissiveTriangles[light.triangleOffset + mid].cdf;
-                if (u_tri <= cdf_mid) {
-                    hi = mid;
-                } else {
-                    lo = mid + 1u;
+                while (lo < hi) {
+                    const uint32_t mid = (lo + hi) >> 1u;
+                    const float cdf_mid = scene.emissiveTriangles[light.triangleOffset + mid].cdf;
+                    if (u_tri <= cdf_mid) {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1u;
+                    }
                 }
+                tri_rel = lo;
             }
-            tri_rel = lo;
+
+            const GPUEmissiveTriangle emissive_triangle =
+                    scene.emissiveTriangles[light.triangleOffset + tri_rel];
+
+            const Triangle tri = scene.triangles[emissive_triangle.globalTriangleIndex];
+            const Vertex v0 = scene.vertices[tri.v0];
+            const Vertex v1 = scene.vertices[tri.v1];
+            const Vertex v2 = scene.vertices[tri.v2];
+
+            // 3) Uniform barycentric sample on the triangle in OBJECT space
+            const float u1 = rng128.nextFloat();
+            const float u2 = rng128.nextFloat();
+            const float sqrt_u1 = sycl::sqrt(u1);
+
+            const float b0 = 1.0f - sqrt_u1;
+            const float b1 = sqrt_u1 * (1.0f - u2);
+            const float b2 = sqrt_u1 * u2;
+
+            const float3 p0_obj = v0.pos;
+            const float3 p1_obj = v1.pos;
+            const float3 p2_obj = v2.pos;
+            const float3 x_obj = p0_obj * b0 + p1_obj * b1 + p2_obj * b2;
+
+            // 4) Transform to WORLD and compute WORLD normal using WORLD vertices
+            const Transform transform = scene.transforms[light.transformIndex];
+
+            const float3 p0_world = toWorldPoint(p0_obj, transform);
+            const float3 p1_world = toWorldPoint(p1_obj, transform);
+            const float3 p2_world = toWorldPoint(p2_obj, transform);
+
+            const float3 e0_world = p1_world - p0_world;
+            const float3 e1_world = p2_world - p0_world;
+
+            float3 normalWorld = float3{
+                e0_world.y() * e1_world.z() - e0_world.z() * e1_world.y(),
+                e0_world.z() * e1_world.x() - e0_world.x() * e1_world.z(),
+                e0_world.x() * e1_world.y() - e0_world.y() * e1_world.x()
+            };
+
+            const float normal_length = sycl::sqrt(dot(normalWorld, normalWorld));
+            if (normal_length <= 0.0f)
+                return sample;
+            normalWorld = normalWorld / normal_length;
+            // Emissive Direction
+            float pdfDir = 0.0f;
+            float3 sampledDirectionW;
+            sampleCosineHemisphere(rng128, normalWorld, sampledDirectionW, pdfDir);
+            // 5) Fill sample
+            sample.positionW = toWorldPoint(x_obj, transform);
+            sample.normalW = normalWorld;
+            sample.direction = sampledDirectionW;
+            // Set as Radiant Flux (WATT)
+            sample.power = light.power * light.color;
+            // Because we sampled proportional to triangle area, then uniformly on that triangle:
+            // pdfArea is uniform over the whole emitter area.
+            sample.pdfArea = 1.0f / light.totalAreaWorld;
+            sample.totalAreaWorld = light.totalAreaWorld;
+            sample.pdfDir = pdfDir;
+            sample.valid = true;
+            sample.lightIndex = light_index;
+
+        } else if (light.lightType == LightType::Surfel) {
+            const float u = rng128.nextFloat();
+            const float v = rng128.nextFloat();
+
+            const auto& surfel = scene.points[light.primitiveIndex];
+            const float3 normalWorld = normalize(cross(surfel.tanU, surfel.tanV));
+
+            sample.positionW = phiMapping(surfel, u, v);
+
+            float pdfDir = 0.0f;
+            float3 sampledDirectionW;
+            sampleCosineHemisphere(rng128, normalWorld, sampledDirectionW, pdfDir);
+            // 5) Fill sample
+            sample.normalW = normalWorld;
+            sample.direction = sampledDirectionW;
+            // Set as Radiant Flux (WATT)
+            sample.power = light.power * light.color;
+            // Because we sampled proportional to triangle area, then uniformly on that triangle:
+            // pdfArea is uniform over the whole emitter area.
+            sample.pdfArea = 1.0f / light.totalAreaWorld;
+            sample.totalAreaWorld = light.totalAreaWorld;
+            sample.pdfDir = pdfDir;
+            sample.valid = true;
+            sample.lightIndex = light_index;
+
         }
-
-        const GPUEmissiveTriangle emissive_triangle =
-                scene.emissiveTriangles[light.triangleOffset + tri_rel];
-
-        const Triangle tri = scene.triangles[emissive_triangle.globalTriangleIndex];
-        const Vertex v0 = scene.vertices[tri.v0];
-        const Vertex v1 = scene.vertices[tri.v1];
-        const Vertex v2 = scene.vertices[tri.v2];
-
-        // 3) Uniform barycentric sample on the triangle in OBJECT space
-        const float u1 = rng128.nextFloat();
-        const float u2 = rng128.nextFloat();
-        const float sqrt_u1 = sycl::sqrt(u1);
-
-        const float b0 = 1.0f - sqrt_u1;
-        const float b1 = sqrt_u1 * (1.0f - u2);
-        const float b2 = sqrt_u1 * u2;
-
-        const float3 p0_obj = v0.pos;
-        const float3 p1_obj = v1.pos;
-        const float3 p2_obj = v2.pos;
-        const float3 x_obj = p0_obj * b0 + p1_obj * b1 + p2_obj * b2;
-
-        // 4) Transform to WORLD and compute WORLD normal using WORLD vertices
-        const Transform transform = scene.transforms[light.transformIndex];
-
-        const float3 p0_world = toWorldPoint(p0_obj, transform);
-        const float3 p1_world = toWorldPoint(p1_obj, transform);
-        const float3 p2_world = toWorldPoint(p2_obj, transform);
-
-        const float3 e0_world = p1_world - p0_world;
-        const float3 e1_world = p2_world - p0_world;
-
-        float3 normalWorld = float3{
-            e0_world.y() * e1_world.z() - e0_world.z() * e1_world.y(),
-            e0_world.z() * e1_world.x() - e0_world.x() * e1_world.z(),
-            e0_world.x() * e1_world.y() - e0_world.y() * e1_world.x()
-        };
-
-        const float normal_length = sycl::sqrt(dot(normalWorld, normalWorld));
-        if (normal_length <= 0.0f)
-            return sample;
-
-        normalWorld = normalWorld / normal_length;
-
-        // Emissive Direction
-
-        float pdfDir = 0.0f;
-        float3 sampledDirectionW;
-        sampleCosineHemisphere(rng128, normalWorld, sampledDirectionW, pdfDir);
-
-
-        // 5) Fill sample
-        sample.positionW = toWorldPoint(x_obj, transform);
-        sample.normalW = normalWorld;
-        sample.direction = sampledDirectionW;
-
-        // Set as Radiant Flux (WATT)
-        sample.power = light.power * light.color;
-
-        // Because we sampled proportional to triangle area, then uniformly on that triangle:
-        // pdfArea is uniform over the whole emitter area.
-        sample.pdfArea = 1.0f / light.totalAreaWorld;
-        sample.totalAreaWorld =  light.totalAreaWorld;
-        sample.pdfDir = pdfDir;
-
-        sample.valid = true;
-        sample.lightIndex = light_index;
         return sample;
     }
 
@@ -630,8 +652,7 @@ namespace Pale {
         const float3 unitNormal = normalize(normal);
 
         // Sample in local frame: +Z hemisphere
-        float3 localDirection;
-        {
+        float3 localDirection; {
             const float uniformRandomOne = randomNumberGenerator.nextFloat();
             const float uniformRandomTwo = randomNumberGenerator.nextFloat();
 
@@ -1586,9 +1607,6 @@ namespace Pale {
         return surfelCenter + su * tu * u + sv * tv * v;
     }
 
-    inline float3 phiMapping(const Point &surfel, float u, float v) {
-        return surfel.position + surfel.scale.x() * surfel.tanU * u + surfel.scale.y() * surfel.tanV * v;
-    }
 
     inline float computeLuminanceRec709(const float3 &inputRgbLinear) {
         const float redWeight = 0.2126f;
@@ -1794,23 +1812,22 @@ namespace Pale {
         globalCompletedBuffer[insertionIndex] = eventValue;
     }
 
-    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX& state) {
+    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX &state) {
         state.valid = false;
     }
 
-    SYCL_EXTERNAL inline void clearPendingAdjointStageXY(PendingAdjointStageXY& state) {
+    SYCL_EXTERNAL inline void clearPendingAdjointStageXY(PendingAdjointStageXY &state) {
         state.valid = false;
     }
 
     SYCL_EXTERNAL inline PendingAdjointStageX makePendingStageX(
-    uint32_t pathId,
-    uint32_t pixelIndex,
-    const WorldHit& worldHit,
-    const RayState& rayState,
-    const float3& throughput,
-    const float3& orientedNormal,
-    GeometryType geometryType)
-    {
+        uint32_t pathId,
+        uint32_t pixelIndex,
+        const WorldHit &worldHit,
+        const RayState &rayState,
+        const float3 &throughput,
+        const float3 &orientedNormal,
+        GeometryType geometryType) {
         PendingAdjointStageX pending{};
         pending.valid = true;
         pending.pathId = pathId;
@@ -1831,12 +1848,11 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline PendingAdjointStageXY makePendingStageXY(
-    const PendingAdjointStageX& stageX,
-    const WorldHit& worldHit,
-    const RayState& rayState,
-    const float3& orientedNormal,
-    GeometryType geometryType)
-    {
+        const PendingAdjointStageX &stageX,
+        const WorldHit &worldHit,
+        const RayState &rayState,
+        const float3 &orientedNormal,
+        GeometryType geometryType) {
         PendingAdjointStageXY pending{};
         pending.valid = true;
 
@@ -1869,12 +1885,11 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventXYZ(
-    const PendingAdjointStageXY& stageXY,
-    const WorldHit& worldHit,
-    const RayState& rayState,
-    const float3& orientedNormal,
-    GeometryType geometryType)
-    {
+        const PendingAdjointStageXY &stageXY,
+        const WorldHit &worldHit,
+        const RayState &rayState,
+        const float3 &orientedNormal,
+        GeometryType geometryType) {
         CompletedGradientEvent completed{};
         completed.valid = true;
 
@@ -1918,13 +1933,12 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventXY(
-    const PendingAdjointStageX& stageX,
-    const WorldHit& worldHit,
-    const RayState& rayState,
-    const float3& throughput,
-    const float3& orientedNormal,
-    GeometryType geometryType)
-    {
+        const PendingAdjointStageX &stageX,
+        const WorldHit &worldHit,
+        const RayState &rayState,
+        const float3 &throughput,
+        const float3 &orientedNormal,
+        GeometryType geometryType) {
         CompletedGradientEvent completed{};
         completed.valid = true;
 
@@ -1956,12 +1970,11 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventX(
-    const WorldHit& worldHit,
-    const RayState& rayState,
-    const float3& throughput,
-    const float3& orientedNormal,
-    GeometryType geometryType)
-    {
+        const WorldHit &worldHit,
+        const RayState &rayState,
+        const float3 &throughput,
+        const float3 &orientedNormal,
+        GeometryType geometryType) {
         CompletedGradientEvent completed{};
         completed.valid = true;
 
