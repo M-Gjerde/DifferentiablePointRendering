@@ -185,9 +185,6 @@ namespace Pale {
                         }
 
                         if (pendingStageX.valid) {
-                            //if (currentGeometryType == GeometryType::PointCloud) {
-                            //    //pendingStageX.xPathThroughput = pendingStageX.xPathThroughput * settings.sampling.qReflect;
-                            //}
                             CompletedGradientEvent completedProjection = makeCompletedGradientEventXY(
                                 pendingStageX,
                                 worldHit,
@@ -433,7 +430,7 @@ namespace Pale {
                         const auto &event = settings.sampling;
 
                         if (contribution.valid) {
-                             if (contribution.kind == PendingAdjointKind::Projection) {
+                            if (contribution.kind == PendingAdjointKind::Projection) {
                                 const Point &surfel = scene.points[contribution.xPrimitiveIndex];
                                 const float3 E = gatherDiffuseIrradianceAtPoint(
                                     contribution.xPosition,
@@ -481,39 +478,39 @@ namespace Pale {
                             }
 
 
-                            // If Y is a mesh
                             if (contribution.kind == PendingAdjointKind::ProjectionScatter) {
                                 float3 Le = {0.0f, 0.0f, 0.0f};
                                 float3 Lr = {0.0f, 0.0f, 0.0f};
-
-                                if (contribution.yGeometryType == GeometryType::Mesh) {
-                                    const auto &instance = scene.instances[contribution.yInstanceIndex];
-                                    auto &material = scene.materials[instance.materialIndex];
-                                    Lr = gatherDiffuseIrradianceAtPoint(
-                                             contribution.yPosition,
-                                             contribution.yNormal,
-                                             photonMap) * material.baseColor * M_1_PIf;
-
-                                    if (material.isEmissive()) {
-                                        GPULightRecord emitter = scene.lights[0];
-                                        Le = material.baseColor * (material.power / (M_PIf * emitter.totalAreaWorld));
-                                    }
-                                } else {
+                                const Point &surfelY = scene.points[contribution.yPrimitiveIndex]; {
                                     const float3 E = gatherDiffuseIrradianceAtPoint(
                                         contribution.yPosition,
                                         contribution.yNormal,
                                         photonMap);
-                                    const auto &pt = scene.points[contribution.yPrimitiveIndex];
+                                    float alpha = contribution.yAlphaGeom * surfelY.opacity;
                                     // Evaluate surfel outgoing radiance (direct/indirect via photon map)
-                                    Lr = E * pt.alpha_r * pt.albedo * M_1_PIf * contribution.yAlphaGeom * pt.opacity;
-                                    // Lambert BRDF
+                                    float3 tangentUWorld = surfelY.scale.x() * surfelY.tanU;
+                                    float3 tangentVWorld = surfelY.scale.y() * surfelY.tanV;
+                                    float3 canonicalNormal = cross(tangentUWorld, tangentVWorld);
+                                    float totalAreaWorld = M_PIf * length(canonicalNormal);
+                                    Lr = E * surfelY.alpha_r * surfelY.albedo * M_1_PIf * alpha;
+                                    Le = surfelY.albedo * (surfelY.power / (M_PIf * totalAreaWorld)) * alpha;
+
+                                    bool hitBackside =
+                                            dot(canonicalNormal, -contribution.yIncomingRay.direction) < 0.0f;
+                                    if (surfelY.power > 0.0f && hitBackside)
+                                        Le = 0.0f;
                                 }
 
-                                const float3 Lo = Le + Lr;
-                                const float3 x = contribution.xPosition;
+                                const float3 Lo_y = Le + Lr;
+                                const Point &surfelX = scene.points[contribution.xPrimitiveIndex];
+                                // Detached sample on X: fixed local coordinates from the camera hit
+                                const float2 uvDetached = phiInverse(contribution.xPosition, surfelX);
+                                // Conceptually detach UV even though numerically xPosition and x is the same value.
+                                const float3 x = phiMapping(surfelX, uvDetached.x(), uvDetached.y());
                                 const float3 y = contribution.yPosition;
-                                const float3 nx = contribution.xNormal;
+                                const float3 nx = contribution.xNormal; // or recompute from surfelX chart
                                 const float3 ny = contribution.yNormal;
+
                                 const float3 vectorXToY = y - x;
                                 const float distanceSquared = dot(vectorXToY, vectorXToY);
                                 if (distanceSquared <= 1e-12f) {
@@ -522,28 +519,32 @@ namespace Pale {
                                 const float distance = sycl::sqrt(distanceSquared);
                                 const float3 directionXToY = vectorXToY / distance;
                                 const float cosineAtY = dot(ny, -directionXToY);
-                                if (cosineAtY <= 1e-6f) return;
-                                float uniformHemispherePDF = 1.0f / (2.0f * M_PIf);
-                                const float pA_Y =
-                                        uniformHemispherePDF * cosineAtY / distanceSquared;
-
-                                const Point &surfelX = scene.points[contribution.xPrimitiveIndex];
+                                if (cosineAtY <= 1e-6f) {
+                                    return;
+                                }
+                                const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
+                                const float pA_Y = uniformHemispherePdf * cosineAtY / distanceSquared;
+                                const float J_A_Y = surfelY.scale.x() * surfelY.scale.y();
+                                const float pU = pA_Y * J_A_Y;
+                                if (pU <= 1e-20f) {
+                                    return;
+                                }
                                 const float alphaX = contribution.xAlphaGeom * surfelX.opacity;
                                 const float3 brdfX = surfelX.alpha_r * surfelX.albedo * M_1_PIf;
-                                const float3 dG_dPos = computeGeometricTermGradientWrtStartpoint(x, y, nx, ny);
+                                // Detached derivative wrt world-space start point x
+                                const float3 dG_dX = computeGeometricTermGradientWrtStartpoint(x, y, nx, ny);
                                 float visibility = 1.0f;
                                 float transmittance = 1.0f;
-                                // This is the transport factor multiplying G(x, y).
                                 const float3 transportWithoutG =
-                                        Lo * alphaX * brdfX * visibility * transmittance;
-                                // Adjoint-weighted scalar multiplier for the local derivative insertion.
-                                const float3 &p_e = (contribution.xPathThroughput);
+                                        Lo_y * alphaX * brdfX * visibility * transmittance;
+
+                                const float3 p_e = contribution.xPathThroughput;
                                 const float scalarWeight =
                                         // First form the gradient with respect to the observed world-space hit point x.
                                         (p_e[0] * transportWithoutG[0] +
                                          p_e[1] * transportWithoutG[1] +
                                          p_e[2] * transportWithoutG[2]) / pA_Y;
-                                const float3 gradientWrtHitPosition = scalarWeight * dG_dPos;
+                                const float3 gradientWrtHitPosition = scalarWeight * dG_dX;
                                 // Then map that to the surfel center translation s_p using the camera-ray / plane Jacobian.
                                 float3x3 intersectionJacobian = planeHitPointIntersectionJacobian(
                                     contribution.xIncomingRay.direction, contribution.xNormal);
@@ -553,121 +554,126 @@ namespace Pale {
 
                                 atomicAddFloat3(gradients.gradPosition[contribution.xPrimitiveIndex],
                                                 gradientWrtSurfelTranslation * invSpp);
+
+
+                                // Detached Y-gradient:
+                                {
+                                    const float3 dG_dY = computeGeometricTermGradientWrtEndpoint(x, y, nx, ny);
+                                    const float3 gradientY = scalarWeight * dG_dY;
+                                    atomicAddFloat3(gradients.gradPosition[contribution.yPrimitiveIndex],
+                                                    gradientY * invSpp);
+                                }
                             }
                         }
 
 
                         if (contribution.kind == PendingAdjointKind::ReflectScatter) {
-                            if (contribution.valid) {
-                                if (contribution.yGeometryType != GeometryType::PointCloud) {
-                                    return;
-                                }
+                            float3 Lo_Z = {0.0f, 0.0f, 0.0f};
 
-                                auto evaluateOutgoingRadiance = [&](GeometryType geometryType,
-                                                                    uint32_t instanceIndex,
-                                                                    uint32_t primitiveIndex,
-                                                                    const float3 &position,
-                                                                    const float3 &normal,
-                                                                    float alphaGeom) -> float3 {
-                                    float3 emittedRadiance = float3{0.0f};
-                                    float3 reflectedRadiance = float3{0.0f};
-
-                                    if (geometryType == GeometryType::Mesh) {
-                                        const auto &instance = scene.instances[instanceIndex];
-                                        const auto &material = scene.materials[instance.materialIndex];
-
-                                        const float3 irradiance =
-                                                gatherDiffuseIrradianceAtPoint(position, normal, photonMap);
-
-                                        reflectedRadiance = irradiance * material.baseColor * M_1_PIf;
-
-                                        if (material.isEmissive()) {
-                                            const GPULightRecord emitter = scene.lights[0];
-                                            emittedRadiance =
-                                                    material.baseColor * (
-                                                        material.power / (M_PIf * emitter.totalAreaWorld));
-                                        }
-                                    } else {
-                                        const auto &surfel = scene.points[primitiveIndex];
-                                        const float3 irradiance =
-                                                gatherDiffuseIrradianceAtPoint(position, normal, photonMap);
-
-                                        reflectedRadiance =
-                                                irradiance *
-                                                surfel.alpha_r *
-                                                surfel.albedo *
-                                                M_1_PIf *
-                                                alphaGeom *
-                                                surfel.opacity;
-                                    }
-
-                                    return emittedRadiance + reflectedRadiance;
-                                };
-
-                                auto evaluateLambertianBrdf = [&](GeometryType geometryType,
-                                                                  uint32_t instanceIndex,
-                                                                  uint32_t primitiveIndex) -> float3 {
-                                    if (geometryType == GeometryType::Mesh) {
-                                        const auto &instance = scene.instances[instanceIndex];
-                                        const auto &material = scene.materials[instance.materialIndex];
-                                        return material.baseColor * M_1_PIf;
-                                    }
-
-                                    const auto &surfel = scene.points[primitiveIndex];
-                                    return surfel.alpha_r * surfel.albedo * M_1_PIf;
-                                };
-
-                                auto computeAreaPdfFromUniformHemisphereSample = [&](const float3 &startPosition,
-                                    const float3 &endPosition,
-                                    const float3 &endNormal) -> float {
-                                    const float3 vectorToEnd = endPosition - startPosition;
-                                    const float distanceSquared = dot(vectorToEnd, vectorToEnd);
-                                    if (distanceSquared <= 1e-12f) {
-                                        return 0.0f;
-                                    }
-
-                                    const float distance = sycl::sqrt(distanceSquared);
-                                    const float3 directionToEnd = vectorToEnd / distance;
-                                    const float cosineAtEnd = dot(endNormal, -directionToEnd);
-                                    if (cosineAtEnd <= 1e-6f) {
-                                        return 0.0f;
-                                    }
-
-                                    const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
-                                    return uniformHemispherePdf * cosineAtEnd / distanceSquared;
-                                };
-
-                                const float3 outgoingRadianceAtZ = evaluateOutgoingRadiance(
-                                    contribution.zGeometryType,
-                                    contribution.zInstanceIndex,
-                                    contribution.zPrimitiveIndex,
+                            const Point &surfelZ = scene.points[contribution.zPrimitiveIndex];
+                            const Point &surfelY = scene.points[contribution.yPrimitiveIndex];
+                            const Point &surfelX = scene.points[contribution.xPrimitiveIndex]; {
+                                float3 Le = {0.0f, 0.0f, 0.0f};
+                                float3 Lr = {0.0f, 0.0f, 0.0f};
+                                const float3 E = gatherDiffuseIrradianceAtPoint(
                                     contribution.zPosition,
                                     contribution.zNormal,
-                                    contribution.zAlphaGeom);
+                                    photonMap);
 
-                                const float3 outgoingRadianceAtY = evaluateOutgoingRadiance(
-                                    contribution.yGeometryType,
-                                    contribution.yInstanceIndex,
-                                    contribution.yPrimitiveIndex,
-                                    contribution.yPosition,
-                                    contribution.yNormal,
-                                    contribution.yAlphaGeom);
+                                const float alphaZ = contribution.zAlphaGeom * surfelZ.opacity;
+                                float3 tangentUWorld = surfelZ.scale.x() * surfelZ.tanU;
+                                float3 tangentVWorld = surfelZ.scale.y() * surfelZ.tanV;
+                                float3 canonicalNormal = cross(tangentUWorld, tangentVWorld);
+                                float totalAreaWorld = M_PIf * length(canonicalNormal);
+                                Lr = E * surfelZ.alpha_r * surfelZ.albedo * M_1_PIf * alphaZ;
+                                Le = surfelZ.albedo * (surfelZ.power / (M_PIf * totalAreaWorld)) * alphaZ;
+                                //Optional backside emission test if desired.
+                                bool hitBackside = dot(canonicalNormal, -contribution.zIncomingRay.direction) < 0.0f;
+                                if (surfelZ.power > 0.0f && hitBackside)
+                                    Le = 0.0f;
 
-                                const float3 xPosition = contribution.xPosition;
-                                const float3 yPosition = contribution.yPosition;
-                                const float3 zPosition = contribution.zPosition;
-
-                                const float3 xNormal = contribution.xNormal;
-                                const float3 yNormal = contribution.yNormal;
-                                const float3 zNormal = contribution.zNormal;
-
-                                float3 gradientWrtYPosition{1.0f};
-
-
-                                atomicAddFloat3(
-                                    gradients.gradPosition[contribution.yPrimitiveIndex],
-                                    gradientWrtYPosition * invSpp);
+                                Lo_Z = Le + Lr;
                             }
+                            // Detached sample on Y
+                            const float2 uvDetachedY = phiInverse(contribution.yPosition, surfelY);
+
+                            const float3 x = contribution.xPosition;
+                            const float3 y = contribution.yPosition;
+                            const float3 z = contribution.zPosition;
+                            const float3 nx = contribution.xNormal;
+                            const float3 ny = contribution.yNormal;
+                            const float3 nz = contribution.zNormal;
+
+                            const float3 vectorYToZ = z - y;
+                            const float distanceSquaredYZ = dot(vectorYToZ, vectorYToZ);
+                            if (distanceSquaredYZ <= 1e-12f) {
+                                return;
+                            }
+
+                            const float distanceXZ = sycl::sqrt(distanceSquaredYZ);
+                            const float3 directionYToZ = vectorYToZ / distanceXZ;
+
+                            const float cosineAtZ = dot(nz, -directionYToZ);
+                            if (cosineAtZ <= 1e-6f) {
+                                return;
+                            }
+
+                            const float3 vectorXToY = y - x;
+                            const float distanceSquaredXY = dot(vectorXToY, vectorXToY);
+                            if (distanceSquaredXY <= 1e-12f) {
+                                return;
+                            }
+                            const float distanceXY = sycl::sqrt(distanceSquaredXY);
+                            const float3 directionXToY = vectorXToY / distanceXY;
+                            const float cosineAtY = dot(ny, -directionXToY);
+                            if (cosineAtY <= 1e-6f) {
+                                return;
+                            }
+                            const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
+                            const float pA_Y = uniformHemispherePdf * cosineAtY / distanceSquaredXY;
+                            const float alphaX = contribution.xAlphaGeom * surfelX.opacity;
+                            const float3 brdfX = surfelX.alpha_r * surfelX.albedo * M_1_PIf;
+                            // Detached derivative wrt world-space start point x
+                            const float Gxy = computeGeometricTermValue(x, y, nx, ny);
+
+
+                            // Change of measure for Z sampled from a hemisphere at Y
+                            const float pA_Z = uniformHemispherePdf * cosineAtZ / distanceSquaredYZ;
+                            if (pA_Z <= 1e-20f) {
+                                return;
+                            }
+
+                            const float alphaY = contribution.yAlphaGeom * surfelY.opacity;
+                            const float3 brdfY = surfelY.alpha_r * surfelY.albedo * M_1_PIf;
+
+
+                            const float visibility = 1.0f;
+                            const float transmittance = 1.0f;
+
+                            const float3 dG_dY = computeGeometricTermGradientWrtStartpoint(y, z, ny, nz);
+
+                            const float3 upstreamTransportWithoutG =
+                                    Lo_Z * alphaY * brdfY * visibility * transmittance;
+
+                            const float3 transportXY =
+                                    alphaX * brdfX * visibility * transmittance * Gxy;
+
+                            const float3 combinedTransport =
+                                    transportXY * upstreamTransportWithoutG;
+
+                            const float3 p_e = contribution.xPathThroughput;
+
+                            const float scalarWeightWithoutPAZ =
+                            (p_e[0] * combinedTransport[0] +
+                             p_e[1] * combinedTransport[1] +
+                             p_e[2] * combinedTransport[2]) / (pA_Y * event.qReflect);
+
+                            const float3 gradientWrtYPosition =
+                                    (scalarWeightWithoutPAZ / (pA_Z)) * dG_dY;
+
+                            atomicAddFloat3(
+                                gradients.gradPosition[contribution.yPrimitiveIndex],
+                                gradientWrtYPosition * invSpp);
                         }
                     }
                 );

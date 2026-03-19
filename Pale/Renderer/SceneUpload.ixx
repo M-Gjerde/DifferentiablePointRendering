@@ -80,7 +80,7 @@ export namespace Pale {
             freeDeviceArray(gpuSceneBuffers.transforms, queue);
             freeDeviceArray(gpuSceneBuffers.materials, queue);
             freeDeviceArray(gpuSceneBuffers.instances, queue);
-
+            freeDeviceArray(gpuSceneBuffers.pointPermutation, queue);
             // lights
             freeDeviceArray(gpuSceneBuffers.lights, queue);
             freeDeviceArray(gpuSceneBuffers.emissiveTriangles, queue);
@@ -93,6 +93,7 @@ export namespace Pale {
             gpuSceneBuffers.tlasNodeCount = 0;
             gpuSceneBuffers.lightCount = 0;
             gpuSceneBuffers.emissiveTriangleCount = 0;
+            gpuSceneBuffers.pointPermutationCount = 0;
         }
 
         // ---------------------------------------------------------------------
@@ -170,7 +171,15 @@ export namespace Pale {
                 gpuSceneBuffers.instances =
                         static_cast<InstanceRecord *>(sycl::malloc_device(bytes, queue));
             }
+            gpuSceneBuffers.pointPermutationCount =
+                    static_cast<std::uint32_t>(buildProducts.pointPermutation.size());
 
+            if (gpuSceneBuffers.pointPermutationCount > 0) {
+                const std::size_t bytes =
+                        static_cast<std::size_t>(gpuSceneBuffers.pointPermutationCount) * sizeof(uint32_t);
+                gpuSceneBuffers.pointPermutation =
+                        static_cast<uint32_t *>(sycl::malloc_device(bytes, queue));
+            }
             // allocate lights
             if (gpuSceneBuffers.lightCount > 0) {
                 const std::size_t bytes =
@@ -275,6 +284,16 @@ export namespace Pale {
                                       newEmissiveTriangleCount,
                                       queue);
 
+            const std::uint32_t newPointPermutationCount =
+                    static_cast<std::uint32_t>(buildProducts.pointPermutation.size());
+
+            logReallocCounted("pointPermutation",
+                              gpuSceneBuffers.pointPermutationCount,
+                              newPointPermutationCount);
+            reallocCountedDeviceArray(gpuSceneBuffers.pointPermutation,
+                                      gpuSceneBuffers.pointPermutationCount,
+                                      newPointPermutationCount,
+                                      queue);
             // ---- Vector-backed arrays (no count stored in GPUSceneBuffers) ----
 
             const std::size_t newBlasRangeCount = buildProducts.bottomLevelRanges.size();
@@ -359,7 +378,7 @@ export namespace Pale {
 
                 for (int i = 0; const auto &it: buildProducts.points) {
                     Log::PA_TRACE("Point After Upload [{}]: {}, {}, {}", i, it.position.x(), it.position.y(),
-                                 it.position.z());
+                                  it.position.z());
                     i++;
                     if (i == 4)
                         break;
@@ -434,6 +453,15 @@ export namespace Pale {
                     gpuSceneBuffers.emissiveTriangleCount * sizeof(GPUEmissiveTriangle));
             }
 
+            if (gpuSceneBuffers.pointPermutationCount > 0 &&
+    gpuSceneBuffers.pointPermutation != nullptr &&
+    !buildProducts.pointPermutation.empty()) {
+                queue.memcpy(
+                    gpuSceneBuffers.pointPermutation,
+                    buildProducts.pointPermutation.data(),
+                    gpuSceneBuffers.pointPermutationCount * sizeof(uint32_t));
+    }
+
             queue.wait();
         }
 
@@ -447,14 +475,14 @@ export namespace Pale {
                                        GPUSceneBuffers &gpuSceneBuffers,
                                        sycl::queue queue) {
             const bool sameSizes =
-                    gpuSceneBuffers.vertexCount == buildProducts.vertices.size() &&
-                    gpuSceneBuffers.pointCount == buildProducts.points.size() &&
-                    gpuSceneBuffers.triangleCount == buildProducts.triangles.size() &&
-                    gpuSceneBuffers.blasNodeCount == buildProducts.bottomLevelNodes.size() &&
-                    gpuSceneBuffers.tlasNodeCount == buildProducts.topLevelNodes.size() &&
-                    gpuSceneBuffers.lightCount == buildProducts.lights.size() &&
-                    gpuSceneBuffers.emissiveTriangleCount == buildProducts.emissiveTriangles.size();
-
+                gpuSceneBuffers.vertexCount == buildProducts.vertices.size() &&
+                gpuSceneBuffers.pointCount == buildProducts.points.size() &&
+                gpuSceneBuffers.triangleCount == buildProducts.triangles.size() &&
+                gpuSceneBuffers.blasNodeCount == buildProducts.bottomLevelNodes.size() &&
+                gpuSceneBuffers.tlasNodeCount == buildProducts.topLevelNodes.size() &&
+                gpuSceneBuffers.pointPermutationCount == buildProducts.pointPermutation.size() &&
+                gpuSceneBuffers.lightCount == buildProducts.lights.size() &&
+                gpuSceneBuffers.emissiveTriangleCount == buildProducts.emissiveTriangles.size();
 
             Pale::Log::PA_INFO("Renderer Registered new points: {}", sameSizes);
             if (!sameSizes) {

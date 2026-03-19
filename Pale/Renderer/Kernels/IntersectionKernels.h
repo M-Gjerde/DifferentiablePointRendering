@@ -635,9 +635,11 @@ namespace Pale {
             }
 
             // Leaf: test surfels
-            for (uint32_t local = 0; local < node.triCount; ++local) {
-                const uint32_t surfelIndex = node.leftFirst + local;
-                const Point &surfel = scene.points[surfelIndex];
+            for (uint32_t primitiveOffset = 0; primitiveOffset < node.triCount; ++primitiveOffset) {
+                const uint32_t primitiveIndex =
+                    scene.pointPermutation[node.leftFirst + primitiveOffset];
+
+                const Point &surfel = scene.points[primitiveIndex];
 
                 float tHitLocal = 0.0f;
                 float alphaGeom = 0.0f;
@@ -649,7 +651,7 @@ namespace Pale {
                 // Keep closest
                 hitAny = true;
                 bestTHit = tHitLocal;
-                bestSurfelIndex = surfelIndex;
+                bestSurfelIndex = primitiveIndex;
                 bestHitLocal = hitLocal;
                 bestAlphaGeomAtHit = alphaGeom;
             }
@@ -672,165 +674,6 @@ namespace Pale {
 
 
         return true;
-    }
-
-    // Intersects a surfel along the ray with uniform sampling.
-    // Returns transmittance up til intersected surfel
-    SYCL_EXTERNAL static bool intersectBLASPointCloudUniform(
-        const Ray &rayObject,
-        uint32_t blasRangeIndex,
-        LocalHit &localHitOut,
-        const GPUSceneBuffers &scene,
-        rng::Xorshift128 &rng128) {
-        const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
-        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
-
-        constexpr float rayEpsilon = 1e-5f;
-        constexpr float tAdvanceEpsilon = 1e-4f; // advance after a rejected hit to avoid re-hitting same surfel
-
-        float cumulativeTransmittanceBefore = 1.0f;
-
-        // Find next closest surfel hit with t in (tMin, tMax).
-        auto findNextClosestSurfel = [&](float tMin,
-                                         float tMax,
-                                         float &outTHit,
-                                         uint32_t &outSurfelIndex,
-                                         float &outAlphaGeomAtHit) -> bool {
-            bool hitAny = false;
-            float bestTHit = tMax;
-
-            const float3 inverseDirection = safeInvDir(rayObject.direction);
-
-            SmallStack<256> traversalStack;
-            traversalStack.push(0);
-
-            while (!traversalStack.empty()) {
-                const int nodeIndex = traversalStack.pop();
-                const BVHNode &node = bvhNodes[nodeIndex];
-
-                float nodeTEntry = 0.0f;
-                if (!slabIntersectAABB(rayObject, node, inverseDirection, bestTHit, nodeTEntry))
-                    continue;
-
-                if (node.triCount == 0) {
-                    const int leftIndex = node.leftFirst;
-                    const int rightIndex = node.leftFirst + 1;
-
-                    float leftTEntry = std::numeric_limits<float>::infinity();
-                    float rightTEntry = std::numeric_limits<float>::infinity();
-
-                    const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
-                                                           leftTEntry);
-                    const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
-                                                            rightTEntry);
-
-                    if (hitLeft && hitRight)
-                        pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                    else if (hitLeft) traversalStack.push(leftIndex);
-                    else if (hitRight) traversalStack.push(rightIndex);
-                    continue;
-                }
-
-                // Leaf: test surfels
-                for (uint32_t local = 0; local < node.triCount; ++local) {
-                    const uint32_t surfelIndex = node.leftFirst + local;
-                    const Point &surfel = scene.points[surfelIndex];
-
-                    float tHitLocal = 0.0f;
-                    float alphaGeom = 0.0f;
-                    float3 hitLocal{};
-                    if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
-                        continue;
-
-                    if (tHitLocal <= tMin)
-                        continue;
-
-                    // Keep closest
-                    bestTHit = tHitLocal;
-                    outSurfelIndex = surfelIndex;
-                    outAlphaGeomAtHit = alphaGeom;
-                    hitAny = true;
-                }
-            }
-
-            if (!hitAny)
-                return false;
-
-            outTHit = bestTHit;
-            return true;
-        };
-
-
-        uint32_t numSurfelsVisited = 0;
-        SurfelEvent surfelEvents[kMaxSplatEventsPerRay];
-        // Stochastic accept/reject loop over successive closest hits
-        float tMin = rayEpsilon;
-        while (true) {
-            float tHit = 0.0f;
-            uint32_t surfelIndex = UINT32_MAX;
-            float alphaGeomAtHit = 0.0f;
-
-            if (!findNextClosestSurfel(tMin, std::numeric_limits<float>::infinity(), tHit, surfelIndex,
-                                       alphaGeomAtHit)) {
-                // No more candidates: pure transmission through this BLAS
-                localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                break;
-            }
-
-            SurfelEvent event;
-            const Point &surfel = scene.points[surfelIndex];
-
-            // Effective interaction probability at this candidate
-            const float tau = 1.0f - (alphaGeomAtHit * surfel.opacity);
-
-            event.alphaGeom = alphaGeomAtHit;
-            event.primitiveIndex = surfelIndex;
-            event.t = tHit;
-            event.transmissivity = cumulativeTransmittanceBefore;
-            surfelEvents[numSurfelsVisited] = event;
-            numSurfelsVisited++;
-
-            cumulativeTransmittanceBefore *= tau;
-            tMin = tHit + tAdvanceEpsilon;
-
-            // stop early if we reach 0 transmittance
-            if ((cumulativeTransmittanceBefore) <= 0.001f) {
-                break;
-            }
-
-            if (numSurfelsVisited >= kMaxSplatEventsPerRay)
-                break;
-        }
-
-        if (numSurfelsVisited == 0) {
-            localHitOut.transmissivity = 1.0f;
-            return false;
-        }
-
-        const float u = rng128.nextFloat(); // [0,1)
-        const uint32_t choice = sycl::min(
-            static_cast<uint32_t>(u * static_cast<float>(numSurfelsVisited + 1u)),
-            numSurfelsVisited
-        );
-
-        if (choice == numSurfelsVisited) {
-            // Chose the "none" event
-            localHitOut.primitiveIndex = UINT32_MAX;
-            localHitOut.alpha = 0.0f;
-            localHitOut.t = std::numeric_limits<float>::infinity();
-            localHitOut.transmissivity = 1.0f; // full transmittance through BLAS
-            localHitOut.invChosenSurfelPdf = numSurfelsVisited + 1u;    // 1 / (1/(N+1))
-            return false; // or true-with-none, but be consistent everywhere
-        }
-
-        // Otherwise chose a surfel
-        localHitOut.alpha = surfelEvents[choice].alphaGeom;
-        localHitOut.t = surfelEvents[choice].t;
-        localHitOut.primitiveIndex = surfelEvents[choice].primitiveIndex;
-        localHitOut.transmissivity = surfelEvents[choice].transmissivity;
-        localHitOut.invChosenSurfelPdf = numSurfelsVisited + 1u;
-        return true;
-
     }
 
     // Transmit and only attenuate the ray.
@@ -889,9 +732,11 @@ namespace Pale {
                 }
 
                 // Leaf: test surfels
-                for (uint32_t local = 0; local < node.triCount; ++local) {
-                    const uint32_t surfelIndex = node.leftFirst + local;
-                    const Point &surfel = scene.points[surfelIndex];
+                for (uint32_t primitiveOffset = 0; primitiveOffset < node.triCount; ++primitiveOffset) {
+                    const uint32_t primitiveIndex =
+                        scene.pointPermutation[node.leftFirst + primitiveOffset];
+
+                    const Point &surfel = scene.points[primitiveIndex];
 
                     float tHitLocal = 0.0f;
                     float alphaGeom = 0.0f;
@@ -904,7 +749,7 @@ namespace Pale {
 
                     // Keep closest
                     bestTHit = tHitLocal;
-                    outSurfelIndex = surfelIndex;
+                    outSurfelIndex = primitiveIndex;
                     outAlphaGeomAtHit = alphaGeom;
                     hitAny = true;
                 }
@@ -1017,16 +862,6 @@ namespace Pale {
                                                           transform);
             } else {
                 switch (rayIntersectMode) {
-                    case SurfelIntersectMode::Bernoulli:
-                        acceptedHitInInstance = intersectBLASPointCloudStochastic(
-                            rayObject,
-                            instance.blasRangeIndex,
-                            localHit,
-                            scene,
-                            rng128,
-                            rayIntersectMode,
-                            scatterOnPrimitiveIndex);
-                        break;
                     case SurfelIntersectMode::Transmit:
                         acceptedHitInInstance = intersectBLASPointCloudTransmit(
                             rayObject, instance.blasRangeIndex, localHit, scene);
@@ -1038,16 +873,7 @@ namespace Pale {
                             localHit,
                             scene);
                         break;
-                    case SurfelIntersectMode::Uniform:
-                        acceptedHitInInstance = intersectBLASPointCloudUniform(
-                            rayObject,
-                            instance.blasRangeIndex,
-                            localHit,
-                            scene,
-                            rng128);
-                        worldHitOut->invChosenSurfelPdf = localHit.invChosenSurfelPdf;
-                        worldHitOut->hitSurfel = acceptedHitInInstance;
-                        break;
+                    default: ;
                 }
             }
 

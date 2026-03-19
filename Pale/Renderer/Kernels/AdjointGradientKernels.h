@@ -233,15 +233,6 @@ namespace Pale {
                           2 * cosineAtX * cosineAtY * directionFromXToY);
 
         return inverseDistanceCubed * tmp2;
-
-        const float3 projectedXNormal =
-                xNormal - directionFromXToY * dot(directionFromXToY, xNormal);
-        const float3 projectedYNormal =
-                yNormal - directionFromXToY * dot(directionFromXToY, yNormal);
-
-        return (-cosineAtY * projectedXNormal
-                + cosineAtX * projectedYNormal
-                + 2.0f * cosineAtX * cosineAtY * directionFromXToY) * inverseDistanceCubed;
     }
 
     inline float3 computeGeometricTermGradientWrtEndpoint(

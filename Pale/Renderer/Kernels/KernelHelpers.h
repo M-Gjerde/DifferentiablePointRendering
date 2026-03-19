@@ -399,137 +399,6 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLight(
-        const GPUSceneBuffers &scene,
-        rng::Xorshift128 &rng128) {
-        AreaLightSample sample{};
-        sample.valid = false;
-
-        if (scene.lightCount == 0)
-            return sample;
-
-        // 1) Pick a light (keep uniform for now; later you can switch to flux-weighted)
-        const float u_light = rng128.nextFloat();
-        const uint32_t light_index =
-                sycl::min(static_cast<uint32_t>(u_light * scene.lightCount), scene.lightCount - 1u);
-
-        const GPULightRecord light = scene.lights[light_index];
-        sample.pdfSelectLight = 1.0f / static_cast<float>(scene.lightCount);
-
-        if (light.lightType == LightType::Mesh) {
-            if (light.triangleCount == 0u || light.totalAreaWorld <= 0.0f)
-                return sample;
-
-            // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
-            const float u_tri = rng128.nextFloat();
-
-            uint32_t tri_rel = 0u; {
-                // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
-                uint32_t lo = 0u;
-                uint32_t hi = light.triangleCount - 1u;
-
-                while (lo < hi) {
-                    const uint32_t mid = (lo + hi) >> 1u;
-                    const float cdf_mid = scene.emissiveTriangles[light.triangleOffset + mid].cdf;
-                    if (u_tri <= cdf_mid) {
-                        hi = mid;
-                    } else {
-                        lo = mid + 1u;
-                    }
-                }
-                tri_rel = lo;
-            }
-
-            const GPUEmissiveTriangle emissive_triangle =
-                    scene.emissiveTriangles[light.triangleOffset + tri_rel];
-
-            const Triangle tri = scene.triangles[emissive_triangle.globalTriangleIndex];
-            const Vertex v0 = scene.vertices[tri.v0];
-            const Vertex v1 = scene.vertices[tri.v1];
-            const Vertex v2 = scene.vertices[tri.v2];
-
-            // 3) Uniform barycentric sample on the triangle in OBJECT space
-            const float u1 = rng128.nextFloat();
-            const float u2 = rng128.nextFloat();
-            const float sqrt_u1 = sycl::sqrt(u1);
-
-            const float b0 = 1.0f - sqrt_u1;
-            const float b1 = sqrt_u1 * (1.0f - u2);
-            const float b2 = sqrt_u1 * u2;
-
-            const float3 p0_obj = v0.pos;
-            const float3 p1_obj = v1.pos;
-            const float3 p2_obj = v2.pos;
-            const float3 x_obj = p0_obj * b0 + p1_obj * b1 + p2_obj * b2;
-
-            // 4) Transform to WORLD and compute WORLD normal using WORLD vertices
-            const Transform transform = scene.transforms[light.transformIndex];
-
-            const float3 p0_world = toWorldPoint(p0_obj, transform);
-            const float3 p1_world = toWorldPoint(p1_obj, transform);
-            const float3 p2_world = toWorldPoint(p2_obj, transform);
-
-            const float3 e0_world = p1_world - p0_world;
-            const float3 e1_world = p2_world - p0_world;
-
-            float3 normalWorld = float3{
-                e0_world.y() * e1_world.z() - e0_world.z() * e1_world.y(),
-                e0_world.z() * e1_world.x() - e0_world.x() * e1_world.z(),
-                e0_world.x() * e1_world.y() - e0_world.y() * e1_world.x()
-            };
-
-            const float normal_length = sycl::sqrt(dot(normalWorld, normalWorld));
-            if (normal_length <= 0.0f)
-                return sample;
-            normalWorld = normalWorld / normal_length;
-            // Emissive Direction
-            float pdfDir = 0.0f;
-            float3 sampledDirectionW;
-            sampleCosineHemisphere(rng128, normalWorld, sampledDirectionW, pdfDir);
-            // 5) Fill sample
-            sample.positionW = toWorldPoint(x_obj, transform);
-            sample.normalW = normalWorld;
-            sample.direction = sampledDirectionW;
-            // Set as Radiant Flux (WATT)
-            sample.power = light.power * light.color;
-            // Because we sampled proportional to triangle area, then uniformly on that triangle:
-            // pdfArea is uniform over the whole emitter area.
-            sample.pdfArea = 1.0f / light.totalAreaWorld;
-            sample.totalAreaWorld = light.totalAreaWorld;
-            sample.pdfDir = pdfDir;
-            sample.valid = true;
-            sample.lightIndex = light_index;
-
-        } else if (light.lightType == LightType::Surfel) {
-            const float u = rng128.nextFloat();
-            const float v = rng128.nextFloat();
-
-            const auto& surfel = scene.points[light.primitiveIndex];
-            const float3 normalWorld = normalize(cross(surfel.tanU, surfel.tanV));
-
-            sample.positionW = phiMapping(surfel, u, v);
-
-            float pdfDir = 0.0f;
-            float3 sampledDirectionW;
-            sampleCosineHemisphere(rng128, normalWorld, sampledDirectionW, pdfDir);
-            // 5) Fill sample
-            sample.normalW = normalWorld;
-            sample.direction = sampledDirectionW;
-            // Set as Radiant Flux (WATT)
-            sample.power = light.power * light.color;
-            // Because we sampled proportional to triangle area, then uniformly on that triangle:
-            // pdfArea is uniform over the whole emitter area.
-            sample.pdfArea = 1.0f / light.totalAreaWorld;
-            sample.totalAreaWorld = light.totalAreaWorld;
-            sample.pdfDir = pdfDir;
-            sample.valid = true;
-            sample.lightIndex = light_index;
-
-        }
-        return sample;
-    }
-
-
     SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3 &unitNormal, rng::Xorshift128 &rng, float &pdf) {
         // 1) Draw two uniform variates
         const float uniformSample1 = rng.nextFloat(); // in [0,1)
@@ -839,6 +708,33 @@ namespace Pale {
         return ray;
     }
 
+    SYCL_EXTERNAL inline float3 computeCameraGeometricTermGradientWrtSurfacePoint(
+        const float3& surfacePosition,
+        const float3& cameraPosition,
+        const float3& surfaceNormal)
+    {
+        const float3 vectorSurfaceToCamera = cameraPosition - surfacePosition;
+        const float distanceSquared = dot(vectorSurfaceToCamera, vectorSurfaceToCamera);
+        if (distanceSquared <= 1e-12f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float distance = sycl::sqrt(distanceSquared);
+        const float3 directionSurfaceToCamera = vectorSurfaceToCamera / distance;
+
+        const float cosineAtSurface = dot(surfaceNormal, directionSurfaceToCamera);
+
+        // Same branch logic as the forward contribution:
+        // if the camera-side geometric term is clamped to zero, its gradient is zero.
+        if (cosineAtSurface <= 1e-6f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float inverseDistanceCubed = 1.0f / (distanceSquared * distance);
+
+        return (3.0f * cosineAtSurface * directionSurfaceToCamera - surfaceNormal) *
+               inverseDistanceCubed;
+    }
 
     SYCL_EXTERNAL inline Ray makePrimaryRayFromPixelJitteredFov(
         const CameraGPU &cam,
@@ -1999,4 +1895,198 @@ namespace Pale {
     SYCL_EXTERNAL inline float computeEndpointCosine(const Ray &incomingRay, const float3 &endpointNormalW) {
         return dot(-incomingRay.direction, endpointNormalW);
     }
+
+
+    SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLight(
+        const GPUSceneBuffers &scene,
+        rng::Xorshift128 &rng128) {
+        AreaLightSample sample{};
+        sample.valid = false;
+
+        if (scene.lightCount == 0)
+            return sample;
+
+        // 1) Pick a light (keep uniform for now; later you can switch to flux-weighted)
+        const float u_light = rng128.nextFloat();
+        const uint32_t light_index =
+                sycl::min(static_cast<uint32_t>(u_light * scene.lightCount), scene.lightCount - 1u);
+
+        const GPULightRecord light = scene.lights[light_index];
+        sample.pdfSelectLight = 1.0f / static_cast<float>(scene.lightCount);
+
+        if (light.lightType == LightType::Mesh) {
+            if (light.triangleCount == 0u || light.totalAreaWorld <= 0.0f)
+                return sample;
+
+            // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
+            const float u_tri = rng128.nextFloat();
+
+            uint32_t tri_rel = 0u; {
+                // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
+                uint32_t lo = 0u;
+                uint32_t hi = light.triangleCount - 1u;
+
+                while (lo < hi) {
+                    const uint32_t mid = (lo + hi) >> 1u;
+                    const float cdf_mid = scene.emissiveTriangles[light.triangleOffset + mid].cdf;
+                    if (u_tri <= cdf_mid) {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1u;
+                    }
+                }
+                tri_rel = lo;
+            }
+
+            const GPUEmissiveTriangle emissive_triangle =
+                    scene.emissiveTriangles[light.triangleOffset + tri_rel];
+
+            const Triangle tri = scene.triangles[emissive_triangle.globalTriangleIndex];
+            const Vertex v0 = scene.vertices[tri.v0];
+            const Vertex v1 = scene.vertices[tri.v1];
+            const Vertex v2 = scene.vertices[tri.v2];
+
+            // 3) Uniform barycentric sample on the triangle in OBJECT space
+            const float u1 = rng128.nextFloat();
+            const float u2 = rng128.nextFloat();
+            const float sqrt_u1 = sycl::sqrt(u1);
+
+            const float b0 = 1.0f - sqrt_u1;
+            const float b1 = sqrt_u1 * (1.0f - u2);
+            const float b2 = sqrt_u1 * u2;
+
+            const float3 p0_obj = v0.pos;
+            const float3 p1_obj = v1.pos;
+            const float3 p2_obj = v2.pos;
+            const float3 x_obj = p0_obj * b0 + p1_obj * b1 + p2_obj * b2;
+
+            // 4) Transform to WORLD and compute WORLD normal using WORLD vertices
+            const Transform transform = scene.transforms[light.transformIndex];
+
+            const float3 p0_world = toWorldPoint(p0_obj, transform);
+            const float3 p1_world = toWorldPoint(p1_obj, transform);
+            const float3 p2_world = toWorldPoint(p2_obj, transform);
+
+            const float3 e0_world = p1_world - p0_world;
+            const float3 e1_world = p2_world - p0_world;
+
+            float3 normalWorld = float3{
+                e0_world.y() * e1_world.z() - e0_world.z() * e1_world.y(),
+                e0_world.z() * e1_world.x() - e0_world.x() * e1_world.z(),
+                e0_world.x() * e1_world.y() - e0_world.y() * e1_world.x()
+            };
+
+            const float normal_length = sycl::sqrt(dot(normalWorld, normalWorld));
+            if (normal_length <= 0.0f)
+                return sample;
+            normalWorld = normalWorld / normal_length;
+            // Emissive Direction
+            float pdfDir = 0.0f;
+            float3 sampledDirectionW;
+            sampleCosineHemisphere(rng128, normalWorld, sampledDirectionW, pdfDir);
+            // 5) Fill sample
+            sample.positionW = toWorldPoint(x_obj, transform);
+            sample.normalW = normalWorld;
+            sample.direction = sampledDirectionW;
+            // Set as Radiant Flux (WATT)
+            sample.power = light.power * light.color;
+            // Because we sampled proportional to triangle area, then uniformly on that triangle:
+            // pdfArea is uniform over the whole emitter area.
+            sample.pdfArea = 1.0f / light.totalAreaWorld;
+            sample.totalAreaWorld = light.totalAreaWorld;
+            sample.pdfDir = pdfDir;
+            sample.valid = true;
+            sample.lightIndex = light_index;
+
+        } else if (light.lightType == LightType::Surfel) {
+            const auto& surfel = scene.points[light.primitiveIndex];
+
+            float xi1 = rng128.nextFloat();
+            float xi2 = rng128.nextFloat();
+
+            float radius = std::sqrt(xi1);
+            float angle = 2.0f * M_PIf * xi2;
+
+            float localU = radius * std::cos(angle);
+            float localV = radius * std::sin(angle);
+
+            float3 tangentUWorld = surfel.scale.x() * surfel.tanU;
+            float3 tangentVWorld = surfel.scale.y() * surfel.tanV;
+
+            float3 positionWorld =
+                surfel.position +
+                localU * tangentUWorld +
+                localV * tangentVWorld;
+
+            float totalAreaWorld = M_PIf * length(cross(tangentUWorld, tangentVWorld));
+            float pdfArea = 1.0f / totalAreaWorld;
+
+            const float3 normalWorld = normalize(cross(surfel.tanU, surfel.tanV));
+
+            float pdfDir = 0.0f;
+            float3 sampledDirectionW;
+            sampleCosineHemisphere(rng128, normalWorld, sampledDirectionW, pdfDir);
+            // 5) Fill sample
+            sample.normalW = normalWorld;
+            sample.direction = sampledDirectionW;
+            sample.positionW = positionWorld;
+
+            // Set as Radiant Flux (WATT)
+            float alphaGeom = 1.0f;
+            opacityBeta(localU, localV, surfel, &alphaGeom);
+            sample.power = light.power * light.color * alphaGeom * surfel.opacity;
+            // Because we sampled proportional to triangle area, then uniformly on that triangle:
+            // pdfArea is uniform over the whole emitter area.
+            sample.pdfArea = pdfArea;
+            sample.totalAreaWorld = totalAreaWorld;
+            sample.pdfDir = pdfDir;
+            sample.valid = true;
+            sample.lightIndex = light_index;
+
+        }
+        return sample;
+    }
+
+    inline float3 computeInverseAreaPdfGradientWrtStartpoint(
+    const float3& startPoint,
+    const float3& endPoint,
+    const float3& endNormal)
+    {
+        const float3 vectorStartToEnd = endPoint - startPoint;
+        const float distanceSquared = dot(vectorStartToEnd, vectorStartToEnd);
+        if (distanceSquared <= 1e-20f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float distance = sycl::sqrt(distanceSquared);
+        const float3 direction = vectorStartToEnd / distance;
+
+        const float cosineAtEnd = dot(endNormal, -direction);
+        if (cosineAtEnd <= 1e-20f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
+        const float areaPdf = uniformHemispherePdf * cosineAtEnd / distanceSquared;
+        if (areaPdf <= 1e-20f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        // Projected component of end normal onto plane orthogonal to direction
+        const float3 projectedEndNormal =
+            endNormal - direction * dot(direction, endNormal);
+
+        // ∇_start (1 / pA)
+        const float3 inverseAreaPdfGradient =
+            (1.0f / areaPdf) *
+            (
+                (2.0f * (startPoint - endPoint) / distanceSquared) -
+                (projectedEndNormal / (distance * cosineAtEnd))
+            );
+
+        return inverseAreaPdfGradient;
+    }
+
+
+
 }

@@ -587,18 +587,29 @@ namespace Pale {
                                 const Point &surfel = scene.points[worldHit.primitiveIndex];
                                 // Canonical surfel normal (no front/back semantics stored).
                                 float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
+                                bool hitBackside = dot(normalW, -primaryRay.direction) < 0.0f;
                                 // Make it face the incoming/view ray so the hemisphere is consistent.
-                                if (dot(normalW, -primaryRay.direction) < 0.0f) {
+                                if (hitBackside) {
                                     normalW = -normalW;
                                 }
                                 const float3 E = gatherDiffuseIrradianceAtPoint(
                                     worldHit.hitPositionW,
                                     normalW,
                                     photonMap);
-
-                                float3 Lo = E * (surfel.alpha_r * surfel.albedo * M_1_PIf);
                                 float alphaEff = surfel.opacity * worldHit.alphaGeom;
-                                accumulatedRadianceRGB += transmittance * alphaEff * Lo;
+
+
+                                float3 Le = surfel.albedo * surfel.power;
+                                float3 Lr = E * (surfel.alpha_r * surfel.albedo * M_1_PIf) * alphaEff;
+                                float3 Lo = Lr + Le;
+
+                                // If emissive we and backside just be black.
+                                if (surfel.power > 0.0 && hitBackside) {
+                                    Lo = 0.0f;
+                                    alphaEff = 1.0f;
+                                }
+
+                                accumulatedRadianceRGB += transmittance * Lo;
                                 transmittance *= (1.0f - alphaEff);
                                 // Early out if we're nearly opqaue
                                 //if (transmittance < 0.001f) {

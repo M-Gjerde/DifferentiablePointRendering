@@ -214,11 +214,14 @@ namespace Pale {
         GPUMaterial *materials{nullptr};
         Point *points{nullptr};
         InstanceRecord *instances{nullptr};
+        uint32_t *pointPermutation{nullptr};
+
         uint32_t blasNodeCount{0};
         uint32_t tlasNodeCount{0};
         uint32_t triangleCount{0};
         uint32_t vertexCount{0};
         uint32_t pointCount{0};
+        uint32_t pointPermutationCount{0};
 
         GPULightRecord *lights{nullptr};
         GPUEmissiveTriangle *emissiveTriangles{nullptr};
@@ -383,14 +386,14 @@ namespace Pale {
     struct CompletedGradientEvent {
         bool valid = false;
 
-        uint32_t pathId = 0;
-        uint32_t pixelIndex = 0;
+        uint32_t pathId = UINT32_MAX;
+        uint32_t pixelIndex = UINT32_MAX;
         PendingAdjointKind kind = PendingAdjointKind::ReflectScatter;
 
         // X = first surfel
-        uint32_t xInstanceIndex = 0;
-        uint32_t xPrimitiveIndex = 0;
-        GeometryType xGeometryType = GeometryType::PointCloud;
+        uint32_t xInstanceIndex = UINT32_MAX;
+        uint32_t xPrimitiveIndex = UINT32_MAX;
+        GeometryType xGeometryType = GeometryType::InvalidType;
         float xAlphaGeom = 0.0f;
         float xCosine = 0.0f;
         float3 xPosition{0.0f};
@@ -399,9 +402,9 @@ namespace Pale {
         float3 xPathThroughput{0.0f};
 
         // Y = second surfel
-        uint32_t yInstanceIndex = 0;
-        uint32_t yPrimitiveIndex = 0;
-        GeometryType yGeometryType = GeometryType::PointCloud;
+        uint32_t yInstanceIndex = UINT32_MAX;
+        uint32_t yPrimitiveIndex = UINT32_MAX;
+        GeometryType yGeometryType = GeometryType::InvalidType;
         float yAlphaGeom = 0.0f;
         float yCosine = 0.0f;
         float3 yPosition{0.0f};
@@ -410,9 +413,9 @@ namespace Pale {
         float3 yPathThroughput{0.0f};
 
         // Z = final mesh hit
-        uint32_t zInstanceIndex = 0;
-        uint32_t zPrimitiveIndex = 0;
-        GeometryType zGeometryType = GeometryType::Mesh;
+        uint32_t zInstanceIndex = UINT32_MAX;
+        uint32_t zPrimitiveIndex = UINT32_MAX;
+        GeometryType zGeometryType = GeometryType::InvalidType;
         float zAlphaGeom = 0.0f;
         float zCosine = 0.0f;
         float3 zPosition{0.0f};

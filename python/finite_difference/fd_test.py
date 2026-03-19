@@ -182,12 +182,12 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 1,
-        "forward_passes": 100,
+        "bounces": 2,
+        "forward_passes": 1000,
         "gather_passes": 1,
-        "adjoint_bounces": 2,
-        "adjoint_passes": 16,
-        "logging": 3,
+        "adjoint_bounces": 3,
+        "adjoint_passes": 1024,
+        "logging": 4,
         "seed": args.seed
     }
 
@@ -243,11 +243,11 @@ def main(args) -> None:
                 elif args.parameter == "beta":
                     value = 6 - (iteration_index * 12) / iterations
                 elif args.parameter == "translation_x":
-                    value = -0.25 + (iteration_index) / (iterations * 2)  # -0.5..0.5
+                    value = -2 + (iteration_index) / (iterations) * 4  # -0.5..0.5
                 elif args.parameter == "translation_y":
-                    value = -0.5 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
+                    value = -2 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = 1.15 + (iteration_index) / (iterations * 10) * 7
+                    value = -2.0 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
@@ -260,11 +260,11 @@ def main(args) -> None:
                 elif args.parameter == "beta":
                     value = 6 - (iteration_index * 12) / iterations
                 elif args.parameter == "translation_x":
-                    value = -2.0 + (iteration_index) / (iterations) * 4  # -0.5..0.5
+                    value = -0.1 + (iteration_index) / (iterations) * 2  # -0.5..0.5
                 elif args.parameter == "translation_y":
-                    value = -1 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
+                    value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = -2 + (iteration_index) / (iterations * 1) * 3  # -0.5..0.5
+                    value = -0.2 + (iteration_index) / (iterations * 2) * 1  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":

@@ -51,6 +51,7 @@ export namespace Pale {
             std::unordered_map<UUID, uint32_t> meshIndexById;
 
             std::vector<Point> points; // global SoA/AoS slice
+            std::vector<uint32_t> pointPermutation;
             std::vector<PointCloudRange> pointCloudRanges;
             std::unordered_map<UUID, uint32_t> pointCloudIndexById;
 

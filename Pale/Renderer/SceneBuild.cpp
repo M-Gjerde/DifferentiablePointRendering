@@ -365,7 +365,11 @@ namespace Pale {
                     light.primitiveIndex = firstPointIndex  + i;
                     light.power = pointGeometry.powers[i];
                     light.color = pointGeometry.albedos[i];
-                    light.totalAreaWorld = M_PIf * pointGeometry.scales[i].x * pointGeometry.scales[i].y;
+
+                    glm::vec3 tangentUWorld = pointGeometry.scales[i].x * pointGeometry.tanU[i];
+                    glm::vec3 tangentVWorld = pointGeometry.scales[i].y * pointGeometry.tanV[i];
+                    float totalAreaWorld = M_PIf * length(cross(tangentUWorld, tangentVWorld));
+                    light.totalAreaWorld = totalAreaWorld;
                     out.lights.push_back(light);
                 }
             }
@@ -747,47 +751,23 @@ namespace Pale {
 
             const uint32_t globalPointStart = pointCloudRange.firstPoint;
 
-            // Build inverse permutation: oldLocalIndex -> newLocalIndex
-            std::vector<uint32_t> inversePermutation(blasResult.pointPermutation.size(), UINT32_MAX);
-            for (uint32_t newLocalIndex = 0; newLocalIndex < blasResult.pointPermutation.size(); ++newLocalIndex) {
-                const uint32_t oldLocalIndex = blasResult.pointPermutation[newLocalIndex];
-                inversePermutation[oldLocalIndex] = newLocalIndex;
+            // Append global primitive indices in BVH order.
+            // pointPermutation[bvhSlot] = primitiveIndex into buildProducts.points[]
+            const uint32_t globalPermutationStart =
+                static_cast<uint32_t>(buildProducts.pointPermutation.size());
+
+            buildProducts.pointPermutation.reserve(
+                buildProducts.pointPermutation.size() + blasResult.pointPermutation.size());
+
+            for (uint32_t localPointIndex : blasResult.pointPermutation) {
+                buildProducts.pointPermutation.push_back(globalPointStart + localPointIndex);
             }
-
-            // Reorder points into BVH order
-            std::vector<Point> reorderedPoints;
-            reorderedPoints.reserve(blasResult.localPoints.size());
-            for (uint32_t localPointIndex: blasResult.pointPermutation) {
-                reorderedPoints.push_back(blasResult.localPoints[localPointIndex]);
-            }
-
-            std::copy(reorderedPoints.begin(), reorderedPoints.end(),
-                      buildProducts.points.begin() + globalPointStart);
-
-            // Remap surfel-light primitive indices for this point cloud
-            for (GPULightRecord &light : buildProducts.lights) {
-                if (light.lightType != LightType::Surfel) {
-                    continue;
-                }
-
-                const uint32_t oldPrimitiveIndex = light.primitiveIndex;
-                if (oldPrimitiveIndex < globalPointStart ||
-                    oldPrimitiveIndex >= globalPointStart + pointCloudRange.pointCount) {
-                    continue;
-                    }
-
-                const uint32_t oldLocalIndex = oldPrimitiveIndex - globalPointStart;
-                const uint32_t newLocalIndex = inversePermutation[oldLocalIndex];
-                light.primitiveIndex = globalPointStart + newLocalIndex;
-            }
-
 
             const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
 
-            // Patch leaf node ranges from local to global indices
-            for (BVHNode &node: blasResult.nodes) {
+            for (BVHNode &node : blasResult.nodes) {
                 if (node.isLeaf()) {
-                    node.leftFirst += globalPointStart;
+                    node.leftFirst += globalPermutationStart;
                 }
             }
 
