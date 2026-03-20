@@ -183,11 +183,11 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 2,
-        "forward_passes": 1000,
+        "forward_passes": 100,
         "gather_passes": 1,
-        "adjoint_bounces": 3,
-        "adjoint_passes": 1024,
-        "logging": 4,
+        "adjoint_bounces": 4,
+        "adjoint_passes": 64,
+        "logging": 3,
         "seed": args.seed
     }
 
@@ -264,7 +264,7 @@ def main(args) -> None:
                 elif args.parameter == "translation_y":
                     value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = -0.2 + (iteration_index) / (iterations * 2) * 1  # -0.5..0.5
+                    value = 1.0 + (iteration_index) / (iterations * 2) * 4  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
@@ -299,6 +299,12 @@ def main(args) -> None:
             save_rgb_preview_png(
                 images[camera],
                 output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".png"),
+                exposure_stops=0.0,
+            )
+            # Save previews
+            save_rgb_preview_png(
+                images["camera2"],
+                output_dir / "rendered" / camera / Path(f"{iteration_index}_" + camera + ".png"),
                 exposure_stops=0.0,
             )
             save_rgb_preview_exr(
