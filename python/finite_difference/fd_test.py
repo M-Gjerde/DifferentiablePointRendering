@@ -182,11 +182,11 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 2,
-        "forward_passes": 100,
+        "bounces": 3,
+        "forward_passes": 1000,
         "gather_passes": 1,
         "adjoint_bounces": 4,
-        "adjoint_passes": 64,
+        "adjoint_passes": 512,
         "logging": 3,
         "seed": args.seed
     }
@@ -264,7 +264,7 @@ def main(args) -> None:
                 elif args.parameter == "translation_y":
                     value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = 1.0 + (iteration_index) / (iterations * 2) * 4  # -0.5..0.5
+                    value = 1.5 + (iteration_index) / (iterations * 2) * 4  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
