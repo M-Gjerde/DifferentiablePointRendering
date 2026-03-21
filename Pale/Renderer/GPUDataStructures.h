@@ -328,59 +328,58 @@ namespace Pale {
         Projection,
     };
 
+
+
+    struct PointCloudSurfaceRecord {
+        uint32_t primitiveIndex = 0;
+        float2 uv = float2{0.0f, 0.0f};
+        float alphaGeom = 0.0f;
+        int32_t sideSign = 1;
+        float3 incomingDirection = float3{0.0f, 0.0f, 0.0f};
+    };
+
     struct PendingAdjointStageX {
         bool valid = false;
-
         uint32_t pathId = 0;
         uint32_t pixelIndex = 0;
-
-        uint32_t xInstanceIndex = 0;
-        uint32_t xPrimitiveIndex = 0;
-        GeometryType xGeometryType = GeometryType::PointCloud;
-
-        float xAlphaGeom = 0.0f;
-        float xCosine = 0.0f;
-
-        float3 xPosition{0.0f};
-        float3 xNormal{0.0f};
-
-        Ray xIncomingRay{};
-        float3 xPathThroughput{0.0f};
+        PointCloudSurfaceRecord xSurface;
+        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
     };
 
     struct PendingAdjointStageXY {
         bool valid = false;
-
         uint32_t pathId = 0;
         uint32_t pixelIndex = 0;
+        PointCloudSurfaceRecord xSurface;
+        PointCloudSurfaceRecord ySurface;
+        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+    };
 
-        // X
-        uint32_t xInstanceIndex = 0;
-        uint32_t xPrimitiveIndex = 0;
-        GeometryType xGeometryType = GeometryType::PointCloud;
+    struct ProjectionGradientEvent {
+        PointCloudSurfaceRecord xSurface;
+        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+    };
 
-        float xAlphaGeom = 0.0f;
-        float xCosine = 0.0f;
+    struct ProjectionScatterGradientEvent {
+        PointCloudSurfaceRecord xSurface;
+        PointCloudSurfaceRecord ySurface;
+        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+    };
 
-        float3 xPosition{0.0f};
-        float3 xNormal{0.0f};
+    struct ReflectScatterGradientEvent {
+        PointCloudSurfaceRecord xSurface;
+        PointCloudSurfaceRecord ySurface;
+        PointCloudSurfaceRecord zSurface;
+        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+    };
 
-        Ray xIncomingRay{};
-        float3 xPathThroughput{0.0f};
-
-        // Y
-        uint32_t yInstanceIndex = 0;
-        uint32_t yPrimitiveIndex = 0;
-        GeometryType yGeometryType = GeometryType::PointCloud;
-
-        float yAlphaGeom = 0.0f;
-        float yCosine = 0.0f;
-
-        float3 yPosition{0.0f};
-        float3 yNormal{0.0f};
-
-        Ray yIncomingRay{};
-        float3 yPathThroughput{0.0f};
+    struct ReconstructedSurfelState {
+        float3 position = float3{0.0f, 0.0f, 0.0f};
+        float3 canonicalNormal = float3{0.0f, 0.0f, 1.0f};
+        float3 orientedNormal = float3{0.0f, 0.0f, 1.0f};
+        float3 tangentUWorld = float3{0.0f, 0.0f, 0.0f};
+        float3 tangentVWorld = float3{0.0f, 0.0f, 0.0f};
+        float areaWorld = 0.0f;
     };
 
     struct CompletedGradientEvent {
@@ -544,13 +543,21 @@ namespace Pale {
         uint32_t maxHitContributionCount = 0;
         uint32_t *countContributions;
 
-        CompletedGradientEvent *completedGradientEvents = nullptr;
-        uint32_t maxCompletedGradientEventCount = 0;
-        uint32_t *countCompletedGradientEvents = nullptr;
-
-        PendingAdjointStageX* pendingStageX;
-        PendingAdjointStageXY* pendingStageXY;
+        PendingAdjointStageX* pendingStageX = nullptr;
+        PendingAdjointStageXY* pendingStageXY = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
+
+        ProjectionGradientEvent* projectionEvents = nullptr;
+        ProjectionScatterGradientEvent* projectionScatterEvents = nullptr;
+        ReflectScatterGradientEvent* reflectScatterEvents = nullptr;
+
+        uint32_t* countProjectionEvents = nullptr;
+        uint32_t* countProjectionScatterEvents = nullptr;
+        uint32_t* countReflectScatterEvents = nullptr;
+
+        uint32_t maxProjectionEventCount = 0;
+        uint32_t maxProjectionScatterEventCount = 0;
+        uint32_t maxReflectScatterEventCount = 0;
 
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;

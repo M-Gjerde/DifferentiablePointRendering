@@ -183,10 +183,10 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 3,
-        "forward_passes": 1000,
+        "forward_passes": 50000,
         "gather_passes": 1,
         "adjoint_bounces": 4,
-        "adjoint_passes": 512,
+        "adjoint_passes": 1024,
         "logging": 3,
         "seed": args.seed
     }
@@ -264,7 +264,7 @@ def main(args) -> None:
                 elif args.parameter == "translation_y":
                     value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = 1.5 + (iteration_index) / (iterations * 2) * 4  # -0.5..0.5
+                    value = 2.0 + (iteration_index) / (iterations * 2) * 4  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
@@ -301,12 +301,15 @@ def main(args) -> None:
                 output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".png"),
                 exposure_stops=0.0,
             )
+
+            ## Secondary cameras
             # Save previews
-            save_rgb_preview_png(
-                images["camera2"],
-                output_dir / "rendered" / camera / Path(f"{iteration_index}_" + camera + ".png"),
-                exposure_stops=0.0,
-            )
+            #save_rgb_preview_png(
+            #    images["camera2"],
+            #    output_dir / "rendered" / camera / Path(f"{iteration_index}_" + camera + ".png"),
+            #    exposure_stops=0.0,
+            #)
+
             save_rgb_preview_exr(
                 rendered_image,
                 output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".exr"),
@@ -419,7 +422,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-2,
+        default=5e-2,
         help="Finite difference epsilon.",
     )
     parser.add_argument(

@@ -13,19 +13,19 @@
 import Pale.Log;
 
 namespace Pale {
-    void submitLightTracingKernel(RenderPackage &pkg) {
-
+    void submitLightTracingKernel(RenderPackage& pkg) {
         {
             ScopedTimer forwardTimer("Forward Pass Total", spdlog::level::debug);
             for (uint32_t forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
-
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
+                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+                {
                     ScopedTimer timer("launchRayGenEmitterKernel");
                     launchRayGenEmitterKernel(pkg, forwardPass);
                 }
 
                 uint32_t activeCount = 0;
-                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait(); {
+                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
+                {
                     ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
 
                     for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
@@ -36,7 +36,8 @@ namespace Pale {
                         ScopedTimer bounceTimer("Bounce: " + std::to_string(bounce));
                         pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                         //pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                        pkg.queue.wait(); {
+                        pkg.queue.wait();
+                        {
                             ScopedTimer timer("launchIntersectKernel");
                             launchIntersectKernel(pkg, activeCount);
                         }
@@ -69,20 +70,22 @@ namespace Pale {
         }
     }
 
-    void submitPhotonMappingKernel(RenderPackage &pkg) {
+    void submitPhotonMappingKernel(RenderPackage& pkg) {
         const uint64_t renderSeed = pkg.random.seed; // capture value
 
-        pkg.queue.fill(pkg.intermediates.map.photonCountDevicePtr, 0u, 1).wait(); {
+        pkg.queue.fill(pkg.intermediates.map.photonCountDevicePtr, 0u, 1).wait();
+        {
             ScopedTimer forwardTimer("Forward Pass Total", spdlog::level::debug);
             for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
-
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
+                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+                {
                     ScopedTimer timer("launchRayGenEmitterKernel");
                     launchRayGenEmitterKernel(pkg, forwardPass);
                 }
 
                 uint32_t activeCount = 0;
-                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait(); {
+                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
+                {
                     ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
 
                     for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces; ++bounce) {
@@ -110,10 +113,12 @@ namespace Pale {
         pkg.queue.memcpy(&photonMapCount,
                          pkg.intermediates.map.photonCountDevicePtr,
                          sizeof(uint32_t)).wait();
-        const uint32_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity); {
+        const uint32_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity);
+        {
             ScopedTimer timer("buildPhotonCellRangesAndOrdering", spdlog::level::debug);
             buildPhotonCellRangesAndOrdering(pkg.queue, pkg.intermediates.map, photonCount);
-        } {
+        }
+        {
             ScopedTimer timer("Camera Gather for " + std::to_string(pkg.numSensors) + " cameras", spdlog::level::debug);
 
             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
@@ -148,127 +153,144 @@ namespace Pale {
     }
 
     // ---- Orchestrator -------------------------------------------------------
-    void submitAdjointKernel(RenderPackage &pkg) {
-        std::mt19937_64 seedGen(pkg.random.seed);
+    // ---- Orchestrator -------------------------------------------------------
+    void submitAdjointKernel(RenderPackage& pkg) {
+        std::mt19937_64 seedGenerator(pkg.random.seed);
 
         pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
-        pkg.queue.fill(pkg.gradients.gradPosition, float3{0, 0, 0}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradTanU, float3{0, 0, 0}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradTanV, float3{0, 0, 0}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradScale, float2{0, 0}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0}, pkg.gradients.numPoints).wait();
+
+        pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
+        pkg.queue.fill(pkg.gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
+        pkg.queue.fill(pkg.gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
+        pkg.queue.fill(pkg.gradients.gradScale, float2{0.0f, 0.0f}, pkg.gradients.numPoints).wait();
+        pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
         pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints).wait();
         pkg.queue.fill(pkg.gradients.gradBeta, 0.0f, pkg.gradients.numPoints).wait();
 
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
             if (pkg.settings.renderDebugGradientImages) {
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosX, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosX, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosY, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosY, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosZ, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosZ, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferRot, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferRot, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferScale, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferScale, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferOpacity, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferOpacity, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferAlbedo, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferAlbedo, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferBeta, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferBeta, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferDepthLoss, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferDepthLoss, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferDepthLossPos, float4{0},
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferDepthLossPos, float4{0.0f},
                                pkg.debugImages[cameraIndex].numPixels).wait();
             }
 
+            const uint32_t samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
 
-            int samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
-            for (int spp = 0; spp < samplesPerPixel; ++spp) {
-                ScopedTimer forwardTimer("Traced adjoint pass", spdlog::level::debug);
+            for (uint32_t spp = 0; spp < samplesPerPixel; ++spp) {
+                ScopedTimer forwardTimer("Traced adjoint pass", spdlog::level::info);
 
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait(); {
-                    ScopedTimer timer("Lauching: LaunchRayGenAdjointKernel");
-                    Log::PA_TRACE("Generating Adjoint Rays");
-                    launchRayGenAdjointKernel(pkg, spp, cameraIndex);
+                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+
+                {
+                    ScopedTimer timer("launchRayGenAdjointKernel");
+                    Log::PA_TRACE("Generating adjoint rays");
+                    launchRayGenAdjointKernel(pkg, spp, static_cast<uint32_t>(cameraIndex));
                 }
 
-                uint32_t raysPerFrame = pkg.sensors[cameraIndex].width * pkg.sensors[cameraIndex].height;
+                const uint32_t raysPerFrame =
+                    pkg.sensors[cameraIndex].width * pkg.sensors[cameraIndex].height;
+
                 uint32_t activeCount = raysPerFrame;
 
-                pkg.queue.fill(pkg.intermediates.pendingStageX, PendingAdjointStageX(), activeCount);
-                pkg.queue.fill(pkg.intermediates.pendingStageXY, PendingAdjointStageXY(), activeCount);
-                pkg.queue.fill(pkg.intermediates.completedGradientEvents, CompletedGradientEvent(), activeCount);
+                // One pending state slot per pathId/pixel.
+                // Clear the full pending arrays once per spp.
+                pkg.queue.fill(pkg.intermediates.pendingStageX, PendingAdjointStageX{}, raysPerFrame).wait();
+                pkg.queue.fill(pkg.intermediates.pendingStageXY, PendingAdjointStageXY{}, raysPerFrame).wait();
 
-
-                for (uint32_t bounce = 0; bounce < pkg.settings.maxAdjointBounces && activeCount > 0; ++bounce) {
+                for (uint32_t bounce = 0;
+                     bounce < pkg.settings.maxAdjointBounces && activeCount > 0;
+                     ++bounce) {
                     pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countCompletedGradientEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                    pkg.queue.wait(); {
-                        Log::PA_TRACE("Lauching: LaunchAdjointIntersectKernel");
-                        ScopedTimer timer("launchAdjointIntersectKernel");
+                    pkg.queue.fill(pkg.intermediates.countProjectionEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countProjectionScatterEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countReflectScatterEvents, static_cast<uint32_t>(0), 1);
+
+                    pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeCount);
+                    pkg.queue.wait();
+
+                    {
+                        Log::PA_TRACE("Launching adjoint intersect kernel");
+                        ScopedTimer timer("launchAdjointIntersectKernel", spdlog::level::debug);
                         launchAdjointIntersectKernel(pkg, spp, activeCount, bounce);
                     }
 
-                    uint32_t completedGradientContributions = 0;
-                    pkg.queue.memcpy(&completedGradientContributions, pkg.intermediates.countCompletedGradientEvents,
-                                     sizeof(uint32_t)).wait();
-                    completedGradientContributions = sycl::min(completedGradientContributions,
-                                                               pkg.intermediates.maxPendingAdjointStateCount);
-                    ScopedTimer timer("launchAdjointKernel");
-                    if (completedGradientContributions) {
-                        adjointContributionKernels(pkg, completedGradientContributions, cameraIndex);
-                    }
+                    uint32_t projectionEventCount = 0;
+                    uint32_t projectionScatterEventCount = 0;
+                    uint32_t reflectScatterEventCount = 0;
 
-                    // Count stats:
+                    pkg.queue.memcpy(
+                        &projectionEventCount,
+                        pkg.intermediates.countProjectionEvents,
+                        sizeof(uint32_t)).wait();
 
+                    pkg.queue.memcpy(
+                        &projectionScatterEventCount,
+                        pkg.intermediates.countProjectionScatterEvents,
+                        sizeof(uint32_t)).wait();
 
-                    //float opacityGrad = 0;
-                    //pkg.queue.memcpy(&opacityGrad, pkg.gradients.gradOpacity, sizeof(float)).wait();
-                    //Log::PA_ERROR("OpacityGrad: {}", opacityGrad);
+                    pkg.queue.memcpy(
+                        &reflectScatterEventCount,
+                        pkg.intermediates.countReflectScatterEvents,
+                        sizeof(uint32_t)).wait();
 
-                    {
-                        //ScopedTimer timer("generateNextRays");
-                        ////generateNextAdjointRays(pkg, activeCount);
-                        ////generateNextRays(pkg, activeCount);
+                    projectionEventCount = sycl::min(
+                        projectionEventCount,
+                        pkg.intermediates.maxProjectionEventCount);
+
+                    projectionScatterEventCount = sycl::min(
+                        projectionScatterEventCount,
+                        pkg.intermediates.maxProjectionScatterEventCount);
+
+                    reflectScatterEventCount = sycl::min(
+                        reflectScatterEventCount,
+                        pkg.intermediates.maxReflectScatterEventCount);
+
+                    if (projectionEventCount > 0 ||
+                        projectionScatterEventCount > 0 ||
+                        reflectScatterEventCount > 0) {
+                        ScopedTimer timer("adjointContributionKernels", spdlog::level::debug);
+
+                        adjointContributionKernels(
+                            pkg,
+                            projectionEventCount,
+                            projectionScatterEventCount,
+                            reflectScatterEventCount,
+                            static_cast<uint32_t>(cameraIndex));
                     }
 
                     uint32_t nextCount = 0;
-                    pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
-                    pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
-                                     nextCount * sizeof(RayState));
-                    pkg.queue.wait();
+                    pkg.queue.memcpy(
+                        &nextCount,
+                        pkg.intermediates.countExtensionOut,
+                        sizeof(uint32_t)).wait();
+
+                    if (nextCount > 0) {
+                        pkg.queue.memcpy(
+                            pkg.intermediates.primaryRays,
+                            pkg.intermediates.extensionRaysA,
+                            nextCount * sizeof(RayState)).wait();
+                    }
+
                     activeCount = nextCount;
-                    pkg.queue.wait();
                 }
             }
-            /*
-            {
-                Point point;
-                float3 grad;
-
-                pkg.queue.memcpy(&point, &pkg.scene.points[2], sizeof(Point));
-                pkg.queue.memcpy(&grad, &pkg.gradients.gradPosition[2], sizeof(float3));
-                pkg.queue.wait();
-
-                Log::PA_WARN("Pos: ({},{},{}) | grad: ({},{},{})", point.position.x(), point.position.y(),
-                             point.position.z(), grad.x(), grad.y(), grad.z());
-            }
-            {
-                Point point;
-                float3 grad;
-
-                pkg.queue.memcpy(&point, &pkg.scene.points[pkg.scene.pointCount - 1], sizeof(Point));
-                pkg.queue.memcpy(&grad, &pkg.gradients.gradPosition[pkg.scene.pointCount - 1], sizeof(float3));
-                pkg.queue.wait();
-
-                Log::PA_WARN("Pos: ({},{},{}) | grad: ({},{},{})", point.position.x(), point.position.y(),
-                             point.position.z(), grad.x(), grad.y(), grad.z());
-            }
-            */
         }
     }
 }

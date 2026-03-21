@@ -1707,189 +1707,96 @@ namespace Pale {
 
         globalCompletedBuffer[insertionIndex] = eventValue;
     }
+   SYCL_EXTERNAL inline PointCloudSurfaceRecord makePointCloudSurfaceRecord(
+        const WorldHit& worldHit,
+        const RayState& rayState,
+        const GPUSceneBuffers& scene) {
 
-    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX &state) {
-        state.valid = false;
+        PointCloudSurfaceRecord surfaceRecord{};
+        surfaceRecord.primitiveIndex = worldHit.primitiveIndex;
+        surfaceRecord.alphaGeom = worldHit.alphaGeom;
+        surfaceRecord.incomingDirection = rayState.ray.direction;
+
+        const Point& surfel = scene.points[worldHit.primitiveIndex];
+        surfaceRecord.uv = phiInverse(worldHit.hitPositionW, surfel);
+
+        const float3 tangentUWorld = surfel.scale.x() * surfel.tanU;
+        const float3 tangentVWorld = surfel.scale.y() * surfel.tanV;
+        const float3 canonicalNormal = normalize(cross(tangentUWorld, tangentVWorld));
+
+        const float signedCosineIncident = dot(canonicalNormal, -rayState.ray.direction);
+        surfaceRecord.sideSign = signNonZero(signedCosineIncident);
+
+        return surfaceRecord;
     }
 
-    SYCL_EXTERNAL inline void clearPendingAdjointStageXY(PendingAdjointStageXY &state) {
-        state.valid = false;
+    SYCL_EXTERNAL inline ReconstructedSurfelState reconstructSurfelState(
+        const Point& surfel,
+        const PointCloudSurfaceRecord& surfaceRecord) {
+
+        ReconstructedSurfelState reconstructedState{};
+        reconstructedState.position = phiMapping(surfel, surfaceRecord.uv.x(), surfaceRecord.uv.y());
+        reconstructedState.tangentUWorld = surfel.scale.x() * surfel.tanU;
+        reconstructedState.tangentVWorld = surfel.scale.y() * surfel.tanV;
+
+        const float3 scaledCross = cross(reconstructedState.tangentUWorld, reconstructedState.tangentVWorld);
+        reconstructedState.canonicalNormal = normalize(scaledCross);
+        reconstructedState.orientedNormal = static_cast<float>(surfaceRecord.sideSign) * reconstructedState.canonicalNormal;
+        reconstructedState.areaWorld = M_PIf * length(scaledCross);
+        return reconstructedState;
     }
 
-    SYCL_EXTERNAL inline PendingAdjointStageX makePendingStageX(
-        uint32_t pathId,
-        uint32_t pixelIndex,
-        const WorldHit &worldHit,
-        const RayState &rayState,
-        const float3 &throughput,
-        const float3 &orientedNormal,
-        GeometryType geometryType) {
-        PendingAdjointStageX pending{};
-        pending.valid = true;
-        pending.pathId = pathId;
-        pending.pixelIndex = pixelIndex;
+    template <typename EventType>
+    SYCL_EXTERNAL inline void appendEventAtomic(
+        uint32_t* countBuffer,
+        EventType* eventBuffer,
+        uint32_t maxEventCount,
+        const EventType& eventRecord) {
 
-        pending.xInstanceIndex = worldHit.instanceIndex;
-        pending.xPrimitiveIndex = worldHit.primitiveIndex;
-        pending.xGeometryType = geometryType;
+        auto eventCounter = sycl::atomic_ref<uint32_t,
+                                             sycl::memory_order::relaxed,
+                                             sycl::memory_scope::device,
+                                             sycl::access::address_space::global_space>(*countBuffer);
 
-        pending.xAlphaGeom = worldHit.alphaGeom;
-        pending.xCosine = dot(-rayState.ray.direction, orientedNormal);
-        pending.xPosition = worldHit.hitPositionW;
-        pending.xNormal = orientedNormal;
-        pending.xIncomingRay = rayState.ray;
-        pending.xPathThroughput = throughput;
-
-        return pending;
+        const uint32_t eventIndex = eventCounter.fetch_add(1);
+        if (eventIndex < maxEventCount) {
+            eventBuffer[eventIndex] = eventRecord;
+        }
     }
 
-    SYCL_EXTERNAL inline PendingAdjointStageXY makePendingStageXY(
-        const PendingAdjointStageX &stageX,
-        const WorldHit &worldHit,
-        const RayState &rayState,
-        const float3 &orientedNormal,
-        GeometryType geometryType) {
-        PendingAdjointStageXY pending{};
-        pending.valid = true;
+    template <typename PhotonMapType>
+    SYCL_EXTERNAL inline float3 evaluateOutgoingRadianceFromSurfel(
+        const Point& surfel,
+        const PointCloudSurfaceRecord& surfaceRecord,
+        const ReconstructedSurfelState& reconstructedState,
+        const PhotonMapType& photonMap) {
 
-        pending.pathId = stageX.pathId;
-        pending.pixelIndex = stageX.pixelIndex;
+        const float3 irradiance = gatherDiffuseIrradianceAtPoint(
+            reconstructedState.position,
+            reconstructedState.orientedNormal,
+            photonMap);
 
-        // Copy X
-        pending.xInstanceIndex = stageX.xInstanceIndex;
-        pending.xPrimitiveIndex = stageX.xPrimitiveIndex;
-        pending.xGeometryType = stageX.xGeometryType;
-        pending.xAlphaGeom = stageX.xAlphaGeom;
-        pending.xCosine = stageX.xCosine;
-        pending.xPosition = stageX.xPosition;
-        pending.xNormal = stageX.xNormal;
-        pending.xIncomingRay = stageX.xIncomingRay;
-        pending.xPathThroughput = stageX.xPathThroughput;
+        const float alpha = surfaceRecord.alphaGeom * surfel.opacity;
 
-        // Fill Y
-        pending.yInstanceIndex = worldHit.instanceIndex;
-        pending.yPrimitiveIndex = worldHit.primitiveIndex;
-        pending.yGeometryType = geometryType;
-        pending.yAlphaGeom = worldHit.alphaGeom;
-        pending.yCosine = dot(-rayState.ray.direction, orientedNormal);
-        pending.yPosition = worldHit.hitPositionW;
-        pending.yNormal = orientedNormal;
-        pending.yIncomingRay = rayState.ray;
-        pending.yPathThroughput = rayState.pathThroughput;
+        const float3 reflectedRadiance =
+            irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf * alpha;
 
-        return pending;
+        float3 emittedRadiance =
+            surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld)) * alpha;
+
+        if (surfel.power > 0.0f && surfaceRecord.sideSign < 0) {
+            emittedRadiance = float3{0.0f, 0.0f, 0.0f};
+        }
+
+        return emittedRadiance + reflectedRadiance;
     }
 
-    SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventXYZ(
-        const PendingAdjointStageXY &stageXY,
-        const WorldHit &worldHit,
-        const RayState &rayState,
-        const float3 &orientedNormal,
-        GeometryType geometryType) {
-        CompletedGradientEvent completed{};
-        completed.valid = true;
-
-        completed.pathId = stageXY.pathId;
-        completed.pixelIndex = stageXY.pixelIndex;
-
-        // X
-        completed.xInstanceIndex = stageXY.xInstanceIndex;
-        completed.xPrimitiveIndex = stageXY.xPrimitiveIndex;
-        completed.xGeometryType = stageXY.xGeometryType;
-        completed.xAlphaGeom = stageXY.xAlphaGeom;
-        completed.xCosine = stageXY.xCosine;
-        completed.xPosition = stageXY.xPosition;
-        completed.xNormal = stageXY.xNormal;
-        completed.xIncomingRay = stageXY.xIncomingRay;
-        completed.xPathThroughput = stageXY.xPathThroughput;
-
-        // Y
-        completed.yInstanceIndex = stageXY.yInstanceIndex;
-        completed.yPrimitiveIndex = stageXY.yPrimitiveIndex;
-        completed.yGeometryType = stageXY.yGeometryType;
-        completed.yAlphaGeom = stageXY.yAlphaGeom;
-        completed.yCosine = stageXY.yCosine;
-        completed.yPosition = stageXY.yPosition;
-        completed.yNormal = stageXY.yNormal;
-        completed.yIncomingRay = stageXY.yIncomingRay;
-        completed.yPathThroughput = stageXY.yPathThroughput;
-
-        // Z
-        completed.zInstanceIndex = worldHit.instanceIndex;
-        completed.zPrimitiveIndex = worldHit.primitiveIndex;
-        completed.zGeometryType = geometryType;
-        completed.zAlphaGeom = worldHit.alphaGeom;
-        completed.zCosine = dot(-rayState.ray.direction, orientedNormal);
-        completed.zPosition = worldHit.hitPositionW;
-        completed.zNormal = orientedNormal;
-        completed.zIncomingRay = rayState.ray;
-        completed.zPathThroughput = rayState.pathThroughput;
-
-        return completed;
+    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX& pendingStage) {
+        pendingStage = PendingAdjointStageX{};
     }
 
-    SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventXY(
-        const PendingAdjointStageX &stageX,
-        const WorldHit &worldHit,
-        const RayState &rayState,
-        const float3 &throughput,
-        const float3 &orientedNormal,
-        GeometryType geometryType) {
-        CompletedGradientEvent completed{};
-        completed.valid = true;
-
-        completed.pathId = stageX.pathId;
-        completed.pixelIndex = stageX.pixelIndex;
-        completed.kind = PendingAdjointKind::ProjectionScatter;
-
-        // X
-        completed.xInstanceIndex = stageX.xInstanceIndex;
-        completed.xPrimitiveIndex = stageX.xPrimitiveIndex;
-        completed.xGeometryType = stageX.xGeometryType;
-        completed.xAlphaGeom = stageX.xAlphaGeom;
-        completed.xCosine = stageX.xCosine;
-        completed.xPosition = stageX.xPosition;
-        completed.xNormal = stageX.xNormal;
-        completed.xIncomingRay = stageX.xIncomingRay;
-        completed.xPathThroughput = throughput;
-
-        // y
-        completed.yInstanceIndex = worldHit.instanceIndex;
-        completed.yPrimitiveIndex = worldHit.primitiveIndex;
-        completed.yGeometryType = geometryType;
-        completed.yAlphaGeom = worldHit.alphaGeom;
-        completed.yCosine = dot(-rayState.ray.direction, orientedNormal);
-        completed.yPosition = worldHit.hitPositionW;
-        completed.yNormal = orientedNormal;
-        completed.yIncomingRay = rayState.ray;
-        return completed;
-    }
-
-    SYCL_EXTERNAL inline CompletedGradientEvent makeCompletedGradientEventX(
-        const WorldHit &worldHit,
-        const RayState &rayState,
-        const float3 &throughput,
-        const float3 &orientedNormal,
-        GeometryType geometryType) {
-        CompletedGradientEvent completed{};
-        completed.valid = true;
-
-        completed.pathId = rayState.pathId;
-        completed.pixelIndex = rayState.pixelIndex;
-        completed.kind = PendingAdjointKind::Projection;
-
-        // y
-        completed.xInstanceIndex = worldHit.instanceIndex;
-        completed.xPrimitiveIndex = worldHit.primitiveIndex;
-        completed.xGeometryType = geometryType;
-        completed.xAlphaGeom = worldHit.alphaGeom;
-        completed.xCosine = dot(-rayState.ray.direction, orientedNormal);
-        completed.xPosition = worldHit.hitPositionW;
-        completed.xNormal = orientedNormal;
-        completed.xIncomingRay = rayState.ray;
-        completed.xPathThroughput = throughput;
-
-        return completed;
+    SYCL_EXTERNAL inline void clearPendingAdjointStageXY(PendingAdjointStageXY& pendingStage) {
+        pendingStage = PendingAdjointStageXY{};
     }
 
     SYCL_EXTERNAL inline float computeEndpointCosine(const Ray &incomingRay, const float3 &endpointNormalW) {
