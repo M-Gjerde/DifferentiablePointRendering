@@ -218,6 +218,39 @@ int main(int argc, char** argv) {
     bool renderPhotonMapping = true;
     bool renderLightTracing = !true;
 
+    if (renderPhotonMapping) {
+        Pale::PathTracerSettings settings;
+        settings.integratorKind = Pale::IntegratorKind::photonMapping;
+        settings.photonsPerLaunch = 1e6;
+        settings.maxBounces = 4;
+        settings.numForwardPasses = 500;
+        settings.numGatherPasses = 1;
+        settings.maxAdjointBounces = 5; // 1 = Projection only // 2 starts including transmittance
+        settings.adjointSamplesPerPixel = 512;
+        settings.renderDebugGradientImages = true;
+        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
+        tracer.setScene(gpu, buildProducts);
+
+        Pale::Log::PA_INFO("Forward Render Pass...");
+        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+        tracer.renderForward(sensors);
+
+        if (settings.renderDebugGradientImages) {
+            Pale::Log::PA_INFO("Adjoint Render Pass...");
+            std::vector<Pale::SensorGPU> availableSensors =
+                Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+
+
+            std::vector<Pale::SensorGPU> selectedAdjointSensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+
+            std::vector<Pale::DebugImages> debugImages(selectedAdjointSensors.size());
+            Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
+                                                                         debugImages.data());
+
+            tracer.renderBackward(selectedAdjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
+        }
+    }
+    /*
     if (renderLightTracing) {
         //  cuda/rocm
         Pale::PathTracerSettings settings;
@@ -236,6 +269,7 @@ int main(int argc, char** argv) {
         //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
 
         tracer.renderForward(sensors); // films is span/array
+
 
         for (const auto& sensor : sensors) {
             std::vector<uint8_t> rgba =
@@ -268,7 +302,9 @@ int main(int argc, char** argv) {
         }
     }
 
+*/
 
+    /*
     if (renderPhotonMapping) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
@@ -543,8 +579,9 @@ int main(int argc, char** argv) {
                 }
             }
         }
-    }
 
+    }
+    */
 
     /*
 

@@ -383,6 +383,56 @@ namespace Pale {
         float areaWorld = 0.0f;
     };
 
+    struct SurfelGradientPayload {
+        float gradBeta = 0.0f;
+        float gradEta = 0.0f;
+        float3 gradRho = float3{0.0f, 0.0f, 0.0f};
+        float3 gradPosition = float3{0.0f, 0.0f, 0.0f};
+        float gradScaleU = 0.0f;
+        float gradScaleV = 0.0f;
+        float3 gradTangentU = float3{0.0f, 0.0f, 0.0f};
+        float3 gradTangentV = float3{0.0f, 0.0f, 0.0f};
+    };
+
+    struct SurfelGradientRecord {
+        uint32_t primitiveIndex;
+
+        float gradBeta;
+        float gradEta;
+
+        float gradRhoX;
+        float gradRhoY;
+        float gradRhoZ;
+
+        float gradPositionX;
+        float gradPositionY;
+        float gradPositionZ;
+
+        float gradScaleU;
+        float gradScaleV;
+
+        float gradTangentUX;
+        float gradTangentUY;
+        float gradTangentUZ;
+
+        float gradTangentVX;
+        float gradTangentVY;
+        float gradTangentVZ;
+    };
+
+    struct GradientRecordRanges {
+        uint32_t projectionOffset = 0;
+        uint32_t projectionCount = 0;
+
+        uint32_t projectionScatterOffset = 0;
+        uint32_t projectionScatterCount = 0;
+
+        uint32_t detachedOffset = 0;
+        uint32_t detachedCount = 0;
+
+        uint32_t totalCount = 0;
+    };
+
     struct CompletedGradientEvent {
         bool valid = false;
 
@@ -552,10 +602,15 @@ namespace Pale {
         AttachedGradientScatterEvent* projectionScatterEvents = nullptr;
         DetachedThreePointGradientEvent* reflectScatterEvents = nullptr;
 
+        SurfelGradientRecord *gradientRecords = nullptr;
+        uint32_t maxGradientRecordCount = 0;
+
+
         uint32_t* countProjectionEvents = nullptr;
         uint32_t* countProjectionScatterEvents = nullptr;
         uint32_t* countReflectScatterEvents = nullptr;
 
+        // capacities
         uint32_t maxProjectionEventCount = 0;
         uint32_t maxProjectionScatterEventCount = 0;
         uint32_t maxReflectScatterEventCount = 0;

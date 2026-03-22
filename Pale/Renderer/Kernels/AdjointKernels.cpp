@@ -11,6 +11,8 @@
 #include "Core/ScopedTimer.h"
 #include "Renderer/Kernels/KernelHelpers.h"
 
+import Pale.Log;
+
 
 namespace Pale {
     void launchRayGenAdjointKernel(RenderPackage &pkg, int spp, uint32_t cameraIndex) {
@@ -392,13 +394,14 @@ namespace Pale {
 
     static void launchAttachedProjectionKernel(
         RenderPackage &pkg,
-        uint32_t projectionEventCount) {
+        uint32_t projectionEventCount,
+        uint32_t baseOffset) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
-        auto &gradients = pkg.gradients;
         const auto &photonMap = pkg.intermediates.map;
         AttachedGradientProjectionEvent *projectionEvents = pkg.intermediates.projectionEvents;
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
 
@@ -407,6 +410,7 @@ namespace Pale {
                 sycl::range<1>(projectionEventCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t eventIndex = globalId[0];
+                    const uint32_t recordIndex = baseOffset + eventIndex;
                     const AttachedGradientProjectionEvent eventRecord = projectionEvents[eventIndex];
 
                     const Point &surfelX = scene.points[eventRecord.xSurface.primitiveIndex];
@@ -429,10 +433,6 @@ namespace Pale {
 
                     const float opacityGradientScalar =
                             sum(opacityGradientContribution) * invSpp;
-
-                    atomicAddFloat(
-                        gradients.gradOpacity[eventRecord.xSurface.primitiveIndex],
-                        opacityGradientScalar);
 
                     const float u = eventRecord.xSurface.uv.x();
                     const float v = eventRecord.xSurface.uv.y();
@@ -467,23 +467,29 @@ namespace Pale {
                      pathWeight[1] * dAlphaEffDPosition * outgoingRadiance[1] +
                      pathWeight[2] * dAlphaEffDPosition * outgoingRadiance[2]) * invSpp;
 
-                    atomicAddFloat3(
-                        gradients.gradPosition[eventRecord.xSurface.primitiveIndex],
-                        positionGradient);
+                    SurfelGradientRecord gradientRecord = {};
+                    gradientRecord.primitiveIndex = eventRecord.xSurface.primitiveIndex;
+                    gradientRecord.gradEta = opacityGradientScalar;
+                    gradientRecord.gradPositionX = positionGradient.x();
+                    gradientRecord.gradPositionY = positionGradient.y();
+                    gradientRecord.gradPositionZ = positionGradient.z();
+
+                    gradientRecords[recordIndex] = gradientRecord;
                 });
         }).wait();
     }
 
     static void launchAttachedScatterKernel(
         RenderPackage &pkg,
-        uint32_t projectionScatterEventCount) {
+        uint32_t projectionScatterEventCount,
+        uint32_t baseOffset) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
-        auto &gradients = pkg.gradients;
         const auto &photonMap = pkg.intermediates.map;
         AttachedGradientScatterEvent *projectionScatterEvents =
                 pkg.intermediates.projectionScatterEvents;
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
 
@@ -492,6 +498,9 @@ namespace Pale {
                 sycl::range<1>(projectionScatterEventCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t eventIndex = globalId[0];
+                    const uint32_t xRecordIndex = baseOffset + 2u * eventIndex + 0u;
+                    const uint32_t yRecordIndex = baseOffset + 2u * eventIndex + 1u;
+
                     const AttachedGradientScatterEvent eventRecord =
                             projectionScatterEvents[eventIndex];
 
@@ -509,6 +518,7 @@ namespace Pale {
                                 eventRecord.ySurface,
                                 yState,
                                 photonMap);
+
 
                     const float3 vectorXToY = yState.position - xState.position;
                     const float distanceSquared = dot(vectorXToY, vectorXToY);
@@ -547,46 +557,60 @@ namespace Pale {
                      pathWeight[1] * transportWithoutGeometricTerm[1] +
                      pathWeight[2] * transportWithoutGeometricTerm[2]) / pAreaY;
 
-                    float3 gradientWrtHitPosition = scalarWeight * dGeometricTermDX;
+                    float3 gradientWrtHitPositionX = scalarWeight * dGeometricTermDX;
 
                     if (eventRecord.xSurface.isAttached) {
                         const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
                             eventRecord.xSurface.incomingDirection,
                             xState.orientedNormal);
-                        gradientWrtHitPosition =
-                                transpose(hitPointJacobian) * gradientWrtHitPosition;
+                        gradientWrtHitPositionX =
+                                transpose(hitPointJacobian) * gradientWrtHitPositionX;
                     }
 
-                    /*
-                    atomicAddFloat3(
-                        gradients.gradPosition[eventRecord.xSurface.primitiveIndex],
-                        gradientWrtHitPosition * invSpp);
-                    */
                     const float3 dGeometricTermDY = computeGeometricTermGradientWrtEndpoint(
                         xState.position,
                         yState.position,
                         xState.orientedNormal,
                         yState.orientedNormal);
 
-                    /*
-                    atomicAddFloat3(
-                        gradients.gradPosition[eventRecord.ySurface.primitiveIndex],
-                        (scalarWeight * dGeometricTermDY) * invSpp);
-                    */
+                    const float3 gradientWrtHitPositionY =
+                            scalarWeight * dGeometricTermDY;
+
+                    const float3 xContribution = gradientWrtHitPositionX * invSpp;
+                    const float3 yContribution = gradientWrtHitPositionY * invSpp;
+
+                    const uint32_t xPrimitiveIndex = eventRecord.xSurface.primitiveIndex;
+                    const uint32_t yPrimitiveIndex = eventRecord.ySurface.primitiveIndex;
+
+
+                    SurfelGradientRecord xRecord{};
+                    xRecord.primitiveIndex = xPrimitiveIndex;
+                    xRecord.gradPositionX = xContribution.x();
+                    xRecord.gradPositionY = xContribution.y();
+                    xRecord.gradPositionZ = xContribution.z();
+                    gradientRecords[xRecordIndex] = xRecord;
+
+                    SurfelGradientRecord yRecord{};
+                    yRecord.primitiveIndex = yPrimitiveIndex;
+                    yRecord.gradPositionX = yContribution.x();
+                    yRecord.gradPositionY = yContribution.y();
+                    yRecord.gradPositionZ = yContribution.z();
+                    gradientRecords[yRecordIndex] = yRecord;
                 });
         }).wait();
     }
 
     static void launchDetachedGradientKernel(
         RenderPackage &pkg,
-        uint32_t reflectScatterEventCount) {
+        uint32_t reflectScatterEventCount,
+        uint32_t baseOffset) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
-        auto &gradients = pkg.gradients;
         const auto &photonMap = pkg.intermediates.map;
         DetachedThreePointGradientEvent *reflectScatterEvents =
                 pkg.intermediates.reflectScatterEvents;
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
         const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
@@ -596,6 +620,8 @@ namespace Pale {
                 sycl::range<1>(reflectScatterEventCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t eventIndex = globalId[0];
+                    const uint32_t recordIndex = baseOffset + eventIndex;
+
                     const DetachedThreePointGradientEvent eventRecord =
                             reflectScatterEvents[eventIndex];
 
@@ -610,12 +636,17 @@ namespace Pale {
                     const ReconstructedSurfelState zState =
                             reconstructSurfelState(surfelZ, eventRecord.zSurface);
 
+                    /*
                     const float3 outgoingRadianceZ =
                             evaluateOutgoingRadianceFromSurfel(
                                 surfelZ,
                                 eventRecord.zSurface,
                                 zState,
                                 photonMap);
+                    */
+
+                    const float3 outgoingRadianceZ = float3{0.0f};
+
 
                     const float3 vectorYToZ = zState.position - yState.position;
                     const float distanceSquaredYZ = dot(vectorYToZ, vectorYToZ);
@@ -689,13 +720,44 @@ namespace Pale {
                             (pAreaY * settings.sampling.qReflect);
 
                     const float3 gradientWrtYPosition =
-                            (scalarWeightWithoutAreaZ / pAreaZ) * dGeometricTermDY;
+                            (scalarWeightWithoutAreaZ / pAreaZ) * dGeometricTermDY * invSpp;
 
-                    /*
-                    atomicAddFloat3(
-                        gradients.gradPosition[eventRecord.ySurface.primitiveIndex],
-                        gradientWrtYPosition * invSpp);
-                    */
+                    SurfelGradientRecord gradientRecord{};
+                    gradientRecord.primitiveIndex = eventRecord.ySurface.primitiveIndex;
+                    gradientRecord.gradPositionX = gradientWrtYPosition.x();
+                    gradientRecord.gradPositionY = gradientWrtYPosition.y();
+                    gradientRecord.gradPositionZ = gradientWrtYPosition.z();
+
+                    gradientRecords[recordIndex] = gradientRecord;
+                });
+        }).wait();
+    }
+
+    template<typename KernelTag>
+    static void reduceSurfelGradientRecords(
+        RenderPackage &pkg,
+        uint32_t gradientRecordCount) {
+        auto &queue = pkg.queue;
+        auto gradients = pkg.gradients;
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
+
+        queue.submit([&](sycl::handler &commandGroupHandler) {
+            commandGroupHandler.parallel_for<KernelTag>(
+                sycl::range<1>(gradientRecordCount),
+                [=](sycl::id<1> globalId) {
+                    const uint32_t recordIndex = globalId[0];
+                    const SurfelGradientRecord gradientRecord = gradientRecords[recordIndex];
+
+                    if (gradientRecord.primitiveIndex == kInvalidIndex) {
+                        return;
+                    }
+
+                    atomicAddFloat(gradients.gradPosition[gradientRecord.primitiveIndex].x(),
+                                   gradientRecord.gradPositionX);
+                    atomicAddFloat(gradients.gradPosition[gradientRecord.primitiveIndex].y(),
+                                   gradientRecord.gradPositionY);
+                    atomicAddFloat(gradients.gradPosition[gradientRecord.primitiveIndex].z(),
+                                   gradientRecord.gradPositionZ);
                 });
         }).wait();
     }
@@ -708,19 +770,52 @@ namespace Pale {
         uint32_t cameraIndex) {
         (void) cameraIndex;
 
+        const GradientRecordRanges ranges = makeGradientRecordRanges(
+            projectionEventCount,
+            projectionScatterEventCount,
+            reflectScatterEventCount);
+
+        if (ranges.totalCount > pkg.intermediates.maxGradientRecordCount) {
+            throw std::runtime_error("gradient record scratch buffer too small");
+        }
+
+
+        Log::PA_DEBUG(
+            "Event counts: projection={}, projectionScatter={}, reflectScatter={}",
+            projectionEventCount,
+            projectionScatterEventCount,
+            reflectScatterEventCount);
+
+
         if (projectionEventCount > 0) {
             ScopedTimer timer("launchAttachedProjectionKernel", spdlog::level::debug);
-            launchAttachedProjectionKernel(pkg, projectionEventCount);
+            launchAttachedProjectionKernel(
+                pkg,
+                projectionEventCount,
+                ranges.projectionOffset);
         }
 
         if (projectionScatterEventCount > 0) {
             ScopedTimer timer("launchAttachedScatterKernel", spdlog::level::debug);
-            launchAttachedScatterKernel(pkg, projectionScatterEventCount);
+            launchAttachedScatterKernel(
+                pkg,
+                projectionScatterEventCount,
+                ranges.projectionScatterOffset);
         }
 
         if (reflectScatterEventCount > 0) {
             ScopedTimer timer("launchDetachedGradientKernel", spdlog::level::debug);
-            launchDetachedGradientKernel(pkg, reflectScatterEventCount);
+            launchDetachedGradientKernel(
+                pkg,
+                reflectScatterEventCount,
+                ranges.detachedOffset);
+        }
+
+        if (ranges.totalCount > 0) {
+            ScopedTimer timer("reduceSurfelGradientRecords", spdlog::level::debug);
+            reduceSurfelGradientRecords<class reduceSurfelGradientRecordsTag>(
+                pkg,
+                ranges.totalCount);
         }
     }
 }

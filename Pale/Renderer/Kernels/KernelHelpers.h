@@ -1995,6 +1995,28 @@ namespace Pale {
         return inverseAreaPdfGradient;
     }
 
+    SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
+           uint32_t projectionEventCount,
+           uint32_t projectionScatterEventCount,
+           uint32_t reflectScatterEventCount) {
+        GradientRecordRanges ranges{};
+
+        ranges.projectionOffset = 0;
+        ranges.projectionCount = projectionEventCount;
+
+        ranges.projectionScatterOffset = ranges.projectionOffset + ranges.projectionCount;
+        ranges.projectionScatterCount = 2u * projectionScatterEventCount;
+
+        ranges.detachedOffset = ranges.projectionScatterOffset + ranges.projectionScatterCount;
+        ranges.detachedCount = reflectScatterEventCount;
+
+        ranges.totalCount = ranges.detachedOffset + ranges.detachedCount;
+        return ranges;
+    }
+
+    SYCL_EXTERNAL inline bool isZeroFloat3(const float3 &value) {
+        return value.x() == 0.0f && value.y() == 0.0f && value.z() == 0.0f;
+    }
 
 
 }

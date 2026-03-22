@@ -238,7 +238,6 @@ namespace Pale {
                                     contribution);
                             }
 
-
                             RayState nextState{};
                             // Spawn next ray
                             nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-5f);

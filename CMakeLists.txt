@@ -111,6 +111,8 @@ target_compile_options(PaleLib
         -fopenmp=libomp
         PRIVATE
         $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer>
+        $<$<CONFIG:Release>:-O3>
+
 )
 
 target_link_libraries(PaleLib
@@ -146,6 +148,8 @@ target_compile_options(${PROJECT_NAME}
         PRIVATE
         -fopenmp=libomp
         $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer>
+        $<$<CONFIG:Release>:-O3>
+
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE PaleLib)
 # If main.cpp itself submits SYCL (unlikely), also decorate the exe:
@@ -198,6 +202,8 @@ if (BUILD_PYBIND)
             PRIVATE
             -fopenmp=libomp
             $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer>
+            $<$<CONFIG:Release>:-O3>
+
     )
 
     # If the bindings submit SYCL, decorate the module as well

@@ -5,7 +5,6 @@ module;
 #include <vector>
 #include <cstdint>
 #include <algorithm>
-#include <cfloat>
 #include <sycl/sycl.hpp>
 
 #include <Renderer/GPUDataStructures.h>

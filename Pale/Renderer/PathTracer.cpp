@@ -16,7 +16,8 @@ import Pale.Log;
 import Pale.Render.BVH;
 
 namespace Pale {
-    PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings), m_sessionSeed(settings.random.seed) {
+    PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings),
+        m_sessionSeed(settings.random.seed) {
     }
 
     void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
@@ -65,110 +66,121 @@ namespace Pale {
         allocateIntermediates(newCapacity);
     }
 
-void PathTracer::allocateIntermediates(uint32_t newCapacity) {
-    freeIntermediates();
-    m_rayQueueCapacity = newCapacity;
+    void PathTracer::allocateIntermediates(uint32_t newCapacity) {
+        freeIntermediates();
+        m_rayQueueCapacity = newCapacity;
 
-    // --- primary buffers ---
-    const std::size_t sizePrimaryRaysBytes =
-        sizeof(RayState) * m_rayQueueCapacity;
-    m_intermediates.primaryRays =
-        sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated primaryRays: {}", Utils::formatBytes(sizePrimaryRaysBytes));
+        // --- primary buffers ---
+        const std::size_t sizePrimaryRaysBytes =
+                sizeof(RayState) * m_rayQueueCapacity;
+        m_intermediates.primaryRays =
+                sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated primaryRays: {}", Utils::formatBytes(sizePrimaryRaysBytes));
 
-    const std::size_t sizeExtensionRaysBytes =
-        sizeof(RayState) * m_rayQueueCapacity;
-    m_intermediates.extensionRaysA =
-        sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated extensionRaysA: {}", Utils::formatBytes(sizeExtensionRaysBytes));
+        const std::size_t sizeExtensionRaysBytes =
+                sizeof(RayState) * m_rayQueueCapacity;
+        m_intermediates.extensionRaysA =
+                sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated extensionRaysA: {}", Utils::formatBytes(sizeExtensionRaysBytes));
 
-    const std::size_t sizeHitRecordsBytes =
-        sizeof(WorldHit) * m_rayQueueCapacity;
-    m_intermediates.hitRecords =
-        sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated hitRecords: {}", Utils::formatBytes(sizeHitRecordsBytes));
+        const std::size_t sizeHitRecordsBytes =
+                sizeof(WorldHit) * m_rayQueueCapacity;
+        m_intermediates.hitRecords =
+                sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated hitRecords: {}", Utils::formatBytes(sizeHitRecordsBytes));
 
-    const std::size_t sizeContributionRecordsBytes =
-        sizeof(HitInfoContribution) * m_rayQueueCapacity;
-    m_intermediates.hitContribution =
-        sycl::malloc_device<HitInfoContribution>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated hitContribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
-    m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
+        const std::size_t sizeContributionRecordsBytes =
+                sizeof(HitInfoContribution) * m_rayQueueCapacity;
+        m_intermediates.hitContribution =
+                sycl::malloc_device<HitInfoContribution>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated hitContribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
+        m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
 
-    // --- compact adjoint event buffers ---
-    const std::size_t sizeProjectionEventsBytes =
-        sizeof(AttachedGradientProjectionEvent) * m_rayQueueCapacity;
-    m_intermediates.projectionEvents =
-        sycl::malloc_device<AttachedGradientProjectionEvent>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated projectionEvents: {}", Utils::formatBytes(sizeProjectionEventsBytes));
-    m_intermediates.maxProjectionEventCount = m_rayQueueCapacity;
+        // --- compact adjoint event buffers ---
+        const std::size_t sizeProjectionEventsBytes =
+                sizeof(AttachedGradientProjectionEvent) * m_rayQueueCapacity;
+        m_intermediates.projectionEvents =
+                sycl::malloc_device<AttachedGradientProjectionEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated projectionEvents: {}", Utils::formatBytes(sizeProjectionEventsBytes));
+        m_intermediates.maxProjectionEventCount = m_rayQueueCapacity;
 
-    const std::size_t sizeProjectionScatterEventsBytes =
-        sizeof(AttachedGradientScatterEvent) * m_rayQueueCapacity;
-    m_intermediates.projectionScatterEvents =
-        sycl::malloc_device<AttachedGradientScatterEvent>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated projectionScatterEvents: {}", Utils::formatBytes(sizeProjectionScatterEventsBytes));
-    m_intermediates.maxProjectionScatterEventCount = m_rayQueueCapacity;
+        const std::size_t sizeProjectionScatterEventsBytes =
+                sizeof(AttachedGradientScatterEvent) * m_rayQueueCapacity;
+        m_intermediates.projectionScatterEvents =
+                sycl::malloc_device<AttachedGradientScatterEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated projectionScatterEvents: {}", Utils::formatBytes(sizeProjectionScatterEventsBytes));
+        m_intermediates.maxProjectionScatterEventCount = m_rayQueueCapacity;
 
-    const std::size_t sizeReflectScatterEventsBytes =
-        sizeof(DetachedThreePointGradientEvent) * m_rayQueueCapacity;
-    m_intermediates.reflectScatterEvents =
-        sycl::malloc_device<DetachedThreePointGradientEvent>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(sizeReflectScatterEventsBytes));
-    m_intermediates.maxReflectScatterEventCount = m_rayQueueCapacity;
+        const std::size_t sizeReflectScatterEventsBytes =
+                sizeof(DetachedThreePointGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.reflectScatterEvents =
+                sycl::malloc_device<DetachedThreePointGradientEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(sizeReflectScatterEventsBytes));
+        m_intermediates.maxReflectScatterEventCount = m_rayQueueCapacity;
 
-    // --- pending adjoint states ---
-    const std::size_t sizePendingAdjointStatesXBytes =
-        sizeof(PendingAdjointStageX) * m_rayQueueCapacity;
-    m_intermediates.pendingStageX =
-        sycl::malloc_device<PendingAdjointStageX>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated pendingStageX: {}", Utils::formatBytes(sizePendingAdjointStatesXBytes));
+        // --- pending adjoint states ---
+        const std::size_t sizePendingAdjointStatesXBytes =
+                sizeof(PendingAdjointStageX) * m_rayQueueCapacity;
+        m_intermediates.pendingStageX =
+                sycl::malloc_device<PendingAdjointStageX>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated pendingStageX: {}", Utils::formatBytes(sizePendingAdjointStatesXBytes));
 
-    const std::size_t sizePendingAdjointStatesXYBytes =
-        sizeof(PendingAdjointStageXY) * m_rayQueueCapacity;
-    m_intermediates.pendingStageXY =
-        sycl::malloc_device<PendingAdjointStageXY>(m_rayQueueCapacity, m_queue);
-    Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingAdjointStatesXYBytes));
+        const std::size_t sizePendingAdjointStatesXYBytes =
+                sizeof(PendingAdjointStageXY) * m_rayQueueCapacity;
+        m_intermediates.pendingStageXY =
+                sycl::malloc_device<PendingAdjointStageXY>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingAdjointStatesXYBytes));
+        m_intermediates.maxPendingAdjointStateCount = m_rayQueueCapacity;
 
-    m_intermediates.maxPendingAdjointStateCount = m_rayQueueCapacity;
 
-    // --- counters ---
-    m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
-    m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
-    m_intermediates.countProjectionEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-    m_intermediates.countProjectionScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-    m_intermediates.countReflectScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-    m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
+        const uint32_t gradientRecordCapacity = 4u * m_rayQueueCapacity;
+        const std::size_t sizeGradientRecordsBytes =
+                sizeof(SurfelGradientRecord) * gradientRecordCapacity;
 
-    m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
-    m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
-    m_queue.memset(m_intermediates.countProjectionEvents, 0, sizeof(uint32_t));
-    m_queue.memset(m_intermediates.countProjectionScatterEvents, 0, sizeof(uint32_t));
-    m_queue.memset(m_intermediates.countReflectScatterEvents, 0, sizeof(uint32_t));
-    m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
-    m_queue.wait();
+        m_intermediates.gradientRecords =
+                sycl::malloc_device<SurfelGradientRecord>(gradientRecordCapacity, m_queue);
+        m_intermediates.maxGradientRecordCount = gradientRecordCapacity;
+        Log::PA_TRACE("Allocated gradientRecords: {}", Utils::formatBytes(sizeGradientRecordsBytes));
+        Log::PA_INFO("sizeof(SurfelGradientRecord) = {}", sizeof(SurfelGradientRecord));
 
-    const std::size_t counterBytes =
-        sizeof(uint32_t) * 6;
+        // --- counters ---
+        m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countProjectionEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countProjectionScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countReflectScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
 
-    const std::size_t intermediatesTotalBytes =
-        sizePrimaryRaysBytes +
-        sizeExtensionRaysBytes +
-        sizeHitRecordsBytes +
-        sizeContributionRecordsBytes +
-        sizeProjectionEventsBytes +
-        sizeProjectionScatterEventsBytes +
-        sizeReflectScatterEventsBytes +
-        sizePendingAdjointStatesXBytes +
-        sizePendingAdjointStatesXYBytes +
-        counterBytes;
+        m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countProjectionEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countProjectionScatterEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countReflectScatterEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
+        m_queue.wait();
 
-    Log::PA_INFO("Total intermediates memory: {}", Utils::formatBytes(intermediatesTotalBytes));
-}
+        const std::size_t counterBytes =
+                sizeof(uint32_t) * 6;
+
+        const std::size_t intermediatesTotalBytes =
+                sizePrimaryRaysBytes +
+                sizeExtensionRaysBytes +
+                sizeHitRecordsBytes +
+                sizeContributionRecordsBytes +
+                sizeProjectionEventsBytes +
+                sizeProjectionScatterEventsBytes +
+                sizeReflectScatterEventsBytes +
+                sizePendingAdjointStatesXBytes +
+                sizePendingAdjointStatesXYBytes +
+                sizeGradientRecordsBytes +
+                counterBytes;
+
+        Log::PA_INFO("Total intermediates memory: {}", Utils::formatBytes(intermediatesTotalBytes));
+    }
 
     void PathTracer::allocatePhotonMap() {
         freePhotonMap();
-        constexpr std::size_t maxPhotonBytes = 10ull * 1024ull * 1024ull * 1024ull; // 10GB
+        constexpr std::size_t maxPhotonBytes = 6ull * 1024ull * 1024ull * 1024ull; // 10GB
         std::size_t photonSize = sizeof(DevicePhotonSurface);
         // desired photon count
         std::size_t requestedPhotons = m_settings.photonsPerLaunch * static_cast<uint64_t>(
@@ -183,9 +195,12 @@ void PathTracer::allocateIntermediates(uint32_t newCapacity) {
 
         Log::PA_INFO("Photon map max size: {}M photons (~{}). Launching {}M photons",
                      maxPhotons / 1e6f,
-                     Utils::formatBytes(finalPhotonCount * photonSize), m_settings.numForwardPasses * m_settings.photonsPerLaunch / 1e6f);
+                     Utils::formatBytes(finalPhotonCount * photonSize),
+                     m_settings.numForwardPasses * m_settings.photonsPerLaunch / 1e6f);
 
-        Log::PA_INFO("Expected Storage Capacity: {}%", (m_settings.numForwardPasses * m_settings.photonsPerLaunch * m_settings.maxBounces / static_cast<float>(finalPhotonCount))* 100.0f);
+        Log::PA_INFO("Expected Storage Capacity: {}%",
+                     (m_settings.numForwardPasses * m_settings.photonsPerLaunch * m_settings.maxBounces / static_cast<
+                          float>(finalPhotonCount)) * 100.0f);
 
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.map.photons, 0,
@@ -196,65 +211,68 @@ void PathTracer::allocateIntermediates(uint32_t newCapacity) {
         Log::PA_INFO("Total photon map memory: {}", Utils::formatBytes(photonMapTotalBytes));
     }
 
-    template <typename T>
-static void freeDevicePtr(T*& devicePointer, sycl::queue& queue) {
+    template<typename T>
+    static void freeDevicePtr(T *&devicePointer, sycl::queue &queue) {
         if (devicePointer) {
             sycl::free(devicePointer, queue);
             devicePointer = nullptr;
         }
     }
 
-void PathTracer::freeIntermediates() {
-    if (!m_rayQueueCapacity) {
-        return;
+    void PathTracer::freeIntermediates() {
+        if (!m_rayQueueCapacity) {
+            return;
+        }
+
+        freeDevicePtr(m_intermediates.primaryRays, m_queue);
+        freeDevicePtr(m_intermediates.extensionRaysA, m_queue);
+        freeDevicePtr(m_intermediates.hitRecords, m_queue);
+        freeDevicePtr(m_intermediates.hitContribution, m_queue);
+
+        freeDevicePtr(m_intermediates.projectionEvents, m_queue);
+        freeDevicePtr(m_intermediates.projectionScatterEvents, m_queue);
+        freeDevicePtr(m_intermediates.reflectScatterEvents, m_queue);
+
+        freeDevicePtr(m_intermediates.pendingStageX, m_queue);
+        freeDevicePtr(m_intermediates.pendingStageXY, m_queue);
+
+        freeDevicePtr(m_intermediates.countPrimary, m_queue);
+        freeDevicePtr(m_intermediates.countContributions, m_queue);
+        freeDevicePtr(m_intermediates.countProjectionEvents, m_queue);
+        freeDevicePtr(m_intermediates.countProjectionScatterEvents, m_queue);
+        freeDevicePtr(m_intermediates.countReflectScatterEvents, m_queue);
+        freeDevicePtr(m_intermediates.countExtensionOut, m_queue);
+        freeDevicePtr(m_intermediates.gradientRecords, m_queue);
+
+        m_intermediates.primaryRays = nullptr;
+        m_intermediates.extensionRaysA = nullptr;
+        m_intermediates.hitRecords = nullptr;
+        m_intermediates.hitContribution = nullptr;
+
+        m_intermediates.projectionEvents = nullptr;
+        m_intermediates.projectionScatterEvents = nullptr;
+        m_intermediates.reflectScatterEvents = nullptr;
+
+        m_intermediates.pendingStageX = nullptr;
+        m_intermediates.pendingStageXY = nullptr;
+
+        m_intermediates.countPrimary = nullptr;
+        m_intermediates.countContributions = nullptr;
+        m_intermediates.countProjectionEvents = nullptr;
+        m_intermediates.countProjectionScatterEvents = nullptr;
+        m_intermediates.countReflectScatterEvents = nullptr;
+        m_intermediates.countExtensionOut = nullptr;
+
+        m_intermediates.maxHitContributionCount = 0;
+        m_intermediates.maxProjectionEventCount = 0;
+        m_intermediates.maxProjectionScatterEventCount = 0;
+        m_intermediates.maxReflectScatterEventCount = 0;
+        m_intermediates.maxPendingAdjointStateCount = 0;
+        m_intermediates.gradientRecords = nullptr;
+        m_intermediates.maxGradientRecordCount = 0;
+
+        m_rayQueueCapacity = 0;
     }
-
-    freeDevicePtr(m_intermediates.primaryRays, m_queue);
-    freeDevicePtr(m_intermediates.extensionRaysA, m_queue);
-    freeDevicePtr(m_intermediates.hitRecords, m_queue);
-    freeDevicePtr(m_intermediates.hitContribution, m_queue);
-
-    freeDevicePtr(m_intermediates.projectionEvents, m_queue);
-    freeDevicePtr(m_intermediates.projectionScatterEvents, m_queue);
-    freeDevicePtr(m_intermediates.reflectScatterEvents, m_queue);
-
-    freeDevicePtr(m_intermediates.pendingStageX, m_queue);
-    freeDevicePtr(m_intermediates.pendingStageXY, m_queue);
-
-    freeDevicePtr(m_intermediates.countPrimary, m_queue);
-    freeDevicePtr(m_intermediates.countContributions, m_queue);
-    freeDevicePtr(m_intermediates.countProjectionEvents, m_queue);
-    freeDevicePtr(m_intermediates.countProjectionScatterEvents, m_queue);
-    freeDevicePtr(m_intermediates.countReflectScatterEvents, m_queue);
-    freeDevicePtr(m_intermediates.countExtensionOut, m_queue);
-
-    m_intermediates.primaryRays = nullptr;
-    m_intermediates.extensionRaysA = nullptr;
-    m_intermediates.hitRecords = nullptr;
-    m_intermediates.hitContribution = nullptr;
-
-    m_intermediates.projectionEvents = nullptr;
-    m_intermediates.projectionScatterEvents = nullptr;
-    m_intermediates.reflectScatterEvents = nullptr;
-
-    m_intermediates.pendingStageX = nullptr;
-    m_intermediates.pendingStageXY = nullptr;
-
-    m_intermediates.countPrimary = nullptr;
-    m_intermediates.countContributions = nullptr;
-    m_intermediates.countProjectionEvents = nullptr;
-    m_intermediates.countProjectionScatterEvents = nullptr;
-    m_intermediates.countReflectScatterEvents = nullptr;
-    m_intermediates.countExtensionOut = nullptr;
-
-    m_intermediates.maxHitContributionCount = 0;
-    m_intermediates.maxProjectionEventCount = 0;
-    m_intermediates.maxProjectionScatterEventCount = 0;
-    m_intermediates.maxReflectScatterEventCount = 0;
-    m_intermediates.maxPendingAdjointStateCount = 0;
-
-    m_rayQueueCapacity = 0;
-}
 
     void PathTracer::freePhotonMap() {
         if (!m_intermediates.map.photons) return;
@@ -269,7 +287,7 @@ void PathTracer::freeIntermediates() {
 
         grid.gatherRadiusWorld = 0.02f;
         const float gatherRadiusWorld = grid.gatherRadiusWorld;
-        const float cellSizeWorld = 0.5f * gatherRadiusWorld;
+        const float cellSizeWorld = gatherRadiusWorld;
 
         grid.cellSizeWorld = float3{cellSizeWorld, cellSizeWorld, cellSizeWorld};
 
@@ -304,7 +322,6 @@ void PathTracer::freeIntermediates() {
     }
 
     void PathTracer::ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid &grid) {
-
         auto allocateU32 = [&](std::uint32_t *&devicePtr, std::size_t elementCount, const char *name) {
             devicePtr = sycl::malloc_device<std::uint32_t>(elementCount, m_queue);
             if (!devicePtr) throw std::runtime_error(std::string("Failed to allocate ") + name);
@@ -367,8 +384,6 @@ void PathTracer::freeIntermediates() {
 
             grid.allocatedBlockCount = requiredBlockCount;
         }
-
-
     }
 
 
@@ -415,7 +430,6 @@ void PathTracer::freeIntermediates() {
                 ensureRayCapacity(requiredRayCapacity);
             }
         }
-
 
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting Adjoint rendering pass");
