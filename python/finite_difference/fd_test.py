@@ -187,7 +187,7 @@ def main(args) -> None:
         "gather_passes": 1,
         "adjoint_bounces": 4,
         "adjoint_passes": 1024,
-        "logging": 3,
+        "logging": 1,
         "seed": args.seed
     }
 

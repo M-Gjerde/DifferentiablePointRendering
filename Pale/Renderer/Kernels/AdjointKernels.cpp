@@ -8,6 +8,7 @@
 
 #include "AdjointGradientKernels.h"
 #include "IntersectionKernels.h"
+#include "Core/ScopedTimer.h"
 #include "Renderer/Kernels/KernelHelpers.h"
 
 
@@ -556,19 +557,22 @@ namespace Pale {
                                 transpose(hitPointJacobian) * gradientWrtHitPosition;
                     }
 
+                    /*
                     atomicAddFloat3(
                         gradients.gradPosition[eventRecord.xSurface.primitiveIndex],
                         gradientWrtHitPosition * invSpp);
-
+                    */
                     const float3 dGeometricTermDY = computeGeometricTermGradientWrtEndpoint(
                         xState.position,
                         yState.position,
                         xState.orientedNormal,
                         yState.orientedNormal);
 
+                    /*
                     atomicAddFloat3(
                         gradients.gradPosition[eventRecord.ySurface.primitiveIndex],
                         (scalarWeight * dGeometricTermDY) * invSpp);
+                    */
                 });
         }).wait();
     }
@@ -687,9 +691,11 @@ namespace Pale {
                     const float3 gradientWrtYPosition =
                             (scalarWeightWithoutAreaZ / pAreaZ) * dGeometricTermDY;
 
+                    /*
                     atomicAddFloat3(
                         gradients.gradPosition[eventRecord.ySurface.primitiveIndex],
                         gradientWrtYPosition * invSpp);
+                    */
                 });
         }).wait();
     }
@@ -703,14 +709,17 @@ namespace Pale {
         (void) cameraIndex;
 
         if (projectionEventCount > 0) {
+            ScopedTimer timer("launchAttachedProjectionKernel", spdlog::level::debug);
             launchAttachedProjectionKernel(pkg, projectionEventCount);
         }
 
         if (projectionScatterEventCount > 0) {
+            ScopedTimer timer("launchAttachedScatterKernel", spdlog::level::debug);
             launchAttachedScatterKernel(pkg, projectionScatterEventCount);
         }
 
         if (reflectScatterEventCount > 0) {
+            ScopedTimer timer("launchDetachedGradientKernel", spdlog::level::debug);
             launchDetachedGradientKernel(pkg, reflectScatterEventCount);
         }
     }

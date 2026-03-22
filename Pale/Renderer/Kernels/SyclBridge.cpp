@@ -282,7 +282,7 @@ namespace Pale {
                     if (projectionEventCount > 0 ||
                         projectionScatterEventCount > 0 ||
                         reflectScatterEventCount > 0) {
-                        ScopedTimer timer("adjointContributionKernels", spdlog::level::debug);
+                        ScopedTimer timer("Total adjointContributionKernels bounce: " + std::to_string(bounce), spdlog::level::debug);
 
                         adjointContributionKernels(
                             pkg,
