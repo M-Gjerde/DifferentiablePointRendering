@@ -220,6 +220,7 @@ def write_gaussian_ply(
         "property float opacity",
         "property float beta",
         "property float shape",
+        "property float power",
         "end_header",
     ]
 
@@ -300,7 +301,7 @@ def write_gaussian_ply(
             f"{tv[0]:.7f} {tv[1]:.7f} {tv[2]:.7f} "
             f"{su:.7f} {sv:.7f} "
             f"{albedo[0]:.7f} {albedo[1]:.7f} {albedo[2]:.7f} "
-            f"{opacity:.7f} {beta:.7f} {shape:.7f}"
+            f"{opacity:.7f} {beta:.7f} {shape:.7f} {0.0:.7f}"
         )
         lines.append(line)
 
@@ -317,7 +318,7 @@ def main():
         "--input",
         type=Path,
         required=True,
-        help="Input COLMAP-style ASCII PLY file.",
+        help="Input ASCII PLY file.",
     )
     parser.add_argument(
         "--output",

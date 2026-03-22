@@ -157,7 +157,7 @@ export namespace Pale {
                                                         {
                                                             "x", "y", "z", "tu_x", "tu_y", "tu_z", "tv_x", "tv_y",
                                                             "tv_z",
-                                                            "su", "sv", "albedo_r", "albedo_g", "albedo_b", "opacity", "power"
+                                                            "su", "sv", "albedo_r", "albedo_g", "albedo_b", "opacity", "shape", "power"
                                                         });
 
             const bool looks2DGS = ply_detail::hasAll(vertexProps,
