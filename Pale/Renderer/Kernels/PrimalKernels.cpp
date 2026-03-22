@@ -270,24 +270,6 @@ namespace Pale {
                             // If positive we hit the front side if negative we hit the backside
                             float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
 
-                            //HitInfoContribution contribution{};
-                            //contribution.hitPositionW = worldHit.hitPositionW;
-                            //contribution.geometricNormalW = orientedNormal;
-                            //contribution.instanceIndex = worldHit.instanceIndex;
-                            //contribution.throughput = throughput;
-                            //contribution.type = instance.geometryType;
-                            //contribution.primitiveIndex = worldHit.primitiveIndex;
-                            //contribution.eventType = EventType::Transmit;
-                            //appendContributionAtomic(
-                            //    intermediates.countContributions,
-                            //    intermediates.hitContribution,
-                            //    intermediates.maxHitContributionCount,
-                            //    contribution);
-
-                            // Deposit Irradiance to photon map independent of surface interaction
-                            //if (settings.integratorKind == IntegratorKind::photonMapping) {
-                            //    depositPhotonSurface(worldHit, orientedNormal,  rayState.pathThroughput / qTransmit, intermediates.map);
-                            //}
 
                             //Generate next ry
                             float3 sampledOutgoingDirectionW = rayState.ray.direction;

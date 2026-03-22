@@ -97,23 +97,23 @@ void PathTracer::allocateIntermediates(uint32_t newCapacity) {
 
     // --- compact adjoint event buffers ---
     const std::size_t sizeProjectionEventsBytes =
-        sizeof(ProjectionGradientEvent) * m_rayQueueCapacity;
+        sizeof(AttachedGradientProjectionEvent) * m_rayQueueCapacity;
     m_intermediates.projectionEvents =
-        sycl::malloc_device<ProjectionGradientEvent>(m_rayQueueCapacity, m_queue);
+        sycl::malloc_device<AttachedGradientProjectionEvent>(m_rayQueueCapacity, m_queue);
     Log::PA_TRACE("Allocated projectionEvents: {}", Utils::formatBytes(sizeProjectionEventsBytes));
     m_intermediates.maxProjectionEventCount = m_rayQueueCapacity;
 
     const std::size_t sizeProjectionScatterEventsBytes =
-        sizeof(ProjectionScatterGradientEvent) * m_rayQueueCapacity;
+        sizeof(AttachedGradientScatterEvent) * m_rayQueueCapacity;
     m_intermediates.projectionScatterEvents =
-        sycl::malloc_device<ProjectionScatterGradientEvent>(m_rayQueueCapacity, m_queue);
+        sycl::malloc_device<AttachedGradientScatterEvent>(m_rayQueueCapacity, m_queue);
     Log::PA_TRACE("Allocated projectionScatterEvents: {}", Utils::formatBytes(sizeProjectionScatterEventsBytes));
     m_intermediates.maxProjectionScatterEventCount = m_rayQueueCapacity;
 
     const std::size_t sizeReflectScatterEventsBytes =
-        sizeof(ReflectScatterGradientEvent) * m_rayQueueCapacity;
+        sizeof(DetachedThreePointGradientEvent) * m_rayQueueCapacity;
     m_intermediates.reflectScatterEvents =
-        sycl::malloc_device<ReflectScatterGradientEvent>(m_rayQueueCapacity, m_queue);
+        sycl::malloc_device<DetachedThreePointGradientEvent>(m_rayQueueCapacity, m_queue);
     Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(sizeReflectScatterEventsBytes));
     m_intermediates.maxReflectScatterEventCount = m_rayQueueCapacity;
 
@@ -267,7 +267,7 @@ void PathTracer::freeIntermediates() {
     void PathTracer::configurePhotonGrid(const AABB &sceneAabb) {
         auto &grid = m_intermediates.map;
 
-        grid.gatherRadiusWorld = 0.01f;
+        grid.gatherRadiusWorld = 0.02f;
         const float gatherRadiusWorld = grid.gatherRadiusWorld;
         const float cellSizeWorld = 0.5f * gatherRadiusWorld;
 

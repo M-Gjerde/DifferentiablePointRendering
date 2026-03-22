@@ -336,6 +336,7 @@ namespace Pale {
         float alphaGeom = 0.0f;
         int32_t sideSign = 1;
         float3 incomingDirection = float3{0.0f, 0.0f, 0.0f};
+        bool isAttached = false;
     };
 
     struct PendingAdjointStageX {
@@ -355,18 +356,18 @@ namespace Pale {
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
     };
 
-    struct ProjectionGradientEvent {
+    struct AttachedGradientProjectionEvent {
         PointCloudSurfaceRecord xSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
     };
 
-    struct ProjectionScatterGradientEvent {
+    struct AttachedGradientScatterEvent {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
     };
 
-    struct ReflectScatterGradientEvent {
+    struct DetachedThreePointGradientEvent {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         PointCloudSurfaceRecord zSurface;
@@ -547,9 +548,9 @@ namespace Pale {
         PendingAdjointStageXY* pendingStageXY = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
 
-        ProjectionGradientEvent* projectionEvents = nullptr;
-        ProjectionScatterGradientEvent* projectionScatterEvents = nullptr;
-        ReflectScatterGradientEvent* reflectScatterEvents = nullptr;
+        AttachedGradientProjectionEvent* projectionEvents = nullptr;
+        AttachedGradientScatterEvent* projectionScatterEvents = nullptr;
+        DetachedThreePointGradientEvent* reflectScatterEvents = nullptr;
 
         uint32_t* countProjectionEvents = nullptr;
         uint32_t* countProjectionScatterEvents = nullptr;

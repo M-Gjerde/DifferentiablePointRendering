@@ -132,6 +132,23 @@ namespace Pale {
                 pkg.queue.wait();
             }
 
+            // Photon map stats:
+            // Percent full
+            uint32_t photonMapCount = 0;
+            pkg.queue.memcpy(&photonMapCount,
+                             pkg.intermediates.map.photonCountDevicePtr,
+                             sizeof(uint32_t)).wait();
+
+            const uint32_t photonCapacity = pkg.intermediates.map.photonCapacity;
+
+            const float percentFull =
+                photonCapacity > 0
+                    ? 100.0f * static_cast<float>(photonMapCount) / static_cast<float>(photonCapacity)
+                    : 0.0f;
+
+            Log::PA_INFO("Photonmap is at {:.2f}% capacity", percentFull);
+
+
             /*
             {
 
@@ -194,7 +211,7 @@ namespace Pale {
             const uint32_t samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
 
             for (uint32_t spp = 0; spp < samplesPerPixel; ++spp) {
-                ScopedTimer forwardTimer("Traced adjoint pass", spdlog::level::info);
+                ScopedTimer forwardTimer("Traced adjoint pass", spdlog::level::debug);
 
                 pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
 

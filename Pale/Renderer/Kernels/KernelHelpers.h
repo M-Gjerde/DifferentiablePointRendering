@@ -964,7 +964,7 @@ namespace Pale {
 
     inline float3 gatherDiffuseIrradianceAtPoint(
         const float3 &queryPositionWorld,
-        const float3 &surfelNormalW,
+        const float3 &queryNormal,
         const DeviceSurfacePhotonMapGrid &grid) {
         const float r = grid.gatherRadiusWorld;
         const float r2 = r * r;
@@ -990,7 +990,7 @@ namespace Pale {
 
                         const float3 d = ph.position - queryPositionWorld;
 
-                        const float cosine = dot(surfelNormalW, -ph.incomingDirection);
+                        const float cosine = dot(queryNormal, -ph.incomingDirection);
                         if (cosine < 0.0f) continue;
 
                         const float dist2 = dot(d, d);
@@ -1663,12 +1663,13 @@ namespace Pale {
             sycl::access::address_space::global_space>(
             *photonMap.photonCountDevicePtr);
 
-        const uint32_t slot = photonCounter.fetch_add(1u);
 
         // Capacity guard
-        if (slot >= photonMap.photonCapacity) {
+        if (photonCounter >= photonMap.photonCapacity) {
             return;
         }
+
+        const uint32_t slot = photonCounter.fetch_add(1u);
 
         DevicePhotonSurface photonEntry{};
         photonEntry.position = worldHit.hitPositionW;
