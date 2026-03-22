@@ -274,7 +274,7 @@ int main(int argc, char** argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 6;
-        settings.numForwardPasses = 5;
+        settings.numForwardPasses = 50;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 8;
