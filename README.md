@@ -8,8 +8,7 @@ To render the included test scene, the required steps are:
 - Install **LLVM/Clang 20**
 - Install **AdaptiveCpp (ACPP)**, providing **SYCL 2020** compilation support
 - Clone this repository **with submodules**
-- Configure the project with **CMake** using the **ACPP toolchain**
-- Build the renderer
+- Configure and build the project with **CMake** using the **ACPP toolchain**
 - Run the test scene
 
 
