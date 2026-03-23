@@ -19,7 +19,7 @@
 	url = https://github.com/ddiakopoulos/tinyply
 [submodule "vendor/assimp"]
 	path = vendor/assimp
-	url = https://github.com/assimp/assimp.git
+	url = https://github.com/M-Gjerde/assimp.git
 [submodule "vendor/pybind11"]
 	path = vendor/pybind11
 	url = https://github.com/pybind/pybind11
