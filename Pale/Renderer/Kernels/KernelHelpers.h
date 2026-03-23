@@ -709,10 +709,9 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline float3 computeCameraGeometricTermGradientWrtSurfacePoint(
-        const float3& surfacePosition,
-        const float3& cameraPosition,
-        const float3& surfaceNormal)
-    {
+        const float3 &surfacePosition,
+        const float3 &cameraPosition,
+        const float3 &surfaceNormal) {
         const float3 vectorSurfaceToCamera = cameraPosition - surfacePosition;
         const float distanceSquared = dot(vectorSurfaceToCamera, vectorSurfaceToCamera);
         if (distanceSquared <= 1e-12f) {
@@ -1708,17 +1707,17 @@ namespace Pale {
 
         globalCompletedBuffer[insertionIndex] = eventValue;
     }
-   SYCL_EXTERNAL inline PointCloudSurfaceRecord makePointCloudSurfaceRecord(
-        const WorldHit& worldHit,
-        const RayState& rayState,
-        const GPUSceneBuffers& scene) {
 
+    SYCL_EXTERNAL inline PointCloudSurfaceRecord makePointCloudSurfaceRecord(
+        const WorldHit &worldHit,
+        const RayState &rayState,
+        const GPUSceneBuffers &scene) {
         PointCloudSurfaceRecord surfaceRecord{};
         surfaceRecord.primitiveIndex = worldHit.primitiveIndex;
         surfaceRecord.alphaGeom = worldHit.alphaGeom;
         surfaceRecord.incomingDirection = rayState.ray.direction;
 
-        const Point& surfel = scene.points[worldHit.primitiveIndex];
+        const Point &surfel = scene.points[worldHit.primitiveIndex];
         surfaceRecord.uv = phiInverse(worldHit.hitPositionW, surfel);
 
         const float3 tangentUWorld = surfel.scale.x() * surfel.tanU;
@@ -1732,9 +1731,8 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline ReconstructedSurfelState reconstructSurfelState(
-        const Point& surfel,
-        const PointCloudSurfaceRecord& surfaceRecord) {
-
+        const Point &surfel,
+        const PointCloudSurfaceRecord &surfaceRecord) {
         ReconstructedSurfelState reconstructedState{};
         reconstructedState.position = phiMapping(surfel, surfaceRecord.uv.x(), surfaceRecord.uv.y());
         reconstructedState.tangentUWorld = surfel.scale.x() * surfel.tanU;
@@ -1742,22 +1740,22 @@ namespace Pale {
 
         const float3 scaledCross = cross(reconstructedState.tangentUWorld, reconstructedState.tangentVWorld);
         reconstructedState.canonicalNormal = normalize(scaledCross);
-        reconstructedState.orientedNormal = static_cast<float>(surfaceRecord.sideSign) * reconstructedState.canonicalNormal;
+        reconstructedState.orientedNormal = static_cast<float>(surfaceRecord.sideSign) * reconstructedState.
+                                            canonicalNormal;
         reconstructedState.areaWorld = M_PIf * length(scaledCross);
         return reconstructedState;
     }
 
-    template <typename EventType>
+    template<typename EventType>
     SYCL_EXTERNAL inline void appendEventAtomic(
-        uint32_t* countBuffer,
-        EventType* eventBuffer,
+        uint32_t *countBuffer,
+        EventType *eventBuffer,
         uint32_t maxEventCount,
-        const EventType& eventRecord) {
-
+        const EventType &eventRecord) {
         auto eventCounter = sycl::atomic_ref<uint32_t,
-                                             sycl::memory_order::relaxed,
-                                             sycl::memory_scope::device,
-                                             sycl::access::address_space::global_space>(*countBuffer);
+            sycl::memory_order::relaxed,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space>(*countBuffer);
 
         const uint32_t eventIndex = eventCounter.fetch_add(1);
         if (eventIndex < maxEventCount) {
@@ -1765,13 +1763,12 @@ namespace Pale {
         }
     }
 
-    template <typename PhotonMapType>
+    template<typename PhotonMapType>
     SYCL_EXTERNAL inline float3 evaluateOutgoingRadianceFromSurfel(
-        const Point& surfel,
-        const PointCloudSurfaceRecord& surfaceRecord,
-        const ReconstructedSurfelState& reconstructedState,
-        const PhotonMapType& photonMap) {
-
+        const Point &surfel,
+        const PointCloudSurfaceRecord &surfaceRecord,
+        const ReconstructedSurfelState &reconstructedState,
+        const PhotonMapType &photonMap) {
         const float3 irradiance = gatherDiffuseIrradianceAtPoint(
             reconstructedState.position,
             reconstructedState.orientedNormal,
@@ -1780,10 +1777,10 @@ namespace Pale {
         const float alpha = surfaceRecord.alphaGeom * surfel.opacity;
 
         const float3 reflectedRadiance =
-            irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf * alpha;
+                irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf * alpha;
 
         float3 emittedRadiance =
-            surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld)) * alpha;
+                surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld)) * alpha;
 
         if (surfel.power > 0.0f && surfaceRecord.sideSign < 0) {
             emittedRadiance = float3{0.0f, 0.0f, 0.0f};
@@ -1792,11 +1789,11 @@ namespace Pale {
         return emittedRadiance + reflectedRadiance;
     }
 
-    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX& pendingStage) {
+    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX &pendingStage) {
         pendingStage = PendingAdjointStageX{};
     }
 
-    SYCL_EXTERNAL inline void clearPendingAdjointStageXY(PendingAdjointStageXY& pendingStage) {
+    SYCL_EXTERNAL inline void clearPendingAdjointStageXY(PendingAdjointStageXY &pendingStage) {
         pendingStage = PendingAdjointStageXY{};
     }
 
@@ -1905,9 +1902,8 @@ namespace Pale {
             sample.pdfDir = pdfDir;
             sample.valid = true;
             sample.lightIndex = light_index;
-
         } else if (light.lightType == LightType::Surfel) {
-            const auto& surfel = scene.points[light.primitiveIndex];
+            const auto &surfel = scene.points[light.primitiveIndex];
 
             float xi1 = rng128.nextFloat();
             float xi2 = rng128.nextFloat();
@@ -1922,9 +1918,9 @@ namespace Pale {
             float3 tangentVWorld = surfel.scale.y() * surfel.tanV;
 
             float3 positionWorld =
-                surfel.position +
-                localU * tangentUWorld +
-                localV * tangentVWorld;
+                    surfel.position +
+                    localU * tangentUWorld +
+                    localV * tangentVWorld;
 
             float totalAreaWorld = M_PIf * length(cross(tangentUWorld, tangentVWorld));
             float pdfArea = 1.0f / totalAreaWorld;
@@ -1950,16 +1946,14 @@ namespace Pale {
             sample.pdfDir = pdfDir;
             sample.valid = true;
             sample.lightIndex = light_index;
-
         }
         return sample;
     }
 
     inline float3 computeInverseAreaPdfGradientWrtStartpoint(
-    const float3& startPoint,
-    const float3& endPoint,
-    const float3& endNormal)
-    {
+        const float3 &startPoint,
+        const float3 &endPoint,
+        const float3 &endNormal) {
         const float3 vectorStartToEnd = endPoint - startPoint;
         const float distanceSquared = dot(vectorStartToEnd, vectorStartToEnd);
         if (distanceSquared <= 1e-20f) {
@@ -1982,23 +1976,23 @@ namespace Pale {
 
         // Projected component of end normal onto plane orthogonal to direction
         const float3 projectedEndNormal =
-            endNormal - direction * dot(direction, endNormal);
+                endNormal - direction * dot(direction, endNormal);
 
         // ∇_start (1 / pA)
         const float3 inverseAreaPdfGradient =
-            (1.0f / areaPdf) *
-            (
-                (2.0f * (startPoint - endPoint) / distanceSquared) -
-                (projectedEndNormal / (distance * cosineAtEnd))
-            );
+                (1.0f / areaPdf) *
+                (
+                    (2.0f * (startPoint - endPoint) / distanceSquared) -
+                    (projectedEndNormal / (distance * cosineAtEnd))
+                );
 
         return inverseAreaPdfGradient;
     }
 
     SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
-           uint32_t projectionEventCount,
-           uint32_t projectionScatterEventCount,
-           uint32_t reflectScatterEventCount) {
+        uint32_t projectionEventCount,
+        uint32_t projectionScatterEventCount,
+        uint32_t reflectScatterEventCount) {
         GradientRecordRanges ranges{};
 
         ranges.projectionOffset = 0;
@@ -2017,6 +2011,4 @@ namespace Pale {
     SYCL_EXTERNAL inline bool isZeroFloat3(const float3 &value) {
         return value.x() == 0.0f && value.y() == 0.0f && value.z() == 0.0f;
     }
-
-
 }

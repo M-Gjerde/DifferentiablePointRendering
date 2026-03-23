@@ -183,10 +183,10 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 3,
-        "forward_passes": 500,
+        "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 4,
-        "adjoint_passes": 256,
+        "adjoint_passes": 32,
         "logging": 3,
         "seed": args.seed
     }
@@ -260,11 +260,11 @@ def main(args) -> None:
                 elif args.parameter == "beta":
                     value = 6 - (iteration_index * 12) / iterations
                 elif args.parameter == "translation_x":
-                    value = 0 - (iteration_index) / (iterations) * 3  # -0.5..0.5
+                    value = 0.5 + (iteration_index) / (iterations) * 2  # -0.5..0.5
                 elif args.parameter == "translation_y":
                     value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = 2.85 + (iteration_index) / (iterations * 1)  # -0.5..0.5
+                    value = 0 + (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":

@@ -636,17 +636,12 @@ namespace Pale {
                     const ReconstructedSurfelState zState =
                             reconstructSurfelState(surfelZ, eventRecord.zSurface);
 
-                    /*
                     const float3 outgoingRadianceZ =
                             evaluateOutgoingRadianceFromSurfel(
                                 surfelZ,
                                 eventRecord.zSurface,
                                 zState,
                                 photonMap);
-                    */
-
-                    const float3 outgoingRadianceZ = float3{0.0f};
-
 
                     const float3 vectorYToZ = zState.position - yState.position;
                     const float distanceSquaredYZ = dot(vectorYToZ, vectorYToZ);
