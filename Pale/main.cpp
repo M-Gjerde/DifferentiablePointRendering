@@ -259,6 +259,8 @@ int main(int argc, char** argv) {
             std::filesystem::path rawFilePath =
                 baseDir / "images" / (fileName + "_raw.exr");
 
+            Pale::Log::PA_INFO("Saving image to: {}", rawFilePath.root_path().string());
+
             Pale::Utils::saveRGBAFloatAsEXR(
                 rawFilePath,
                 rgbaRaw,
@@ -309,7 +311,7 @@ int main(int argc, char** argv) {
             std::filesystem::path rawFilePath =
                 baseDir / "images" / (fileName + "_raw.exr");
 
-            Pale::Log::PA_INFO("Saving image: {}", rawFilePath.string());
+            Pale::Log::PA_INFO("Saving image to: {}", rawFilePath.root_path().string());
             Pale::Utils::saveRGBAFloatAsEXR(
                 rawFilePath,
                 rgbaRaw,
