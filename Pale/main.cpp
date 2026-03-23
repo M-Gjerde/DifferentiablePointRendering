@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
 
 
     bool addPoints = true;
-    bool addModel = !true;
+    bool addModel = true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
         auto entityPointCloud = scene->createEntity("PointCloud");
@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = !true;
+    bool renderLightTracing = true;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
 
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                std::filesystem::path("Output") / sceneName; // assumes sensor.name is std::string
+                std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = sensor.name;
@@ -317,6 +317,17 @@ int main(int argc, char** argv) {
                 imageHeight
             );
         }
+    }
+
+    // Write Registry:
+    assetManager.registry().save("asset_registry.yaml");
+    deviceSelector.getQueue().wait();
+    return 0;
+}
+
+/*
+
+
 
         {
             auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
@@ -661,8 +672,3 @@ int main(int argc, char** argv) {
     }
     */
 
-    // Write Registry:
-    assetManager.registry().save("asset_registry.yaml");
-    deviceSelector.getQueue().wait();
-    return 0;
-}
