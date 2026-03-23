@@ -559,7 +559,8 @@ namespace Pale {
 
                     float3 gradientWrtHitPositionX = scalarWeight * dGeometricTermDX;
 
-                    if (eventRecord.xSurface.isAttached) {
+                    if (eventRecord.xSurface.isAttached)
+                        {
                         const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
                             eventRecord.xSurface.incomingDirection,
                             xState.orientedNormal);

@@ -186,7 +186,7 @@ def main(args) -> None:
         "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 4,
-        "adjoint_passes": 32,
+        "adjoint_passes": 128,
         "logging": 3,
         "seed": args.seed
     }
@@ -264,7 +264,7 @@ def main(args) -> None:
                 elif args.parameter == "translation_y":
                     value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = 0 + (iteration_index) / (iterations * 1)  # -0.5..0.5
+                    value = 0 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
