@@ -139,8 +139,9 @@ cmake --build build -j"$(nproc)"
 cd build
 ./DifferentiablePointRendering points.ply cbox.xml
 ```
-You should end up with something like this:
+You should end up with two rendered images like this:
 
+(Left: Light tracing rendering. Right: Photon mapping)
 <p align="center"> <img src="docs/image1.png" alt="Light tracing test scene" width="49%" /> <img src="docs/image2.png" alt="Photon mapped test scene" width="49%" /> </p> ```
 
 ### Troubleshooting
