@@ -1,3 +1,18 @@
+## Overview
+
+This project is a **SYCL 2020 compliant** physically based differentiable renderer. It must be compiled with a **SYCL 2020 compliant compiler toolchain**. The setup below uses **LLVM/Clang 20** together with **AdaptiveCpp (ACPP)** on **Ubuntu 24.04**.
+
+To render the included test scene, the required steps are:
+
+- Install the base system dependencies
+- Install **LLVM/Clang 20**
+- Install **AdaptiveCpp (ACPP)**, providing **SYCL 2020** compilation support
+- Clone this repository **with submodules**
+- Configure the project with **CMake** using the **ACPP toolchain**
+- Build the renderer
+- Run the test scene
+
+
 ## Building on Ubuntu 24.04
 
 The project is tested to build on a clean Ubuntu 24.04 setup with LLVM/Clang 20 and AdaptiveCpp.
