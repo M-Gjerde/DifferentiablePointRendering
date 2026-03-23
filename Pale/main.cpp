@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
 
         // 3) Material
         Pale::AssetHandle bunnyMaterialAssetHandle =
-            assetIndexer.importPath("Materials/cbox_custom/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
+            assetIndexer.importPath("Materials/cbox/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
 
         auto& bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;

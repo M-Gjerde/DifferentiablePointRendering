@@ -144,8 +144,7 @@ cmake --build build -j"$(nproc)"
 ## Render a test scene:
 ```bash
 cd build
-
-./DifferentiablePointRendering ../Assets/points.ply ../Assets/cbox.xml
+./DifferentiablePointRendering points.ply cbox.xml
 ```
 
 
