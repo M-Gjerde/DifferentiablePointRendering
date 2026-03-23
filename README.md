@@ -60,7 +60,7 @@ export CC=clang-20
 export CXX=clang++-20
 ```
 
-To make this persistent, add both lines to `~/.bashrc`.
+Optional: To make this persistent, add both lines to `~/.bashrc`.
 
 ### 3. Install AdaptiveCpp
 
@@ -85,7 +85,7 @@ export PATH=/opt/AdaptiveCpp/bin:$PATH
 export CMAKE_PREFIX_PATH=/opt/AdaptiveCpp:$CMAKE_PREFIX_PATH
 ```
 
-To make this persistent, add both lines to `~/.bashrc`.
+Optional: To make this persistent, add both lines to `~/.bashrc`.
 
 ### 4. Clone the repository
 
@@ -104,10 +104,12 @@ git submodule update --init --recursive
 
 ### 5. Configure the project
 
+Note: Build in debug mode, Release mode doesn't work due to clang compiler crash caused by SYCL combined with c++ modules.
+
 ```bash
 cmake -S . -B build \
   -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_C_COMPILER=clang-20 \
   -DCMAKE_CXX_COMPILER=clang++-20 \
   -DCMAKE_PREFIX_PATH=/opt/AdaptiveCpp
@@ -116,21 +118,6 @@ cmake -S . -B build \
 ### 6. Build
 
 ```bash
-cmake --build build -j"$(nproc)"
-```
-
-### Optional: build Python bindings
-
-Note: Build in debug mode, Release mode doesn't work due to clang compiler crash caused by SYCL combined with c++ modules.
-```bash
-cmake -S . -B build \
-  -G Ninja \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_C_COMPILER=clang-20 \
-  -DCMAKE_CXX_COMPILER=clang++-20 \
-  -DCMAKE_PREFIX_PATH=/opt/AdaptiveCpp \
-  -DBUILD_PYBIND=ON
-
 cmake --build build -j"$(nproc)"
 ```
 
@@ -157,4 +144,21 @@ If the repository was cloned without submodules, run:
 
 ```bash
 git submodule update --init --recursive
+```
+
+
+
+### Optional: build Python bindings
+Python bindings builds a python library of the renderer.
+Note: Build in debug mode, Release mode doesn't work due to clang compiler crash caused by SYCL combined with c++ modules.
+```bash
+cmake -S . -B build \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_C_COMPILER=clang-20 \
+  -DCMAKE_CXX_COMPILER=clang++-20 \
+  -DCMAKE_PREFIX_PATH=/opt/AdaptiveCpp \
+  -DBUILD_PYBIND=ON
+
+cmake --build build -j"$(nproc)"
 ```
