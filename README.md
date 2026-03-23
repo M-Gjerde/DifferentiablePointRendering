@@ -3,14 +3,7 @@
 The project is tested to build on a clean Ubuntu 24.04 setup with LLVM/Clang 20 and AdaptiveCpp.
 
 ### Requirements
-
-- Ubuntu 24.04
-- LLVM / Clang 20
-- AdaptiveCpp
-- CMake
-- Ninja
-- OpenEXR
-- OpenMP
+- A fresh Ubuntu 24.04 install
 
 ### 1. Install base system dependencies
 
