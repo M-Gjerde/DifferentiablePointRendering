@@ -116,7 +116,7 @@ If you already cloned the repository without submodules:
 git submodule update --init --recursive
 ```
 
-### 5. Configure the project
+### 5. Configure and Build the project
 
 Note: Build in debug mode, Release mode doesn't work due to clang compiler crash caused by SYCL combined with c++ modules.
 
@@ -129,13 +129,13 @@ cmake -S . -B build \
   -DCMAKE_PREFIX_PATH=/opt/AdaptiveCpp
 ```
 
-### 6. Build
+#### Build:
 
 ```bash
 cmake --build build -j"$(nproc)"
 ```
 
-## Render a test scene:
+## 6. Render a test scene:
 ```bash
 cd build
 ./DifferentiablePointRendering points.ply cbox.xml
