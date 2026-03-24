@@ -20,7 +20,7 @@ uint32_t reflectScatterEventCount,
 uint32_t cameraIndex);
 
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
-    void launchAdjointIntersectKernel(RenderPackage &pkg,  uint32_t spp,uint32_t activeRayCount, uint32_t bounceIndex);
+    void launchAdjointIntersectKernel(RenderPackage &pkg,  uint32_t spp,uint32_t activeRayCount);
 
 }
 

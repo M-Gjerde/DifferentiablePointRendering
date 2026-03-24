@@ -87,7 +87,7 @@ namespace Pale {
     }
 
 
-    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t bounceIndex) {
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount) {
         auto &queue = pkg.queue;
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
@@ -183,7 +183,7 @@ namespace Pale {
                     // -------------------------------------------------------------
                     // Emit compact completed events
                     // -------------------------------------------------------------
-                    if (isPointCloudHit && bounceIndex == 0) {
+                    if (isPointCloudHit && rayState.bounceIndex == 0) {
                         AttachedGradientProjectionEvent attachedProjectionEvent{};
                         attachedProjectionEvent.xSurface = currentSurfaceRecord;
                         attachedProjectionEvent.xPathThroughput = rayState.pathThroughput;
@@ -201,6 +201,8 @@ namespace Pale {
                             attachedScatterEvent.xSurface = previousPendingStageX.xSurface;
                             attachedScatterEvent.ySurface = currentSurfaceRecord;
                             attachedScatterEvent.xPathThroughput = previousPendingStageX.xPathThroughput;
+                            attachedScatterEvent.applyIncomingRayHitJacobianToX = previousPendingStageX.
+                                    applyIncomingRayHitJacobianToX;
 
                             appendEventAtomic(
                                 intermediates.countProjectionScatterEvents,
@@ -353,7 +355,7 @@ namespace Pale {
                             nextPendingStageX.pixelIndex = rayState.pixelIndex;
                             nextPendingStageX.xSurface = currentSurfaceRecord;
                             nextPendingStageX.xPathThroughput = currentPrefixThroughput;
-                            nextPendingStageX.xSurface.isAttached = (rayState.bounceIndex == 0);
+                            nextPendingStageX.applyIncomingRayHitJacobianToX = (rayState.bounceIndex == 0);
 
                             if (previousPendingStageX.valid) {
                                 nextPendingStageXY.valid = true;
@@ -362,6 +364,8 @@ namespace Pale {
                                 nextPendingStageXY.xSurface = previousPendingStageX.xSurface;
                                 nextPendingStageXY.ySurface = currentSurfaceRecord;
                                 nextPendingStageXY.xPathThroughput = previousPendingStageX.xPathThroughput;
+                                nextPendingStageXY.applyIncomingRayHitJacobianToX = previousPendingStageX.
+                                        applyIncomingRayHitJacobianToX;
                             }
                         }
 
@@ -467,6 +471,7 @@ namespace Pale {
                      pathWeight[1] * dAlphaEffDPosition * outgoingRadiance[1] +
                      pathWeight[2] * dAlphaEffDPosition * outgoingRadiance[2]) * invSpp;
 
+
                     SurfelGradientRecord gradientRecord = {};
                     gradientRecord.primitiveIndex = eventRecord.xSurface.primitiveIndex;
                     gradientRecord.gradEta = opacityGradientScalar;
@@ -555,12 +560,12 @@ namespace Pale {
                     const float scalarWeight =
                     (pathWeight[0] * transportWithoutGeometricTerm[0] +
                      pathWeight[1] * transportWithoutGeometricTerm[1] +
-                     pathWeight[2] * transportWithoutGeometricTerm[2]) / pAreaY;
+                     pathWeight[2] * transportWithoutGeometricTerm[2]) / (pAreaY);
 
                     float3 gradientWrtHitPositionX = scalarWeight * dGeometricTermDX;
 
-                    if (eventRecord.xSurface.isAttached)
-                        {
+                    if (eventRecord.applyIncomingRayHitJacobianToX)
+                    {
                         const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
                             eventRecord.xSurface.incomingDirection,
                             xState.orientedNormal);
@@ -715,8 +720,9 @@ namespace Pale {
                              pathWeight[2] * combinedTransport[2]) /
                             (pAreaY * settings.sampling.qReflect);
 
-                    const float3 gradientWrtYPosition =
+                    float3 gradientWrtYPosition =
                             (scalarWeightWithoutAreaZ / pAreaZ) * dGeometricTermDY * invSpp;
+
 
                     SurfelGradientRecord gradientRecord{};
                     gradientRecord.primitiveIndex = eventRecord.ySurface.primitiveIndex;

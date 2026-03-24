@@ -106,6 +106,7 @@ namespace Pale {
     /*************************  Scene graph **************************/
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
+
     enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1, InvalidType = UINT32_MAX };
 
     struct alignas(16) MeshRange {
@@ -161,7 +162,6 @@ namespace Pale {
 
         // Surfel
         uint32_t primitiveIndex;
-
     };
 
     struct AreaLightSample {
@@ -183,7 +183,6 @@ namespace Pale {
         uint32_t globalTriangleIndex;
         float worldArea; // triangle area after transform
         float cdf; // inclusive CDF in [0,1] within its light’s triangle range
-
     };
 
     struct InstanceRecord {
@@ -329,14 +328,12 @@ namespace Pale {
     };
 
 
-
     struct PointCloudSurfaceRecord {
         uint32_t primitiveIndex = 0;
         float2 uv = float2{0.0f, 0.0f};
         float alphaGeom = 0.0f;
         int32_t sideSign = 1;
         float3 incomingDirection = float3{0.0f, 0.0f, 0.0f};
-        bool isAttached = false;
     };
 
     struct PendingAdjointStageX {
@@ -345,6 +342,7 @@ namespace Pale {
         uint32_t pixelIndex = 0;
         PointCloudSurfaceRecord xSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+        bool applyIncomingRayHitJacobianToX = false;
     };
 
     struct PendingAdjointStageXY {
@@ -354,6 +352,7 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+        bool applyIncomingRayHitJacobianToX = false;
     };
 
     struct AttachedGradientProjectionEvent {
@@ -365,6 +364,7 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+        bool applyIncomingRayHitJacobianToX = false;
     };
 
     struct DetachedThreePointGradientEvent {
@@ -594,21 +594,21 @@ namespace Pale {
         uint32_t maxHitContributionCount = 0;
         uint32_t *countContributions;
 
-        PendingAdjointStageX* pendingStageX = nullptr;
-        PendingAdjointStageXY* pendingStageXY = nullptr;
+        PendingAdjointStageX *pendingStageX = nullptr;
+        PendingAdjointStageXY *pendingStageXY = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
 
-        AttachedGradientProjectionEvent* projectionEvents = nullptr;
-        AttachedGradientScatterEvent* projectionScatterEvents = nullptr;
-        DetachedThreePointGradientEvent* reflectScatterEvents = nullptr;
+        AttachedGradientProjectionEvent *projectionEvents = nullptr;
+        AttachedGradientScatterEvent *projectionScatterEvents = nullptr;
+        DetachedThreePointGradientEvent *reflectScatterEvents = nullptr;
 
         SurfelGradientRecord *gradientRecords = nullptr;
         uint32_t maxGradientRecordCount = 0;
 
 
-        uint32_t* countProjectionEvents = nullptr;
-        uint32_t* countProjectionScatterEvents = nullptr;
-        uint32_t* countReflectScatterEvents = nullptr;
+        uint32_t *countProjectionEvents = nullptr;
+        uint32_t *countProjectionScatterEvents = nullptr;
+        uint32_t *countReflectScatterEvents = nullptr;
 
         // capacities
         uint32_t maxProjectionEventCount = 0;
