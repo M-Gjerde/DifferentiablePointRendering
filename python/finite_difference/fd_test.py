@@ -264,7 +264,7 @@ def main(args) -> None:
                 elif args.parameter == "translation_y":
                     value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = 0 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
+                    value = 1.0 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":

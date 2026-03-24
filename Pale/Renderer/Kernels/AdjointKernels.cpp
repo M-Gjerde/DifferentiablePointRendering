@@ -299,6 +299,7 @@ namespace Pale {
                                 nextState.bounceIndex,
                                 nextState.pathThroughput,
                                 settings.russianRouletteStart)) {
+
                                 shouldEnqueueNextState = true;
                                 currentHitSeedsScatterPrefix = true;
                                 currentPrefixThroughput = rayState.pathThroughput / settings.sampling.qReflect;
@@ -560,11 +561,11 @@ namespace Pale {
                     const float scalarWeight =
                     (pathWeight[0] * transportWithoutGeometricTerm[0] +
                      pathWeight[1] * transportWithoutGeometricTerm[1] +
-                     pathWeight[2] * transportWithoutGeometricTerm[2]) / (pAreaY);
+                     pathWeight[2] * transportWithoutGeometricTerm[2]) / (pAreaY * settings.sampling.qReflect);
 
                     float3 gradientWrtHitPositionX = scalarWeight * dGeometricTermDX;
 
-                    if (eventRecord.applyIncomingRayHitJacobianToX)
+                    //if (eventRecord.applyIncomingRayHitJacobianToX)
                     {
                         const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
                             eventRecord.xSurface.incomingDirection,
@@ -718,7 +719,7 @@ namespace Pale {
                             (pathWeight[0] * combinedTransport[0] +
                              pathWeight[1] * combinedTransport[1] +
                              pathWeight[2] * combinedTransport[2]) /
-                            (pAreaY * settings.sampling.qReflect);
+                            (pAreaY * (2.0 * settings.sampling.qReflect));
 
                     float3 gradientWrtYPosition =
                             (scalarWeightWithoutAreaZ / pAreaZ) * dGeometricTermDY * invSpp;
