@@ -182,11 +182,11 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 1,
-        "forward_passes": 100,
+        "bounces": 3,
+        "forward_passes": 200,
         "gather_passes": 1,
-        "adjoint_bounces": 1,
-        "adjoint_passes": 16,
+        "adjoint_bounces": 5,
+        "adjoint_passes": 128,
         "logging": 3,
         "seed": args.seed
     }
@@ -209,14 +209,24 @@ def main(args) -> None:
     output_dir = create_latest_run_dir(output_dir)
 
     # Create subfolders
-    (output_dir / "rendered").mkdir(parents=True, exist_ok=True)
-    (output_dir / "grad").mkdir(parents=True, exist_ok=True)
+    rendered_dir = output_dir / "rendered"
+    grad_dir = output_dir / "grad"
+    rendered_dir.mkdir(parents=True, exist_ok=True)
+    grad_dir.mkdir(parents=True, exist_ok=True)
 
     renderer = pale.Renderer(str(assets_root), str(scene_xml), str(pointcloud_ply), renderer_settings)
+    renderer_cameras = list(renderer.get_camera_names())
+    camera = args.camera # selected target/adjoint camera
 
-    camera = args.camera
+    # Make one folder per renderer camera so every iteration is easy to inspect
+    for camera_name in renderer_cameras:
+        if camera_name == camera:
+            continue
+        (rendered_dir / camera_name).mkdir(parents=True, exist_ok=True)
+
     target_image = read_rgb_exr(output_dir.parent / Path(camera + "_raw_target.exr"))
     print("Target image path:", output_dir.parent / Path(camera + "_raw_target.exr"))
+    print("Renderer cameras:", renderer_cameras)
 
     csv_path = output_dir / f"{camera}_{args.parameter}_sweep.csv"
     fieldnames = [
@@ -225,12 +235,12 @@ def main(args) -> None:
         "loss",
         "analytic_grad",
         "fd_grad",
-        "fd_kind",  # 0=central, 1=forward, 2=backward
+        "fd_kind",
         "fd_epsilon",
     ]
 
     iterations = int(args.iterations)
-    index = int(args.index if args.index >= 0 else 0)  # keep your prior behavior
+    index = int(args.index if args.index >= 0 else 0)
 
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -239,41 +249,27 @@ def main(args) -> None:
         for iteration_index in range(iterations + 1):
             if args.scene == "empty":
                 if args.parameter == "opacity":
-                    value = (iteration_index) / iterations  # 0..1
+                    value = iteration_index / iterations
                 elif args.parameter == "beta":
                     value = 6 - (iteration_index * 12) / iterations
                 elif args.parameter == "translation_x":
-                    value = -2 + (iteration_index) / (iterations) * 4  # -0.5..0.5
+                    value = -2 + iteration_index / iterations * 4
                 elif args.parameter == "translation_y":
-                    value = -2 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
+                    value = -2 + iteration_index / iterations * 4
                 elif args.parameter == "translation_z":
-                    value = -2.0 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
+                    value = -2.0 + iteration_index / iterations * 4
                 elif args.parameter == "scale_u":
-                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
+                    value = iteration_index / iterations
                 elif args.parameter == "scale_v":
-                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
+                    value = iteration_index / iterations
                 else:
                     raise RuntimeError("This script doesn't support parameter: " + args.parameter)
             else:
-                if args.parameter == "opacity":
-                    value = (iteration_index) / iterations  # 0..1
-                elif args.parameter == "beta":
-                    value = 6 - (iteration_index * 12) / iterations
-                elif args.parameter == "translation_x":
-                    value = 0.5 + (iteration_index) / (iterations) * 2  # -0.5..0.5
-                elif args.parameter == "translation_y":
-                    value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
-                elif args.parameter == "translation_z":
-                    value = 1.0 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
-                elif args.parameter == "scale_u":
-                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
-                elif args.parameter == "scale_v":
-                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
-                else:
-                    raise RuntimeError("This script doesn't support parameter: " + args.parameter)
+                if iterations <= 0:
+                    raise RuntimeError("--iterations must be > 0.")
+                t = iteration_index / iterations
+                value = args.min + t * (args.max - args.min)
 
-            # --- Finite difference derivative of LOSS at 'value' ---
-            # Note: this renders multiple times per iteration (central = 3 total renders).
             loss_value, fd_grad, fd_kind = _finite_difference_loss(
                 renderer=renderer,
                 parameter=args.parameter,
@@ -285,9 +281,6 @@ def main(args) -> None:
                 clamp_01=True,
             )
 
-            # Restore base state and render once more for:
-            #  - saving previews
-            #  - computing per-pixel dLoss/dI for adjoint
             _set_parameter(renderer, args.parameter, float(value), index)
             renderer.rebuild_bvh()
             images = renderer.render_forward()
@@ -295,38 +288,44 @@ def main(args) -> None:
 
             loss_grad_image = compute_l2_grad(rendered_image, target_image)
 
-            # Save previews
-            save_rgb_preview_png(
-                images[camera],
-                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".png"),
-                exposure_stops=0.0,
-            )
-
-            ## Secondary cameras
-            # Save previews
-            #save_rgb_preview_png(
-            #    images["camera2"],
-            #    output_dir / "rendered" / camera / Path(f"{iteration_index}_" + camera + ".png"),
-            #    exposure_stops=0.0,
-            #)
-
-            save_rgb_preview_exr(
-                rendered_image,
-                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".exr"),
-                exposure_stops=0.0,
-            )
-            save_rgb_preview_exr(
-                target_image,
-                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + f"_target" + ".exr"),
-                exposure_stops=0.0,
-            )
+            # Save primary camera target-dependent outputs
             save_seismic_signed(
                 loss_grad_image,
-                output_dir / "grad" / Path(f"{iteration_index}_" + camera + ".png"),
+                grad_dir / f"{iteration_index}_{camera}.png",
                 0.99,
             )
 
-            # Adjoint / analytic gradient
+            if iterations <= 0:
+                save_rgb_preview_exr(
+                    target_image,
+                    rendered_dir / f"{camera}_target.exr",
+                    exposure_stops=0.0,
+                )
+
+            save_rgb_preview_png(
+                images[camera],
+                rendered_dir / f"{iteration_index}_{camera}.png",
+                exposure_stops=0.0,
+            )
+            # Save outputs for every available camera
+            for camera_name in renderer_cameras:
+                if camera_name not in images or args.camera == camera_name:
+                    #print(f"Skipping preview PNG for camera key: {camera_name}")
+                    continue
+
+                raw_key = f"{camera_name}_raw"
+                if raw_key not in images:
+                    print(f"Skipping EXR for missing camera key: {raw_key}")
+                    continue
+
+                camera_output_dir = rendered_dir / camera_name
+
+                save_rgb_preview_png(
+                    images[camera_name],
+                    camera_output_dir / f"{iteration_index}_{camera_name}.png",
+                    exposure_stops=0.0,
+                )
+
             gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
             if args.parameter == "translation_x":
                 param_gradients = gradients["position"]
@@ -346,6 +345,7 @@ def main(args) -> None:
             else:
                 param_gradients = gradients[args.parameter]
                 param_gradient = param_gradients[args.index]
+
             writer.writerow(
                 {
                     "iter": iteration_index,
@@ -392,15 +392,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--parameter",
         type=str,
-        choices=["translation_x", "translation_y", "translation_z", "scale_u",  "scale_v", "opacity"],
+        choices=[
+            "translation_x",
+            "translation_y",
+            "translation_z",
+            "scale_u",
+            "scale_v",
+            "opacity",
+            "beta",
+        ],
         default="opacity",
     )
     parser.add_argument(
-        "--axis",
-        type=str,
-        choices=["x", "y", "z"],
-        default="x",
-        help="Which axis to finite-difference: 'translation', 'rotation', or 'scale'.",
+        "--min",
+        type=float,
+        required=True,
+        default=0.0,
+        help="Minimum sweep value for the selected parameter.",
+    )
+    parser.add_argument(
+        "--max",
+        type=float,
+        required=True,
+        default=1.0,
+        help="Maximum sweep value for the selected parameter.",
     )
     parser.add_argument(
         "--output",

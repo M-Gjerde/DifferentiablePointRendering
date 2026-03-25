@@ -504,8 +504,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.5f;
-        float qReflect = 0.5f;
+        float qNull = 0.0f;
+        float qReflect = 1.0f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };

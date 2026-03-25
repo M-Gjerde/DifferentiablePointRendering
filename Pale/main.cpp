@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
 
 
     bool addPoints = true;
-    bool addModel = true;
+    bool addModel = !true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
         auto entityPointCloud = scene->createEntity("PointCloud");
@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
 
         // 3) Material
         Pale::AssetHandle bunnyMaterialAssetHandle =
-            assetIndexer.importPath("Materials/cbox/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
+            assetIndexer.importPath("Materials/cbox_custom/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
 
         auto& bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = true;
+    bool renderLightTracing = !true;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
 
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
+                std::filesystem::path("Output") / sceneName; // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = sensor.name;
@@ -258,8 +258,6 @@ int main(int argc, char** argv) {
 
             std::filesystem::path rawFilePath =
                 baseDir / "images" / (fileName + "_raw.exr");
-
-            Pale::Log::PA_INFO("Saving image to: {}", (std::filesystem::current_path() / rawFilePath).string());
 
             Pale::Utils::saveRGBAFloatAsEXR(
                 rawFilePath,
@@ -280,7 +278,7 @@ int main(int argc, char** argv) {
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 2; // 1 = Projection only // 2 starts including transmittance
         settings.adjointSamplesPerPixel = 8;
-        settings.renderDebugGradientImages = !true;
+        settings.renderDebugGradientImages = true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
 
@@ -311,7 +309,6 @@ int main(int argc, char** argv) {
             std::filesystem::path rawFilePath =
                 baseDir / "images" / (fileName + "_raw.exr");
 
-            Pale::Log::PA_INFO("Saving image to: {}", (std::filesystem::current_path() / rawFilePath).string());
             Pale::Utils::saveRGBAFloatAsEXR(
                 rawFilePath,
                 rgbaRaw,
@@ -319,17 +316,6 @@ int main(int argc, char** argv) {
                 imageHeight
             );
         }
-    }
-
-    // Write Registry:
-    assetManager.registry().save("asset_registry.yaml");
-    deviceSelector.getQueue().wait();
-    return 0;
-}
-
-/*
-
-
 
         {
             auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
@@ -674,3 +660,8 @@ int main(int argc, char** argv) {
     }
     */
 
+    // Write Registry:
+    assetManager.registry().save("asset_registry.yaml");
+    deviceSelector.getQueue().wait();
+    return 0;
+}
