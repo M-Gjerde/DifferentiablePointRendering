@@ -183,10 +183,10 @@ def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
         "bounces": 3,
-        "forward_passes": 200,
+        "forward_passes": 100,
         "gather_passes": 1,
         "adjoint_bounces": 5,
-        "adjoint_passes": 128,
+        "adjoint_passes": 100,
         "logging": 3,
         "seed": args.seed
     }
