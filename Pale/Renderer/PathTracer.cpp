@@ -132,6 +132,13 @@ namespace Pale {
         Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingAdjointStatesXYBytes));
         m_intermediates.maxPendingAdjointStateCount = m_rayQueueCapacity;
 
+        const std::size_t sizePendingCameraSegmentBytes =
+                sizeof(PendingCameraSegment) * m_rayQueueCapacity;
+        m_intermediates.pendingCameraSegments =
+                sycl::malloc_device<PendingCameraSegment>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingCameraSegmentBytes));
+        m_intermediates.maxCameraToSurfaceScatterEventCount = m_rayQueueCapacity;
+
 
         const uint32_t gradientRecordCapacity = 4u * m_rayQueueCapacity;
         const std::size_t sizeGradientRecordsBytes =
@@ -139,6 +146,8 @@ namespace Pale {
 
         m_intermediates.gradientRecords =
                 sycl::malloc_device<SurfelGradientRecord>(gradientRecordCapacity, m_queue);
+        m_intermediates.cameraToSurfaceScatterEvents =
+                sycl::malloc_device<CameraToSurfaceScatterEvent>(m_rayQueueCapacity, m_queue);
         m_intermediates.maxGradientRecordCount = gradientRecordCapacity;
         Log::PA_TRACE("Allocated gradientRecords: {}", Utils::formatBytes(sizeGradientRecordsBytes));
         Log::PA_INFO("sizeof(SurfelGradientRecord) = {}", sizeof(SurfelGradientRecord));
@@ -150,6 +159,7 @@ namespace Pale {
         m_intermediates.countProjectionScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countReflectScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countCameraToSurfaceScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
 
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
@@ -157,6 +167,7 @@ namespace Pale {
         m_queue.memset(m_intermediates.countProjectionScatterEvents, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countReflectScatterEvents, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countCameraToSurfaceScatterEvents, 0, sizeof(uint32_t));
         m_queue.wait();
 
         const std::size_t counterBytes =

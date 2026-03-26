@@ -235,6 +235,135 @@ namespace Pale {
         return inverseDistanceCubed * tmp2;
     }
 
+    struct CachedSegmentEndpointDerivativeResult {
+    bool valid = true;
+    bool overflowed = false;
+    float weightedTransmittance = 1.0f;
+    float3 gradWeightedTransmittanceWrtEndPosition{0.0f, 0.0f, 0.0f};
+};
+
+inline float3 computeCachedEffectiveAlphaGradientWrtSegmentEnd(
+    const CachedSegmentOccluderRecord& occluderRecord,
+    const float3& segmentStartPosition,
+    const float3& segmentEndPosition,
+    const GPUSceneBuffers& scene)
+{
+    const Point& surfel = scene.points[occluderRecord.primitiveIndex];
+
+    const float3 segmentDirection = segmentEndPosition - segmentStartPosition;
+    const float segmentLength = length(segmentDirection);
+    if (segmentLength <= 1e-8f) {
+        return float3{0.0f, 0.0f, 0.0f};
+    }
+
+    const float lambda = sycl::clamp(
+        occluderRecord.distanceFromSegmentStart / segmentLength,
+        0.0f,
+        1.0f);
+
+    const float scaleU = surfel.scale.x();
+    const float scaleV = surfel.scale.y();
+    if (scaleU <= 1e-8f || scaleV <= 1e-8f) {
+        return float3{0.0f, 0.0f, 0.0f};
+    }
+
+    const float3 canonicalNormal = normalize(cross(
+        surfel.scale.x() * surfel.tanU,
+        surfel.scale.y() * surfel.tanV));
+
+    const float denominator = dot(canonicalNormal, segmentDirection);
+    if (sycl::fabs(denominator) <= 1e-8f) {
+        return float3{0.0f, 0.0f, 0.0f};
+    }
+
+    const float3 duDend =
+        lambda * (
+            (surfel.tanU / scaleU) -
+            canonicalNormal * (dot(segmentDirection, surfel.tanU) / (scaleU * denominator)));
+
+    const float3 dvDend =
+        lambda * (
+            (surfel.tanV / scaleV) -
+            canonicalNormal * (dot(segmentDirection, surfel.tanV) / (scaleV * denominator)));
+
+    const float u = occluderRecord.uv.x();
+    const float v = occluderRecord.uv.y();
+    const float radiusSquared = u * u + v * v;
+    const float safeOneMinusRadiusSquared = sycl::fmax(1e-6f, 1.0f - radiusSquared);
+
+    const float betaScale = 4.0f * sycl::exp(surfel.beta);
+    const float dAlphaGeomDu =
+        (-2.0f * betaScale * u * occluderRecord.alphaGeom) / safeOneMinusRadiusSquared;
+    const float dAlphaGeomDv =
+        (-2.0f * betaScale * v * occluderRecord.alphaGeom) / safeOneMinusRadiusSquared;
+
+    const float3 dAlphaGeomDend =
+        dAlphaGeomDu * duDend +
+        dAlphaGeomDv * dvDend;
+
+    return surfel.opacity * dAlphaGeomDend;
+}
+
+inline CachedSegmentEndpointDerivativeResult evaluateCachedWeightedSegmentTransmittanceWrtEnd(
+    const CachedSegmentTransmittance& cachedSegment,
+    const float3& segmentStartPosition,
+    const float3& segmentEndPosition,
+    const GPUSceneBuffers& scene,
+    float qNull)
+{
+    CachedSegmentEndpointDerivativeResult result{};
+    result.overflowed = cachedSegment.overflowed;
+
+    if (cachedSegment.overflowed) {
+        result.valid = false;
+        result.weightedTransmittance = 0.0f;
+        result.gradWeightedTransmittanceWrtEndPosition = float3{0.0f, 0.0f, 0.0f};
+        return result;
+    }
+
+    if (qNull <= 1e-8f) {
+        result.valid = false;
+        result.weightedTransmittance = 0.0f;
+        result.gradWeightedTransmittanceWrtEndPosition = float3{0.0f, 0.0f, 0.0f};
+        return result;
+    }
+
+    float weightedTransmittance = 1.0f;
+    float3 accumulatedLogDerivativeWrtEnd{0.0f, 0.0f, 0.0f};
+
+    for (uint32_t occluderIndex = 0u;
+         occluderIndex < cachedSegment.occluderCount;
+         ++occluderIndex) {
+        const CachedSegmentOccluderRecord& occluderRecord =
+            cachedSegment.occluders[occluderIndex];
+
+        if (occluderRecord.primitiveIndex == kInvalidIndex) {
+            continue;
+        }
+
+        const Point& surfel = scene.points[occluderRecord.primitiveIndex];
+        const float alphaEffective = occluderRecord.alphaGeom * surfel.opacity;
+        const float oneMinusAlpha = sycl::fmax(1e-6f, 1.0f - alphaEffective);
+
+        weightedTransmittance *= oneMinusAlpha / qNull;
+
+        const float3 dAlphaEffectiveDend =
+            computeCachedEffectiveAlphaGradientWrtSegmentEnd(
+                occluderRecord,
+                segmentStartPosition,
+                segmentEndPosition,
+                scene);
+
+        accumulatedLogDerivativeWrtEnd += dAlphaEffectiveDend / oneMinusAlpha;
+    }
+
+    result.weightedTransmittance = weightedTransmittance;
+    result.gradWeightedTransmittanceWrtEndPosition =
+        -weightedTransmittance * accumulatedLogDerivativeWrtEnd;
+
+    return result;
+}
+
     inline float3 computeGeometricTermGradientWrtEndpoint(
         const float3 &xPosition,
         const float3 &yPosition,

@@ -182,11 +182,11 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 3,
+        "bounces": 2,
         "forward_passes": 100,
         "gather_passes": 1,
-        "adjoint_bounces": 4,
-        "adjoint_passes": 128,
+        "adjoint_bounces": 3,
+        "adjoint_passes": 32,
         "logging": 3,
         "seed": args.seed
     }
@@ -260,11 +260,11 @@ def main(args) -> None:
                 elif args.parameter == "beta":
                     value = 6 - (iteration_index * 12) / iterations
                 elif args.parameter == "translation_x":
-                    value = 0.5 + (iteration_index) / (iterations) * 2  # -0.5..0.5
+                    value = -1 + (iteration_index) / (iterations) * 2  # -0.5..0.5
                 elif args.parameter == "translation_y":
-                    value = -2 + (iteration_index) / (iterations * 1) * 4   # -0.5..0.5
+                    value = -1.5 + (iteration_index) / (iterations * 1) * 3   # -0.5..0.5
                 elif args.parameter == "translation_z":
-                    value = 1.0 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
+                    value = -2.0 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
                 elif args.parameter == "scale_u":
                     value = (iteration_index) / (iterations * 1)  # -0.5..0.5
                 elif args.parameter == "scale_v":
@@ -422,7 +422,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-2,
+        default=1e-3,
         help="Finite difference epsilon.",
     )
     parser.add_argument(
