@@ -354,7 +354,6 @@ namespace Pale {
         bool valid = false;
         uint32_t pathId = 0u;
         uint32_t pixelIndex = 0u;
-
         float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
         float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
         float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};

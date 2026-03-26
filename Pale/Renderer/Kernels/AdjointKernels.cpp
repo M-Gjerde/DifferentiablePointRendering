@@ -963,30 +963,42 @@ namespace Pale {
                         yState.orientedNormal);
 
                     float transmittance = 1.0f;
-                    if (yPrimitiveIndex == 2 && xPrimitiveIndex == 0 && eventRecord.segmentXY.occluderCount) {
-                        const auto &cachedSegment = eventRecord.segmentXY;
-                        for (uint32_t occluderIndex = 0u;
-                             occluderIndex < cachedSegment.occluderCount;
-                             ++occluderIndex) {
-                            const auto &cachedOccluder = cachedSegment.occluders[occluderIndex];
-                            const Point &occluderSurfel =
-                                    scene.points[cachedOccluder.primitiveIndex];
+                    const auto &cachedSegment = eventRecord.segmentXY;
+                    for (uint32_t occluderIndex = 0u;
+                         occluderIndex < cachedSegment.occluderCount;
+                         ++occluderIndex) {
+                        const auto &cachedOccluder = cachedSegment.occluders[occluderIndex];
+                        const Point &occluderSurfel =
+                                scene.points[cachedOccluder.primitiveIndex];
 
-                            const float u = cachedOccluder.uv.x();
-                            const float v = cachedOccluder.uv.y();
 
-                            const float alphaGeomOccluder = cachedOccluder.alphaGeom;
-                            const float alphaEffectiveOccluder =
-                                    alphaGeomOccluder * occluderSurfel.opacity;
+                        const float u = cachedOccluder.uv.x();
+                        const float v = cachedOccluder.uv.y();
+                        float3 s_pi_attached = phiMapping(occluderSurfel, u, v);
 
-                            const float oneMinusAlpha = 1.0f - alphaEffectiveOccluder;
-                            transmittance *= oneMinusAlpha;
+                        const float alphaGeomOccluder = cachedOccluder.alphaGeom;
+                        const float alphaEffectiveOccluder =
+                                alphaGeomOccluder * occluderSurfel.opacity;
 
-                            if (oneMinusAlpha <= 1e-8f) {
-                                return;
-                            }
+                        const float oneMinusAlpha = 1.0f - alphaEffectiveOccluder;
+                        transmittance *= oneMinusAlpha;
+
+                        if (oneMinusAlpha <= 1e-8f) {
+                            return;
                         }
+                        float3 n_i = cross(occluderSurfel.tanU, occluderSurfel.tanV);
+                        // negative or positive normal, coulb be flipped but shouldn't matter.
+
+                        float3 s_pi = occluderSurfel.position;
+                        float3 y = phiMapping(surfelY, eventRecord.ySurface.uv.x(), eventRecord.ySurface.uv.y());
+                        float3 x = phiMapping(surfelX, eventRecord.xSurface.uv.x(), eventRecord.xSurface.uv.y());
+                        float lambda_i = dot(n_i, s_pi - y) / dot(n_i, x - y);
+
+                        float3 s_i = y + lambda_i * (x - y);
+                        int debug = 1;
+
                     }
+
 
                     const float3 transportWithoutGeometricTerm =
                             outgoingRadianceY * alphaX * brdfX * transmittance;
