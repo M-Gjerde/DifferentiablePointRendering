@@ -326,7 +326,40 @@ namespace Pale {
         ProjectionScatter,
         Projection,
     };
+    enum class SampledPointEventType : uint32_t {
+        None = 0u,
+        Null = 1u,
+        Reflect = 2u,
+        Transmit = 3u
+    };
+    static constexpr uint32_t kMaxSegmentOccluders = 5;
 
+    static constexpr uint32_t kMaxCachedSegmentOccluderCount = 10u;
+
+
+    struct CachedSegmentOccluderRecord {
+        uint32_t primitiveIndex = kInvalidIndex;
+        float2 uv{0.0f, 0.0f};
+        float alphaGeom = 0.0f;
+        float distanceFromSegmentStart = 0.0f;
+    };
+
+    struct CachedSegmentTransmittance {
+        uint32_t occluderCount = 0u;
+        bool overflowed = false;
+        CachedSegmentOccluderRecord occluders[kMaxCachedSegmentOccluderCount];
+    };
+
+    struct PendingCameraSegment {
+        bool valid = false;
+        uint32_t pathId = 0u;
+        uint32_t pixelIndex = 0u;
+        float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
+        float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
+        float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
+
+        CachedSegmentTransmittance segmentOccludersToFirstScatter{};
+    };
 
     struct PointCloudSurfaceRecord {
         uint32_t primitiveIndex = 0;
@@ -336,13 +369,27 @@ namespace Pale {
         float3 incomingDirection = float3{0.0f, 0.0f, 0.0f};
     };
 
+    struct CameraToSurfaceScatterEvent {
+        PointCloudSurfaceRecord ySurface{};
+
+        float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
+        float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
+        float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
+
+        CachedSegmentTransmittance segmentCameraToY{};
+    };
+
     struct PendingAdjointStageX {
         bool valid = false;
+        bool isTransmit = false;
         uint32_t pathId = 0;
         uint32_t pixelIndex = 0;
         PointCloudSurfaceRecord xSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         bool applyIncomingRayHitJacobianToX = false;
+
+        float3 segmentStartPositionWorld{0.0f, 0.0f, 0.0f};
+        CachedSegmentTransmittance segmentOccludersToNextHit{};
     };
 
     struct PendingAdjointStageXY {
@@ -353,6 +400,9 @@ namespace Pale {
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         bool applyIncomingRayHitJacobianToX = false;
+
+        float3 segmentStartPositionWorld{0.0f, 0.0f, 0.0f};
+        CachedSegmentTransmittance segmentOccludersToNextHit{};
     };
 
     struct AttachedGradientProjectionEvent {
@@ -365,6 +415,7 @@ namespace Pale {
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         bool applyIncomingRayHitJacobianToX = false;
+        CachedSegmentTransmittance segmentXY{};
     };
 
     struct DetachedThreePointGradientEvent {
@@ -372,6 +423,7 @@ namespace Pale {
         PointCloudSurfaceRecord ySurface;
         PointCloudSurfaceRecord zSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+        CachedSegmentTransmittance segmentYZ{};
     };
 
     struct ReconstructedSurfelState {
@@ -395,34 +447,35 @@ namespace Pale {
     };
 
     struct SurfelGradientRecord {
-        uint32_t primitiveIndex;
+        uint32_t primitiveIndex = UINT32_MAX;
 
-        float gradBeta;
-        float gradEta;
+        float gradBeta = 0.0f;
+        float gradEta = 0.0f;
 
-        float gradRhoX;
-        float gradRhoY;
-        float gradRhoZ;
+        float gradRhoX = 0.0f;
+        float gradRhoY = 0.0f;
+        float gradRhoZ = 0.0f;
 
-        float gradPositionX;
-        float gradPositionY;
-        float gradPositionZ;
+        float gradPositionX = 0.0f;
+        float gradPositionY = 0.0f;
+        float gradPositionZ = 0.0f;
 
-        float gradScaleU;
-        float gradScaleV;
-
-        float gradTangentUX;
-        float gradTangentUY;
-        float gradTangentUZ;
-
-        float gradTangentVX;
-        float gradTangentVY;
-        float gradTangentVZ;
+        float gradScaleU = 0.0f;
+        float gradScaleV = 0.0f;
+        float gradTangentUX = 0.0f;
+        float gradTangentUY = 0.0f;
+        float gradTangentUZ = 0.0f;
+        float gradTangentVX = 0.0f;
+        float gradTangentVY = 0.0f;
+        float gradTangentVZ = 0.0f;
     };
 
     struct GradientRecordRanges {
         uint32_t projectionOffset = 0;
         uint32_t projectionCount = 0;
+
+        uint32_t projectionTransmitOffset = 0;
+        uint32_t projectionTransmitCount = 0;
 
         uint32_t projectionScatterOffset = 0;
         uint32_t projectionScatterCount = 0;
@@ -605,6 +658,10 @@ namespace Pale {
         SurfelGradientRecord *gradientRecords = nullptr;
         uint32_t maxGradientRecordCount = 0;
 
+        PendingCameraSegment* pendingCameraSegments = nullptr;
+        CameraToSurfaceScatterEvent* cameraToSurfaceScatterEvents = nullptr;
+        uint32_t* countCameraToSurfaceScatterEvents = nullptr;
+        uint32_t maxCameraToSurfaceScatterEventCount = 0u;
 
         uint32_t *countProjectionEvents = nullptr;
         uint32_t *countProjectionScatterEvents = nullptr;

@@ -8,19 +8,18 @@
 
 
 namespace Pale {
-
-    void launchRayGenAdjointKernel(RenderPackage & pkg, int spp, uint32_t cameraIndex);
+    void launchRayGenAdjointKernel(RenderPackage &pkg, int spp, uint32_t cameraIndex);
 
     void launchAdjointProjectionKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex);
 
     void adjointContributionKernels(RenderPackage &pkg,
-uint32_t projectionEventCount,
-uint32_t projectionScatterEventCount,
-uint32_t reflectScatterEventCount,
-uint32_t cameraIndex);
+                                    uint32_t projectionEventCount,
+                                    uint32_t projectionScatterEventCount,
+                                    uint32_t reflectScatterEventCount,
+                                    uint32_t cameraToSurfaceScatterEventCount,
+                                    uint32_t cameraIndex);
 
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
-    void launchAdjointIntersectKernel(RenderPackage &pkg,  uint32_t spp,uint32_t activeRayCount);
 
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount);
 }
-
