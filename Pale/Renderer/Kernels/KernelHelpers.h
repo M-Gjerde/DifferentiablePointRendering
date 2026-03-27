@@ -2016,38 +2016,7 @@ namespace Pale {
         return value.x() == 0.0f && value.y() == 0.0f && value.z() == 0.0f;
     }
 
-    inline void clearCachedSegmentTransmittance(CachedSegmentTransmittance& cachedSegment) {
-        cachedSegment.occluderCount = 0u;
-        cachedSegment.overflowed = false;
-        for (uint32_t recordIndex = 0; recordIndex < kMaxCachedSegmentOccluderCount; ++recordIndex) {
-            cachedSegment.occluders[recordIndex] = {};
-        }
-    }
 
-    inline void appendOccluderToCachedSegment(
-        CachedSegmentTransmittance& cachedSegment,
-        uint32_t primitiveIndex,
-        const float2& uv,
-        float alphaGeom,
-        float distanceFromSegmentStart)
-    {
-        if (cachedSegment.overflowed) {
-            return;
-        }
-
-        if (cachedSegment.occluderCount >= kMaxCachedSegmentOccluderCount) {
-            cachedSegment.overflowed = true;
-            return;
-        }
-
-        CachedSegmentOccluderRecord& record =
-            cachedSegment.occluders[cachedSegment.occluderCount++];
-
-        record.primitiveIndex = primitiveIndex;
-        record.uv = uv;
-        record.alphaGeom = alphaGeom;
-        record.distanceFromSegmentStart = distanceFromSegmentStart;
-    }
 
     inline void clearPendingCameraSegment(PendingCameraSegment& pendingCameraSegment) {
         pendingCameraSegment.valid = false;
@@ -2056,10 +2025,7 @@ namespace Pale {
         pendingCameraSegment.cameraPathThroughput = float3{0.0f, 0.0f, 0.0f};
         pendingCameraSegment.cameraOriginWorld = float3{0.0f, 0.0f, 0.0f};
         pendingCameraSegment.cameraDirectionWorld = float3{0.0f, 0.0f, 0.0f};
-        clearCachedSegmentTransmittance(pendingCameraSegment.segmentOccludersToFirstScatter);
     }
 
-    inline bool hasCachedSegmentOcclusion(const CachedSegmentTransmittance& cachedSegment) {
-        return cachedSegment.occluderCount > 0u || cachedSegment.overflowed;
-    }
+
 }

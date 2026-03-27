@@ -252,6 +252,7 @@ namespace Pale {
     struct alignas(16) RayState {
         Ray ray{};
         float3 pathThroughput{0.0f};
+        float transmission = 1.0f;
         uint32_t bounceIndex{0};
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
         uint32_t lightIndex = UINT32_MAX;
@@ -334,22 +335,6 @@ namespace Pale {
     };
     static constexpr uint32_t kMaxSegmentOccluders = 5;
 
-    static constexpr uint32_t kMaxCachedSegmentOccluderCount = 10u;
-
-
-    struct CachedSegmentOccluderRecord {
-        uint32_t primitiveIndex = kInvalidIndex;
-        float2 uv{0.0f, 0.0f};
-        float alphaGeom = 0.0f;
-        float distanceFromSegmentStart = 0.0f;
-    };
-
-    struct CachedSegmentTransmittance {
-        uint32_t occluderCount = 0u;
-        bool overflowed = false;
-        CachedSegmentOccluderRecord occluders[kMaxCachedSegmentOccluderCount];
-    };
-
     struct PendingCameraSegment {
         bool valid = false;
         uint32_t pathId = 0u;
@@ -357,8 +342,6 @@ namespace Pale {
         float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
         float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
         float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
-
-        CachedSegmentTransmittance segmentOccludersToFirstScatter{};
     };
 
     struct PointCloudSurfaceRecord {
@@ -370,13 +353,10 @@ namespace Pale {
     };
 
     struct CameraToSurfaceScatterEvent {
-        PointCloudSurfaceRecord ySurface{};
-
+        PointCloudSurfaceRecord xSurface{};
         float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
         float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
         float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
-
-        CachedSegmentTransmittance segmentCameraToY{};
     };
 
     struct PendingAdjointStageX {
@@ -387,9 +367,6 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         bool applyIncomingRayHitJacobianToX = false;
-
-        float3 segmentStartPositionWorld{0.0f, 0.0f, 0.0f};
-        CachedSegmentTransmittance segmentOccludersToNextHit{};
     };
 
     struct PendingAdjointStageXY {
@@ -400,22 +377,20 @@ namespace Pale {
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         bool applyIncomingRayHitJacobianToX = false;
-
-        float3 segmentStartPositionWorld{0.0f, 0.0f, 0.0f};
-        CachedSegmentTransmittance segmentOccludersToNextHit{};
     };
 
     struct AttachedGradientProjectionEvent {
         PointCloudSurfaceRecord xSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+        float transmission = 1.0f;
     };
 
     struct AttachedGradientScatterEvent {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+        float transmission = 1.0f;
         bool applyIncomingRayHitJacobianToX = false;
-        CachedSegmentTransmittance segmentXY{};
     };
 
     struct DetachedThreePointGradientEvent {
@@ -423,7 +398,6 @@ namespace Pale {
         PointCloudSurfaceRecord ySurface;
         PointCloudSurfaceRecord zSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        CachedSegmentTransmittance segmentYZ{};
     };
 
     struct ReconstructedSurfelState {
@@ -557,8 +531,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.0f;
-        float qReflect = 1.0f;
+        float qNull = 0.4f;
+        float qReflect = 0.6f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };

@@ -16,8 +16,8 @@ def main(args) -> None:
     # --- settings ---
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 3,
-        "forward_passes": 100,
+        "bounces": 2,
+        "forward_passes": 1000,
         "gather_passes": 1,
         "adjoint_bounces": 0,
         "adjoint_passes": 0,
@@ -117,6 +117,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Where to output files",
         default="output"
+    )
+    parser.add_argument(
+        "--min",
+        type=float,
+    )
+    parser.add_argument(
+        "--max",
+        type=float,
     )
     parser.add_argument(
         "--camera",
