@@ -799,7 +799,7 @@ namespace Pale {
     SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld,
                                              WorldHit *worldHitOut,
                                              const GPUSceneBuffers &scene,
-                                             rng::Xorshift128 &rng128,
+                                             rng::Xorshift128 rng128 = rng::Xorshift128(0.0),
                                              SurfelIntersectMode rayIntersectMode = SurfelIntersectMode::Bernoulli,
                                              uint32_t scatterOnPrimitiveIndex = UINT32_MAX) {
         const TLASNode *tlasNodes = scene.tlasNodes;

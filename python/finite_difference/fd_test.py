@@ -182,11 +182,11 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 4,
-        "forward_passes": 100,
+        "bounces": 2,
+        "forward_passes": 25,
         "gather_passes": 1,
-        "adjoint_bounces": 6,
-        "adjoint_passes": 128,
+        "adjoint_bounces": 2,
+        "adjoint_passes": 32,
         "logging": 3,
         "seed": args.seed
     }
