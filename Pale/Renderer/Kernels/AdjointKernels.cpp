@@ -119,12 +119,6 @@ namespace Pale {
                     const uint32_t rayIndex = globalId[0];
                     const RayState rayState = intermediates.primaryRays[rayIndex];
 
-                    // transmission is interpreted as:
-                    // accumulated null-event transmittance on the current open segment
-                    // since the last real interaction.
-                    //
-                    // This function assumes fresh rays begin with transmission = 1.0f.
-
                     const uint64_t seed = rng::makeSeed(
                         renderSeed,
                         rayState.pathId,
@@ -161,7 +155,7 @@ namespace Pale {
 
                             sampleCosineHemisphere(
                                 rng,
-                                worldHit.geometricNormalW,
+                                orientedNormal,
                                 sampledOutgoingDirectionWorld,
                                 cosineHemispherePdf);
                             break;
@@ -211,29 +205,29 @@ namespace Pale {
 
                     RayState nextState{};
                     bool shouldEnqueueNextState = false;
-                    SampledPointEventType sampledPointEventType = SampledPointEventType::None;
 
                     PendingCameraSegment nextPendingCameraSegment{};
                     PendingAdjointStageX nextPendingStageX{};
                     PendingAdjointStageXY nextPendingStageXY{};
 
+                    clearPendingCameraSegment(nextPendingCameraSegment);
                     clearPendingAdjointStageX(nextPendingStageX);
                     clearPendingAdjointStageXY(nextPendingStageXY);
 
-                    if (instance.geometryType == GeometryType::Mesh) {
+                    if (currentGeometryType == GeometryType::Mesh) {
                         const GPUMaterial material = scene.materials[instance.materialIndex];
                         const float3 throughputMultiplier = material.baseColor;
 
-                        nextState.ray.origin = worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-6f);
+                        nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-6f);
                         nextState.ray.direction = sampledOutgoingDirectionWorld;
-                        nextState.ray.normal = worldHit.geometricNormalW;
+                        nextState.ray.normal = orientedNormal;
                         nextState.bounceIndex = rayState.bounceIndex + 1u;
                         nextState.pixelIndex = rayState.pixelIndex;
                         nextState.pathId = rayState.pathId;
                         nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
                         nextState.traversalIndex = rayState.traversalIndex + 1u;
 
-                        // Real interaction: start a fresh segment after this hit.
+                        // A real interaction consumes the previous open segment.
                         nextState.transmission = 1.0f;
 
                         if (applyRussianRoulette(
@@ -244,33 +238,35 @@ namespace Pale {
                             shouldEnqueueNextState = true;
                         }
 
+                        // No surfel-gradient event types are emitted for mesh hits here.
                         clearPendingCameraSegment(nextPendingCameraSegment);
                         clearPendingAdjointStageX(nextPendingStageX);
                         clearPendingAdjointStageXY(nextPendingStageXY);
                     }
                     else {
                         const Point& surfel = scene.points[worldHit.primitiveIndex];
+
+                        const float qNull = settings.sampling.qNull;
+                        const float qReflect = settings.sampling.qReflect;
+
                         const float randomNumber = rng.nextFloat();
+                        const bool sampledNull = randomNumber < qNull;
+                        const bool sampledReflect = !sampledNull; // since qTransmit = 0 and qAbsorb = 0
 
-                        if (randomNumber < settings.sampling.qNull) {
-                            sampledPointEventType = SampledPointEventType::Null;
-
+                        if (sampledNull) {
                             const float attenuation = 1.0f - worldHit.alphaGeom * surfel.opacity;
-                            const float weight = attenuation / settings.sampling.qNull;
 
                             nextState.ray.origin = worldHit.hitPositionW + (rayState.ray.direction * 1e-5f);
                             nextState.ray.direction = rayState.ray.direction;
-                            nextState.ray.normal = worldHit.geometricNormalW;
+                            nextState.ray.normal = orientedNormal;
                             nextState.bounceIndex = rayState.bounceIndex;
                             nextState.pixelIndex = rayState.pixelIndex;
-                            nextState.traversalIndex = rayState.traversalIndex + 1u;
                             nextState.pathId = rayState.pathId;
+                            nextState.pathThroughput = rayState.pathThroughput / qNull;
+                            nextState.traversalIndex = rayState.traversalIndex + 1u;
 
-                            // Null event extends the current open segment.
+                            // Null extends the current open segment.
                             nextState.transmission = rayState.transmission * attenuation;
-
-                            nextState.pathThroughput = rayState.pathThroughput / settings.sampling.qNull;
-                            // We apply attenuation when we re-trace the ray
 
                             if (applyRussianRoulette(
                                 rng,
@@ -286,18 +282,16 @@ namespace Pale {
                                 nextPendingStageXY = previousPendingStageXY;
                             }
                         }
-                        else if (randomNumber < settings.sampling.qNull + settings.sampling.qReflect) {
-                            sampledPointEventType = SampledPointEventType::Reflect;
-
+                        else {
+                            // reflect
+                            const float alpha = worldHit.alphaGeom * surfel.opacity;
                             const float3 surfelBrdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
                             const float cosineTheta = sycl::fmax(
                                 0.0f,
                                 dot(sampledOutgoingDirectionWorld, orientedNormal));
-                            const float alpha = worldHit.alphaGeom * surfel.opacity;
 
                             const float3 throughputMultiplier =
-                                ((alpha / settings.sampling.qReflect) *
-                                    (surfelBrdf * cosineTheta)) /
+                                ((alpha / qReflect) * (surfelBrdf * cosineTheta)) /
                                 uniformHemispherePdf;
 
                             nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-5f);
@@ -309,8 +303,7 @@ namespace Pale {
                             nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
                             nextState.traversalIndex = rayState.traversalIndex + 1u;
 
-                            // Real interaction: the old segment is consumed now.
-                            // Future nulls belong to the next segment.
+                            // Real interaction consumes the previous open segment.
                             nextState.transmission = 1.0f;
 
                             if (applyRussianRoulette(
@@ -322,12 +315,13 @@ namespace Pale {
                             }
 
                             if (canUsePendingAdjointState) {
+                                // Camera -> X local attached term
                                 if (previousPendingCameraSegment.valid) {
                                     AttachedGradientProjectionEvent attachedProjectionEvent{};
                                     attachedProjectionEvent.xSurface = currentSurfaceRecord;
                                     attachedProjectionEvent.transmission = rayState.transmission;
                                     attachedProjectionEvent.xPathThroughput =
-                                        rayState.pathThroughput / settings.sampling.qReflect;
+                                        rayState.pathThroughput / qReflect;
 
                                     appendEventAtomic(
                                         intermediates.countProjectionEvents,
@@ -336,15 +330,18 @@ namespace Pale {
                                         attachedProjectionEvent);
                                 }
 
+                                // X -> Y attached scatter term
                                 if (previousPendingStageX.valid) {
                                     AttachedGradientScatterEvent attachedScatterEvent{};
                                     attachedScatterEvent.xSurface = previousPendingStageX.xSurface;
                                     attachedScatterEvent.ySurface = currentSurfaceRecord;
-                                    attachedScatterEvent.xPathThroughput =
-                                        previousPendingStageX.xPathThroughput / settings.sampling.qReflect;
 
-                                    attachedScatterEvent.transmissionPreviousSegment = previousPendingStageX.
-                                        previousSegmentTransmission;
+                                    // IMPORTANT: do not divide by qReflect again
+                                    attachedScatterEvent.xPathThroughput =
+                                        previousPendingStageX.xPathThroughput;
+
+                                    attachedScatterEvent.transmissionPreviousSegment =
+                                        previousPendingStageX.previousSegmentTransmission;
 
                                     attachedScatterEvent.transmission = rayState.transmission;
 
@@ -355,6 +352,7 @@ namespace Pale {
                                         attachedScatterEvent);
                                 }
 
+                                // XY -> Z detached term
                                 if (previousPendingStageXY.valid) {
                                     DetachedThreePointGradientEvent detachedThreePointEvent{};
                                     detachedThreePointEvent.xSurface = previousPendingStageXY.xSurface;
@@ -371,14 +369,17 @@ namespace Pale {
                                         detachedThreePointEvent);
                                 }
 
+                                // Seed new X stage at the current reflect hit
                                 nextPendingStageX.valid = true;
                                 nextPendingStageX.pathId = rayState.pathId;
                                 nextPendingStageX.pixelIndex = rayState.pixelIndex;
                                 nextPendingStageX.xSurface = currentSurfaceRecord;
                                 nextPendingStageX.xPathThroughput =
-                                    rayState.pathThroughput / settings.sampling.qReflect;
-                                nextPendingStageX.previousSegmentTransmission = rayState.transmission;
+                                    rayState.pathThroughput / qReflect;
+                                nextPendingStageX.previousSegmentTransmission =
+                                    rayState.transmission;
 
+                                // Seed new XY stage if there was already an X stage
                                 if (previousPendingStageX.valid) {
                                     nextPendingStageXY.valid = true;
                                     nextPendingStageXY.pathId = rayState.pathId;
@@ -391,65 +392,6 @@ namespace Pale {
 
                                 clearPendingCameraSegment(nextPendingCameraSegment);
                             }
-                        }
-                        else if (
-                            randomNumber <
-                            settings.sampling.qNull +
-                            settings.sampling.qReflect +
-                            settings.sampling.qTransmit) {
-                            sampledPointEventType = SampledPointEventType::Transmit;
-
-                            const float alpha = worldHit.alphaGeom * surfel.opacity;
-                            const float weight = (alpha * surfel.alpha_t) / settings.sampling.qTransmit;
-                            const float3 throughput = rayState.pathThroughput * weight;
-
-                            const float3 canonicalNormal = normalize(cross(
-                                surfel.scale.x() * surfel.tanU,
-                                surfel.scale.y() * surfel.tanV));
-                            const float signedCosineIncident =
-                                dot(canonicalNormal, -rayState.ray.direction);
-                            const int sideSign = signNonZero(signedCosineIncident);
-                            const float3 transmitOrientedNormal =
-                                static_cast<float>(sideSign) * canonicalNormal;
-
-                            float3 transmitDirection = rayState.ray.direction;
-                            float transmitPdf = 0.0f;
-                            sampleUniformHemisphereAroundNormal(
-                                rng,
-                                transmitOrientedNormal,
-                                transmitDirection,
-                                transmitPdf);
-
-                            nextState.ray.origin =
-                                worldHit.hitPositionW + (-transmitOrientedNormal * 1e-5f);
-                            nextState.ray.direction = transmitDirection;
-                            nextState.ray.normal = -transmitOrientedNormal;
-                            nextState.bounceIndex = rayState.bounceIndex + 1u;
-                            nextState.pixelIndex = rayState.pixelIndex;
-                            nextState.pathId = rayState.pathId;
-                            nextState.pathThroughput = throughput * surfel.albedo;
-                            nextState.traversalIndex = rayState.traversalIndex + 1u;
-
-                            // Real interaction: reset segment-local null transmittance.
-                            nextState.transmission = 1.0f;
-
-                            if (applyRussianRoulette(
-                                rng,
-                                nextState.bounceIndex,
-                                nextState.pathThroughput,
-                                settings.russianRouletteStart)) {
-                                shouldEnqueueNextState = true;
-                            }
-
-                            clearPendingCameraSegment(nextPendingCameraSegment);
-                            clearPendingAdjointStageX(nextPendingStageX);
-                            clearPendingAdjointStageXY(nextPendingStageXY);
-                        }
-                        else {
-                            sampledPointEventType = SampledPointEventType::None;
-                            clearPendingCameraSegment(nextPendingCameraSegment);
-                            clearPendingAdjointStageX(nextPendingStageX);
-                            clearPendingAdjointStageXY(nextPendingStageXY);
                         }
                     }
 
@@ -682,7 +624,7 @@ namespace Pale {
                     const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
                         eventRecord.xSurface.incomingDirection,
                         xState.orientedNormal);
-                    //gradientWrtHitPositionX = transpose(hitPointJacobian) * gradientWrtHitPositionX;
+                    gradientWrtHitPositionX = transpose(hitPointJacobian) * gradientWrtHitPositionX;
 
 
                     gradientRecord.gradPositionX += gradientWrtHitPositionX.x();
@@ -831,9 +773,9 @@ namespace Pale {
                                         dAlphaGeomDu * dUiDxEndpoint +
                                         dAlphaGeomDv * dViDxEndpoint);
                                 accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint +=
-                                    dAlphaEffectiveDx * (1.0f / oneMinusAlpha) / settings.sampling.qNull;
+                                    dAlphaEffectiveDx * (1.0f / oneMinusAlpha);
                                 accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint +=
-                                    dAlphaEffectiveDY * (1.0f / oneMinusAlpha) / settings.sampling.qNull;
+                                    dAlphaEffectiveDY * (1.0f / oneMinusAlpha);
                             }
                         }
                     }
@@ -871,9 +813,9 @@ namespace Pale {
                         xState.position,
                         yState.position,
                         xState.orientedNormal,
-                        yState.orientedNormal)  / settings.sampling.qReflect;
+                        yState.orientedNormal);
 
-                    const float3 pathWeight = eventRecord.xPathThroughput * eventRecord.transmissionPreviousSegment;
+                    const float3 pathWeight = eventRecord.xPathThroughput;
                     const float3 dTransmittanceDx =
                         -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint;
 
@@ -885,7 +827,8 @@ namespace Pale {
 
                     float3 gradientWrtHitPositionX =
                         scalarWeightWithoutTauAndGeometric *
-                        (geometricTermXY * dTransmittanceDx + transmittance * dGeometricTermDx);
+                        (geometricTermXY * dTransmittanceDx + transmittance * dGeometricTermDx) * eventRecord.
+                        transmissionPreviousSegment;
 
                     const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
                         eventRecord.xSurface.incomingDirection,
