@@ -54,6 +54,7 @@ namespace Pale {
                     ray.ray.normal = ls.normalW;
                     ray.pathThroughput = initialThroughput;
                     ray.bounceIndex = 0;
+                    ray.traversalIndex = 0;
                     ray.lightIndex = ls.lightIndex;
                     ray.pathId = pathId;
 
@@ -87,7 +88,7 @@ namespace Pale {
                     RayState rayState = intermediates.primaryRays[rayIndex];
 
                     const uint64_t seed =
-                            rng::makeSeed(renderSeed, rayState.pathId, rayState.bounceIndex, rng::kStreamTraversal, 107u);
+                            rng::makeSeed(renderSeed, rayState.pathId, rayState.traversalIndex, rng::kStreamTraversal, 107u);
                     rng::Xorshift128 rng(seed);
 
                     WorldHit worldHit{};
@@ -146,7 +147,8 @@ namespace Pale {
                         nextState.ray.origin = worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-6f);
                         nextState.ray.direction = sampledOutgoingDirectionW;
                         nextState.ray.normal = worldHit.geometricNormalW;
-                        nextState.bounceIndex = rayState.bounceIndex + 1;
+                        nextState.bounceIndex = rayState.bounceIndex;
+                        nextState.traversalIndex = rayState.traversalIndex + 1;
                         nextState.pixelIndex = rayState.pixelIndex;
                         nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
                         nextState.pathId = rayState.pathId;
@@ -175,6 +177,7 @@ namespace Pale {
                             nextState.ray.direction = rayState.ray.direction;
                             nextState.ray.normal = worldHit.geometricNormalW;
                             nextState.bounceIndex = rayState.bounceIndex + 1;
+                            nextState.traversalIndex = rayState.traversalIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = rayState.pathThroughput * weight;
                             nextState.pathId = rayState.pathId;
@@ -244,6 +247,7 @@ namespace Pale {
                             nextState.ray.direction = sampledOutgoingDirectionW;
                             nextState.ray.normal = orientedNormal;
                             nextState.bounceIndex = rayState.bounceIndex + 1;
+                            nextState.traversalIndex = rayState.traversalIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = throughput;
                             nextState.pathId = rayState.pathId;
@@ -289,6 +293,7 @@ namespace Pale {
                             nextState.ray.direction = sampledOutgoingDirectionW;
                             nextState.ray.normal = -orientedNormal; // optional, but keep consistent
                             nextState.bounceIndex = rayState.bounceIndex + 1;
+                            nextState.traversalIndex = rayState.traversalIndex + 1;
                             nextState.pixelIndex = rayState.pixelIndex;
                             nextState.pathThroughput = throughput;
                             nextState.pathId = rayState.pathId;

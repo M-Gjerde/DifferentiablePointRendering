@@ -367,7 +367,7 @@ namespace Pale {
         uint32_t pixelIndex = 0;
         PointCloudSurfaceRecord xSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        bool applyIncomingRayHitJacobianToX = false;
+        float previousSegmentTransmission = 1.0f;
     };
 
     struct PendingAdjointStageXY {
@@ -377,7 +377,6 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        bool applyIncomingRayHitJacobianToX = false;
     };
 
     struct AttachedGradientProjectionEvent {
@@ -391,7 +390,7 @@ namespace Pale {
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         float transmission = 1.0f;
-        bool applyIncomingRayHitJacobianToX = false;
+        float transmissionPreviousSegment = 1.0f;
     };
 
     struct DetachedThreePointGradientEvent {
@@ -533,8 +532,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.4f;
-        float qReflect = 0.6f;
+        float qNull = 0.3f;
+        float qReflect = 0.7f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
