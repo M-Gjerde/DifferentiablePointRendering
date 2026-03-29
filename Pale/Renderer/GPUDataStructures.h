@@ -255,6 +255,7 @@ namespace Pale {
         float transmission = 1.0f;
         uint32_t bounceIndex{0};
         uint32_t traversalIndex{0};
+        float openSegmentProposalInverse = 1.0f;
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
         uint32_t lightIndex = UINT32_MAX;
         uint32_t hasTrackedParameter = UINT32_MAX;
@@ -323,7 +324,6 @@ namespace Pale {
         NullTransmittance,
         ReflectScatter,
         TransmitScatter,
-
         // Projection states
         ProjectionScatter,
         Projection,
@@ -383,6 +383,7 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         float transmission = 1.0f;
+        float segmentProposalInverse = 1.0f;
     };
 
     struct AttachedGradientScatterEvent {
@@ -391,6 +392,7 @@ namespace Pale {
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         float transmission = 1.0f;
         float transmissionPreviousSegment = 1.0f;
+        float segmentProposalInverse = 1.0f;
     };
 
     struct DetachedThreePointGradientEvent {

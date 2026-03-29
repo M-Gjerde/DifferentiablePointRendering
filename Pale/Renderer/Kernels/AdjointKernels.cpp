@@ -16,18 +16,18 @@ import Pale.Log;
 
 
 namespace Pale {
-    void launchRayGenAdjointKernel(RenderPackage& pkg, int spp, uint32_t cameraIndex) {
-        auto& queue = pkg.queue;
-        auto& settings = pkg.settings;
-        auto& intermediates = pkg.intermediates;
-        auto& sensor = pkg.sensors[cameraIndex];
+    void launchRayGenAdjointKernel(RenderPackage &pkg, int spp, uint32_t cameraIndex) {
+        auto &queue = pkg.queue;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
+        auto &sensor = pkg.sensors[cameraIndex];
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
         uint32_t raysPerSet = imageWidth * imageHeight;
 
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t renderSeed = settings.random.seed;
 
             commandGroupHandler.parallel_for<struct RayGenAdjointKernelTag>(
@@ -42,7 +42,7 @@ namespace Pale {
                     const uint32_t pixelIndex = pixelLinearIndexWithinImage;
                     // RNG for this pixelhttps://www.chess.com/home
                     const uint64_t seed =
-                        rng::makeSeed(renderSeed, globalRayIndex, spp, rng::kStreamRayGen, 0u);
+                            rng::makeSeed(renderSeed, globalRayIndex, spp, rng::kStreamRayGen, 0u);
                     rng::Xorshift128 rng128(seed);
 
                     // Adjoint source weight
@@ -104,169 +104,106 @@ namespace Pale {
         }).wait();
     }
 
-    void launchAdjointIntersectKernel(RenderPackage& pkg, uint32_t spp, uint32_t activeRayCount) {
-        auto& queue = pkg.queue;
-        auto& settings = pkg.settings;
-        auto& intermediates = pkg.intermediates;
-        auto& scene = pkg.scene;
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
+        auto &scene = pkg.scene;
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t renderSeed = settings.random.seed;
 
-            commandGroupHandler.parallel_for<class launchIntersectKernel>(
+            commandGroupHandler.parallel_for<class launchAdjointIntersectKernelTag>(
                 sycl::range<1>(activeRayCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t rayIndex = globalId[0];
-                    const RayState rayState = intermediates.primaryRays[rayIndex];
+                    RayState currentRayState = intermediates.primaryRays[rayIndex];
 
-                    const uint64_t seed = rng::makeSeed(
-                        renderSeed,
-                        rayState.pathId,
-                        spp,
-                        rng::kStreamTraversal,
-                        rayState.traversalIndex);
-
-                    rng::Xorshift128 rng(seed);
-
-                    WorldHit worldHit{};
-                    intersectScene(rayState.ray, &worldHit, scene, rng, SurfelIntersectMode::FirstHit);
-                    if (!worldHit.hit) {
-                        return;
-                    }
-
-                    buildIntersectionNormal(scene, worldHit);
-
-                    const InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
-                    const GeometryType currentGeometryType = instance.geometryType;
-                    const bool isPointCloudHit = currentGeometryType == GeometryType::PointCloud;
-
-                    float3 orientedNormal{0.0f, 0.0f, 0.0f};
-                    float3 sampledOutgoingDirectionWorld{0.0f, 0.0f, 0.0f};
-                    float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
-                    float cosineHemispherePdf = 0.0f;
-
-                    switch (currentGeometryType) {
-                    case GeometryType::Mesh:
-                        {
-                            orientedNormal = worldHit.geometricNormalW;
-                            if (dot(rayState.ray.direction, orientedNormal) > 0.0f) {
-                                orientedNormal = -orientedNormal;
-                            }
-
-                            sampleCosineHemisphere(
-                                rng,
-                                orientedNormal,
-                                sampledOutgoingDirectionWorld,
-                                cosineHemispherePdf);
-                            break;
-                        }
-
-                    case GeometryType::PointCloud:
-                        {
-                            const Point& surfel = scene.points[worldHit.primitiveIndex];
-                            const float3 canonicalNormal = normalize(cross(
-                                surfel.scale.x() * surfel.tanU,
-                                surfel.scale.y() * surfel.tanV));
-
-                            const float signedCosineIncident = dot(canonicalNormal, -rayState.ray.direction);
-                            const int sideSign = signNonZero(signedCosineIncident);
-                            orientedNormal = static_cast<float>(sideSign) * canonicalNormal;
-
-                            sampleUniformHemisphereAroundNormal(
-                                rng,
-                                orientedNormal,
-                                sampledOutgoingDirectionWorld,
-                                uniformHemispherePdf);
-                            break;
-                        }
-
-                    default:
-                        return;
-                    }
-
-                    const uint32_t pathId = rayState.pathId;
+                    const uint32_t pathId = currentRayState.pathId;
                     const bool canUsePendingAdjointState =
-                        pathId < intermediates.maxPendingAdjointStateCount;
+                            pathId < intermediates.maxPendingAdjointStateCount;
 
-                    PendingCameraSegment previousPendingCameraSegment{};
-                    PendingAdjointStageX previousPendingStageX{};
-                    PendingAdjointStageXY previousPendingStageXY{};
+                    PendingCameraSegment currentPendingCameraSegment{};
+                    PendingAdjointStageX currentPendingStageX{};
+                    PendingAdjointStageXY currentPendingStageXY{};
+
+                    clearPendingCameraSegment(currentPendingCameraSegment);
+                    clearPendingAdjointStageX(currentPendingStageX);
+                    clearPendingAdjointStageXY(currentPendingStageXY);
 
                     if (canUsePendingAdjointState) {
-                        previousPendingCameraSegment = intermediates.pendingCameraSegments[pathId];
-                        previousPendingStageX = intermediates.pendingStageX[pathId];
-                        previousPendingStageXY = intermediates.pendingStageXY[pathId];
-                    }
-
-                    PointCloudSurfaceRecord currentSurfaceRecord{};
-                    if (isPointCloudHit) {
-                        currentSurfaceRecord = makePointCloudSurfaceRecord(worldHit, rayState, scene);
+                        currentPendingCameraSegment = intermediates.pendingCameraSegments[pathId];
+                        currentPendingStageX = intermediates.pendingStageX[pathId];
+                        currentPendingStageXY = intermediates.pendingStageXY[pathId];
                     }
 
                     RayState nextState{};
                     bool shouldEnqueueNextState = false;
 
-                    PendingCameraSegment nextPendingCameraSegment{};
-                    PendingAdjointStageX nextPendingStageX{};
-                    PendingAdjointStageXY nextPendingStageXY{};
+                    constexpr uint32_t maxInlineNullTraversals = 256u;
 
-                    clearPendingCameraSegment(nextPendingCameraSegment);
-                    clearPendingAdjointStageX(nextPendingStageX);
-                    clearPendingAdjointStageXY(nextPendingStageXY);
+                    for (uint32_t inlineTraversalIndex = 0u;
+                         inlineTraversalIndex < maxInlineNullTraversals;
+                         ++inlineTraversalIndex) {
+                        const uint64_t stepSeed = rng::makeSeed(
+                            renderSeed,
+                            currentRayState.pathId,
+                            spp,
+                            rng::kStreamTraversal,
+                            currentRayState.traversalIndex);
 
-                    if (currentGeometryType == GeometryType::Mesh) {
-                        const GPUMaterial material = scene.materials[instance.materialIndex];
-                        const float3 throughputMultiplier = material.baseColor;
+                        rng::Xorshift128 rng(stepSeed);
 
-                        nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-6f);
-                        nextState.ray.direction = sampledOutgoingDirectionWorld;
-                        nextState.ray.normal = orientedNormal;
-                        nextState.bounceIndex = rayState.bounceIndex + 1u;
-                        nextState.pixelIndex = rayState.pixelIndex;
-                        nextState.pathId = rayState.pathId;
-                        nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
-                        nextState.traversalIndex = rayState.traversalIndex + 1u;
-
-                        // A real interaction consumes the previous open segment.
-                        nextState.transmission = 1.0f;
-
-                        if (applyRussianRoulette(
+                        WorldHit worldHit{};
+                        intersectScene(
+                            currentRayState.ray,
+                            &worldHit,
+                            scene,
                             rng,
-                            nextState.bounceIndex,
-                            nextState.pathThroughput,
-                            settings.russianRouletteStart)) {
-                            shouldEnqueueNextState = true;
+                            SurfelIntersectMode::FirstHit);
+
+                        if (!worldHit.hit) {
+                            clearPendingCameraSegment(currentPendingCameraSegment);
+                            clearPendingAdjointStageX(currentPendingStageX);
+                            clearPendingAdjointStageXY(currentPendingStageXY);
+                            break;
                         }
 
-                        // No surfel-gradient event types are emitted for mesh hits here.
-                        clearPendingCameraSegment(nextPendingCameraSegment);
-                        clearPendingAdjointStageX(nextPendingStageX);
-                        clearPendingAdjointStageXY(nextPendingStageXY);
-                    }
-                    else {
-                        const Point& surfel = scene.points[worldHit.primitiveIndex];
+                        buildIntersectionNormal(scene, worldHit);
 
-                        const float qNull = settings.sampling.qNull;
-                        const float qReflect = settings.sampling.qReflect;
+                        const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+                        const GeometryType currentGeometryType = instance.geometryType;
 
-                        const float randomNumber = rng.nextFloat();
-                        const bool sampledNull = randomNumber < qNull;
-                        const bool sampledReflect = !sampledNull; // since qTransmit = 0 and qAbsorb = 0
+                        if (currentGeometryType == GeometryType::Mesh) {
+                            float3 orientedNormal = worldHit.geometricNormalW;
+                            if (dot(currentRayState.ray.direction, orientedNormal) > 0.0f) {
+                                orientedNormal = -orientedNormal;
+                            }
 
-                        if (sampledNull) {
-                            const float attenuation = 1.0f - worldHit.alphaGeom * surfel.opacity;
+                            float3 sampledOutgoingDirectionWorld{0.0f, 0.0f, 0.0f};
+                            float cosineHemispherePdf = 0.0f;
+                            sampleCosineHemisphere(
+                                rng,
+                                orientedNormal,
+                                sampledOutgoingDirectionWorld,
+                                cosineHemispherePdf);
 
-                            nextState.ray.origin = worldHit.hitPositionW + (rayState.ray.direction * 1e-5f);
-                            nextState.ray.direction = rayState.ray.direction;
+                            const GPUMaterial material = scene.materials[instance.materialIndex];
+                            const float3 throughputMultiplier = material.baseColor;
+
+                            nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-6f);
+                            nextState.ray.direction = sampledOutgoingDirectionWorld;
                             nextState.ray.normal = orientedNormal;
-                            nextState.bounceIndex = rayState.bounceIndex;
-                            nextState.pixelIndex = rayState.pixelIndex;
-                            nextState.pathId = rayState.pathId;
-                            nextState.pathThroughput = rayState.pathThroughput / qNull;
-                            nextState.traversalIndex = rayState.traversalIndex + 1u;
+                            nextState.bounceIndex = currentRayState.bounceIndex + 1u;
+                            nextState.pixelIndex = currentRayState.pixelIndex;
+                            nextState.pathId = currentRayState.pathId;
+                            nextState.pathThroughput = currentRayState.pathThroughput * throughputMultiplier;
+                            nextState.traversalIndex = currentRayState.traversalIndex + 1u;
+                            nextState.transmission = 1.0f;
 
-                            // Null extends the current open segment.
-                            nextState.transmission = rayState.transmission * attenuation;
+                            clearPendingCameraSegment(currentPendingCameraSegment);
+                            clearPendingAdjointStageX(currentPendingStageX);
+                            clearPendingAdjointStageXY(currentPendingStageXY);
 
                             if (applyRussianRoulette(
                                 rng,
@@ -276,14 +213,56 @@ namespace Pale {
                                 shouldEnqueueNextState = true;
                             }
 
-                            if (canUsePendingAdjointState) {
-                                nextPendingCameraSegment = previousPendingCameraSegment;
-                                nextPendingStageX = previousPendingStageX;
-                                nextPendingStageXY = previousPendingStageXY;
-                            }
+                            break;
                         }
-                        else {
-                            // reflect
+
+                        if (currentGeometryType == GeometryType::PointCloud) {
+                            const Point &surfel = scene.points[worldHit.primitiveIndex];
+
+                            const float qNull = settings.sampling.qNull;
+                            const float qReflect = settings.sampling.qReflect;
+
+                            const float3 canonicalNormal = normalize(cross(
+                                surfel.scale.x() * surfel.tanU,
+                                surfel.scale.y() * surfel.tanV));
+
+                            const float signedCosineIncident =
+                                    dot(canonicalNormal, -currentRayState.ray.direction);
+                            const int sideSign = signNonZero(signedCosineIncident);
+                            const float3 orientedNormal =
+                                    static_cast<float>(sideSign) * canonicalNormal;
+
+                            const float randomNumber = rng.nextFloat();
+                            const bool sampledNull = randomNumber < qNull;
+
+                            if (sampledNull) {
+                                const float attenuation =
+                                        1.0f - worldHit.alphaGeom * surfel.opacity;
+
+                                currentRayState.ray.origin =
+                                        worldHit.hitPositionW + (currentRayState.ray.direction * 1e-5f);
+                                currentRayState.ray.normal = orientedNormal;
+                                currentRayState.pathThroughput =
+                                        currentRayState.pathThroughput / qNull;
+                                currentRayState.traversalIndex =
+                                        currentRayState.traversalIndex + 1u;
+                                currentRayState.transmission =
+                                        currentRayState.transmission * attenuation;
+
+                                continue;
+                            }
+
+                            float3 sampledOutgoingDirectionWorld{0.0f, 0.0f, 0.0f};
+                            float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
+                            sampleUniformHemisphereAroundNormal(
+                                rng,
+                                orientedNormal,
+                                sampledOutgoingDirectionWorld,
+                                uniformHemispherePdf);
+
+                            PointCloudSurfaceRecord currentSurfaceRecord =
+                                    makePointCloudSurfaceRecord(worldHit, currentRayState, scene);
+
                             const float alpha = worldHit.alphaGeom * surfel.opacity;
                             const float3 surfelBrdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
                             const float cosineTheta = sycl::fmax(
@@ -291,37 +270,23 @@ namespace Pale {
                                 dot(sampledOutgoingDirectionWorld, orientedNormal));
 
                             const float3 throughputMultiplier =
-                                ((alpha / qReflect) * (surfelBrdf * cosineTheta)) /
-                                uniformHemispherePdf;
-
-                            nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-5f);
-                            nextState.ray.direction = sampledOutgoingDirectionWorld;
-                            nextState.ray.normal = orientedNormal;
-                            nextState.bounceIndex = rayState.bounceIndex + 1u;
-                            nextState.pixelIndex = rayState.pixelIndex;
-                            nextState.pathId = rayState.pathId;
-                            nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;
-                            nextState.traversalIndex = rayState.traversalIndex + 1u;
-
-                            // Real interaction consumes the previous open segment.
-                            nextState.transmission = 1.0f;
-
-                            if (applyRussianRoulette(
-                                rng,
-                                nextState.bounceIndex,
-                                nextState.pathThroughput,
-                                settings.russianRouletteStart)) {
-                                shouldEnqueueNextState = true;
-                            }
+                                    ((alpha / qReflect) * (surfelBrdf * cosineTheta)) /
+                                    uniformHemispherePdf;
 
                             if (canUsePendingAdjointState) {
-                                // Camera -> X local attached term
+                                const PendingCameraSegment previousPendingCameraSegment =
+                                        currentPendingCameraSegment;
+                                const PendingAdjointStageX previousPendingStageX =
+                                        currentPendingStageX;
+                                const PendingAdjointStageXY previousPendingStageXY =
+                                        currentPendingStageXY;
+
                                 if (previousPendingCameraSegment.valid) {
                                     AttachedGradientProjectionEvent attachedProjectionEvent{};
                                     attachedProjectionEvent.xSurface = currentSurfaceRecord;
-                                    attachedProjectionEvent.transmission = rayState.transmission;
+                                    attachedProjectionEvent.transmission = currentRayState.transmission;
                                     attachedProjectionEvent.xPathThroughput =
-                                        rayState.pathThroughput / qReflect;
+                                            currentRayState.pathThroughput / qReflect;
 
                                     appendEventAtomic(
                                         intermediates.countProjectionEvents,
@@ -330,20 +295,16 @@ namespace Pale {
                                         attachedProjectionEvent);
                                 }
 
-                                // X -> Y attached scatter term
                                 if (previousPendingStageX.valid) {
                                     AttachedGradientScatterEvent attachedScatterEvent{};
                                     attachedScatterEvent.xSurface = previousPendingStageX.xSurface;
                                     attachedScatterEvent.ySurface = currentSurfaceRecord;
-
-                                    // IMPORTANT: do not divide by qReflect again
                                     attachedScatterEvent.xPathThroughput =
-                                        previousPendingStageX.xPathThroughput;
-
+                                            previousPendingStageX.xPathThroughput / qReflect;
                                     attachedScatterEvent.transmissionPreviousSegment =
-                                        previousPendingStageX.previousSegmentTransmission;
-
-                                    attachedScatterEvent.transmission = rayState.transmission;
+                                            previousPendingStageX.previousSegmentTransmission;
+                                    attachedScatterEvent.transmission =
+                                            currentRayState.transmission;
 
                                     appendEventAtomic(
                                         intermediates.countProjectionScatterEvents,
@@ -352,15 +313,18 @@ namespace Pale {
                                         attachedScatterEvent);
                                 }
 
-                                // XY -> Z detached term
                                 if (previousPendingStageXY.valid) {
                                     DetachedThreePointGradientEvent detachedThreePointEvent{};
-                                    detachedThreePointEvent.xSurface = previousPendingStageXY.xSurface;
-                                    detachedThreePointEvent.ySurface = previousPendingStageXY.ySurface;
-                                    detachedThreePointEvent.zSurface = currentSurfaceRecord;
-                                    detachedThreePointEvent.transmission = rayState.transmission;
+                                    detachedThreePointEvent.xSurface =
+                                            previousPendingStageXY.xSurface;
+                                    detachedThreePointEvent.ySurface =
+                                            previousPendingStageXY.ySurface;
+                                    detachedThreePointEvent.zSurface =
+                                            currentSurfaceRecord;
+                                    detachedThreePointEvent.transmission =
+                                            currentRayState.transmission;
                                     detachedThreePointEvent.xPathThroughput =
-                                        previousPendingStageXY.xPathThroughput;
+                                            previousPendingStageXY.xPathThroughput;
 
                                     appendEventAtomic(
                                         intermediates.countReflectScatterEvents,
@@ -369,52 +333,85 @@ namespace Pale {
                                         detachedThreePointEvent);
                                 }
 
-                                // Seed new X stage at the current reflect hit
-                                nextPendingStageX.valid = true;
-                                nextPendingStageX.pathId = rayState.pathId;
-                                nextPendingStageX.pixelIndex = rayState.pixelIndex;
-                                nextPendingStageX.xSurface = currentSurfaceRecord;
-                                nextPendingStageX.xPathThroughput =
-                                    rayState.pathThroughput / qReflect;
-                                nextPendingStageX.previousSegmentTransmission =
-                                    rayState.transmission;
+                                clearPendingCameraSegment(currentPendingCameraSegment);
 
-                                // Seed new XY stage if there was already an X stage
+                                currentPendingStageX.valid = true;
+                                currentPendingStageX.pathId = currentRayState.pathId;
+                                currentPendingStageX.pixelIndex = currentRayState.pixelIndex;
+                                currentPendingStageX.xSurface = currentSurfaceRecord;
+                                currentPendingStageX.xPathThroughput =
+                                        currentRayState.pathThroughput / qReflect;
+                                currentPendingStageX.previousSegmentTransmission =
+                                        currentRayState.transmission;
+
                                 if (previousPendingStageX.valid) {
-                                    nextPendingStageXY.valid = true;
-                                    nextPendingStageXY.pathId = rayState.pathId;
-                                    nextPendingStageXY.pixelIndex = rayState.pixelIndex;
-                                    nextPendingStageXY.xSurface = previousPendingStageX.xSurface;
-                                    nextPendingStageXY.ySurface = currentSurfaceRecord;
-                                    nextPendingStageXY.xPathThroughput =
-                                        previousPendingStageX.xPathThroughput;
+                                    currentPendingStageXY.valid = true;
+                                    currentPendingStageXY.pathId = currentRayState.pathId;
+                                    currentPendingStageXY.pixelIndex = currentRayState.pixelIndex;
+                                    currentPendingStageXY.xSurface =
+                                            previousPendingStageX.xSurface;
+                                    currentPendingStageXY.ySurface =
+                                            currentSurfaceRecord;
+                                    currentPendingStageXY.xPathThroughput =
+                                            previousPendingStageX.xPathThroughput;
+                                } else {
+                                    clearPendingAdjointStageXY(currentPendingStageXY);
                                 }
-
-                                clearPendingCameraSegment(nextPendingCameraSegment);
                             }
+
+                            nextState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-5f);
+                            nextState.ray.direction = sampledOutgoingDirectionWorld;
+                            nextState.ray.normal = orientedNormal;
+                            nextState.bounceIndex = currentRayState.bounceIndex + 1u;
+                            nextState.pixelIndex = currentRayState.pixelIndex;
+                            nextState.pathId = currentRayState.pathId;
+                            nextState.pathThroughput =
+                                    currentRayState.pathThroughput * throughputMultiplier;
+                            nextState.traversalIndex = currentRayState.traversalIndex + 1u;
+                            nextState.transmission = 1.0f;
+
+                            if (applyRussianRoulette(
+                                rng,
+                                nextState.bounceIndex,
+                                nextState.pathThroughput,
+                                settings.russianRouletteStart)) {
+                                shouldEnqueueNextState = true;
+                            } else {
+                                clearPendingCameraSegment(currentPendingCameraSegment);
+                                clearPendingAdjointStageX(currentPendingStageX);
+                                clearPendingAdjointStageXY(currentPendingStageXY);
+                            }
+
+                            break;
                         }
+
+                        clearPendingCameraSegment(currentPendingCameraSegment);
+                        clearPendingAdjointStageX(currentPendingStageX);
+                        clearPendingAdjointStageXY(currentPendingStageXY);
+                        break;
                     }
 
                     if (canUsePendingAdjointState) {
-                        if (nextPendingCameraSegment.valid) {
-                            intermediates.pendingCameraSegments[pathId] = nextPendingCameraSegment;
-                        }
-                        else {
-                            clearPendingCameraSegment(intermediates.pendingCameraSegments[pathId]);
-                        }
-
-                        if (nextPendingStageX.valid) {
-                            intermediates.pendingStageX[pathId] = nextPendingStageX;
-                        }
-                        else {
-                            clearPendingAdjointStageX(intermediates.pendingStageX[pathId]);
+                        if (currentPendingCameraSegment.valid) {
+                            intermediates.pendingCameraSegments[pathId] =
+                                    currentPendingCameraSegment;
+                        } else {
+                            clearPendingCameraSegment(
+                                intermediates.pendingCameraSegments[pathId]);
                         }
 
-                        if (nextPendingStageXY.valid) {
-                            intermediates.pendingStageXY[pathId] = nextPendingStageXY;
+                        if (currentPendingStageX.valid) {
+                            intermediates.pendingStageX[pathId] = currentPendingStageX;
+                        } else {
+                            clearPendingAdjointStageX(
+                                intermediates.pendingStageX[pathId]);
                         }
-                        else {
-                            clearPendingAdjointStageXY(intermediates.pendingStageXY[pathId]);
+
+                        if (currentPendingStageXY.valid) {
+                            intermediates.pendingStageXY[pathId] = currentPendingStageXY;
+                        } else {
+                            clearPendingAdjointStageXY(
+                                intermediates.pendingStageXY[pathId]);
                         }
                     }
 
@@ -434,21 +431,21 @@ namespace Pale {
     }
 
     static void launchAttachedProjectionKernel(
-        RenderPackage& pkg,
+        RenderPackage &pkg,
         uint32_t cameraIndex,
         uint32_t projectionEventCount,
         uint32_t baseOffset) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        const auto& photonMap = pkg.intermediates.map;
-        auto& sensor = pkg.sensors[cameraIndex];
-        AttachedGradientProjectionEvent* projectionEvents = pkg.intermediates.projectionEvents;
-        SurfelGradientRecord* gradientRecords = pkg.intermediates.gradientRecords;
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        const auto &photonMap = pkg.intermediates.map;
+        auto &sensor = pkg.sensors[cameraIndex];
+        AttachedGradientProjectionEvent *projectionEvents = pkg.intermediates.projectionEvents;
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             commandGroupHandler.parallel_for<class launchProjectionContributionKernelTag>(
                 sycl::range<1>(projectionEventCount),
                 [=](sycl::id<1> globalId) {
@@ -456,16 +453,16 @@ namespace Pale {
                     const uint32_t recordIndex = baseOffset + eventIndex;
                     const AttachedGradientProjectionEvent eventRecord = projectionEvents[eventIndex];
 
-                    const Point& surfelX = scene.points[eventRecord.xSurface.primitiveIndex];
+                    const Point &surfelX = scene.points[eventRecord.xSurface.primitiveIndex];
                     const ReconstructedSurfelState xState =
-                        reconstructSurfelState(surfelX, eventRecord.xSurface);
+                            reconstructSurfelState(surfelX, eventRecord.xSurface);
 
                     const float3 irradiance = gatherDiffuseIrradianceAtPoint(
                         xState.position,
                         xState.orientedNormal,
                         photonMap);
                     const float3 outgoingRadiance =
-                        surfelX.alpha_r * surfelX.albedo * M_1_PIf * irradiance;
+                            surfelX.alpha_r * surfelX.albedo * M_1_PIf * irradiance;
 
                     const float targetDistance = length(xState.position - sensor.camera.pos);
                     const float distanceEpsilon = 1e-4f;
@@ -494,9 +491,9 @@ namespace Pale {
                             }
 
                             buildIntersectionNormal(scene, worldHit);
-                            auto& instance = scene.instances[worldHit.instanceIndex];
+                            auto &instance = scene.instances[worldHit.instanceIndex];
                             if (instance.geometryType == GeometryType::PointCloud) {
-                                const Point& occluderSurfel = scene.points[worldHit.primitiveIndex];
+                                const Point &occluderSurfel = scene.points[worldHit.primitiveIndex];
                                 float3 occluderNormal = normalize(cross(occluderSurfel.tanU, occluderSurfel.tanV));
                                 bool hitBackside = dot(occluderNormal, -ray.direction) < 0.0f;
                                 if (hitBackside) {
@@ -519,7 +516,7 @@ namespace Pale {
                                 }
 
                                 const float lambdaOccluder =
-                                    dot(occluderNormal, occluderSurfel.position - xState.position) / denominator;
+                                        dot(occluderNormal, occluderSurfel.position - xState.position) / denominator;
 
 
                                 const float scaleU = occluderSurfel.scale.x();
@@ -535,14 +532,14 @@ namespace Pale {
                                 const float inverseDenominator = 1.0f / denominator;
 
                                 const float3 dUiDx =
-                                    (1.0f - lambdaOccluder) * (
-                                        localBasisU
-                                        - occluderNormal * (dot(dxy, localBasisU) * inverseDenominator));
+                                        (1.0f - lambdaOccluder) * (
+                                            localBasisU
+                                            - occluderNormal * (dot(dxy, localBasisU) * inverseDenominator));
 
                                 const float3 dViDx =
-                                    (1.0f - lambdaOccluder) * (
-                                        localBasisV
-                                        - occluderNormal * (dot(dxy, localBasisV) * inverseDenominator));
+                                        (1.0f - lambdaOccluder) * (
+                                            localBasisV
+                                            - occluderNormal * (dot(dxy, localBasisV) * inverseDenominator));
 
 
                                 const float radiusSquared = u * u + v * v;
@@ -555,17 +552,17 @@ namespace Pale {
                                 const float betaScale = 4.0f * sycl::exp(occluderSurfel.beta);
 
                                 const float dAlphaGeomDu =
-                                    -2.0f * betaScale * u * alphaGeomOccluder / oneMinusRadiusSquared;
+                                        -2.0f * betaScale * u * alphaGeomOccluder / oneMinusRadiusSquared;
                                 const float dAlphaGeomDv =
-                                    -2.0f * betaScale * v * alphaGeomOccluder / oneMinusRadiusSquared;
+                                        -2.0f * betaScale * v * alphaGeomOccluder / oneMinusRadiusSquared;
 
                                 const float3 dAlphaEffectiveDx =
-                                    occluderSurfel.opacity * (
-                                        dAlphaGeomDu * dUiDx +
-                                        dAlphaGeomDv * dViDx);
+                                        occluderSurfel.opacity * (
+                                            dAlphaGeomDu * dUiDx +
+                                            dAlphaGeomDv * dViDx);
 
                                 accumulatedAlphaDerivativeOverOneMinusAlphaEndpoint +=
-                                    dAlphaEffectiveDx * (1.0f / oneMinusAlpha);
+                                        dAlphaEffectiveDx * (1.0f / oneMinusAlpha);
                             }
                         }
                     }
@@ -590,20 +587,21 @@ namespace Pale {
                         scaleV);
 
                     const float3 dUvDPosition =
-                        u * uvPositionJacobian.du_d_surfel_translation +
-                        v * uvPositionJacobian.dv_d_surfel_translation;
+                            u * uvPositionJacobian.du_d_surfel_translation +
+                            v * uvPositionJacobian.dv_d_surfel_translation;
 
                     const float betaScale = 4.0f * sycl::exp(surfelX.beta);
                     const float factor =
-                        (-2.0f * betaScale * eventRecord.xSurface.alphaGeom) / (1.0f - radiusSquared);
+                            (-2.0f * betaScale * eventRecord.xSurface.alphaGeom) / (1.0f - radiusSquared);
 
                     const float3 dAlphaGeomDPosition = factor * dUvDPosition;
                     const float3 dAlphaEffDPosition = surfelX.opacity * dAlphaGeomDPosition;
 
-                    const float3 positionGradient = transmittance *
-                    (pathWeight[0] * dAlphaEffDPosition * outgoingRadiance[0] +
-                        pathWeight[1] * dAlphaEffDPosition * outgoingRadiance[1] +
-                        pathWeight[2] * dAlphaEffDPosition * outgoingRadiance[2]) * invSpp;
+                    const float scalarWeight =
+        dot(pathWeight, outgoingRadiance);
+
+                    const float3 positionGradient = transmittance * dAlphaEffDPosition * scalarWeight * invSpp;
+
 
                     SurfelGradientRecord gradientRecord = {};
                     gradientRecord.primitiveIndex = eventRecord.xSurface.primitiveIndex;
@@ -613,12 +611,11 @@ namespace Pale {
 
                     float alphaX = eventRecord.xSurface.alphaGeom * surfelX.opacity;
                     const float3 dTransmittanceDx =
-                        -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaEndpoint;
-                    const float scalarWeight =
-                        dot(pathWeight, outgoingRadiance * alphaX);
+                            -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaEndpoint;
+
                     float3 gradientWrtHitPositionX =
-                        scalarWeight *
-                        (dTransmittanceDx) * invSpp;
+                            scalarWeight * alphaX *
+                            (dTransmittanceDx) * invSpp;
 
 
                     const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
@@ -638,20 +635,20 @@ namespace Pale {
 
 
     static void launchAttachedScatterKernel(
-        RenderPackage& pkg,
+        RenderPackage &pkg,
         uint32_t projectionScatterEventCount,
         uint32_t baseOffset) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        const auto& photonMap = pkg.intermediates.map;
-        AttachedGradientScatterEvent* projectionScatterEvents =
-            pkg.intermediates.projectionScatterEvents;
-        SurfelGradientRecord* gradientRecords = pkg.intermediates.gradientRecords;
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        const auto &photonMap = pkg.intermediates.map;
+        AttachedGradientScatterEvent *projectionScatterEvents =
+                pkg.intermediates.projectionScatterEvents;
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             commandGroupHandler.parallel_for<class launchProjectionScatterContributionKernelTag>(
                 sycl::range<1>(projectionScatterEventCount),
                 [=](sycl::id<1> globalId) {
@@ -668,17 +665,17 @@ namespace Pale {
                     gradientRecords[yRecordIndex] = yRecordInit;
 
                     const AttachedGradientScatterEvent eventRecord =
-                        projectionScatterEvents[eventIndex];
+                            projectionScatterEvents[eventIndex];
                     const uint32_t xPrimitiveIndex = eventRecord.xSurface.primitiveIndex;
                     const uint32_t yPrimitiveIndex = eventRecord.ySurface.primitiveIndex;
 
-                    const Point& surfelX = scene.points[xPrimitiveIndex];
-                    const Point& surfelY = scene.points[yPrimitiveIndex];
+                    const Point &surfelX = scene.points[xPrimitiveIndex];
+                    const Point &surfelY = scene.points[yPrimitiveIndex];
 
                     const ReconstructedSurfelState xState =
-                        reconstructSurfelState(surfelX, eventRecord.xSurface);
+                            reconstructSurfelState(surfelX, eventRecord.xSurface);
                     const ReconstructedSurfelState yState =
-                        reconstructSurfelState(surfelY, eventRecord.ySurface);
+                            reconstructSurfelState(surfelY, eventRecord.ySurface);
 
                     float transmittance = 1.0f;
                     float3 accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint = float3{0.0f};
@@ -709,9 +706,9 @@ namespace Pale {
                             }
 
                             buildIntersectionNormal(scene, worldHit);
-                            auto& instance = scene.instances[worldHit.instanceIndex];
+                            auto &instance = scene.instances[worldHit.instanceIndex];
                             if (instance.geometryType == GeometryType::PointCloud) {
-                                const Point& occluderSurfel = scene.points[worldHit.primitiveIndex];
+                                const Point &occluderSurfel = scene.points[worldHit.primitiveIndex];
                                 float3 occluderNormal = normalize(cross(occluderSurfel.tanU, occluderSurfel.tanV));
                                 bool hitBackside = dot(occluderNormal, -ray.direction) < 0.0f;
                                 if (hitBackside) {
@@ -735,24 +732,24 @@ namespace Pale {
                                     continue;
                                 }
                                 const float lambdaOccluder =
-                                    dot(occluderNormal, occluderSurfel.position - yState.position) / denominator;
+                                        dot(occluderNormal, occluderSurfel.position - yState.position) / denominator;
                                 const float inverseDenominator = 1.0f / denominator;
                                 const float3 dUiDx =
-                                    lambdaOccluder * (
-                                        localBasisU
-                                        - occluderNormal * (dot(dxy, localBasisU) * inverseDenominator));
+                                        lambdaOccluder * (
+                                            localBasisU
+                                            - occluderNormal * (dot(dxy, localBasisU) * inverseDenominator));
                                 const float3 dUiDxEndpoint =
-                                    (1.0f - lambdaOccluder) * (
-                                        localBasisU
-                                        - occluderNormal * (dot(dxy, localBasisU) * inverseDenominator));
+                                        (1.0f - lambdaOccluder) * (
+                                            localBasisU
+                                            - occluderNormal * (dot(dxy, localBasisU) * inverseDenominator));
                                 const float3 dViDx =
-                                    lambdaOccluder * (
-                                        localBasisV
-                                        - occluderNormal * (dot(dxy, localBasisV) * inverseDenominator));
+                                        lambdaOccluder * (
+                                            localBasisV
+                                            - occluderNormal * (dot(dxy, localBasisV) * inverseDenominator));
                                 const float3 dViDxEndpoint =
-                                    (1.0f - lambdaOccluder) * (
-                                        localBasisV
-                                        - occluderNormal * (dot(dxy, localBasisV) * inverseDenominator));
+                                        (1.0f - lambdaOccluder) * (
+                                            localBasisV
+                                            - occluderNormal * (dot(dxy, localBasisV) * inverseDenominator));
                                 const float radiusSquared = u * u + v * v;
                                 const float oneMinusRadiusSquared = 1.0f - radiusSquared;
                                 if (oneMinusRadiusSquared <= 1e-8f) {
@@ -761,30 +758,30 @@ namespace Pale {
                                 // Replace this with your exact exponent mapping if beta is stored differently.
                                 const float betaScale = 4.0f * sycl::exp(occluderSurfel.beta);
                                 const float dAlphaGeomDu =
-                                    -2.0f * betaScale * u * alphaGeomOccluder / oneMinusRadiusSquared;
+                                        -2.0f * betaScale * u * alphaGeomOccluder / oneMinusRadiusSquared;
                                 const float dAlphaGeomDv =
-                                    -2.0f * betaScale * v * alphaGeomOccluder / oneMinusRadiusSquared;
+                                        -2.0f * betaScale * v * alphaGeomOccluder / oneMinusRadiusSquared;
                                 const float3 dAlphaEffectiveDx =
-                                    occluderSurfel.opacity * (
-                                        dAlphaGeomDu * dUiDx +
-                                        dAlphaGeomDv * dViDx);
+                                        occluderSurfel.opacity * (
+                                            dAlphaGeomDu * dUiDx +
+                                            dAlphaGeomDv * dViDx);
                                 const float3 dAlphaEffectiveDY =
-                                    occluderSurfel.opacity * (
-                                        dAlphaGeomDu * dUiDxEndpoint +
-                                        dAlphaGeomDv * dViDxEndpoint);
+                                        occluderSurfel.opacity * (
+                                            dAlphaGeomDu * dUiDxEndpoint +
+                                            dAlphaGeomDv * dViDxEndpoint);
                                 accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint +=
-                                    dAlphaEffectiveDx * (1.0f / oneMinusAlpha);
+                                        dAlphaEffectiveDx * (1.0f / oneMinusAlpha);
                                 accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint +=
-                                    dAlphaEffectiveDY * (1.0f / oneMinusAlpha);
+                                        dAlphaEffectiveDY * (1.0f / oneMinusAlpha);
                             }
                         }
                     }
                     const float3 outgoingRadianceY =
-                        evaluateOutgoingRadianceFromSurfel(
-                            surfelY,
-                            eventRecord.ySurface,
-                            yState,
-                            photonMap);
+                            evaluateOutgoingRadianceFromSurfel(
+                                surfelY,
+                                eventRecord.ySurface,
+                                yState,
+                                photonMap);
                     const float3 vectorXToY = yState.position - xState.position;
                     const float distanceSquared = dot(vectorXToY, vectorXToY);
                     if (distanceSquared <= 1e-12f) {
@@ -815,20 +812,19 @@ namespace Pale {
                         xState.orientedNormal,
                         yState.orientedNormal);
 
-                    const float3 pathWeight = eventRecord.xPathThroughput;
+                    const float3 pathWeight = eventRecord.xPathThroughput * eventRecord.transmissionPreviousSegment;
                     const float3 dTransmittanceDx =
-                        -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint;
+                            -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint;
 
                     const float3 outgoingTransportWithoutTauAndGeometric =
-                        outgoingRadianceY * alphaX * brdfX;
+                            outgoingRadianceY * alphaX * brdfX;
 
                     const float scalarWeightWithoutTauAndGeometric =
-                        dot(pathWeight, outgoingTransportWithoutTauAndGeometric) / pAreaY;
+                            dot(pathWeight, outgoingTransportWithoutTauAndGeometric) / pAreaY;
 
                     float3 gradientWrtHitPositionX =
-                        scalarWeightWithoutTauAndGeometric *
-                        (geometricTermXY * dTransmittanceDx + transmittance * dGeometricTermDx) * eventRecord.
-                        transmissionPreviousSegment;
+                            scalarWeightWithoutTauAndGeometric *
+                            (geometricTermXY * dTransmittanceDx + transmittance * dGeometricTermDx);
 
                     const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
                         eventRecord.xSurface.incomingDirection,
@@ -842,10 +838,10 @@ namespace Pale {
                         yState.orientedNormal);
 
                     const float3 dTransmittanceDY =
-                        -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint;
+                            -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint;
                     float3 gradientWrtHitPositionY =
-                        scalarWeightWithoutTauAndGeometric *
-                        (geometricTermXY * dTransmittanceDY + transmittance * dGeometricTermDY);
+                            scalarWeightWithoutTauAndGeometric *
+                            (geometricTermXY * dTransmittanceDY + transmittance * dGeometricTermDY);
 
                     float3 xContribution = gradientWrtHitPositionX * invSpp;
                     float3 yContribution = gradientWrtHitPositionY * invSpp;
@@ -869,23 +865,23 @@ namespace Pale {
     }
 
     static void launchDetachedGradientKernel(
-        RenderPackage& pkg,
+        RenderPackage &pkg,
         uint32_t reflectScatterEventCount,
         uint32_t baseOffset) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        const auto& photonMap = pkg.intermediates.map;
-        DetachedThreePointGradientEvent* reflectScatterEvents =
-            pkg.intermediates.reflectScatterEvents;
-        SurfelGradientRecord* gradientRecords = pkg.intermediates.gradientRecords;
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        const auto &photonMap = pkg.intermediates.map;
+        DetachedThreePointGradientEvent *reflectScatterEvents =
+                pkg.intermediates.reflectScatterEvents;
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
         const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
         const float qNullInv = 1.0f / settings.sampling.qNull;
         const float qReflectInv = 1.0f / settings.sampling.qReflect;
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             commandGroupHandler.parallel_for<class launchReflectScatterContributionKernelTag>(
                 sycl::range<1>(reflectScatterEventCount),
                 [=](sycl::id<1> globalId) {
@@ -896,25 +892,25 @@ namespace Pale {
                     gradientRecords[recordIndex] = gradientRecordInit;
 
                     const DetachedThreePointGradientEvent eventRecord =
-                        reflectScatterEvents[eventIndex];
+                            reflectScatterEvents[eventIndex];
 
-                    const Point& surfelX = scene.points[eventRecord.xSurface.primitiveIndex];
-                    const Point& surfelY = scene.points[eventRecord.ySurface.primitiveIndex];
-                    const Point& surfelZ = scene.points[eventRecord.zSurface.primitiveIndex];
+                    const Point &surfelX = scene.points[eventRecord.xSurface.primitiveIndex];
+                    const Point &surfelY = scene.points[eventRecord.ySurface.primitiveIndex];
+                    const Point &surfelZ = scene.points[eventRecord.zSurface.primitiveIndex];
 
                     const ReconstructedSurfelState xState =
-                        reconstructSurfelState(surfelX, eventRecord.xSurface);
+                            reconstructSurfelState(surfelX, eventRecord.xSurface);
                     const ReconstructedSurfelState yState =
-                        reconstructSurfelState(surfelY, eventRecord.ySurface);
+                            reconstructSurfelState(surfelY, eventRecord.ySurface);
                     const ReconstructedSurfelState zState =
-                        reconstructSurfelState(surfelZ, eventRecord.zSurface);
+                            reconstructSurfelState(surfelZ, eventRecord.zSurface);
 
                     const float3 outgoingRadianceZ =
-                        evaluateOutgoingRadianceFromSurfel(
-                            surfelZ,
-                            eventRecord.zSurface,
-                            zState,
-                            photonMap);
+                            evaluateOutgoingRadianceFromSurfel(
+                                surfelZ,
+                                eventRecord.zSurface,
+                                zState,
+                                photonMap);
 
                     const float3 vectorYToZ = zState.position - yState.position;
                     const float distanceSquaredYZ = dot(vectorYToZ, vectorYToZ);
@@ -1049,13 +1045,13 @@ namespace Pale {
 
 
                     const float3 upstreamTransportWithoutGeometricTerm =
-                        outgoingRadianceZ * alphaY * brdfY;
+                            outgoingRadianceZ * alphaY * brdfY;
 
                     const float3 transportXY =
-                        alphaX * brdfX * geometricTermXY;
+                            alphaX * brdfX * geometricTermXY;
 
                     const float3 combinedTransport =
-                        transportXY * upstreamTransportWithoutGeometricTerm;
+                            transportXY * upstreamTransportWithoutGeometricTerm;
 
                     const float3 dGeometricTermDY = computeGeometricTermGradientWrtStartpoint(
                         yState.position,
@@ -1066,13 +1062,13 @@ namespace Pale {
                     const float3 pathWeight = eventRecord.xPathThroughput / (2.0f * settings.sampling.qReflect);
 
                     const float scalarWeightWithoutAreaZ =
-                        (pathWeight[0] * combinedTransport[0] +
-                            pathWeight[1] * combinedTransport[1] +
-                            pathWeight[2] * combinedTransport[2]) /
-                        (pAreaY);
+                            (pathWeight[0] * combinedTransport[0] +
+                             pathWeight[1] * combinedTransport[1] +
+                             pathWeight[2] * combinedTransport[2]) /
+                            (pAreaY);
 
                     float3 gradientWrtYPosition =
-                        (scalarWeightWithoutAreaZ / pAreaZ) * dGeometricTermDY * invSpp;
+                            (scalarWeightWithoutAreaZ / pAreaZ) * dGeometricTermDY * invSpp;
 
 
                     SurfelGradientRecord gradientRecord{};
@@ -1086,15 +1082,15 @@ namespace Pale {
         }).wait();
     }
 
-    template <typename KernelTag>
+    template<typename KernelTag>
     static void reduceSurfelGradientRecords(
-        RenderPackage& pkg,
+        RenderPackage &pkg,
         uint32_t gradientRecordCount) {
-        auto& queue = pkg.queue;
+        auto &queue = pkg.queue;
         auto gradients = pkg.gradients;
-        SurfelGradientRecord* gradientRecords = pkg.intermediates.gradientRecords;
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             commandGroupHandler.parallel_for<KernelTag>(
                 sycl::range<1>(gradientRecordCount),
                 [=](sycl::id<1> globalId) {
@@ -1116,13 +1112,13 @@ namespace Pale {
     }
 
     void adjointContributionKernels(
-        RenderPackage& pkg,
+        RenderPackage &pkg,
         uint32_t projectionEventCount,
         uint32_t projectionScatterEventCount,
         uint32_t reflectScatterEventCount,
         uint32_t cameraToSurfaceScatterEventCount,
         uint32_t cameraIndex) {
-        (void)cameraIndex;
+        (void) cameraIndex;
 
         const GradientRecordRanges ranges = makeGradientRecordRanges(
             projectionEventCount,
@@ -1136,9 +1132,8 @@ namespace Pale {
 
 
         Log::PA_DEBUG(
-            "Event counts: projection={}, projectionTransmit={}, projectionScatter={}, reflectScatter={}",
+            "Event counts: projection={}, projectionScatter={}, reflectScatter={}",
             projectionEventCount,
-            cameraToSurfaceScatterEventCount,
             projectionScatterEventCount,
             reflectScatterEventCount);
 
