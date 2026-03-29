@@ -826,6 +826,10 @@ namespace Pale {
                             scalarWeightWithoutTauAndGeometric *
                             (geometricTermXY * dTransmittanceDx + transmittance * dGeometricTermDx);
 
+                    if (transmittance != 1.0f) {
+                        gradientWrtHitPositionX = gradientWrtHitPositionX / settings.sampling.qNull;
+                    }
+
                     const float3x3 hitPointJacobian = planeHitPointIntersectionJacobian(
                         eventRecord.xSurface.incomingDirection,
                         xState.orientedNormal);
@@ -859,7 +863,7 @@ namespace Pale {
                     yRecord.gradPositionX = yContribution.x();
                     yRecord.gradPositionY = yContribution.y();
                     yRecord.gradPositionZ = yContribution.z();
-                    gradientRecords[yRecordIndex] = yRecord;
+                    //gradientRecords[yRecordIndex] = yRecord;
                 });
         }).wait();
     }
