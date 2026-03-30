@@ -278,8 +278,8 @@ int main(int argc, char** argv) {
         settings.maxBounces = 1;
         settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 2; // 1 = Projection only // 2 starts including transmittance
-        settings.adjointSamplesPerPixel = 1;
+        settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
+        settings.adjointSamplesPerPixel = 32;
         settings.renderDebugGradientImages = true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);

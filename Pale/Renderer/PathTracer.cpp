@@ -140,7 +140,7 @@ namespace Pale {
         m_intermediates.maxCameraToSurfaceScatterEventCount = m_rayQueueCapacity;
 
 
-        const uint32_t gradientRecordCapacity = 4u * m_rayQueueCapacity;
+        const uint32_t gradientRecordCapacity = 4u * m_rayQueueCapacity * 4u;
         const std::size_t sizeGradientRecordsBytes =
                 sizeof(SurfelGradientRecord) * gradientRecordCapacity;
 

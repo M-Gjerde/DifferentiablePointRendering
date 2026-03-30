@@ -1997,16 +1997,16 @@ namespace Pale {
         GradientRecordRanges ranges{};
 
         ranges.projectionOffset = 0;
-        ranges.projectionCount = projectionEventCount;
+        ranges.projectionCount = kMaxSplatEventsPerRay * projectionEventCount;
 
         ranges.projectionTransmitOffset = ranges.projectionOffset + ranges.projectionCount;
         ranges.projectionTransmitCount = projectionTransmitEventCount;
 
         ranges.projectionScatterOffset = ranges.projectionTransmitOffset + ranges.projectionTransmitCount;
-        ranges.projectionScatterCount = 2u * projectionScatterEventCount;
+        ranges.projectionScatterCount = 2u * kMaxSplatEventsPerRay * projectionScatterEventCount;
 
         ranges.detachedOffset = ranges.projectionScatterOffset + ranges.projectionScatterCount;
-        ranges.detachedCount = reflectScatterEventCount;
+        ranges.detachedCount = kMaxSplatEventsPerRay * reflectScatterEventCount;
 
         ranges.totalCount = ranges.detachedOffset + ranges.detachedCount;
         return ranges;
