@@ -573,14 +573,14 @@ namespace Pale {
                                 float alphaEff = surfel.opacity * worldHit.alphaGeom;
 
 
-                                float3 Le = surfel.albedo * surfel.power;
+                                float3 Le = surfel.alpha_r * surfel.albedo * surfel.power * alphaEff;
                                 float3 Lr = E * (surfel.alpha_r * surfel.albedo * M_1_PIf) * alphaEff;
                                 float3 Lo = Lr + Le;
 
                                 // If emissive we and backside just be black.
                                 if (surfel.power > 0.0 && hitBackside) {
                                     Lo = 0.0f;
-                                    alphaEff = 1.0f;
+                                    //alphaEff = 1.0f;
                                 }
 
                                 accumulatedRadianceRGB += transmittance * Lo;
