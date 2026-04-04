@@ -275,12 +275,12 @@ int main(int argc, char** argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 5;
+        settings.maxBounces = 1;
         settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
-        settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
-        settings.adjointSamplesPerPixel = 32;
-        settings.renderDebugGradientImages = !true;
+        settings.maxAdjointBounces = 1; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
+        settings.adjointSamplesPerPixel = 4;
+        settings.renderDebugGradientImages = true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
 

@@ -559,7 +559,6 @@ namespace Pale {
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
     static_assert(sycl::is_device_copyable<PathTracerSettings>::value);
-
     // -------------------- Photon storage (device) --------------------------
     // Filled during the emitter pass by appending at an atomic counter.
     // One entry per stored photon (only diffuse hits).
@@ -631,14 +630,13 @@ namespace Pale {
         AttachedGradientProjectionEvent *projectionEvents = nullptr;
         AttachedGradientScatterEvent *projectionScatterEvents = nullptr;
         DetachedThreePointGradientEvent *reflectScatterEvents = nullptr;
-
         SurfelGradientRecord *gradientRecords = nullptr;
-        uint32_t maxGradientRecordCount = 0;
 
         PendingCameraSegment* pendingCameraSegments = nullptr;
         CameraToSurfaceScatterEvent* cameraToSurfaceScatterEvents = nullptr;
         uint32_t* countCameraToSurfaceScatterEvents = nullptr;
         uint32_t maxCameraToSurfaceScatterEventCount = 0u;
+        uint32_t maxGradientRecordCount = 0;
 
         uint32_t *countProjectionEvents = nullptr;
         uint32_t *countProjectionScatterEvents = nullptr;
