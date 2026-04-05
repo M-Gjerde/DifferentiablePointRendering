@@ -757,7 +757,7 @@ namespace Pale {
                         gradientRecordOccluders.primitiveIndex = occluderDerivative.primitiveIndex;
 
                         const float3 occluderContribution =
-                                occluderScale * occluderDerivative.derivative * qNullInvTotal;
+                                occluderScale * occluderDerivative.derivative;
 
                         gradientRecordOccluders.gradPositionX = occluderContribution.x();
                         gradientRecordOccluders.gradPositionY = occluderContribution.y();

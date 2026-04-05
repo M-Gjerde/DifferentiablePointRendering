@@ -1,15 +1,39 @@
 # batch_fd_check.py
 #
-# Changes vs your pasted version:
-# 1) Exclude the *last* CSV row from scoring (default ON via --exclude_last_row).
-# 3) Keep last row only for *printing visibility*, not for scoring.
+# Batch finite-difference vs analytic gradient checker.
 #
-# Pass condition per scored row:
-#   abs_err <= abs_threshold  OR  rel_err <= rel_threshold
+# Features:
+# - Reads per-case sweep config from tests.json
+# - Per-case required fields:
+#     scene, camera, parameter, index, min, max,
+#     forward_passes, bounces, adjoint_passes, adjoint_bounces
+# - Excludes last CSV row from scoring by default
+# - Keeps excluded rows visible in printed output
+# - Ignores tiny gradients below --grad_floor
+# - Pass condition per scored row:
+#       rel_err <= rel_threshold
+# - Overall case pass:
+#       fail_frac <= fail_frac_threshold
 #
-# Overall test pass:
-#   fail_frac <= fail_frac_threshold
-#
+# Example tests.json:
+# {
+#   "common_args": ["--iterations", "10", "--fd_epsilon", "5e-3", "--ply", "pointcloud", "--seed", "42"],
+#   "cases": [
+#     {
+#       "scene": "transmit",
+#       "camera": "camera1",
+#       "parameter": "translation_z",
+#       "index": 0,
+#       "min": -0.05,
+#       "max": 0.05,
+#       "forward_passes": 75,
+#       "bounces": 1,
+#       "adjoint_passes": 64,
+#       "adjoint_bounces": 2
+#     }
+#   ]
+# }
+
 import argparse
 import json
 import subprocess
@@ -28,29 +52,31 @@ ANSI_RESET = "\033[0m"
 ANSI_BOLD = "\033[1m"
 
 
-def color(s: str, c: str, enable: bool) -> str:
-    return f"{c}{s}{ANSI_RESET}" if enable else s
+def color(text: str, ansi_color: str, enable: bool) -> str:
+    return f"{ansi_color}{text}{ANSI_RESET}" if enable else text
 
 
-def safe_rel_err(a: float, b: float, eps: float) -> float:
-    denom = max(eps, abs(a) + abs(b))
-    return abs(a - b) / denom
+def safe_rel_err(value_a: float, value_b: float, eps: float) -> float:
+    denominator = max(eps, abs(value_a) + abs(value_b))
+    return abs(value_a - value_b) / denominator
 
 
 def load_csv(run_dir: Path, camera: str, parameter: str) -> pd.DataFrame:
     csv_path = run_dir / f"{camera}_{parameter}_sweep.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV not found: {csv_path}")
-    df = pd.read_csv(csv_path)
-    needed = {"iter", parameter, "analytic_grad", "fd_grad", "fd_kind"}
-    if not needed.issubset(df.columns):
-        raise RuntimeError(f"CSV missing columns {needed}, has: {list(df.columns)}")
-    return df
+
+    data_frame = pd.read_csv(csv_path)
+    required_columns = {"iter", parameter, "analytic_grad", "fd_grad", "fd_kind"}
+    if not required_columns.issubset(data_frame.columns):
+        raise RuntimeError(
+            f"CSV missing columns {required_columns}, has: {list(data_frame.columns)}"
+        )
+    return data_frame
 
 
-def resolve_run_dir(workspace_dir: Path, scene: str, parameter: str) -> Path:
-    scene_path = Path(scene)
-    return workspace_dir / "Output" / scene_path / parameter / "0"
+def resolve_run_dir(workspace_dir: Path, scene: str, parameter: str, index: int) -> Path:
+    return workspace_dir / "Output" / scene / parameter / str(index) / "0"
 
 
 def run_render_target(
@@ -59,10 +85,17 @@ def run_render_target(
     scene: str,
     parameter: str,
 ) -> int:
-    cmd = [python_exe, str(render_target_script), "--parameter", parameter, "--scene", scene]
-    print(color("TARGET:", ANSI_BOLD, True), " ".join(cmd))
-    p = subprocess.run(cmd)
-    return int(p.returncode)
+    command = [
+        python_exe,
+        str(render_target_script),
+        "--parameter",
+        parameter,
+        "--scene",
+        scene,
+    ]
+    print(color("TARGET:", ANSI_BOLD, True), " ".join(command))
+    process = subprocess.run(command)
+    return int(process.returncode)
 
 
 def run_one(
@@ -71,63 +104,93 @@ def run_one(
     scene: str,
     camera: str,
     parameter: str,
+    point_index: int,
+    sweep_min: float,
+    sweep_max: float,
+    forward_passes: int,
+    bounces: int,
+    adjoint_passes: int,
+    adjoint_bounces: int,
     common_args: list[str],
     extra_args: list[str],
 ) -> int:
-    cmd = [python_exe, str(script_path), "--parameter", parameter, "--scene", scene, "--camera", camera]
-    cmd += common_args
-    cmd += extra_args
-    print(color("RUN:", ANSI_BOLD, True), " ".join(cmd))
-    p = subprocess.run(cmd)
-    return int(p.returncode)
+    command = [
+        python_exe,
+        str(script_path),
+        "--parameter",
+        parameter,
+        "--scene",
+        scene,
+        "--camera",
+        camera,
+        "--index",
+        str(point_index),
+        "--min",
+        str(sweep_min),
+        "--max",
+        str(sweep_max),
+        "--forward_passes",
+        str(forward_passes),
+        "--bounces",
+        str(bounces),
+        "--adjoint_passes",
+        str(adjoint_passes),
+        "--adjoint_bounces",
+        str(adjoint_bounces),
+    ]
+    command += common_args
+    command += extra_args
+
+    print(color("RUN:", ANSI_BOLD, True), " ".join(command))
+    process = subprocess.run(command)
+    return int(process.returncode)
 
 
 def filter_rows(
-    df: pd.DataFrame,
+    data_frame: pd.DataFrame,
     parameter: str,
     tail: int,
     ignore_boundaries: bool,
     exclude_last_row: bool,
 ) -> pd.DataFrame:
-    dft = df
+    filtered_data_frame = data_frame
 
-    # Drop last row BEFORE tailing (this is what you want: last row often dominated by MC noise)
-    if exclude_last_row and len(dft) >= 2:
-        dft = dft.iloc[:-1]
+    if exclude_last_row and len(filtered_data_frame) >= 2:
+        filtered_data_frame = filtered_data_frame.iloc[:-1]
 
-    # Now tail
-    dft = dft.tail(tail) if tail > 0 else dft
+    filtered_data_frame = filtered_data_frame.tail(tail) if tail > 0 else filtered_data_frame
 
     if ignore_boundaries and parameter == "opacity":
-        v = dft[parameter].to_numpy(dtype=np.float64)
-        mask = (v > 1e-6) & (v < 1.0 - 1e-6)
-        dft = dft.loc[mask]
+        parameter_values = filtered_data_frame[parameter].to_numpy(dtype=np.float64)
+        valid_mask = (parameter_values > 1e-6) & (parameter_values < 1.0 - 1e-6)
+        filtered_data_frame = filtered_data_frame.loc[valid_mask]
 
-    return dft
+    return filtered_data_frame
+
 
 def print_all_rows(
-    df: pd.DataFrame,
+    data_frame: pd.DataFrame,
     parameter: str,
-    scored_df: pd.DataFrame,
+    scored_data_frame: pd.DataFrame,
     rel_eps: float,
     rel_threshold: float,
     grad_floor: float,
     enable_color: bool,
-):
-    scored_iters = set(scored_df["iter"].astype(int).tolist())
+) -> None:
+    scored_iterations = set(scored_data_frame["iter"].astype(int).tolist())
 
     print("\nAll rows (scored + excluded):")
-    for _, r in df.iterrows():
-        it = int(r["iter"])
-        param = float(r[parameter])
-        an = float(r["analytic_grad"])
-        fd = float(r["fd_grad"])
-        fd_kind = int(r["fd_kind"])
+    for _, row in data_frame.iterrows():
+        iteration = int(row["iter"])
+        parameter_value = float(row[parameter])
+        analytic_grad = float(row["analytic_grad"])
+        fd_grad = float(row["fd_grad"])
+        fd_kind = int(row["fd_kind"])
 
-        rel_err = safe_rel_err(an, fd, rel_eps)
-        max_grad_magnitude = max(abs(an), abs(fd))
+        rel_err = safe_rel_err(analytic_grad, fd_grad, rel_eps)
+        max_grad_magnitude = max(abs(analytic_grad), abs(fd_grad))
         is_tiny = max_grad_magnitude < grad_floor
-        is_scored = it in scored_iters
+        is_scored = iteration in scored_iterations
 
         if is_tiny:
             status = color("SKIP", ANSI_YELLOW, enable_color)
@@ -139,14 +202,14 @@ def print_all_rows(
             status = color("SKIP", ANSI_YELLOW, enable_color)
 
         print(
-            f" iter={it:3d}  param={param:.6g}  "
-            f"AN={an:+.6e}  FD={fd:+.6e}  "
-            f"rel={rel_err:.3e}  "
-            f"fd_kind={fd_kind}  {status}"
+            f" iter={iteration:3d}  param={parameter_value:.6g}  "
+            f"AN={analytic_grad:+.6e}  FD={fd_grad:+.6e}  "
+            f"rel={rel_err:.3e}  fd_kind={fd_kind}  {status}"
         )
 
+
 def compute_check(
-    df: pd.DataFrame,
+    data_frame: pd.DataFrame,
     parameter: str,
     tail: int,
     rel_eps: float,
@@ -155,30 +218,35 @@ def compute_check(
     exclude_last_row: bool,
     grad_floor: float,
 ) -> dict[str, Any]:
-    scored = filter_rows(df, parameter, tail, ignore_boundaries, exclude_last_row)
+    scored_data_frame = filter_rows(
+        data_frame=data_frame,
+        parameter=parameter,
+        tail=tail,
+        ignore_boundaries=ignore_boundaries,
+        exclude_last_row=exclude_last_row,
+    )
 
-    an_all = scored["analytic_grad"].to_numpy(dtype=np.float64)
-    fd_all = scored["fd_grad"].to_numpy(dtype=np.float64)
+    analytic_all = scored_data_frame["analytic_grad"].to_numpy(dtype=np.float64)
+    fd_all = scored_data_frame["fd_grad"].to_numpy(dtype=np.float64)
 
-    active_mask = np.maximum(np.abs(an_all), np.abs(fd_all)) >= grad_floor
+    active_mask = np.maximum(np.abs(analytic_all), np.abs(fd_all)) >= grad_floor
     skipped_mask = ~active_mask
 
-    active_df = scored.loc[active_mask].copy()
+    active_data_frame = scored_data_frame.loc[active_mask].copy()
 
-    an = active_df["analytic_grad"].to_numpy(dtype=np.float64)
-    fd = active_df["fd_grad"].to_numpy(dtype=np.float64)
+    analytic = active_data_frame["analytic_grad"].to_numpy(dtype=np.float64)
+    fd = active_data_frame["fd_grad"].to_numpy(dtype=np.float64)
 
     rel_err = np.array(
-        [safe_rel_err(float(a), float(b), rel_eps) for a, b in zip(an, fd)],
-        dtype=np.float64
+        [safe_rel_err(float(a), float(b), rel_eps) for a, b in zip(analytic, fd)],
+        dtype=np.float64,
     )
 
     row_pass = rel_err <= rel_threshold
     row_fail = ~row_pass
-
     fail_frac = float(np.mean(row_fail)) if len(row_fail) else 0.0
 
-    if len(active_df):
+    if len(active_data_frame):
         if np.any(row_fail):
             worst_idx = int(np.argmax(np.where(row_fail, rel_err, -1.0)))
         else:
@@ -186,8 +254,8 @@ def compute_check(
     else:
         worst_idx = -1
 
-    out: dict[str, Any] = {
-        "rows_used": int(len(active_df)),
+    metrics: dict[str, Any] = {
+        "rows_used": int(len(active_data_frame)),
         "rows_skipped_small_grad": int(np.sum(skipped_mask)),
         "fail_frac": fail_frac,
         "rel_mean": float(np.mean(rel_err)) if len(rel_err) else float("nan"),
@@ -195,68 +263,156 @@ def compute_check(
         "rel_max": float(np.max(rel_err)) if len(rel_err) else float("nan"),
     }
 
-    if worst_idx >= 0 and len(active_df):
-        r = active_df.iloc[worst_idx]
-        out["worst_iter"] = int(r["iter"])
-        out["worst_param"] = float(r[parameter])
-        out["worst_an"] = float(r["analytic_grad"])
-        out["worst_fd"] = float(r["fd_grad"])
-        out["worst_rel"] = float(safe_rel_err(out["worst_an"], out["worst_fd"], rel_eps))
-        out["worst_fd_kind"] = int(r["fd_kind"])
-        out["worst_row_pass"] = bool(out["worst_rel"] <= rel_threshold)
+    if worst_idx >= 0 and len(active_data_frame):
+        worst_row = active_data_frame.iloc[worst_idx]
+        metrics["worst_iter"] = int(worst_row["iter"])
+        metrics["worst_param"] = float(worst_row[parameter])
+        metrics["worst_an"] = float(worst_row["analytic_grad"])
+        metrics["worst_fd"] = float(worst_row["fd_grad"])
+        metrics["worst_rel"] = float(
+            safe_rel_err(metrics["worst_an"], metrics["worst_fd"], rel_eps)
+        )
+        metrics["worst_fd_kind"] = int(worst_row["fd_kind"])
+        metrics["worst_row_pass"] = bool(metrics["worst_rel"] <= rel_threshold)
     else:
-        out["worst_iter"] = None
+        metrics["worst_iter"] = None
 
-    last = df.iloc[-1]
-    out["last_iter"] = int(last["iter"])
-    out["last_param"] = float(last[parameter])
-    out["last_an"] = float(last["analytic_grad"])
-    out["last_fd"] = float(last["fd_grad"])
-    out["last_rel"] = float(safe_rel_err(out["last_an"], out["last_fd"], rel_eps))
-    out["last_fd_kind"] = int(last["fd_kind"])
-    out["_scored_df"] = active_df
-    out["_small_grad_mask"] = active_mask
-    return out
+    last_row = data_frame.iloc[-1]
+    metrics["last_iter"] = int(last_row["iter"])
+    metrics["last_param"] = float(last_row[parameter])
+    metrics["last_an"] = float(last_row["analytic_grad"])
+    metrics["last_fd"] = float(last_row["fd_grad"])
+    metrics["last_rel"] = float(
+        safe_rel_err(metrics["last_an"], metrics["last_fd"], rel_eps)
+    )
+    metrics["last_fd_kind"] = int(last_row["fd_kind"])
+
+    metrics["_scored_df"] = active_data_frame
+    return metrics
+
+
+def validate_common_args(common_args: list[str]) -> None:
+    forbidden_common_flags = {
+        "--index",
+        "--min",
+        "--max",
+        "--forward_passes",
+        "--bounces",
+        "--adjoint_passes",
+        "--adjoint_bounces",
+    }
+
+    for token in common_args:
+        if token in forbidden_common_flags:
+            raise RuntimeError(
+                f"{token} must not appear in common_args; it must be specified per case."
+            )
+
+
+def validate_case(case: dict[str, Any]) -> None:
+    required_case_fields = [
+        "scene",
+        "camera",
+        "parameter",
+        "index",
+        "min",
+        "max",
+        "forward_passes",
+        "bounces",
+        "adjoint_passes",
+        "adjoint_bounces",
+    ]
+
+    for field_name in required_case_fields:
+        if field_name not in case:
+            raise RuntimeError(f"Case missing required field '{field_name}': {case}")
+
+    sweep_min = float(case["min"])
+    sweep_max = float(case["max"])
+    if not sweep_min < sweep_max:
+        raise RuntimeError(
+            f"Case has invalid sweep range: min must be < max, got min={sweep_min}, max={sweep_max}. Case: {case}"
+        )
+
+    point_index = int(case["index"])
+    if point_index < 0:
+        raise RuntimeError(f"Case index must be >= 0, got {point_index}. Case: {case}")
+
+    if int(case["forward_passes"]) <= 0:
+        raise RuntimeError(f"forward_passes must be > 0. Case: {case}")
+    if int(case["bounces"]) < 0:
+        raise RuntimeError(f"bounces must be >= 0. Case: {case}")
+    if int(case["adjoint_passes"]) <= 0:
+        raise RuntimeError(f"adjoint_passes must be > 0. Case: {case}")
+    if int(case["adjoint_bounces"]) < 0:
+        raise RuntimeError(f"adjoint_bounces must be >= 0. Case: {case}")
+
 
 def main() -> None:
-    ap = argparse.ArgumentParser("Batch FD vs analytic gradient checker (robust)")
-    ap.add_argument("--tests", type=str, required=True)
-    ap.add_argument("--script", type=str, default="./finite_difference/fd_test.py")
-    ap.add_argument("--workspace", type=str, default="./finite_difference/")
-    ap.add_argument("--python", type=str, default=sys.executable)
-    ap.add_argument("--grad_floor", type=float, default=1e-5) # Ignore gradients smaller than this.
-    ap.add_argument(
+    argument_parser = argparse.ArgumentParser(
+        "Batch FD vs analytic gradient checker"
+    )
+    argument_parser.add_argument("--tests", type=str, required=True)
+    argument_parser.add_argument("--script", type=str, default="./finite_difference/fd_test.py")
+    argument_parser.add_argument("--workspace", type=str, default="./finite_difference/")
+    argument_parser.add_argument("--python", type=str, default=sys.executable)
+    argument_parser.add_argument("--grad_floor", type=float, default=1e-5)
+    argument_parser.add_argument(
         "--render_target_script",
         type=str,
         default="finite_difference/render_target.py",
         help="Path to render_target.py",
     )
-
-    ap.add_argument("--tail", type=int, default=0, help="Use last N iterations AFTER dropping last row (0=all)")
-    ap.add_argument("--rel_eps", type=float, default=1e-12)
-
-    ap.add_argument("--rel_threshold", type=float, default=0.05)
-    ap.add_argument("--fail_frac_threshold", type=float, default=0.0, help="Allow this fraction of rows to fail")
-
-    ap.add_argument("--ignore_boundaries", action="store_true", help="Ignore opacity near 0 and 1 in scoring")
-    ap.add_argument(
-        "--exclude_last_row",
-        action="store_true",
-        help="Exclude the last CSV row from scoring (recommended; often pure MC noise)",
-        default=True
+    argument_parser.add_argument(
+        "--tail",
+        type=int,
+        default=0,
+        help="Use last N iterations after optionally dropping last row. 0 means use all.",
     )
-    ap.add_argument("--no_color", action="store_true")
-    ap.add_argument("--extra_args", nargs=argparse.REMAINDER, default=[])
-    args = ap.parse_args()
+    argument_parser.add_argument("--rel_eps", type=float, default=1e-12)
+    argument_parser.add_argument("--rel_threshold", type=float, default=0.05)
+    argument_parser.add_argument(
+        "--fail_frac_threshold",
+        type=float,
+        default=0.5,
+        help="Allow this fraction of scored rows to fail.",
+    )
+    argument_parser.add_argument(
+        "--ignore_boundaries",
+        action="store_true",
+        help="Ignore opacity near 0 and 1 in scoring.",
+    )
+    argument_parser.add_argument(
+        "--exclude_last_row",
+        dest="exclude_last_row",
+        action="store_true",
+        default=True,
+        help="Exclude the last CSV row from scoring.",
+    )
+    argument_parser.add_argument(
+        "--include_last_row",
+        dest="exclude_last_row",
+        action="store_false",
+        help="Include the last CSV row in scoring.",
+    )
+    argument_parser.add_argument("--no_color", action="store_true")
+    argument_parser.add_argument("--extra_args", nargs=argparse.REMAINDER, default=[])
+    args = argument_parser.parse_args()
 
     enable_color = not args.no_color and sys.stdout.isatty()
 
-    cfg = json.loads(Path(args.tests).read_text())
-    cases = cfg.get("cases", [])
-    common_args = [str(x) for x in cfg.get("common_args", [])]
+    tests_path = Path(args.tests).resolve()
+    config = json.loads(tests_path.read_text())
+
+    cases = config.get("cases", [])
+    common_args = [str(token) for token in config.get("common_args", [])]
 
     if not cases:
         raise RuntimeError("tests.json: no cases provided")
+
+    validate_common_args(common_args)
+    for case in cases:
+        validate_case(case)
 
     workspace_dir = Path(args.workspace).resolve()
     script_path = Path(args.script).resolve()
@@ -265,54 +421,120 @@ def main() -> None:
     failures = 0
     results: list[dict[str, Any]] = []
 
-    for i, case in enumerate(cases, start=1):
-        scene = case["scene"]
-        camera = case["camera"]
-        parameter = case["parameter"]
+    for case_number, case in enumerate(cases, start=1):
+        scene = str(case["scene"])
+        camera = str(case["camera"])
+        parameter = str(case["parameter"])
+        point_index = int(case["index"])
+        sweep_min = float(case["min"])
+        sweep_max = float(case["max"])
+        forward_passes = int(case["forward_passes"])
+        bounces = int(case["bounces"])
+        adjoint_passes = int(case["adjoint_passes"])
+        adjoint_bounces = int(case["adjoint_bounces"])
 
-        print("\n" + color(f"=== Case {i}/{len(cases)} ===", ANSI_BOLD, enable_color))
-        print(f"scene={scene} camera={camera} parameter={parameter}")
+        print("\n" + color(f"=== Case {case_number}/{len(cases)} ===", ANSI_BOLD, enable_color))
+        print(
+            f"scene={scene} camera={camera} parameter={parameter} "
+            f"index={point_index} min={sweep_min} max={sweep_max} "
+            f"forward_passes={forward_passes} bounces={bounces} "
+            f"adjoint_passes={adjoint_passes} adjoint_bounces={adjoint_bounces}"
+        )
 
-        # Render target first
-        rc = run_render_target(
+        render_target_return_code = run_render_target(
             python_exe=args.python,
             render_target_script=render_target_script,
             scene=scene,
             parameter=parameter,
         )
-        if rc != 0:
+        if render_target_return_code != 0:
             failures += 1
-            print(color(f"TARGET FAILED (exit {rc})", ANSI_RED, enable_color))
-            results.append({"scene": scene, "camera": camera, "parameter": parameter, "status": "target_failed"})
+            print(
+                color(
+                    f"TARGET FAILED (exit {render_target_return_code})",
+                    ANSI_RED,
+                    enable_color,
+                )
+            )
+            results.append(
+                {
+                    "scene": scene,
+                    "camera": camera,
+                    "parameter": parameter,
+                    "index": point_index,
+                    "min": sweep_min,
+                    "max": sweep_max,
+                    "forward_passes": forward_passes,
+                    "bounces": bounces,
+                    "adjoint_passes": adjoint_passes,
+                    "adjoint_bounces": adjoint_bounces,
+                    "status": "target_failed",
+                }
+            )
             continue
 
-        # Run FD test
-        rc = run_one(
+        run_return_code = run_one(
             python_exe=args.python,
             script_path=script_path,
             scene=scene,
             camera=camera,
             parameter=parameter,
+            point_index=point_index,
+            sweep_min=sweep_min,
+            sweep_max=sweep_max,
+            forward_passes=forward_passes,
+            bounces=bounces,
+            adjoint_passes=adjoint_passes,
+            adjoint_bounces=adjoint_bounces,
             common_args=common_args,
-            extra_args=[str(x) for x in args.extra_args],
+            extra_args=[str(token) for token in args.extra_args],
         )
-        if rc != 0:
+        if run_return_code != 0:
             failures += 1
-            print(color(f"RUN FAILED (exit {rc})", ANSI_RED, enable_color))
-            results.append({"scene": scene, "camera": camera, "parameter": parameter, "status": "run_failed"})
+            print(color(f"RUN FAILED (exit {run_return_code})", ANSI_RED, enable_color))
+            results.append(
+                {
+                    "scene": scene,
+                    "camera": camera,
+                    "parameter": parameter,
+                    "index": point_index,
+                    "min": sweep_min,
+                    "max": sweep_max,
+                    "forward_passes": forward_passes,
+                    "bounces": bounces,
+                    "adjoint_passes": adjoint_passes,
+                    "adjoint_bounces": adjoint_bounces,
+                    "status": "run_failed",
+                }
+            )
             continue
 
-        run_dir = resolve_run_dir(workspace_dir, scene, parameter)
+        run_dir = resolve_run_dir(workspace_dir, scene, parameter, point_index)
+
         try:
-            df = load_csv(run_dir, camera, parameter)
-        except Exception as e:
+            data_frame = load_csv(run_dir, camera, parameter)
+        except Exception as exception:
             failures += 1
-            print(color(f"CSV READ FAILED: {e}", ANSI_RED, enable_color))
-            results.append({"scene": scene, "camera": camera, "parameter": parameter, "status": "csv_failed"})
+            print(color(f"CSV READ FAILED: {exception}", ANSI_RED, enable_color))
+            results.append(
+                {
+                    "scene": scene,
+                    "camera": camera,
+                    "parameter": parameter,
+                    "index": point_index,
+                    "min": sweep_min,
+                    "max": sweep_max,
+                    "forward_passes": forward_passes,
+                    "bounces": bounces,
+                    "adjoint_passes": adjoint_passes,
+                    "adjoint_bounces": adjoint_bounces,
+                    "status": "csv_failed",
+                }
+            )
             continue
 
-        m = compute_check(
-            df=df,
+        metrics = compute_check(
+            data_frame=data_frame,
             parameter=parameter,
             tail=args.tail,
             rel_eps=args.rel_eps,
@@ -322,60 +544,84 @@ def main() -> None:
             grad_floor=args.grad_floor,
         )
 
-        ok = (m["fail_frac"] <= args.fail_frac_threshold)
+        case_passed = metrics["fail_frac"] <= args.fail_frac_threshold
+        status_text = "PASS" if case_passed else "FAIL"
 
-        status = "PASS" if ok else "FAIL"
-        print(color(status, ANSI_GREEN if ok else ANSI_RED, enable_color))
+        print(color(status_text, ANSI_GREEN if case_passed else ANSI_RED, enable_color))
         print(f"run_dir: {run_dir}")
         print(
-            f"rows_used: {m['rows_used']}  tail={args.tail}  "
+            f"rows_used: {metrics['rows_used']}  tail={args.tail}  "
             f"exclude_last_row={args.exclude_last_row}  ignore_boundaries={args.ignore_boundaries}"
         )
         print(
             f"thresholds: rel<={args.rel_threshold}; "
             f"allow_fail_frac={args.fail_frac_threshold}"
         )
-        print(f"fail_frac: {m['fail_frac']:.3f}")
-        print(f"rel_err (mean/median/max): {m['rel_mean']:.6g} / {m['rel_median']:.6g} / {m['rel_max']:.6g}")
+        print(f"fail_frac: {metrics['fail_frac']:.3f}")
+        print(
+            f"rel_err (mean/median/max): "
+            f"{metrics['rel_mean']:.6g} / {metrics['rel_median']:.6g} / {metrics['rel_max']:.6g}"
+        )
 
-        if m.get("worst_iter") is not None:
-            wp = "pass" if m["worst_row_pass"] else "fail"
-            wp_col = ANSI_GREEN if m["worst_row_pass"] else ANSI_RED
+        if metrics.get("worst_iter") is not None:
+            worst_status_text = "pass" if metrics["worst_row_pass"] else "fail"
+            worst_status_color = ANSI_GREEN if metrics["worst_row_pass"] else ANSI_RED
             print(
                 "worst(scored): "
-                f"iter={m['worst_iter']} param={m['worst_param']:.6g} "
-                f"AN={m['worst_an']:.6g} FD={m['worst_fd']:.6g} "
-                f"fd_kind={m['worst_fd_kind']} "
-                f"[{color(wp, wp_col, enable_color)}]"
+                f"iter={metrics['worst_iter']} param={metrics['worst_param']:.6g} "
+                f"AN={metrics['worst_an']:.6g} FD={metrics['worst_fd']:.6g} "
+                f"fd_kind={metrics['worst_fd_kind']} "
+                f"[{color(worst_status_text, worst_status_color, enable_color)}]"
             )
 
-        # Last row visibility only
         print_all_rows(
-            df=df,
+            data_frame=data_frame,
             parameter=parameter,
-            scored_df=m["_scored_df"],
+            scored_data_frame=metrics["_scored_df"],
             rel_eps=args.rel_eps,
             rel_threshold=args.rel_threshold,
             grad_floor=args.grad_floor,
             enable_color=enable_color,
         )
 
-        if not ok:
+        if not case_passed:
             failures += 1
 
-        results.append({"scene": scene, "camera": camera, "parameter": parameter, "status": "pass" if ok else "fail", **m})
+        results.append(
+            {
+                "scene": scene,
+                "camera": camera,
+                "parameter": parameter,
+                "index": point_index,
+                "min": sweep_min,
+                "max": sweep_max,
+                "forward_passes": forward_passes,
+                "bounces": bounces,
+                "adjoint_passes": adjoint_passes,
+                "adjoint_bounces": adjoint_bounces,
+                "status": "pass" if case_passed else "fail",
+                **metrics,
+            }
+        )
 
     print("\n" + color("=== Summary ===", ANSI_BOLD, enable_color))
-    passed = sum(1 for r in results if r["status"] == "pass")
-    failed = len(results) - passed
-    print(f"Total: {len(results)}  Passed: {passed}  Failed: {failed}")
-    if failed:
+    passed_count = sum(1 for result in results if result["status"] == "pass")
+    failed_count = len(results) - passed_count
+    print(f"Total: {len(results)}  Passed: {passed_count}  Failed: {failed_count}")
+
+    if failed_count:
         print(color("Failed cases:", ANSI_RED, enable_color))
-        for r in results:
-            if r["status"] != "pass":
+        for result in results:
+            if result["status"] != "pass":
                 print(
-                    f"- scene={r['scene']} camera={r['camera']} parameter={r['parameter']} "
-                    f"fail_frac={r.get('fail_frac', 'n/a')}"
+                    f"- scene={result['scene']} camera={result['camera']} "
+                    f"parameter={result['parameter']} index={result.get('index', 'n/a')} "
+                    f"min={result.get('min', 'n/a')} max={result.get('max', 'n/a')} "
+                    f"forward_passes={result.get('forward_passes', 'n/a')} "
+                    f"bounces={result.get('bounces', 'n/a')} "
+                    f"adjoint_passes={result.get('adjoint_passes', 'n/a')} "
+                    f"adjoint_bounces={result.get('adjoint_bounces', 'n/a')} "
+                    f"fail_frac={result.get('fail_frac', 'n/a')}"
                 )
 
     sys.exit(0 if failures == 0 else 1)

@@ -134,7 +134,7 @@ def _finite_difference_loss(
     L0, _, _ = _render_loss(renderer, camera, target_image)
 
     # Decide stencil
-    if clamp_01 and parameter == "opacity" or parameter == "scale":
+    if clamp_01 and parameter in {"opacity", "scale_u", "scale_v"}:
         lo = 0.0
         hi = 1.0
     else:
@@ -182,31 +182,38 @@ def _finite_difference_loss(
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 1,
-        "forward_passes": 100,
+        "bounces": args.bounces,
+        "forward_passes": args.forward_passes,
         "gather_passes": 1,
-        "adjoint_bounces": 2,
-        "adjoint_passes": 128,
-        "logging": 3,
-        "seed": args.seed
+        "adjoint_bounces": args.adjoint_bounces,
+        "adjoint_passes": args.adjoint_passes,
+        "logging": 4,
+        "seed": args.seed,
     }
-
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
 
-    scene_path = Path(args.scene).parent
-    scene_xml = assets_root / "GradientTests" / f"{args.scene}" / f"{args.scene}.xml"
-    pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.scene}" / f"{args.ply}.ply"
+    scene_xml = assets_root / "GradientTests" / args.scene / f"{args.scene}.xml"
+    pointcloud_ply = assets_root / "GradientTests" / args.scene / f"{args.ply}.ply"
+
     print("Assets root:", assets_root)
     print("Scene:", scene_xml)
     print("Ply:", pointcloud_ply)
     print("Index:", args.index)
     print("Parameter:", args.parameter)
+
     fd_epsilon = args.fd_epsilon
+    index = int(args.index)
 
     print("FD epsilon:", fd_epsilon)
 
-    output_dir = Path(__file__).parent / "Output" / scene_path / f"{args.scene}" / args.parameter
-    output_dir = create_latest_run_dir(output_dir)
+    base_output_dir = (
+            Path(__file__).parent
+            / "Output"
+            / args.scene
+            / args.parameter
+            / str(index)
+    )
+    output_dir = create_latest_run_dir(base_output_dir)
 
     # Create subfolders
     rendered_dir = output_dir / "rendered"
@@ -224,8 +231,8 @@ def main(args) -> None:
             continue
         (rendered_dir / camera_name).mkdir(parents=True, exist_ok=True)
 
-    target_image = read_rgb_exr(output_dir.parent / Path(camera + "_raw_target.exr"))
-    print("Target image path:", output_dir.parent / Path(camera + "_raw_target.exr"))
+    target_image = read_rgb_exr(output_dir.parent.parent / Path(camera + "_raw_target.exr"))
+    print("Target image path:", output_dir.parent.parent / Path(camera + "_raw_target.exr"))
     print("Renderer cameras:", renderer_cameras)
 
     csv_path = output_dir / f"{camera}_{args.parameter}_sweep.csv"
@@ -240,7 +247,6 @@ def main(args) -> None:
     ]
 
     iterations = int(args.iterations)
-    index = int(args.index if args.index >= 0 else 0)
 
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -387,7 +393,7 @@ def parse_args() -> argparse.Namespace:
         "--index",
         type=int,
         default=0,
-        help="Gaussian index to perturb (>=0 for single, -1 for all). Default: -1.",
+        help="Point index to perturb. Default: 0.",
     )
     parser.add_argument(
         "--parameter",
@@ -445,6 +451,30 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=42,
         help="random seed for renderer",
+    )
+    parser.add_argument(
+        "--forward_passes",
+        type=int,
+        default=50,
+        help="Number of forward passes.",
+    )
+    parser.add_argument(
+        "--bounces",
+        type=int,
+        default=1,
+        help="Number of forward bounces.",
+    )
+    parser.add_argument(
+        "--adjoint_passes",
+        type=int,
+        default=32,
+        help="Number of adjoint passes.",
+    )
+    parser.add_argument(
+        "--adjoint_bounces",
+        type=int,
+        default=2,
+        help="Number of adjoint bounces.",
     )
     return parser.parse_args()
 
