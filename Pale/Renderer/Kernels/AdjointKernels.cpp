@@ -1223,7 +1223,7 @@ namespace Pale {
                     gradientRecord.gradPositionY = gradientWrtYPosition.y();
                     gradientRecord.gradPositionZ = gradientWrtYPosition.z();
 
-                    //gradientRecords[recordIndex] = gradientRecord;
+                    gradientRecords[recordIndex] = gradientRecord;
                 });
         }).wait();
     }
