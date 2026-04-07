@@ -737,6 +737,7 @@ namespace Pale {
                     gradientRecord.gradPositionZ += gradientWrtHitPositionX.z();
                     gradientRecords[recordIndex] = gradientRecord;
 
+
                     // ---------------------------------------------------------------------
                     // Term 1 intermediate occluder contributions on the camera segment:
                     //   alpha_X * L_surfel(X, omega_x->c) * G(c, X) * d tau / p_A(X)
@@ -1051,6 +1052,11 @@ namespace Pale {
                             scalarWeightWithoutTauAndGeometric *
                             (geometricTermXY * dTransmittanceDy + transmittance * dGeometricTermDy);
 
+                    const float3x3 hitPointJacobianY = planeHitPointIntersectionJacobian(
+                    eventRecord.ySurface.incomingDirection,
+                    yState.orientedNormal);
+                    //gradientWrtHitPositionY = transpose(hitPointJacobianY) * gradientWrtHitPositionY;
+
 
                     const float3 xContribution = gradientWrtHitPositionX * invSpp;
                     const float3 yContribution = gradientWrtHitPositionY * invSpp;
@@ -1067,8 +1073,51 @@ namespace Pale {
                     yRecord.gradPositionX = yContribution.x();
                     yRecord.gradPositionY = yContribution.y();
                     yRecord.gradPositionZ = yContribution.z();
-                    gradientRecords[yRecordIndex] = yRecord;
 
+                    //Begin a new three point form: <p__1, d_T_psi L__o>
+                    const float scaleU = surfelY.scale.x();
+                    const float scaleV = surfelY.scale.y();
+                    const float u = eventRecord.ySurface.uv.x();
+                    const float v = eventRecord.ySurface.uv.y();
+                    const float radiusSquared = u * u + v * v;
+                    const float oneMinusRadiusSquared = 1.0f - radiusSquared;
+                    if (oneMinusRadiusSquared <= 1e-8f) {
+                        return;
+                    }
+
+
+                    const auto uvPositionJacobian = computeDuvDSurfelTranslationJacobian(
+                        surfelY.tanU,
+                        surfelY.tanV,
+                        yState.orientedNormal,
+                        eventRecord.ySurface.incomingDirection,
+                        u,
+                        v,
+                        scaleU,
+                        scaleV);
+                    const float3 dUvDPosition =
+                            u * uvPositionJacobian.du_d_surfel_translation +
+                            v * uvPositionJacobian.dv_d_surfel_translation;
+
+                    const float betaScale = 4.0f * sycl::exp(surfelY.beta);
+                    const float factor =
+                            (-2.0f * betaScale * eventRecord.ySurface.alphaGeom) / oneMinusRadiusSquared;
+
+                    const float3 dAlphaGeomDPosition = factor * dUvDPosition;
+                    const float3 dAlphaEffDPosition = surfelY.opacity * dAlphaGeomDPosition;
+
+                    float3 p1 = pathWeight * brdfX * alphaX;
+                    const float scalarWeight = dot(p1, outgoingRadianceY);
+
+                    float3 positionGradientp1_Y =
+                            (transmittance) *
+                            dAlphaEffDPosition * scalarWeight * invSpp;
+
+                   yRecord.gradPositionX += positionGradientp1_Y.x();
+                   yRecord.gradPositionY += positionGradientp1_Y.y();
+                   yRecord.gradPositionZ += positionGradientp1_Y.z();
+
+                    gradientRecords[yRecordIndex] = yRecord;
 
                     float occluderScale =
                             -transmittance * geometricTermXY * scalarWeightWithoutTauAndGeometric * invSpp;
@@ -1216,14 +1265,20 @@ namespace Pale {
                     float3 gradientWrtYPosition =
                             (scalarWeightWithoutAreaZ / pAreaZ) * dGeometricTermDY * invSpp;
 
+                    //const float3x3 hitPointJacobianY = planeHitPointIntersectionJacobian(
+                    //eventRecord.ySurface.incomingDirection,
+                    //yState.orientedNormal);
+                    //gradientWrtYPosition = transpose(hitPointJacobianY) * gradientWrtYPosition;
 
-                    SurfelGradientRecord gradientRecord{};
-                    gradientRecord.primitiveIndex = eventRecord.ySurface.primitiveIndex;
-                    gradientRecord.gradPositionX = gradientWrtYPosition.x();
-                    gradientRecord.gradPositionY = gradientWrtYPosition.y();
-                    gradientRecord.gradPositionZ = gradientWrtYPosition.z();
+                    SurfelGradientRecord gradientRecordY{};
+                    gradientRecordY.primitiveIndex = eventRecord.ySurface.primitiveIndex;
+                    gradientRecordY.gradPositionX = gradientWrtYPosition.x();
+                    gradientRecordY.gradPositionY = gradientWrtYPosition.y();
+                    gradientRecordY.gradPositionZ = gradientWrtYPosition.z();
+                    gradientRecords[recordIndex] = gradientRecordY;
 
-                    gradientRecords[recordIndex] = gradientRecord;
+                    //Continue second stage of three point form: <p__1, d_T_psi L__o>
+
                 });
         }).wait();
     }

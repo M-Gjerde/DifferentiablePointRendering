@@ -67,7 +67,7 @@
       "max": 3.5,
       "forward_passes": 50,
       "bounces": 1,
-      "adjoint_passes": 32,
+      "adjoint_passes": 128,
       "adjoint_bounces": 2
     },
     {
