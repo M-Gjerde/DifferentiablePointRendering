@@ -1764,11 +1764,11 @@ namespace Pale {
     }
 
     template<typename PhotonMapType>
-    SYCL_EXTERNAL inline float3 evaluateOutgoingRadianceFromSurfel(
-        const Point &surfel,
-        const PointCloudSurfaceRecord &surfaceRecord,
-        const ReconstructedSurfelState &reconstructedState,
-        const PhotonMapType &photonMap) {
+    SYCL_EXTERNAL inline float3 evaluateOutgoingRadianceWithLocalAlpha(const Point &surfel,
+                                                                       const PointCloudSurfaceRecord &surfaceRecord,
+                                                                       const ReconstructedSurfelState &
+                                                                       reconstructedState,
+                                                                       const PhotonMapType &photonMap) {
         const float3 irradiance = gatherDiffuseIrradianceAtPoint(
             reconstructedState.position,
             reconstructedState.orientedNormal,
@@ -1788,6 +1788,31 @@ namespace Pale {
 
         return emittedRadiance + reflectedRadiance;
     }
+
+    template<typename PhotonMapType>
+    SYCL_EXTERNAL inline float3 evaluateSurfelRadianceWithoutLocalAlpha(
+        const Point &surfel,
+        const PointCloudSurfaceRecord &surfaceRecord,
+        const ReconstructedSurfelState &reconstructedState,
+        const PhotonMapType &photonMap) {
+        const float3 irradiance = gatherDiffuseIrradianceAtPoint(
+            reconstructedState.position,
+            reconstructedState.orientedNormal,
+            photonMap);
+
+        const float3 reflectedRadiance =
+                irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
+
+        float3 emittedRadiance =
+                surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld));
+
+        if (surfel.power > 0.0f && surfaceRecord.sideSign < 0) {
+            emittedRadiance = float3{0.0f, 0.0f, 0.0f};
+        }
+
+        return emittedRadiance + reflectedRadiance;
+    }
+
 
     SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX &pendingStage) {
         pendingStage = PendingAdjointStageX{};
@@ -1950,65 +1975,44 @@ namespace Pale {
         return sample;
     }
 
-    inline float3 computeInverseAreaPdfGradientWrtStartpoint(
-        const float3 &startPoint,
-        const float3 &endPoint,
-        const float3 &endNormal) {
-        const float3 vectorStartToEnd = endPoint - startPoint;
-        const float distanceSquared = dot(vectorStartToEnd, vectorStartToEnd);
-        if (distanceSquared <= 1e-20f) {
-            return float3{0.0f, 0.0f, 0.0f};
-        }
-
-        const float distance = sycl::sqrt(distanceSquared);
-        const float3 direction = vectorStartToEnd / distance;
-
-        const float cosineAtEnd = dot(endNormal, -direction);
-        if (cosineAtEnd <= 1e-20f) {
-            return float3{0.0f, 0.0f, 0.0f};
-        }
-
-        const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
-        const float areaPdf = uniformHemispherePdf * cosineAtEnd / distanceSquared;
-        if (areaPdf <= 1e-20f) {
-            return float3{0.0f, 0.0f, 0.0f};
-        }
-
-        // Projected component of end normal onto plane orthogonal to direction
-        const float3 projectedEndNormal =
-                endNormal - direction * dot(direction, endNormal);
-
-        // ∇_start (1 / pA)
-        const float3 inverseAreaPdfGradient =
-                (1.0f / areaPdf) *
-                (
-                    (2.0f * (startPoint - endPoint) / distanceSquared) -
-                    (projectedEndNormal / (distance * cosineAtEnd))
-                );
-
-        return inverseAreaPdfGradient;
-    }
-
     SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
-        uint32_t projectionEventCount,
-        uint32_t projectionTransmitEventCount,
-        uint32_t projectionScatterEventCount,
-        uint32_t reflectScatterEventCount) {
+        uint32_t measurementEventCount,
+        uint32_t onePointEventCount,
+        uint32_t twoPointEventCount,
+        uint32_t threePointEventCount) {
         GradientRecordRanges ranges{};
 
-        ranges.projectionOffset = 0;
-        ranges.projectionCount = kMaxSplatEventsPerRay * projectionEventCount;
+        static constexpr uint32_t measurementRecordsPerEvent =
+                1u + kMaxSplatEventsPerRay;
+        static constexpr uint32_t onePointRecordsPerEvent =
+                1u;
+        static constexpr uint32_t twoPointRecordsPerEvent =
+                2u + kMaxSplatEventsPerRay;
+        static constexpr uint32_t threePointRecordsPerEvent =
+                1u + kMaxSplatEventsPerRay;
 
-        ranges.projectionTransmitOffset = ranges.projectionOffset + ranges.projectionCount;
-        ranges.projectionTransmitCount = projectionTransmitEventCount;
+        ranges.measurementOffset = 0u;
+        ranges.measurementCount =
+                measurementRecordsPerEvent * measurementEventCount;
 
-        ranges.projectionScatterOffset = ranges.projectionTransmitOffset + ranges.projectionTransmitCount;
-        ranges.projectionScatterCount = 2u * kMaxSplatEventsPerRay * projectionScatterEventCount;
+        ranges.onePointOffset =
+                ranges.measurementOffset + ranges.measurementCount;
+        ranges.onePointCount =
+                onePointRecordsPerEvent * onePointEventCount;
 
-        ranges.detachedOffset = ranges.projectionScatterOffset + ranges.projectionScatterCount;
-        ranges.detachedCount = kMaxSplatEventsPerRay * reflectScatterEventCount;
+        ranges.twoPointOffset =
+                ranges.onePointOffset + ranges.onePointCount;
+        ranges.twoPointCount =
+                twoPointRecordsPerEvent * twoPointEventCount;
 
-        ranges.totalCount = ranges.detachedOffset + ranges.detachedCount;
+        ranges.threePointOffset =
+                ranges.twoPointOffset + ranges.twoPointCount;
+        ranges.threePointCount =
+                threePointRecordsPerEvent * threePointEventCount;
+
+        ranges.totalCount =
+                ranges.threePointOffset + ranges.threePointCount;
+
         return ranges;
     }
 
@@ -2017,8 +2021,7 @@ namespace Pale {
     }
 
 
-
-    inline void clearPendingCameraSegment(PendingCameraSegment& pendingCameraSegment) {
+    inline void clearPendingCameraSegment(PendingCameraSegment &pendingCameraSegment) {
         pendingCameraSegment.valid = false;
         pendingCameraSegment.pathId = 0u;
         pendingCameraSegment.pixelIndex = 0u;
@@ -2026,6 +2029,4 @@ namespace Pale {
         pendingCameraSegment.cameraOriginWorld = float3{0.0f, 0.0f, 0.0f};
         pendingCameraSegment.cameraDirectionWorld = float3{0.0f, 0.0f, 0.0f};
     }
-
-
 }

@@ -368,6 +368,8 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         float previousSegmentTransmission = 1.0f;
+        bool useImplicitRayHitJacobian = false;
+
     };
 
     struct PendingAdjointStageXY {
@@ -379,23 +381,25 @@ namespace Pale {
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
     };
 
-    struct AttachedGradientProjectionEvent {
+    struct TransportOnePointGradientEvent {
         PointCloudSurfaceRecord xSurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        float transmission = 1.0f;
-        float segmentProposalInverse = 1.0f;
+        float transmission{};
+        float3 xPathThroughput;
+        bool useImplicitRayHitJacobian = false;
     };
+    using MeasurementGradientEvent = TransportOnePointGradientEvent;
+    using TransportOnePointGradientEvent = TransportOnePointGradientEvent;
 
-    struct AttachedGradientScatterEvent {
+    struct TransportTwoPointsGradientEvent {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         float transmission = 1.0f;
         float transmissionPreviousSegment = 1.0f;
-        float segmentProposalInverse = 1.0f;
+        bool useImplicitRayHitJacobian = false;
     };
 
-    struct DetachedThreePointGradientEvent {
+    struct TransportThreePointsGradientEvent {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         PointCloudSurfaceRecord zSurface;
@@ -448,21 +452,20 @@ namespace Pale {
     };
 
     struct GradientRecordRanges {
-        uint32_t projectionOffset = 0;
-        uint32_t projectionCount = 0;
+        uint32_t measurementOffset = 0;
+        uint32_t measurementCount = 0;
 
-        uint32_t projectionTransmitOffset = 0;
-        uint32_t projectionTransmitCount = 0;
+        uint32_t onePointOffset = 0;
+        uint32_t onePointCount = 0;
 
-        uint32_t projectionScatterOffset = 0;
-        uint32_t projectionScatterCount = 0;
+        uint32_t twoPointOffset = 0;
+        uint32_t twoPointCount = 0;
 
-        uint32_t detachedOffset = 0;
-        uint32_t detachedCount = 0;
+        uint32_t threePointOffset = 0;
+        uint32_t threePointCount = 0;
 
         uint32_t totalCount = 0;
     };
-
     struct CompletedGradientEvent {
         bool valid = false;
 
@@ -534,8 +537,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.2f;
-        float qReflect = 0.8f;
+        float qNull = 0.0f;
+        float qReflect = 1.0f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
@@ -627,25 +630,24 @@ namespace Pale {
         PendingAdjointStageXY *pendingStageXY = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
 
-        AttachedGradientProjectionEvent *projectionEvents = nullptr;
-        AttachedGradientScatterEvent *projectionScatterEvents = nullptr;
-        DetachedThreePointGradientEvent *reflectScatterEvents = nullptr;
+        MeasurementGradientEvent* measurementEvents;
+        TransportOnePointGradientEvent* transportOnePointEvents;
+        TransportTwoPointsGradientEvent *transportTwoPointEvents = nullptr;
+        TransportThreePointsGradientEvent *transportThreePointEvents = nullptr;
         SurfelGradientRecord *gradientRecords = nullptr;
-
         PendingCameraSegment* pendingCameraSegments = nullptr;
-        CameraToSurfaceScatterEvent* cameraToSurfaceScatterEvents = nullptr;
-        uint32_t* countCameraToSurfaceScatterEvents = nullptr;
-        uint32_t maxCameraToSurfaceScatterEventCount = 0u;
-        uint32_t maxGradientRecordCount = 0;
 
-        uint32_t *countProjectionEvents = nullptr;
-        uint32_t *countProjectionScatterEvents = nullptr;
-        uint32_t *countReflectScatterEvents = nullptr;
+        uint32_t* countMeasurementEvents = nullptr;
+        uint32_t *countOnePointEvents = nullptr;
+        uint32_t *countTwoPointEvents = nullptr;
+        uint32_t *countThreePointEvents = nullptr;
 
         // capacities
-        uint32_t maxProjectionEventCount = 0;
-        uint32_t maxProjectionScatterEventCount = 0;
-        uint32_t maxReflectScatterEventCount = 0;
+        uint32_t maxOnePointEventCount = 0;
+        uint32_t maxTwoPointEventCount = 0;
+        uint32_t maxThreePointEventCount = 0;
+        uint32_t maxMeasurementEventCount = 0u;
+        uint32_t maxGradientRecordCount = 0;
 
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;

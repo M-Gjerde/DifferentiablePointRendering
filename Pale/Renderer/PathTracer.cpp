@@ -97,26 +97,32 @@ namespace Pale {
         m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
 
         // --- compact adjoint event buffers ---
-        const std::size_t sizeProjectionEventsBytes =
-                sizeof(AttachedGradientProjectionEvent) * m_rayQueueCapacity;
-        m_intermediates.projectionEvents =
-                sycl::malloc_device<AttachedGradientProjectionEvent>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated projectionEvents: {}", Utils::formatBytes(sizeProjectionEventsBytes));
-        m_intermediates.maxProjectionEventCount = m_rayQueueCapacity;
+        const std::size_t sizeMeasurementEventsBytes =
+                sizeof(MeasurementGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.measurementEvents =
+                sycl::malloc_device<MeasurementGradientEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated MeasurementGradientEvents: {}", Utils::formatBytes(sizeMeasurementEventsBytes));
+        // --- compact adjoint event buffers ---
+        const std::size_t sizeOneHitEventsBytes =
+                sizeof(TransportOnePointGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.transportOnePointEvents =
+                sycl::malloc_device<TransportOnePointGradientEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated projectionEvents: {}", Utils::formatBytes(sizeOneHitEventsBytes));
+        m_intermediates.maxOnePointEventCount = m_rayQueueCapacity;
 
         const std::size_t sizeProjectionScatterEventsBytes =
-                sizeof(AttachedGradientScatterEvent) * m_rayQueueCapacity;
-        m_intermediates.projectionScatterEvents =
-                sycl::malloc_device<AttachedGradientScatterEvent>(m_rayQueueCapacity, m_queue);
+                sizeof(TransportTwoPointsGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.transportTwoPointEvents =
+                sycl::malloc_device<TransportTwoPointsGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated projectionScatterEvents: {}", Utils::formatBytes(sizeProjectionScatterEventsBytes));
-        m_intermediates.maxProjectionScatterEventCount = m_rayQueueCapacity;
+        m_intermediates.maxTwoPointEventCount = m_rayQueueCapacity;
 
         const std::size_t sizeReflectScatterEventsBytes =
-                sizeof(DetachedThreePointGradientEvent) * m_rayQueueCapacity;
-        m_intermediates.reflectScatterEvents =
-                sycl::malloc_device<DetachedThreePointGradientEvent>(m_rayQueueCapacity, m_queue);
+                sizeof(TransportThreePointsGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.transportThreePointEvents =
+                sycl::malloc_device<TransportThreePointsGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(sizeReflectScatterEventsBytes));
-        m_intermediates.maxReflectScatterEventCount = m_rayQueueCapacity;
+        m_intermediates.maxThreePointEventCount = m_rayQueueCapacity;
 
         // --- pending adjoint states ---
         const std::size_t sizePendingAdjointStatesXBytes =
@@ -137,17 +143,14 @@ namespace Pale {
         m_intermediates.pendingCameraSegments =
                 sycl::malloc_device<PendingCameraSegment>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingCameraSegmentBytes));
-        m_intermediates.maxCameraToSurfaceScatterEventCount = m_rayQueueCapacity;
+        m_intermediates.maxMeasurementEventCount = m_rayQueueCapacity;
 
 
         const uint32_t gradientRecordCapacity = 4u * m_rayQueueCapacity * 4u;
         const std::size_t sizeGradientRecordsBytes =
                 sizeof(SurfelGradientRecord) * gradientRecordCapacity;
-
         m_intermediates.gradientRecords =
                 sycl::malloc_device<SurfelGradientRecord>(gradientRecordCapacity, m_queue);
-        m_intermediates.cameraToSurfaceScatterEvents =
-                sycl::malloc_device<CameraToSurfaceScatterEvent>(m_rayQueueCapacity, m_queue);
         m_intermediates.maxGradientRecordCount = gradientRecordCapacity;
         Log::PA_TRACE("Allocated gradientRecords: {}", Utils::formatBytes(sizeGradientRecordsBytes));
         Log::PA_INFO("sizeof(SurfelGradientRecord) = {}", sizeof(SurfelGradientRecord));
@@ -155,19 +158,19 @@ namespace Pale {
         // --- counters ---
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countProjectionEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countProjectionScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countReflectScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countOnePointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countTwoPointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countThreePointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countCameraToSurfaceScatterEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countMeasurementEvents = sycl::malloc_device<uint32_t>(1, m_queue);
 
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countProjectionEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countProjectionScatterEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countReflectScatterEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countOnePointEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countTwoPointEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countThreePointEvents, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countCameraToSurfaceScatterEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countMeasurementEvents, 0, sizeof(uint32_t));
         m_queue.wait();
 
         const std::size_t counterBytes =
@@ -178,7 +181,8 @@ namespace Pale {
                 sizeExtensionRaysBytes +
                 sizeHitRecordsBytes +
                 sizeContributionRecordsBytes +
-                sizeProjectionEventsBytes +
+                sizeMeasurementEventsBytes +
+                sizeOneHitEventsBytes +
                 sizeProjectionScatterEventsBytes +
                 sizeReflectScatterEventsBytes +
                 sizePendingAdjointStatesXBytes +
@@ -240,18 +244,19 @@ namespace Pale {
         freeDevicePtr(m_intermediates.hitRecords, m_queue);
         freeDevicePtr(m_intermediates.hitContribution, m_queue);
 
-        freeDevicePtr(m_intermediates.projectionEvents, m_queue);
-        freeDevicePtr(m_intermediates.projectionScatterEvents, m_queue);
-        freeDevicePtr(m_intermediates.reflectScatterEvents, m_queue);
+        freeDevicePtr(m_intermediates.measurementEvents, m_queue);
+        freeDevicePtr(m_intermediates.transportOnePointEvents, m_queue);
+        freeDevicePtr(m_intermediates.transportTwoPointEvents, m_queue);
+        freeDevicePtr(m_intermediates.transportThreePointEvents, m_queue);
 
         freeDevicePtr(m_intermediates.pendingStageX, m_queue);
         freeDevicePtr(m_intermediates.pendingStageXY, m_queue);
 
         freeDevicePtr(m_intermediates.countPrimary, m_queue);
         freeDevicePtr(m_intermediates.countContributions, m_queue);
-        freeDevicePtr(m_intermediates.countProjectionEvents, m_queue);
-        freeDevicePtr(m_intermediates.countProjectionScatterEvents, m_queue);
-        freeDevicePtr(m_intermediates.countReflectScatterEvents, m_queue);
+        freeDevicePtr(m_intermediates.countOnePointEvents, m_queue);
+        freeDevicePtr(m_intermediates.countTwoPointEvents, m_queue);
+        freeDevicePtr(m_intermediates.countThreePointEvents, m_queue);
         freeDevicePtr(m_intermediates.countExtensionOut, m_queue);
         freeDevicePtr(m_intermediates.gradientRecords, m_queue);
 
@@ -260,24 +265,25 @@ namespace Pale {
         m_intermediates.hitRecords = nullptr;
         m_intermediates.hitContribution = nullptr;
 
-        m_intermediates.projectionEvents = nullptr;
-        m_intermediates.projectionScatterEvents = nullptr;
-        m_intermediates.reflectScatterEvents = nullptr;
+        m_intermediates.measurementEvents = nullptr;
+        m_intermediates.transportOnePointEvents = nullptr;
+        m_intermediates.transportTwoPointEvents = nullptr;
+        m_intermediates.transportThreePointEvents = nullptr;
 
         m_intermediates.pendingStageX = nullptr;
         m_intermediates.pendingStageXY = nullptr;
 
         m_intermediates.countPrimary = nullptr;
         m_intermediates.countContributions = nullptr;
-        m_intermediates.countProjectionEvents = nullptr;
-        m_intermediates.countProjectionScatterEvents = nullptr;
-        m_intermediates.countReflectScatterEvents = nullptr;
+        m_intermediates.countOnePointEvents = nullptr;
+        m_intermediates.countTwoPointEvents = nullptr;
+        m_intermediates.countThreePointEvents = nullptr;
         m_intermediates.countExtensionOut = nullptr;
 
         m_intermediates.maxHitContributionCount = 0;
-        m_intermediates.maxProjectionEventCount = 0;
-        m_intermediates.maxProjectionScatterEventCount = 0;
-        m_intermediates.maxReflectScatterEventCount = 0;
+        m_intermediates.maxOnePointEventCount = 0;
+        m_intermediates.maxTwoPointEventCount = 0;
+        m_intermediates.maxMeasurementEventCount = 0;
         m_intermediates.maxPendingAdjointStateCount = 0;
         m_intermediates.gradientRecords = nullptr;
         m_intermediates.maxGradientRecordCount = 0;

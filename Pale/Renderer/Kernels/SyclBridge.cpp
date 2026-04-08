@@ -160,10 +160,7 @@ namespace Pale {
     }
 
     // ---- Orchestrator -------------------------------------------------------
-    // ---- Orchestrator -------------------------------------------------------
     void submitAdjointKernel(RenderPackage &pkg) {
-        std::mt19937_64 seedGenerator(pkg.random.seed);
-
         pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
 
         pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
@@ -214,106 +211,107 @@ namespace Pale {
                 }
 
 
-                uint32_t activeCount = raysPerFrame;
+                uint32_t activeRayCount = raysPerFrame;
 
                 // One pending state slot per pathId/pixel.
                 // Clear the full pending arrays once per spp.
                 pkg.queue.fill(pkg.intermediates.pendingStageX, PendingAdjointStageX{}, raysPerFrame).wait();
                 pkg.queue.fill(pkg.intermediates.pendingStageXY, PendingAdjointStageXY{}, raysPerFrame).wait();
 
-                for (uint32_t bounce = 0;
-                     bounce < pkg.settings.maxAdjointBounces && activeCount > 0;
-                     ++bounce) {
+                for (uint32_t adjointBounceIndex = 0;
+                     adjointBounceIndex < pkg.settings.maxAdjointBounces && activeRayCount > 0;
+                     ++adjointBounceIndex) {
                     pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countProjectionEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countCameraToSurfaceScatterEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countProjectionScatterEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countReflectScatterEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countOnePointEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countMeasurementEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countTwoPointEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countThreePointEvents, static_cast<uint32_t>(0), 1);
 
-                    pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeCount);
-                    pkg.queue.wait();
-
-                    {
+                    pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeRayCount);
+                    pkg.queue.wait(); {
                         Log::PA_TRACE("Launching adjoint intersect kernel");
                         ScopedTimer timer("launchAdjointIntersectKernel", spdlog::level::debug);
-                        launchAdjointIntersectKernel(pkg, spp, activeCount);
+                        launchAdjointIntersectKernel(pkg, spp, activeRayCount);
                     }
 
-                    uint32_t projectionEventCount = 0;
-                    uint32_t projectionTransmitEventCount = 0;
-                    uint32_t projectionScatterEventCount = 0;
-                    uint32_t reflectScatterEventCount = 0;
+                    uint32_t onePointEventCount = 0;
+                    uint32_t measurementEventCount = 0;
+                    uint32_t twoPointEventCount = 0;
+                    uint32_t threePointEventCount = 0;
 
                     pkg.queue.memcpy(
-                        &projectionEventCount,
-                        pkg.intermediates.countProjectionEvents,
+                        &onePointEventCount,
+                        pkg.intermediates.countOnePointEvents,
                         sizeof(uint32_t)).wait();
 
                     pkg.queue.memcpy(
-                        &projectionTransmitEventCount,
-                        pkg.intermediates.countCameraToSurfaceScatterEvents,
+                        &measurementEventCount,
+                        pkg.intermediates.countMeasurementEvents,
                         sizeof(uint32_t)).wait();
 
                     pkg.queue.memcpy(
-                        &projectionScatterEventCount,
-                        pkg.intermediates.countProjectionScatterEvents,
+                        &twoPointEventCount,
+                        pkg.intermediates.countTwoPointEvents,
                         sizeof(uint32_t)).wait();
 
                     pkg.queue.memcpy(
-                        &reflectScatterEventCount,
-                        pkg.intermediates.countReflectScatterEvents,
+                        &threePointEventCount,
+                        pkg.intermediates.countThreePointEvents,
                         sizeof(uint32_t)).wait();
 
-                    projectionEventCount = sycl::min(
-                        projectionEventCount,
-                        pkg.intermediates.maxProjectionEventCount);
+                    onePointEventCount = sycl::min(
+                        onePointEventCount,
+                        pkg.intermediates.maxOnePointEventCount);
 
-                    projectionTransmitEventCount = sycl::min(
-                        projectionTransmitEventCount,
-                        pkg.intermediates.maxCameraToSurfaceScatterEventCount);
+                    measurementEventCount = sycl::min(
+                        measurementEventCount,
+                        pkg.intermediates.maxMeasurementEventCount);
 
-                    projectionScatterEventCount = sycl::min(
-                        projectionScatterEventCount,
-                        pkg.intermediates.maxProjectionScatterEventCount);
+                    twoPointEventCount = sycl::min(
+                        twoPointEventCount,
+                        pkg.intermediates.maxTwoPointEventCount);
 
-                    reflectScatterEventCount = sycl::min(
-                        reflectScatterEventCount,
-                        pkg.intermediates.maxReflectScatterEventCount);
+                    threePointEventCount = sycl::min(
+                        threePointEventCount,
+                        pkg.intermediates.maxThreePointEventCount);
 
-                    if (projectionEventCount > 0 ||
-                        projectionScatterEventCount > 0 ||
-                        reflectScatterEventCount > 0 ||
-                        projectionTransmitEventCount > 0) {
-                        ScopedTimer timer("Total adjointContributionKernels bounce: " + std::to_string(bounce),
-                                          spdlog::level::debug);
+                    if (onePointEventCount > 0 ||
+                        twoPointEventCount > 0 ||
+                        threePointEventCount > 0 ||
+                        measurementEventCount > 0) {
+                        ScopedTimer timer(
+                            "Total adjointContributionKernels bounce: " + std::to_string(adjointBounceIndex),
+                            spdlog::level::debug);
 
                         adjointContributionKernels(
                             pkg,
-                            projectionEventCount,
-                            projectionScatterEventCount,
-                            reflectScatterEventCount,
-                            projectionTransmitEventCount,
+                            measurementEventCount,
+                            onePointEventCount,
+                            twoPointEventCount,
+                            threePointEventCount,
                             static_cast<uint32_t>(cameraIndex));
-                    }
-
-                    pkg.queue.memset(pkg.intermediates.gradientRecords, 0x00, pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
-
-                    uint32_t nextCount = 0;
-                    pkg.queue.memcpy(
-                        &nextCount,
-                        pkg.intermediates.countExtensionOut,
-                        sizeof(uint32_t)).wait();
-
-                    if (nextCount > 0) {
-                        pkg.queue.memcpy(
-                            pkg.intermediates.primaryRays,
-                            pkg.intermediates.extensionRaysA,
-                            nextCount * sizeof(RayState)).wait();
-                    }
-
-                    activeCount = nextCount;
                 }
+
+                pkg.queue.memset(pkg.intermediates.gradientRecords, 0x00,
+                                 pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
+
+                uint32_t nextRayCount = 0;
+                pkg.queue.memcpy(
+                    &nextRayCount,
+                    pkg.intermediates.countExtensionOut,
+                    sizeof(uint32_t)).wait();
+
+                if (nextRayCount > 0) {
+                    pkg.queue.memcpy(
+                        pkg.intermediates.primaryRays,
+                        pkg.intermediates.extensionRaysA,
+                        nextRayCount * sizeof(RayState)).wait();
+                }
+
+                activeRayCount = nextRayCount;
             }
         }
     }
+}
+
 }

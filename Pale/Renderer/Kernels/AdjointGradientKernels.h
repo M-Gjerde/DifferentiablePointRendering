@@ -447,25 +447,43 @@ namespace Pale {
         float3 dv_d_surfel_translation;
     };
 
-    inline UVPositionJacobian computeDuvDSurfelTranslationJacobian(
-        const float3 &tangentUWorld,
-        const float3 &tangentVWorld,
-        const float3 &canonicalNormalWorld,
-        const float3 &rayDirection,
-        float u, float v,
-        float su, float sv) {
-        const float denom = dot(canonicalNormalWorld, rayDirection);
-        if (sycl::fabs(denom) <= 1e-4f) {
+    inline UVPositionJacobian computeDuvDSurfelTranslationJacobianForImplicitRayHit(
+      const float3& tangentUWorld,
+      const float3& tangentVWorld,
+      const float3& canonicalNormalWorld,
+      const float3& rayDirection,
+      float scaleU,
+      float scaleV) {
+        const float denominator = dot(canonicalNormalWorld, rayDirection);
+        if (sycl::fabs(denominator) <= 1e-4f) {
             return {};
         }
 
-        const float tuDotD = dot(tangentUWorld, rayDirection);
-        const float tvDotD = dot(tangentVWorld, rayDirection);
+        const float tangentUDotRayDirection = dot(tangentUWorld, rayDirection);
+        const float tangentVDotRayDirection = dot(tangentVWorld, rayDirection);
 
-        // du/dp_k and dv/dp_k (3x1 each), from your analytic expression
-        const float3 duDPk = ((tuDotD / denom) * canonicalNormalWorld - tangentUWorld) / su;
-        const float3 dvDPk = ((tvDotD / denom) * canonicalNormalWorld - tangentVWorld) / sv;
-        return {duDPk, dvDPk};
+        const float3 duDTranslation =
+            ((tangentUDotRayDirection / denominator) * canonicalNormalWorld - tangentUWorld) / scaleU;
+
+        const float3 dvDTranslation =
+            ((tangentVDotRayDirection / denominator) * canonicalNormalWorld - tangentVWorld) / scaleV;
+
+        return {duDTranslation, dvDTranslation};
+    }
+
+    inline UVPositionJacobian computeDuvDSurfelTranslationJacobianForExplicitSurfacePoint(
+        const float3& tangentUWorld,
+        const float3& tangentVWorld,
+        float scaleU,
+        float scaleV) {
+        if (scaleU <= 1e-12f || scaleV <= 1e-12f) {
+            return {};
+        }
+
+        return {
+            -tangentUWorld / scaleU,
+            -tangentVWorld / scaleV
+        };
     }
 
     inline float3 computeAreaPdfGradientWrtX(
