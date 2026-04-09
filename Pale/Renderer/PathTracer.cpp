@@ -332,8 +332,8 @@ namespace Pale {
     void PathTracer::configurePhotonGrid(const AABB &sceneAabb) {
         auto &grid = m_intermediates.map;
 
-        grid.minimumGatherRadiusWorld = 0.001f;
-        grid.maximumGatherRadiusWorld = 0.1f;
+        grid.minimumGatherRadiusWorld = 0.005f;
+        grid.maximumGatherRadiusWorld = 0.2f;
         grid.gatherPadWorld = 0.04f;
         const float cellSizeWorld = 0.005f;
 

@@ -1385,7 +1385,7 @@ SYCL_EXTERNAL inline int absoluteInt(int value) {
     return value < 0 ? -value : value;
 }
 
-static constexpr uint32_t kPhotonGatherNeighborCount = 256;
+static constexpr uint32_t kPhotonGatherNeighborCount = 128;
 
 SYCL_EXTERNAL inline void tryInsertPhotonIntoNearestSet(
     const DevicePhotonSurface &candidatePhoton,
