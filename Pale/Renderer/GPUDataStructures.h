@@ -583,7 +583,9 @@ namespace Pale {
 
     // ----------------- Full surface photon map handle (device) -------------------
     struct DeviceSurfacePhotonMapGrid {
-        float gatherRadiusWorld = 0.00f;
+        float minimumGatherRadiusWorld = 0.00f;
+        float maximumGatherRadiusWorld = 0.00f;
+        float gatherPadWorld = 0.00f;
         float3 cellSizeWorld = float3{0};
         float3 gridOriginWorld = float3{0};
         sycl::int3 gridResolution = sycl::int3{0};
@@ -593,7 +595,7 @@ namespace Pale {
         DevicePhotonSurface *photons = nullptr;
         std::uint32_t photonCapacity = 0;
         std::uint32_t *photonCountDevicePtr = nullptr;
-
+        std::uint32_t *photonStreamCountDevicePtr = nullptr;
         std::uint32_t allocatedCellCount = 0;
         std::uint32_t allocatedPhotonCapacity = 0;
         std::uint32_t allocatedBlockCount = 0;

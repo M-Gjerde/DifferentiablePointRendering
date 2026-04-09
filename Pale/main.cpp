@@ -22,14 +22,14 @@ import Pale.Render.Sensors;
 import Pale.Scene;
 
 
-static std::string assetPathOrId(const Pale::AssetRegistry& reg, const Pale::AssetHandle& id) {
+static std::string assetPathOrId(const Pale::AssetRegistry &reg, const Pale::AssetHandle &id) {
     if (auto m = reg.meta(id)) return m->path.string();
     return std::string(id); // fallback if it's not in the registry
 }
 
-static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
-                            Pale::AssetManager& am) {
-    auto& reg = am.registry();
+static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene,
+                            Pale::AssetManager &am) {
+    auto &reg = am.registry();
 
     Pale::Log::PA_INFO("===== Scene Summary =====");
     size_t entityCount = 0;
@@ -37,11 +37,11 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
     size_t emissiveCount = 0;
 
     auto view = scene->getAllEntitiesWith<Pale::IDComponent>();
-    for (entt::entity entity : view) {
+    for (entt::entity entity: view) {
         Pale::Entity e(entity, scene.get());
         ++entityCount;
 
-        const char* name = e.getName().c_str();
+        const char *name = e.getName().c_str();
         bool hasMesh = e.hasComponent<Pale::MeshComponent>();
         bool hasMat = e.hasComponent<Pale::MaterialComponent>();
         bool hasEm = e.hasComponent<Pale::AreaLightComponent>();
@@ -50,15 +50,14 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
 
         // Mesh
         if (hasMesh) {
-            auto& mc = e.getComponent<Pale::MeshComponent>();
+            auto &mc = e.getComponent<Pale::MeshComponent>();
             ++meshCount;
             std::string meshLabel = assetPathOrId(reg, mc.meshID);
 
             size_t submeshCount = 0;
             if (auto mesh = am.get<Pale::Mesh>(mc.meshID)) {
                 submeshCount = mesh->submeshes.size();
-            }
-            else {
+            } else {
                 Pale::Log::PA_WARN("  Mesh: {} (FAILED to load)", meshLabel);
             }
 
@@ -67,7 +66,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
 
         // Material
         if (hasMat) {
-            auto& matc = e.getComponent<Pale::MaterialComponent>();
+            auto &matc = e.getComponent<Pale::MaterialComponent>();
             std::string matLabel = assetPathOrId(reg, matc.materialID);
 
             if (auto mat = am.get<Pale::Material>(matc.materialID)) {
@@ -77,8 +76,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
                     mat->baseColor.x, mat->baseColor.y, mat->baseColor.z,
                     mat->roughness, mat->metallic
                 );
-            }
-            else {
+            } else {
                 Pale::Log::PA_INFO("  Material: {}  (pending load)", matLabel);
             }
         }
@@ -86,7 +84,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
         // Emissive
         if (hasEm) {
             ++emissiveCount;
-            auto& em = e.getComponent<Pale::AreaLightComponent>();
+            auto &em = e.getComponent<Pale::AreaLightComponent>();
             Pale::Log::PA_INFO("  Emissive radiance=({:.3f},{:.3f},{:.3f})",
                                em.radiance.x, em.radiance.y, em.radiance.z);
         }
@@ -97,9 +95,9 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene,
 }
 
 
-void rebuild_bvh(Pale::PathTracer* pathTracer, std::shared_ptr<Pale::Scene>& scene,
-                 Pale::SceneBuild::BuildProducts& buildProducts, Pale::AssetManager* assetManager,
-                 Pale::DeviceSelector& deviceSelector, Pale::GPUSceneBuffers& sceneGpu) {
+void rebuild_bvh(Pale::PathTracer *pathTracer, std::shared_ptr<Pale::Scene> &scene,
+                 Pale::SceneBuild::BuildProducts &buildProducts, Pale::AssetManager *assetManager,
+                 Pale::DeviceSelector &deviceSelector, Pale::GPUSceneBuffers &sceneGpu) {
     Pale::AssetAccessFromManager assetAccessor(*assetManager);
 
     buildProducts = Pale::SceneBuild::build(
@@ -119,7 +117,7 @@ void rebuild_bvh(Pale::PathTracer* pathTracer, std::shared_ptr<Pale::Scene>& sce
 }
 
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
@@ -171,35 +169,35 @@ int main(int argc, char** argv) {
         auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
         auto entityPointCloud = scene->createEntity("PointCloud");
         entityPointCloud.addComponent<Pale::PointCloudComponent>().pointCloudID = assetHandle;
-        auto& transform = entityPointCloud.getComponent<Pale::PointCloudComponent>();
+        auto &transform = entityPointCloud.getComponent<Pale::PointCloudComponent>();
 
         Pale::AssetAccessFromManager assetAccessor(assetManager);
 
         const auto pointCloudAsset = assetAccessor.getPointCloud(assetHandle);
         // assuming one geometry block per asset for now
-        const Pale::PointGeometry& pointGeometry = pointCloudAsset->points.front();
+        const Pale::PointGeometry &pointGeometry = pointCloudAsset->points.front();
     }
 
     if (addModel) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
-        auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
+        auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
         bunnyTransformComponent.setPosition(glm::vec3(0.45f, 0.6f, 0.3f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(4.0f, 0.0f, 0.0f));
         bunnyTransformComponent.setScale(glm::vec3(0.7f, 0.7f, 0.7f));
 
         // 2) Mesh
         Pale::AssetHandle bunnyMeshAssetHandle =
-            assetIndexer.importPath("meshes/bunny.ply", Pale::AssetType::Mesh);
+                assetIndexer.importPath("meshes/bunny.ply", Pale::AssetType::Mesh);
 
-        auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
+        auto &bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
 
         // 3) Material
         Pale::AssetHandle bunnyMaterialAssetHandle =
-            assetIndexer.importPath("Materials/cbox/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
+                assetIndexer.importPath("Materials/cbox/bsdf_blue_0.mat.yaml", Pale::AssetType::Material);
 
-        auto& bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
+        auto &bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
     }
 
@@ -237,17 +235,17 @@ int main(int argc, char** argv) {
 
         tracer.renderForward(sensors); // films is span/array
 
-        for (const auto& sensor : sensors) {
+        for (const auto &sensor: sensors) {
             std::vector<uint8_t> rgba =
-                Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
             std::vector<float> rgbaRaw =
-                Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
+                    Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
             const uint32_t imageWidth = sensor.width;
             const uint32_t imageHeight = sensor.height;
 
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
+                    std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = sensor.name;
@@ -257,7 +255,7 @@ int main(int argc, char** argv) {
             Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
 
             std::filesystem::path rawFilePath =
-                baseDir / "images" / (fileName + "_raw.exr");
+                    baseDir / "images" / (fileName + "_raw.exr");
 
             Pale::Log::PA_INFO("Saving image to: {}", (std::filesystem::current_path() / rawFilePath).string());
 
@@ -276,10 +274,10 @@ int main(int argc, char** argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 2;
-        settings.numForwardPasses = 500;
+        settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
-        settings.adjointSamplesPerPixel = 1;
+        settings.adjointSamplesPerPixel = 4;
         settings.renderDebugGradientImages = true;
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
@@ -289,18 +287,18 @@ int main(int argc, char** argv) {
         tracer.renderForward(sensors);
 
         // Save target image
-        for (const auto& sensor : sensors) {
+        for (const auto &sensor: sensors) {
             std::vector<uint8_t> rgba =
-                Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+                    Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
             const uint32_t imageWidth = sensor.width;
             const uint32_t imageHeight = sensor.height;
 
             std::vector<float> rgbaRaw =
-                Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
+                    Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
 
             // Per-camera output directory: Output/<pointcloud>/<camera_name>/
             std::filesystem::path baseDir =
-                std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
+                    std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
 
             std::filesystem::create_directories(baseDir);
             std::string fileName = sensor.name;
@@ -309,7 +307,7 @@ int main(int argc, char** argv) {
             Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
 
             std::filesystem::path rawFilePath =
-                baseDir / "images" / (fileName + "_raw.exr");
+                    baseDir / "images" / (fileName + "_raw.exr");
 
             Pale::Log::PA_INFO("Saving image to: {}", (std::filesystem::current_path() / rawFilePath).string());
             Pale::Utils::saveRGBAFloatAsEXR(
@@ -320,69 +318,71 @@ int main(int argc, char** argv) {
             );
         }
 
-        {
-            auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
-            Pale::Entity entity(entities.front(), (scene.get()));
-            auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(
-                entity.getComponent<Pale::PointCloudComponent>().pointCloudID);
-            if (!pointAssetSharedPtr) {
-                throw std::runtime_error("set_gaussian_opacity: failed to get PointAsset for dynamic point cloud");
-            }
-            Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
-            Pale::PointGeometry& pointGeometry = pointAsset.points.front();
-            //pointGeometry.positions[0].z = -2.7f;
-            rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
-        }
-
-        Pale::Log::PA_INFO("Forward Render Pass...");
-        tracer.renderForward(sensors); // films is span/array
-
-
-        // Render with pertubation
-        // Save target image
-        for (const auto& sensor : sensors) {
-            std::vector<uint8_t> rgba =
-                Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-            const uint32_t imageWidth = sensor.width;
-            const uint32_t imageHeight = sensor.height;
-
-            std::vector<float> rgbaRaw =
-                Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
-
-            std::filesystem::path baseDir =
-                std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
-
-            std::filesystem::create_directories(baseDir);
-            std::string fileName = sensor.name;
-            fileName += "_photonmap";
-            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
-            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
-
-
-            std::filesystem::path rawFilePath =
-                baseDir / "images" / (fileName + "_raw.exr");
-
-            Pale::Utils::saveRGBAFloatAsEXR(
-                rawFilePath,
-                rgbaRaw,
-                imageWidth,
-                imageHeight
-            );
-        }
-
-
         for (int i = 0; i < 1; ++i) {
             if (settings.renderDebugGradientImages) {
+                {
+                    auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
+                    Pale::Entity entity(entities.front(), (scene.get()));
+                    auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(
+                        entity.getComponent<Pale::PointCloudComponent>().pointCloudID);
+                    if (!pointAssetSharedPtr) {
+                        throw std::runtime_error(
+                            "set_gaussian_opacity: failed to get PointAsset for dynamic point cloud");
+                    }
+                    Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+                    Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+                    //pointGeometry.positions[0].z = -2.7f;
+                    rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
+                }
+
+                Pale::Log::PA_INFO("Forward Render Pass...");
+                tracer.renderForward(sensors); // films is span/array
+
+
+                // Render with pertubation
+                // Save target image
+                for (const auto &sensor: sensors) {
+                    std::vector<uint8_t> rgba =
+                            Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+                    const uint32_t imageWidth = sensor.width;
+                    const uint32_t imageHeight = sensor.height;
+
+                    std::vector<float> rgbaRaw =
+                            Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
+
+                    std::filesystem::path baseDir =
+                            std::filesystem::path("Output") / sceneName.parent_path();
+                    // assumes sensor.name is std::string
+
+                    std::filesystem::create_directories(baseDir);
+                    std::string fileName = sensor.name;
+                    fileName += "_photonmap";
+                    std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
+                    Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
+
+
+                    std::filesystem::path rawFilePath =
+                            baseDir / "images" / (fileName + "_raw.exr");
+
+                    Pale::Utils::saveRGBAFloatAsEXR(
+                        rawFilePath,
+                        rgbaRaw,
+                        imageWidth,
+                        imageHeight
+                    );
+                }
+
+
                 Pale::Log::PA_INFO("Adjoint Render Pass...");
                 std::vector<Pale::SensorGPU> availableSensors =
-                    Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+                        Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
 
                 std::vector<Pale::SensorGPU> selectedAdjointSensors;
                 Pale::SensorGPU selectedSensor;
-                for (int i = 0; const auto& sensor : availableSensors) {
+                for (int i = 0; const auto &sensor: availableSensors) {
                     if (sensor.camera.useForAdjointPass) {
                         selectedAdjointSensors.push_back(sensor);
-                        for (const auto& forwardSensor : sensors) {
+                        for (const auto &forwardSensor: sensors) {
                             if (std::string(sensor.camera.name) == std::string(forwardSensor.camera.name))
                                 selectedSensor = forwardSensor;
                         }
@@ -399,7 +399,7 @@ int main(int argc, char** argv) {
                 std::vector<float> rgbaHostAdjointTarget;
 
                 std::filesystem::path baseDir =
-                    std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
+                        std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
 
 
                 std::string fileName = selectedSensor.name;
@@ -410,25 +410,25 @@ int main(int argc, char** argv) {
                 Pale::Utils::loadEXRAsRGBAFloat(targetImagePath, rgbaHostAdjointTarget, width, height);
 
                 std::vector<float> rgbaHostRendered =
-                    Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), selectedSensor);
+                        Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), selectedSensor);
 
                 std::vector<float> rgbaHostAdjointSource =
-                    Pale::Utils::computeL2ImageGradientRGBA(rgbaHostRendered, rgbaHostAdjointTarget, width, height);
+                        Pale::Utils::computeL2ImageGradientRGBA(rgbaHostRendered, rgbaHostAdjointTarget, width, height);
 
 
                 std::vector<float> rgba =
-                    Pale::uploadSensorRGBA(deviceSelector.getQueue(), selectedAdjointSensors.front(),
-                                           rgbaHostAdjointSource);
+                        Pale::uploadSensorRGBA(deviceSelector.getQueue(), selectedAdjointSensors.front(),
+                                               rgbaHostAdjointSource);
 
 
                 tracer.renderBackward(selectedAdjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
 
                 float hostGradientBeta{};
                 deviceSelector.getQueue()
-                              .memcpy(&hostGradientBeta,
-                                      gradients.gradBeta,
-                                      sizeof(float))
-                              .wait();
+                        .memcpy(&hostGradientBeta,
+                                gradients.gradBeta,
+                                sizeof(float))
+                        .wait();
 
                 Pale::Log::PA_INFO(
                     "grad Beta = ({})",
@@ -436,10 +436,10 @@ int main(int argc, char** argv) {
                 );
                 float hostGradientOpacity{};
                 deviceSelector.getQueue()
-                              .memcpy(&hostGradientOpacity,
-                                      gradients.gradOpacity,
-                                      sizeof(float))
-                              .wait();
+                        .memcpy(&hostGradientOpacity,
+                                gradients.gradOpacity,
+                                sizeof(float))
+                        .wait();
 
                 Pale::Log::PA_INFO(
                     "grad Opacity = ({})",
@@ -448,17 +448,17 @@ int main(int argc, char** argv) {
 
                 Pale::float3 hostPosition{};
                 deviceSelector.getQueue()
-                              .memcpy(&hostPosition,
-                                      &gradients.gradPosition[1],
-                                      3 * sizeof(float))
-                              .wait();
+                        .memcpy(&hostPosition,
+                                &gradients.gradPosition[1],
+                                3 * sizeof(float))
+                        .wait();
 
                 Pale::Log::PA_INFO(
                     "grad Position = ({}, {}, {})",
                     hostPosition.x(), hostPosition.y(), hostPosition.z()
                 );
 
-                for (size_t i = 0; const auto& adjointSensor : selectedAdjointSensors) {
+                for (size_t i = 0; const auto &adjointSensor: selectedAdjointSensors) {
                     auto debugImagesHost = Pale::downloadDebugGradientImages(
                         deviceSelector.getQueue(), adjointSensor, debugImages[i]);
 
@@ -466,15 +466,14 @@ int main(int argc, char** argv) {
                     const uint32_t imageWidth = adjointSensor.width;
                     const uint32_t imageHeight = adjointSensor.height;
                     const float adjointSamplesPerPixel =
-                        static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
+                            static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
 
                     // Per-camera base directory: Output/<pointcloud>/<camera_name>/
                     std::filesystem::path baseDir =
-                        std::filesystem::path("Output") / sceneName.parent_path()
-                        / adjointSensor.name;
-                    {
+                            std::filesystem::path("Output") / sceneName.parent_path()
+                            / adjointSensor.name; {
                         std::filesystem::path pngPath =
-                            baseDir / "adjoint_source_l2_gradient_seismic.png";
+                                baseDir / "adjoint_source_l2_gradient_seismic.png";
 
                         Pale::Utils::saveGradientSignPNG(
                             pngPath,
@@ -487,7 +486,7 @@ int main(int argc, char** argv) {
                             true);
 
                         std::filesystem::path pngQ99Path =
-                            baseDir / "adjoint_source_l2_gradient_seismic_q099.png";
+                                baseDir / "adjoint_source_l2_gradient_seismic_q099.png";
 
                         Pale::Utils::saveGradientSignPNG(
                             pngQ99Path,
@@ -503,12 +502,12 @@ int main(int argc, char** argv) {
 
                     std::filesystem::create_directories(baseDir);
 
-                    auto saveGradientSet = [&](const std::vector<float>& rgbaBuffer,
-                                               const std::string& prefixBaseName) {
+                    auto saveGradientSet = [&](const std::vector<float> &rgbaBuffer,
+                                               const std::string &prefixBaseName) {
                         // Full-range (absQuantile = 1.0)
                         {
                             std::string fileName =
-                                prefixBaseName + "_seismic.png";
+                                    prefixBaseName + "_seismic.png";
                             std::filesystem::path filePath = baseDir / fileName;
 
                             if (Pale::Utils::saveGradientSignPNG(
@@ -525,7 +524,7 @@ int main(int argc, char** argv) {
 
                             // q=0.99
                             std::string fileNameQuantile =
-                                prefixBaseName + "_seismic_q099.png";
+                                    prefixBaseName + "_seismic_q099.png";
                             std::filesystem::path filePathQuantile = baseDir / fileNameQuantile;
 
                             Pale::Utils::saveGradientSignPNG(

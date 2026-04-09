@@ -22,14 +22,18 @@ namespace Pale {
 
     void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
         m_sceneGPU = scene;
-        uint32_t requiredCapacity = m_settings.photonsPerLaunch;
+
+        const uint32_t requiredCapacity = m_settings.photonsPerLaunch;
         ensureRayCapacity(requiredCapacity);
 
-        if (!m_intermediates.map.photons && m_settings.integratorKind == IntegratorKind::photonMapping) {
+        if (m_settings.integratorKind == IntegratorKind::photonMapping) {
+            freePhotonMap();
+            freePhotonGridBuffers();
+
             allocatePhotonMap();
 
-            auto topTLAS = bp.topLevelNodes.front();
-            AABB sceneAabb = {topTLAS.aabbMin, topTLAS.aabbMax};
+            const auto &topTLAS = bp.topLevelNodes.front();
+            const AABB sceneAabb{topTLAS.aabbMin, topTLAS.aabbMax};
 
             const float3 sceneMin = sceneAabb.minP;
             const float3 sceneMax = sceneAabb.maxP;
@@ -44,15 +48,15 @@ namespace Pale {
                 sceneExtent.x(), sceneExtent.y(), sceneExtent.z()
             );
 
-            const float Adiff = bp.diffuseSurfaceArea;
-            const float N = static_cast<float>(m_settings.photonsPerLaunch);
-            const float k = 10.0f;
-            const float r0 = sycl::sqrt((k * Adiff) / (N * M_PIf));
+            const float diffuse_surface_area = bp.diffuseSurfaceArea;
+            const float photon_count = static_cast<float>(m_settings.photonsPerLaunch);
+            const float radius_scale = 10.0f;
+            const float initial_radius = sycl::sqrt((radius_scale * diffuse_surface_area) / (photon_count * M_PIf));
+            (void)initial_radius; // remove if unused
 
             configurePhotonGrid(sceneAabb);
         }
     }
-
     // Call this before first render, or inside submitKernel() after computing capacity.
     void PathTracer::ensureRayCapacity(uint32_t requiredRayQueueCapacity) {
         if (requiredRayQueueCapacity <= m_rayQueueCapacity) return;
@@ -195,7 +199,7 @@ namespace Pale {
 
     void PathTracer::allocatePhotonMap() {
         freePhotonMap();
-        constexpr std::size_t maxPhotonBytes = 6ull * 1024ull * 1024ull * 1024ull; // 10GB
+        constexpr std::size_t maxPhotonBytes = 10ull * 1024ull * 1024ull * 1024ull; // 10GB
         std::size_t photonSize = sizeof(DevicePhotonSurface);
         // desired photon count
         std::size_t requestedPhotons = m_settings.photonsPerLaunch * static_cast<uint64_t>(
@@ -248,6 +252,8 @@ namespace Pale {
         freeDevicePtr(m_intermediates.transportOnePointEvents, m_queue);
         freeDevicePtr(m_intermediates.transportTwoPointEvents, m_queue);
         freeDevicePtr(m_intermediates.transportThreePointEvents, m_queue);
+        freeDevicePtr(m_intermediates.pendingCameraSegments, m_queue);
+        freeDevicePtr(m_intermediates.countMeasurementEvents, m_queue);
 
         freeDevicePtr(m_intermediates.pendingStageX, m_queue);
         freeDevicePtr(m_intermediates.pendingStageXY, m_queue);
@@ -279,7 +285,9 @@ namespace Pale {
         m_intermediates.countTwoPointEvents = nullptr;
         m_intermediates.countThreePointEvents = nullptr;
         m_intermediates.countExtensionOut = nullptr;
-
+        m_intermediates.pendingCameraSegments = nullptr;
+        m_intermediates.countMeasurementEvents = nullptr;
+        m_intermediates.maxThreePointEventCount = 0;
         m_intermediates.maxHitContributionCount = 0;
         m_intermediates.maxOnePointEventCount = 0;
         m_intermediates.maxTwoPointEventCount = 0;
@@ -292,25 +300,48 @@ namespace Pale {
     }
 
     void PathTracer::freePhotonMap() {
-        if (!m_intermediates.map.photons) return;
         freeDevicePtr(m_intermediates.map.photons, m_queue);
         freeDevicePtr(m_intermediates.map.photonCountDevicePtr, m_queue);
+
         m_intermediates.map.photons = nullptr;
         m_intermediates.map.photonCountDevicePtr = nullptr;
+        m_intermediates.map.photonCapacity = 0;
+    }
+
+    void PathTracer::freePhotonGridBuffers() {
+        auto &grid = m_intermediates.map;
+
+        freeDevicePtr(grid.cellStart, m_queue);
+        freeDevicePtr(grid.cellEnd, m_queue);
+        freeDevicePtr(grid.cellCount, m_queue);
+        freeDevicePtr(grid.cellWriteOffset, m_queue);
+
+        freeDevicePtr(grid.photonCellId, m_queue);
+        freeDevicePtr(grid.photonIndex, m_queue);
+        freeDevicePtr(grid.sortedPhotonIndex, m_queue);
+
+        freeDevicePtr(grid.blockSums, m_queue);
+        freeDevicePtr(grid.blockPrefix, m_queue);
+
+        grid.allocatedCellCount = 0;
+        grid.allocatedPhotonCapacity = 0;
+        grid.allocatedBlockCount = 0;
+        grid.totalCellCount = 0;
     }
 
     void PathTracer::configurePhotonGrid(const AABB &sceneAabb) {
         auto &grid = m_intermediates.map;
 
-        grid.gatherRadiusWorld = 0.02f;
-        const float gatherRadiusWorld = grid.gatherRadiusWorld;
-        const float cellSizeWorld = gatherRadiusWorld;
+        grid.minimumGatherRadiusWorld = 0.001f;
+        grid.maximumGatherRadiusWorld = 0.1f;
+        grid.gatherPadWorld = 0.04f;
+        const float cellSizeWorld = 0.005f;
 
         grid.cellSizeWorld = float3{cellSizeWorld, cellSizeWorld, cellSizeWorld};
 
-        const float3 pad = float3{gatherRadiusWorld, gatherRadiusWorld, gatherRadiusWorld};
-        grid.gridOriginWorld = sceneAabb.minP - pad;
-        const float3 gridMax = sceneAabb.maxP + pad;
+        const float3 pad = float3{grid.gatherPadWorld};
+        grid.gridOriginWorld = (sceneAabb.minP - pad);
+        const float3 gridMax = (sceneAabb.maxP + pad);
 
         const float3 extent = gridMax - grid.gridOriginWorld;
 

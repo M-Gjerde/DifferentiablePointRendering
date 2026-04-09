@@ -34,6 +34,7 @@ export namespace Pale {
         void allocatePhotonMap();
         void freeIntermediates();
         void freePhotonMap();
+        void freePhotonGridBuffers();
         void configurePhotonGrid(const AABB& sceneAabb);
     private:
         sycl::queue m_queue;

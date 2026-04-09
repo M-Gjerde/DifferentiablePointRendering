@@ -761,14 +761,15 @@ namespace Pale {
                     const float scaleU = surfelX.scale.x();
                     const float scaleV = surfelX.scale.y();
                     UVPositionJacobian uvPositionJacobian{};
-                    uvPositionJacobian =
-                            computeDuvDSurfelTranslationJacobianForImplicitRayHit(
-                                surfelX.tanU,
-                                surfelX.tanV,
-                                xState.orientedNormal,
-                                eventRecord.xSurface.incomingDirection,
-                                scaleU,
-                                scaleV);
+
+                        uvPositionJacobian =
+                                computeDuvDSurfelTranslationJacobianForImplicitRayHit(
+                                    surfelX.tanU,
+                                    surfelX.tanV,
+                                    xState.orientedNormal,
+                                    eventRecord.xSurface.incomingDirection,
+                                    scaleU,
+                                    scaleV);
 
                     const float3 dUvDPosition =
                             u * uvPositionJacobian.du_d_surfel_translation +
@@ -1079,13 +1080,10 @@ namespace Pale {
                             scalarWeightWithoutTauAndGeometric *
                             (geometricTermXY * dTransmittanceDx + transmittance * dGeometricTermDx);
 
-                    //if (eventRecord.useImplicitRayHitJacobian)
-                        {
                         const float3x3 hitPointJacobianX = planeHitPointIntersectionJacobian(
                             eventRecord.xSurface.incomingDirection,
                             xState.orientedNormal);
                         gradientWrtHitPositionX = transpose(hitPointJacobianX) * gradientWrtHitPositionX;
-                    }
 
 
                     const float3 dTransmittanceDy =
@@ -1094,11 +1092,6 @@ namespace Pale {
                     float3 gradientWrtHitPositionY =
                             scalarWeightWithoutTauAndGeometric *
                             (geometricTermXY * dTransmittanceDy + transmittance * dGeometricTermDy);
-
-                    //const float3x3 hitPointJacobianY = planeHitPointIntersectionJacobian(
-                    //    eventRecord.ySurface.incomingDirection,
-                    //    yState.orientedNormal);
-                    //gradientWrtHitPositionY = transpose(hitPointJacobianY) * gradientWrtHitPositionY;
 
                     const float3 xContribution = gradientWrtHitPositionX * invSpp;
                     const float3 yContribution = gradientWrtHitPositionY * invSpp;
@@ -1230,7 +1223,7 @@ namespace Pale {
                         return;
                     }
 
-                    const float pAreaY = uniformHemispherePdf;
+                    const float pAreaY = uniformHemispherePdf * cosineAtY / distanceSquaredXY;
                     if (pAreaY <= 1e-20f) {
                         return;
                     }
@@ -1268,9 +1261,8 @@ namespace Pale {
 
                     const float cosineX = fmax(0.0f, dot(xState.orientedNormal, directionXToY));
 
-
                     const float3 prefixTransport =
-                            alphaX * brdfX * cosineX *
+                            alphaX * brdfX * geometricTermXY *
                             alphaY * brdfY *
                             outgoingRadianceZ;
 
@@ -1432,10 +1424,10 @@ namespace Pale {
                             (geometricTermYZ * dTransmittanceDyOnYZ +
                              transmittanceYZ * dGeometricTermDyOnYZ) * invSpp;
 
-                    //const float3x3 hitPointJacobianY = planeHitPointIntersectionJacobian(
-                    //    eventRecord.ySurface.incomingDirection,
-                    //    yState.orientedNormal);
-                    //gradientWrtYPosition = transpose(hitPointJacobianY) * gradientWrtYPosition;
+                    const float3x3 hitPointJacobianY = planeHitPointJacobianWrtOrigin(
+                        eventRecord.zSurface.incomingDirection,
+                        zState.orientedNormal);
+                    gradientWrtYPosition = transpose(hitPointJacobianY) * gradientWrtYPosition;
 
                     SurfelGradientRecord yRecord{};
                     yRecord.primitiveIndex = eventRecord.ySurface.primitiveIndex;
@@ -1447,6 +1439,7 @@ namespace Pale {
                     const float occluderScale =
                             -transmittanceYZ *
                             geometricTermYZ *
+
                             scalarWeightWithoutTauAndGeometricYZ *
                             invSpp;
 

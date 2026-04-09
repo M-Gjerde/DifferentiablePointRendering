@@ -443,7 +443,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-1,
+        default=5e-2,
         help="Finite difference epsilon.",
     )
     parser.add_argument(
@@ -467,7 +467,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--adjoint_passes",
         type=int,
-        default=32,
+        default=64,
         help="Number of adjoint passes.",
     )
     parser.add_argument(

@@ -566,7 +566,7 @@ namespace Pale {
                                 if (hitBackside) {
                                     normalW = -normalW;
                                 }
-                                const float3 E = gatherDiffuseIrradianceAtPoint(
+                                const float3 E = gatherDiffuseIrradianceAtPointBoundedKnn(
                                     worldHit.hitPositionW,
                                     normalW,
                                     photonMap);
@@ -627,7 +627,7 @@ namespace Pale {
                                                               ? -worldHit.geometricNormalW
                                                               : worldHit.geometricNormalW;
 
-                                    const float3 E = gatherDiffuseIrradianceAtPoint(
+                                    const float3 E = gatherDiffuseIrradianceAtPointBoundedKnn(
                                         worldHit.hitPositionW, normal, photonMap);
                                     const float3 Lo = (material.baseColor * M_1_PIf) * E;
 
