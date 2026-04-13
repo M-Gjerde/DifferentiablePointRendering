@@ -369,6 +369,7 @@ namespace Pale {
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         float previousSegmentTransmission = 1.0f;
         bool useImplicitRayHitJacobian = false;
+        float geometryPreviousSegment = 1.0f;
 
     };
 
@@ -381,30 +382,39 @@ namespace Pale {
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
     };
 
-    struct TransportOnePointGradientEvent {
+    struct MeasurementGradientEvent {
         PointCloudSurfaceRecord xSurface;
         float transmission{};
         float3 xPathThroughput;
         bool useImplicitRayHitJacobian = false;
     };
-    using MeasurementGradientEvent = TransportOnePointGradientEvent;
-    using TransportOnePointGradientEvent = TransportOnePointGradientEvent;
 
-    struct TransportTwoPointsGradientEvent {
+    struct MeasurementGradientEventXY {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
         float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
         float transmission = 1.0f;
         float transmissionPreviousSegment = 1.0f;
+        float geometryPreviousSegment = 1.0f;
         bool useImplicitRayHitJacobian = false;
     };
 
-    struct TransportThreePointsGradientEvent {
-        PointCloudSurfaceRecord xSurface;
-        PointCloudSurfaceRecord ySurface;
-        PointCloudSurfaceRecord zSurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        float transmission = 1.0f;
+    struct CameraAttachedBridgeGradientEvent {
+        PointCloudSurfaceRecord xSurface;   // first camera hit
+        PointCloudSurfaceRecord ySurface;   // sampled next surfel
+
+        float3 xPathThroughput;             // prefix at X, already includes /qReflect for X
+        float transmissionPreviousSegment;  // tau(camera, X)
+        float transmission;                 // tau(X, Y)
+    };
+
+    struct RecursiveBridgeGradientEvent {
+        PointCloudSurfaceRecord xSurface;   // bridge start
+        PointCloudSurfaceRecord ySurface;   // bridge end
+
+        float3 xPathThroughput;             // prefix at A, already includes /qReflect for A
+        float transmissionPreviousSegment;  // tau(prev, A)
+        float transmission;                 // tau(A, B)
     };
 
     struct ReconstructedSurfelState {
@@ -455,14 +465,14 @@ namespace Pale {
         uint32_t measurementOffset = 0;
         uint32_t measurementCount = 0;
 
-        uint32_t onePointOffset = 0;
-        uint32_t onePointCount = 0;
+        uint32_t measurementTwoPointOffset = 0;
+        uint32_t measurementTwoPointCount = 0;
 
-        uint32_t twoPointOffset = 0;
-        uint32_t twoPointCount = 0;
+        uint32_t cameraAttachedBridgeOffset = 0;
+        uint32_t cameraAttachedBridgeCount = 0;
 
-        uint32_t threePointOffset = 0;
-        uint32_t threePointCount = 0;
+        uint32_t recursiveBridgeOffset = 0;
+        uint32_t recursiveBridgeCount = 0;
 
         uint32_t totalCount = 0;
     };
@@ -629,26 +639,25 @@ namespace Pale {
         uint32_t *countContributions;
 
         PendingAdjointStageX *pendingStageX = nullptr;
-        PendingAdjointStageXY *pendingStageXY = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
 
         MeasurementGradientEvent* measurementEvents;
-        TransportOnePointGradientEvent* transportOnePointEvents;
-        TransportTwoPointsGradientEvent *transportTwoPointEvents = nullptr;
-        TransportThreePointsGradientEvent *transportThreePointEvents = nullptr;
+        MeasurementGradientEventXY *measurementTwoPointEvents = nullptr;
+        CameraAttachedBridgeGradientEvent *cameraAttachedBridgeEvents = nullptr;
+        RecursiveBridgeGradientEvent *recursiveBridgeEvents = nullptr;
         SurfelGradientRecord *gradientRecords = nullptr;
         PendingCameraSegment* pendingCameraSegments = nullptr;
 
         uint32_t* countMeasurementEvents = nullptr;
-        uint32_t *countOnePointEvents = nullptr;
-        uint32_t *countTwoPointEvents = nullptr;
-        uint32_t *countThreePointEvents = nullptr;
+        uint32_t *countMeasurementTwoPointEvents = nullptr;
+        uint32_t *countAttachedBridgeEvents = nullptr;
+        uint32_t *countRecursiveBridgeEvents = nullptr;
 
         // capacities
-        uint32_t maxOnePointEventCount = 0;
-        uint32_t maxTwoPointEventCount = 0;
-        uint32_t maxThreePointEventCount = 0;
         uint32_t maxMeasurementEventCount = 0u;
+        uint32_t maxMeasurementTwoPointEventCount = 0u;
+        uint32_t maxCameraAttachedEvents = 0;
+        uint32_t maxRecursiveBridgeEvent = 0;
         uint32_t maxGradientRecordCount = 0;
 
         uint32_t *countPrimary;

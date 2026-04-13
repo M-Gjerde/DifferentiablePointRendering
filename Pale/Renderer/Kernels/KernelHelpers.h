@@ -1291,8 +1291,8 @@ namespace Pale {
 
 
 
-        //if (length(flux) <= 1e-6f)
-        //    return;
+        if (length(flux) <= 0)
+            return;
         // Capacity guard
         if (photonCounter >= photonMap.photonCapacity) {
             return;
@@ -1385,7 +1385,7 @@ SYCL_EXTERNAL inline int absoluteInt(int value) {
     return value < 0 ? -value : value;
 }
 
-static constexpr uint32_t kPhotonGatherNeighborCount = 128;
+static constexpr uint32_t kPhotonGatherNeighborCount = 256;
 
 SYCL_EXTERNAL inline void tryInsertPhotonIntoNearestSet(
     const DevicePhotonSurface &candidatePhoton,
@@ -1423,7 +1423,7 @@ SYCL_EXTERNAL inline void tryInsertPhotonIntoNearestSet(
         worstNeighborDistanceSquared);
 }
 
-SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointBoundedKnn(
+SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
     const float3 &queryPositionWorld,
     const float3 &queryNormalWorld,
     const DeviceSurfacePhotonMapGrid &grid) {
@@ -1597,7 +1597,7 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointBoundedKnn(
         const PointCloudSurfaceRecord &surfaceRecord,
         const ReconstructedSurfelState &reconstructedState,
         const PhotonMapType &photonMap) {
-        const float3 irradiance = gatherDiffuseIrradianceAtPointBoundedKnn(
+        const float3 irradiance = gatherDiffuseIrradianceAtPoint(
             reconstructedState.position,
             reconstructedState.orientedNormal,
             photonMap);
@@ -1622,7 +1622,7 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointBoundedKnn(
                                                                        const ReconstructedSurfelState &
                                                                        reconstructedState,
                                                                        const PhotonMapType &photonMap) {
-        const float3 irradiance = gatherDiffuseIrradianceAtPointBoundedKnn(
+        const float3 irradiance = gatherDiffuseIrradianceAtPoint(
             reconstructedState.position,
             reconstructedState.orientedNormal,
             photonMap);
@@ -1812,41 +1812,43 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointBoundedKnn(
 
     SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
         uint32_t measurementEventCount,
-        uint32_t onePointEventCount,
-        uint32_t twoPointEventCount,
-        uint32_t threePointEventCount) {
+        uint32_t measurementTwoPointEventCount,
+        uint32_t cameraAttachedBridgeEventCount,
+        uint32_t recursiveBridgeEventCount) {
         GradientRecordRanges ranges{};
 
-        static constexpr uint32_t measurementRecordsPerEvent =
-                1u + kMaxSplatEventsPerRay;
-        static constexpr uint32_t onePointRecordsPerEvent =
-                1u;
-        static constexpr uint32_t twoPointRecordsPerEvent =
-                2u + kMaxSplatEventsPerRay;
-        static constexpr uint32_t threePointRecordsPerEvent =
-                1u + kMaxSplatEventsPerRay;
+    static constexpr uint32_t measurementRecordsPerEvent =
+            1u + kMaxSplatEventsPerRay;
+
+    static constexpr uint32_t measurementTwoPointRecordsPerEvent =
+            1u;
+
+    static constexpr uint32_t cameraAttachedBridgeRecordsPerEvent =
+            1u + kMaxSplatEventsPerRay;
+
+    static constexpr uint32_t recursiveBridgeRecordsPerEvent =
+            2u + kMaxSplatEventsPerRay;
 
         ranges.measurementOffset = 0u;
         ranges.measurementCount =
                 measurementRecordsPerEvent * measurementEventCount;
 
-        ranges.onePointOffset =
-                ranges.measurementOffset + ranges.measurementCount;
-        ranges.onePointCount =
-                onePointRecordsPerEvent * onePointEventCount;
+        ranges.measurementTwoPointOffset = ranges.measurementOffset + ranges.measurementCount;
+        ranges.measurementTwoPointCount =
+                measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
 
-        ranges.twoPointOffset =
-                ranges.onePointOffset + ranges.onePointCount;
-        ranges.twoPointCount =
-                twoPointRecordsPerEvent * twoPointEventCount;
+        ranges.cameraAttachedBridgeOffset =
+                ranges.measurementTwoPointOffset + ranges.measurementTwoPointCount;
+        ranges.cameraAttachedBridgeCount =
+                cameraAttachedBridgeRecordsPerEvent * cameraAttachedBridgeEventCount;
 
-        ranges.threePointOffset =
-                ranges.twoPointOffset + ranges.twoPointCount;
-        ranges.threePointCount =
-                threePointRecordsPerEvent * threePointEventCount;
+        ranges.recursiveBridgeOffset =
+                ranges.cameraAttachedBridgeOffset + ranges.cameraAttachedBridgeCount;
+        ranges.recursiveBridgeCount =
+                recursiveBridgeRecordsPerEvent * recursiveBridgeEventCount;
 
         ranges.totalCount =
-                ranges.threePointOffset + ranges.threePointCount;
+                ranges.recursiveBridgeOffset + ranges.recursiveBridgeCount;
 
         return ranges;
     }

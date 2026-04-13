@@ -216,16 +216,15 @@ namespace Pale {
                 // One pending state slot per pathId/pixel.
                 // Clear the full pending arrays once per spp.
                 pkg.queue.fill(pkg.intermediates.pendingStageX, PendingAdjointStageX{}, raysPerFrame).wait();
-                pkg.queue.fill(pkg.intermediates.pendingStageXY, PendingAdjointStageXY{}, raysPerFrame).wait();
 
                 for (uint32_t adjointBounceIndex = 0;
                      adjointBounceIndex < pkg.settings.maxAdjointBounces && activeRayCount > 0;
                      ++adjointBounceIndex) {
                     pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countOnePointEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countMeasurementEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countTwoPointEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countThreePointEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countMeasurementTwoPointEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countAttachedBridgeEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countRecursiveBridgeEvents, static_cast<uint32_t>(0), 1);
 
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeRayCount);
                     pkg.queue.wait(); {
@@ -234,15 +233,10 @@ namespace Pale {
                         launchAdjointIntersectKernel(pkg, spp, activeRayCount);
                     }
 
-                    uint32_t onePointEventCount = 0;
                     uint32_t measurementEventCount = 0;
-                    uint32_t twoPointEventCount = 0;
-                    uint32_t threePointEventCount = 0;
-
-                    pkg.queue.memcpy(
-                        &onePointEventCount,
-                        pkg.intermediates.countOnePointEvents,
-                        sizeof(uint32_t)).wait();
+                    uint32_t measurementTwoPoint = 0;
+                    uint32_t cameraAttachedBridgeEventCount = 0;
+                    uint32_t recursiveBridgeEventCount = 0;
 
                     pkg.queue.memcpy(
                         &measurementEventCount,
@@ -250,35 +244,41 @@ namespace Pale {
                         sizeof(uint32_t)).wait();
 
                     pkg.queue.memcpy(
-                        &twoPointEventCount,
-                        pkg.intermediates.countTwoPointEvents,
+                        &measurementTwoPoint,
+                        pkg.intermediates.countMeasurementTwoPointEvents,
                         sizeof(uint32_t)).wait();
 
                     pkg.queue.memcpy(
-                        &threePointEventCount,
-                        pkg.intermediates.countThreePointEvents,
+                        &cameraAttachedBridgeEventCount,
+                        pkg.intermediates.countAttachedBridgeEvents,
                         sizeof(uint32_t)).wait();
 
-                    onePointEventCount = sycl::min(
-                        onePointEventCount,
-                        pkg.intermediates.maxOnePointEventCount);
+                    pkg.queue.memcpy(
+                        &recursiveBridgeEventCount,
+                        pkg.intermediates.countRecursiveBridgeEvents,
+                        sizeof(uint32_t)).wait();
 
                     measurementEventCount = sycl::min(
                         measurementEventCount,
                         pkg.intermediates.maxMeasurementEventCount);
 
-                    twoPointEventCount = sycl::min(
-                        twoPointEventCount,
-                        pkg.intermediates.maxTwoPointEventCount);
 
-                    threePointEventCount = sycl::min(
-                        threePointEventCount,
-                        pkg.intermediates.maxThreePointEventCount);
+                    measurementTwoPoint = sycl::min(
+                        measurementTwoPoint,
+                        pkg.intermediates.maxMeasurementTwoPointEventCount);
 
-                    if (onePointEventCount > 0 ||
-                        twoPointEventCount > 0 ||
-                        threePointEventCount > 0 ||
-                        measurementEventCount > 0) {
+                    cameraAttachedBridgeEventCount = sycl::min(
+                        cameraAttachedBridgeEventCount,
+                        pkg.intermediates.maxCameraAttachedEvents);
+
+                    recursiveBridgeEventCount = sycl::min(
+                        recursiveBridgeEventCount,
+                        pkg.intermediates.maxRecursiveBridgeEvent);
+
+                    if (cameraAttachedBridgeEventCount > 0 ||
+                        recursiveBridgeEventCount > 0 ||
+                        measurementEventCount > 0 ||
+                        measurementTwoPoint > 0) {
                         ScopedTimer timer(
                             "Total adjointContributionKernels bounce: " + std::to_string(adjointBounceIndex),
                             spdlog::level::debug);
@@ -286,32 +286,31 @@ namespace Pale {
                         adjointContributionKernels(
                             pkg,
                             measurementEventCount,
-                            onePointEventCount,
-                            twoPointEventCount,
-                            threePointEventCount,
+                            measurementTwoPoint,
+                            cameraAttachedBridgeEventCount,
+                            recursiveBridgeEventCount,
                             static_cast<uint32_t>(cameraIndex));
-                }
+                    }
 
-                pkg.queue.memset(pkg.intermediates.gradientRecords, 0x00,
-                                 pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
+                    pkg.queue.memset(pkg.intermediates.gradientRecords, 0x00,
+                                     pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
 
-                uint32_t nextRayCount = 0;
-                pkg.queue.memcpy(
-                    &nextRayCount,
-                    pkg.intermediates.countExtensionOut,
-                    sizeof(uint32_t)).wait();
-
-                if (nextRayCount > 0) {
+                    uint32_t nextRayCount = 0;
                     pkg.queue.memcpy(
-                        pkg.intermediates.primaryRays,
-                        pkg.intermediates.extensionRaysA,
-                        nextRayCount * sizeof(RayState)).wait();
-                }
+                        &nextRayCount,
+                        pkg.intermediates.countExtensionOut,
+                        sizeof(uint32_t)).wait();
 
-                activeRayCount = nextRayCount;
+                    if (nextRayCount > 0) {
+                        pkg.queue.memcpy(
+                            pkg.intermediates.primaryRays,
+                            pkg.intermediates.extensionRaysA,
+                            nextRayCount * sizeof(RayState)).wait();
+                    }
+
+                    activeRayCount = nextRayCount;
+                }
             }
         }
     }
-}
-
 }

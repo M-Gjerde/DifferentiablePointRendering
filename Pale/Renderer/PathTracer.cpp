@@ -106,27 +106,26 @@ namespace Pale {
         m_intermediates.measurementEvents =
                 sycl::malloc_device<MeasurementGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated MeasurementGradientEvents: {}", Utils::formatBytes(sizeMeasurementEventsBytes));
-        // --- compact adjoint event buffers ---
-        const std::size_t sizeOneHitEventsBytes =
-                sizeof(TransportOnePointGradientEvent) * m_rayQueueCapacity;
-        m_intermediates.transportOnePointEvents =
-                sycl::malloc_device<TransportOnePointGradientEvent>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated projectionEvents: {}", Utils::formatBytes(sizeOneHitEventsBytes));
-        m_intermediates.maxOnePointEventCount = m_rayQueueCapacity;
+        const std::size_t sizeMeasurementEventsTwoPointBytes =
+                sizeof(MeasurementGradientEventXY) * m_rayQueueCapacity;
+        m_intermediates.measurementTwoPointEvents =
+                sycl::malloc_device<MeasurementGradientEventXY>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated sizeMeasurementEventsTwoPointBytes: {}", Utils::formatBytes(sizeMeasurementEventsTwoPointBytes));
+        m_intermediates.maxMeasurementTwoPointEventCount = m_rayQueueCapacity;
 
-        const std::size_t sizeProjectionScatterEventsBytes =
-                sizeof(TransportTwoPointsGradientEvent) * m_rayQueueCapacity;
-        m_intermediates.transportTwoPointEvents =
-                sycl::malloc_device<TransportTwoPointsGradientEvent>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated projectionScatterEvents: {}", Utils::formatBytes(sizeProjectionScatterEventsBytes));
-        m_intermediates.maxTwoPointEventCount = m_rayQueueCapacity;
+        const std::size_t cameraAttachedBridgeEventSize =
+                sizeof(CameraAttachedBridgeGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.cameraAttachedBridgeEvents =
+                sycl::malloc_device<CameraAttachedBridgeGradientEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated projectionScatterEvents: {}", Utils::formatBytes(cameraAttachedBridgeEventSize));
+        m_intermediates.maxCameraAttachedEvents = m_rayQueueCapacity;
 
-        const std::size_t sizeReflectScatterEventsBytes =
-                sizeof(TransportThreePointsGradientEvent) * m_rayQueueCapacity;
-        m_intermediates.transportThreePointEvents =
-                sycl::malloc_device<TransportThreePointsGradientEvent>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(sizeReflectScatterEventsBytes));
-        m_intermediates.maxThreePointEventCount = m_rayQueueCapacity;
+        const std::size_t sizeRecursiveBridgeEvent =
+                sizeof(RecursiveBridgeGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.recursiveBridgeEvents =
+                sycl::malloc_device<RecursiveBridgeGradientEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(sizeRecursiveBridgeEvent));
+        m_intermediates.maxRecursiveBridgeEvent = m_rayQueueCapacity;
 
         // --- pending adjoint states ---
         const std::size_t sizePendingAdjointStatesXBytes =
@@ -135,11 +134,6 @@ namespace Pale {
                 sycl::malloc_device<PendingAdjointStageX>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated pendingStageX: {}", Utils::formatBytes(sizePendingAdjointStatesXBytes));
 
-        const std::size_t sizePendingAdjointStatesXYBytes =
-                sizeof(PendingAdjointStageXY) * m_rayQueueCapacity;
-        m_intermediates.pendingStageXY =
-                sycl::malloc_device<PendingAdjointStageXY>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingAdjointStatesXYBytes));
         m_intermediates.maxPendingAdjointStateCount = m_rayQueueCapacity;
 
         const std::size_t sizePendingCameraSegmentBytes =
@@ -162,19 +156,19 @@ namespace Pale {
         // --- counters ---
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countOnePointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countTwoPointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countThreePointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countAttachedBridgeEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countRecursiveBridgeEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMeasurementEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countMeasurementTwoPointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
 
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countOnePointEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countTwoPointEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countThreePointEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countAttachedBridgeEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countRecursiveBridgeEvents, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countMeasurementEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countMeasurementTwoPointEvents, 0, sizeof(uint32_t));
         m_queue.wait();
 
         const std::size_t counterBytes =
@@ -186,11 +180,10 @@ namespace Pale {
                 sizeHitRecordsBytes +
                 sizeContributionRecordsBytes +
                 sizeMeasurementEventsBytes +
-                sizeOneHitEventsBytes +
-                sizeProjectionScatterEventsBytes +
-                sizeReflectScatterEventsBytes +
+                sizeMeasurementEventsTwoPointBytes +
+                cameraAttachedBridgeEventSize +
+                sizeRecursiveBridgeEvent +
                 sizePendingAdjointStatesXBytes +
-                sizePendingAdjointStatesXYBytes +
                 sizeGradientRecordsBytes +
                 counterBytes;
 
@@ -249,20 +242,19 @@ namespace Pale {
         freeDevicePtr(m_intermediates.hitContribution, m_queue);
 
         freeDevicePtr(m_intermediates.measurementEvents, m_queue);
-        freeDevicePtr(m_intermediates.transportOnePointEvents, m_queue);
-        freeDevicePtr(m_intermediates.transportTwoPointEvents, m_queue);
-        freeDevicePtr(m_intermediates.transportThreePointEvents, m_queue);
+        freeDevicePtr(m_intermediates.measurementTwoPointEvents, m_queue);
+        freeDevicePtr(m_intermediates.cameraAttachedBridgeEvents, m_queue);
+        freeDevicePtr(m_intermediates.recursiveBridgeEvents, m_queue);
         freeDevicePtr(m_intermediates.pendingCameraSegments, m_queue);
         freeDevicePtr(m_intermediates.countMeasurementEvents, m_queue);
+        freeDevicePtr(m_intermediates.countMeasurementTwoPointEvents, m_queue);
 
         freeDevicePtr(m_intermediates.pendingStageX, m_queue);
-        freeDevicePtr(m_intermediates.pendingStageXY, m_queue);
 
         freeDevicePtr(m_intermediates.countPrimary, m_queue);
         freeDevicePtr(m_intermediates.countContributions, m_queue);
-        freeDevicePtr(m_intermediates.countOnePointEvents, m_queue);
-        freeDevicePtr(m_intermediates.countTwoPointEvents, m_queue);
-        freeDevicePtr(m_intermediates.countThreePointEvents, m_queue);
+        freeDevicePtr(m_intermediates.countAttachedBridgeEvents, m_queue);
+        freeDevicePtr(m_intermediates.countRecursiveBridgeEvents, m_queue);
         freeDevicePtr(m_intermediates.countExtensionOut, m_queue);
         freeDevicePtr(m_intermediates.gradientRecords, m_queue);
 
@@ -272,29 +264,28 @@ namespace Pale {
         m_intermediates.hitContribution = nullptr;
 
         m_intermediates.measurementEvents = nullptr;
-        m_intermediates.transportOnePointEvents = nullptr;
-        m_intermediates.transportTwoPointEvents = nullptr;
-        m_intermediates.transportThreePointEvents = nullptr;
+        m_intermediates.measurementTwoPointEvents = nullptr;
+        m_intermediates.cameraAttachedBridgeEvents = nullptr;
+        m_intermediates.recursiveBridgeEvents = nullptr;
 
         m_intermediates.pendingStageX = nullptr;
-        m_intermediates.pendingStageXY = nullptr;
 
         m_intermediates.countPrimary = nullptr;
         m_intermediates.countContributions = nullptr;
-        m_intermediates.countOnePointEvents = nullptr;
-        m_intermediates.countTwoPointEvents = nullptr;
-        m_intermediates.countThreePointEvents = nullptr;
+        m_intermediates.countAttachedBridgeEvents = nullptr;
+        m_intermediates.countRecursiveBridgeEvents = nullptr;
         m_intermediates.countExtensionOut = nullptr;
         m_intermediates.pendingCameraSegments = nullptr;
         m_intermediates.countMeasurementEvents = nullptr;
-        m_intermediates.maxThreePointEventCount = 0;
+        m_intermediates.countMeasurementTwoPointEvents = nullptr;
+        m_intermediates.maxRecursiveBridgeEvent = 0;
         m_intermediates.maxHitContributionCount = 0;
-        m_intermediates.maxOnePointEventCount = 0;
-        m_intermediates.maxTwoPointEventCount = 0;
+        m_intermediates.maxCameraAttachedEvents = 0;
         m_intermediates.maxMeasurementEventCount = 0;
         m_intermediates.maxPendingAdjointStateCount = 0;
         m_intermediates.gradientRecords = nullptr;
         m_intermediates.maxGradientRecordCount = 0;
+        m_intermediates.maxMeasurementTwoPointEventCount = 0;
 
         m_rayQueueCapacity = 0;
     }
@@ -332,7 +323,7 @@ namespace Pale {
     void PathTracer::configurePhotonGrid(const AABB &sceneAabb) {
         auto &grid = m_intermediates.map;
 
-        grid.minimumGatherRadiusWorld = 0.005f;
+        grid.minimumGatherRadiusWorld = 0.04f;
         grid.maximumGatherRadiusWorld = 0.2f;
         grid.gatherPadWorld = 0.04f;
         const float cellSizeWorld = 0.005f;

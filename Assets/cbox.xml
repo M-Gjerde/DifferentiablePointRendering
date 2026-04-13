@@ -27,6 +27,7 @@
     </sensor>
 
 
+    <!--
     <sensor type="perspective" id="camera2">
         <string name="fov_axis" value="smaller"/>
         <float name="near_clip" value="0.01"/>
@@ -95,10 +96,8 @@
         </film>
     </sensor>
 
-
-    <!-- BSDFs
-
 -->
+
 
     <!-- BSDFs -->
     <bsdf type="diffuse" id="gray">
@@ -136,10 +135,8 @@
         </transform>
         <ref id="light_gray"/>
     </shape>
+
 -->
-
-
-    <!-- Floor: z=0, normal +Z (no rotation) -->
     <shape type="obj" id="floor">
         <string name="filename" value="meshes/rectangle.obj"/>
         <transform name="to_world">
