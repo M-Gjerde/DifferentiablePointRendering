@@ -304,7 +304,7 @@ namespace Pale {
                                         previousPendingStageX.xSurface;
                                     measurementTwoPointEvent.ySurface = currentSurfaceRecord;
                                     measurementTwoPointEvent.xPathThroughput =
-                                        previousPendingStageX.xPathThroughput; // no extra /qReflect
+                                        previousPendingStageX.xPathThroughput / qReflect;
                                     measurementTwoPointEvent.transmissionPreviousSegment =
                                         previousPendingStageX.previousSegmentTransmission;
                                     measurementTwoPointEvent.transmission =
@@ -325,7 +325,7 @@ namespace Pale {
                                         previousPendingStageX.xSurface;
                                     attachedBridgeEvent.ySurface = currentSurfaceRecord;
                                     attachedBridgeEvent.xPathThroughput =
-                                        previousPendingStageX.xPathThroughput; // no extra /qReflect
+                                        previousPendingStageX.xPathThroughput / qReflect;
                                     attachedBridgeEvent.transmissionPreviousSegment =
                                         previousPendingStageX.previousSegmentTransmission;
                                     attachedBridgeEvent.transmission =
@@ -346,7 +346,7 @@ namespace Pale {
                                         previousPendingStageX.xSurface;
                                     recursiveBridgeEvent.ySurface = currentSurfaceRecord;
                                     recursiveBridgeEvent.xPathThroughput =
-                                        previousPendingStageX.xPathThroughput; // no extra /qReflect
+                                        previousPendingStageX.xPathThroughput / qReflect;
                                     recursiveBridgeEvent.transmissionPreviousSegment =
                                         previousPendingStageX.previousSegmentTransmission;
                                     recursiveBridgeEvent.transmission =
