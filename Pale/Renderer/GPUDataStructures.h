@@ -403,7 +403,7 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface;   // first camera hit
         PointCloudSurfaceRecord ySurface;   // sampled next surfel
 
-        float3 xPathThroughput;             // prefix at X, already includes /qReflect for X
+        float3 xPathThroughput;
         float transmissionPreviousSegment;  // tau(camera, X)
         float transmission;                 // tau(X, Y)
     };
@@ -412,7 +412,7 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface;   // bridge start
         PointCloudSurfaceRecord ySurface;   // bridge end
 
-        float3 xPathThroughput;             // prefix at A, already includes /qReflect for A
+        float3 xPathThroughput;
         float transmissionPreviousSegment;  // tau(prev, A)
         float transmission;                 // tau(A, B)
     };
@@ -547,8 +547,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.0f;
-        float qReflect = 1.0f;
+        float qNull = 0.3f;
+        float qReflect = 0.7f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
