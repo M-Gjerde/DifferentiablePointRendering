@@ -89,7 +89,7 @@ namespace Pale {
                     RayState currentRayState = intermediates.primaryRays[rayIndex];
 
                     // Guard against pathological transparent stacks or self-intersection loops.
-                    constexpr uint32_t maxInlineNullTraversals = 256u;
+                    constexpr uint32_t maxInlineNullTraversals = 16;
 
                     for (uint32_t inlineTraversalIndex = 0; inlineTraversalIndex < maxInlineNullTraversals;
                          ++inlineTraversalIndex) {
@@ -107,6 +107,7 @@ namespace Pale {
                         if (!worldHit.hit) {
                             return;
                         }
+
 
                         buildIntersectionNormal(scene, worldHit);
                         const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
@@ -179,7 +180,9 @@ namespace Pale {
                                 *intermediates.countExtensionOut);
 
                             const uint32_t outIndex = extensionCounter.fetch_add(1u);
-                            intermediates.extensionRaysA[outIndex] = nextRayState;
+                            if (outIndex < intermediates.maxRayQueueCapacity) {
+                                intermediates.extensionRaysA[outIndex] = nextRayState;
+                            }
                             return;
                         }
 
@@ -287,7 +290,9 @@ namespace Pale {
                                     *intermediates.countExtensionOut);
 
                                 const uint32_t outIndex = extensionCounter.fetch_add(1u);
-                                intermediates.extensionRaysA[outIndex] = nextRayState;
+                                if (outIndex < intermediates.maxRayQueueCapacity) {
+                                    intermediates.extensionRaysA[outIndex] = nextRayState;
+                                }
                                 return;
                             }
 
@@ -298,6 +303,7 @@ namespace Pale {
 
                         return;
                     }
+
 
                     // Traversal guard hit: terminate the ray.
                     return;

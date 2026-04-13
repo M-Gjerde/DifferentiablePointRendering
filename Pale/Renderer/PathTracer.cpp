@@ -50,9 +50,6 @@ namespace Pale {
 
             const float diffuse_surface_area = bp.diffuseSurfaceArea;
             const float photon_count = static_cast<float>(m_settings.photonsPerLaunch);
-            const float radius_scale = 10.0f;
-            const float initial_radius = sycl::sqrt((radius_scale * diffuse_surface_area) / (photon_count * M_PIf));
-            (void)initial_radius; // remove if unused
 
             configurePhotonGrid(sceneAabb);
         }
@@ -73,7 +70,7 @@ namespace Pale {
     void PathTracer::allocateIntermediates(uint32_t newCapacity) {
         freeIntermediates();
         m_rayQueueCapacity = newCapacity;
-
+        m_intermediates.maxRayQueueCapacity = m_rayQueueCapacity;
         // --- primary buffers ---
         const std::size_t sizePrimaryRaysBytes =
                 sizeof(RayState) * m_rayQueueCapacity;
@@ -192,7 +189,7 @@ namespace Pale {
 
     void PathTracer::allocatePhotonMap() {
         freePhotonMap();
-        constexpr std::size_t maxPhotonBytes = 10ull * 1024ull * 1024ull * 1024ull; // 10GB
+        constexpr std::size_t maxPhotonBytes = 8ull * 1024ull * 1024ull * 1024ull; // 10GB
         std::size_t photonSize = sizeof(DevicePhotonSurface);
         // desired photon count
         std::size_t requestedPhotons = m_settings.photonsPerLaunch * static_cast<uint64_t>(
@@ -205,14 +202,14 @@ namespace Pale {
         m_intermediates.map.photonCountDevicePtr = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.map.photonCapacity = static_cast<uint32_t>(finalPhotonCount);
 
-        Log::PA_INFO("Photon map max size: {}M photons (~{}). Launching {}M photons",
+        Log::PA_INFO("Photon map max size: {}M photons (~{}). Launching {}M photons should require storage for {}M photons",
                      maxPhotons / 1e6f,
                      Utils::formatBytes(finalPhotonCount * photonSize),
-                     m_settings.numForwardPasses * m_settings.photonsPerLaunch / 1e6f);
+                     m_settings.numForwardPasses * m_settings.photonsPerLaunch / 1e6f, m_settings.numForwardPasses * m_settings.photonsPerLaunch * m_settings.maxBounces / 1e6f);
 
-        Log::PA_INFO("Expected Storage Capacity: {}%",
+        Log::PA_INFO("Used Storage Capacity: {}%",
                      (m_settings.numForwardPasses * m_settings.photonsPerLaunch * m_settings.maxBounces / static_cast<
-                          float>(finalPhotonCount)) * 100.0f);
+                          float>(maxPhotons)) * 100.0f);
 
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.map.photons, 0,
@@ -286,6 +283,7 @@ namespace Pale {
         m_intermediates.gradientRecords = nullptr;
         m_intermediates.maxGradientRecordCount = 0;
         m_intermediates.maxMeasurementTwoPointEventCount = 0;
+        m_intermediates.maxRayQueueCapacity = 0;
 
         m_rayQueueCapacity = 0;
     }
@@ -326,7 +324,7 @@ namespace Pale {
         grid.minimumGatherRadiusWorld = 0.04f;
         grid.maximumGatherRadiusWorld = 0.2f;
         grid.gatherPadWorld = 0.04f;
-        const float cellSizeWorld = 0.005f;
+        const float cellSizeWorld = 0.01f;
 
         grid.cellSizeWorld = float3{cellSizeWorld, cellSizeWorld, cellSizeWorld};
 

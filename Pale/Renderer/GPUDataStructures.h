@@ -659,6 +659,7 @@ namespace Pale {
         uint32_t maxCameraAttachedEvents = 0;
         uint32_t maxRecursiveBridgeEvent = 0;
         uint32_t maxGradientRecordCount = 0;
+        uint32_t maxRayQueueCapacity = 0;
 
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;

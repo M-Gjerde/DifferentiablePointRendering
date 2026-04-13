@@ -1282,23 +1282,19 @@ namespace Pale {
         const float3 &flux,
         const DeviceSurfacePhotonMapGrid &photonMap) {
         // Atomic counter for photon slots
-        auto photonCounter = sycl::atomic_ref<
-            uint32_t,
-            sycl::memory_order::acq_rel,
+        auto photonCounter = sycl::atomic_ref<uint32_t,
+            sycl::memory_order::relaxed,
             sycl::memory_scope::device,
             sycl::access::address_space::global_space>(
             *photonMap.photonCountDevicePtr);
 
-
-
-        if (length(flux) <= 0)
-            return;
-        // Capacity guard
-        if (photonCounter >= photonMap.photonCapacity) {
+        const uint32_t slot = photonCounter.fetch_add(1u);
+        if (slot >= photonMap.photonCapacity) {
             return;
         }
+        if (length(flux) <= 0.0)
+            return;
 
-        const uint32_t slot = photonCounter.fetch_add(1u);
 
         DevicePhotonSurface photonEntry{};
         photonEntry.position = worldHit.hitPositionW;

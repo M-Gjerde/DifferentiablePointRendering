@@ -443,7 +443,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=5e-2,
+        default=1e-2,
         help="Finite difference epsilon.",
     )
     parser.add_argument(
