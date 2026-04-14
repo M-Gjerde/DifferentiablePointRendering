@@ -16,6 +16,9 @@ from finite_difference.finite_diff_helpers import (
     save_seismic_signed,
 )
 
+def safe_rel_err(value_a: float, value_b: float, eps: float = 1e-12) -> float:
+    denominator = max(eps, abs(value_a) + abs(value_b))
+    return abs(value_a - value_b) / denominator
 
 def create_latest_run_dir(base_output_dir: Path) -> Path:
     """
@@ -352,9 +355,13 @@ def main(args) -> None:
                 }
             )
 
+            relative_error = safe_rel_err(float(param_gradient), float(fd_grad))
+            relative_error_percent = 100.0 * relative_error
+
             print(
-                f"{iteration_index + 1}/{iterations}, {args.parameter}: {value:.2f}, "
-                f"Loss: {loss_value:.6f}, AN: {param_gradient:.6f}, FD: {fd_grad:.6f} (kind={int(fd_kind)})"
+                f"{iteration_index}/{iterations}, {args.parameter}: {value:.2f}, "
+                f"Loss: {loss_value:.6f}, AN: {param_gradient:.6f}, FD: {fd_grad:.6f}, "
+                f"RelErr: {relative_error_percent:.2f}% (kind={int(fd_kind)})"
             )
             f.flush()
 

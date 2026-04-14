@@ -108,14 +108,15 @@ namespace Pale {
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
         auto &scene = pkg.scene;
+        auto &sensor = pkg.sensors.front();
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t renderSeed = settings.random.seed;
 
             commandGroupHandler.parallel_for<class launchAdjointIntersectKernelTag>(
                 sycl::range<1>(activeRayCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t rayIndex = globalId[0];
+                [=](sycl::id<1> global_id) {
+                    const uint32_t rayIndex = global_id[0];
                     RayState currentRayState = intermediates.primaryRays[rayIndex];
 
                     const uint32_t pathId = currentRayState.pathId;
@@ -234,13 +235,14 @@ namespace Pale {
 
                             if (sampledNull) {
                                 const float attenuation =
-                                        1.0f - worldHit.alphaGeom * surfel.opacity;
+                                        1.0f - (worldHit.alphaGeom * surfel.opacity);
 
-                                currentRayState.ray.origin = worldHit.hitPositionW + (currentRayState.ray.direction * 1e-5f);
+                                currentRayState.ray.origin =
+                                        worldHit.hitPositionW + (currentRayState.ray.direction * 1e-5f);
                                 currentRayState.ray.normal = orientedNormal;
-                                currentRayState.pathThroughput = currentRayState.pathThroughput;
+                                currentRayState.pathThroughput *= (1.0f / qNull);
+                                currentRayState.transmission *= attenuation;
                                 currentRayState.traversalIndex = currentRayState.traversalIndex + 1u;
-                                currentRayState.transmission = currentRayState.transmission * attenuation;
 
                                 continue;
                             }
@@ -257,15 +259,17 @@ namespace Pale {
                                     makePointCloudSurfaceRecord(worldHit, currentRayState, scene);
 
                             const float alpha = worldHit.alphaGeom * surfel.opacity;
-                            const float3 surfelBrdf =
+                            const float3 surfelBsdf =
                                     surfel.alpha_r * surfel.albedo * M_1_PIf;
                             const float cosineTheta = sycl::fmax(
                                 0.0f,
                                 dot(sampledOutgoingDirectionWorld, orientedNormal));
 
                             const float3 throughputMultiplier =
-                                    ((alpha / qReflect) * (surfelBrdf * cosineTheta)) /
+                                    ((alpha / qReflect) * (surfelBsdf * cosineTheta)) /
                                     uniformHemispherePdf;
+
+                            float currentSegmentGeometry = 1.0f;
 
                             if (canUsePendingAdjointState) {
                                 const PendingCameraSegment previousPendingCameraSegment =
@@ -278,13 +282,13 @@ namespace Pale {
                                         previousPendingStageX.useImplicitRayHitJacobian &&
                                         currentRayState.bounceIndex == 1u;
 
-                                // Camera -> X one-point measurement event
                                 if (previousPendingCameraSegment.valid) {
+                                    float cosine = dot(sensor.camera.forward, currentRayState.ray.direction);
                                     MeasurementGradientEvent measurementEvent{};
                                     measurementEvent.xSurface = currentSurfaceRecord;
                                     measurementEvent.transmission = currentRayState.transmission;
                                     measurementEvent.xPathThroughput =
-                                            currentRayState.pathThroughput / qReflect;
+                                            currentRayState.pathThroughput / qReflect * cosine;
 
                                     appendEventAtomic(
                                         intermediates.countMeasurementEvents,
@@ -293,14 +297,14 @@ namespace Pale {
                                         measurementEvent);
                                 }
 
-                                // Special camera-attached X derivative for camera -> X -> Y
                                 if (isCameraAttachedSecondHit) {
+                                    float cosine = dot(sensor.camera.forward, currentRayState.ray.direction);
                                     MeasurementGradientEventXY measurementTwoPointEvent{};
                                     measurementTwoPointEvent.xSurface =
                                             previousPendingStageX.xSurface;
                                     measurementTwoPointEvent.ySurface = currentSurfaceRecord;
                                     measurementTwoPointEvent.xPathThroughput =
-                                            previousPendingStageX.xPathThroughput / qReflect;
+                                            previousPendingStageX.xPathThroughput * cosine;
                                     measurementTwoPointEvent.transmissionPreviousSegment =
                                             previousPendingStageX.previousSegmentTransmission;
                                     measurementTwoPointEvent.transmission =
@@ -313,7 +317,6 @@ namespace Pale {
                                         measurementTwoPointEvent);
                                 }
 
-                                // First surfel bridge after camera: X -> Y
                                 if (previousPendingStageX.valid &&
                                     previousPendingStageX.useImplicitRayHitJacobian) {
                                     CameraAttachedBridgeGradientEvent attachedBridgeEvent{};
@@ -321,9 +324,11 @@ namespace Pale {
                                             previousPendingStageX.xSurface;
                                     attachedBridgeEvent.ySurface = currentSurfaceRecord;
                                     attachedBridgeEvent.xPathThroughput =
-                                            previousPendingStageX.xPathThroughput / qReflect;
+                                            previousPendingStageX.xPathThroughput;
                                     attachedBridgeEvent.transmissionPreviousSegment =
                                             previousPendingStageX.previousSegmentTransmission;
+                                    attachedBridgeEvent.geometryPreviousSegment =
+                                            previousPendingStageX.geometryPreviousSegment;
                                     attachedBridgeEvent.transmission =
                                             currentRayState.transmission;
 
@@ -334,7 +339,6 @@ namespace Pale {
                                         attachedBridgeEvent);
                                 }
 
-                                // Generic recursive bridge: A -> B
                                 if (previousPendingStageX.valid &&
                                     !previousPendingStageX.useImplicitRayHitJacobian) {
                                     RecursiveBridgeGradientEvent recursiveBridgeEvent{};
@@ -342,23 +346,51 @@ namespace Pale {
                                             previousPendingStageX.xSurface;
                                     recursiveBridgeEvent.ySurface = currentSurfaceRecord;
                                     recursiveBridgeEvent.xPathThroughput =
-                                            previousPendingStageX.xPathThroughput / qReflect;
+                                            previousPendingStageX.xPathThroughput;
+
                                     recursiveBridgeEvent.transmissionPreviousSegment =
                                             previousPendingStageX.previousSegmentTransmission;
+                                    recursiveBridgeEvent.geometryPreviousSegment =
+                                            previousPendingStageX.geometryPreviousSegment;
                                     recursiveBridgeEvent.transmission =
                                             currentRayState.transmission;
 
                                     appendEventAtomic(
                                         intermediates.countRecursiveBridgeEvents,
-                                        intermediates.recursiveBridgeEvents, // rename if your member differs
+                                        intermediates.recursiveBridgeEvents,
                                         intermediates.maxRecursiveBridgeEvent,
                                         recursiveBridgeEvent);
                                 }
 
-                                // Camera segment is only relevant once
                                 clearPendingCameraSegment(currentPendingCameraSegment);
 
-                                // Current real hit becomes the next bridge startpoint
+                                if (previousPendingStageX.valid) {
+                                    const Point &previousSurfel =
+                                            scene.points[previousPendingStageX.xSurface.primitiveIndex];
+
+                                    const ReconstructedSurfelState previousState =
+                                            reconstructSurfelState(
+                                                previousSurfel,
+                                                previousPendingStageX.xSurface);
+
+                                    const ReconstructedSurfelState currentState =
+                                            reconstructSurfelState(
+                                                surfel,
+                                                currentSurfaceRecord);
+
+                                    currentSegmentGeometry = computeGeometricTermValue(
+                                        previousState.position,
+                                        currentState.position,
+                                        previousState.orientedNormal,
+                                        currentState.orientedNormal);
+                                } else {
+                                    // First real scene hit after camera.
+                                    // Camera->X is handled separately, so there is no previous
+                                    // scene-scene geometry factor yet.
+
+                                    currentSegmentGeometry = 1.0f;
+                                }
+
                                 currentPendingStageX.valid = true;
                                 currentPendingStageX.pathId = currentRayState.pathId;
                                 currentPendingStageX.pixelIndex = currentRayState.pixelIndex;
@@ -367,6 +399,8 @@ namespace Pale {
                                         currentRayState.pathThroughput / qReflect;
                                 currentPendingStageX.previousSegmentTransmission =
                                         currentRayState.transmission;
+                                currentPendingStageX.geometryPreviousSegment =
+                                        currentSegmentGeometry;
                                 currentPendingStageX.useImplicitRayHitJacobian =
                                         previousPendingCameraSegment.valid;
                             }
@@ -379,7 +413,9 @@ namespace Pale {
                             nextRayState.pixelIndex = currentRayState.pixelIndex;
                             nextRayState.pathId = currentRayState.pathId;
                             nextRayState.pathThroughput =
-                                    currentRayState.pathThroughput * throughputMultiplier;
+                                    currentRayState.pathThroughput *
+                                    throughputMultiplier *
+                                    currentRayState.transmission;
                             nextRayState.traversalIndex =
                                     currentRayState.traversalIndex + 1u;
                             nextRayState.transmission = 1.0f;
@@ -451,7 +487,6 @@ namespace Pale {
         SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
-        const float qNullInv = 1.0f / settings.sampling.qNull;
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             commandGroupHandler.parallel_for<class measurementGradientEventTag>(
@@ -499,7 +534,6 @@ namespace Pale {
                     };
                     OccluderDerivatives occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
-                    float qNullInvTotal = 1.0f;
 
                     if (eventRecord.transmission != 1.0f) {
                         const float3 rayDirection = normalize(vectorCameraToX);
@@ -613,8 +647,6 @@ namespace Pale {
                                         worldHit.primitiveIndex;
                                 storedOccluderCount++;
                             }
-
-                            qNullInvTotal *= qNullInv;
                         }
                     }
 
@@ -970,6 +1002,7 @@ namespace Pale {
 
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
         const float qNullInv = 1.0f / settings.sampling.qNull;
+        auto &sensor = pkg.sensors.front();
 
         // Camera-attached first bridge X -> Y:
         // only differentiate the endpoint Y on the XY segment.
@@ -1053,7 +1086,7 @@ namespace Pale {
 
                     // xPathThroughput already contains the 1/qReflect factor for the reflective event at X.
                     const float3 pathWeight =
-                            eventRecord.xPathThroughput * eventRecord.transmissionPreviousSegment;
+                            eventRecord.xPathThroughput;
 
                     const float3 transportWithoutTauAndGeometric =
                             outgoingRadianceY * alphaX * brdfX;
@@ -1072,8 +1105,7 @@ namespace Pale {
                     OccluderDerivative occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
 
-                    if (eventRecord.transmission != 1.0f)
-                    {
+                    if (eventRecord.transmission != 1.0f) {
                         const float distanceEpsilon = 1e-4f;
 
                         const float3 rayDirection = normalize(vectorXToY);
@@ -1356,7 +1388,7 @@ namespace Pale {
 
                     // Prefix adjoint weight at X times incoming-segment transmittance tau(prev, X).
                     const float3 pathWeight =
-                            eventRecord.xPathThroughput * eventRecord.transmissionPreviousSegment;
+                            eventRecord.xPathThroughput;
                     // Local transport at X, excluding tau(X,Y) and G(X,Y).
                     const float3 transportWithoutTauAndGeometric =
                             outgoingRadianceY * alphaX * brdfX;

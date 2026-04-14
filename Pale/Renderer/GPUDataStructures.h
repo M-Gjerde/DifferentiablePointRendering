@@ -405,6 +405,7 @@ namespace Pale {
 
         float3 xPathThroughput;
         float transmissionPreviousSegment;  // tau(camera, X)
+        float geometryPreviousSegment;  // tau(camera, X)
         float transmission;                 // tau(X, Y)
     };
 
@@ -414,6 +415,7 @@ namespace Pale {
 
         float3 xPathThroughput;
         float transmissionPreviousSegment;  // tau(prev, A)
+        float geometryPreviousSegment;  // tau(prev, A)
         float transmission;                 // tau(A, B)
     };
 

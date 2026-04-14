@@ -115,7 +115,7 @@ def parse_args() -> argparse.Namespace:
     argument_parser.add_argument(
         "--fail_frac_threshold",
         type=float,
-        default=0.5,
+        default=0.3,
         help="Maximum allowed fraction of failing scored rows for an entire case to pass.",
     )
     argument_parser.add_argument(
