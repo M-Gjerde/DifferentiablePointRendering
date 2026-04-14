@@ -60,15 +60,14 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
         shutil.copytree(run0, run1)
 
         # Remove old 0 so we can recreate a fresh one
-        #shutil.rmtree(run0)
+        # shutil.rmtree(run0)
 
     # Create a fresh 0
     run_dir = base_output_dir / "0"
-    #if run_dir.exists():
+    # if run_dir.exists():
     #    shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Using latest run_dir: {run_dir}")
     return run_dir
 
 
@@ -195,16 +194,18 @@ def main(args) -> None:
     scene_xml = assets_root / "GradientTests" / args.scene / f"{args.scene}.xml"
     pointcloud_ply = assets_root / "GradientTests" / args.scene / f"{args.ply}.ply"
 
-    print("Assets root:", assets_root)
-    print("Scene:", scene_xml)
-    print("Ply:", pointcloud_ply)
-    print("Index:", args.index)
-    print("Parameter:", args.parameter)
+    if renderer_settings["logging"] < 4:
+        print("Assets root:", assets_root)
+        print("Scene:", scene_xml)
+        print("Ply:", pointcloud_ply)
+        print("Index:", args.index)
+        print("Parameter:", args.parameter)
 
     fd_epsilon = args.fd_epsilon
     index = int(args.index)
 
-    print("FD epsilon:", fd_epsilon)
+    if renderer_settings["logging"] < 4:
+        print("FD epsilon:", fd_epsilon)
 
     base_output_dir = (
             Path(__file__).parent
@@ -213,6 +214,8 @@ def main(args) -> None:
             / args.parameter
             / str(index)
     )
+
+
     output_dir = create_latest_run_dir(base_output_dir)
 
     # Create subfolders
@@ -223,7 +226,7 @@ def main(args) -> None:
 
     renderer = pale.Renderer(str(assets_root), str(scene_xml), str(pointcloud_ply), renderer_settings)
     renderer_cameras = list(renderer.get_camera_names())
-    camera = args.camera # selected target/adjoint camera
+    camera = args.camera  # selected target/adjoint camera
 
     # Make one folder per renderer camera so every iteration is easy to inspect
     for camera_name in renderer_cameras:
@@ -232,8 +235,11 @@ def main(args) -> None:
         (rendered_dir / camera_name).mkdir(parents=True, exist_ok=True)
 
     target_image = read_rgb_exr(output_dir.parent.parent / Path(camera + "_raw_target.exr"))
-    print("Target image path:", output_dir.parent.parent / Path(camera + "_raw_target.exr"))
-    print("Renderer cameras:", renderer_cameras)
+
+    if renderer_settings["logging"] < 4:
+        print(f"Using run_dir: {output_dir}")
+        print("Target image path:", output_dir.parent.parent / Path(camera + "_raw_target.exr"))
+        print("Renderer cameras:", renderer_cameras)
 
     csv_path = output_dir / f"{camera}_{args.parameter}_sweep.csv"
     fieldnames = [
@@ -253,28 +259,10 @@ def main(args) -> None:
         writer.writeheader()
 
         for iteration_index in range(iterations + 1):
-            if args.scene == "empty":
-                if args.parameter == "opacity":
-                    value = iteration_index / iterations
-                elif args.parameter == "beta":
-                    value = 6 - (iteration_index * 12) / iterations
-                elif args.parameter == "translation_x":
-                    value = -2 + iteration_index / iterations * 4
-                elif args.parameter == "translation_y":
-                    value = -2 + iteration_index / iterations * 4
-                elif args.parameter == "translation_z":
-                    value = -2.0 + iteration_index / iterations * 4
-                elif args.parameter == "scale_u":
-                    value = iteration_index / iterations
-                elif args.parameter == "scale_v":
-                    value = iteration_index / iterations
-                else:
-                    raise RuntimeError("This script doesn't support parameter: " + args.parameter)
-            else:
-                if iterations <= 0:
-                    raise RuntimeError("--iterations must be > 0.")
-                t = iteration_index / iterations
-                value = args.min + t * (args.max - args.min)
+            if iterations <= 0:
+                raise RuntimeError("--iterations must be > 0.")
+            t = iteration_index / iterations
+            value = args.min + t * (args.max - args.min)
 
             loss_value, fd_grad, fd_kind = _finite_difference_loss(
                 renderer=renderer,
@@ -316,7 +304,7 @@ def main(args) -> None:
             # Save outputs for every available camera
             for camera_name in renderer_cameras:
                 if camera_name not in images or args.camera == camera_name:
-                    #print(f"Skipping preview PNG for camera key: {camera_name}")
+                    # print(f"Skipping preview PNG for camera key: {camera_name}")
                     continue
 
                 raw_key = f"{camera_name}_raw"
@@ -365,7 +353,7 @@ def main(args) -> None:
             )
 
             print(
-                f"{iteration_index}/{iterations}, {args.parameter}: {value:.2f}, "
+                f"{iteration_index + 1}/{iterations}, {args.parameter}: {value:.2f}, "
                 f"Loss: {loss_value:.6f}, AN: {param_gradient:.6f}, FD: {fd_grad:.6f} (kind={int(fd_kind)})"
             )
             f.flush()

@@ -2,85 +2,128 @@
   "common_args": [
     "--iterations",
     "10",
-    "--fd_epsilon",
-    "2e-2",
     "--ply",
     "pointcloud",
     "--seed",
-    "666"
+    "42"
   ],
   "cases": [
-        {
+    {
+      "scene": "simple_1",
+      "camera": "camera1",
+      "parameter": "translation_z",
+      "index": 1,
+      "min": 2.0,
+      "max": 4.0,
+      "fd_epsilon": 1e-3,
+      "forward_passes": 500,
+      "bounces": 2,
+      "adjoint_passes": 32,
+      "adjoint_bounces": 3
+    },
+    {
+      "scene": "simple_1",
+      "camera": "camera1",
+      "parameter": "translation_x",
+      "index": 1,
+      "min": 0.0,
+      "max": 2.0,
+      "fd_epsilon": 1e-3,
+      "forward_passes": 500,
+      "bounces": 2,
+      "adjoint_passes": 32,
+      "adjoint_bounces": 3
+    },
+    {
+      "scene": "simple_1",
+      "camera": "camera1",
+      "parameter": "translation_x",
+      "index": 0,
+      "min": -2.0,
+      "max": -0.1,
+      "fd_epsilon": 1e-3,
+      "forward_passes": 100,
+      "bounces": 2,
+      "adjoint_passes": 32,
+      "adjoint_bounces": 3
+    },
+    {
       "scene": "transmit_2",
       "camera": "camera1",
       "parameter": "translation_x",
       "index": 1,
       "min": -1.0,
       "max": 1.0,
+      "fd_epsilon": 1e-3,
       "forward_passes": 100,
-      "bounces": 1,
+      "bounces": 2,
       "adjoint_passes": 32,
-      "adjoint_bounces": 2
+      "adjoint_bounces": 3
     },
-        {
+    {
       "scene": "transmit_2",
       "camera": "camera1",
       "parameter": "translation_x",
       "index": 0,
       "min": -1.0,
       "max": 1.0,
+      "fd_epsilon": 1e-3,
       "forward_passes": 100,
-      "bounces": 1,
+      "bounces": 2,
       "adjoint_passes": 32,
-      "adjoint_bounces": 2
+      "adjoint_bounces": 3
     },
     {
       "scene": "transmit_2",
       "camera": "camera1",
       "parameter": "translation_z",
       "index": 0,
-      "min": -1.5,
-      "max": 1.5,
+      "min": -1.0,
+      "max": 1.0,
+      "fd_epsilon": 1e-3,
       "forward_passes": 100,
-      "bounces": 1,
+      "bounces": 2,
       "adjoint_passes": 32,
-      "adjoint_bounces": 2
+      "adjoint_bounces": 3
     },
     {
       "scene": "transmit_2",
-      "camera": "camera1",
-      "parameter": "translation_z",
-      "index": 1,
-      "min": -0.5,
-      "max": 1.2,
-      "forward_passes": 100,
-      "bounces": 1,
-      "adjoint_passes": 64,
-      "adjoint_bounces": 2
-    },
-    {
-      "scene": "transmit",
       "camera": "camera1",
       "parameter": "translation_z",
       "index": 1,
       "min": 1.0,
-      "max": 3.5,
-      "forward_passes": 50,
-      "bounces": 1,
-      "adjoint_passes": 128,
-      "adjoint_bounces": 2
+      "max": 2.5,
+      "fd_epsilon": 1e-3,
+      "forward_passes": 100,
+      "bounces": 2,
+      "adjoint_passes": 32,
+      "adjoint_bounces": 3
+    },
+    {
+      "scene": "transmit",
+      "camera": "camera1",
+      "parameter": "translation_z",
+      "index": 1,
+      "min": -0.5,
+      "max": 0.5,
+      "fd_epsilon": 1e-3,
+      "forward_passes": 200,
+      "bounces": 2,
+      "adjoint_passes": 32,
+      "adjoint_bounces": 3
     },
     {
       "scene": "transmit",
       "camera": "camera1",
       "parameter": "translation_z",
       "index": 0,
-      "min": -2.5,
+      "min": -1.0,
       "max": 1.0,
-      "forward_passes": 50,
-      "bounces": 1,
+      "fd_epsilon": 1e-3,
+      "forward_passes": 100,
+      "bounces": 2,
       "adjoint_passes": 32,
-      "adjoint_bounces": 2
+      "adjoint_bounces": 3
     }
   ]
 }

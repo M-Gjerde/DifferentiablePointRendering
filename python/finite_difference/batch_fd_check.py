@@ -40,6 +40,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -50,11 +51,112 @@ ANSI_RED = "\033[91m"
 ANSI_YELLOW = "\033[93m"
 ANSI_RESET = "\033[0m"
 ANSI_BOLD = "\033[1m"
+ANSI_CYAN = "\033[96m"
+ANSI_BOLD_CYAN = "\033[1;96m"
 
+def parse_args() -> argparse.Namespace:
+    argument_parser = argparse.ArgumentParser(
+        description="Batch finite-difference versus analytic gradient checker."
+    )
+    argument_parser.add_argument(
+        "--tests",
+        type=str,
+        required=True,
+        help="Path to the tests.json file containing common_args and per-case configurations.",
+    )
+    argument_parser.add_argument(
+        "--script",
+        type=str,
+        default="./finite_difference/fd_test.py",
+        help="Path to the finite-difference test driver script.",
+    )
+    argument_parser.add_argument(
+        "--workspace",
+        type=str,
+        default="./finite_difference/",
+        help="Workspace root directory containing the Output folder with generated sweep CSV files.",
+    )
+    argument_parser.add_argument(
+        "--python",
+        type=str,
+        default=sys.executable,
+        help="Python executable used to launch the helper scripts.",
+    )
+    argument_parser.add_argument(
+        "--grad_floor",
+        type=float,
+        default=1e-5,
+        help="Minimum gradient magnitude required for a row to be scored. Rows below this threshold are skipped.",
+    )
+    argument_parser.add_argument(
+        "--render_target_script",
+        type=str,
+        default="finite_difference/render_target.py",
+        help="Path to the target-render generation script.",
+    )
+    argument_parser.add_argument(
+        "--tail",
+        type=int,
+        default=0,
+        help="Use only the last N rows after optional exclusion of the final row. Use 0 to score all available rows.",
+    )
+    argument_parser.add_argument(
+        "--rel_eps",
+        type=float,
+        default=1e-12,
+        help="Small epsilon used in the relative error denominator for numerical stability.",
+    )
+    argument_parser.add_argument(
+        "--rel_threshold",
+        type=float,
+        default=0.05,
+        help="Maximum allowed relative error for an individual scored row to pass.",
+    )
+    argument_parser.add_argument(
+        "--fail_frac_threshold",
+        type=float,
+        default=0.5,
+        help="Maximum allowed fraction of failing scored rows for an entire case to pass.",
+    )
+    argument_parser.add_argument(
+        "--ignore_boundaries",
+        action="store_true",
+        help="Ignore opacity rows near 0 and 1 when scoring.",
+    )
+    argument_parser.add_argument(
+        "--exclude_last_row",
+        dest="exclude_last_row",
+        action="store_true",
+        default=True,
+        help="Exclude the final CSV row from scoring.",
+    )
+    argument_parser.add_argument(
+        "--include_last_row",
+        dest="exclude_last_row",
+        action="store_false",
+        help="Include the final CSV row in scoring.",
+    )
+    argument_parser.add_argument(
+        "--no_color",
+        action="store_true",
+        help="Disable ANSI color output.",
+    )
+    argument_parser.add_argument(
+        "--extra_args",
+        nargs=argparse.REMAINDER,
+        default=[],
+        help="Additional arguments forwarded verbatim to the finite-difference test driver script.",
+    )
+    return argument_parser.parse_args()
 
 def color(text: str, ansi_color: str, enable: bool) -> str:
     return f"{ansi_color}{text}{ANSI_RESET}" if enable else text
 
+def full_width_headline(text: str, ansi_color: str, enable_color: bool, fill_char: str = "=") -> str:
+    terminal_width = shutil.get_terminal_size(fallback=(100, 20)).columns
+    plain_text = f" {text} "
+    headline_text = plain_text.center(terminal_width, fill_char)
+    return color(headline_text, ansi_color, enable_color)
 
 def safe_rel_err(value_a: float, value_b: float, eps: float) -> float:
     denominator = max(eps, abs(value_a) + abs(value_b))
@@ -84,6 +186,8 @@ def run_render_target(
     render_target_script: Path,
     scene: str,
     parameter: str,
+    forward_passes: int,
+    bounces: int,
 ) -> int:
     command = [
         python_exe,
@@ -92,8 +196,12 @@ def run_render_target(
         parameter,
         "--scene",
         scene,
+        "--forward_passes",
+        str(forward_passes),
+        "--bounces",
+        str(bounces),
     ]
-    print(color("TARGET:", ANSI_BOLD, True), " ".join(command))
+    print(color("RENDER TARGET:", ANSI_BOLD_CYAN, True), " ".join(command))
     process = subprocess.run(command)
     return int(process.returncode)
 
@@ -107,6 +215,7 @@ def run_one(
     point_index: int,
     sweep_min: float,
     sweep_max: float,
+    fd_epsilon: float,
     forward_passes: int,
     bounces: int,
     adjoint_passes: int,
@@ -129,6 +238,8 @@ def run_one(
         str(sweep_min),
         "--max",
         str(sweep_max),
+        "--fd_epsilon",
+        str(fd_epsilon),
         "--forward_passes",
         str(forward_passes),
         "--bounces",
@@ -141,7 +252,7 @@ def run_one(
     command += common_args
     command += extra_args
 
-    print(color("RUN:", ANSI_BOLD, True), " ".join(command))
+    print(color("FD_TEST:", ANSI_BOLD_CYAN, True), " ".join(command))
     process = subprocess.run(command)
     return int(process.returncode)
 
@@ -296,6 +407,7 @@ def validate_common_args(common_args: list[str]) -> None:
         "--index",
         "--min",
         "--max",
+        "--fd_epsilon",
         "--forward_passes",
         "--bounces",
         "--adjoint_passes",
@@ -317,6 +429,7 @@ def validate_case(case: dict[str, Any]) -> None:
         "index",
         "min",
         "max",
+        "fd_epsilon",
         "forward_passes",
         "bounces",
         "adjoint_passes",
@@ -338,6 +451,10 @@ def validate_case(case: dict[str, Any]) -> None:
     if point_index < 0:
         raise RuntimeError(f"Case index must be >= 0, got {point_index}. Case: {case}")
 
+    fd_epsilon = float(case["fd_epsilon"])
+    if fd_epsilon <= 0.0:
+        raise RuntimeError(f"fd_epsilon must be > 0. Case: {case}")
+
     if int(case["forward_passes"]) <= 0:
         raise RuntimeError(f"forward_passes must be > 0. Case: {case}")
     if int(case["bounces"]) < 0:
@@ -348,56 +465,9 @@ def validate_case(case: dict[str, Any]) -> None:
         raise RuntimeError(f"adjoint_bounces must be >= 0. Case: {case}")
 
 
+
 def main() -> None:
-    argument_parser = argparse.ArgumentParser(
-        "Batch FD vs analytic gradient checker"
-    )
-    argument_parser.add_argument("--tests", type=str, required=True)
-    argument_parser.add_argument("--script", type=str, default="./finite_difference/fd_test.py")
-    argument_parser.add_argument("--workspace", type=str, default="./finite_difference/")
-    argument_parser.add_argument("--python", type=str, default=sys.executable)
-    argument_parser.add_argument("--grad_floor", type=float, default=1e-5)
-    argument_parser.add_argument(
-        "--render_target_script",
-        type=str,
-        default="finite_difference/render_target.py",
-        help="Path to render_target.py",
-    )
-    argument_parser.add_argument(
-        "--tail",
-        type=int,
-        default=0,
-        help="Use last N iterations after optionally dropping last row. 0 means use all.",
-    )
-    argument_parser.add_argument("--rel_eps", type=float, default=1e-12)
-    argument_parser.add_argument("--rel_threshold", type=float, default=0.05)
-    argument_parser.add_argument(
-        "--fail_frac_threshold",
-        type=float,
-        default=0.5,
-        help="Allow this fraction of scored rows to fail.",
-    )
-    argument_parser.add_argument(
-        "--ignore_boundaries",
-        action="store_true",
-        help="Ignore opacity near 0 and 1 in scoring.",
-    )
-    argument_parser.add_argument(
-        "--exclude_last_row",
-        dest="exclude_last_row",
-        action="store_true",
-        default=True,
-        help="Exclude the last CSV row from scoring.",
-    )
-    argument_parser.add_argument(
-        "--include_last_row",
-        dest="exclude_last_row",
-        action="store_false",
-        help="Include the last CSV row in scoring.",
-    )
-    argument_parser.add_argument("--no_color", action="store_true")
-    argument_parser.add_argument("--extra_args", nargs=argparse.REMAINDER, default=[])
-    args = argument_parser.parse_args()
+    args = parse_args()
 
     enable_color = not args.no_color and sys.stdout.isatty()
 
@@ -428,15 +498,24 @@ def main() -> None:
         point_index = int(case["index"])
         sweep_min = float(case["min"])
         sweep_max = float(case["max"])
+        fd_epsilon = float(case["fd_epsilon"])
         forward_passes = int(case["forward_passes"])
         bounces = int(case["bounces"])
         adjoint_passes = int(case["adjoint_passes"])
         adjoint_bounces = int(case["adjoint_bounces"])
 
-        print("\n" + color(f"=== Case {case_number}/{len(cases)} ===", ANSI_BOLD, enable_color))
+        print()
+        print(
+            full_width_headline(
+                f"Case {case_number}/{len(cases)} | {scene} | {camera} | {parameter}",
+                ANSI_BOLD_CYAN,
+                enable_color,
+            )
+        )
         print(
             f"scene={scene} camera={camera} parameter={parameter} "
             f"index={point_index} min={sweep_min} max={sweep_max} "
+            f"fd_epsilon={fd_epsilon} "
             f"forward_passes={forward_passes} bounces={bounces} "
             f"adjoint_passes={adjoint_passes} adjoint_bounces={adjoint_bounces}"
         )
@@ -446,6 +525,8 @@ def main() -> None:
             render_target_script=render_target_script,
             scene=scene,
             parameter=parameter,
+            forward_passes=forward_passes,
+            bounces=bounces,
         )
         if render_target_return_code != 0:
             failures += 1
@@ -482,6 +563,7 @@ def main() -> None:
             point_index=point_index,
             sweep_min=sweep_min,
             sweep_max=sweep_max,
+            fd_epsilon=fd_epsilon,
             forward_passes=forward_passes,
             bounces=bounces,
             adjoint_passes=adjoint_passes,
