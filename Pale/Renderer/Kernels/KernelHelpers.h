@@ -1381,7 +1381,7 @@ SYCL_EXTERNAL inline int absoluteInt(int value) {
     return value < 0 ? -value : value;
 }
 
-static constexpr uint32_t kPhotonGatherNeighborCount = 256;
+static constexpr uint32_t kPhotonGatherNeighborCount = 128;
 
 SYCL_EXTERNAL inline void tryInsertPhotonIntoNearestSet(
     const DevicePhotonSurface &candidatePhoton,
@@ -1817,10 +1817,10 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
             1u + kMaxSplatEventsPerRay;
 
     static constexpr uint32_t measurementTwoPointRecordsPerEvent =
-            1u;
+            1u + kMaxSplatEventsPerRay;
 
     static constexpr uint32_t cameraAttachedBridgeRecordsPerEvent =
-            1u + kMaxSplatEventsPerRay;
+            1u ;
 
     static constexpr uint32_t recursiveBridgeRecordsPerEvent =
             2u + kMaxSplatEventsPerRay;

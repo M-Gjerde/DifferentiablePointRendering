@@ -243,7 +243,7 @@ namespace Pale {
                     {
                         Log::PA_TRACE("Launching adjoint intersect kernel");
                         ScopedTimer timer("launchAdjointIntersectKernel", spdlog::level::debug);
-                        launchAdjointIntersectKernel(pkg, spp, activeRayCount);
+                        launchAdjointIntersectKernel(pkg, spp, activeRayCount, cameraIndex);
                     }
 
                     uint32_t measurementEventCount = 0;

@@ -370,6 +370,7 @@ namespace Pale {
         float previousSegmentTransmission = 1.0f;
         bool useImplicitRayHitJacobian = false;
         float geometryPreviousSegment = 1.0f;
+        float cosinePreviousSegment = 1.0f;
 
     };
 
@@ -396,6 +397,7 @@ namespace Pale {
         float transmission = 1.0f;
         float transmissionPreviousSegment = 1.0f;
         float geometryPreviousSegment = 1.0f;
+        float cosinePreviousSegment = 1.0f;
         bool useImplicitRayHitJacobian = false;
     };
 
@@ -549,8 +551,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.2f;
-        float qReflect = 0.8f;
+        float qNull = 0.0f;
+        float qReflect = 1.0f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };

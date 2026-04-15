@@ -103,12 +103,12 @@ namespace Pale {
         }).wait();
     }
 
-    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount) {
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex) {
         auto &queue = pkg.queue;
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
         auto &scene = pkg.scene;
-        auto &sensor = pkg.sensors.front();
+        auto &sensor = pkg.sensors[cameraIndex];
 
         queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t renderSeed = settings.random.seed;
@@ -298,13 +298,13 @@ namespace Pale {
                                 }
 
                                 if (isCameraAttachedSecondHit) {
-                                    float cosine = dot(sensor.camera.forward, currentRayState.ray.direction);
                                     MeasurementGradientEventXY measurementTwoPointEvent{};
                                     measurementTwoPointEvent.xSurface =
                                             previousPendingStageX.xSurface;
                                     measurementTwoPointEvent.ySurface = currentSurfaceRecord;
                                     measurementTwoPointEvent.xPathThroughput =
-                                            previousPendingStageX.xPathThroughput * cosine;
+                                            previousPendingStageX.xPathThroughput / qReflect * previousPendingStageX.
+                                            cosinePreviousSegment;
                                     measurementTwoPointEvent.transmissionPreviousSegment =
                                             previousPendingStageX.previousSegmentTransmission;
                                     measurementTwoPointEvent.transmission =
@@ -324,7 +324,8 @@ namespace Pale {
                                             previousPendingStageX.xSurface;
                                     attachedBridgeEvent.ySurface = currentSurfaceRecord;
                                     attachedBridgeEvent.xPathThroughput =
-                                            previousPendingStageX.xPathThroughput;
+                                        previousPendingStageX.xPathThroughput * previousPendingStageX.
+                                        cosinePreviousSegment  / qReflect;
                                     attachedBridgeEvent.transmissionPreviousSegment =
                                             previousPendingStageX.previousSegmentTransmission;
                                     attachedBridgeEvent.geometryPreviousSegment =
@@ -346,7 +347,8 @@ namespace Pale {
                                             previousPendingStageX.xSurface;
                                     recursiveBridgeEvent.ySurface = currentSurfaceRecord;
                                     recursiveBridgeEvent.xPathThroughput =
-                                            previousPendingStageX.xPathThroughput;
+                                        previousPendingStageX.xPathThroughput * previousPendingStageX.
+                                        geometryPreviousSegment  / qReflect ;
 
                                     recursiveBridgeEvent.transmissionPreviousSegment =
                                             previousPendingStageX.previousSegmentTransmission;
@@ -403,6 +405,10 @@ namespace Pale {
                                         currentSegmentGeometry;
                                 currentPendingStageX.useImplicitRayHitJacobian =
                                         previousPendingCameraSegment.valid;
+
+                                if (previousPendingCameraSegment.valid)
+                                    currentPendingStageX.cosinePreviousSegment = dot(
+                                        sensor.camera.forward, currentRayState.ray.direction);
                             }
 
                             nextRayState.ray.origin =
@@ -757,7 +763,7 @@ namespace Pale {
                 sycl::range<1>(onePointEventCount),
                 [=](sycl::id<1> globalId) {
                     const uint32_t eventIndex = globalId[0];
-                    static constexpr uint32_t recordsPerEvent = 1u;
+                    static constexpr uint32_t recordsPerEvent = 1u + kMaxSplatEventsPerRay;
                     const uint32_t eventRecordBase = baseOffset + recordsPerEvent * eventIndex;
                     const uint32_t recordIndex = eventRecordBase + 0u;
 
@@ -816,7 +822,6 @@ namespace Pale {
                         xState.orientedNormal,
                         yState.orientedNormal);
 
-
                     const float3 pathWeight =
                             eventRecord.xPathThroughput * eventRecord.transmissionPreviousSegment;
 
@@ -832,14 +837,16 @@ namespace Pale {
                     };
 
                     float transmittance = 1.0f;
+                    float3 accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint = float3{0.0f};
                     OccluderDerivative occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
-
                     if (eventRecord.transmission != 1.0f) {
                         const float distanceEpsilon = 1e-4f;
+
                         const float3 rayDirection = normalize(vectorXToY);
                         Ray ray = {xState.position, rayDirection};
                         ray.origin = xState.position + rayDirection * distanceEpsilon;
+
                         const float targetDistance = length(xState.position - yState.position);
                         const float3 xPosition = xState.position;
                         const float3 yPosition = yState.position;
@@ -853,19 +860,23 @@ namespace Pale {
                                 scene,
                                 rng::Xorshift128(0.0),
                                 SurfelIntersectMode::FirstHit);
+
                             if (!worldHit.hit) {
                                 break;
                             }
+
                             const float hitDistance = length(worldHit.hitPositionW - xState.position);
                             if (hitDistance >= targetDistance - distanceEpsilon) {
                                 break;
                             }
+
                             buildIntersectionNormal(scene, worldHit);
                             auto &instance = scene.instances[worldHit.instanceIndex];
                             if (instance.geometryType != GeometryType::PointCloud) {
                                 ray.origin = worldHit.hitPositionW + (ray.direction * 1e-4f);
                                 continue;
                             }
+
                             const Point &occluderSurfel = scene.points[worldHit.primitiveIndex];
                             float3 occluderNormal =
                                     normalize(cross(occluderSurfel.tanU, occluderSurfel.tanV));
@@ -874,31 +885,51 @@ namespace Pale {
                             if (hitBackside) {
                                 occluderNormal = -occluderNormal;
                             }
+
                             const float alphaEffective = occluderSurfel.opacity * worldHit.alphaGeom;
                             const float oneMinusAlpha = 1.0f - alphaEffective;
                             if (oneMinusAlpha <= 1e-8f) {
                                 break;
                             }
+
                             transmittance *= oneMinusAlpha;
                             ray.origin = worldHit.hitPositionW + (ray.direction * 1e-4f);
+
                             const float2 uv = phiInverse(worldHit.hitPositionW, occluderSurfel);
-                            const float u = uv.x();
-                            const float v = uv.y();
+                            const float uOcc = uv.x();
+                            const float vOcc = uv.y();
+
                             const float scaleU = occluderSurfel.scale.x();
                             const float scaleV = occluderSurfel.scale.y();
                             if (scaleU <= 1e-12f || scaleV <= 1e-12f) {
                                 continue;
                             }
+
                             const float3 tangentU = occluderSurfel.tanU;
                             const float3 tangentV = occluderSurfel.tanV;
                             const float3 localBasisU = tangentU / scaleU;
                             const float3 localBasisV = tangentV / scaleV;
                             const float alphaGeomOccluder = worldHit.alphaGeom;
+
                             const float denominator = dot(occluderNormal, dxy);
                             if (sycl::fabs(denominator) <= 1e-8f) {
                                 continue;
                             }
+
+                            const float lambdaOccluder =
+                                    dot(occluderNormal, occluderSurfel.position - yPosition) / denominator;
                             const float inverseDenominator = 1.0f / denominator;
+
+                            const float3 dUiDy =
+                                    (1.0f - lambdaOccluder) * (
+                                        localBasisU -
+                                        occluderNormal * (dot(dxy, localBasisU) * inverseDenominator));
+
+                            const float3 dViDy =
+                                    (1.0f - lambdaOccluder) * (
+                                        localBasisV -
+                                        occluderNormal * (dot(dxy, localBasisV) * inverseDenominator));
+
                             const float3 dUiDspi =
                                     occluderNormal *
                                     (dot(dxy, tangentU) / scaleU) * inverseDenominator -
@@ -909,7 +940,7 @@ namespace Pale {
                                     (dot(dxy, tangentV) / scaleV) * inverseDenominator -
                                     localBasisV;
 
-                            const float radiusSquared = u * u + v * v;
+                            const float radiusSquared = uOcc * uOcc + vOcc * vOcc;
                             const float oneMinusRadiusSquared = 1.0f - radiusSquared;
                             if (oneMinusRadiusSquared <= 1e-8f) {
                                 continue;
@@ -918,14 +949,22 @@ namespace Pale {
                             const float betaScale = 4.0f * sycl::exp(occluderSurfel.beta);
 
                             const float dAlphaGeomDu =
-                                    -2.0f * betaScale * u * alphaGeomOccluder / oneMinusRadiusSquared;
+                                    -2.0f * betaScale * uOcc * alphaGeomOccluder / oneMinusRadiusSquared;
                             const float dAlphaGeomDv =
-                                    -2.0f * betaScale * v * alphaGeomOccluder / oneMinusRadiusSquared;
+                                    -2.0f * betaScale * vOcc * alphaGeomOccluder / oneMinusRadiusSquared;
+
+                            const float3 dAlphaEffectiveDy =
+                                    occluderSurfel.opacity * (
+                                        dAlphaGeomDu * dUiDy +
+                                        dAlphaGeomDv * dViDy);
 
                             const float3 dAlphaEffectiveDspi =
                                     occluderSurfel.opacity * (
                                         dAlphaGeomDu * dUiDspi +
                                         dAlphaGeomDv * dViDspi);
+
+                            accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint +=
+                                    dAlphaEffectiveDy * (1.0f / oneMinusAlpha);
 
                             if (storedOccluderCount < kMaxSplatEventsPerRay) {
                                 occluderDerivatives[storedOccluderCount].derivative =
@@ -957,7 +996,12 @@ namespace Pale {
                     xRecord.gradPositionZ = xContribution.z();
                     gradientRecords[recordIndex] = xRecord;
 
-                    /*
+                    const float geometricTermXY = computeGeometricTermValue(
+                        xState.position,
+                        yState.position,
+                        xState.orientedNormal,
+                        yState.orientedNormal);
+
                     const float occluderScale =
                             -transmittance *
                             geometricTermXY *
@@ -968,7 +1012,7 @@ namespace Pale {
                          occluderIndex < storedOccluderCount;
                          ++occluderIndex) {
                         const uint32_t occluderRecordIndex =
-                                eventRecordBase + 2u + occluderIndex;
+                                eventRecordBase + 1u + occluderIndex;
 
                         const OccluderDerivative &occluderDerivative =
                                 occluderDerivatives[occluderIndex];
@@ -983,7 +1027,6 @@ namespace Pale {
 
                         gradientRecords[occluderRecordIndex] = occluderRecord;
                     }
-                    */
                 });
         }).wait();
     }
@@ -1101,10 +1144,8 @@ namespace Pale {
 
                     float transmittance = 1.0f;
                     float3 accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint = float3{0.0f};
-
                     OccluderDerivative occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
-
                     if (eventRecord.transmission != 1.0f) {
                         const float distanceEpsilon = 1e-4f;
 
@@ -1258,32 +1299,6 @@ namespace Pale {
                     yRecord.gradPositionY = yContribution.y();
                     yRecord.gradPositionZ = yContribution.z();
                     gradientRecords[yRecordIndex] = yRecord;
-
-                    const float occluderScale =
-                            -transmittance *
-                            geometricTermXY *
-                            scalarWeightWithoutTauAndGeometric *
-                            invSpp;
-
-                    for (uint32_t occluderIndex = 0u;
-                         occluderIndex < storedOccluderCount;
-                         ++occluderIndex) {
-                        const uint32_t occluderRecordIndex =
-                                eventRecordBase + 1u + occluderIndex;
-
-                        const OccluderDerivative &occluderDerivative =
-                                occluderDerivatives[occluderIndex];
-                        const float3 occluderContribution =
-                                occluderScale * occluderDerivative.derivative;
-
-                        SurfelGradientRecord occluderRecord{};
-                        occluderRecord.primitiveIndex = occluderDerivative.primitiveIndex;
-                        occluderRecord.gradPositionX = occluderContribution.x();
-                        occluderRecord.gradPositionY = occluderContribution.y();
-                        occluderRecord.gradPositionZ = occluderContribution.z();
-
-                        gradientRecords[occluderRecordIndex] = occluderRecord;
-                    }
                 });
         }).wait();
     }

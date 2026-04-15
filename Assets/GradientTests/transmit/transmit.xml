@@ -9,7 +9,7 @@
         <float name="near_clip" value="0.01"/>
         <float name="far_clip" value="100.0"/>
         <float name="focus_distance" value="100"/>
-        <float name="fov" value="40.3077"/>
+        <float name="fov" value="20.3077"/>
         <float name="adjoint_source" value="True"/>
         <transform name="to_world">
             <lookat origin="0, 5.0,2" target="0,0.0,-0.5" up="0,0,1"/>

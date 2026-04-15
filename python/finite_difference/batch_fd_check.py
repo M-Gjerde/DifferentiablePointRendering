@@ -127,14 +127,7 @@ def parse_args() -> argparse.Namespace:
         "--exclude_last_row",
         dest="exclude_last_row",
         action="store_true",
-        default=True,
         help="Exclude the final CSV row from scoring.",
-    )
-    argument_parser.add_argument(
-        "--include_last_row",
-        dest="exclude_last_row",
-        action="store_false",
-        help="Include the final CSV row in scoring.",
     )
     argument_parser.add_argument(
         "--no_color",
@@ -142,11 +135,18 @@ def parse_args() -> argparse.Namespace:
         help="Disable ANSI color output.",
     )
     argument_parser.add_argument(
+        "--case_index",
+        type=int,
+        default=None,
+        help="Run only one case by zero-based index from tests.json.",
+    )
+    argument_parser.add_argument(
         "--extra_args",
         nargs=argparse.REMAINDER,
         default=[],
         help="Additional arguments forwarded verbatim to the finite-difference test driver script.",
     )
+
     return argument_parser.parse_args()
 
 def color(text: str, ansi_color: str, enable: bool) -> str:
@@ -312,10 +312,12 @@ def print_all_rows(
         else:
             status = color("SKIP", ANSI_YELLOW, enable_color)
 
+        relative_error_percent = 100.0 * rel_err
+
         print(
-            f" iter={iteration:3d}  param={parameter_value:.6g}  "
-            f"AN={analytic_grad:+.6e}  FD={fd_grad:+.6e}  "
-            f"rel={rel_err:.3e}  fd_kind={fd_kind}  {status}"
+            f" iter={iteration:3d}  param={parameter_value:.6f}  "
+            f"AN={analytic_grad:+.6f}  FD={fd_grad:+.6f}  "
+            f"rel={relative_error_percent:.2f}%  fd_kind={fd_kind}  {status}"
         )
 
 
@@ -357,6 +359,17 @@ def compute_check(
     row_fail = ~row_pass
     fail_frac = float(np.mean(row_fail)) if len(row_fail) else 0.0
 
+    rel_sum = float(np.sum(rel_err)) if len(rel_err) else float("nan")
+    rel_mean = float(np.mean(rel_err)) if len(rel_err) else float("nan")
+    rel_median = float(np.median(rel_err)) if len(rel_err) else float("nan")
+    rel_max = float(np.max(rel_err)) if len(rel_err) else float("nan")
+    rel_rms = float(np.sqrt(np.mean(np.square(rel_err)))) if len(rel_err) else float("nan")
+
+    if len(rel_err) and rel_threshold > 0.0:
+        normalized_score = max(0.0, 100.0 * (1.0 - rel_mean / rel_threshold))
+    else:
+        normalized_score = float("nan")
+
     if len(active_data_frame):
         if np.any(row_fail):
             worst_idx = int(np.argmax(np.where(row_fail, rel_err, -1.0)))
@@ -369,9 +382,12 @@ def compute_check(
         "rows_used": int(len(active_data_frame)),
         "rows_skipped_small_grad": int(np.sum(skipped_mask)),
         "fail_frac": fail_frac,
-        "rel_mean": float(np.mean(rel_err)) if len(rel_err) else float("nan"),
-        "rel_median": float(np.median(rel_err)) if len(rel_err) else float("nan"),
-        "rel_max": float(np.max(rel_err)) if len(rel_err) else float("nan"),
+        "rel_sum": rel_sum,
+        "rel_mean": rel_mean,
+        "rel_median": rel_median,
+        "rel_max": rel_max,
+        "rel_rms": rel_rms,
+        "score": normalized_score,
     }
 
     if worst_idx >= 0 and len(active_data_frame):
@@ -400,7 +416,6 @@ def compute_check(
 
     metrics["_scored_df"] = active_data_frame
     return metrics
-
 
 def validate_common_args(common_args: list[str]) -> None:
     forbidden_common_flags = {
@@ -479,6 +494,14 @@ def main() -> None:
 
     if not cases:
         raise RuntimeError("tests.json: no cases provided")
+
+    if args.case_index is not None:
+        if args.case_index < 0 or args.case_index >= len(cases):
+            raise RuntimeError(
+                f"--case_index out of range: got {args.case_index}, "
+                f"but tests.json has {len(cases)} cases."
+            )
+        cases = [cases[args.case_index]]
 
     validate_common_args(common_args)
     for case in cases:
@@ -628,21 +651,54 @@ def main() -> None:
 
         case_passed = metrics["fail_frac"] <= args.fail_frac_threshold
         status_text = "PASS" if case_passed else "FAIL"
+        status_color = ANSI_GREEN if case_passed else ANSI_RED
 
-        print(color(status_text, ANSI_GREEN if case_passed else ANSI_RED, enable_color))
+        print(color(status_text, status_color, enable_color))
         print(f"run_dir: {run_dir}")
         print(
-            f"rows_used: {metrics['rows_used']}  tail={args.tail}  "
-            f"exclude_last_row={args.exclude_last_row}  ignore_boundaries={args.ignore_boundaries}"
+            f"rows_used: {metrics['rows_used']}  "
+            f"rows_skipped_small_grad={metrics['rows_skipped_small_grad']}  "
+            f"tail={args.tail}  "
+            f"exclude_last_row={args.exclude_last_row}  "
+            f"ignore_boundaries={args.ignore_boundaries}"
         )
         print(
-            f"thresholds: rel<={args.rel_threshold}; "
-            f"allow_fail_frac={args.fail_frac_threshold}"
+            f"thresholds: rel<={100.0 * args.rel_threshold:.2f}%; "
+            f"allow_fail_frac={100.0 * args.fail_frac_threshold:.2f}%"
         )
-        print(f"fail_frac: {metrics['fail_frac']:.3f}")
+
+        print(f"fail_frac: {100.0 * metrics['fail_frac']:.2f}%")
+
+        score_value = metrics["score"]
+        if np.isnan(score_value):
+            score_color = ANSI_YELLOW
+            score_text = "SCORE: n/a"
+        else:
+            if score_value >= 90.0:
+                score_color = ANSI_CYAN
+            elif score_value >= 70.0:
+                score_color = ANSI_GREEN
+            elif score_value >= 50.0:
+                score_color = ANSI_YELLOW
+            else:
+                score_color = ANSI_RED
+            score_text = f"SCORE: {score_value:.2f}/100"
+
         print(
-            f"rel_err (mean/median/max): "
-            f"{metrics['rel_mean']:.6g} / {metrics['rel_median']:.6g} / {metrics['rel_max']:.6g}"
+            f"rel_err: "
+            f"sum={100.0 * metrics['rel_sum']:.2f}%  "
+            f"mean={100.0 * metrics['rel_mean']:.2f}%  "
+            f"median={100.0 * metrics['rel_median']:.2f}%  "
+            f"rms={100.0 * metrics['rel_rms']:.2f}%  "
+            f"max={100.0 * metrics['rel_max']:.2f}%"
+        )
+
+        print(
+            color(
+                f"{ANSI_BOLD}=== {score_text} ===",
+                score_color,
+                enable_color,
+            )
         )
 
         if metrics.get("worst_iter") is not None:
@@ -650,9 +706,12 @@ def main() -> None:
             worst_status_color = ANSI_GREEN if metrics["worst_row_pass"] else ANSI_RED
             print(
                 "worst(scored): "
-                f"iter={metrics['worst_iter']} param={metrics['worst_param']:.6g} "
-                f"AN={metrics['worst_an']:.6g} FD={metrics['worst_fd']:.6g} "
-                f"fd_kind={metrics['worst_fd_kind']} "
+                f"iter={metrics['worst_iter']}  "
+                f"param={metrics['worst_param']:.6f}  "
+                f"AN={metrics['worst_an']:+.6f}  "
+                f"FD={metrics['worst_fd']:+.6f}  "
+                f"rel={100.0 * metrics['worst_rel']:.2f}%  "
+                f"fd_kind={metrics['worst_fd_kind']}  "
                 f"[{color(worst_status_text, worst_status_color, enable_color)}]"
             )
 
@@ -691,10 +750,66 @@ def main() -> None:
     failed_count = len(results) - passed_count
     print(f"Total: {len(results)}  Passed: {passed_count}  Failed: {failed_count}")
 
+    if results:
+        sorted_results = sorted(
+            results,
+            key=lambda result: (
+                1 if result["status"] == "pass" else 0,
+                result.get("score", float("-inf"))
+                if isinstance(result.get("score", None), (int, float))
+                and not np.isnan(result.get("score", float("nan")))
+                else float("-inf"),
+            ),
+        )
+
+        print("\nCase scores:")
+        for result in sorted_results:
+            result_score = result.get("score", float("nan"))
+            if isinstance(result_score, (int, float)) and not np.isnan(result_score):
+                result_score_text = f"{result_score:.2f}/100"
+            else:
+                result_score_text = "n/a"
+
+            if result["status"] == "pass":
+                result_status_color = ANSI_GREEN
+            elif result["status"] in {"fail", "target_failed", "run_failed", "csv_failed"}:
+                result_status_color = ANSI_RED
+            else:
+                result_status_color = ANSI_YELLOW
+
+            print(
+                f"- [{color(result['status'], result_status_color, enable_color)}] "
+                f"scene={result['scene']} camera={result['camera']} "
+                f"parameter={result['parameter']} index={result.get('index', 'n/a')} "
+                f"score={result_score_text} "
+                f"fail_frac="
+                f"{100.0 * result.get('fail_frac', float('nan')):.2f}%"
+                if isinstance(result.get("fail_frac", None), (int, float))
+                and not np.isnan(result.get("fail_frac", float("nan")))
+                else
+                f"- [{color(result['status'], result_status_color, enable_color)}] "
+                f"scene={result['scene']} camera={result['camera']} "
+                f"parameter={result['parameter']} index={result.get('index', 'n/a')} "
+                f"score={result_score_text} fail_frac=n/a"
+            )
+
     if failed_count:
         print(color("Failed cases:", ANSI_RED, enable_color))
         for result in results:
             if result["status"] != "pass":
+                fail_frac_value = result.get("fail_frac", float("nan"))
+                fail_frac_text = (
+                    f"{100.0 * fail_frac_value:.2f}%"
+                    if isinstance(fail_frac_value, (int, float)) and not np.isnan(fail_frac_value)
+                    else "n/a"
+                )
+                score_value = result.get("score", float("nan"))
+                score_text = (
+                    f"{score_value:.2f}/100"
+                    if isinstance(score_value, (int, float)) and not np.isnan(score_value)
+                    else "n/a"
+                )
+
                 print(
                     f"- scene={result['scene']} camera={result['camera']} "
                     f"parameter={result['parameter']} index={result.get('index', 'n/a')} "
@@ -703,7 +818,7 @@ def main() -> None:
                     f"bounces={result.get('bounces', 'n/a')} "
                     f"adjoint_passes={result.get('adjoint_passes', 'n/a')} "
                     f"adjoint_bounces={result.get('adjoint_bounces', 'n/a')} "
-                    f"fail_frac={result.get('fail_frac', 'n/a')}"
+                    f"score={score_text} fail_frac={fail_frac_text}"
                 )
 
     sys.exit(0 if failures == 0 else 1)

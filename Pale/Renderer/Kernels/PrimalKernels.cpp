@@ -543,6 +543,8 @@ namespace Pale {
                         //if (!isWatchedPixel(pixelX, pixelY))
                         //    return;
 
+                        float cameraCosine = dot(sensor.camera.forward, primaryRay.direction);
+
                         // -----------------------------------------------------------------
                         // 1) Transmit ray: collect all splat events + terminal mesh hit
                         // -----------------------------------------------------------------s
@@ -650,7 +652,7 @@ namespace Pale {
                                 pixelY * imageWidth + pixelX;
 
                         float4 previousValue = sensor.framebuffer[framebufferIndex];
-
+                        accumulatedRadianceRGB = accumulatedRadianceRGB * cameraCosine;
                         float4 currentValue =
                                 float4(accumulatedRadianceRGB.x(),
                                        accumulatedRadianceRGB.y(),

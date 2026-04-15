@@ -35,7 +35,6 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
     """
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect existing integer-named run dirs
     run_indices: list[int] = []
     for child in base_output_dir.iterdir():
         if not child.is_dir():
@@ -48,7 +47,6 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
     if 0 in run_indices:
         run0 = base_output_dir / "0"
 
-        # Shift N -> N+1 for N>=1 (descending to avoid collisions)
         for idx in sorted((i for i in run_indices if i != 0), reverse=True):
             src = base_output_dir / str(idx)
             dst = base_output_dir / str(idx + 1)
@@ -56,26 +54,18 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
                 shutil.rmtree(dst)
             src.rename(dst)
 
-        # Copy old 0 -> 1 (instead of rename), then remove old 0 contents/path.
         run1 = base_output_dir / "1"
         if run1.exists():
             shutil.rmtree(run1)
         shutil.copytree(run0, run1)
 
-        # Remove old 0 so we can recreate a fresh one
-        # shutil.rmtree(run0)
-
-    # Create a fresh 0
     run_dir = base_output_dir / "0"
-    # if run_dir.exists():
-    #    shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     return run_dir
 
 
 def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, index: int) -> None:
-    # Extend this if you later want FD for translation/rotation/scale.
     if parameter == "opacity":
         renderer.set_point_opacity(opacity=float(value), index=int(index))
     elif parameter == "beta":
@@ -91,13 +81,13 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
     elif parameter == "scale_v":
         renderer.set_point_scale(scale=float(value), axis=1, index=int(index))
     else:
-        raise RuntimeError(f"FD currently not implemented for'{parameter}'.")
+        raise RuntimeError(f"FD currently not implemented for '{parameter}'.")
 
 
 def _render_loss(
-        renderer: "pale.Renderer",
-        camera: str,
-        target_image: np.ndarray,
+    renderer: "pale.Renderer",
+    camera: str,
+    target_image: np.ndarray,
 ) -> tuple[float, np.ndarray, dict]:
     """
     Returns (loss_value, rendered_rgb, images_dict).
@@ -105,37 +95,35 @@ def _render_loss(
     """
     images = renderer.render_forward()
     image = images[camera + "_raw"]
-    rendered = np.asarray(image, dtype=np.float32)[..., :3]  # drop alpha
+    rendered = np.asarray(image, dtype=np.float32)[..., :3]
     loss_value = float(compute_l2_loss(rendered, target_image))
     return loss_value, rendered, images
 
 
 def _finite_difference_loss(
-        renderer: "pale.Renderer",
-        parameter: str,
-        base_value: float,
-        eps: float,
-        index: int,
-        camera: str,
-        target_image: np.ndarray,
-        clamp_01: bool = True,
+    renderer: "pale.Renderer",
+    parameter: str,
+    base_value: float,
+    eps: float,
+    index: int,
+    camera: str,
+    target_image: np.ndarray,
+    clamp_01: bool = True,
 ) -> tuple[float, float, float]:
     """
     Computes L(base), and a finite-difference derivative dL/dparam at base_value.
 
     Uses:
-      - central difference if possible (base-eps >= 0 and base+eps <= 1 for opacity, if clamp_01)
+      - central difference if possible
       - otherwise one-sided difference.
 
     Returns (L0, fd_grad, fd_kind_code)
       fd_kind_code: 0=central, 1=forward, 2=backward
     """
-    # Base
     _set_parameter(renderer, parameter, base_value, index)
     renderer.rebuild_bvh()
     L0, _, _ = _render_loss(renderer, camera, target_image)
 
-    # Decide stencil
     if clamp_01 and parameter in {"opacity", "scale_u", "scale_v"}:
         lo = 0.0
         hi = 1.0
@@ -160,7 +148,6 @@ def _finite_difference_loss(
         fd = (Lp - Lm) / (2.0 * eps)
         return L0, float(fd), 0.0
 
-    # One-sided
     if (base_value + eps) <= hi:
         v_plus = base_value + eps
         _set_parameter(renderer, parameter, v_plus, index)
@@ -177,7 +164,6 @@ def _finite_difference_loss(
         fd = (L0 - Lm) / eps
         return L0, float(fd), 2.0
 
-    # Should never happen for opacity in [0,1] with eps>0
     raise RuntimeError("Could not form any finite difference stencil.")
 
 
@@ -211,17 +197,15 @@ def main(args) -> None:
         print("FD epsilon:", fd_epsilon)
 
     base_output_dir = (
-            Path(__file__).parent
-            / "Output"
-            / args.scene
-            / args.parameter
-            / str(index)
+        Path(__file__).parent
+        / "Output"
+        / args.scene
+        / args.parameter
+        / str(index)
     )
-
 
     output_dir = create_latest_run_dir(base_output_dir)
 
-    # Create subfolders
     rendered_dir = output_dir / "rendered"
     grad_dir = output_dir / "grad"
     rendered_dir.mkdir(parents=True, exist_ok=True)
@@ -229,9 +213,8 @@ def main(args) -> None:
 
     renderer = pale.Renderer(str(assets_root), str(scene_xml), str(pointcloud_ply), renderer_settings)
     renderer_cameras = list(renderer.get_camera_names())
-    camera = args.camera  # selected target/adjoint camera
+    camera = args.camera
 
-    # Make one folder per renderer camera so every iteration is easy to inspect
     for camera_name in renderer_cameras:
         if camera_name == camera:
             continue
@@ -239,10 +222,15 @@ def main(args) -> None:
 
     target_image = read_rgb_exr(output_dir.parent.parent / Path(camera + "_raw_target.exr"))
 
+    if args.fill_target:
+        #print(target_image.min(), target_image.max())
+        target_image = np.ones_like(target_image, dtype=np.float32)
+
     if renderer_settings["logging"] < 4:
         print(f"Using run_dir: {output_dir}")
         print("Target image path:", output_dir.parent.parent / Path(camera + "_raw_target.exr"))
         print("Renderer cameras:", renderer_cameras)
+        print("Fill target:", args.fill_target)
 
     csv_path = output_dir / f"{camera}_{args.parameter}_sweep.csv"
     fieldnames = [
@@ -285,7 +273,6 @@ def main(args) -> None:
 
             loss_grad_image = compute_l2_grad(rendered_image, target_image)
 
-            # Save primary camera target-dependent outputs
             save_seismic_signed(
                 loss_grad_image,
                 grad_dir / f"{iteration_index}_{camera}.png",
@@ -304,10 +291,9 @@ def main(args) -> None:
                 rendered_dir / f"{iteration_index}_{camera}.png",
                 exposure_stops=0.0,
             )
-            # Save outputs for every available camera
+
             for camera_name in renderer_cameras:
                 if camera_name not in images or args.camera == camera_name:
-                    # print(f"Skipping preview PNG for camera key: {camera_name}")
                     continue
 
                 raw_key = f"{camera_name}_raw"
@@ -470,6 +456,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=2,
         help="Number of adjoint bounces.",
+    )
+    parser.add_argument(
+        "--fill_target",
+        action="store_true",
+        default=True,
+        help="Replace the loaded target image with an all-ones image.",
     )
     return parser.parse_args()
 

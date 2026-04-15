@@ -324,7 +324,7 @@ namespace Pale {
         grid.minimumGatherRadiusWorld = 0.04f;
         grid.maximumGatherRadiusWorld = 0.2f;
         grid.gatherPadWorld = 0.04f;
-        const float cellSizeWorld = 0.005f;
+        const float cellSizeWorld = 0.007f;
 
         grid.cellSizeWorld = float3{cellSizeWorld, cellSizeWorld, cellSizeWorld};
 
