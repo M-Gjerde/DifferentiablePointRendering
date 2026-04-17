@@ -8,6 +8,19 @@
     {
       "scene": "simple_1",
       "camera": "camera1",
+      "parameter": "translation_z",
+      "index": 2,
+      "min": 1.5,
+      "max": 3.5,
+      "fd_epsilon": 1e-1,
+      "forward_passes": 200,
+      "bounces": 2,
+      "adjoint_passes": 64,
+      "adjoint_bounces": 3
+    },
+    {
+      "scene": "simple_1",
+      "camera": "camera1",
       "parameter": "translation_x",
       "index": 1,
       "min": 0.3,
