@@ -370,8 +370,8 @@ namespace Pale {
         float previousSegmentTransmission = 1.0f;
         bool useImplicitRayHitJacobian = false;
         float geometryPreviousSegment = 1.0f;
+        float hemisphereToAreaPreviousSegmentPDF = 1.0f;
         float cosinePreviousSegment = 1.0f;
-
     };
 
     struct PendingAdjointStageXY {
@@ -508,7 +508,6 @@ namespace Pale {
         float3 yNormal{0.0f};
         Ray yIncomingRay{};
         float3 yPathThroughput{0.0f};
-
         // Z = final mesh hit
         uint32_t zInstanceIndex = UINT32_MAX;
         uint32_t zPrimitiveIndex = UINT32_MAX;
@@ -551,8 +550,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.0f;
-        float qReflect = 1.0f;
+        float qNull = 0.2f;
+        float qReflect = 0.8f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };

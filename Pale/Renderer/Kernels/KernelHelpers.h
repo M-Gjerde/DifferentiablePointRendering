@@ -356,6 +356,9 @@ namespace Pale {
     inline float3 phiMapping(const Point &surfel, float u, float v) {
         return surfel.position + surfel.scale.x() * surfel.tanU * u + surfel.scale.y() * surfel.tanV * v;
     }
+    inline float3 phiMapping(const Point &surfel, float2 uv) {
+        return surfel.position + surfel.scale.x() * surfel.tanU * uv[0] + surfel.scale.y() * surfel.tanV * uv[1];
+    }
 
     SYCL_EXTERNAL inline void sampleCosineHemisphere(
         rng::Xorshift128 &rng, const float3 &n,

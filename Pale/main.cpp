@@ -214,7 +214,7 @@ int main(int argc, char **argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = true;
+    bool renderLightTracing = !true;
 
     if (renderLightTracing) {
         //  cuda/rocm
@@ -273,8 +273,8 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 3;
-        settings.numForwardPasses = 100;
+        settings.maxBounces = 2;
+        settings.numForwardPasses = 5;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
         settings.adjointSamplesPerPixel = 1;
@@ -331,7 +331,7 @@ int main(int argc, char **argv) {
                     }
                     Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
                     Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-                    //pointGeometry.positions[0].z = -2.7f;
+                    pointGeometry.positions[1].z = 1.8f;
                     rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
                 }
 
