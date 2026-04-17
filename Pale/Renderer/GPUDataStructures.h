@@ -360,18 +360,41 @@ namespace Pale {
         float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
     };
 
+    struct PendingAdjointVertex {
+        PointCloudSurfaceRecord surface{};
+
+        uint32_t bounceIndex = 0u;
+
+        // Throughput stored before the reflect-sampling factor of the current vertex
+        // is applied in the next state update. This preserves your current convention.
+        float3 pathThroughput = float3{0.0f, 0.0f, 0.0f};
+
+        // Segment metadata for the segment arriving at this vertex from the previous one.
+        float transmissionFromPrevious = 1.0f;
+        float geometryFromPrevious = 1.0f;
+        float areaPdfFromPrevious = 1.0f;
+
+        // Local scattering factor stored at this vertex.
+        float3 bsdf = float3{0.0f, 0.0f, 0.0f};
+
+        // Only used for the camera-attached path case.
+        float cosineFromPrevious = 0.0f;
+    };
+
     struct PendingAdjointStageX {
         bool valid = false;
-        bool isTransmit = false;
-        uint32_t pathId = 0;
-        uint32_t pixelIndex = 0;
-        PointCloudSurfaceRecord xSurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        float previousSegmentTransmission = 1.0f;
+        uint32_t pathId = 0u;
+        uint32_t pixelIndex = 0u;
+
+        // Whether the CURRENT stored vertex was produced from the camera-attached
+        // branch that uses the implicit ray-hit Jacobian convention.
         bool useImplicitRayHitJacobian = false;
-        float geometryPreviousSegment = 1.0f;
-        float hemisphereToAreaPreviousSegmentPDF = 1.0f;
-        float cosinePreviousSegment = 1.0f;
+
+        // Rolling two-vertex history:
+        // previous = X, current = Y, live hit = Z
+        bool hasPrevious = false;
+        PendingAdjointVertex previous{};
+        PendingAdjointVertex current{};
     };
 
     struct PendingAdjointStageXY {

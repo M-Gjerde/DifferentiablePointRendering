@@ -168,7 +168,7 @@ namespace Pale {
         bool isMatch = false;
 
         for (uint32_t i = 0; i < 1; ++i) {
-            const DebugPixel &debugPixel = kDebugPixels[i];
+            const DebugPixel& debugPixel = kDebugPixels[i];
             if (pixelY == debugPixel.pixelY && pixelX == debugPixel.pixelX) {
                 isMatch = true;
             }
@@ -176,7 +176,7 @@ namespace Pale {
         return isMatch;
     }
 
-    SYCL_EXTERNAL inline float3 safeInvDir(const float3 &dir) {
+    SYCL_EXTERNAL inline float3 safeInvDir(const float3& dir) {
         constexpr float EPS = 1e-6f; // treat anything smaller as “zero”
         constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
         float3 inv;
@@ -186,11 +186,11 @@ namespace Pale {
         return inv;
     }
 
-    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray &ray,
-                                                const TLASNode &node,
-                                                const float3 &invDir,
+    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray& ray,
+                                                const TLASNode& node,
+                                                const float3& invDir,
                                                 float tMaxLimit,
-                                                float &tEntry) {
+                                                float& tEntry) {
         float3 t0 = (node.aabbMin - ray.origin) * invDir;
         float3 t1 = (node.aabbMax - ray.origin) * invDir;
 
@@ -219,11 +219,11 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray &ray,
-                                                const BVHNode &node,
-                                                const float3 &invDir,
+    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray& ray,
+                                                const BVHNode& node,
+                                                const float3& invDir,
                                                 float tMaxLimit,
-                                                float &tEntry) {
+                                                float& tEntry) {
         float3 t0 = (node.aabbMin - ray.origin) * invDir;
         float3 t1 = (node.aabbMax - ray.origin) * invDir;
 
@@ -253,7 +253,7 @@ namespace Pale {
     }
 
     //──────────────── world → object and back ────────────────────────────────
-    SYCL_EXTERNAL inline Ray toObjectSpace(const Ray &rayW, const Transform &xf) {
+    SYCL_EXTERNAL inline Ray toObjectSpace(const Ray& rayW, const Transform& xf) {
         Ray r;
         /* 1.  Transform origin – w = 1                                      */
         float4 hO = xf.worldToObject * float4{rayW.origin, 1.f};
@@ -266,27 +266,27 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline float3 transformPoint(const float4x4 &tf, const float3 &p, float w = 1.0f) {
+    SYCL_EXTERNAL inline float3 transformPoint(const float4x4& tf, const float3& p, float w = 1.0f) {
         const float4 v = {p, w};
         float4 result = tf * v;
         float invW = 1.f / result.w();
         return float3{result.x() * invW, result.y() * invW, result.z() * invW};
     }
 
-    SYCL_EXTERNAL inline float3 transformDirection(const float4x4 &tf, const float3 &dir) {
+    SYCL_EXTERNAL inline float3 transformDirection(const float4x4& tf, const float3& dir) {
         const float4 v = {dir, 0.f};
         float4 r = tf * v;
         return normalize(float3{r.x(), r.y(), r.z()});
     }
 
-    SYCL_EXTERNAL inline float3 toWorldPoint(const float3 &pO, const Transform &xf) {
+    SYCL_EXTERNAL inline float3 toWorldPoint(const float3& pO, const Transform& xf) {
         float4 hp = xf.objectToWorld * float4{pO, 1.f};
         return float3{hp.x(), hp.y(), hp.z()} / hp.w();
     }
 
-    SYCL_EXTERNAL inline bool intersectTriangle(const Ray &ray, const float3 v0, const float3 v1, const float3 v2,
-                                                float &outT, float &outU,
-                                                float &outV, float tMin) {
+    SYCL_EXTERNAL inline bool intersectTriangle(const Ray& ray, const float3 v0, const float3 v1, const float3 v2,
+                                                float& outT, float& outU,
+                                                float& outV, float tMin) {
         const float3 e1 = v1 - v0;
         const float3 e2 = v2 - v0;
 
@@ -315,7 +315,7 @@ namespace Pale {
         return true;
     }
 
-    inline float3 buildTangentFrisvad(const float3 &unitNormal) {
+    inline float3 buildTangentFrisvad(const float3& unitNormal) {
         // Frisvad 2012: "Building an Orthonormal Basis, Revisited"
         // Handles all normals without branching issues.
         const float sign = std::copysign(1.0f, unitNormal.z());
@@ -331,13 +331,13 @@ namespace Pale {
     }
 
 
-    inline void buildOrthonormalBasis(const float3 &unitNormal, float3 &tangent, float3 &bitangent) {
+    inline void buildOrthonormalBasis(const float3& unitNormal, float3& tangent, float3& bitangent) {
         tangent = buildTangentFrisvad(unitNormal);
         bitangent = cross(unitNormal, tangent);
     }
 
     SYCL_EXTERNAL inline uint32_t sampleTriangleByCdf(
-        const GPUEmissiveTriangle *emissive_triangles,
+        const GPUEmissiveTriangle* emissive_triangles,
         uint32_t offset,
         uint32_t count,
         float u) {
@@ -353,16 +353,17 @@ namespace Pale {
     }
 
 
-    inline float3 phiMapping(const Point &surfel, float u, float v) {
+    inline float3 phiMapping(const Point& surfel, float u, float v) {
         return surfel.position + surfel.scale.x() * surfel.tanU * u + surfel.scale.y() * surfel.tanV * v;
     }
-    inline float3 phiMapping(const Point &surfel, float2 uv) {
+
+    inline float3 phiMapping(const Point& surfel, float2 uv) {
         return surfel.position + surfel.scale.x() * surfel.tanU * uv[0] + surfel.scale.y() * surfel.tanV * uv[1];
     }
 
     SYCL_EXTERNAL inline void sampleCosineHemisphere(
-        rng::Xorshift128 &rng, const float3 &n,
-        float3 &outDir, float &outPdf) {
+        rng::Xorshift128& rng, const float3& n,
+        float3& outDir, float& outPdf) {
         float u1 = rng.nextFloat();
         float u2 = rng.nextFloat();
 
@@ -383,8 +384,8 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline void sampleCosineHemisphereRandom(
-        float u1, float u2, const float3 &n,
-        float3 &outDir, float &outPdf) {
+        float u1, float u2, const float3& n,
+        float3& outDir, float& outPdf) {
         float z = sycl::sqrt(1.f - u1);
         float r = sycl::sqrt(1 - (z * z));
 
@@ -402,7 +403,7 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3 &unitNormal, rng::Xorshift128 &rng, float &pdf) {
+    SYCL_EXTERNAL inline float3 sampleCosineHemisphere(const float3& unitNormal, rng::Xorshift128& rng, float& pdf) {
         // 1) Draw two uniform variates
         const float uniformSample1 = rng.nextFloat(); // in [0,1)
         const float uniformSample2 = rng.nextFloat(); // in [0,1)
@@ -420,7 +421,7 @@ namespace Pale {
 
         // 4) Transform to world
         const float3 sampledDirectionW =
-                tangent * localX + bitangent * localY + unitNormal * localZ;
+            tangent * localX + bitangent * localY + unitNormal * localZ;
 
         // 5) Normalize for safety and compute pdf = cosTheta / pi
         const float3 unitSampledDirectionW = normalize(sampledDirectionW);
@@ -430,24 +431,25 @@ namespace Pale {
         return unitSampledDirectionW;
     }
 
-    inline void buildIntersectionNormal(const GPUSceneBuffers &scene, WorldHit &worldHit) {
+    inline void buildIntersectionNormal(const GPUSceneBuffers& scene, WorldHit& worldHit) {
         if (!worldHit.hit)
             return;
-        InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+        InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
         if (instance.geometryType == GeometryType::Mesh) {
-            const Triangle &triangle = scene.triangles[worldHit.primitiveIndex];
-            const Transform &objectWorldTransform = scene.transforms[instance.transformIndex];
-            const Vertex &vertex0 = scene.vertices[triangle.v0];
-            const Vertex &vertex1 = scene.vertices[triangle.v1];
-            const Vertex &vertex2 = scene.vertices[triangle.v2];
+            const Triangle& triangle = scene.triangles[worldHit.primitiveIndex];
+            const Transform& objectWorldTransform = scene.transforms[instance.transformIndex];
+            const Vertex& vertex0 = scene.vertices[triangle.v0];
+            const Vertex& vertex1 = scene.vertices[triangle.v1];
+            const Vertex& vertex2 = scene.vertices[triangle.v2];
             // Canonical geometric normal (no face-forwarding)
             const float3 worldP0 = toWorldPoint(vertex0.pos, objectWorldTransform);
             const float3 worldP1 = toWorldPoint(vertex1.pos, objectWorldTransform);
             const float3 worldP2 = toWorldPoint(vertex2.pos, objectWorldTransform);
             const float3 canonicalNormalW = normalize(cross(worldP1 - worldP0, worldP2 - worldP0));
             worldHit.geometricNormalW = canonicalNormalW;
-        } else if (instance.geometryType == GeometryType::PointCloud) {
-            const auto &surfel = scene.points[worldHit.primitiveIndex];
+        }
+        else if (instance.geometryType == GeometryType::PointCloud) {
+            const auto& surfel = scene.points[worldHit.primitiveIndex];
             // Canonical surfel normal from tangents (no face-forwarding)
             const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
             worldHit.geometricNormalW = canonicalNormalW;
@@ -463,7 +465,7 @@ namespace Pale {
         return uv;
     }
 
-    inline float2 phiInverse(const float3 &hitWorld, const Point &surfel) {
+    inline float2 phiInverse(const float3& hitWorld, const Point& surfel) {
         float3 r = hitWorld - surfel.position;
         float2 uv;
         uv[0] = dot(surfel.tanU, r) / surfel.scale.x();
@@ -472,9 +474,9 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline void sampleUniformSphere(
-        rng::Xorshift128 &randomNumberGenerator,
-        float3 &outDirection,
-        float &outPdf
+        rng::Xorshift128& randomNumberGenerator,
+        float3& outDirection,
+        float& outPdf
     ) {
         const float uniformRandomOne = randomNumberGenerator.nextFloat();
         const float uniformRandomTwo = randomNumberGenerator.nextFloat();
@@ -491,9 +493,9 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline void buildOrthonormalBasisFromNormal(
-        const float3 &unitNormal,
-        float3 &outTangent,
-        float3 &outBitangent
+        const float3& unitNormal,
+        float3& outTangent,
+        float3& outBitangent
     ) {
         // Robust ONB construction (Frisvad-style branchless variant)
         // Assumes unitNormal is normalized.
@@ -515,16 +517,17 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline void sampleUniformHemisphereAroundNormal(
-        rng::Xorshift128 &randomNumberGenerator,
-        const float3 &normal,
-        float3 &outDirectionWorld,
-        float &outPdf
+        rng::Xorshift128& randomNumberGenerator,
+        const float3& normal,
+        float3& outDirectionWorld,
+        float& outPdf
     ) {
         // Ensure a valid unit normal
         const float3 unitNormal = normalize(normal);
 
         // Sample in local frame: +Z hemisphere
-        float3 localDirection; {
+        float3 localDirection;
+        {
             const float uniformRandomOne = randomNumberGenerator.nextFloat();
             const float uniformRandomTwo = randomNumberGenerator.nextFloat();
 
@@ -532,7 +535,7 @@ namespace Pale {
             const float azimuthAngle = 2.0f * M_PIf * uniformRandomTwo;
 
             const float radialComponent =
-                    sycl::sqrt(sycl::fmax(0.0f, 1.0f - zCoordinate * zCoordinate));
+                sycl::sqrt(sycl::fmax(0.0f, 1.0f - zCoordinate * zCoordinate));
 
             const float xCoordinate = radialComponent * sycl::cos(azimuthAngle);
             const float yCoordinate = radialComponent * sycl::sin(azimuthAngle);
@@ -547,9 +550,9 @@ namespace Pale {
 
         // Transform to world
         outDirectionWorld =
-                tangent * localDirection.x() +
-                bitangent * localDirection.y() +
-                unitNormal * localDirection.z();
+            tangent * localDirection.x() +
+            bitangent * localDirection.y() +
+            unitNormal * localDirection.z();
 
         // Numerical safety
         outDirectionWorld = normalize(outDirectionWorld);
@@ -561,7 +564,7 @@ namespace Pale {
         if (dot(outDirectionWorld, unitNormal) < 0.0f) outDirectionWorld = -outDirectionWorld;
     }
 
-    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float *outOpacity, float kSigmas = 2.2f) {
+    SYCL_EXTERNAL static bool opacityGaussian(float u, float v, float* outOpacity, float kSigmas = 2.2f) {
         const float r2 = u * u + v * v;
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 > kSigmas * kSigmas)
@@ -571,7 +574,7 @@ namespace Pale {
         return true;
     }
 
-    SYCL_EXTERNAL static bool opacityBeta(float u, float v, const Point &surfel, float *outOpacity) {
+    SYCL_EXTERNAL static bool opacityBeta(float u, float v, const Point& surfel, float* outOpacity) {
         const float r2 = u * u + v * v;
         // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
         if (r2 >= 1.0)
@@ -585,13 +588,13 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL static bool intersectSurfel(const Ray &rayObject,
-                                              const Point &surfel,
+    SYCL_EXTERNAL static bool intersectSurfel(const Ray& rayObject,
+                                              const Point& surfel,
                                               float tMin, float tMax,
-                                              float &outTHit,
-                                              float3 &outHitLocal,
-                                              float &outOpacity,
-                                              const float &eps = 1e-6f) {
+                                              float& outTHit,
+                                              float3& outHitLocal,
+                                              float& outOpacity,
+                                              const float& eps = 1e-6f) {
         // Should match the same kSigmas as in BVH construction
         // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
         const float3 unitTangentU = normalize(surfel.tanU);
@@ -619,8 +622,8 @@ namespace Pale {
         return true;
     }
 
-    SYCL_EXTERNAL inline float2 computeSurfelUVAtTHit(const Ray &rayObject,
-                                                      const Point &surfel,
+    SYCL_EXTERNAL inline float2 computeSurfelUVAtTHit(const Ray& rayObject,
+                                                      const Point& surfel,
                                                       float tHit) {
         const float3 unitTangentU = normalize(surfel.tanU);
         const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));
@@ -638,11 +641,11 @@ namespace Pale {
     }
 
 
-    SYCL_EXTERNAL inline bool worldRayToPixel(const CameraGPU &camera,
-                                              const float3 &rayOriginWorld,
-                                              const float3 &rayDirectionWorld,
-                                              uint32_t &outPixelX,
-                                              uint32_t &outPixelY) {
+    SYCL_EXTERNAL inline bool worldRayToPixel(const CameraGPU& camera,
+                                              const float3& rayOriginWorld,
+                                              const float3& rayDirectionWorld,
+                                              uint32_t& outPixelX,
+                                              uint32_t& outPixelY) {
         // 1) World -> view
         const float3 rayOriginView = transformPoint(camera.view, rayOriginWorld, 1.f);
         const float3 rayDirectionView = transformDirection(camera.view, rayDirectionWorld);
@@ -678,7 +681,7 @@ namespace Pale {
     }
 
     // Generate a primary ray from pixel (uses inverse view-projection on the camera)
-    inline Ray makePrimaryRayFromPixel(const CameraGPU &camera,
+    inline Ray makePrimaryRayFromPixel(const CameraGPU& camera,
                                        std::uint32_t pixelX,
                                        std::uint32_t pixelY) {
         // 1) Pixel center → NDC in [-1,1]^2
@@ -712,9 +715,9 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline float3 computeCameraGeometricTermGradientWrtSurfacePoint(
-        const float3 &surfacePosition,
-        const float3 &cameraPosition,
-        const float3 &surfaceNormal) {
+        const float3& surfacePosition,
+        const float3& cameraPosition,
+        const float3& surfaceNormal) {
         const float3 vectorSurfaceToCamera = cameraPosition - surfacePosition;
         const float distanceSquared = dot(vectorSurfaceToCamera, vectorSurfaceToCamera);
         if (distanceSquared <= 1e-12f) {
@@ -735,11 +738,11 @@ namespace Pale {
         const float inverseDistanceCubed = 1.0f / (distanceSquared * distance);
 
         return (3.0f * cosineAtSurface * directionSurfaceToCamera - surfaceNormal) *
-               inverseDistanceCubed;
+            inverseDistanceCubed;
     }
 
     SYCL_EXTERNAL inline Ray makePrimaryRayFromPixelJitteredFov(
-        const CameraGPU &cam,
+        const CameraGPU& cam,
         float px, float py,
         float jx, float jy) {
         const float width = static_cast<float>(cam.width);
@@ -773,14 +776,14 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline bool projectToPixelFromPinhole(
-        const SensorGPU &sensor,
-        const float3 &pointWorld,
-        uint32_t &outPixelIndex,
-        float3 &outOmegaFromSurfaceToCamera,
-        float &outDistance,
-        int &pixelX,
-        int &pixelY,
-        bool &debug) {
+        const SensorGPU& sensor,
+        const float3& pointWorld,
+        uint32_t& outPixelIndex,
+        float3& outOmegaFromSurfaceToCamera,
+        float& outDistance,
+        int& pixelX,
+        int& pixelY,
+        bool& debug) {
         const float3 cameraPositionWorld = sensor.camera.pos;
 
         const float3 vectorFromSurfaceToCamera = cameraPositionWorld - pointWorld;
@@ -827,11 +830,11 @@ namespace Pale {
 
 
     SYCL_EXTERNAL inline bool projectPinholeToPixel(
-        const SensorGPU &sensor,
-        const float3 &pointWorld,
-        uint32_t &outPixelIndex,
-        float3 &outOmegaFromSurfaceToCamera,
-        float &outDistance) {
+        const SensorGPU& sensor,
+        const float3& pointWorld,
+        uint32_t& outPixelIndex,
+        float3& outOmegaFromSurfaceToCamera,
+        float& outDistance) {
         /*
         const float3 cameraPositionWorld = sensor.camera.pos;
 
@@ -866,15 +869,15 @@ namespace Pale {
     }
 
 
-    inline bool isInsideGrid(const sycl::int3 &cell, const sycl::int3 &resolution) {
+    inline bool isInsideGrid(const sycl::int3& cell, const sycl::int3& resolution) {
         return (cell.x() >= 0 && cell.y() >= 0 && cell.z() >= 0 &&
-                cell.x() < resolution.x() &&
-                cell.y() < resolution.y() &&
-                cell.z() < resolution.z());
+            cell.x() < resolution.x() &&
+            cell.y() < resolution.y() &&
+            cell.z() < resolution.z());
     }
 
 
-    inline sycl::int3 worldToCell(const float3 &positionWorld, const DeviceSurfacePhotonMapGrid &grid) {
+    inline sycl::int3 worldToCell(const float3& positionWorld, const DeviceSurfacePhotonMapGrid& grid) {
         const float3 local = (positionWorld - grid.gridOriginWorld);
         const float3 cellFloat = float3{
             local.x() / grid.cellSizeWorld.x(),
@@ -895,7 +898,7 @@ namespace Pale {
         return cell;
     }
 
-    inline std::uint32_t linearCellIndex(const sycl::int3 &cell, const sycl::int3 &gridResolution) {
+    inline std::uint32_t linearCellIndex(const sycl::int3& cell, const sycl::int3& gridResolution) {
         // x fastest
         return static_cast<std::uint32_t>(
             (cell.z() * gridResolution.y() + cell.y()) * gridResolution.x() + cell.x()
@@ -903,14 +906,14 @@ namespace Pale {
     }
 
 
-    inline float squaredDistanceToCellBounds(const float3 &point,
-                                             const sycl::int3 &cell,
-                                             const DeviceSurfacePhotonMapGrid &grid) {
+    inline float squaredDistanceToCellBounds(const float3& point,
+                                             const sycl::int3& cell,
+                                             const DeviceSurfacePhotonMapGrid& grid) {
         const float3 cellMin = grid.gridOriginWorld + float3{
-                                   static_cast<float>(cell.x()) * grid.cellSizeWorld.x(),
-                                   static_cast<float>(cell.y()) * grid.cellSizeWorld.y(),
-                                   static_cast<float>(cell.z()) * grid.cellSizeWorld.z()
-                               };
+            static_cast<float>(cell.x()) * grid.cellSizeWorld.x(),
+            static_cast<float>(cell.y()) * grid.cellSizeWorld.y(),
+            static_cast<float>(cell.z()) * grid.cellSizeWorld.z()
+        };
         const float3 cellMax = cellMin + grid.cellSizeWorld;
 
         const float dx = sycl::fmax(cellMin.x() - point.x(), point.x() - cellMax.x());
@@ -921,8 +924,8 @@ namespace Pale {
     }
 
     inline sycl::int3 clampCell(
-        const sycl::int3 &cell,
-        const DeviceSurfacePhotonMapGrid &grid) {
+        const sycl::int3& cell,
+        const DeviceSurfacePhotonMapGrid& grid) {
         return sycl::int3{
             sycl::clamp(cell.x(), 0, int(grid.gridResolution.x()) - 1),
             sycl::clamp(cell.y(), 0, int(grid.gridResolution.y()) - 1),
@@ -934,8 +937,8 @@ namespace Pale {
     inline int signNonZero(float x) { return (x >= 0.0f) ? 1 : -1; }
 
     inline float3 cellToWorldCenter(
-        const sycl::int3 &cellCoord,
-        const DeviceSurfacePhotonMapGrid &grid) {
+        const sycl::int3& cellCoord,
+        const DeviceSurfacePhotonMapGrid& grid) {
         // Convert integer cell index to center position in world space
         const float3 cellCoordFloat = float3{
             float(cellCoord.x()) + 0.5f,
@@ -947,7 +950,7 @@ namespace Pale {
     }
 
 
-    inline sycl::int3 worldToCellClamped(const float3 &positionWorld, const DeviceSurfacePhotonMapGrid &grid) {
+    inline sycl::int3 worldToCellClamped(const float3& positionWorld, const DeviceSurfacePhotonMapGrid& grid) {
         const float3 local = positionWorld - grid.gridOriginWorld;
         const float3 cellFloat = local / grid.cellSizeWorld;
 
@@ -964,48 +967,48 @@ namespace Pale {
     }
 
 
-    inline void atomicAddFloat4ToImage(float4 *dst, const float4 &v) {
+    inline void atomicAddFloat4ToImage(float4* dst, const float4& v) {
         for (int c = 0; c < 3; ++c) {
             sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>
-                    a(reinterpret_cast<float *>(dst)[c]);
+                             sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>
+                a(reinterpret_cast<float*>(dst)[c]);
             a.fetch_add(v[c]);
         }
         sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                    sycl::memory_scope::device,
-                    sycl::access::address_space::global_space>
-                a(reinterpret_cast<float *>(dst)[3]);
+                         sycl::memory_scope::device,
+                         sycl::access::address_space::global_space>
+            a(reinterpret_cast<float*>(dst)[3]);
         a.store(1.0f);
     }
 
-    inline void atomicAddFloat3ToImage(float4 *dst, const float3 &v) {
+    inline void atomicAddFloat3ToImage(float4* dst, const float3& v) {
         for (int c = 0; c < 3; ++c) {
             sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>
-                    a(reinterpret_cast<float *>(dst)[c]);
+                             sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>
+                a(reinterpret_cast<float*>(dst)[c]);
             a.fetch_add(v[c]);
         }
         sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                    sycl::memory_scope::device,
-                    sycl::access::address_space::global_space>
-                a(reinterpret_cast<float *>(dst)[3]);
+                         sycl::memory_scope::device,
+                         sycl::access::address_space::global_space>
+            a(reinterpret_cast<float*>(dst)[3]);
         a.store(1.0f);
     }
 
-    inline void atomicAddFloatToImage(float4 *dst, const float &v) {
+    inline void atomicAddFloatToImage(float4* dst, const float& v) {
         for (int c = 0; c < 3; ++c) {
             sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>
-                    a(reinterpret_cast<float *>(dst)[c]);
+                             sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>
+                a(reinterpret_cast<float*>(dst)[c]);
             a.fetch_add(v);
         }
         sycl::atomic_ref<float, sycl::memory_order::relaxed,
-                    sycl::memory_scope::device,
-                    sycl::access::address_space::global_space>
-                a(reinterpret_cast<float *>(dst)[3]);
+                         sycl::memory_scope::device,
+                         sycl::access::address_space::global_space>
+            a(reinterpret_cast<float*>(dst)[3]);
         a.store(1.0f);
     }
 
@@ -1014,55 +1017,55 @@ namespace Pale {
     }
 
 
-    inline float computeLuminanceRec709(const float3 &inputRgbLinear) {
+    inline float computeLuminanceRec709(const float3& inputRgbLinear) {
         const float redWeight = 0.2126f;
         const float greenWeight = 0.7152f;
         const float blueWeight = 0.0722f;
         return redWeight * inputRgbLinear[0]
-               + greenWeight * inputRgbLinear[1]
-               + blueWeight * inputRgbLinear[2];
+            + greenWeight * inputRgbLinear[1]
+            + blueWeight * inputRgbLinear[2];
     }
 
-    inline float luminance(const float3 &rgb) {
+    inline float luminance(const float3& rgb) {
         return computeLuminanceRec709(rgb);
     }
 
-    inline float luminanceGrayscale(const float3 &inputRgbLinear) {
+    inline float luminanceGrayscale(const float3& inputRgbLinear) {
         const float redWeight = 0.33f;
         const float greenWeight = 0.33f;
         const float blueWeight = 0.33f;
         return redWeight * inputRgbLinear[0]
-               + greenWeight * inputRgbLinear[1]
-               + blueWeight * inputRgbLinear[2];
+            + greenWeight * inputRgbLinear[1]
+            + blueWeight * inputRgbLinear[2];
     }
 
-    inline void breakAtMeshInstance(const WorldHit &worldHit) {
+    inline void breakAtMeshInstance(const WorldHit& worldHit) {
         switch (worldHit.instanceIndex) {
-            case 0:
-                break;
-            case 1:
-                break;
-            case 2:
-                break;
-            case 5:
-                break;
-            default:
-                break;
+        case 0:
+            break;
+        case 1:
+            break;
+        case 2:
+            break;
+        case 5:
+            break;
+        default:
+            break;
         }
     }
 
-    inline void breakAtPointCloudInstance(const WorldHit &worldHit) {
+    inline void breakAtPointCloudInstance(const WorldHit& worldHit) {
         switch (worldHit.primitiveIndex) {
-            case 0:
-                break;
-            case 1:
-                break;
-            case 2:
-                break;
-            case 7:
-                break;
-            default:
-                break;
+        case 0:
+            break;
+        case 1:
+            break;
+        case 2:
+            break;
+        case 7:
+            break;
+        default:
+            break;
         }
     }
 
@@ -1085,9 +1088,9 @@ namespace Pale {
 
 
     SYCL_EXTERNAL inline bool applyRussianRoulette(
-        rng::Xorshift128 &rng128,
+        rng::Xorshift128& rng128,
         uint32_t bounceIndex,
-        float3 &pathThroughput,
+        float3& pathThroughput,
         uint32_t rrStartBounce,
         float rrMinProbability = 0.00f,
         float rrMaxProbability = 0.99f,
@@ -1103,7 +1106,7 @@ namespace Pale {
         const float tz = pathThroughput.z();
 
         const bool throughputIsFinite =
-                sycl::isfinite(tx) && sycl::isfinite(ty) && sycl::isfinite(tz);
+            sycl::isfinite(tx) && sycl::isfinite(ty) && sycl::isfinite(tz);
 
         if (!throughputIsFinite) {
             return false;
@@ -1112,7 +1115,7 @@ namespace Pale {
         // Luminance-based continuation probability (more stable than max).
         // Clamp also prevents huge 1/p factors.
         const float luminance =
-                0.2126f * tx + 0.7152f * ty + 0.0722f * tz;
+            0.2126f * tx + 0.7152f * ty + 0.0722f * tz;
 
         float continuationProbability = sycl::clamp(luminance, rrMinProbability, rrMaxProbability);
 
@@ -1132,10 +1135,10 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline void appendContributionAtomic(
-        uint32_t *globalContributionCounter,
-        HitInfoContribution *globalContributionBuffer,
+        uint32_t* globalContributionCounter,
+        HitInfoContribution* globalContributionBuffer,
         uint32_t maxContributionCapacity,
-        const HitInfoContribution &contributionValue) {
+        const HitInfoContribution& contributionValue) {
         sycl::atomic_ref<
             uint32_t,
             sycl::memory_order::relaxed,
@@ -1154,17 +1157,17 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline void appendTransmittanceContributionAtomic(
-        uint32_t *globalContributionCounter,
-        HitTransmittanceContribution *globalContributionBuffer,
+        uint32_t* globalContributionCounter,
+        HitTransmittanceContribution* globalContributionBuffer,
         uint32_t maxContributionCapacity,
-        const HitTransmittanceContribution &contributionValue) {
+        const HitTransmittanceContribution& contributionValue) {
     }
 
     SYCL_EXTERNAL inline void appendCompletedGradientEventAtomic(
-        uint32_t *globalCompletedCounter,
-        CompletedGradientEvent *globalCompletedBuffer,
+        uint32_t* globalCompletedCounter,
+        CompletedGradientEvent* globalCompletedBuffer,
         uint32_t maxCompletedCapacity,
-        const CompletedGradientEvent &eventValue) {
+        const CompletedGradientEvent& eventValue) {
         sycl::atomic_ref<
             uint32_t,
             sycl::memory_order::relaxed,
@@ -1182,15 +1185,15 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline PointCloudSurfaceRecord makePointCloudSurfaceRecord(
-        const WorldHit &worldHit,
-        const RayState &rayState,
-        const GPUSceneBuffers &scene) {
+        const WorldHit& worldHit,
+        const RayState& rayState,
+        const GPUSceneBuffers& scene) {
         PointCloudSurfaceRecord surfaceRecord{};
         surfaceRecord.primitiveIndex = worldHit.primitiveIndex;
         surfaceRecord.alphaGeom = worldHit.alphaGeom;
         surfaceRecord.incomingDirection = rayState.ray.direction;
 
-        const Point &surfel = scene.points[worldHit.primitiveIndex];
+        const Point& surfel = scene.points[worldHit.primitiveIndex];
         surfaceRecord.uv = phiInverse(worldHit.hitPositionW, surfel);
 
         const float3 tangentUWorld = surfel.scale.x() * surfel.tanU;
@@ -1204,8 +1207,8 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline ReconstructedSurfelState reconstructSurfelState(
-        const Point &surfel,
-        const PointCloudSurfaceRecord &surfaceRecord) {
+        const Point& surfel,
+        const PointCloudSurfaceRecord& surfaceRecord) {
         ReconstructedSurfelState reconstructedState{};
         reconstructedState.position = phiMapping(surfel, surfaceRecord.uv.x(), surfaceRecord.uv.y());
         reconstructedState.tangentUWorld = surfel.scale.x() * surfel.tanU;
@@ -1214,21 +1217,21 @@ namespace Pale {
         const float3 scaledCross = cross(reconstructedState.tangentUWorld, reconstructedState.tangentVWorld);
         reconstructedState.canonicalNormal = normalize(scaledCross);
         reconstructedState.orientedNormal = static_cast<float>(surfaceRecord.sideSign) * reconstructedState.
-                                            canonicalNormal;
+            canonicalNormal;
         reconstructedState.areaWorld = M_PIf * length(scaledCross);
         return reconstructedState;
     }
 
-    template<typename EventType>
+    template <typename EventType>
     SYCL_EXTERNAL inline void appendEventAtomic(
-        uint32_t *countBuffer,
-        EventType *eventBuffer,
+        uint32_t* countBuffer,
+        EventType* eventBuffer,
         uint32_t maxEventCount,
-        const EventType &eventRecord) {
+        const EventType& eventRecord) {
         auto eventCounter = sycl::atomic_ref<uint32_t,
-            sycl::memory_order::relaxed,
-            sycl::memory_scope::device,
-            sycl::access::address_space::global_space>(*countBuffer);
+                                             sycl::memory_order::relaxed,
+                                             sycl::memory_scope::device,
+                                             sycl::access::address_space::global_space>(*countBuffer);
 
         const uint32_t eventIndex = eventCounter.fetch_add(1);
         if (eventIndex < maxEventCount) {
@@ -1237,9 +1240,9 @@ namespace Pale {
     }
 
     inline float3 gatherDiffuseIrradianceAtPoint(
-        const float3 &queryPositionWorld,
-        const float3 &queryNormal,
-        const DeviceSurfacePhotonMapGrid &grid) {
+        const float3& queryPositionWorld,
+        const float3& queryNormal,
+        const DeviceSurfacePhotonMapGrid& grid) {
         const float r = grid.minimumGatherRadiusWorld;
         const float r2 = r * r;
         const float invArea = 1.0f / (M_PIf * r2);
@@ -1280,15 +1283,15 @@ namespace Pale {
 
 
     SYCL_EXTERNAL inline void depositPhotonSurface(
-        const WorldHit &worldHit,
-        const float3 &incomingDirection,
-        const float3 &flux,
-        const DeviceSurfacePhotonMapGrid &photonMap) {
+        const WorldHit& worldHit,
+        const float3& incomingDirection,
+        const float3& flux,
+        const DeviceSurfacePhotonMapGrid& photonMap) {
         // Atomic counter for photon slots
         auto photonCounter = sycl::atomic_ref<uint32_t,
-            sycl::memory_order::relaxed,
-            sycl::memory_scope::device,
-            sycl::access::address_space::global_space>(
+                                              sycl::memory_order::relaxed,
+                                              sycl::memory_scope::device,
+                                              sycl::access::address_space::global_space>(
             *photonMap.photonCountDevicePtr);
 
         const uint32_t slot = photonCounter.fetch_add(1u);
@@ -1317,14 +1320,13 @@ namespace Pale {
     }
 
 
-// Distance from a point to a grid cell AABB in world space.
-// Works with anisotropic cell sizes through grid.cellSizeWorld.
-SYCL_EXTERNAL inline float minimumSquaredDistanceFromPointToCellAabb(
-    const float3 &queryPositionWorld,
-    const sycl::int3 &cellIndex,
-    const DeviceSurfacePhotonMapGrid &grid) {
-
-    const float3 cellMinimumWorld =
+    // Distance from a point to a grid cell AABB in world space.
+    // Works with anisotropic cell sizes through grid.cellSizeWorld.
+    SYCL_EXTERNAL inline float minimumSquaredDistanceFromPointToCellAabb(
+        const float3& queryPositionWorld,
+        const sycl::int3& cellIndex,
+        const DeviceSurfacePhotonMapGrid& grid) {
+        const float3 cellMinimumWorld =
             grid.gridOriginWorld +
             float3{
                 static_cast<float>(cellIndex.x()) * grid.cellSizeWorld.x(),
@@ -1332,280 +1334,277 @@ SYCL_EXTERNAL inline float minimumSquaredDistanceFromPointToCellAabb(
                 static_cast<float>(cellIndex.z()) * grid.cellSizeWorld.z()
             };
 
-    const float3 cellMaximumWorld = cellMinimumWorld + grid.cellSizeWorld;
+        const float3 cellMaximumWorld = cellMinimumWorld + grid.cellSizeWorld;
 
-    const float dx =
+        const float dx =
             queryPositionWorld.x() < cellMinimumWorld.x()
                 ? (cellMinimumWorld.x() - queryPositionWorld.x())
                 : (queryPositionWorld.x() > cellMaximumWorld.x()
                        ? (queryPositionWorld.x() - cellMaximumWorld.x())
                        : 0.0f);
 
-    const float dy =
+        const float dy =
             queryPositionWorld.y() < cellMinimumWorld.y()
                 ? (cellMinimumWorld.y() - queryPositionWorld.y())
                 : (queryPositionWorld.y() > cellMaximumWorld.y()
                        ? (queryPositionWorld.y() - cellMaximumWorld.y())
                        : 0.0f);
 
-    const float dz =
+        const float dz =
             queryPositionWorld.z() < cellMinimumWorld.z()
                 ? (cellMinimumWorld.z() - queryPositionWorld.z())
                 : (queryPositionWorld.z() > cellMaximumWorld.z()
                        ? (queryPositionWorld.z() - cellMaximumWorld.z())
                        : 0.0f);
 
-    return dx * dx + dy * dy + dz * dz;
-}
+        return dx * dx + dy * dy + dz * dz;
+    }
 
-SYCL_EXTERNAL inline void recomputeWorstNeighbor(
-    const float *nearestPhotonDistanceSquared,
-    uint32_t acceptedNeighborCount,
-    uint32_t &worstNeighborIndex,
-    float &worstNeighborDistanceSquared) {
+    SYCL_EXTERNAL inline void recomputeWorstNeighbor(
+        const float* nearestPhotonDistanceSquared,
+        uint32_t acceptedNeighborCount,
+        uint32_t& worstNeighborIndex,
+        float& worstNeighborDistanceSquared) {
+        worstNeighborIndex = 0u;
+        worstNeighborDistanceSquared = nearestPhotonDistanceSquared[0];
 
-    worstNeighborIndex = 0u;
-    worstNeighborDistanceSquared = nearestPhotonDistanceSquared[0];
-
-    for (uint32_t neighborIndex = 1u; neighborIndex < acceptedNeighborCount; ++neighborIndex) {
-        const float candidateDistanceSquared = nearestPhotonDistanceSquared[neighborIndex];
-        if (candidateDistanceSquared > worstNeighborDistanceSquared) {
-            worstNeighborDistanceSquared = candidateDistanceSquared;
-            worstNeighborIndex = neighborIndex;
+        for (uint32_t neighborIndex = 1u; neighborIndex < acceptedNeighborCount; ++neighborIndex) {
+            const float candidateDistanceSquared = nearestPhotonDistanceSquared[neighborIndex];
+            if (candidateDistanceSquared > worstNeighborDistanceSquared) {
+                worstNeighborDistanceSquared = candidateDistanceSquared;
+                worstNeighborIndex = neighborIndex;
+            }
         }
     }
-}
 
-SYCL_EXTERNAL inline int clampInt(int value, int minimumValue, int maximumValue) {
-    return value < minimumValue ? minimumValue : (value > maximumValue ? maximumValue : value);
-}
+    SYCL_EXTERNAL inline int clampInt(int value, int minimumValue, int maximumValue) {
+        return value < minimumValue ? minimumValue : (value > maximumValue ? maximumValue : value);
+    }
 
-SYCL_EXTERNAL inline int absoluteInt(int value) {
-    return value < 0 ? -value : value;
-}
+    SYCL_EXTERNAL inline int absoluteInt(int value) {
+        return value < 0 ? -value : value;
+    }
 
-static constexpr uint32_t kPhotonGatherNeighborCount = 128;
+    static constexpr uint32_t kPhotonGatherNeighborCount = 128;
 
-SYCL_EXTERNAL inline void tryInsertPhotonIntoNearestSet(
-    const DevicePhotonSurface &candidatePhoton,
-    float candidateDistanceSquared,
-    float3 *nearestPhotonPowers,
-    float *nearestPhotonDistanceSquared,
-    uint32_t &acceptedNeighborCount,
-    uint32_t &worstNeighborIndex,
-    float &worstNeighborDistanceSquared) {
+    SYCL_EXTERNAL inline void tryInsertPhotonIntoNearestSet(
+        const DevicePhotonSurface& candidatePhoton,
+        float candidateDistanceSquared,
+        float3* nearestPhotonPowers,
+        float* nearestPhotonDistanceSquared,
+        uint32_t& acceptedNeighborCount,
+        uint32_t& worstNeighborIndex,
+        float& worstNeighborDistanceSquared) {
+        if (acceptedNeighborCount < kPhotonGatherNeighborCount) {
+            nearestPhotonPowers[acceptedNeighborCount] = candidatePhoton.power;
+            nearestPhotonDistanceSquared[acceptedNeighborCount] = candidateDistanceSquared;
 
-    if (acceptedNeighborCount < kPhotonGatherNeighborCount) {
-        nearestPhotonPowers[acceptedNeighborCount] = candidatePhoton.power;
-        nearestPhotonDistanceSquared[acceptedNeighborCount] = candidateDistanceSquared;
+            if (acceptedNeighborCount == 0u || candidateDistanceSquared > worstNeighborDistanceSquared) {
+                worstNeighborDistanceSquared = candidateDistanceSquared;
+                worstNeighborIndex = acceptedNeighborCount;
+            }
 
-        if (acceptedNeighborCount == 0u || candidateDistanceSquared > worstNeighborDistanceSquared) {
-            worstNeighborDistanceSquared = candidateDistanceSquared;
-            worstNeighborIndex = acceptedNeighborCount;
+            ++acceptedNeighborCount;
+            return;
         }
 
-        ++acceptedNeighborCount;
-        return;
+        if (candidateDistanceSquared >= worstNeighborDistanceSquared) {
+            return;
+        }
+
+        nearestPhotonPowers[worstNeighborIndex] = candidatePhoton.power;
+        nearestPhotonDistanceSquared[worstNeighborIndex] = candidateDistanceSquared;
+
+        recomputeWorstNeighbor(
+            nearestPhotonDistanceSquared,
+            acceptedNeighborCount,
+            worstNeighborIndex,
+            worstNeighborDistanceSquared);
     }
 
-    if (candidateDistanceSquared >= worstNeighborDistanceSquared) {
-        return;
-    }
+    SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
+        const float3& queryPositionWorld,
+        const float3& queryNormalWorld,
+        const DeviceSurfacePhotonMapGrid& grid) {
+        float3 nearestPhotonPowers[kPhotonGatherNeighborCount];
+        float nearestPhotonDistanceSquared[kPhotonGatherNeighborCount];
 
-    nearestPhotonPowers[worstNeighborIndex] = candidatePhoton.power;
-    nearestPhotonDistanceSquared[worstNeighborIndex] = candidateDistanceSquared;
+        uint32_t acceptedNeighborCount = 0u;
+        uint32_t worstNeighborIndex = 0u;
+        float worstNeighborDistanceSquared = 0.0f;
 
-    recomputeWorstNeighbor(
-        nearestPhotonDistanceSquared,
-        acceptedNeighborCount,
-        worstNeighborIndex,
-        worstNeighborDistanceSquared);
-}
+        const sycl::int3 queryCell = worldToCellClamped(queryPositionWorld, grid);
 
-SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
-    const float3 &queryPositionWorld,
-    const float3 &queryNormalWorld,
-    const DeviceSurfacePhotonMapGrid &grid) {
-
-    float3 nearestPhotonPowers[kPhotonGatherNeighborCount];
-    float nearestPhotonDistanceSquared[kPhotonGatherNeighborCount];
-
-    uint32_t acceptedNeighborCount = 0u;
-    uint32_t worstNeighborIndex = 0u;
-    float worstNeighborDistanceSquared = 0.0f;
-
-    const sycl::int3 queryCell = worldToCellClamped(queryPositionWorld, grid);
-
-    const int maximumSearchRing =
+        const int maximumSearchRing =
             sycl::max(
                 sycl::max(grid.gridResolution.x(), grid.gridResolution.y()),
                 grid.gridResolution.z());
 
-    const float minimumCellExtentWorld =
+        const float minimumCellExtentWorld =
             sycl::fmin(grid.cellSizeWorld.x(),
                        sycl::fmin(grid.cellSizeWorld.y(), grid.cellSizeWorld.z()));
 
-    const float minimumKernelRadiusSquared =
+        const float minimumKernelRadiusSquared =
             grid.minimumGatherRadiusWorld * grid.minimumGatherRadiusWorld;
 
-    const float maximumKernelRadiusSquared =
+        const float maximumKernelRadiusSquared =
             grid.maximumGatherRadiusWorld * grid.maximumGatherRadiusWorld;
 
-    for (int searchRing = 0; searchRing < maximumSearchRing; ++searchRing) {
-        const int minCellX = clampInt(queryCell.x() - searchRing, 0, grid.gridResolution.x() - 1);
-        const int maxCellX = clampInt(queryCell.x() + searchRing, 0, grid.gridResolution.x() - 1);
+        for (int searchRing = 0; searchRing < maximumSearchRing; ++searchRing) {
+            const int minCellX = clampInt(queryCell.x() - searchRing, 0, grid.gridResolution.x() - 1);
+            const int maxCellX = clampInt(queryCell.x() + searchRing, 0, grid.gridResolution.x() - 1);
 
-        const int minCellY = clampInt(queryCell.y() - searchRing, 0, grid.gridResolution.y() - 1);
-        const int maxCellY = clampInt(queryCell.y() + searchRing, 0, grid.gridResolution.y() - 1);
+            const int minCellY = clampInt(queryCell.y() - searchRing, 0, grid.gridResolution.y() - 1);
+            const int maxCellY = clampInt(queryCell.y() + searchRing, 0, grid.gridResolution.y() - 1);
 
-        const int minCellZ = clampInt(queryCell.z() - searchRing, 0, grid.gridResolution.z() - 1);
-        const int maxCellZ = clampInt(queryCell.z() + searchRing, 0, grid.gridResolution.z() - 1);
+            const int minCellZ = clampInt(queryCell.z() - searchRing, 0, grid.gridResolution.z() - 1);
+            const int maxCellZ = clampInt(queryCell.z() + searchRing, 0, grid.gridResolution.z() - 1);
 
-        for (int cellZ = minCellZ; cellZ <= maxCellZ; ++cellZ) {
-            for (int cellY = minCellY; cellY <= maxCellY; ++cellY) {
-                for (int cellX = minCellX; cellX <= maxCellX; ++cellX) {
-                    if (searchRing > 0) {
-                        const bool isInsidePreviousCube =
+            for (int cellZ = minCellZ; cellZ <= maxCellZ; ++cellZ) {
+                for (int cellY = minCellY; cellY <= maxCellY; ++cellY) {
+                    for (int cellX = minCellX; cellX <= maxCellX; ++cellX) {
+                        if (searchRing > 0) {
+                            const bool isInsidePreviousCube =
                                 absoluteInt(cellX - queryCell.x()) < searchRing &&
                                 absoluteInt(cellY - queryCell.y()) < searchRing &&
                                 absoluteInt(cellZ - queryCell.z()) < searchRing;
 
-                        if (isInsidePreviousCube) {
-                            continue;
+                            if (isInsidePreviousCube) {
+                                continue;
+                            }
                         }
-                    }
 
-                    const sycl::int3 candidateCell{cellX, cellY, cellZ};
+                        const sycl::int3 candidateCell{cellX, cellY, cellZ};
 
-                    const float minimumCellDistanceSquared =
+                        const float minimumCellDistanceSquared =
                             minimumSquaredDistanceFromPointToCellAabb(
                                 queryPositionWorld,
                                 candidateCell,
                                 grid);
 
-                    // Whole-cell pruning against the maximum allowed support radius.
-                    if (minimumCellDistanceSquared > maximumKernelRadiusSquared) {
-                        continue;
-                    }
+                        // Whole-cell pruning against the maximum allowed support radius.
+                        if (minimumCellDistanceSquared > maximumKernelRadiusSquared) {
+                            continue;
+                        }
 
-                    // Whole-cell pruning against current KNN worst distance once K is full.
-                    if (acceptedNeighborCount == kPhotonGatherNeighborCount &&
-                        minimumCellDistanceSquared > worstNeighborDistanceSquared) {
-                        continue;
-                    }
+                        // Whole-cell pruning against current KNN worst distance once K is full.
+                        if (acceptedNeighborCount == kPhotonGatherNeighborCount &&
+                            minimumCellDistanceSquared > worstNeighborDistanceSquared) {
+                            continue;
+                        }
 
-                    const uint32_t cellId =
+                        const uint32_t cellId =
                             linearCellIndex(candidateCell, grid.gridResolution);
 
-                    const uint32_t start = grid.cellStart[cellId];
-                    if (start == kInvalidIndex) {
-                        continue;
-                    }
-
-                    const uint32_t end = grid.cellEnd[cellId];
-
-                    for (uint32_t photonSlot = start; photonSlot < end; ++photonSlot) {
-                        const uint32_t photonIndex = grid.sortedPhotonIndex[photonSlot];
-                        const DevicePhotonSurface photon = grid.photons[photonIndex];
-
-                        const float3 photonOffset = photon.position - queryPositionWorld;
-                        const float photonDistanceSquared = dot(photonOffset, photonOffset);
-
-                        if (photonDistanceSquared > maximumKernelRadiusSquared) {
+                        const uint32_t start = grid.cellStart[cellId];
+                        if (start == kInvalidIndex) {
                             continue;
                         }
 
-                        const float incidentCosine =
+                        const uint32_t end = grid.cellEnd[cellId];
+
+                        for (uint32_t photonSlot = start; photonSlot < end; ++photonSlot) {
+                            const uint32_t photonIndex = grid.sortedPhotonIndex[photonSlot];
+                            const DevicePhotonSurface photon = grid.photons[photonIndex];
+
+                            const float3 photonOffset = photon.position - queryPositionWorld;
+                            const float photonDistanceSquared = dot(photonOffset, photonOffset);
+
+                            if (photonDistanceSquared > maximumKernelRadiusSquared) {
+                                continue;
+                            }
+
+                            const float incidentCosine =
                                 dot(queryNormalWorld, -photon.incomingDirection);
 
-                        if (incidentCosine <= 0.0f) {
-                            continue;
-                        }
+                            if (incidentCosine <= 0.0f) {
+                                continue;
+                            }
 
-                        tryInsertPhotonIntoNearestSet(
-                            photon,
-                            photonDistanceSquared,
-                            nearestPhotonPowers,
-                            nearestPhotonDistanceSquared,
-                            acceptedNeighborCount,
-                            worstNeighborIndex,
-                            worstNeighborDistanceSquared);
+                            tryInsertPhotonIntoNearestSet(
+                                photon,
+                                photonDistanceSquared,
+                                nearestPhotonPowers,
+                                nearestPhotonDistanceSquared,
+                                acceptedNeighborCount,
+                                worstNeighborIndex,
+                                worstNeighborDistanceSquared);
+                        }
                     }
                 }
             }
-        }
 
-        const float minimumDistanceToAnyFutureRing =
+            const float minimumDistanceToAnyFutureRing =
                 static_cast<float>(searchRing + 1) * minimumCellExtentWorld;
 
-        const float minimumDistanceToAnyFutureRingSquared =
+            const float minimumDistanceToAnyFutureRingSquared =
                 minimumDistanceToAnyFutureRing * minimumDistanceToAnyFutureRing;
 
-        // No future ring can contribute within R_max.
-        if (minimumDistanceToAnyFutureRingSquared > maximumKernelRadiusSquared) {
-            break;
+            // No future ring can contribute within R_max.
+            if (minimumDistanceToAnyFutureRingSquared > maximumKernelRadiusSquared) {
+                break;
+            }
+
+            // KNN set is already complete and no future ring can contain a closer photon.
+            if (acceptedNeighborCount == kPhotonGatherNeighborCount &&
+                minimumDistanceToAnyFutureRingSquared > worstNeighborDistanceSquared) {
+                break;
+            }
         }
 
-        // KNN set is already complete and no future ring can contain a closer photon.
-        if (acceptedNeighborCount == kPhotonGatherNeighborCount &&
-            minimumDistanceToAnyFutureRingSquared > worstNeighborDistanceSquared) {
-            break;
+        if (acceptedNeighborCount == 0u) {
+            return float3{0.0f, 0.0f, 0.0f};
         }
-    }
 
-    if (acceptedNeighborCount == 0u) {
-        return float3{0.0f, 0.0f, 0.0f};
-    }
-
-    const float unclampedKernelRadiusSquared =
+        const float unclampedKernelRadiusSquared =
             sycl::fmax(worstNeighborDistanceSquared, minimumKernelRadiusSquared);
 
-    const float kernelRadiusSquared =
+        const float kernelRadiusSquared =
             sycl::fmin(unclampedKernelRadiusSquared, maximumKernelRadiusSquared);
 
-    const float inverseKernelRadiusSquared = 1.0f / kernelRadiusSquared;
+        const float inverseKernelRadiusSquared = 1.0f / kernelRadiusSquared;
 
-    // 2D Epanechnikov kernel on a disk:
-    // w(r) = 1 - r^2 / R^2, integral over disk = pi R^2 / 2
-    const float inverseEpanechnikovNormalization =
+        // 2D Epanechnikov kernel on a disk:
+        // w(r) = 1 - r^2 / R^2, integral over disk = pi R^2 / 2
+        const float inverseEpanechnikovNormalization =
             2.0f / (M_PIf * kernelRadiusSquared);
 
-    float3 irradiance = float3{0.0f, 0.0f, 0.0f};
+        float3 irradiance = float3{0.0f, 0.0f, 0.0f};
 
-    for (uint32_t neighborIndex = 0u; neighborIndex < acceptedNeighborCount; ++neighborIndex) {
-        const float distanceSquared = nearestPhotonDistanceSquared[neighborIndex];
+        for (uint32_t neighborIndex = 0u; neighborIndex < acceptedNeighborCount; ++neighborIndex) {
+            const float distanceSquared = nearestPhotonDistanceSquared[neighborIndex];
 
-        // Should already be inside the max radius because of the insertion filter,
-        // but keep the weight robust.
-        if (distanceSquared > kernelRadiusSquared) {
-            continue;
-        }
+            // Should already be inside the max radius because of the insertion filter,
+            // but keep the weight robust.
+            if (distanceSquared > kernelRadiusSquared) {
+                continue;
+            }
 
-        const float weight =
+            const float weight =
                 sycl::fmax(0.0f, 1.0f - distanceSquared * inverseKernelRadiusSquared);
 
-        irradiance += nearestPhotonPowers[neighborIndex] * weight;
+            irradiance += nearestPhotonPowers[neighborIndex] * weight;
+        }
+
+        return irradiance * inverseEpanechnikovNormalization;
     }
 
-    return irradiance * inverseEpanechnikovNormalization;
-}
-
-    template<typename PhotonMapType>
+    template <typename PhotonMapType>
     SYCL_EXTERNAL inline float3 evaluateSurfelRadianceWithoutLocalAlpha(
-        const Point &surfel,
-        const PointCloudSurfaceRecord &surfaceRecord,
-        const ReconstructedSurfelState &reconstructedState,
-        const PhotonMapType &photonMap) {
+        const Point& surfel,
+        const PointCloudSurfaceRecord& surfaceRecord,
+        const ReconstructedSurfelState& reconstructedState,
+        const PhotonMapType& photonMap) {
         const float3 irradiance = gatherDiffuseIrradianceAtPoint(
             reconstructedState.position,
             reconstructedState.orientedNormal,
             photonMap);
 
         const float3 reflectedRadiance =
-                irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
+            irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
 
         float3 emittedRadiance =
-                surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld));
+            surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld));
 
         if (surfel.power > 0.0f && surfaceRecord.sideSign < 0) {
             emittedRadiance = float3{0.0f, 0.0f, 0.0f};
@@ -1615,12 +1614,12 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
     }
 
 
-    template<typename PhotonMapType>
-    SYCL_EXTERNAL inline float3 evaluateOutgoingRadianceWithLocalAlpha(const Point &surfel,
-                                                                       const PointCloudSurfaceRecord &surfaceRecord,
-                                                                       const ReconstructedSurfelState &
+    template <typename PhotonMapType>
+    SYCL_EXTERNAL inline float3 evaluateOutgoingRadianceWithLocalAlpha(const Point& surfel,
+                                                                       const PointCloudSurfaceRecord& surfaceRecord,
+                                                                       const ReconstructedSurfelState&
                                                                        reconstructedState,
-                                                                       const PhotonMapType &photonMap) {
+                                                                       const PhotonMapType& photonMap) {
         const float3 irradiance = gatherDiffuseIrradianceAtPoint(
             reconstructedState.position,
             reconstructedState.orientedNormal,
@@ -1629,10 +1628,10 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
         const float alpha = surfaceRecord.alphaGeom * surfel.opacity;
 
         const float3 reflectedRadiance =
-                irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf * alpha;
+            irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf * alpha;
 
         float3 emittedRadiance =
-                surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld)) * alpha;
+            surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld)) * alpha;
 
         if (surfel.power > 0.0f && surfaceRecord.sideSign < 0) {
             emittedRadiance = float3{0.0f, 0.0f, 0.0f};
@@ -1642,28 +1641,107 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
     }
 
 
-
-    SYCL_EXTERNAL inline float squaredLength(const float3 &value) {
+    SYCL_EXTERNAL inline float squaredLength(const float3& value) {
         return dot(value, value);
     }
 
 
-    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX &pendingStage) {
-        pendingStage = PendingAdjointStageX{};
+    SYCL_EXTERNAL inline void clearPendingAdjointVertex(PendingAdjointVertex& v) {
+        v.surface = {};
+        v.bounceIndex = 0u;
+        v.pathThroughput = float3{0.0f, 0.0f, 0.0f};
+        v.transmissionFromPrevious = 1.0f;
+        v.geometryFromPrevious = 1.0f;
+        v.areaPdfFromPrevious = 1.0f;
+        v.bsdf = float3{0.0f, 0.0f, 0.0f};
+        v.cosineFromPrevious = 0.0f;
     }
 
-    SYCL_EXTERNAL inline void clearPendingAdjointStageXY(PendingAdjointStageXY &pendingStage) {
-        pendingStage = PendingAdjointStageXY{};
+    SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX& s) {
+        s.valid = false;
+        s.pathId = 0u;
+        s.pixelIndex = 0u;
+        s.useImplicitRayHitJacobian = false;
+        s.hasPrevious = false;
+        clearPendingAdjointVertex(s.previous);
+        clearPendingAdjointVertex(s.current);
     }
 
-    SYCL_EXTERNAL inline float computeEndpointCosine(const Ray &incomingRay, const float3 &endpointNormalW) {
-        return dot(-incomingRay.direction, endpointNormalW);
+    SYCL_EXTERNAL inline PendingAdjointVertex makePendingAdjointVertex(
+        const PointCloudSurfaceRecord& surface,
+        uint32_t bounceIndex,
+        const float3& pathThroughput,
+        float transmissionFromPrevious,
+        float geometryFromPrevious,
+        float areaPdfFromPrevious,
+        const float3& bsdf,
+        float cosineFromPrevious) {
+        PendingAdjointVertex v{};
+        v.surface = surface;
+        v.bounceIndex = bounceIndex;
+        v.pathThroughput = pathThroughput;
+        v.transmissionFromPrevious = transmissionFromPrevious;
+        v.geometryFromPrevious = geometryFromPrevious;
+        v.areaPdfFromPrevious = areaPdfFromPrevious;
+        v.bsdf = bsdf;
+        v.cosineFromPrevious = cosineFromPrevious;
+        return v;
     }
 
+    SYCL_EXTERNAL inline void pushPendingAdjointVertex(
+        PendingAdjointStageX& stage,
+        uint32_t pathId,
+        uint32_t pixelIndex,
+        bool useImplicitRayHitJacobian,
+        const PendingAdjointVertex& newCurrent) {
+        if (stage.valid) {
+            stage.hasPrevious = true;
+            stage.previous = stage.current;
+        }
+        else {
+            stage.hasPrevious = false;
+            clearPendingAdjointVertex(stage.previous);
+        }
+
+        stage.valid = true;
+        stage.pathId = pathId;
+        stage.pixelIndex = pixelIndex;
+        stage.useImplicitRayHitJacobian = useImplicitRayHitJacobian;
+        stage.current = newCurrent;
+    }
+
+    inline float3 computePointCloudOrientedNormal(
+        const Point& surfel,
+        const float3& rayDirectionWorld) {
+
+        const float3 canonicalNormal = normalize(cross(
+            surfel.scale.x() * surfel.tanU,
+            surfel.scale.y() * surfel.tanV));
+
+        const float signedCosineIncident =
+            dot(canonicalNormal, -rayDirectionWorld);
+        const int sideSign = signNonZero(signedCosineIncident);
+
+        return static_cast<float>(sideSign) * canonicalNormal;
+    }
+
+    inline float computeSegmentAreaPdfFromUniformHemisphere(
+        const ReconstructedSurfelState& fromState,
+        const ReconstructedSurfelState& toState,
+        float hemispherePdf) {
+
+        const float3 vectorFromTo = toState.position - fromState.position;
+        const float distanceSquared = dot(vectorFromTo, vectorFromTo);
+        const float distance = sycl::sqrt(distanceSquared);
+        const float3 directionFromTo = vectorFromTo / distance;
+        const float cosineAtTo = dot(toState.orientedNormal, -directionFromTo);
+
+        return hemispherePdf * cosineAtTo / distanceSquared;
+    }
 
     SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLight(
-        const GPUSceneBuffers &scene,
-        rng::Xorshift128 &rng128) {
+        const GPUSceneBuffers& scene,
+        rng::Xorshift128& rng128) {
         AreaLightSample sample{};
         sample.valid = false;
 
@@ -1673,7 +1751,7 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
         // 1) Pick a light (keep uniform for now; later you can switch to flux-weighted)
         const float u_light = rng128.nextFloat();
         const uint32_t light_index =
-                sycl::min(static_cast<uint32_t>(u_light * scene.lightCount), scene.lightCount - 1u);
+            sycl::min(static_cast<uint32_t>(u_light * scene.lightCount), scene.lightCount - 1u);
 
         const GPULightRecord light = scene.lights[light_index];
         sample.pdfSelectLight = 1.0f / static_cast<float>(scene.lightCount);
@@ -1685,7 +1763,8 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
             // 2) Pick a triangle proportional to WORLD area using the precomputed CDF
             const float u_tri = rng128.nextFloat();
 
-            uint32_t tri_rel = 0u; {
+            uint32_t tri_rel = 0u;
+            {
                 // Binary search first cdf >= u_tri (CDF is inclusive and last entry is exactly 1)
                 uint32_t lo = 0u;
                 uint32_t hi = light.triangleCount - 1u;
@@ -1695,7 +1774,8 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
                     const float cdf_mid = scene.emissiveTriangles[light.triangleOffset + mid].cdf;
                     if (u_tri <= cdf_mid) {
                         hi = mid;
-                    } else {
+                    }
+                    else {
                         lo = mid + 1u;
                     }
                 }
@@ -1703,7 +1783,7 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
             }
 
             const GPUEmissiveTriangle emissive_triangle =
-                    scene.emissiveTriangles[light.triangleOffset + tri_rel];
+                scene.emissiveTriangles[light.triangleOffset + tri_rel];
 
             const Triangle tri = scene.triangles[emissive_triangle.globalTriangleIndex];
             const Vertex v0 = scene.vertices[tri.v0];
@@ -1761,8 +1841,9 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
             sample.pdfDir = pdfDir;
             sample.valid = true;
             sample.lightIndex = light_index;
-        } else if (light.lightType == LightType::Surfel) {
-            const auto &surfel = scene.points[light.primitiveIndex];
+        }
+        else if (light.lightType == LightType::Surfel) {
+            const auto& surfel = scene.points[light.primitiveIndex];
 
             float xi1 = rng128.nextFloat();
             float xi2 = rng128.nextFloat();
@@ -1777,9 +1858,9 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
             float3 tangentVWorld = surfel.scale.y() * surfel.tanV;
 
             float3 positionWorld =
-                    surfel.position +
-                    localU * tangentUWorld +
-                    localV * tangentVWorld;
+                surfel.position +
+                localU * tangentUWorld +
+                localV * tangentVWorld;
 
             float totalAreaWorld = M_PIf * length(cross(tangentUWorld, tangentVWorld));
             float pdfArea = 1.0f / totalAreaWorld;
@@ -1816,48 +1897,48 @@ SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
         uint32_t recursiveBridgeEventCount) {
         GradientRecordRanges ranges{};
 
-    static constexpr uint32_t measurementRecordsPerEvent =
+        static constexpr uint32_t measurementRecordsPerEvent =
             1u + kMaxSplatEventsPerRay;
 
-    static constexpr uint32_t measurementTwoPointRecordsPerEvent =
+        static constexpr uint32_t measurementTwoPointRecordsPerEvent =
             1u + kMaxSplatEventsPerRay;
 
-    static constexpr uint32_t cameraAttachedBridgeRecordsPerEvent =
-            1u ;
+        static constexpr uint32_t cameraAttachedBridgeRecordsPerEvent =
+            1u;
 
-    static constexpr uint32_t recursiveBridgeRecordsPerEvent =
+        static constexpr uint32_t recursiveBridgeRecordsPerEvent =
             2u + kMaxSplatEventsPerRay;
 
         ranges.measurementOffset = 0u;
         ranges.measurementCount =
-                measurementRecordsPerEvent * measurementEventCount;
+            measurementRecordsPerEvent * measurementEventCount;
 
         ranges.measurementTwoPointOffset = ranges.measurementOffset + ranges.measurementCount;
         ranges.measurementTwoPointCount =
-                measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
+            measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
 
         ranges.cameraAttachedBridgeOffset =
-                ranges.measurementTwoPointOffset + ranges.measurementTwoPointCount;
+            ranges.measurementTwoPointOffset + ranges.measurementTwoPointCount;
         ranges.cameraAttachedBridgeCount =
-                cameraAttachedBridgeRecordsPerEvent * cameraAttachedBridgeEventCount;
+            cameraAttachedBridgeRecordsPerEvent * cameraAttachedBridgeEventCount;
 
         ranges.recursiveBridgeOffset =
-                ranges.cameraAttachedBridgeOffset + ranges.cameraAttachedBridgeCount;
+            ranges.cameraAttachedBridgeOffset + ranges.cameraAttachedBridgeCount;
         ranges.recursiveBridgeCount =
-                recursiveBridgeRecordsPerEvent * recursiveBridgeEventCount;
+            recursiveBridgeRecordsPerEvent * recursiveBridgeEventCount;
 
         ranges.totalCount =
-                ranges.recursiveBridgeOffset + ranges.recursiveBridgeCount;
+            ranges.recursiveBridgeOffset + ranges.recursiveBridgeCount;
 
         return ranges;
     }
 
-    SYCL_EXTERNAL inline bool isZeroFloat3(const float3 &value) {
+    SYCL_EXTERNAL inline bool isZeroFloat3(const float3& value) {
         return value.x() == 0.0f && value.y() == 0.0f && value.z() == 0.0f;
     }
 
 
-    inline void clearPendingCameraSegment(PendingCameraSegment &pendingCameraSegment) {
+    inline void clearPendingCameraSegment(PendingCameraSegment& pendingCameraSegment) {
         pendingCameraSegment.valid = false;
         pendingCameraSegment.pathId = 0u;
         pendingCameraSegment.pixelIndex = 0u;
