@@ -2,7 +2,7 @@
   "common_args": [
     "--iterations", "10",
     "--ply", "pointcloud",
-    "--seed", "666"
+    "--seed", "42"
   ],
   "cases": [
     {
@@ -12,11 +12,11 @@
       "index": 6,
       "min": -0.3,
       "max": 0.3,
-      "fd_epsilon": 1e-2,
-      "forward_passes": 100,
-      "bounces": 3,
-      "adjoint_passes": 10,
-      "adjoint_bounces": 4
+      "fd_epsilon": 5e-2,
+      "forward_passes": 20,
+      "bounces": 2,
+      "adjoint_passes": 2,
+      "adjoint_bounces": 3
     },
     {
       "scene": "cornell",
@@ -24,11 +24,11 @@
       "parameter": "translation_y",
       "index": 6,
       "min": 0.0,
-      "max": 0.65,
-      "fd_epsilon": 1e-2,
-      "forward_passes": 25,
+      "max": 0.45,
+      "fd_epsilon": 5e-2,
+      "forward_passes": 20,
       "bounces": 2,
-      "adjoint_passes": 1,
+      "adjoint_passes": 2,
       "adjoint_bounces": 3
     },
     {

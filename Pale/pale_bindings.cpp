@@ -130,10 +130,8 @@ public:
             settings.random.seed = get_i(settingsDict, "seed", settings.random.seed);
             settings.renderDebugGradientImages =
                     get_b(settingsDict, "debug_images", settings.renderDebugGradientImages);
-            settings.depthDistortionWeight =
-                    get_f(settingsDict, "depth_distort_weight", settings.depthDistortionWeight);
-            settings.normalConsistencyWeight =
-                    get_f(settingsDict, "normal_consistency_weight", settings.normalConsistencyWeight);
+            settings.enableAdjointDirectLight =
+                    get_b(settingsDict, "enable_adjoint_shadow_rays", settings.enableAdjointDirectLight);
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
 

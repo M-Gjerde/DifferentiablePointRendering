@@ -1702,8 +1702,7 @@ namespace Pale {
         const float3 reflectedRadiance =
             irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf * alpha;
 
-        float3 emittedRadiance =
-            surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld)) * alpha;
+        float3 emittedRadiance = surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld)) * alpha;
 
         if (surfel.power > 0.0f && surfaceRecord.sideSign < 0) {
             emittedRadiance = float3{0.0f, 0.0f, 0.0f};

@@ -377,6 +377,7 @@ namespace Pale {
 
         uint32_t pixelIndex = 0u;
         uint32_t pathId = 0u;
+        uint32_t bounceIndex = 0u;
     };
 
     struct DirectLightGradientEvent {
@@ -384,6 +385,7 @@ namespace Pale {
 
         // Prefix weight up to the current surface x.
         float3 xPathThroughput{0.0f, 0.0f, 0.0f};
+        float3 localBsdf{0.0f, 0.0f, 0.0f};
 
         // Surface-to-light sample.
         float3 lightPositionWorld{0.0f, 0.0f, 0.0f};
@@ -634,7 +636,7 @@ namespace Pale {
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
         AdjointSampleSettings sampling;
-        bool enableAdjointDirectLight = true;
+        bool enableAdjointDirectLight = false;
 
     };
 

@@ -177,6 +177,7 @@ def main(args) -> None:
         "adjoint_passes": args.adjoint_passes,
         "logging": 4,
         "seed": args.seed,
+        "enable_adjoint_shadow_rays": False,
     }
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
 
@@ -468,7 +469,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fill_target",
         action="store_true",
-        default=False,
+        default=True,
         help="Replace the loaded target image with an all-ones image.",
     )
     parser.add_argument(

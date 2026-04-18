@@ -291,7 +291,7 @@ namespace Pale {
                                     // Keep the current convention explicit:
                                     // transported adjoint weight up to the current surface,
                                     // before adding the local direct-light factor.
-                                    query.adjointWeight = currentRayState.pathThroughput;
+                                    query.adjointWeight = currentRayState.pathThroughput / qReflect;
                                     query.transmissionToSurface = currentRayState.transmission;
                                     query.localBsdf = alpha * surfelBsdf;
 
@@ -300,12 +300,28 @@ namespace Pale {
 
                                     query.lightPositionWorld = lightSample.positionW;
                                     query.lightNormalWorld = lightSample.normalW;
-                                    query.lightRadiance = lightSample.power;
+                                    query.lightRadiance = lightSample.power / (M_PIf * lightSample.totalAreaWorld);
                                     query.lightPdfArea = lightSample.pdfArea;
-
                                     query.pixelIndex = currentRayState.pixelIndex;
                                     query.pathId = currentRayState.pathId;
+                                    query.bounceIndex = currentRayState.bounceIndex;
 
+                                    const PendingAdjointStageX previousAdjointStage = pendingAdjointStage;
+                                    if (query.bounceIndex == 0) {
+                                        const float cosine = dot(sensor.camera.forward, currentRayState.ray.direction);
+                                        query.adjointWeight *= cosine;
+                                    }
+                                    else if (previousAdjointStage.valid) {
+                                        const Point& storedSurfel =
+                                            scene.points[previousAdjointStage.current.surface.primitiveIndex];
+                                        const ReconstructedSurfelState storedState =
+                                            reconstructSurfelState(
+                                                storedSurfel,
+                                                previousAdjointStage.current.surface);
+                                        const float cosine = dot(storedState.orientedNormal,
+                                                                 currentRayState.ray.direction);
+                                        query.adjointWeight *= cosine;
+                                    }
                                     appendEventAtomic(
                                         intermediates.countDirectLightQueries,
                                         intermediates.directLightQueries,
@@ -339,13 +355,12 @@ namespace Pale {
                                     measurementEvent.xPathThroughput =
                                         currentRayState.pathThroughput / qReflect * cosine;
 
-/*
+
                                     appendEventAtomic(
                                         intermediates.countMeasurementEvents,
                                         intermediates.measurementEvents,
                                         intermediates.maxMeasurementEventCount,
                                         measurementEvent);
-                                    */
                                 }
 
                                 // -------------------------------------------------------------
@@ -363,13 +378,12 @@ namespace Pale {
                                     measurementTwoPointEvent.transmission =
                                         currentRayState.transmission;
 
-                                    /*
+
                                     appendEventAtomic(
                                         intermediates.countMeasurementTwoPointEvents,
                                         intermediates.measurementTwoPointEvents,
                                         intermediates.maxMeasurementTwoPointEventCount,
                                         measurementTwoPointEvent);
-                                    */
                                 }
 
                                 // -------------------------------------------------------------
@@ -390,13 +404,12 @@ namespace Pale {
                                     attachedBridgeEvent.transmission =
                                         currentRayState.transmission;
 
-                                    /*
+
                                     appendEventAtomic(
                                         intermediates.countAttachedBridgeEvents,
                                         intermediates.cameraAttachedBridgeEvents,
                                         intermediates.maxCameraAttachedEvents,
                                         attachedBridgeEvent);
-                                    */
                                 }
 
                                 // -------------------------------------------------------------
@@ -423,13 +436,12 @@ namespace Pale {
                                         previousAdjointStage.current.geometryFromPrevious;
                                     recursiveBridgeEvent.transmission =
                                         currentRayState.transmission;
-                                    /*
+
                                     appendEventAtomic(
                                         intermediates.countRecursiveBridgeEvents,
                                         intermediates.recursiveBridgeEvents,
                                         intermediates.maxRecursiveBridgeEvent,
                                         recursiveBridgeEvent);
-                                    */
                                 }
 
                                 clearPendingCameraSegment(pendingCameraSegment);
@@ -589,6 +601,10 @@ namespace Pale {
                     const uint32_t queryIndex = global_id[0];
                     const DirectLightQuery query = intermediates.directLightQueries[queryIndex];
 
+                    if (query.lightPdfArea <= 1e-20f) {
+                        return;
+                    }
+
                     const Point& surfel =
                         scene.points[query.surface.primitiveIndex];
 
@@ -598,21 +614,21 @@ namespace Pale {
                     const float3 lightVector =
                         query.lightPositionWorld - surfaceState.position;
                     const float lightDistanceSquared = dot(lightVector, lightVector);
-                    const float lightDistance = sycl::sqrt(lightDistanceSquared);
-
-                    if (lightDistance <= 1e-8f) {
+                    if (lightDistanceSquared <= 1e-12f) {
                         return;
                     }
 
-                    const float3 wi = lightVector / lightDistance;
+                    const float lightDistance = sycl::sqrt(lightDistanceSquared);
+                    const float3 lightDirection = lightVector / lightDistance;
 
-                    const float G = computeGeometricTermValue(
+                    // Early reject if the geometric term would be zero.
+                    const float geometricTerm = computeGeometricTermValue(
                         surfaceState.position,
                         query.lightPositionWorld,
                         surfaceState.orientedNormal,
                         query.lightNormalWorld);
 
-                    if (G <= 0.0f) {
+                    if (geometricTerm <= 0.0f) {
                         return;
                     }
 
@@ -625,30 +641,71 @@ namespace Pale {
 
                     rng::Xorshift128 rng(stepSeed);
 
-                    const float3 d = query.lightPositionWorld - surfaceState.position;
-                    const float targetDistance = sycl::sqrt(dot(d, d));
+                    // March toward the sampled light point.
+                    // Point-cloud hits are NOT treated as hard blockers here:
+                    // they contribute attenuation later in the gradient kernel.
+                    // Mesh hits before the light ARE treated as blockers.
+                    constexpr float distanceEpsilon = 1e-4f;
+                    constexpr uint32_t maxShadowTraversals = 256u;
 
-                    WorldHit shadowHit{};
-                    Ray shadowRay = makeShadowRayToPoint(surfaceState.position, query.lightPositionWorld,
-                                                         surfaceState.orientedNormal);
+                    const float targetDistance = lightDistance;
 
-                    intersectScene(
-                        shadowRay,
-                        &shadowHit,
-                        scene,
-                        rng,
-                        SurfelIntersectMode::FirstHit);
+                    Ray shadowRay{};
+                    shadowRay.origin =
+                        surfaceState.position + surfaceState.orientedNormal * distanceEpsilon;
+                    shadowRay.direction = lightDirection;
+                    shadowRay.normal = surfaceState.orientedNormal;
 
-                    bool visible = false;
-                    if (!shadowHit.hit) {
-                        visible = true;
-                    }
-                    else {
+                    bool blockedByOpaqueGeometry = false;
+
+                    for (uint32_t traversalIndex = 0u;
+                         traversalIndex < maxShadowTraversals;
+                         ++traversalIndex) {
+                        (void)traversalIndex;
+
+                        WorldHit shadowHit{};
+                        intersectScene(
+                            shadowRay,
+                            &shadowHit,
+                            scene,
+                            rng,
+                            SurfelIntersectMode::FirstHit);
+
+                        if (!shadowHit.hit) {
+                            break;
+                        }
+
                         const float3 hitVector = shadowHit.hitPositionW - surfaceState.position;
                         const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
-                        visible = hitDistance + 1e-4f >= targetDistance;
+
+                        // Nothing before the sampled light point anymore.
+                        if (hitDistance >= targetDistance - distanceEpsilon) {
+                            break;
+                        }
+
+                        const InstanceRecord& hitInstance =
+                            scene.instances[shadowHit.instanceIndex];
+
+                        // Meshes are treated as hard blockers for direct-light visibility.
+                        if (hitInstance.geometryType == GeometryType::Mesh) {
+                            blockedByOpaqueGeometry = true;
+                            break;
+                        }
+
+                        // Point-cloud surfels are semi-transparent attenuators.
+                        // Do not reject the sample here; just continue marching.
+                        if (hitInstance.geometryType == GeometryType::PointCloud) {
+                            shadowRay.origin =
+                                shadowHit.hitPositionW + shadowRay.direction * distanceEpsilon;
+                            continue;
+                        }
+
+                        // Any other geometry type: conservatively treat as blocker.
+                        blockedByOpaqueGeometry = true;
+                        break;
                     }
-                    if (!visible) {
+
+                    if (blockedByOpaqueGeometry) {
                         return;
                     }
 
@@ -659,11 +716,13 @@ namespace Pale {
                     event.lightRadiance = query.lightRadiance;
                     event.lightPdfArea = query.lightPdfArea;
 
+                    // Prefix weight only. The direct-light kernel will rebuild the
+                    // local light transport and differentiate tau(x,l) * G(x,l).
                     event.transmissionToSurface = query.transmissionToSurface;
                     event.visibility = 1.0f;
                     event.xPathThroughput =
                         query.adjointWeight * query.transmissionToSurface;
-
+                    event.localBsdf = query.localBsdf;
                     appendEventAtomic(
                         intermediates.countDirectLightEvents,
                         intermediates.directLightEvents,
@@ -768,6 +827,7 @@ namespace Pale {
 
                             const Point& occluderSurfel =
                                 scene.points[worldHit.primitiveIndex];
+
 
                             float3 occluderNormal =
                                 normalize(cross(occluderSurfel.tanU, occluderSurfel.tanV));
@@ -1833,6 +1893,7 @@ namespace Pale {
                     const ReconstructedSurfelState xState =
                         reconstructSurfelState(surfelX, eventRecord.surface);
 
+
                     const float3 lightPosition = eventRecord.lightPositionWorld;
                     const float3 lightNormal = eventRecord.lightNormalWorld;
                     const float3 lightRadiance = eventRecord.lightRadiance;
@@ -1856,9 +1917,6 @@ namespace Pale {
                         return;
                     }
 
-                    const float alphaX = eventRecord.surface.alphaGeom * surfelX.opacity;
-                    const float3 brdfX = surfelX.alpha_r * surfelX.albedo * M_1_PIf;
-
                     const float geometricTermXL = computeGeometricTermValue(
                         xState.position,
                         lightPosition,
@@ -1869,21 +1927,16 @@ namespace Pale {
                         return;
                     }
 
-                    const float3 dGeometricTermDx = computeGeometricTermGradientWrtStartpoint(
-                        xState.position,
-                        lightPosition,
-                        xState.orientedNormal,
-                        lightNormal);
-
                     // Prefix transported adjoint weight up to X.
                     const float3 pathWeight = eventRecord.xPathThroughput;
+                    const float3 localBsdf = eventRecord.localBsdf;
 
                     // Local direct-light transport at X, excluding tau(X,L) and G(X,L).
-                    const float3 transportWithoutTauAndGeometric =
-                        lightRadiance * alphaX * brdfX * (1.0f / lightPdfArea);
+                    const float3 transportWithoutTau =
+                        lightRadiance * localBsdf * (1.0f / lightPdfArea) * geometricTermXL;
 
-                    float scalarWeightWithoutTauAndGeometric =
-                        dot(pathWeight, transportWithoutTauAndGeometric);
+                    float scalarWeightWithoutTau =
+                        dot(pathWeight, transportWithoutTau);
 
                     struct OccluderDerivative {
                         float3 derivative{0.0f};
@@ -2029,11 +2082,10 @@ namespace Pale {
                                     worldHit.primitiveIndex;
                                 storedOccluderCount++;
                             }
-
-                            scalarWeightWithoutTauAndGeometric *= qNullInv;
                         }
                     }
 
+                    /*
                     const float3 dTransmittanceDx =
                         -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint;
 
@@ -2051,11 +2103,11 @@ namespace Pale {
                     xRecord.gradPositionY = xContribution.y();
                     xRecord.gradPositionZ = xContribution.z();
                     //gradientRecords[xRecordIndex] = xRecord;
+                    */
 
                     const float occluderScale =
                         -transmittance *
-                        geometricTermXL *
-                        scalarWeightWithoutTauAndGeometric *
+                        scalarWeightWithoutTau *
                         invSpp;
 
                     for (uint32_t occluderIndex = 0u;
@@ -2168,6 +2220,7 @@ namespace Pale {
                 recursiveBridgeEventCount,
                 ranges.recursiveBridgeOffset);
         }
+
 
         if (directLightEventCount > 0) {
             launchAdjointDirectLightContributionKernel(
