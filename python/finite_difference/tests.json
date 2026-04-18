@@ -2,7 +2,7 @@
   "common_args": [
     "--iterations", "10",
     "--ply", "pointcloud",
-    "--seed", "42"
+    "--seed", "666"
   ],
   "cases": [
     {
@@ -13,7 +13,7 @@
       "min": -0.3,
       "max": 0.3,
       "fd_epsilon": 1e-2,
-      "forward_passes": 10,
+      "forward_passes": 100,
       "bounces": 3,
       "adjoint_passes": 10,
       "adjoint_bounces": 4
@@ -23,25 +23,25 @@
       "camera": "camera1",
       "parameter": "translation_y",
       "index": 6,
-      "min": 0.2,
+      "min": 0.0,
       "max": 0.65,
       "fd_epsilon": 1e-2,
-      "forward_passes": 10,
+      "forward_passes": 25,
       "bounces": 2,
-      "adjoint_passes": 64,
+      "adjoint_passes": 1,
       "adjoint_bounces": 3
     },
     {
-      "scene": "simple_2",
+      "scene": "cornell",
       "camera": "camera1",
       "parameter": "translation_z",
       "index": 6,
       "min": 0.2,
       "max": 0.8,
       "fd_epsilon": 1e-2,
-      "forward_passes": 5,
+      "forward_passes": 50,
       "bounces": 2,
-      "adjoint_passes": 16,
+      "adjoint_passes": 1,
       "adjoint_bounces": 3
     },
     {

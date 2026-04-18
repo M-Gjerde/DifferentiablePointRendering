@@ -274,7 +274,7 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 2;
-        settings.numForwardPasses = 20;
+        settings.numForwardPasses = 100;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
         settings.adjointSamplesPerPixel = 1;
