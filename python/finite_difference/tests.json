@@ -10,12 +10,12 @@
       "camera": "camera1",
       "parameter": "translation_x",
       "index": 6,
-      "min": -0.3,
-      "max": 0.3,
+      "min": -0.2,
+      "max": 0.2,
       "fd_epsilon": 5e-2,
       "forward_passes": 20,
       "bounces": 2,
-      "adjoint_passes": 2,
+      "adjoint_passes": 8,
       "adjoint_bounces": 3
     },
     {
@@ -27,9 +27,9 @@
       "max": 0.45,
       "fd_epsilon": 5e-2,
       "forward_passes": 20,
-      "bounces": 2,
-      "adjoint_passes": 2,
-      "adjoint_bounces": 3
+      "bounces": 4,
+      "adjoint_passes": 8,
+      "adjoint_bounces": 5
     },
     {
       "scene": "cornell",
@@ -40,9 +40,9 @@
       "max": 0.8,
       "fd_epsilon": 1e-2,
       "forward_passes": 50,
-      "bounces": 2,
-      "adjoint_passes": 1,
-      "adjoint_bounces": 3
+      "bounces": 4,
+      "adjoint_passes": 8,
+      "adjoint_bounces": 5
     },
     {
       "scene": "simple_1",
