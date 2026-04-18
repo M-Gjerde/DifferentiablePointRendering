@@ -255,6 +255,14 @@ def main(args) -> None:
             t = iteration_index / iterations
             value = args.min + t * (args.max - args.min)
 
+            if args.fill_target_random:
+                random_number_generator = np.random.default_rng(iteration_index)
+                target_image = random_number_generator.uniform(
+                    0.0,
+                    1.0,
+                    size=target_image.shape
+                ).astype(np.float32)
+
             loss_value, fd_grad, fd_kind = _finite_difference_loss(
                 renderer=renderer,
                 parameter=args.parameter,
@@ -460,8 +468,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fill_target",
         action="store_true",
-        default=True,
+        default=False,
         help="Replace the loaded target image with an all-ones image.",
+    )
+    parser.add_argument(
+        "--fill_target_random",
+        action="store_true",
+        default=False,
+        help="Replace the loaded target image with a deterministic random [0, 1] image (Noise)",
     )
     return parser.parse_args()
 

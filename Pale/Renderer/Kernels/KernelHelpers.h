@@ -1239,7 +1239,7 @@ namespace Pale {
         }
     }
 
-    inline float3 gatherDiffuseIrradianceAtPoint(
+    inline float3 gatherDiffuseIrradianceAtPointOld(
         const float3& queryPositionWorld,
         const float3& queryNormal,
         const DeviceSurfacePhotonMapGrid& grid) {
@@ -1281,6 +1281,78 @@ namespace Pale {
         return irradiance;
     }
 
+
+    inline float3 gatherDiffuseIrradianceAtPoint(
+        const float3& queryPositionWorld,
+        const float3& queryNormal,
+        const DeviceSurfacePhotonMapGrid& grid) {
+        const float tangentRadius = grid.minimumGatherRadiusWorld;
+        const float tangentRadiusSquared = tangentRadius * tangentRadius;
+
+        const float slabHalfThickness = 0.1f * tangentRadius;
+        const float slabHalfThicknessSquared = slabHalfThickness * slabHalfThickness;
+
+        const float epanechnikovScale = 2.0f / (M_PIf * tangentRadiusSquared);
+        const float inverseTangentRadiusSquared = 1.0f / tangentRadiusSquared;
+
+        const float supportExtent = tangentRadius + slabHalfThickness;
+        const float3 supportOffset = float3{supportExtent, supportExtent, supportExtent};
+
+        const sycl::int3 minCell =
+            worldToCellClamped(queryPositionWorld - supportOffset, grid);
+        const sycl::int3 maxCell =
+            worldToCellClamped(queryPositionWorld + supportOffset, grid);
+
+        float3 irradiance = float3{0.0f};
+
+        for (int cellZ = minCell.z(); cellZ <= maxCell.z(); ++cellZ) {
+            for (int cellY = minCell.y(); cellY <= maxCell.y(); ++cellY) {
+                for (int cellX = minCell.x(); cellX <= maxCell.x(); ++cellX) {
+                    const uint32_t cellId =
+                        linearCellIndex(sycl::int3{cellX, cellY, cellZ}, grid.gridResolution);
+
+                    const uint32_t start = grid.cellStart[cellId];
+                    if (start == kInvalidIndex) {
+                        continue;
+                    }
+
+                    const uint32_t end = grid.cellEnd[cellId];
+                    for (uint32_t sortedIndex = start; sortedIndex < end; ++sortedIndex) {
+                        const uint32_t photonIndex = grid.sortedPhotonIndex[sortedIndex];
+                        const DevicePhotonSurface photon = grid.photons[photonIndex];
+
+                        const float3 offset = photon.position - queryPositionWorld;
+                        const float distanceSquared = dot(offset, offset);
+
+                        if (distanceSquared > tangentRadiusSquared + slabHalfThicknessSquared) {
+                            continue;
+                        }
+
+                        const float signedPlaneDistance = dot(offset, queryNormal);
+                        const float planeDistanceSquared = signedPlaneDistance * signedPlaneDistance;
+                        const float tangentDistanceSquared = distanceSquared - planeDistanceSquared;
+
+                        const bool insideSlab = planeDistanceSquared <= slabHalfThicknessSquared;
+                        const bool insideDisk = tangentDistanceSquared <= tangentRadiusSquared;
+                        const bool sameSide = dot(queryNormal, -photon.incomingDirection) > 0.0f;
+
+                        const float accept =
+                            (insideSlab && insideDisk && sameSide) ? 1.0f : 0.0f;
+
+                        const float normalizedRadiusSquared =
+                            tangentDistanceSquared * inverseTangentRadiusSquared;
+                        const float unclampedWeight = 1.0f - normalizedRadiusSquared;
+                        const float kernelWeight =
+                            accept * epanechnikovScale * sycl::fmax(0.0f, unclampedWeight);
+
+                        irradiance += photon.power * kernelWeight;
+                    }
+                }
+            }
+        }
+
+        return irradiance;
+    }
 
     SYCL_EXTERNAL inline void depositPhotonSurface(
         const WorldHit& worldHit,
@@ -1713,7 +1785,6 @@ namespace Pale {
     inline float3 computePointCloudOrientedNormal(
         const Point& surfel,
         const float3& rayDirectionWorld) {
-
         const float3 canonicalNormal = normalize(cross(
             surfel.scale.x() * surfel.tanU,
             surfel.scale.y() * surfel.tanV));
@@ -1729,7 +1800,6 @@ namespace Pale {
         const ReconstructedSurfelState& fromState,
         const ReconstructedSurfelState& toState,
         float hemispherePdf) {
-
         const float3 vectorFromTo = toState.position - fromState.position;
         const float distanceSquared = dot(vectorFromTo, vectorFromTo);
         const float distance = sycl::sqrt(distanceSquared);

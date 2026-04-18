@@ -274,7 +274,7 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 2;
-        settings.numForwardPasses = 5;
+        settings.numForwardPasses = 20;
         settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
         settings.adjointSamplesPerPixel = 1;
@@ -331,7 +331,7 @@ int main(int argc, char **argv) {
                     }
                     Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
                     Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-                    pointGeometry.positions[1].z = 1.8f;
+                    //pointGeometry.positions[1].z = 1.8f;
                     rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
                 }
 

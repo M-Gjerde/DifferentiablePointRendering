@@ -103,424 +103,428 @@ namespace Pale {
         }).wait();
     }
 
-void launchAdjointIntersectKernel(RenderPackage& pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex) {
-    auto& queue = pkg.queue;
-    auto& settings = pkg.settings;
-    auto& intermediates = pkg.intermediates;
-    auto& scene = pkg.scene;
-    auto& sensor = pkg.sensors[cameraIndex];
+    void launchAdjointIntersectKernel(RenderPackage& pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex) {
+        auto& queue = pkg.queue;
+        auto& settings = pkg.settings;
+        auto& intermediates = pkg.intermediates;
+        auto& scene = pkg.scene;
+        auto& sensor = pkg.sensors[cameraIndex];
 
-    queue.submit([&](sycl::handler& commandGroupHandler) {
-        const uint64_t renderSeed = settings.random.seed;
+        queue.submit([&](sycl::handler& commandGroupHandler) {
+            const uint64_t renderSeed = settings.random.seed;
 
-        commandGroupHandler.parallel_for<class launchAdjointIntersectKernelTag>(
-            sycl::range<1>(activeRayCount),
-            [=](sycl::id<1> global_id) {
-                const uint32_t rayIndex = global_id[0];
-                RayState currentRayState = intermediates.primaryRays[rayIndex];
+            commandGroupHandler.parallel_for<class launchAdjointIntersectKernelTag>(
+                sycl::range<1>(activeRayCount),
+                [=](sycl::id<1> global_id) {
+                    const uint32_t rayIndex = global_id[0];
+                    RayState currentRayState = intermediates.primaryRays[rayIndex];
 
-                const uint32_t pathId = currentRayState.pathId;
-                const bool hasPendingState =
-                    pathId < intermediates.maxPendingAdjointStateCount;
+                    const uint32_t pathId = currentRayState.pathId;
+                    const bool hasPendingState =
+                        pathId < intermediates.maxPendingAdjointStateCount;
 
-                PendingCameraSegment pendingCameraSegment{};
-                PendingAdjointStageX pendingAdjointStage{};
-
-                clearPendingCameraSegment(pendingCameraSegment);
-                clearPendingAdjointStageX(pendingAdjointStage);
-
-                if (hasPendingState) {
-                    pendingCameraSegment = intermediates.pendingCameraSegments[pathId];
-                    pendingAdjointStage = intermediates.pendingStageX[pathId];
-                }
-
-                RayState nextRayState{};
-                bool shouldEnqueueNextRayState = false;
-
-                constexpr uint32_t maxInlineNullTraversals = 256u;
-
-                for (uint32_t inlineTraversalIndex = 0u;
-                     inlineTraversalIndex < maxInlineNullTraversals;
-                     ++inlineTraversalIndex) {
-                    (void)inlineTraversalIndex;
-
-                    const uint64_t stepSeed = rng::makeSeed(
-                        renderSeed,
-                        currentRayState.pathId,
-                        spp,
-                        rng::kStreamTraversal,
-                        currentRayState.traversalIndex);
-
-                    rng::Xorshift128 rng(stepSeed);
-
-                    WorldHit worldHit{};
-                    intersectScene(
-                        currentRayState.ray,
-                        &worldHit,
-                        scene,
-                        rng,
-                        SurfelIntersectMode::FirstHit);
-
-                    if (!worldHit.hit) {
-                        clearPendingCameraSegment(pendingCameraSegment);
-                        clearPendingAdjointStageX(pendingAdjointStage);
-                        break;
-                    }
-
-                    buildIntersectionNormal(scene, worldHit);
-
-                    const InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
-                    const GeometryType geometryType = instance.geometryType;
-
-                    // ---------------------------------------------------------------------
-                    // Mesh path
-                    // ---------------------------------------------------------------------
-                    if (geometryType == GeometryType::Mesh) {
-                        float3 orientedNormal = worldHit.geometricNormalW;
-                        if (dot(currentRayState.ray.direction, orientedNormal) > 0.0f) {
-                            orientedNormal = -orientedNormal;
-                        }
-
-                        float3 sampledOutgoingDirectionWorld{0.0f, 0.0f, 0.0f};
-                        float cosineHemispherePdf = 0.0f;
-                        sampleCosineHemisphere(
-                            rng,
-                            orientedNormal,
-                            sampledOutgoingDirectionWorld,
-                            cosineHemispherePdf);
-
-                        const GPUMaterial material = scene.materials[instance.materialIndex];
-                        const float3 throughputMultiplier = material.baseColor;
-
-                        nextRayState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-6f);
-                        nextRayState.ray.direction = sampledOutgoingDirectionWorld;
-                        nextRayState.ray.normal = orientedNormal;
-                        nextRayState.bounceIndex = currentRayState.bounceIndex + 1u;
-                        nextRayState.pixelIndex = currentRayState.pixelIndex;
-                        nextRayState.pathId = currentRayState.pathId;
-                        nextRayState.pathThroughput =
-                            currentRayState.pathThroughput * throughputMultiplier * currentRayState.transmission;
-                        nextRayState.traversalIndex = currentRayState.traversalIndex + 1u;
-                        nextRayState.transmission = 1.0f;
-
-                        clearPendingCameraSegment(pendingCameraSegment);
-                        clearPendingAdjointStageX(pendingAdjointStage);
-
-                        if (applyRussianRoulette(
-                            rng,
-                            nextRayState.bounceIndex,
-                            nextRayState.pathThroughput,
-                            settings.russianRouletteStart)) {
-                            shouldEnqueueNextRayState = true;
-                        }
-
-                        break;
-                    }
-
-                    // ---------------------------------------------------------------------
-                    // Point cloud path
-                    // ---------------------------------------------------------------------
-                    if (geometryType == GeometryType::PointCloud) {
-                        const Point& surfel = scene.points[worldHit.primitiveIndex];
-
-                        const float qNull = settings.sampling.qNull;
-                        const float qReflect = settings.sampling.qReflect;
-
-                        const float3 orientedNormal =
-                            computePointCloudOrientedNormal(surfel, currentRayState.ray.direction);
-
-                        const float randomNumber = rng.nextFloat();
-                        const bool sampledNull = randomNumber < qNull;
-
-                        // -----------------------------------------------------------------
-                        // Null event
-                        // -----------------------------------------------------------------
-                        if (sampledNull) {
-                            const float attenuation =
-                                1.0f - (worldHit.alphaGeom * surfel.opacity);
-
-                            currentRayState.ray.origin =
-                                worldHit.hitPositionW + (currentRayState.ray.direction * 1e-5f);
-                            currentRayState.ray.normal = orientedNormal;
-                            currentRayState.pathThroughput *= (1.0f / qNull);
-                            currentRayState.transmission *= attenuation;
-                            currentRayState.traversalIndex = currentRayState.traversalIndex + 1u;
-
-                            continue;
-                        }
-
-                        // -----------------------------------------------------------------
-                        // Real surfel hit
-                        // -----------------------------------------------------------------
-                        float3 sampledOutgoingDirectionWorld{0.0f, 0.0f, 0.0f};
-                        float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
-
-                        sampleUniformHemisphereAroundNormal(
-                            rng,
-                            orientedNormal,
-                            sampledOutgoingDirectionWorld,
-                            uniformHemispherePdf);
-
-                        const PointCloudSurfaceRecord currentSurface =
-                            makePointCloudSurfaceRecord(worldHit, currentRayState, scene);
-
-                        const float alpha = worldHit.alphaGeom * surfel.opacity;
-                        const float3 surfelBsdf =
-                            surfel.alpha_r * surfel.albedo * M_1_PIf;
-
-                        const float cosineTheta = sycl::fmax(
-                            0.0f,
-                            dot(sampledOutgoingDirectionWorld, orientedNormal));
-
-                        const float3 throughputMultiplier =
-                            ((alpha / qReflect) * (surfelBsdf * cosineTheta)) /
-                            uniformHemispherePdf;
-
-                        float segmentGeometryFromStoredVertex = 1.0f;
-                        float segmentAreaPdfFromStoredVertex = 1.0f;
-
-                        if (hasPendingState) {
-                            const PendingCameraSegment previousCameraSegment = pendingCameraSegment;
-                            const PendingAdjointStageX previousAdjointStage = pendingAdjointStage;
-
-                            const bool isCameraAttachedSecondHit =
-                                previousAdjointStage.valid &&
-                                previousAdjointStage.useImplicitRayHitJacobian &&
-                                currentRayState.bounceIndex == 1u;
-
-                            // -------------------------------------------------------------
-                            // Measurement event
-                            // -------------------------------------------------------------
-                            if (previousCameraSegment.valid) {
-                                const float cosine =
-                                    dot(sensor.camera.forward, currentRayState.ray.direction);
-
-                                MeasurementGradientEvent measurementEvent{};
-                                measurementEvent.xSurface = currentSurface;
-                                measurementEvent.transmission = currentRayState.transmission;
-                                measurementEvent.xPathThroughput =
-                                    currentRayState.pathThroughput / qReflect * cosine;
-
-                                appendEventAtomic(
-                                    intermediates.countMeasurementEvents,
-                                    intermediates.measurementEvents,
-                                    intermediates.maxMeasurementEventCount,
-                                    measurementEvent);
-                            }
-
-                            // -------------------------------------------------------------
-                            // Camera-attached two-point event
-                            // -------------------------------------------------------------
-                            if (isCameraAttachedSecondHit) {
-                                MeasurementGradientEventXY measurementTwoPointEvent{};
-                                measurementTwoPointEvent.xSurface = previousAdjointStage.current.surface;
-                                measurementTwoPointEvent.ySurface = currentSurface;
-                                measurementTwoPointEvent.xPathThroughput =
-                                    previousAdjointStage.current.pathThroughput / qReflect *
-                                    previousAdjointStage.current.cosineFromPrevious;
-                                measurementTwoPointEvent.transmissionPreviousSegment =
-                                    previousAdjointStage.current.transmissionFromPrevious;
-                                measurementTwoPointEvent.transmission =
-                                    currentRayState.transmission;
-
-                                appendEventAtomic(
-                                    intermediates.countMeasurementTwoPointEvents,
-                                    intermediates.measurementTwoPointEvents,
-                                    intermediates.maxMeasurementTwoPointEventCount,
-                                    measurementTwoPointEvent);
-                            }
-
-                            // -------------------------------------------------------------
-                            // Camera-attached bridge event
-                            // -------------------------------------------------------------
-                            if (previousAdjointStage.valid &&
-                                previousAdjointStage.useImplicitRayHitJacobian) {
-
-                                CameraAttachedBridgeGradientEvent attachedBridgeEvent{};
-                                attachedBridgeEvent.xSurface = previousAdjointStage.current.surface;
-                                attachedBridgeEvent.ySurface = currentSurface;
-                                attachedBridgeEvent.xPathThroughput =
-                                    previousAdjointStage.current.pathThroughput *
-                                    previousAdjointStage.current.cosineFromPrevious / qReflect;
-                                attachedBridgeEvent.transmissionPreviousSegment =
-                                    previousAdjointStage.current.transmissionFromPrevious;
-                                attachedBridgeEvent.geometryPreviousSegment =
-                                    previousAdjointStage.current.geometryFromPrevious;
-                                attachedBridgeEvent.transmission =
-                                    currentRayState.transmission;
-
-                                appendEventAtomic(
-                                    intermediates.countAttachedBridgeEvents,
-                                    intermediates.cameraAttachedBridgeEvents,
-                                    intermediates.maxCameraAttachedEvents,
-                                    attachedBridgeEvent);
-                            }
-
-                            // -------------------------------------------------------------
-                            // Recursive bridge event
-                            // previous = X, current = Y, live hit = Z
-                            // -------------------------------------------------------------
-                            if (previousAdjointStage.valid &&
-                                !previousAdjointStage.useImplicitRayHitJacobian) {
-
-                                RecursiveBridgeGradientEvent recursiveBridgeEvent{};
-                                recursiveBridgeEvent.xSurface = previousAdjointStage.current.surface;
-                                recursiveBridgeEvent.ySurface = currentSurface;
-
-                                recursiveBridgeEvent.xPathThroughput =
-                                    previousAdjointStage.previous.pathThroughput *
-                                    previousAdjointStage.previous.bsdf *
-                                    previousAdjointStage.current.transmissionFromPrevious *
-                                    previousAdjointStage.current.geometryFromPrevious /
-                                    (previousAdjointStage.current.areaPdfFromPrevious *
-                                     qReflect * qReflect);
-
-                                recursiveBridgeEvent.transmissionPreviousSegment =
-                                    previousAdjointStage.current.transmissionFromPrevious;
-                                recursiveBridgeEvent.geometryPreviousSegment =
-                                    previousAdjointStage.current.geometryFromPrevious;
-                                recursiveBridgeEvent.transmission =
-                                    currentRayState.transmission;
-
-                                appendEventAtomic(
-                                    intermediates.countRecursiveBridgeEvents,
-                                    intermediates.recursiveBridgeEvents,
-                                    intermediates.maxRecursiveBridgeEvent,
-                                    recursiveBridgeEvent);
-                            }
-
-                            clearPendingCameraSegment(pendingCameraSegment);
-
-                            // -------------------------------------------------------------
-                            // Build segment metadata for stored-vertex -> currentSurface
-                            // -------------------------------------------------------------
-                            if (previousAdjointStage.valid) {
-                                const Point& storedSurfel =
-                                    scene.points[previousAdjointStage.current.surface.primitiveIndex];
-
-                                const ReconstructedSurfelState storedState =
-                                    reconstructSurfelState(
-                                        storedSurfel,
-                                        previousAdjointStage.current.surface);
-
-                                const ReconstructedSurfelState liveState =
-                                    reconstructSurfelState(
-                                        surfel,
-                                        currentSurface);
-
-                                segmentGeometryFromStoredVertex = computeGeometricTermValue(
-                                    storedState.position,
-                                    liveState.position,
-                                    storedState.orientedNormal,
-                                    liveState.orientedNormal);
-
-                                segmentAreaPdfFromStoredVertex =
-                                    computeSegmentAreaPdfFromUniformHemisphere(
-                                        storedState,
-                                        liveState,
-                                        uniformHemispherePdf);
-                            } else {
-                                segmentGeometryFromStoredVertex = 1.0f;
-                                segmentAreaPdfFromStoredVertex = 1.0f;
-                            }
-
-                            // -------------------------------------------------------------
-                            // Push live surface into rolling adjoint history
-                            // previous = old current, current = live hit
-                            // -------------------------------------------------------------
-                            const float cosineFromPrevious =
-                                previousCameraSegment.valid
-                                    ? dot(sensor.camera.forward, currentRayState.ray.direction)
-                                    : 0.0f;
-
-                            const PendingAdjointVertex newCurrentVertex =
-                                makePendingAdjointVertex(
-                                    currentSurface,
-                                    currentRayState.bounceIndex,
-                                    currentRayState.pathThroughput / qReflect,
-                                    currentRayState.transmission,
-                                    segmentGeometryFromStoredVertex,
-                                    segmentAreaPdfFromStoredVertex,
-                                    alpha * surfelBsdf,
-                                    cosineFromPrevious);
-
-                            pushPendingAdjointVertex(
-                                pendingAdjointStage,
-                                currentRayState.pathId,
-                                currentRayState.pixelIndex,
-                                previousCameraSegment.valid,
-                                newCurrentVertex);
-                        }
-
-                        // -----------------------------------------------------------------
-                        // Spawn next ray
-                        // -----------------------------------------------------------------
-                        nextRayState.ray.origin =
-                            worldHit.hitPositionW + (orientedNormal * 1e-5f);
-                        nextRayState.ray.direction = sampledOutgoingDirectionWorld;
-                        nextRayState.ray.normal = orientedNormal;
-                        nextRayState.bounceIndex = currentRayState.bounceIndex + 1u;
-                        nextRayState.pixelIndex = currentRayState.pixelIndex;
-                        nextRayState.pathId = currentRayState.pathId;
-                        nextRayState.pathThroughput =
-                            currentRayState.pathThroughput *
-                            throughputMultiplier *
-                            currentRayState.transmission;
-                        nextRayState.traversalIndex =
-                            currentRayState.traversalIndex + 1u;
-                        nextRayState.transmission = 1.0f;
-
-                        if (applyRussianRoulette(
-                            rng,
-                            nextRayState.bounceIndex,
-                            nextRayState.pathThroughput,
-                            settings.russianRouletteStart)) {
-                            shouldEnqueueNextRayState = true;
-                        } else {
-                            clearPendingCameraSegment(pendingCameraSegment);
-                            clearPendingAdjointStageX(pendingAdjointStage);
-                        }
-
-                        break;
-                    }
+                    PendingCameraSegment pendingCameraSegment{};
+                    PendingAdjointStageX pendingAdjointStage{};
 
                     clearPendingCameraSegment(pendingCameraSegment);
                     clearPendingAdjointStageX(pendingAdjointStage);
-                    break;
-                }
 
-                if (hasPendingState) {
-                    if (pendingCameraSegment.valid) {
-                        intermediates.pendingCameraSegments[pathId] = pendingCameraSegment;
-                    } else {
-                        clearPendingCameraSegment(
-                            intermediates.pendingCameraSegments[pathId]);
+                    if (hasPendingState) {
+                        pendingCameraSegment = intermediates.pendingCameraSegments[pathId];
+                        pendingAdjointStage = intermediates.pendingStageX[pathId];
                     }
 
-                    if (pendingAdjointStage.valid) {
-                        intermediates.pendingStageX[pathId] = pendingAdjointStage;
-                    } else {
-                        clearPendingAdjointStageX(
-                            intermediates.pendingStageX[pathId]);
-                    }
-                }
+                    RayState nextRayState{};
+                    bool shouldEnqueueNextRayState = false;
 
-                if (shouldEnqueueNextRayState) {
-                    auto extensionCounter = sycl::atomic_ref<
-                        uint32_t,
-                        sycl::memory_order::relaxed,
-                        sycl::memory_scope::device,
-                        sycl::access::address_space::global_space>(
-                        *intermediates.countExtensionOut);
+                    constexpr uint32_t maxInlineNullTraversals = 256u;
 
-                    const uint32_t outIndex = extensionCounter.fetch_add(1u);
-                    if (outIndex < intermediates.maxRayQueueCapacity) {
-                        intermediates.extensionRaysA[outIndex] = nextRayState;
+                    for (uint32_t inlineTraversalIndex = 0u;
+                         inlineTraversalIndex < maxInlineNullTraversals;
+                         ++inlineTraversalIndex) {
+                        (void)inlineTraversalIndex;
+
+                        const uint64_t stepSeed = rng::makeSeed(
+                            renderSeed,
+                            currentRayState.pathId,
+                            spp,
+                            rng::kStreamTraversal,
+                            currentRayState.traversalIndex);
+
+                        rng::Xorshift128 rng(stepSeed);
+
+                        WorldHit worldHit{};
+                        intersectScene(
+                            currentRayState.ray,
+                            &worldHit,
+                            scene,
+                            rng,
+                            SurfelIntersectMode::FirstHit);
+
+                        if (!worldHit.hit) {
+                            clearPendingCameraSegment(pendingCameraSegment);
+                            clearPendingAdjointStageX(pendingAdjointStage);
+                            break;
+                        }
+
+                        buildIntersectionNormal(scene, worldHit);
+
+                        const InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
+                        const GeometryType geometryType = instance.geometryType;
+
+                        // ---------------------------------------------------------------------
+                        // Mesh path
+                        // ---------------------------------------------------------------------
+                        if (geometryType == GeometryType::Mesh) {
+                            float3 orientedNormal = worldHit.geometricNormalW;
+                            if (dot(currentRayState.ray.direction, orientedNormal) > 0.0f) {
+                                orientedNormal = -orientedNormal;
+                            }
+
+                            float3 sampledOutgoingDirectionWorld{0.0f, 0.0f, 0.0f};
+                            float cosineHemispherePdf = 0.0f;
+                            sampleCosineHemisphere(
+                                rng,
+                                orientedNormal,
+                                sampledOutgoingDirectionWorld,
+                                cosineHemispherePdf);
+
+                            const GPUMaterial material = scene.materials[instance.materialIndex];
+                            const float3 throughputMultiplier = material.baseColor;
+
+                            nextRayState.ray.origin = worldHit.hitPositionW + (orientedNormal * 1e-6f);
+                            nextRayState.ray.direction = sampledOutgoingDirectionWorld;
+                            nextRayState.ray.normal = orientedNormal;
+                            nextRayState.bounceIndex = currentRayState.bounceIndex + 1u;
+                            nextRayState.pixelIndex = currentRayState.pixelIndex;
+                            nextRayState.pathId = currentRayState.pathId;
+                            nextRayState.pathThroughput =
+                                currentRayState.pathThroughput * throughputMultiplier * currentRayState.transmission;
+                            nextRayState.traversalIndex = currentRayState.traversalIndex + 1u;
+                            nextRayState.transmission = 1.0f;
+
+                            clearPendingCameraSegment(pendingCameraSegment);
+                            clearPendingAdjointStageX(pendingAdjointStage);
+
+                            if (applyRussianRoulette(
+                                rng,
+                                nextRayState.bounceIndex,
+                                nextRayState.pathThroughput,
+                                settings.russianRouletteStart)) {
+                                shouldEnqueueNextRayState = true;
+                            }
+
+                            break;
+                        }
+
+                        // ---------------------------------------------------------------------
+                        // Point cloud path
+                        // ---------------------------------------------------------------------
+                        if (geometryType == GeometryType::PointCloud) {
+                            const Point& surfel = scene.points[worldHit.primitiveIndex];
+
+                            const float qNull = settings.sampling.qNull;
+                            const float qReflect = settings.sampling.qReflect;
+
+                            const float3 orientedNormal =
+                                computePointCloudOrientedNormal(surfel, currentRayState.ray.direction);
+
+                            const float randomNumber = rng.nextFloat();
+                            const bool sampledNull = randomNumber < qNull;
+
+                            // -----------------------------------------------------------------
+                            // Null event
+                            // -----------------------------------------------------------------
+                            if (sampledNull) {
+                                const float attenuation =
+                                    1.0f - (worldHit.alphaGeom * surfel.opacity);
+
+                                currentRayState.ray.origin =
+                                    worldHit.hitPositionW + (currentRayState.ray.direction * 1e-5f);
+                                currentRayState.ray.normal = orientedNormal;
+                                currentRayState.pathThroughput *= (1.0f / qNull);
+                                currentRayState.transmission *= attenuation;
+                                currentRayState.traversalIndex = currentRayState.traversalIndex + 1u;
+
+                                continue;
+                            }
+
+                            // -----------------------------------------------------------------
+                            // Real surfel hit
+                            // -----------------------------------------------------------------
+                            float3 sampledOutgoingDirectionWorld{0.0f, 0.0f, 0.0f};
+                            float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
+
+                            sampleUniformHemisphereAroundNormal(
+                                rng,
+                                orientedNormal,
+                                sampledOutgoingDirectionWorld,
+                                uniformHemispherePdf);
+
+                            // If possible then use light sample ray
+
+                            const PointCloudSurfaceRecord currentSurface =
+                                makePointCloudSurfaceRecord(worldHit, currentRayState, scene);
+
+                            const float alpha = worldHit.alphaGeom * surfel.opacity;
+                            const float3 surfelBsdf =
+                                surfel.alpha_r * surfel.albedo * M_1_PIf;
+
+                            const float cosineTheta = sycl::fmax(
+                                0.0f,
+                                dot(sampledOutgoingDirectionWorld, orientedNormal));
+
+                            const float3 throughputMultiplier =
+                                ((alpha / qReflect) * (surfelBsdf * cosineTheta)) /
+                                uniformHemispherePdf;
+
+                            float segmentGeometryFromStoredVertex = 1.0f;
+                            float segmentAreaPdfFromStoredVertex = 1.0f;
+
+                            if (hasPendingState) {
+                                const PendingCameraSegment previousCameraSegment = pendingCameraSegment;
+                                const PendingAdjointStageX previousAdjointStage = pendingAdjointStage;
+
+                                const bool isCameraAttachedSecondHit =
+                                    previousAdjointStage.valid &&
+                                    previousAdjointStage.useImplicitRayHitJacobian &&
+                                    currentRayState.bounceIndex == 1u;
+
+                                // -------------------------------------------------------------
+                                // Measurement event
+                                // -------------------------------------------------------------
+                                if (previousCameraSegment.valid) {
+                                    const float cosine =
+                                        dot(sensor.camera.forward, currentRayState.ray.direction);
+
+                                    MeasurementGradientEvent measurementEvent{};
+                                    measurementEvent.xSurface = currentSurface;
+                                    measurementEvent.transmission = currentRayState.transmission;
+                                    measurementEvent.xPathThroughput =
+                                        currentRayState.pathThroughput / qReflect * cosine;
+
+                                    appendEventAtomic(
+                                        intermediates.countMeasurementEvents,
+                                        intermediates.measurementEvents,
+                                        intermediates.maxMeasurementEventCount,
+                                        measurementEvent);
+                                }
+
+                                // -------------------------------------------------------------
+                                // Camera-attached two-point event
+                                // -------------------------------------------------------------
+                                if (isCameraAttachedSecondHit) {
+                                    MeasurementGradientEventXY measurementTwoPointEvent{};
+                                    measurementTwoPointEvent.xSurface = previousAdjointStage.current.surface;
+                                    measurementTwoPointEvent.ySurface = currentSurface;
+                                    measurementTwoPointEvent.xPathThroughput =
+                                        previousAdjointStage.current.pathThroughput / qReflect *
+                                        previousAdjointStage.current.cosineFromPrevious;
+                                    measurementTwoPointEvent.transmissionPreviousSegment =
+                                        previousAdjointStage.current.transmissionFromPrevious;
+                                    measurementTwoPointEvent.transmission =
+                                        currentRayState.transmission;
+
+                                    appendEventAtomic(
+                                        intermediates.countMeasurementTwoPointEvents,
+                                        intermediates.measurementTwoPointEvents,
+                                        intermediates.maxMeasurementTwoPointEventCount,
+                                        measurementTwoPointEvent);
+                                }
+
+                                // -------------------------------------------------------------
+                                // Camera-attached bridge event
+                                // -------------------------------------------------------------
+                                if (previousAdjointStage.valid &&
+                                    previousAdjointStage.useImplicitRayHitJacobian) {
+                                    CameraAttachedBridgeGradientEvent attachedBridgeEvent{};
+                                    attachedBridgeEvent.xSurface = previousAdjointStage.current.surface;
+                                    attachedBridgeEvent.ySurface = currentSurface;
+                                    attachedBridgeEvent.xPathThroughput =
+                                        previousAdjointStage.current.pathThroughput *
+                                        previousAdjointStage.current.cosineFromPrevious / qReflect;
+                                    attachedBridgeEvent.transmissionPreviousSegment =
+                                        previousAdjointStage.current.transmissionFromPrevious;
+                                    attachedBridgeEvent.geometryPreviousSegment =
+                                        previousAdjointStage.current.geometryFromPrevious;
+                                    attachedBridgeEvent.transmission =
+                                        currentRayState.transmission;
+
+                                    appendEventAtomic(
+                                        intermediates.countAttachedBridgeEvents,
+                                        intermediates.cameraAttachedBridgeEvents,
+                                        intermediates.maxCameraAttachedEvents,
+                                        attachedBridgeEvent);
+                                }
+
+                                // -------------------------------------------------------------
+                                // Recursive bridge event
+                                // previous = X, current = Y, live hit = Z
+                                // -------------------------------------------------------------
+                                if (previousAdjointStage.valid &&
+                                    !previousAdjointStage.useImplicitRayHitJacobian) {
+                                    RecursiveBridgeGradientEvent recursiveBridgeEvent{};
+                                    recursiveBridgeEvent.xSurface = previousAdjointStage.current.surface;
+                                    recursiveBridgeEvent.ySurface = currentSurface;
+
+                                    recursiveBridgeEvent.xPathThroughput =
+                                        previousAdjointStage.previous.pathThroughput *
+                                        previousAdjointStage.previous.bsdf *
+                                        previousAdjointStage.current.transmissionFromPrevious *
+                                        previousAdjointStage.current.geometryFromPrevious /
+                                        (previousAdjointStage.current.areaPdfFromPrevious *
+                                            qReflect * qReflect);
+
+                                    recursiveBridgeEvent.transmissionPreviousSegment =
+                                        previousAdjointStage.current.transmissionFromPrevious;
+                                    recursiveBridgeEvent.geometryPreviousSegment =
+                                        previousAdjointStage.current.geometryFromPrevious;
+                                    recursiveBridgeEvent.transmission =
+                                        currentRayState.transmission;
+
+                                    appendEventAtomic(
+                                        intermediates.countRecursiveBridgeEvents,
+                                        intermediates.recursiveBridgeEvents,
+                                        intermediates.maxRecursiveBridgeEvent,
+                                        recursiveBridgeEvent);
+                                }
+
+                                clearPendingCameraSegment(pendingCameraSegment);
+
+                                // -------------------------------------------------------------
+                                // Build segment metadata for stored-vertex -> currentSurface
+                                // -------------------------------------------------------------
+                                if (previousAdjointStage.valid) {
+                                    const Point& storedSurfel =
+                                        scene.points[previousAdjointStage.current.surface.primitiveIndex];
+
+                                    const ReconstructedSurfelState storedState =
+                                        reconstructSurfelState(
+                                            storedSurfel,
+                                            previousAdjointStage.current.surface);
+
+                                    const ReconstructedSurfelState liveState =
+                                        reconstructSurfelState(
+                                            surfel,
+                                            currentSurface);
+
+                                    segmentGeometryFromStoredVertex = computeGeometricTermValue(
+                                        storedState.position,
+                                        liveState.position,
+                                        storedState.orientedNormal,
+                                        liveState.orientedNormal);
+
+                                    segmentAreaPdfFromStoredVertex =
+                                        computeSegmentAreaPdfFromUniformHemisphere(
+                                            storedState,
+                                            liveState,
+                                            uniformHemispherePdf);
+                                }
+                                else {
+                                    segmentGeometryFromStoredVertex = 1.0f;
+                                    segmentAreaPdfFromStoredVertex = 1.0f;
+                                }
+
+                                // -------------------------------------------------------------
+                                // Push live surface into rolling adjoint history
+                                // previous = old current, current = live hit
+                                // -------------------------------------------------------------
+                                const float cosineFromPrevious =
+                                    previousCameraSegment.valid
+                                        ? dot(sensor.camera.forward, currentRayState.ray.direction)
+                                        : 0.0f;
+
+                                const PendingAdjointVertex newCurrentVertex =
+                                    makePendingAdjointVertex(
+                                        currentSurface,
+                                        currentRayState.bounceIndex,
+                                        currentRayState.pathThroughput / qReflect,
+                                        currentRayState.transmission,
+                                        segmentGeometryFromStoredVertex,
+                                        segmentAreaPdfFromStoredVertex,
+                                        alpha * surfelBsdf,
+                                        cosineFromPrevious);
+
+                                pushPendingAdjointVertex(
+                                    pendingAdjointStage,
+                                    currentRayState.pathId,
+                                    currentRayState.pixelIndex,
+                                    previousCameraSegment.valid,
+                                    newCurrentVertex);
+                            }
+
+                            // -----------------------------------------------------------------
+                            // Spawn next ray
+                            // -----------------------------------------------------------------
+                            nextRayState.ray.origin =
+                                worldHit.hitPositionW + (orientedNormal * 1e-5f);
+                            nextRayState.ray.direction = sampledOutgoingDirectionWorld;
+                            nextRayState.ray.normal = orientedNormal;
+                            nextRayState.bounceIndex = currentRayState.bounceIndex + 1u;
+                            nextRayState.pixelIndex = currentRayState.pixelIndex;
+                            nextRayState.pathId = currentRayState.pathId;
+                            nextRayState.pathThroughput =
+                                currentRayState.pathThroughput *
+                                throughputMultiplier *
+                                currentRayState.transmission;
+                            nextRayState.traversalIndex =
+                                currentRayState.traversalIndex + 1u;
+                            nextRayState.transmission = 1.0f;
+
+                            if (applyRussianRoulette(
+                                rng,
+                                nextRayState.bounceIndex,
+                                nextRayState.pathThroughput,
+                                settings.russianRouletteStart)) {
+                                shouldEnqueueNextRayState = true;
+                            }
+                            else {
+                                clearPendingCameraSegment(pendingCameraSegment);
+                                clearPendingAdjointStageX(pendingAdjointStage);
+                            }
+
+                            break;
+                        }
+
+                        clearPendingCameraSegment(pendingCameraSegment);
+                        clearPendingAdjointStageX(pendingAdjointStage);
+                        break;
                     }
-                }
-            });
-    }).wait();
-}
+
+                    if (hasPendingState) {
+                        if (pendingCameraSegment.valid) {
+                            intermediates.pendingCameraSegments[pathId] = pendingCameraSegment;
+                        }
+                        else {
+                            clearPendingCameraSegment(
+                                intermediates.pendingCameraSegments[pathId]);
+                        }
+
+                        if (pendingAdjointStage.valid) {
+                            intermediates.pendingStageX[pathId] = pendingAdjointStage;
+                        }
+                        else {
+                            clearPendingAdjointStageX(
+                                intermediates.pendingStageX[pathId]);
+                        }
+                    }
+
+                    if (shouldEnqueueNextRayState) {
+                        auto extensionCounter = sycl::atomic_ref<
+                            uint32_t,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(
+                            *intermediates.countExtensionOut);
+
+                        const uint32_t outIndex = extensionCounter.fetch_add(1u);
+                        if (outIndex < intermediates.maxRayQueueCapacity) {
+                            intermediates.extensionRaysA[outIndex] = nextRayState;
+                        }
+                    }
+                });
+        }).wait();
+    }
 
     static void measurementGradientEvent(
         RenderPackage& pkg,

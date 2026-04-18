@@ -2,9 +2,48 @@
   "common_args": [
     "--iterations", "10",
     "--ply", "pointcloud",
-    "--seed", "666"
+    "--seed", "42"
   ],
   "cases": [
+    {
+      "scene": "cornell",
+      "camera": "camera1",
+      "parameter": "translation_x",
+      "index": 6,
+      "min": -0.3,
+      "max": 0.3,
+      "fd_epsilon": 1e-2,
+      "forward_passes": 10,
+      "bounces": 3,
+      "adjoint_passes": 10,
+      "adjoint_bounces": 4
+    },
+    {
+      "scene": "cornell",
+      "camera": "camera1",
+      "parameter": "translation_y",
+      "index": 6,
+      "min": 0.2,
+      "max": 0.65,
+      "fd_epsilon": 1e-2,
+      "forward_passes": 10,
+      "bounces": 2,
+      "adjoint_passes": 64,
+      "adjoint_bounces": 3
+    },
+    {
+      "scene": "simple_2",
+      "camera": "camera1",
+      "parameter": "translation_z",
+      "index": 6,
+      "min": 0.2,
+      "max": 0.8,
+      "fd_epsilon": 1e-2,
+      "forward_passes": 5,
+      "bounces": 2,
+      "adjoint_passes": 16,
+      "adjoint_bounces": 3
+    },
     {
       "scene": "simple_1",
       "camera": "camera1",
@@ -15,7 +54,7 @@
       "fd_epsilon": 1e-1,
       "forward_passes": 200,
       "bounces": 2,
-      "adjoint_passes": 64,
+      "adjoint_passes": 32,
       "adjoint_bounces": 3
     },
     {
@@ -26,9 +65,9 @@
       "min": 0.3,
       "max": 1.8,
       "fd_epsilon": 1e-1,
-      "forward_passes": 300,
+      "forward_passes": 200,
       "bounces": 2,
-      "adjoint_passes": 64,
+      "adjoint_passes": 32,
       "adjoint_bounces": 3
     },
     {
