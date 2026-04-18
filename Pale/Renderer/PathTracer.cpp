@@ -103,6 +103,21 @@ namespace Pale {
         m_intermediates.measurementEvents =
                 sycl::malloc_device<MeasurementGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated MeasurementGradientEvents: {}", Utils::formatBytes(sizeMeasurementEventsBytes));
+
+        const std::size_t sizeDirectLightEventBytes =
+                sizeof(DirectLightQuery) * m_rayQueueCapacity;
+        m_intermediates.directLightQueries =
+                sycl::malloc_device<DirectLightQuery>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated MeasurementGradientEvents: {}", Utils::formatBytes(sizeDirectLightEventBytes));
+        m_intermediates.maxDirectLightQueryCount = m_rayQueueCapacity;
+
+        const std::size_t sizeDirectLightGradientEventBytes =
+                sizeof(DirectLightGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.directLightEvents =
+                sycl::malloc_device<DirectLightGradientEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated MeasurementGradientEvents: {}", Utils::formatBytes(sizeDirectLightGradientEventBytes));
+        m_intermediates.maxDirectLightEventCount = m_rayQueueCapacity;
+
         const std::size_t sizeMeasurementEventsTwoPointBytes =
                 sizeof(MeasurementGradientEventXY) * m_rayQueueCapacity;
         m_intermediates.measurementTwoPointEvents =
@@ -158,6 +173,8 @@ namespace Pale {
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMeasurementEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMeasurementTwoPointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countDirectLightQueries = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countDirectLightEvents = sycl::malloc_device<uint32_t>(1, m_queue);
 
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
@@ -166,6 +183,8 @@ namespace Pale {
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countMeasurementEvents, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countMeasurementTwoPointEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countDirectLightQueries, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countDirectLightEvents, 0, sizeof(uint32_t));
         m_queue.wait();
 
         const std::size_t counterBytes =
@@ -182,6 +201,8 @@ namespace Pale {
                 sizeRecursiveBridgeEvent +
                 sizePendingAdjointStatesXBytes +
                 sizeGradientRecordsBytes +
+                sizeDirectLightEventBytes +
+                sizeDirectLightGradientEventBytes +
                 counterBytes;
 
         Log::PA_INFO("Total intermediates memory: {}", Utils::formatBytes(intermediatesTotalBytes));
@@ -243,8 +264,12 @@ namespace Pale {
         freeDevicePtr(m_intermediates.cameraAttachedBridgeEvents, m_queue);
         freeDevicePtr(m_intermediates.recursiveBridgeEvents, m_queue);
         freeDevicePtr(m_intermediates.pendingCameraSegments, m_queue);
+        freeDevicePtr(m_intermediates.directLightQueries, m_queue);
+        freeDevicePtr(m_intermediates.directLightEvents, m_queue);
         freeDevicePtr(m_intermediates.countMeasurementEvents, m_queue);
         freeDevicePtr(m_intermediates.countMeasurementTwoPointEvents, m_queue);
+        freeDevicePtr(m_intermediates.countDirectLightEvents, m_queue);
+        freeDevicePtr(m_intermediates.countDirectLightQueries, m_queue);
 
         freeDevicePtr(m_intermediates.pendingStageX, m_queue);
 
@@ -273,8 +298,12 @@ namespace Pale {
         m_intermediates.countRecursiveBridgeEvents = nullptr;
         m_intermediates.countExtensionOut = nullptr;
         m_intermediates.pendingCameraSegments = nullptr;
+        m_intermediates.directLightEvents = nullptr;
+        m_intermediates.directLightQueries = nullptr;
         m_intermediates.countMeasurementEvents = nullptr;
         m_intermediates.countMeasurementTwoPointEvents = nullptr;
+        m_intermediates.countDirectLightQueries = nullptr;
+        m_intermediates.countDirectLightEvents = nullptr;
         m_intermediates.maxRecursiveBridgeEvent = 0;
         m_intermediates.maxHitContributionCount = 0;
         m_intermediates.maxCameraAttachedEvents = 0;
@@ -284,6 +313,8 @@ namespace Pale {
         m_intermediates.maxGradientRecordCount = 0;
         m_intermediates.maxMeasurementTwoPointEventCount = 0;
         m_intermediates.maxRayQueueCapacity = 0;
+        m_intermediates.maxDirectLightEventCount = 0;
+        m_intermediates.maxDirectLightQueryCount = 0;
 
         m_rayQueueCapacity = 0;
     }

@@ -1960,11 +1960,13 @@ namespace Pale {
         return sample;
     }
 
+
     SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
         uint32_t measurementEventCount,
         uint32_t measurementTwoPointEventCount,
         uint32_t cameraAttachedBridgeEventCount,
-        uint32_t recursiveBridgeEventCount) {
+        uint32_t recursiveBridgeEventCount,
+        uint32_t directLightEventCount) {
         GradientRecordRanges ranges{};
 
         static constexpr uint32_t measurementRecordsPerEvent =
@@ -1979,11 +1981,15 @@ namespace Pale {
         static constexpr uint32_t recursiveBridgeRecordsPerEvent =
             2u + kMaxSplatEventsPerRay;
 
+        static constexpr uint32_t directLightRecordsPerEvent =
+            1u + kMaxSplatEventsPerRay;
+
         ranges.measurementOffset = 0u;
         ranges.measurementCount =
             measurementRecordsPerEvent * measurementEventCount;
 
-        ranges.measurementTwoPointOffset = ranges.measurementOffset + ranges.measurementCount;
+        ranges.measurementTwoPointOffset =
+            ranges.measurementOffset + ranges.measurementCount;
         ranges.measurementTwoPointCount =
             measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
 
@@ -1997,8 +2003,13 @@ namespace Pale {
         ranges.recursiveBridgeCount =
             recursiveBridgeRecordsPerEvent * recursiveBridgeEventCount;
 
-        ranges.totalCount =
+        ranges.directLightOffset =
             ranges.recursiveBridgeOffset + ranges.recursiveBridgeCount;
+        ranges.directLightCount =
+            directLightRecordsPerEvent * directLightEventCount;
+
+        ranges.totalCount =
+            ranges.directLightOffset + ranges.directLightCount;
 
         return ranges;
     }
@@ -2015,5 +2026,26 @@ namespace Pale {
         pendingCameraSegment.cameraPathThroughput = float3{0.0f, 0.0f, 0.0f};
         pendingCameraSegment.cameraOriginWorld = float3{0.0f, 0.0f, 0.0f};
         pendingCameraSegment.cameraDirectionWorld = float3{0.0f, 0.0f, 0.0f};
+    }
+
+    inline Ray makeShadowRayToPoint(
+        const float3& origin,
+        const float3& target,
+        const float3& shadingNormal,
+        float eps = 1e-5f) {
+        const float3 d = target - origin;
+        const float dist = sycl::sqrt(dot(d, d));
+        const float3 dir = d / dist;
+
+        Ray ray{};
+        ray.origin = origin + shadingNormal * eps;
+        ray.direction = dir;
+        ray.normal = shadingNormal;
+
+        // If your Ray type has tMin/tMax, set them here.
+        // ray.tMin = eps;
+        // ray.tMax = dist - eps;
+
+        return ray;
     }
 }

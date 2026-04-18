@@ -182,6 +182,8 @@ namespace Pale {
         pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints).wait();
         pkg.queue.fill(pkg.gradients.gradBeta, 0.0f, pkg.gradients.numPoints).wait();
 
+        const bool enableAdjointDirectLight = pkg.settings.enableAdjointDirectLight;
+
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
             if (pkg.settings.renderDebugGradientImages) {
                 pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosX, float4{0.0f},
@@ -216,17 +218,15 @@ namespace Pale {
                     pkg.sensors[cameraIndex].width * pkg.sensors[cameraIndex].height;
 
                 pkg.queue.fill(pkg.intermediates.pendingCameraSegments, PendingCameraSegment{}, raysPerFrame).wait();
+
                 {
                     ScopedTimer timer("launchRayGenAdjointKernel");
                     Log::PA_TRACE("Generating adjoint rays");
                     launchRayGenAdjointKernel(pkg, spp, static_cast<uint32_t>(cameraIndex));
                 }
 
-
                 uint32_t activeRayCount = raysPerFrame;
 
-                // One pending state slot per pathId/pixel.
-                // Clear the full pending arrays once per spp.
                 pkg.queue.fill(pkg.intermediates.pendingStageX, PendingAdjointStageX{}, raysPerFrame).wait();
 
                 for (uint32_t adjointBounceIndex = 0;
@@ -238,8 +238,13 @@ namespace Pale {
                     pkg.queue.fill(pkg.intermediates.countAttachedBridgeEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countRecursiveBridgeEvents, static_cast<uint32_t>(0), 1);
 
+                    // Always reset these so stale values never survive across bounces.
+                    pkg.queue.fill(pkg.intermediates.countDirectLightQueries, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countDirectLightEvents, static_cast<uint32_t>(0), 1);
+
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeRayCount);
                     pkg.queue.wait();
+
                     {
                         Log::PA_TRACE("Launching adjoint intersect kernel");
                         ScopedTimer timer("launchAdjointIntersectKernel", spdlog::level::debug);
@@ -247,7 +252,7 @@ namespace Pale {
                     }
 
                     uint32_t measurementEventCount = 0;
-                    uint32_t measurementTwoPoint = 0;
+                    uint32_t measurementTwoPointEventCount = 0;
                     uint32_t cameraAttachedBridgeEventCount = 0;
                     uint32_t recursiveBridgeEventCount = 0;
 
@@ -257,7 +262,7 @@ namespace Pale {
                         sizeof(uint32_t)).wait();
 
                     pkg.queue.memcpy(
-                        &measurementTwoPoint,
+                        &measurementTwoPointEventCount,
                         pkg.intermediates.countMeasurementTwoPointEvents,
                         sizeof(uint32_t)).wait();
 
@@ -275,9 +280,8 @@ namespace Pale {
                         measurementEventCount,
                         pkg.intermediates.maxMeasurementEventCount);
 
-
-                    measurementTwoPoint = sycl::min(
-                        measurementTwoPoint,
+                    measurementTwoPointEventCount = sycl::min(
+                        measurementTwoPointEventCount,
                         pkg.intermediates.maxMeasurementTwoPointEventCount);
 
                     cameraAttachedBridgeEventCount = sycl::min(
@@ -288,10 +292,43 @@ namespace Pale {
                         recursiveBridgeEventCount,
                         pkg.intermediates.maxRecursiveBridgeEvent);
 
+                    uint32_t directLightEventCount = 0;
+
+                    if (enableAdjointDirectLight) {
+                        uint32_t directLightQueryCount = 0;
+                        pkg.queue.memcpy(
+                            &directLightQueryCount,
+                            pkg.intermediates.countDirectLightQueries,
+                            sizeof(uint32_t)).wait();
+
+                        directLightQueryCount = sycl::min(
+                            directLightQueryCount,
+                            pkg.intermediates.maxDirectLightQueryCount);
+
+                        if (directLightQueryCount > 0) {
+                            ScopedTimer timer("launchAdjointDirectLightKernel", spdlog::level::debug);
+                            launchAdjointDirectLightKernel(
+                                pkg,
+                                spp,
+                                directLightQueryCount,
+                                static_cast<uint32_t>(cameraIndex));
+                        }
+
+                        pkg.queue.memcpy(
+                            &directLightEventCount,
+                            pkg.intermediates.countDirectLightEvents,
+                            sizeof(uint32_t)).wait();
+
+                        directLightEventCount = sycl::min(
+                            directLightEventCount,
+                            pkg.intermediates.maxDirectLightEventCount);
+                    }
+
                     if (cameraAttachedBridgeEventCount > 0 ||
                         recursiveBridgeEventCount > 0 ||
                         measurementEventCount > 0 ||
-                        measurementTwoPoint > 0) {
+                        measurementTwoPointEventCount > 0 ||
+                        directLightEventCount > 0) {
                         ScopedTimer timer(
                             "Total adjointContributionKernels bounce: " + std::to_string(adjointBounceIndex),
                             spdlog::level::debug);
@@ -299,14 +336,17 @@ namespace Pale {
                         adjointContributionKernels(
                             pkg,
                             measurementEventCount,
-                            measurementTwoPoint,
+                            measurementTwoPointEventCount,
                             cameraAttachedBridgeEventCount,
                             recursiveBridgeEventCount,
+                            directLightEventCount,
                             static_cast<uint32_t>(cameraIndex));
                     }
 
-                    pkg.queue.memset(pkg.intermediates.gradientRecords, 0x00,
-                                     pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
+                    pkg.queue.memset(
+                        pkg.intermediates.gradientRecords,
+                        0x00,
+                        pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
 
                     uint32_t nextRayCount = 0;
                     pkg.queue.memcpy(

@@ -336,6 +336,7 @@ namespace Pale {
     };
     static constexpr uint32_t kMaxSegmentOccluders = 5;
 
+
     struct PendingCameraSegment {
         bool valid = false;
         uint32_t pathId = 0u;
@@ -351,6 +352,50 @@ namespace Pale {
         float alphaGeom = 0.0f;
         int32_t sideSign = 1;
         float3 incomingDirection = float3{0.0f, 0.0f, 0.0f};
+    };
+    struct DirectLightQuery {
+        PointCloudSurfaceRecord surface{};
+
+        // Adjoint weight transported to the current surface before local direct-light evaluation.
+        float3 adjointWeight{0.0f, 0.0f, 0.0f};
+
+        // Open-segment transmission on the incoming path up to this surface.
+        float transmissionToSurface = 1.0f;
+
+        // Local scattering factor at the current surface.
+        float3 localBsdf{0.0f, 0.0f, 0.0f};
+
+        // For non-Lambertian extensions. For diffuse this is not strictly needed,
+        // but it is useful to keep.
+        float3 outgoingDirectionWorld{0.0f, 0.0f, 0.0f};
+
+        // Sampled emitter point.
+        float3 lightPositionWorld{0.0f, 0.0f, 0.0f};
+        float3 lightNormalWorld{0.0f, 0.0f, 0.0f};
+        float3 lightRadiance{0.0f, 0.0f, 0.0f};
+        float lightPdfArea = 1.0f;
+
+        uint32_t pixelIndex = 0u;
+        uint32_t pathId = 0u;
+    };
+
+    struct DirectLightGradientEvent {
+        PointCloudSurfaceRecord surface{};
+
+        // Prefix weight up to the current surface x.
+        float3 xPathThroughput{0.0f, 0.0f, 0.0f};
+
+        // Surface-to-light sample.
+        float3 lightPositionWorld{0.0f, 0.0f, 0.0f};
+        float3 lightNormalWorld{0.0f, 0.0f, 0.0f};
+        float3 lightRadiance{0.0f, 0.0f, 0.0f};
+        float lightPdfArea = 1.0f;
+
+        // Prefix transmission up to x, kept separate for readability if you want it.
+        float transmissionToSurface = 1.0f;
+
+        // Optional, currently binary and not differentiated.
+        float visibility = 1.0f;
     };
 
     struct CameraToSurfaceScatterEvent {
@@ -397,15 +442,6 @@ namespace Pale {
         PendingAdjointVertex current{};
     };
 
-    struct PendingAdjointStageXY {
-        bool valid = false;
-        uint32_t pathId = 0;
-        uint32_t pixelIndex = 0;
-        PointCloudSurfaceRecord xSurface;
-        PointCloudSurfaceRecord ySurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-    };
-
     struct MeasurementGradientEvent {
         PointCloudSurfaceRecord xSurface;
         float transmission{};
@@ -429,9 +465,9 @@ namespace Pale {
         PointCloudSurfaceRecord ySurface;   // sampled next surfel
 
         float3 xPathThroughput;
-        float transmissionPreviousSegment;  // tau(camera, X)
-        float geometryPreviousSegment;  // tau(camera, X)
-        float transmission;                 // tau(X, Y)
+        float transmissionPreviousSegment{};  // tau(camera, X)
+        float geometryPreviousSegment{};  // tau(camera, X)
+        float transmission{};                 // tau(X, Y)
     };
 
     struct RecursiveBridgeGradientEvent {
@@ -439,9 +475,9 @@ namespace Pale {
         PointCloudSurfaceRecord ySurface;   // bridge end
 
         float3 xPathThroughput;
-        float transmissionPreviousSegment;  // tau(prev, A)
-        float geometryPreviousSegment;  // tau(prev, A)
-        float transmission;                 // tau(A, B)
+        float transmissionPreviousSegment{};  // tau(prev, A)
+        float geometryPreviousSegment{};  // tau(prev, A)
+        float transmission{};                 // tau(A, B)
     };
 
     struct ReconstructedSurfelState {
@@ -489,20 +525,24 @@ namespace Pale {
     };
 
     struct GradientRecordRanges {
-        uint32_t measurementOffset = 0;
-        uint32_t measurementCount = 0;
+        uint32_t measurementOffset = 0u;
+        uint32_t measurementCount = 0u;
 
-        uint32_t measurementTwoPointOffset = 0;
-        uint32_t measurementTwoPointCount = 0;
+        uint32_t measurementTwoPointOffset = 0u;
+        uint32_t measurementTwoPointCount = 0u;
 
-        uint32_t cameraAttachedBridgeOffset = 0;
-        uint32_t cameraAttachedBridgeCount = 0;
+        uint32_t cameraAttachedBridgeOffset = 0u;
+        uint32_t cameraAttachedBridgeCount = 0u;
 
-        uint32_t recursiveBridgeOffset = 0;
-        uint32_t recursiveBridgeCount = 0;
+        uint32_t recursiveBridgeOffset = 0u;
+        uint32_t recursiveBridgeCount = 0u;
 
-        uint32_t totalCount = 0;
+        uint32_t directLightOffset = 0u;
+        uint32_t directLightCount = 0u;
+
+        uint32_t totalCount = 0u;
     };
+
     struct CompletedGradientEvent {
         bool valid = false;
 
@@ -594,6 +634,8 @@ namespace Pale {
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
         AdjointSampleSettings sampling;
+        bool enableAdjointDirectLight = true;
+
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
@@ -678,6 +720,14 @@ namespace Pale {
         uint32_t *countMeasurementTwoPointEvents = nullptr;
         uint32_t *countAttachedBridgeEvents = nullptr;
         uint32_t *countRecursiveBridgeEvents = nullptr;
+
+        DirectLightQuery* directLightQueries = nullptr;
+        uint32_t* countDirectLightQueries = nullptr;
+        uint32_t maxDirectLightQueryCount = 0u;
+
+        DirectLightGradientEvent* directLightEvents = nullptr;
+        uint32_t* countDirectLightEvents = nullptr;
+        uint32_t maxDirectLightEventCount = 0u;
 
         // capacities
         uint32_t maxMeasurementEventCount = 0u;
