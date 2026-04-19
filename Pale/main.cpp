@@ -275,7 +275,6 @@ int main(int argc, char **argv) {
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 2;
         settings.numForwardPasses = 1;
-        settings.numGatherPasses = 1;
         settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
         settings.adjointSamplesPerPixel = 1;
         settings.renderDebugGradientImages = true;

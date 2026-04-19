@@ -166,6 +166,37 @@ def _finite_difference_loss(
 
     raise RuntimeError("Could not form any finite difference stencil.")
 
+def _make_target_image(
+    renderer: "pale.Renderer",
+    camera: str,
+    output_dir: Path,
+    target_mode: str,
+) -> tuple[np.ndarray, tuple[int, int, int]]:
+    """
+    Returns:
+        target_image, target_shape
+
+    target_shape is always (H, W, 3).
+    """
+    if target_mode == "original":
+        target_image = read_rgb_exr(output_dir.parent.parent / Path(camera + "_raw_target.exr"))
+        return target_image.astype(np.float32), tuple(target_image.shape)
+
+    reference_images = renderer.render_forward()
+    reference_rendered = np.asarray(reference_images[camera + "_raw"], dtype=np.float32)[..., :3]
+    target_shape = tuple(reference_rendered.shape)
+
+    if target_mode == "ones":
+        target_image = np.ones_like(reference_rendered, dtype=np.float32)
+        return target_image, target_shape
+
+    if target_mode == "random":
+        # Initial value only. Per-iteration random target is generated inside the sweep loop.
+        target_image = np.zeros_like(reference_rendered, dtype=np.float32)
+        return target_image, target_shape
+
+    raise RuntimeError(f"Unknown target_mode '{target_mode}'.")
+
 
 def main(args) -> None:
     renderer_settings = {
@@ -221,17 +252,18 @@ def main(args) -> None:
             continue
         (rendered_dir / camera_name).mkdir(parents=True, exist_ok=True)
 
-    target_image = read_rgb_exr(output_dir.parent.parent / Path(camera + "_raw_target.exr"))
-
-    if args.fill_target:
-        #print(target_image.min(), target_image.max())
-        target_image = np.ones_like(target_image, dtype=np.float32)
+    target_image, target_shape = _make_target_image(
+        renderer=renderer,
+        camera=camera,
+        output_dir=output_dir,
+        target_mode=args.target_mode,
+    )
 
     if renderer_settings["logging"] < 4:
         print(f"Using run_dir: {output_dir}")
         print("Target image path:", output_dir.parent.parent / Path(camera + "_raw_target.exr"))
         print("Renderer cameras:", renderer_cameras)
-        print("Fill target:", args.fill_target)
+        print("Target mode:", args.target_mode)
 
     csv_path = output_dir / f"{camera}_{args.parameter}_sweep.csv"
     fieldnames = [
@@ -256,12 +288,12 @@ def main(args) -> None:
             t = iteration_index / iterations
             value = args.min + t * (args.max - args.min)
 
-            if args.fill_target_random:
+            if args.target_mode == "random":
                 random_number_generator = np.random.default_rng(iteration_index)
                 target_image = random_number_generator.uniform(
                     0.0,
                     1.0,
-                    size=target_image.shape
+                    size=target_shape
                 ).astype(np.float32)
 
             loss_value, fd_grad, fd_kind = _finite_difference_loss(
@@ -467,17 +499,13 @@ def parse_args() -> argparse.Namespace:
         help="Number of adjoint bounces.",
     )
     parser.add_argument(
-        "--fill_target",
-        action="store_true",
-        default=True,
-        help="Replace the loaded target image with an all-ones image.",
+        "--target_mode",
+        type=str,
+        choices=["original", "ones", "random"],
+        default="original",
+        help="How to construct the target image: original EXR, all ones, or deterministic random noise.",
     )
-    parser.add_argument(
-        "--fill_target_random",
-        action="store_true",
-        default=False,
-        help="Replace the loaded target image with a deterministic random [0, 1] image (Noise)",
-    )
+
     return parser.parse_args()
 
 

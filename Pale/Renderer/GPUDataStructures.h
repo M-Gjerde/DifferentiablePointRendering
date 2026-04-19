@@ -615,8 +615,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.2f;
-        float qReflect = 0.8f;
+        float qNull = 0.3f;
+        float qReflect = 0.7f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
@@ -628,7 +628,6 @@ namespace Pale {
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 6;
         uint32_t numForwardPasses = 6;
-        uint32_t numGatherPasses = 1;
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
         uint32_t russianRouletteStart = 6; // Which bounce to start RR
@@ -645,17 +644,17 @@ namespace Pale {
     // -------------------- Photon storage (device) --------------------------
     // Filled during the emitter pass by appending at an atomic counter.
     // One entry per stored photon (only diffuse hits).
-    struct alignas(16) DevicePhotonSurface {
+    struct DevicePhotonSurface {
         // Positions in world space
         float3 position{0.0f};
         // Photon power (throughput × emission), RGB channels
         float3 power{0.0f};
         float3 incomingDirection{0.0f};
+        //float3 normal{0.0f};
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         //int sideSign{}; // +1 or -1: hemisphere relative to canonical surfel normal
         //GeometryType geometryType{GeometryType::InvalidType};
         //float3 incomingDirection{0.0f};
-
         std::uint32_t isValid = 0;
     };
 

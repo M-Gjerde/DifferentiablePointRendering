@@ -1281,19 +1281,84 @@ namespace Pale {
         return irradiance;
     }
 
+inline float3 gatherDiffuseIrradianceAtPoint(
+    const float3& queryPositionWorld,
+    const float3& queryNormal,
+    const DeviceSurfacePhotonMapGrid& grid) {
+    const float tangentRadius = grid.minimumGatherRadiusWorld;
+    const float tangentRadiusSquared = tangentRadius * tangentRadius;
+    const float inverseArea = 1.0f / (M_PIf * tangentRadiusSquared);
 
-    inline float3 gatherDiffuseIrradianceAtPoint(
+    const float3 normalizedQueryNormal = normalize(queryNormal);
+
+    // Thin slab around the query tangent plane.
+    const float slabHalfThickness = 0.05f * grid.minimumGatherRadiusWorld;
+    const float slabHalfThicknessSquared = slabHalfThickness * slabHalfThickness;
+
+    const float supportExtent = tangentRadius + slabHalfThickness;
+    const float3 supportOffset = float3{supportExtent, supportExtent, supportExtent};
+
+    const sycl::int3 minCell =
+        worldToCellClamped(queryPositionWorld - supportOffset, grid);
+    const sycl::int3 maxCell =
+        worldToCellClamped(queryPositionWorld + supportOffset, grid);
+
+    float3 irradiance = float3{0.0f};
+
+    for (int cz = minCell.z(); cz <= maxCell.z(); ++cz)
+        for (int cy = minCell.y(); cy <= maxCell.y(); ++cy)
+            for (int cx = minCell.x(); cx <= maxCell.x(); ++cx) {
+                const uint32_t cellId =
+                    linearCellIndex(sycl::int3{cx, cy, cz}, grid.gridResolution);
+                const uint32_t start = grid.cellStart[cellId];
+                if (start == kInvalidIndex)
+                    continue;
+
+                const uint32_t end = grid.cellEnd[cellId];
+                for (uint32_t j = start; j < end; ++j) {
+                    const uint32_t photonIndex = grid.sortedPhotonIndex[j];
+                    const DevicePhotonSurface ph = grid.photons[photonIndex];
+
+                    const float3 offset = ph.position - queryPositionWorld;
+
+                    const float cosine = dot(normalizedQueryNormal, -ph.incomingDirection);
+                    if (cosine < 0.0f)
+                        continue;
+
+                    const float signedPlaneDistance = dot(offset, normalizedQueryNormal);
+                    const float planeDistanceSquared =
+                        signedPlaneDistance * signedPlaneDistance;
+                    if (planeDistanceSquared > slabHalfThicknessSquared)
+                        continue;
+
+                    const float fullDistanceSquared = dot(offset, offset);
+                    const float tangentDistanceSquared =
+                        sycl::fmax(0.0f, fullDistanceSquared - planeDistanceSquared);
+                    if (tangentDistanceSquared > tangentRadiusSquared)
+                        continue;
+
+                    irradiance += ph.power * inverseArea;
+                }
+            }
+
+    return irradiance;
+}
+
+
+    inline float3 gatherDiffuseIrradianceAtPointOld2(
         const float3& queryPositionWorld,
         const float3& queryNormal,
         const DeviceSurfacePhotonMapGrid& grid) {
         const float tangentRadius = grid.minimumGatherRadiusWorld;
         const float tangentRadiusSquared = tangentRadius * tangentRadius;
 
-        const float slabHalfThickness = 0.1f * tangentRadius;
+        const float slabHalfThickness = sycl::fmax(1e-5f, 0.025f * tangentRadius);
         const float slabHalfThicknessSquared = slabHalfThickness * slabHalfThickness;
 
-        const float epanechnikovScale = 2.0f / (M_PIf * tangentRadiusSquared);
         const float inverseTangentRadiusSquared = 1.0f / tangentRadiusSquared;
+        const float inverseSlabHalfThicknessSquared = 1.0f / slabHalfThicknessSquared;
+
+        const float epanechnikovScale = 2.0f / (M_PIf * tangentRadiusSquared);
 
         const float supportExtent = tangentRadius + slabHalfThickness;
         const float3 supportOffset = float3{supportExtent, supportExtent, supportExtent};
@@ -1330,20 +1395,28 @@ namespace Pale {
 
                         const float signedPlaneDistance = dot(offset, queryNormal);
                         const float planeDistanceSquared = signedPlaneDistance * signedPlaneDistance;
-                        const float tangentDistanceSquared = distanceSquared - planeDistanceSquared;
+                        if (planeDistanceSquared > slabHalfThicknessSquared) {
+                            continue;
+                        }
 
-                        const bool insideSlab = planeDistanceSquared <= slabHalfThicknessSquared;
-                        const bool insideDisk = tangentDistanceSquared <= tangentRadiusSquared;
-                        const bool sameSide = dot(queryNormal, -photon.incomingDirection) > 0.0f;
+                        const float tangentDistanceSquared =
+                            sycl::fmax(0.0f, distanceSquared - planeDistanceSquared);
+                        if (tangentDistanceSquared > tangentRadiusSquared) {
+                            continue;
+                        }
 
-                        const float accept =
-                            (insideSlab && insideDisk && sameSide) ? 1.0f : 0.0f;
+                        const float sameHemisphere =
+                            dot(queryNormal, -photon.incomingDirection) > 0.0f ? 1.0f : 0.0f;
 
-                        const float normalizedRadiusSquared =
-                            tangentDistanceSquared * inverseTangentRadiusSquared;
-                        const float unclampedWeight = 1.0f - normalizedRadiusSquared;
+                        const float tangentWeight =
+                            sycl::fmax(0.0f, 1.0f - tangentDistanceSquared * inverseTangentRadiusSquared);
+
+                        const float planeWeight =
+                            sycl::fmax(0.0f, 1.0f - planeDistanceSquared * inverseSlabHalfThicknessSquared);
+
+                        // Square the plane weight to aggressively suppress near-slab-edge photons.
                         const float kernelWeight =
-                            accept * epanechnikovScale * sycl::fmax(0.0f, unclampedWeight);
+                            sameHemisphere * epanechnikovScale * tangentWeight * planeWeight * planeWeight;
 
                         irradiance += photon.power * kernelWeight;
                     }
@@ -1357,6 +1430,7 @@ namespace Pale {
     SYCL_EXTERNAL inline void depositPhotonSurface(
         const WorldHit& worldHit,
         const float3& incomingDirection,
+        const float3& normal,
         const float3& flux,
         const DeviceSurfacePhotonMapGrid& photonMap) {
         // Atomic counter for photon slots
@@ -1381,7 +1455,7 @@ namespace Pale {
         photonEntry.incomingDirection = incomingDirection;
 
         // Incoming direction (towards surface)
-        //photonEntry.incomingDirection = -rayState.ray.direction;
+        //photonEntry.normal = normal;
 
         // Power carried by the photon
         photonEntry.power = flux;

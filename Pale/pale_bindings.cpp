@@ -124,7 +124,6 @@ public:
             settings.photonsPerLaunch = get_u64(settingsDict, "photons", settings.photonsPerLaunch);
             settings.maxBounces = get_i(settingsDict, "bounces", settings.maxBounces);
             settings.numForwardPasses = get_i(settingsDict, "forward_passes", settings.numForwardPasses);
-            settings.numGatherPasses = get_i(settingsDict, "gather_passes", settings.numGatherPasses);
             settings.maxAdjointBounces = get_i(settingsDict, "adjoint_bounces", settings.maxAdjointBounces);
             settings.adjointSamplesPerPixel = get_i(settingsDict, "adjoint_passes", settings.adjointSamplesPerPixel);
             settings.random.seed = get_i(settingsDict, "seed", settings.random.seed);
@@ -140,7 +139,6 @@ public:
         Pale::Log::PA_WARN("  Photons per launch        : {}", settings.photonsPerLaunch);
         Pale::Log::PA_WARN("  Max bounces               : {}", settings.maxBounces);
         Pale::Log::PA_WARN("  Forward passes            : {}", settings.numForwardPasses);
-        Pale::Log::PA_WARN("  Gather passes             : {}", settings.numGatherPasses);
         Pale::Log::PA_WARN("  Adjoint bounces           : {}", settings.maxAdjointBounces);
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
         Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", settings.depthDistortionWeight);

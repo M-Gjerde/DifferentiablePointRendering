@@ -226,6 +226,7 @@ def run_one(
     bounces: int,
     adjoint_passes: int,
     adjoint_bounces: int,
+    target_mode: str,
     common_args: list[str],
     extra_args: list[str],
 ) -> int:
@@ -254,6 +255,8 @@ def run_one(
         str(adjoint_passes),
         "--adjoint_bounces",
         str(adjoint_bounces),
+        "--target_mode",
+        target_mode,
     ]
     command += common_args
     command += extra_args
@@ -485,6 +488,14 @@ def validate_case(case: dict[str, Any]) -> None:
     if int(case["adjoint_bounces"]) < 0:
         raise RuntimeError(f"adjoint_bounces must be >= 0. Case: {case}")
 
+    target_mode = str(case.get("target_mode", "original"))
+    valid_target_modes = {"original", "ones", "random"}
+    if target_mode not in valid_target_modes:
+        raise RuntimeError(
+            f"Invalid target_mode '{target_mode}'. "
+            f"Expected one of {sorted(valid_target_modes)}. Case: {case}"
+        )
+
 
 def main() -> None:
     args = parse_args()
@@ -543,6 +554,7 @@ def main() -> None:
         bounces = int(case["bounces"])
         adjoint_passes = int(case["adjoint_passes"])
         adjoint_bounces = int(case["adjoint_bounces"])
+        target_mode = str(case.get("target_mode", "original"))
 
         print()
         print(
@@ -557,7 +569,8 @@ def main() -> None:
             f"index={point_index} min={sweep_min} max={sweep_max} "
             f"fd_epsilon={fd_epsilon} "
             f"forward_passes={forward_passes} bounces={bounces} "
-            f"adjoint_passes={adjoint_passes} adjoint_bounces={adjoint_bounces}"
+            f"adjoint_passes={adjoint_passes} adjoint_bounces={adjoint_bounces} "
+            f"target_mode={target_mode}"
         )
 
         render_target_return_code = run_render_target(
@@ -609,7 +622,9 @@ def main() -> None:
             adjoint_passes=adjoint_passes,
             adjoint_bounces=adjoint_bounces,
             common_args=common_args,
+            target_mode=target_mode,
             extra_args=[str(token) for token in args.extra_args],
+
         )
         if run_return_code != 0:
             failures += 1
