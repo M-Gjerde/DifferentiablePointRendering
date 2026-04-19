@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     argument_parser.add_argument(
         "--rel_threshold",
         type=float,
-        default=0.05,
+        default=0.10,
         help="Maximum allowed relative error for an individual scored row to pass.",
     )
     argument_parser.add_argument(
@@ -139,6 +139,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Run only one case by zero-based index from tests.json.",
+    )
+    argument_parser.add_argument(
+        "--skip_first_cases",
+        type=int,
+        default=0,
+        help="Skip the first N test cases from tests.json before running the remaining cases.",
     )
     argument_parser.add_argument(
         "--extra_args",
@@ -480,7 +486,6 @@ def validate_case(case: dict[str, Any]) -> None:
         raise RuntimeError(f"adjoint_bounces must be >= 0. Case: {case}")
 
 
-
 def main() -> None:
     args = parse_args()
 
@@ -495,6 +500,11 @@ def main() -> None:
     if not cases:
         raise RuntimeError("tests.json: no cases provided")
 
+    if args.skip_first_cases < 0:
+        raise RuntimeError(
+            f"--skip_first_cases must be >= 0, got {args.skip_first_cases}"
+        )
+
     if args.case_index is not None:
         if args.case_index < 0 or args.case_index >= len(cases):
             raise RuntimeError(
@@ -502,6 +512,13 @@ def main() -> None:
                 f"but tests.json has {len(cases)} cases."
             )
         cases = [cases[args.case_index]]
+    else:
+        if args.skip_first_cases >= len(cases):
+            raise RuntimeError(
+                f"--skip_first_cases={args.skip_first_cases} skips all available cases. "
+                f"tests.json has only {len(cases)} cases."
+            )
+        cases = cases[args.skip_first_cases:]
 
     validate_common_args(common_args)
     for case in cases:

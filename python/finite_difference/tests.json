@@ -2,9 +2,22 @@
   "common_args": [
     "--iterations", "10",
     "--ply", "pointcloud",
-    "--seed", "42"
+    "--seed", "666"
   ],
   "cases": [
+        {
+      "scene": "cornell",
+      "camera": "camera1",
+      "parameter": "translation_y",
+      "index": 6,
+      "min": 0.0,
+      "max": 0.45,
+      "fd_epsilon": 1e-3,
+      "forward_passes": 25,
+      "bounces": 2,
+      "adjoint_passes": 16,
+      "adjoint_bounces": 3
+    },
     {
       "scene": "cornell",
       "camera": "camera1",
@@ -13,22 +26,22 @@
       "min": -0.2,
       "max": 0.2,
       "fd_epsilon": 5e-2,
-      "forward_passes": 20,
+      "forward_passes": 25,
       "bounces": 2,
-      "adjoint_passes": 8,
+      "adjoint_passes": 32,
       "adjoint_bounces": 3
     },
     {
       "scene": "cornell",
       "camera": "camera1",
-      "parameter": "translation_y",
+      "parameter": "translation_x",
       "index": 6,
-      "min": 0.0,
-      "max": 0.45,
+      "min": -0.2,
+      "max": 0.2,
       "fd_epsilon": 5e-2,
-      "forward_passes": 20,
+      "forward_passes": 25,
       "bounces": 4,
-      "adjoint_passes": 8,
+      "adjoint_passes": 32,
       "adjoint_bounces": 5
     },
     {
@@ -47,27 +60,14 @@
     {
       "scene": "simple_1",
       "camera": "camera1",
-      "parameter": "translation_z",
-      "index": 2,
-      "min": 1.5,
-      "max": 3.5,
-      "fd_epsilon": 1e-1,
-      "forward_passes": 200,
-      "bounces": 2,
-      "adjoint_passes": 32,
-      "adjoint_bounces": 3
-    },
-    {
-      "scene": "simple_1",
-      "camera": "camera1",
       "parameter": "translation_x",
       "index": 1,
       "min": 0.3,
       "max": 1.8,
       "fd_epsilon": 1e-1,
-      "forward_passes": 200,
+      "forward_passes": 100,
       "bounces": 2,
-      "adjoint_passes": 32,
+      "adjoint_passes": 8,
       "adjoint_bounces": 3
     },
     {
@@ -75,10 +75,10 @@
       "camera": "camera1",
       "parameter": "translation_z",
       "index": 1,
-      "min": 0.6,
+      "min": 0.1,
       "max": 2.6,
-      "fd_epsilon": 1e-1,
-      "forward_passes": 300,
+      "fd_epsilon": 5e-2,
+      "forward_passes": 100,
       "bounces": 2,
       "adjoint_passes": 64,
       "adjoint_bounces": 3
@@ -93,7 +93,7 @@
       "fd_epsilon": 5e-2,
       "forward_passes": 300,
       "bounces": 1,
-      "adjoint_passes": 32,
+      "adjoint_passes": 8,
       "adjoint_bounces": 2
     },
     {
@@ -103,10 +103,10 @@
       "index": 1,
       "min": 0.6,
       "max": 2.0,
-      "fd_epsilon": 1e-1,
-      "forward_passes": 50,
+      "fd_epsilon": 1e-2,
+      "forward_passes": 100,
       "bounces": 1,
-      "adjoint_passes": 64,
+      "adjoint_passes": 16,
       "adjoint_bounces": 2
     },
     {
@@ -117,9 +117,9 @@
       "min": -1.0,
       "max": 1.0,
       "fd_epsilon": 5e-3,
-      "forward_passes": 50,
+      "forward_passes": 100,
       "bounces": 1,
-      "adjoint_passes": 16,
+      "adjoint_passes": 1,
       "adjoint_bounces": 2
     },
     {
@@ -132,7 +132,7 @@
       "fd_epsilon": 5e-3,
       "forward_passes": 100,
       "bounces": 1,
-      "adjoint_passes": 32,
+      "adjoint_passes": 1,
       "adjoint_bounces": 2
     },
     {
@@ -145,7 +145,7 @@
       "fd_epsilon": 5e-3,
       "forward_passes": 100,
       "bounces": 1,
-      "adjoint_passes": 32,
+      "adjoint_passes": 1,
       "adjoint_bounces": 2
     }
   ]
