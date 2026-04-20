@@ -141,8 +141,7 @@ public:
         Pale::Log::PA_WARN("  Forward passes            : {}", settings.numForwardPasses);
         Pale::Log::PA_WARN("  Adjoint bounces           : {}", settings.maxAdjointBounces);
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
-        Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", settings.depthDistortionWeight);
-        Pale::Log::PA_WARN("  Normal Consistency Weight : {}", settings.normalConsistencyWeight);
+        Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", settings.enableAdjointDirectLight);
 
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorsForward.size(); ++i) {

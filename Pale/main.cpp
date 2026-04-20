@@ -331,7 +331,7 @@ int main(int argc, char **argv) {
                     }
                     Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
                     Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-                    //pointGeometry.positions[1].z = 1.8f;
+                    pointGeometry.positions[5].z = 0.3f;
                     rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
                 }
 

@@ -398,6 +398,7 @@ namespace Pale {
 
         // Optional, currently binary and not differentiated.
         float visibility = 1.0f;
+        bool useImplicitRayHitJacobian = false;
     };
 
     struct CameraToSurfaceScatterEvent {

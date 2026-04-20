@@ -20,6 +20,16 @@ def safe_rel_err(value_a: float, value_b: float, eps: float = 1e-12) -> float:
     denominator = max(eps, abs(value_a) + abs(value_b))
     return abs(value_a - value_b) / denominator
 
+def parse_bool_arg(value: str) -> bool:
+    normalized_value = str(value).strip().lower()
+    if normalized_value in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized_value in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        f"Invalid boolean value '{value}'. Expected one of: "
+        f"true/false, yes/no, 1/0, on/off."
+    )
 def create_latest_run_dir(base_output_dir: Path) -> Path:
     """
     Always writes the newest run to:  base_output_dir/0
@@ -208,7 +218,7 @@ def main(args) -> None:
         "adjoint_passes": args.adjoint_passes,
         "logging": 4,
         "seed": args.seed,
-        "enable_adjoint_shadow_rays": False,
+        "enable_adjoint_shadow_rays": args.enable_adjoint_shadow_rays,
     }
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
 
@@ -505,7 +515,13 @@ def parse_args() -> argparse.Namespace:
         default="original",
         help="How to construct the target image: original EXR, all ones, or deterministic random noise.",
     )
-
+    parser.add_argument(
+        "--enable_adjoint_shadow_rays",
+        type=parse_bool_arg,
+        default=False,
+        help="Enable adjoint shadow rays during the backward pass. "
+             "Accepted values: true/false, yes/no, 1/0, on/off.",
+    )
     return parser.parse_args()
 
 

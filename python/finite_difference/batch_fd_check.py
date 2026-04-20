@@ -226,6 +226,7 @@ def run_one(
     bounces: int,
     adjoint_passes: int,
     adjoint_bounces: int,
+    enable_adjoint_shadow_rays: bool,
     target_mode: str,
     common_args: list[str],
     extra_args: list[str],
@@ -255,6 +256,8 @@ def run_one(
         str(adjoint_passes),
         "--adjoint_bounces",
         str(adjoint_bounces),
+        "--enable_adjoint_shadow_rays",
+        "true" if enable_adjoint_shadow_rays else "false",
         "--target_mode",
         target_mode,
     ]
@@ -436,6 +439,7 @@ def validate_common_args(common_args: list[str]) -> None:
         "--bounces",
         "--adjoint_passes",
         "--adjoint_bounces",
+        "--enable_adjoint_shadow_rays",
     }
 
     for token in common_args:
@@ -496,6 +500,11 @@ def validate_case(case: dict[str, Any]) -> None:
             f"Expected one of {sorted(valid_target_modes)}. Case: {case}"
         )
 
+    enable_adjoint_shadow_rays = case.get("enable_adjoint_shadow_rays", False)
+    if not isinstance(enable_adjoint_shadow_rays, bool):
+        raise RuntimeError(
+            f"enable_adjoint_shadow_rays must be a JSON boolean true/false. Case: {case}"
+        )
 
 def main() -> None:
     args = parse_args()
@@ -555,6 +564,7 @@ def main() -> None:
         adjoint_passes = int(case["adjoint_passes"])
         adjoint_bounces = int(case["adjoint_bounces"])
         target_mode = str(case.get("target_mode", "original"))
+        enable_adjoint_shadow_rays = bool(case.get("enable_adjoint_shadow_rays", False))
 
         print()
         print(
@@ -570,6 +580,7 @@ def main() -> None:
             f"fd_epsilon={fd_epsilon} "
             f"forward_passes={forward_passes} bounces={bounces} "
             f"adjoint_passes={adjoint_passes} adjoint_bounces={adjoint_bounces} "
+            f"enable_adjoint_shadow_rays={enable_adjoint_shadow_rays} "
             f"target_mode={target_mode}"
         )
 
@@ -602,6 +613,8 @@ def main() -> None:
                     "bounces": bounces,
                     "adjoint_passes": adjoint_passes,
                     "adjoint_bounces": adjoint_bounces,
+                    "enable_adjoint_shadow_rays": enable_adjoint_shadow_rays,
+                    "target_mode": target_mode,
                     "status": "target_failed",
                 }
             )
@@ -621,10 +634,10 @@ def main() -> None:
             bounces=bounces,
             adjoint_passes=adjoint_passes,
             adjoint_bounces=adjoint_bounces,
+            enable_adjoint_shadow_rays=enable_adjoint_shadow_rays,
             common_args=common_args,
             target_mode=target_mode,
             extra_args=[str(token) for token in args.extra_args],
-
         )
         if run_return_code != 0:
             failures += 1
