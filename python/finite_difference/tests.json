@@ -9,6 +9,34 @@
   ],
   "cases": [
     {
+      "scene": "empty",
+      "camera": "camera1",
+      "parameter": "scale_u",
+      "index": 0,
+      "min": 0.1,
+      "max": 1.0,
+      "fd_epsilon": 5e-3,
+      "forward_passes": 25,
+      "bounces": 2,
+      "adjoint_passes": 2,
+      "adjoint_bounces": 3,
+      "target_mode": "random"
+    },
+    {
+      "scene": "empty",
+      "camera": "camera1",
+      "parameter": "scale_v",
+      "index": 0,
+      "min": 0.1,
+      "max": 1.0,
+      "fd_epsilon": 5e-3,
+      "forward_passes": 25,
+      "bounces": 2,
+      "adjoint_passes": 2,
+      "adjoint_bounces": 3,
+      "target_mode": "ones"
+    },
+    {
       "scene": "cornell",
       "camera": "camera1",
       "parameter": "translation_x",
