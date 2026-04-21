@@ -20,6 +20,75 @@ def safe_rel_err(value_a: float, value_b: float, eps: float = 1e-12) -> float:
     denominator = max(eps, abs(value_a) + abs(value_b))
     return abs(value_a - value_b) / denominator
 
+def _rotation_axis_from_parameter(parameter: str) -> np.ndarray:
+    if parameter == "rotation_x":
+        return np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    if parameter == "rotation_y":
+        return np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    if parameter == "rotation_z":
+        return np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    raise RuntimeError(f"Not a rotation parameter: '{parameter}'")
+
+
+def _rotate_axis_angle(v: np.ndarray, axis_unit: np.ndarray, angle_radians: float) -> np.ndarray:
+    c = np.cos(angle_radians)
+    s = np.sin(angle_radians)
+    return (
+        v * c
+        + np.cross(axis_unit, v) * s
+        + axis_unit * (np.dot(axis_unit, v) * (1.0 - c))
+    )
+
+def _extract_analytic_gradient(
+    gradients: dict,
+    parameter: str,
+    index: int,
+    parameter_value: float,
+) -> float:
+    if parameter == "translation_x":
+        return float(gradients["position"][index][0])
+    if parameter == "translation_y":
+        return float(gradients["position"][index][1])
+    if parameter == "translation_z":
+        return float(gradients["position"][index][2])
+
+    if parameter == "scale_u":
+        return float(gradients["scale"][index][0])
+    if parameter == "scale_v":
+        return float(gradients["scale"][index][1])
+
+    if parameter == "opacity":
+        return float(gradients["opacity"][index])
+
+    if parameter == "beta":
+        return float(gradients["beta"][index])
+
+    if parameter in {"rotation_x", "rotation_y", "rotation_z"}:
+        axis = _rotation_axis_from_parameter(parameter)
+
+        g_tan_u = np.asarray(gradients["tangent_u"][index], dtype=np.float64)
+        g_tan_v = np.asarray(gradients["tangent_v"][index], dtype=np.float64)
+
+        tan_u0 = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        tan_v0 = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+
+        angle_radians = np.deg2rad(float(parameter_value))
+        tan_u = _rotate_axis_angle(tan_u0, axis, angle_radians)
+        tan_v = _rotate_axis_angle(tan_v0, axis, angle_radians)
+
+        d_tan_u_d_theta_rad = np.cross(axis, tan_u)
+        d_tan_v_d_theta_rad = np.cross(axis, tan_v)
+
+        dL_d_theta_rad = (
+            np.dot(g_tan_u, d_tan_u_d_theta_rad)
+            + np.dot(g_tan_v, d_tan_v_d_theta_rad)
+        )
+
+        dL_d_theta_deg = dL_d_theta_rad * (np.pi / 180.0)
+        return float(dL_d_theta_deg)
+
+    raise RuntimeError(f"Unsupported parameter '{parameter}'.")
+
 def parse_bool_arg(value: str) -> bool:
     normalized_value = str(value).strip().lower()
     if normalized_value in {"1", "true", "t", "yes", "y", "on"}:
@@ -86,6 +155,12 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
         renderer.set_point_translation(translation=float(value), axis=1, index=int(index))
     elif parameter == "translation_z":
         renderer.set_point_translation(translation=float(value), axis=2, index=int(index))
+    elif parameter == "rotation_x":
+        renderer.set_point_rotation_degrees(rotation_deg=float(value), axis=0, index=int(index))
+    elif parameter == "rotation_y":
+        renderer.set_point_rotation_degrees(rotation_deg=float(value), axis=1, index=int(index))
+    elif parameter == "rotation_z":
+        renderer.set_point_rotation_degrees(rotation_deg=float(value), axis=2, index=int(index))
     elif parameter == "scale_u":
         renderer.set_point_scale(scale=float(value), axis=0, index=int(index))
     elif parameter == "scale_v":
@@ -361,24 +436,12 @@ def main(args) -> None:
                 )
 
             gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
-            if args.parameter == "translation_x":
-                param_gradients = gradients["position"]
-                param_gradient = param_gradients[args.index][0]
-            elif args.parameter == "translation_y":
-                param_gradients = gradients["position"]
-                param_gradient = param_gradients[args.index][1]
-            elif args.parameter == "translation_z":
-                param_gradients = gradients["position"]
-                param_gradient = param_gradients[args.index][2]
-            elif args.parameter == "scale_u":
-                param_gradients = gradients["scale"]
-                param_gradient = param_gradients[args.index][0]
-            elif args.parameter == "scale_v":
-                param_gradients = gradients["scale"]
-                param_gradient = param_gradients[args.index][1]
-            else:
-                param_gradients = gradients[args.parameter]
-                param_gradient = param_gradients[args.index]
+            param_gradient = _extract_analytic_gradient(
+                gradients=gradients,
+                parameter=args.parameter,
+                index=args.index,
+                parameter_value=float(value),
+            )
 
             writer.writerow(
                 {
@@ -434,6 +497,9 @@ def parse_args() -> argparse.Namespace:
             "translation_x",
             "translation_y",
             "translation_z",
+            "rotation_x",
+            "rotation_y",
+            "rotation_z",
             "scale_u",
             "scale_v",
             "opacity",

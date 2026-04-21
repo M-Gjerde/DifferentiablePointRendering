@@ -917,7 +917,6 @@ namespace Pale {
                     const float scalarWeight = dot(pathWeight, outgoingRadianceX);
 
 
-                    // L_surfel(X, omega_x->c), without alpha_X
                     const float3 outgoingRadianceXNoAlpha = evaluateSurfelRadianceWithoutLocalAlpha(
                         surfelX,
                         eventRecord.xSurface, xState,
@@ -953,6 +952,7 @@ namespace Pale {
                         (-2.0f * betaScale * eventRecord.xSurface.alphaGeom) /
                         oneMinusRadiusSquared;
 
+                    // Existing position derivative
                     const float3 dAlphaGeomDPosition = factor * dUvDPosition;
                     const float3 dAlphaEffectiveDPosition =
                         surfelX.opacity * dAlphaGeomDPosition;
@@ -966,11 +966,7 @@ namespace Pale {
                         scalarWeightNoAlpha *
                         invSpp;
 
-                    // d alpha_geom / d s_u and d alpha_geom / d s_v
-                    // Using:
-                    // d alpha_geom / du = -2 * betaScale * u * alphaGeom / (1 - r^2)
-                    // d u / d s_u = -u / s_u
-                    // => d alpha_geom / d s_u = 2 * betaScale * u^2 * alphaGeom / (s_u * (1 - r^2))
+                    // Existing scale derivatives
                     float dAlphaGeomDScaleU = 0.0f;
                     float dAlphaGeomDScaleV = 0.0f;
 
@@ -1003,6 +999,59 @@ namespace Pale {
                         scalarWeightNoAlpha *
                         invSpp;
 
+                    // New: receiver-opacity rotation term, mapped to tanU / tanV updates
+                    float3 tanUGradient = float3(0.0f);
+                    float3 tanVGradient = float3(0.0f);
+
+                    const float dAlphaGeomDu = factor * u;
+                    const float dAlphaGeomDv = factor * v;
+
+                    const float3 rayDirection = normalize(vectorCameraToX);
+                    const float3 normalX = xState.orientedNormal;
+
+                    const float nDotD = dot(normalX, rayDirection);
+                    if (sycl::fabs(nDotD) > 1e-8f && scaleU > 1e-12f && scaleV > 1e-12f) {
+                        const float3 xMinusSp =
+                            (u * scaleU) * surfelX.tanU +
+                            (v * scaleV) * surfelX.tanV;
+
+                        const float3 a =
+                            (xState.position - sensor.camera.pos) - xMinusSp;
+
+                        const float nDotA = dot(normalX, a);
+                        const float invNDotD = 1.0f / nDotD;
+                        const float invNDotDSquared = invNDotD * invNDotD;
+
+                        const float3 q =
+                            ((cross(normalX, a) * nDotD) -
+                                (nDotA * cross(normalX, rayDirection))) *
+                            invNDotDSquared;
+
+                        const float3 duDRotation =
+                            q * (dot(rayDirection, surfelX.tanU) / scaleU) +
+                            (cross(surfelX.tanU, xMinusSp) / scaleU);
+
+                        const float3 dvDRotation =
+                            q * (dot(rayDirection, surfelX.tanV) / scaleV) +
+                            (cross(surfelX.tanV, xMinusSp) / scaleV);
+
+                        const float3 dAlphaGeomDRotation =
+                            dAlphaGeomDu * duDRotation +
+                            dAlphaGeomDv * dvDRotation;
+
+                        const float3 dAlphaEffectiveDRotation =
+                            surfelX.opacity * dAlphaGeomDRotation;
+
+                        const float3 rotationGradientZeta =
+                            eventRecord.transmission *
+                            dAlphaEffectiveDRotation *
+                            scalarWeightNoAlpha *
+                            invSpp;
+
+                        tanUGradient = cross(rotationGradientZeta, surfelX.tanU);
+                        tanVGradient = cross(rotationGradientZeta, surfelX.tanV);
+                    }
+
                     SurfelGradientRecord gradientRecord{};
                     gradientRecord.primitiveIndex = eventRecord.xSurface.primitiveIndex;
                     gradientRecord.gradPositionX = positionGradient.x();
@@ -1010,6 +1059,15 @@ namespace Pale {
                     gradientRecord.gradPositionZ = positionGradient.z();
                     gradientRecord.gradScaleU = scaleGradientU;
                     gradientRecord.gradScaleV = scaleGradientV;
+
+                    gradientRecord.gradTangentUX = tanUGradient.x();
+                    gradientRecord.gradTangentUY = tanUGradient.y();
+                    gradientRecord.gradTangentUZ = tanUGradient.z();
+
+                    gradientRecord.gradTangentVX = tanVGradient.x();
+                    gradientRecord.gradTangentVY = tanVGradient.y();
+                    gradientRecord.gradTangentVZ = tanVGradient.z();
+
                     gradientRecords[recordIndex] = gradientRecord;
 
                     const float occluderScale =
@@ -1274,22 +1332,130 @@ namespace Pale {
                         }
                     }
 
-                    float3 gradientWrtHitPositionX =
+                    const float3 gradientWrtWorldHitPositionX =
                         scalarWeightWithoutTauAndGeometric *
                         transmittance * dGeometricTermDx;
+
+                    // Position gradient via hit-point translation Jacobian
+                    float3 gradientWrtHitPositionX = gradientWrtWorldHitPositionX;
 
                     const float3x3 hitPointJacobianX = planeHitPointIntersectionJacobian(
                         eventRecord.xSurface.incomingDirection,
                         xState.orientedNormal);
-                    gradientWrtHitPositionX = transpose(hitPointJacobianX) * gradientWrtHitPositionX;
 
+                    gradientWrtHitPositionX = transpose(hitPointJacobianX) * gradientWrtHitPositionX;
                     const float3 xContribution = gradientWrtHitPositionX * invSpp;
+
+                    // -------------------------------------------------------------------------
+                    // New: tanU / tanV gradients for surfel X on the X->Y segment.
+                    // This implements the receiver-side inner-kernel rotation contribution
+                    // under the assumptions:
+                    //   * Lambertian receiver => d f_s / d rotation = 0
+                    //   * no explicit fixed-x rotation derivative of tau(x,y)
+                    //   * only the geometric term contributes
+                    //
+                    // Two pieces are included:
+                    //   (A) moved-hit contribution through x(n_x)
+                    //   (B) explicit normal dependence of G(x,y)
+                    // -------------------------------------------------------------------------
+
+                    float3 tanUContribution = float3(0.0f);
+                    float3 tanVContribution = float3(0.0f);
+
+                    // Use the same ray direction convention as planeHitPointIntersectionJacobian()
+                    const float3 primaryRayDirection = eventRecord.xSurface.incomingDirection;
+                    const float nDotD = dot(xState.orientedNormal, primaryRayDirection);
+
+                    // Raw surfel frame before oriented-normal flip
+                    const float3 rawCross = cross(surfelX.tanU, surfelX.tanV);
+                    const float rawCrossLength = length(rawCross);
+
+                    if (sycl::fabs(nDotD) > 1e-8f && rawCrossLength > 1e-8f) {
+                        const float3 rawNormal = rawCross / rawCrossLength;
+
+                        // Keep the same orientation convention as xState.orientedNormal
+                        const float orientationSign =
+                            dot(rawNormal, xState.orientedNormal) >= 0.0f ? 1.0f : -1.0f;
+
+                        // ---------------------------------------------------------------------
+                        // (A) Gradient wrt oriented normal induced by hit-point motion:
+                        //
+                        // x = o + t d,  t = n·(p-o)/(n·d)
+                        //
+                        // For fixed surfel center p and ray direction d:
+                        //    ∂x/∂n = d (p - x)^T / (n·d)
+                        //
+                        // Therefore, if g_x = ∂L/∂x, then
+                        //    g_n^(hit) = (∂x/∂n)^T g_x
+                        //               = (p - x) * (d·g_x) / (n·d)
+                        // ---------------------------------------------------------------------
+                        const float3 pMinusX = surfelX.position - xState.position;
+
+                        const float3 gradientWrtOrientedNormalFromMovedHit =
+                            pMinusX *
+                            (dot(primaryRayDirection, gradientWrtWorldHitPositionX) / nDotD);
+
+                        // ---------------------------------------------------------------------
+                        // (B) Explicit derivative of G wrt start normal n_x at fixed x,y:
+                        //
+                        // G(x,y) = (n_x·omega_xy)(n_y·(-omega_xy)) / ||x-y||^2
+                        //
+                        // ∂G/∂n_x = omega_xy * cos(theta_y) / d^2
+                        // ---------------------------------------------------------------------
+                        const float3 dGeometricTermDStartNormal =
+                            directionXToY * (cosineAtY / distanceSquared);
+
+                        const float3 gradientWrtOrientedNormalExplicit =
+                            scalarWeightWithoutTauAndGeometric *
+                            transmittance *
+                            dGeometricTermDStartNormal;
+
+                        // Total gradient wrt oriented receiver normal
+                        const float3 gradientWrtOrientedNormalX =
+                            gradientWrtOrientedNormalFromMovedHit +
+                            gradientWrtOrientedNormalExplicit;
+
+                        // Convert oriented-normal gradient to raw-normal gradient
+                        const float3 gradientWrtRawNormal =
+                            orientationSign * gradientWrtOrientedNormalX;
+
+                        // For n = normalize(t_u x t_v):
+                        // δn = P_perp δc / ||c||,  c = t_u x t_v,  P_perp = I - nn^T
+                        //
+                        // If g_n is the gradient wrt n, then
+                        // g_c = P_perp g_n / ||c||
+                        //
+                        // and using δc = δt_u x t_v + t_u x δt_v:
+                        // g_{t_u} = t_v x g_c
+                        // g_{t_v} = g_c x t_u
+                        const float3 gradientProjectedToRawNormalTangent =
+                            gradientWrtRawNormal -
+                            rawNormal * dot(rawNormal, gradientWrtRawNormal);
+
+                        const float3 gradientWrtCross =
+                            gradientProjectedToRawNormalTangent / rawCrossLength;
+
+                        tanUContribution =
+                            cross(surfelX.tanV, gradientWrtCross) * invSpp;
+
+                        tanVContribution =
+                            cross(gradientWrtCross, surfelX.tanU) * invSpp;
+                    }
 
                     SurfelGradientRecord xRecord{};
                     xRecord.primitiveIndex = xPrimitiveIndex;
                     xRecord.gradPositionX = xContribution.x();
                     xRecord.gradPositionY = xContribution.y();
                     xRecord.gradPositionZ = xContribution.z();
+
+                    xRecord.gradTangentUX = tanUContribution.x();
+                    xRecord.gradTangentUY = tanUContribution.y();
+                    xRecord.gradTangentUZ = tanUContribution.z();
+
+                    xRecord.gradTangentVX = tanVContribution.x();
+                    xRecord.gradTangentVY = tanVContribution.y();
+                    xRecord.gradTangentVZ = tanVContribution.z();
+
                     gradientRecords[recordIndex] = xRecord;
 
                     const float geometricTermXY = computeGeometricTermValue(
@@ -2226,8 +2392,8 @@ namespace Pale {
     }
 
     static void reduceSurfelGradientRecords(
-     RenderPackage& pkg,
-     uint32_t gradientRecordCount) {
+        RenderPackage& pkg,
+        uint32_t gradientRecordCount) {
         auto& queue = pkg.queue;
         auto gradients = pkg.gradients;
         SurfelGradientRecord* gradientRecords = pkg.intermediates.gradientRecords;
@@ -2254,6 +2420,27 @@ namespace Pale {
                     atomicAddFloat(
                         gradients.gradPosition[primitiveIndex].z(),
                         gradientRecord.gradPositionZ);
+
+
+                    atomicAddFloat(
+                        gradients.gradTanU[primitiveIndex].x(),
+                        gradientRecord.gradTangentUX);
+                    atomicAddFloat(
+                        gradients.gradTanU[primitiveIndex].y(),
+                        gradientRecord.gradTangentUY);
+                    atomicAddFloat(
+                        gradients.gradTanU[primitiveIndex].z(),
+                        gradientRecord.gradTangentUZ);
+
+                    atomicAddFloat(
+                        gradients.gradTanV[primitiveIndex].x(),
+                        gradientRecord.gradTangentVX);
+                    atomicAddFloat(
+                        gradients.gradTanV[primitiveIndex].y(),
+                        gradientRecord.gradTangentVY);
+                    atomicAddFloat(
+                        gradients.gradTanV[primitiveIndex].z(),
+                        gradientRecord.gradTangentVZ);
 
                     atomicAddFloat(
                         gradients.gradScale[primitiveIndex].x(),
