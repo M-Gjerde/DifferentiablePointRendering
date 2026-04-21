@@ -1528,10 +1528,19 @@ namespace Pale {
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
         const float qNullInv = 1.0f / settings.sampling.qNull;
         auto& sensor = pkg.sensors.front();
+        (void)sensor;
 
         // Camera-attached first bridge X -> Y:
-        // only differentiate the endpoint Y on the XY segment.
-        // The startpoint X is handled separately by the camera-side measurement derivative.
+        // Differentiate endpoint Y on the XY segment.
+        // Under the current split:
+        //   - BSDF / albedo gradient belongs to X, not Y.
+        //   - Y contributes through:
+        //       * y-position dependence of tau(x,y) G(x,y)
+        //       * y-normal dependence of G(x,y)
+        //       * local alpha_y (eta_y, beta_y)
+        //       * local chart motion under scale / rotation of Y
+        //
+        // We defer d/d psi_y of L_surfel(Y, ...) itself to later adjoint propagation.
 
         queue.submit([&](sycl::handler& commandGroupHandler) {
             commandGroupHandler.parallel_for<class cameraAttachedBridgeEventTag>(
@@ -1545,6 +1554,13 @@ namespace Pale {
                     const CameraAttachedBridgeGradientEvent eventRecord =
                         cameraAttachedEvents[eventIndex];
 
+                    // Clear record slot
+                    {
+                        SurfelGradientRecord invalidRecord{};
+                        invalidRecord.primitiveIndex = kInvalidIndex;
+                        gradientRecords[yRecordIndex] = invalidRecord;
+                    }
+
                     const uint32_t xPrimitiveIndex = eventRecord.xSurface.primitiveIndex;
                     const uint32_t yPrimitiveIndex = eventRecord.ySurface.primitiveIndex;
 
@@ -1556,8 +1572,17 @@ namespace Pale {
                     const ReconstructedSurfelState yState =
                         reconstructSurfelState(surfelY, eventRecord.ySurface);
 
+                    // Includes local alpha_Y
                     const float3 outgoingRadianceY =
                         evaluateOutgoingRadianceWithLocalAlpha(
+                            surfelY,
+                            eventRecord.ySurface,
+                            yState,
+                            photonMap);
+
+                    // Excludes local alpha_Y
+                    const float3 outgoingRadianceYNoAlpha =
+                        evaluateSurfelRadianceWithoutLocalAlpha(
                             surfelY,
                             eventRecord.ySurface,
                             yState,
@@ -1571,10 +1596,13 @@ namespace Pale {
 
                     const float distance = sycl::sqrt(distanceSquared);
                     const float3 directionXToY = vectorXToY / distance;
+
                     const float cosineAtY = dot(yState.orientedNormal, -directionXToY);
                     if (cosineAtY <= 1e-6f) {
                         return;
                     }
+
+                    const float cosineAtX = dot(xState.orientedNormal, directionXToY);
 
                     const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
                     const float pAreaY = uniformHemispherePdf * cosineAtY / distanceSquared;
@@ -1582,9 +1610,24 @@ namespace Pale {
                         return;
                     }
 
-                    const float u = surfelY.scale.x();
-                    const float v = surfelY.scale.y();
-                    const float Juv = u * v;
+                    // Local UV/sample information on Y
+                    const float uY = eventRecord.ySurface.uv.x();
+                    const float vY = eventRecord.ySurface.uv.y();
+                    const float radiusSquaredY = uY * uY + vY * vY;
+                    const float oneMinusRadiusSquaredY = 1.0f - radiusSquaredY;
+                    if (oneMinusRadiusSquaredY <= 1e-8f) {
+                        return;
+                    }
+
+                    const float scaleYU = surfelY.scale.x();
+                    const float scaleYV = surfelY.scale.y();
+                    if (scaleYU <= 1e-12f || scaleYV <= 1e-12f) {
+                        return;
+                    }
+
+                    // Current implementation uses the same estimator structure as before:
+                    // scalar weight carries Juv / PuvY, which cancels the local chart Jacobian.
+                    const float Juv = scaleYU * scaleYV;
                     const float PuvY = Juv * pAreaY;
 
                     const float alphaX = eventRecord.xSurface.alphaGeom * surfelX.opacity;
@@ -1603,8 +1646,7 @@ namespace Pale {
                         yState.orientedNormal);
 
                     // xPathThroughput already contains the 1/qReflect factor for the reflective event at X.
-                    const float3 pathWeight =
-                        eventRecord.xPathThroughput;
+                    const float3 pathWeight = eventRecord.xPathThroughput;
 
                     const float3 transportWithoutTauAndGeometric =
                         outgoingRadianceY * alphaX * brdfX;
@@ -1612,8 +1654,38 @@ namespace Pale {
                     float scalarWeightWithoutTauAndGeometric =
                         dot(pathWeight, transportWithoutTauAndGeometric) * Juv / PuvY;
 
+                    // ---------------------------------------------------------------------
+                    // New: local eta_y / beta_y weights.
+                    //
+                    // outgoingRadianceY          = alphaY * L_surfel(Y, ...)
+                    // outgoingRadianceYNoAlpha  =         L_surfel(Y, ...)
+                    //
+                    // alphaY = etaY * alphaGeomY
+                    // d alphaY / d etaY  = alphaGeomY
+                    // d alphaY / d betaY = etaY * d alphaGeomY / d betaY
+                    //
+                    // beta kernel:
+                    // alphaGeomY = (1 - r^2)^b, b = 4 exp(beta)
+                    // d alphaGeomY / d betaY = b * log(1 - r^2) * alphaGeomY
+                    // ---------------------------------------------------------------------
+                    const float alphaGeomY = eventRecord.ySurface.alphaGeom;
+                    const float betaScaleY = 4.0f * sycl::exp(surfelY.beta);
+                    const float dAlphaGeomYDBeta =
+                        betaScaleY * sycl::log(oneMinusRadiusSquaredY) * alphaGeomY;
+
+                    float scalarWeightWithoutTauAndGeometricEtaY =
+                        dot(pathWeight,
+                            outgoingRadianceYNoAlpha *
+                            (alphaGeomY * alphaX * brdfX)) * Juv / PuvY;
+
+                    float scalarWeightWithoutTauAndGeometricBetaY =
+                        dot(pathWeight,
+                            outgoingRadianceYNoAlpha *
+                            (surfelY.opacity * dAlphaGeomYDBeta * alphaX * brdfX)) * Juv / PuvY;
+
                     float transmittance = 1.0f;
                     float3 accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint = float3{0.0f};
+
                     if (eventRecord.transmission != 1.0f) {
                         const float distanceEpsilon = 1e-4f;
 
@@ -1673,16 +1745,16 @@ namespace Pale {
                             const float uOcc = uv.x();
                             const float vOcc = uv.y();
 
-                            const float scaleU = occluderSurfel.scale.x();
-                            const float scaleV = occluderSurfel.scale.y();
-                            if (scaleU <= 1e-12f || scaleV <= 1e-12f) {
+                            const float occScaleU = occluderSurfel.scale.x();
+                            const float occScaleV = occluderSurfel.scale.y();
+                            if (occScaleU <= 1e-12f || occScaleV <= 1e-12f) {
                                 continue;
                             }
 
                             const float3 tangentU = occluderSurfel.tanU;
                             const float3 tangentV = occluderSurfel.tanV;
-                            const float3 localBasisU = tangentU / scaleU;
-                            const float3 localBasisV = tangentV / scaleV;
+                            const float3 localBasisU = tangentU / occScaleU;
+                            const float3 localBasisV = tangentV / occScaleV;
                             const float alphaGeomOccluder = worldHit.alphaGeom;
 
                             const float denominator = dot(occluderNormal, dxy);
@@ -1703,7 +1775,6 @@ namespace Pale {
                                 (1.0f - lambdaOccluder) * (
                                     localBasisV -
                                     occluderNormal * (dot(dxy, localBasisV) * inverseDenominator));
-
 
                             const float radiusSquared = uOcc * uOcc + vOcc * vOcc;
                             const float oneMinusRadiusSquared = 1.0f - radiusSquared;
@@ -1726,24 +1797,135 @@ namespace Pale {
                             accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint +=
                                 dAlphaEffectiveDy * (1.0f / oneMinusAlpha);
 
+                            // Keep the same null-event compensation for all local scalar weights
                             scalarWeightWithoutTauAndGeometric *= qNullInv;
+                            scalarWeightWithoutTauAndGeometricEtaY *= qNullInv;
+                            scalarWeightWithoutTauAndGeometricBetaY *= qNullInv;
                         }
                     }
 
                     const float3 dTransmittanceDy =
                         -transmittance * accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint;
 
-                    float3 gradientWrtHitPositionY =
+                    // World-position gradient wrt endpoint y
+                    const float3 gradientWrtHitPositionY =
                         scalarWeightWithoutTauAndGeometric *
                         (geometricTermXY * dTransmittanceDy + transmittance * dGeometricTermDy);
 
                     const float3 yContribution = gradientWrtHitPositionY * invSpp;
 
+                    // ---------------------------------------------------------------------
+                    // Scale gradients on Y:
+                    // y = s_p + s_u t_u u + s_v t_v v
+                    // dy/ds_u = u * t_u, dy/ds_v = v * t_v
+                    //
+                    // In the current estimator structure Juv cancels against PuvY,
+                    // so only moved-point terms are included here.
+                    // ---------------------------------------------------------------------
+                    const float scaleYContributionU =
+                        dot(gradientWrtHitPositionY, uY * surfelY.tanU) * invSpp;
+
+                    const float scaleYContributionV =
+                        dot(gradientWrtHitPositionY, vY * surfelY.tanV) * invSpp;
+
+                    // ---------------------------------------------------------------------
+                    // Tangent gradients on Y:
+                    //
+                    // (A) moved-point contribution:
+                    //     dy/dt_u = s_u * u * I
+                    //     dy/dt_v = s_v * v * I
+                    //
+                    // (B) explicit normal dependence of G wrt n_y:
+                    //     dG/dn_y = (-omega_xy) * cos(theta_x) / d^2
+                    //
+                    // Convert gradient wrt raw normal n = normalize(t_u x t_v)
+                    // to Euclidean gradients wrt tanU / tanV.
+                    // ---------------------------------------------------------------------
+                    float3 tanUYContribution = float3(0.0f);
+                    float3 tanVYContribution = float3(0.0f);
+
+                    // (A) moved-point contribution
+                    tanUYContribution += (scaleYU * uY) * gradientWrtHitPositionY * invSpp;
+                    tanVYContribution += (scaleYV * vY) * gradientWrtHitPositionY * invSpp;
+
+                    // (B) explicit end-normal contribution
+                    const float3 rawCross = cross(surfelY.tanU, surfelY.tanV);
+                    const float rawCrossLength = length(rawCross);
+                    if (rawCrossLength > 1e-8f) {
+                        const float3 rawNormal = rawCross / rawCrossLength;
+
+                        const float orientationSign =
+                            dot(rawNormal, yState.orientedNormal) >= 0.0f ? 1.0f : -1.0f;
+
+                        // dG / dn_y
+                        const float3 dGeometricTermDEndNormal =
+                            (-directionXToY) * (cosineAtX / distanceSquared);
+
+                        const float3 gradientWrtOrientedNormalY =
+                            scalarWeightWithoutTauAndGeometric *
+                            transmittance *
+                            dGeometricTermDEndNormal;
+
+                        const float3 gradientWrtRawNormal =
+                            orientationSign * gradientWrtOrientedNormalY;
+
+                        const float3 gradientProjectedToRawNormalTangent =
+                            gradientWrtRawNormal -
+                            rawNormal * dot(rawNormal, gradientWrtRawNormal);
+
+                        const float3 gradientWrtCross =
+                            gradientProjectedToRawNormalTangent / rawCrossLength;
+
+                        tanUYContribution +=
+                            cross(surfelY.tanV, gradientWrtCross) * invSpp;
+
+                        tanVYContribution +=
+                            cross(gradientWrtCross, surfelY.tanU) * invSpp;
+                    }
+
+                    // ---------------------------------------------------------------------
+                    // Local eta_y / beta_y on the XY leg.
+                    //
+                    // Contribution structure:
+                    //   alphaY * (alphaX * brdfX * tau * G * ...)
+                    //
+                    // so:
+                    //   dL/d etaY  = alphaGeomY * (...)
+                    //   dL/d betaY = opacityY * dAlphaGeomY/dBetaY * (...)
+                    // ---------------------------------------------------------------------
+                    const float etaYContribution =
+                        transmittance *
+                        geometricTermXY *
+                        scalarWeightWithoutTauAndGeometricEtaY *
+                        invSpp;
+
+                    const float betaYContribution =
+                        transmittance *
+                        geometricTermXY *
+                        scalarWeightWithoutTauAndGeometricBetaY *
+                        invSpp;
+
                     SurfelGradientRecord yRecord{};
                     yRecord.primitiveIndex = yPrimitiveIndex;
+
                     yRecord.gradPositionX = yContribution.x();
                     yRecord.gradPositionY = yContribution.y();
                     yRecord.gradPositionZ = yContribution.z();
+
+                    yRecord.gradScaleU = scaleYContributionU;
+                    yRecord.gradScaleV = scaleYContributionV;
+
+                    yRecord.gradTangentUX = tanUYContribution.x();
+                    yRecord.gradTangentUY = tanUYContribution.y();
+                    yRecord.gradTangentUZ = tanUYContribution.z();
+
+                    yRecord.gradTangentVX = tanVYContribution.x();
+                    yRecord.gradTangentVY = tanVYContribution.y();
+                    yRecord.gradTangentVZ = tanVYContribution.z();
+
+                    yRecord.gradEta = etaYContribution;
+                    yRecord.gradBeta = betaYContribution;
+
                     gradientRecords[yRecordIndex] = yRecord;
                 });
         }).wait();
@@ -1772,8 +1954,8 @@ namespace Pale {
 
                     static constexpr uint32_t recordsPerEvent = 2u + kMaxSplatEventsPerRay;
                     const uint32_t eventRecordBase = baseOffset + recordsPerEvent * eventIndex;
-                    const uint32_t xRecordIndex = eventRecordBase + 0u;
-                    const uint32_t yRecordIndex = eventRecordBase + 1u;
+                    const uint32_t xRecordIndex = eventRecordBase + 0u; // code xSurface = math Y
+                    const uint32_t yRecordIndex = eventRecordBase + 1u; // code ySurface = math Z
 
                     for (uint32_t recordOffset = 0u; recordOffset < recordsPerEvent; ++recordOffset) {
                         SurfelGradientRecord invalidRecord{};
@@ -1795,8 +1977,17 @@ namespace Pale {
                     const ReconstructedSurfelState yState =
                         reconstructSurfelState(surfelY, eventRecord.ySurface);
 
+                    // Includes local alpha at code ySurface (= math Z)
                     const float3 outgoingRadianceY =
                         evaluateOutgoingRadianceWithLocalAlpha(
+                            surfelY,
+                            eventRecord.ySurface,
+                            yState,
+                            photonMap);
+
+                    // Excludes local alpha at code ySurface (= math Z)
+                    const float3 outgoingRadianceYNoAlpha =
+                        evaluateSurfelRadianceWithoutLocalAlpha(
                             surfelY,
                             eventRecord.ySurface,
                             yState,
@@ -1815,19 +2006,33 @@ namespace Pale {
                         return;
                     }
 
+                    const float cosineAtX = dot(xState.orientedNormal, directionXToY);
+
                     const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
                     const float pAreaY = uniformHemispherePdf * cosineAtY / distanceSquared;
                     if (pAreaY <= 1e-20f) {
                         return;
                     }
 
-                    const float u = surfelY.scale.x();
-                    const float v = surfelY.scale.y();
-                    const float Juv = u * v;
-                    const float PuvY = Juv * pAreaY;
+                    // code xSurface = math Y
+                    const float uX = eventRecord.xSurface.uv.x();
+                    const float vX = eventRecord.xSurface.uv.y();
+                    const float alphaGeomX = eventRecord.xSurface.alphaGeom;
 
-                    const float alphaX = eventRecord.xSurface.alphaGeom * surfelX.opacity;
-                    const float3 brdfX = surfelX.alpha_r * surfelX.albedo * M_1_PIf;
+                    const float scaleXU = surfelX.scale.x();
+                    const float scaleXV = surfelX.scale.y();
+                    const float Juv = scaleXU * scaleXV;
+                    const float PuvY = Juv * pAreaY;
+                    if (PuvY <= 1e-20f) {
+                        return;
+                    }
+
+                    const float radiusSquaredX = uX * uX + vX * vX;
+                    const float oneMinusRadiusSquaredX = 1.0f - radiusSquaredX;
+
+                    const float alphaX = alphaGeomX * surfelX.opacity;
+                    const float brdfScaleX = surfelX.alpha_r * M_1_PIf;
+                    const float3 brdfX = brdfScaleX * surfelX.albedo;
 
                     const float geometricTermXY = computeGeometricTermValue(
                         xState.position,
@@ -1847,24 +2052,88 @@ namespace Pale {
                         xState.orientedNormal,
                         yState.orientedNormal);
 
-                    // Prefix adjoint weight at X times incoming-segment transmittance tau(prev, X).
-                    const float3 pathWeight =
-                        eventRecord.xPathThroughput;
-                    // Local transport at X, excluding tau(X,Y) and G(X,Y).
+                    // Prefix adjoint weight at code xSurface (= math Y)
+                    const float3 pathWeight = eventRecord.xPathThroughput;
+
+                    // Local transport at code xSurface, excluding tau(X,Y) and G(X,Y)
                     const float3 transportWithoutTauAndGeometric =
                         outgoingRadianceY * alphaX * brdfX;
+
                     float scalarWeightWithoutTauAndGeometric =
                         dot(pathWeight, transportWithoutTauAndGeometric) * Juv / PuvY;
+
+                    // ---------------------------------------------------------------------
+                    // Local eta / beta / albedo weights for code xSurface (= math Y)
+                    // ---------------------------------------------------------------------
+                    float scalarWeightWithoutTauAndGeometricEtaX = 0.0f;
+                    float scalarWeightWithoutTauAndGeometricBetaX = 0.0f;
+                    float3 albedoWeightWithoutTauAndGeometricX = float3{0.0f, 0.0f, 0.0f};
+
+                    scalarWeightWithoutTauAndGeometricEtaX =
+                        dot(pathWeight,
+                            outgoingRadianceY * (alphaGeomX * brdfX)) * Juv / PuvY;
+
+                    if (oneMinusRadiusSquaredX > 1e-8f) {
+                        const float betaScaleX = 4.0f * sycl::exp(surfelX.beta);
+                        const float dAlphaGeomXDBeta =
+                            betaScaleX * sycl::log(oneMinusRadiusSquaredX) * alphaGeomX;
+
+                        scalarWeightWithoutTauAndGeometricBetaX =
+                            dot(pathWeight,
+                                outgoingRadianceY *
+                                (surfelX.opacity * dAlphaGeomXDBeta * brdfX)) * Juv / PuvY;
+                    }
+
+                    albedoWeightWithoutTauAndGeometricX =
+                        (pathWeight * outgoingRadianceY) * (alphaX * brdfScaleX * Juv / PuvY);
+
+                    // ---------------------------------------------------------------------
+                    // Local eta / beta weights for code ySurface (= math Z)
+                    // ---------------------------------------------------------------------
+                    const float uYLocal = eventRecord.ySurface.uv.x();
+                    const float vYLocal = eventRecord.ySurface.uv.y();
+                    const float alphaGeomYLocal = eventRecord.ySurface.alphaGeom;
+                    const float radiusSquaredYLocal = uYLocal * uYLocal + vYLocal * vYLocal;
+                    const float oneMinusRadiusSquaredYLocal = 1.0f - radiusSquaredYLocal;
+
+                    const float scaleYU = surfelY.scale.x();
+                    const float scaleYV = surfelY.scale.y();
+
+                    float scalarWeightWithoutTauAndGeometricEtaY = 0.0f;
+                    float scalarWeightWithoutTauAndGeometricBetaY = 0.0f;
+
+                    scalarWeightWithoutTauAndGeometricEtaY =
+                        dot(pathWeight,
+                            outgoingRadianceYNoAlpha *
+                            (alphaGeomYLocal * alphaX * brdfX)) * Juv / PuvY;
+
+                    if (oneMinusRadiusSquaredYLocal > 1e-8f) {
+                        const float betaScaleYLocal = 4.0f * sycl::exp(surfelY.beta);
+                        const float dAlphaGeomYLocalDBeta =
+                            betaScaleYLocal *
+                            sycl::log(oneMinusRadiusSquaredYLocal) *
+                            alphaGeomYLocal;
+
+                        scalarWeightWithoutTauAndGeometricBetaY =
+                            dot(pathWeight,
+                                outgoingRadianceYNoAlpha *
+                                (surfelY.opacity * dAlphaGeomYLocalDBeta * alphaX * brdfX)) *
+                            Juv / PuvY;
+                    }
+
                     struct OccluderDerivative {
-                        float3 derivative{0.0f};
+                        float3 derivative{0.0f, 0.0f, 0.0f};
                         uint32_t primitiveIndex = kInvalidIndex;
                     };
 
                     float transmittance = 1.0f;
-                    float3 accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint = float3{0.0f};
-                    float3 accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint = float3{0.0f};
+                    float3 accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint =
+                        float3{0.0f, 0.0f, 0.0f};
+                    float3 accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint =
+                        float3{0.0f, 0.0f, 0.0f};
                     OccluderDerivative occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
+
                     if (eventRecord.transmission != 1.0f) {
                         const float distanceEpsilon = 1e-4f;
 
@@ -2018,6 +2287,11 @@ namespace Pale {
                             }
 
                             scalarWeightWithoutTauAndGeometric *= qNullInv;
+                            scalarWeightWithoutTauAndGeometricEtaX *= qNullInv;
+                            scalarWeightWithoutTauAndGeometricBetaX *= qNullInv;
+                            albedoWeightWithoutTauAndGeometricX *= qNullInv;
+                            scalarWeightWithoutTauAndGeometricEtaY *= qNullInv;
+                            scalarWeightWithoutTauAndGeometricBetaY *= qNullInv;
                         }
                     }
 
@@ -2038,11 +2312,187 @@ namespace Pale {
                     const float3 xContribution = gradientWrtXPosition * invSpp;
                     const float3 yContribution = gradientWrtYPosition * invSpp;
 
+                    // ---------------------------------------------------------------------
+                    // code xSurface (= math Y): scale gradients
+                    // ---------------------------------------------------------------------
+                    float scaleXContributionU = 0.0f;
+                    float scaleXContributionV = 0.0f;
+                    if (scaleXU > 1e-12f && scaleXV > 1e-12f) {
+                        scaleXContributionU =
+                            dot(gradientWrtXPosition, uX * surfelX.tanU) * invSpp;
+                        scaleXContributionV =
+                            dot(gradientWrtXPosition, vX * surfelX.tanV) * invSpp;
+                    }
+
+                    // ---------------------------------------------------------------------
+                    // code xSurface (= math Y): tangent gradients
+                    // ---------------------------------------------------------------------
+                    float3 tanUXContribution = float3{0.0f, 0.0f, 0.0f};
+                    float3 tanVXContribution = float3{0.0f, 0.0f, 0.0f};
+
+                    if (scaleXU > 1e-12f && scaleXV > 1e-12f) {
+                        tanUXContribution += (scaleXU * uX) * gradientWrtXPosition * invSpp;
+                        tanVXContribution += (scaleXV * vX) * gradientWrtXPosition * invSpp;
+                    }
+
+                    const float3 rawCrossX = cross(surfelX.tanU, surfelX.tanV);
+                    const float rawCrossXLength = length(rawCrossX);
+                    if (rawCrossXLength > 1e-8f) {
+                        const float3 rawNormalX = rawCrossX / rawCrossXLength;
+
+                        const float orientationSignX =
+                            dot(rawNormalX, xState.orientedNormal) >= 0.0f ? 1.0f : -1.0f;
+
+                        const float3 dGeometricTermDStartNormal =
+                            directionXToY * (cosineAtY / distanceSquared);
+
+                        const float3 gradientWrtOrientedNormalX =
+                            scalarWeightWithoutTauAndGeometric *
+                            transmittance *
+                            dGeometricTermDStartNormal;
+
+                        const float3 gradientWrtRawNormalX =
+                            orientationSignX * gradientWrtOrientedNormalX;
+
+                        const float3 gradientProjectedToRawNormalXTangent =
+                            gradientWrtRawNormalX -
+                            rawNormalX * dot(rawNormalX, gradientWrtRawNormalX);
+
+                        const float3 gradientWrtCrossX =
+                            gradientProjectedToRawNormalXTangent / rawCrossXLength;
+
+                        tanUXContribution +=
+                            cross(surfelX.tanV, gradientWrtCrossX) * invSpp;
+
+                        tanVXContribution +=
+                            cross(gradientWrtCrossX, surfelX.tanU) * invSpp;
+                    }
+
+                    // ---------------------------------------------------------------------
+                    // code xSurface (= math Y): eta / beta / albedo gradients
+                    // ---------------------------------------------------------------------
+                    float etaXContribution =
+                        transmittance *
+                        geometricTermXY *
+                        scalarWeightWithoutTauAndGeometricEtaX *
+                        invSpp;
+
+                    float betaXContribution = 0.0f;
+                    if (oneMinusRadiusSquaredX > 1e-8f) {
+                        betaXContribution =
+                            transmittance *
+                            geometricTermXY *
+                            scalarWeightWithoutTauAndGeometricBetaX *
+                            invSpp;
+                    }
+
+                    const float3 albedoXContribution =
+                        transmittance *
+                        geometricTermXY *
+                        albedoWeightWithoutTauAndGeometricX *
+                        invSpp;
+
+                    // ---------------------------------------------------------------------
+                    // code ySurface (= math Z): scale gradients
+                    // ---------------------------------------------------------------------
+                    float scaleYContributionU = 0.0f;
+                    float scaleYContributionV = 0.0f;
+
+                    if (scaleYU > 1e-12f && scaleYV > 1e-12f) {
+                        scaleYContributionU =
+                            dot(gradientWrtYPosition, uYLocal * surfelY.tanU) * invSpp;
+                        scaleYContributionV =
+                            dot(gradientWrtYPosition, vYLocal * surfelY.tanV) * invSpp;
+                    }
+
+                    // ---------------------------------------------------------------------
+                    // code ySurface (= math Z): tangent gradients
+                    // ---------------------------------------------------------------------
+                    float3 tanUYContribution = float3{0.0f, 0.0f, 0.0f};
+                    float3 tanVYContribution = float3{0.0f, 0.0f, 0.0f};
+
+                    if (scaleYU > 1e-12f && scaleYV > 1e-12f) {
+                        tanUYContribution += (scaleYU * uYLocal) * gradientWrtYPosition * invSpp;
+                        tanVYContribution += (scaleYV * vYLocal) * gradientWrtYPosition * invSpp;
+                    }
+
+                    const float3 rawCrossY = cross(surfelY.tanU, surfelY.tanV);
+                    const float rawCrossYLength = length(rawCrossY);
+
+                    if (rawCrossYLength > 1e-8f) {
+                        const float3 rawNormalY = rawCrossY / rawCrossYLength;
+
+                        const float orientationSignY =
+                            dot(rawNormalY, yState.orientedNormal) >= 0.0f ? 1.0f : -1.0f;
+
+                        const float3 dGeometricTermDEndNormal =
+                            (-directionXToY) * (cosineAtX / distanceSquared);
+
+                        const float3 gradientWrtOrientedNormalY =
+                            scalarWeightWithoutTauAndGeometric *
+                            transmittance *
+                            dGeometricTermDEndNormal;
+
+                        const float3 gradientWrtRawNormalY =
+                            orientationSignY * gradientWrtOrientedNormalY;
+
+                        const float3 gradientProjectedToRawNormalYTangent =
+                            gradientWrtRawNormalY -
+                            rawNormalY * dot(rawNormalY, gradientWrtRawNormalY);
+
+                        const float3 gradientWrtCrossY =
+                            gradientProjectedToRawNormalYTangent / rawCrossYLength;
+
+                        tanUYContribution +=
+                            cross(surfelY.tanV, gradientWrtCrossY) * invSpp;
+
+                        tanVYContribution +=
+                            cross(gradientWrtCrossY, surfelY.tanU) * invSpp;
+                    }
+
+                    // ---------------------------------------------------------------------
+                    // code ySurface (= math Z): eta / beta gradients
+                    // No local albedo gradient here since BSDF is evaluated at code xSurface.
+                    // ---------------------------------------------------------------------
+                    const float etaYContribution =
+                        transmittance *
+                        geometricTermXY *
+                        scalarWeightWithoutTauAndGeometricEtaY *
+                        invSpp;
+
+                    float betaYContribution = 0.0f;
+                    if (oneMinusRadiusSquaredYLocal > 1e-8f) {
+                        betaYContribution =
+                            transmittance *
+                            geometricTermXY *
+                            scalarWeightWithoutTauAndGeometricBetaY *
+                            invSpp;
+                    }
+
                     SurfelGradientRecord xRecord{};
                     xRecord.primitiveIndex = xPrimitiveIndex;
                     xRecord.gradPositionX = xContribution.x();
                     xRecord.gradPositionY = xContribution.y();
                     xRecord.gradPositionZ = xContribution.z();
+
+                    xRecord.gradScaleU = scaleXContributionU;
+                    xRecord.gradScaleV = scaleXContributionV;
+
+                    xRecord.gradTangentUX = tanUXContribution.x();
+                    xRecord.gradTangentUY = tanUXContribution.y();
+                    xRecord.gradTangentUZ = tanUXContribution.z();
+
+                    xRecord.gradTangentVX = tanVXContribution.x();
+                    xRecord.gradTangentVY = tanVXContribution.y();
+                    xRecord.gradTangentVZ = tanVXContribution.z();
+
+                    //xRecord.gradEta = etaXContribution;
+                    //xRecord.gradBeta = betaXContribution;
+
+                    xRecord.gradAlbedoR = albedoXContribution.x();
+                    xRecord.gradAlbedoG = albedoXContribution.y();
+                    xRecord.gradAlbedoB = albedoXContribution.z();
+
                     gradientRecords[xRecordIndex] = xRecord;
 
                     SurfelGradientRecord yRecord{};
@@ -2050,6 +2500,21 @@ namespace Pale {
                     yRecord.gradPositionX = yContribution.x();
                     yRecord.gradPositionY = yContribution.y();
                     yRecord.gradPositionZ = yContribution.z();
+
+                    yRecord.gradScaleU = scaleYContributionU;
+                    yRecord.gradScaleV = scaleYContributionV;
+
+                    yRecord.gradTangentUX = tanUYContribution.x();
+                    yRecord.gradTangentUY = tanUYContribution.y();
+                    yRecord.gradTangentUZ = tanUYContribution.z();
+
+                    yRecord.gradTangentVX = tanVYContribution.x();
+                    yRecord.gradTangentVY = tanVYContribution.y();
+                    yRecord.gradTangentVZ = tanVYContribution.z();
+
+                    yRecord.gradEta = etaYContribution;
+                    yRecord.gradBeta = betaYContribution;
+
                     gradientRecords[yRecordIndex] = yRecord;
 
                     const float occluderScale =

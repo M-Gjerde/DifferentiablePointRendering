@@ -1561,8 +1561,8 @@ public:
 
         const float angleRadians = glm::radians(angleDegrees);
 
-        const glm::vec3 tanU0 = glm::vec3(1.0f, 0.0f, 0.0f);
-        const glm::vec3 tanV0 = glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 tanU0 = glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 tanV0 = glm::vec3(0.0f, 0.0f, 1.0f);
 
         glm::vec3 tanURot = rotateAxisAngle(tanU0, axis, angleRadians);
         glm::vec3 tanVRot = rotateAxisAngle(tanV0, axis, angleRadians);
