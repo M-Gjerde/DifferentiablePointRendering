@@ -75,8 +75,8 @@ def _extract_analytic_gradient(
         g_tan_u = np.asarray(gradients["tangent_u"][index], dtype=np.float64)
         g_tan_v = np.asarray(gradients["tangent_v"][index], dtype=np.float64)
 
-        tan_u0 = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        tan_v0 = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        tan_u0 = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        tan_v0 = np.array([0.0, 1.0, 0.0], dtype=np.float64)
 
         angle_radians = np.deg2rad(float(parameter_value))
         tan_u = _rotate_axis_angle(tan_u0, axis, angle_radians)

@@ -790,10 +790,18 @@ namespace Pale {
                     const float targetDistance = distance;
                     const float distanceEpsilon = 1e-4f;
                     float transmittance = 1.0f;
+
                     struct OccluderDerivatives {
-                        float3 derivative{0.0f};
+                        float3 gradPosition{0.0f};
+                        float gradScaleU = 0.0f;
+                        float gradScaleV = 0.0f;
+                        float gradEta = 0.0f;
+                        float gradBeta = 0.0f;
+                        float3 gradTangentU{0.0f};
+                        float3 gradTangentV{0.0f};
                         uint32_t primitiveIndex = UINT32_MAX;
                     };
+
                     OccluderDerivatives occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
 
@@ -831,7 +839,6 @@ namespace Pale {
                             const Point& occluderSurfel =
                                 scene.points[worldHit.primitiveIndex];
 
-
                             float3 occluderNormal =
                                 normalize(cross(occluderSurfel.tanU, occluderSurfel.tanV));
 
@@ -841,8 +848,9 @@ namespace Pale {
                                 occluderNormal = -occluderNormal;
                             }
 
+                            const float alphaGeomOccluder = worldHit.alphaGeom;
                             const float alphaEffective =
-                                occluderSurfel.opacity * worldHit.alphaGeom;
+                                occluderSurfel.opacity * alphaGeomOccluder;
                             const float oneMinusAlpha = 1.0f - alphaEffective;
                             if (oneMinusAlpha <= 1e-8f) {
                                 break;
@@ -856,11 +864,6 @@ namespace Pale {
                             const float vOcc = uv.y();
 
                             const float3 dxy = segmentOrigin - xState.position;
-                            const float alphaGeomOccluder = worldHit.alphaGeom;
-                            const float denominator = dot(occluderNormal, dxy);
-                            if (sycl::fabs(denominator) <= 1e-8f) {
-                                continue;
-                            }
 
                             const float scaleU = occluderSurfel.scale.x();
                             const float scaleV = occluderSurfel.scale.y();
@@ -872,8 +875,17 @@ namespace Pale {
                             const float3 tangentV = occluderSurfel.tanV;
                             const float3 localBasisU = tangentU / scaleU;
                             const float3 localBasisV = tangentV / scaleV;
+
+                            const float denominator = dot(occluderNormal, dxy);
+                            if (sycl::fabs(denominator) <= 1e-8f) {
+                                continue;
+                            }
+
                             const float inverseDenominator = 1.0f / denominator;
 
+                            // -------------------------------------------------------------
+                            // Translation derivative (existing)
+                            // -------------------------------------------------------------
                             const float3 dUiDspi =
                                 occluderNormal *
                                 (dot(dxy, tangentU) / scaleU) * inverseDenominator -
@@ -891,6 +903,7 @@ namespace Pale {
                             }
 
                             const float betaScaleOcc = 4.0f * sycl::exp(occluderSurfel.beta);
+
                             const float dAlphaGeomDu =
                                 -2.0f * betaScaleOcc * uOcc * alphaGeomOccluder /
                                 oneMinusRadiusSquaredOcc;
@@ -903,9 +916,100 @@ namespace Pale {
                                     dAlphaGeomDu * dUiDspi +
                                     dAlphaGeomDv * dViDspi);
 
+                            // -------------------------------------------------------------
+                            // Scale derivatives (fixed ray, fixed plane hit point)
+                            // -------------------------------------------------------------
+                            const float dAlphaEffectiveDScaleU =
+                                (2.0f * betaScaleOcc * uOcc * uOcc * alphaEffective) /
+                                (scaleU * oneMinusRadiusSquaredOcc);
+
+                            const float dAlphaEffectiveDScaleV =
+                                (2.0f * betaScaleOcc * vOcc * vOcc * alphaEffective) /
+                                (scaleV * oneMinusRadiusSquaredOcc);
+
+                            // -------------------------------------------------------------
+                            // Eta / opacity derivative
+                            // -------------------------------------------------------------
+                            const float dAlphaEffectiveDEta =
+                                alphaGeomOccluder;
+
+                            // -------------------------------------------------------------
+                            // Beta derivative
+                            // -------------------------------------------------------------
+                            const float dAlphaEffectiveDBeta =
+                                betaScaleOcc *
+                                sycl::log(oneMinusRadiusSquaredOcc) *
+                                alphaEffective;
+
+                            // -------------------------------------------------------------
+                            // Rotation derivative for fixed ray line
+                            // -------------------------------------------------------------
+                            float3 gradTangentUOcc = float3(0.0f);
+                            float3 gradTangentVOcc = float3(0.0f);
+
+                            const float nDotD = dot(occluderNormal, rayDirection);
+                            if (sycl::fabs(nDotD) > 1e-8f) {
+                                const float3 hitMinusSp =
+                                    worldHit.hitPositionW - occluderSurfel.position;
+                                const float3 aOcc =
+                                    occluderSurfel.position - segmentOrigin;
+                                const float nDotA = dot(occluderNormal, aOcc);
+
+                                const float invNDotD = 1.0f / nDotD;
+                                const float invNDotDSquared = invNDotD * invNDotD;
+
+                                const float3 qOcc =
+                                    ((cross(occluderNormal, aOcc) * nDotD) -
+                                        (nDotA * cross(occluderNormal, rayDirection))) *
+                                    invNDotDSquared;
+
+                                const float3 duDRotation =
+                                    qOcc * (dot(rayDirection, tangentU) / scaleU) +
+                                    (cross(tangentU, hitMinusSp) / scaleU);
+
+                                const float3 dvDRotation =
+                                    qOcc * (dot(rayDirection, tangentV) / scaleV) +
+                                    (cross(tangentV, hitMinusSp) / scaleV);
+
+                                const float3 dAlphaEffectiveDRotation =
+                                    occluderSurfel.opacity * (
+                                        dAlphaGeomDu * duDRotation +
+                                        dAlphaGeomDv * dvDRotation);
+
+                                const float3 rotationDerivativeZeta =
+                                    dAlphaEffectiveDRotation * (1.0f / oneMinusAlpha);
+
+                                gradTangentUOcc =
+                                    cross(rotationDerivativeZeta, occluderSurfel.tanU);
+
+                                gradTangentVOcc =
+                                    cross(rotationDerivativeZeta, occluderSurfel.tanV);
+                            }
+
                             if (storedOccluderCount < kMaxSplatEventsPerRay) {
-                                occluderDerivatives[storedOccluderCount].derivative =
-                                    dAlphaEffectiveDspi * (1.0f / oneMinusAlpha);
+                                const float invOneMinusAlpha = 1.0f / oneMinusAlpha;
+
+                                occluderDerivatives[storedOccluderCount].gradPosition =
+                                    dAlphaEffectiveDspi * invOneMinusAlpha;
+
+                                occluderDerivatives[storedOccluderCount].gradScaleU =
+                                    dAlphaEffectiveDScaleU * invOneMinusAlpha;
+
+                                occluderDerivatives[storedOccluderCount].gradScaleV =
+                                    dAlphaEffectiveDScaleV * invOneMinusAlpha;
+
+                                occluderDerivatives[storedOccluderCount].gradEta =
+                                    dAlphaEffectiveDEta * invOneMinusAlpha;
+
+                                occluderDerivatives[storedOccluderCount].gradBeta =
+                                    dAlphaEffectiveDBeta * invOneMinusAlpha;
+
+                                occluderDerivatives[storedOccluderCount].gradTangentU =
+                                    gradTangentUOcc;
+
+                                occluderDerivatives[storedOccluderCount].gradTangentV =
+                                    gradTangentVOcc;
+
                                 occluderDerivatives[storedOccluderCount].primitiveIndex =
                                     worldHit.primitiveIndex;
                                 storedOccluderCount++;
@@ -916,10 +1020,10 @@ namespace Pale {
                     const float3 pathWeight = eventRecord.xPathThroughput;
                     const float scalarWeight = dot(pathWeight, outgoingRadianceX);
 
-
                     const float3 outgoingRadianceXNoAlpha = evaluateSurfelRadianceWithoutLocalAlpha(
                         surfelX,
-                        eventRecord.xSurface, xState,
+                        eventRecord.xSurface,
+                        xState,
                         photonMap);
 
                     const float u = eventRecord.xSurface.uv.x();
@@ -999,7 +1103,7 @@ namespace Pale {
                         scalarWeightNoAlpha *
                         invSpp;
 
-                    // New: receiver-opacity rotation term, mapped to tanU / tanV updates
+                    // Receiver-opacity rotation term, mapped to tanU / tanV updates
                     float3 tanUGradient = float3(0.0f);
                     float3 tanVGradient = float3(0.0f);
 
@@ -1051,21 +1155,8 @@ namespace Pale {
                         tanUGradient = cross(rotationGradientZeta, surfelX.tanU);
                         tanVGradient = cross(rotationGradientZeta, surfelX.tanV);
                     }
-                    // -------------------------------------------------------------------------
-                    // New: local opacity and beta gradients for surfel X in the camera->X term.
-                    //
-                    // Here:
-                    //   contribution = transmission * alphaX * L_surfel(X, omega_x->c)
-                    // and outgoingRadianceXNoAlpha = L_surfel(X, omega_x->c) without alphaX.
-                    //
-                    // Therefore:
-                    //   d alphaX / d opacity = alphaGeomX
-                    //   d alphaX / d beta    = opacity * d alphaGeomX / d beta
-                    //
-                    // For the beta kernel:
-                    //   alphaGeom = (1 - r^2)^b,  b = 4 * exp(beta)
-                    //   d alphaGeom / d beta = b * log(1 - r^2) * alphaGeom
-                    // -------------------------------------------------------------------------
+
+                    // Local opacity and beta gradients for surfel X in the camera->X term
                     const float alphaGeomX = eventRecord.xSurface.alphaGeom;
 
                     const float opacityGradient =
@@ -1106,6 +1197,7 @@ namespace Pale {
                     gradientRecord.gradBeta = betaGradient;
 
                     gradientRecords[recordIndex] = gradientRecord;
+
                     const float occluderScale =
                         -transmittance * scalarWeight * invSpp;
 
@@ -1121,12 +1213,34 @@ namespace Pale {
                         gradientRecordOccluder.primitiveIndex =
                             occluderDerivative.primitiveIndex;
 
-                        const float3 occluderContribution =
-                            occluderScale * occluderDerivative.derivative;
+                        const float3 occluderPositionContribution =
+                            occluderScale * occluderDerivative.gradPosition;
+                        const float3 occluderTanUContribution =
+                            occluderScale * occluderDerivative.gradTangentU;
+                        const float3 occluderTanVContribution =
+                            occluderScale * occluderDerivative.gradTangentV;
 
-                        gradientRecordOccluder.gradPositionX = occluderContribution.x();
-                        gradientRecordOccluder.gradPositionY = occluderContribution.y();
-                        gradientRecordOccluder.gradPositionZ = occluderContribution.z();
+                        gradientRecordOccluder.gradPositionX = occluderPositionContribution.x();
+                        gradientRecordOccluder.gradPositionY = occluderPositionContribution.y();
+                        gradientRecordOccluder.gradPositionZ = occluderPositionContribution.z();
+
+                        gradientRecordOccluder.gradScaleU =
+                            occluderScale * occluderDerivative.gradScaleU;
+                        gradientRecordOccluder.gradScaleV =
+                            occluderScale * occluderDerivative.gradScaleV;
+
+                        gradientRecordOccluder.gradEta =
+                            occluderScale * occluderDerivative.gradEta;
+                        gradientRecordOccluder.gradBeta =
+                            occluderScale * occluderDerivative.gradBeta;
+
+                        gradientRecordOccluder.gradTangentUX = occluderTanUContribution.x();
+                        gradientRecordOccluder.gradTangentUY = occluderTanUContribution.y();
+                        gradientRecordOccluder.gradTangentUZ = occluderTanUContribution.z();
+
+                        gradientRecordOccluder.gradTangentVX = occluderTanVContribution.x();
+                        gradientRecordOccluder.gradTangentVY = occluderTanVContribution.y();
+                        gradientRecordOccluder.gradTangentVZ = occluderTanVContribution.z();
 
                         gradientRecords[occluderRecordIndex] = gradientRecordOccluder;
                     }
@@ -1222,20 +1336,17 @@ namespace Pale {
                     float scalarWeightWithoutTauAndGeometric =
                         dot(pathWeight, transportWithoutTauAndGeometric) / pAreaY;
 
-                    // ---------------------------------------------------------------------
-                    // New: BRDF / albedo gradient weight for surfel X.
-                    //
-                    // brdfX = alpha_r * albedo / pi
-                    // d brdfX / d albedo = alpha_r / pi   (componentwise)
-                    //
-                    // So per-channel:
-                    // dL / d albedo_c ~ pathWeight_c * outgoingRadianceY_c * alphaX * alpha_r/pi
-                    // ---------------------------------------------------------------------
                     float3 albedoWeightWithoutTauAndGeometric =
                         (pathWeight * outgoingRadianceY) * (alphaX * brdfScaleX / pAreaY);
 
                     struct OccluderDerivative {
-                        float3 derivative{0.0f};
+                        float3 gradPosition{0.0f};
+                        float gradScaleU = 0.0f;
+                        float gradScaleV = 0.0f;
+                        float gradEta = 0.0f;
+                        float gradBeta = 0.0f;
+                        float3 gradTangentU{0.0f};
+                        float3 gradTangentV{0.0f};
                         uint32_t primitiveIndex = kInvalidIndex;
                     };
 
@@ -1243,6 +1354,7 @@ namespace Pale {
                     float3 accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint = float3{0.0f};
                     OccluderDerivative occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
+
                     if (eventRecord.transmission != 1.0f) {
                         const float distanceEpsilon = 1e-4f;
 
@@ -1289,7 +1401,8 @@ namespace Pale {
                                 occluderNormal = -occluderNormal;
                             }
 
-                            const float alphaEffective = occluderSurfel.opacity * worldHit.alphaGeom;
+                            const float alphaGeomOccluder = worldHit.alphaGeom;
+                            const float alphaEffective = occluderSurfel.opacity * alphaGeomOccluder;
                             const float oneMinusAlpha = 1.0f - alphaEffective;
                             if (oneMinusAlpha <= 1e-8f) {
                                 break;
@@ -1312,7 +1425,6 @@ namespace Pale {
                             const float3 tangentV = occluderSurfel.tanV;
                             const float3 localBasisU = tangentU / scaleU;
                             const float3 localBasisV = tangentV / scaleV;
-                            const float alphaGeomOccluder = worldHit.alphaGeom;
 
                             const float denominator = dot(occluderNormal, dxy);
                             if (sycl::fabs(denominator) <= 1e-8f) {
@@ -1356,22 +1468,99 @@ namespace Pale {
                             const float dAlphaGeomDv =
                                 -2.0f * betaScale * vOcc * alphaGeomOccluder / oneMinusRadiusSquared;
 
+                            // Endpoint derivative wrt y (existing)
                             const float3 dAlphaEffectiveDy =
                                 occluderSurfel.opacity * (
                                     dAlphaGeomDu * dUiDy +
                                     dAlphaGeomDv * dViDy);
 
+                            // Translation derivative wrt surfel center (existing)
                             const float3 dAlphaEffectiveDspi =
                                 occluderSurfel.opacity * (
                                     dAlphaGeomDu * dUiDspi +
                                     dAlphaGeomDv * dViDspi);
 
+                            // Scale derivatives
+                            const float dAlphaEffectiveDScaleU =
+                                (2.0f * betaScale * uOcc * uOcc * alphaEffective) /
+                                (scaleU * oneMinusRadiusSquared);
+
+                            const float dAlphaEffectiveDScaleV =
+                                (2.0f * betaScale * vOcc * vOcc * alphaEffective) /
+                                (scaleV * oneMinusRadiusSquared);
+
+                            // Opacity / eta derivative
+                            const float dAlphaEffectiveDEta =
+                                alphaGeomOccluder;
+
+                            // Beta derivative
+                            const float dAlphaEffectiveDBeta =
+                                betaScale * sycl::log(oneMinusRadiusSquared) * alphaEffective;
+
+                            // Rotation derivative with fixed segment endpoints x,y
+                            float3 gradTangentUOcc = float3(0.0f);
+                            float3 gradTangentVOcc = float3(0.0f);
+
+                            const float nDotD = dot(occluderNormal, rayDirection);
+                            if (sycl::fabs(nDotD) > 1e-8f) {
+                                const float3 hitMinusSp =
+                                    worldHit.hitPositionW - occluderSurfel.position;
+                                const float3 aOcc =
+                                    occluderSurfel.position - yPosition;
+                                const float nDotA = dot(occluderNormal, aOcc);
+
+                                const float invNDotD = 1.0f / nDotD;
+                                const float invNDotDSquared = invNDotD * invNDotD;
+
+                                const float3 qOcc =
+                                    ((cross(occluderNormal, aOcc) * nDotD) -
+                                        (nDotA * cross(occluderNormal, rayDirection))) *
+                                    invNDotDSquared;
+
+                                const float3 duDRotation =
+                                    qOcc * (dot(rayDirection, tangentU) / scaleU) +
+                                    (cross(tangentU, hitMinusSp) / scaleU);
+
+                                const float3 dvDRotation =
+                                    qOcc * (dot(rayDirection, tangentV) / scaleV) +
+                                    (cross(tangentV, hitMinusSp) / scaleV);
+
+                                const float3 dAlphaEffectiveDRotation =
+                                    occluderSurfel.opacity * (
+                                        dAlphaGeomDu * duDRotation +
+                                        dAlphaGeomDv * dvDRotation);
+
+                                const float invOneMinusAlpha = 1.0f / oneMinusAlpha;
+                                const float3 rotationDerivativeZeta =
+                                    dAlphaEffectiveDRotation * invOneMinusAlpha;
+
+                                gradTangentUOcc =
+                                    cross(rotationDerivativeZeta, occluderSurfel.tanU);
+
+                                gradTangentVOcc =
+                                    cross(rotationDerivativeZeta, occluderSurfel.tanV);
+                            }
+
                             accumulatedAlphaDerivativeOverOneMinusAlphaEndPoint +=
                                 dAlphaEffectiveDy * (1.0f / oneMinusAlpha);
 
                             if (storedOccluderCount < kMaxSplatEventsPerRay) {
-                                occluderDerivatives[storedOccluderCount].derivative =
-                                    dAlphaEffectiveDspi * (1.0f / oneMinusAlpha);
+                                const float invOneMinusAlpha = 1.0f / oneMinusAlpha;
+
+                                occluderDerivatives[storedOccluderCount].gradPosition =
+                                    dAlphaEffectiveDspi * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradScaleU =
+                                    dAlphaEffectiveDScaleU * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradScaleV =
+                                    dAlphaEffectiveDScaleV * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradEta =
+                                    dAlphaEffectiveDEta * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradBeta =
+                                    dAlphaEffectiveDBeta * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradTangentU =
+                                    gradTangentUOcc;
+                                occluderDerivatives[storedOccluderCount].gradTangentV =
+                                    gradTangentVOcc;
                                 occluderDerivatives[storedOccluderCount].primitiveIndex =
                                     worldHit.primitiveIndex;
                                 storedOccluderCount++;
@@ -1386,7 +1575,6 @@ namespace Pale {
                         scalarWeightWithoutTauAndGeometric *
                         transmittance * dGeometricTermDx;
 
-                    // Position gradient via hit-point translation Jacobian
                     float3 gradientWrtHitPositionX = gradientWrtWorldHitPositionX;
 
                     const float3x3 hitPointJacobianX = planeHitPointIntersectionJacobian(
@@ -1396,9 +1584,7 @@ namespace Pale {
                     gradientWrtHitPositionX = transpose(hitPointJacobianX) * gradientWrtHitPositionX;
                     const float3 xContribution = gradientWrtHitPositionX * invSpp;
 
-                    // -------------------------------------------------------------------------
                     // tanU / tanV gradients for surfel X on the X->Y segment
-                    // -------------------------------------------------------------------------
                     float3 tanUContribution = float3(0.0f);
                     float3 tanVContribution = float3(0.0f);
 
@@ -1455,9 +1641,6 @@ namespace Pale {
                         xState.orientedNormal,
                         yState.orientedNormal);
 
-                    // -------------------------------------------------------------------------
-                    // New: BRDF / albedo gradient for surfel X on the X->Y segment
-                    // -------------------------------------------------------------------------
                     const float3 albedoContribution =
                         transmittance *
                         geometricTermXY *
@@ -1498,14 +1681,39 @@ namespace Pale {
 
                         const OccluderDerivative& occluderDerivative =
                             occluderDerivatives[occluderIndex];
-                        const float3 occluderContribution =
-                            occluderScale * occluderDerivative.derivative;
 
                         SurfelGradientRecord occluderRecord{};
-                        occluderRecord.primitiveIndex = occluderDerivative.primitiveIndex;
-                        occluderRecord.gradPositionX = occluderContribution.x();
-                        occluderRecord.gradPositionY = occluderContribution.y();
-                        occluderRecord.gradPositionZ = occluderContribution.z();
+                        occluderRecord.primitiveIndex =
+                            occluderDerivative.primitiveIndex;
+
+                        const float3 occluderPositionContribution =
+                            occluderScale * occluderDerivative.gradPosition;
+                        const float3 occluderTanUContribution =
+                            occluderScale * occluderDerivative.gradTangentU;
+                        const float3 occluderTanVContribution =
+                            occluderScale * occluderDerivative.gradTangentV;
+
+                        occluderRecord.gradPositionX = occluderPositionContribution.x();
+                        occluderRecord.gradPositionY = occluderPositionContribution.y();
+                        occluderRecord.gradPositionZ = occluderPositionContribution.z();
+
+                        occluderRecord.gradScaleU =
+                            occluderScale * occluderDerivative.gradScaleU;
+                        occluderRecord.gradScaleV =
+                            occluderScale * occluderDerivative.gradScaleV;
+
+                        occluderRecord.gradEta =
+                            occluderScale * occluderDerivative.gradEta;
+                        occluderRecord.gradBeta =
+                            occluderScale * occluderDerivative.gradBeta;
+
+                        occluderRecord.gradTangentUX = occluderTanUContribution.x();
+                        occluderRecord.gradTangentUY = occluderTanUContribution.y();
+                        occluderRecord.gradTangentUZ = occluderTanUContribution.z();
+
+                        occluderRecord.gradTangentVX = occluderTanVContribution.x();
+                        occluderRecord.gradTangentVY = occluderTanVContribution.y();
+                        occluderRecord.gradTangentVZ = occluderTanVContribution.z();
 
                         gradientRecords[occluderRecordIndex] = occluderRecord;
                     }
@@ -2063,27 +2271,9 @@ namespace Pale {
                         dot(pathWeight, transportWithoutTauAndGeometric) * Juv / PuvY;
 
                     // ---------------------------------------------------------------------
-                    // Local eta / beta / albedo weights for code xSurface (= math Y)
+                    // Local albedo weight for code xSurface (= math Y)
                     // ---------------------------------------------------------------------
-                    float scalarWeightWithoutTauAndGeometricEtaX = 0.0f;
-                    float scalarWeightWithoutTauAndGeometricBetaX = 0.0f;
                     float3 albedoWeightWithoutTauAndGeometricX = float3{0.0f, 0.0f, 0.0f};
-
-                    scalarWeightWithoutTauAndGeometricEtaX =
-                        dot(pathWeight,
-                            outgoingRadianceY * (alphaGeomX * brdfX)) * Juv / PuvY;
-
-                    if (oneMinusRadiusSquaredX > 1e-8f) {
-                        const float betaScaleX = 4.0f * sycl::exp(surfelX.beta);
-                        const float dAlphaGeomXDBeta =
-                            betaScaleX * sycl::log(oneMinusRadiusSquaredX) * alphaGeomX;
-
-                        scalarWeightWithoutTauAndGeometricBetaX =
-                            dot(pathWeight,
-                                outgoingRadianceY *
-                                (surfelX.opacity * dAlphaGeomXDBeta * brdfX)) * Juv / PuvY;
-                    }
-
                     albedoWeightWithoutTauAndGeometricX =
                         (pathWeight * outgoingRadianceY) * (alphaX * brdfScaleX * Juv / PuvY);
 
@@ -2122,7 +2312,13 @@ namespace Pale {
                     }
 
                     struct OccluderDerivative {
-                        float3 derivative{0.0f, 0.0f, 0.0f};
+                        float3 gradPosition{0.0f, 0.0f, 0.0f};
+                        float gradScaleU = 0.0f;
+                        float gradScaleV = 0.0f;
+                        float gradEta = 0.0f;
+                        float gradBeta = 0.0f;
+                        float3 gradTangentU{0.0f, 0.0f, 0.0f};
+                        float3 gradTangentV{0.0f, 0.0f, 0.0f};
                         uint32_t primitiveIndex = kInvalidIndex;
                     };
 
@@ -2180,7 +2376,8 @@ namespace Pale {
                                 occluderNormal = -occluderNormal;
                             }
 
-                            const float alphaEffective = occluderSurfel.opacity * worldHit.alphaGeom;
+                            const float alphaGeomOccluder = worldHit.alphaGeom;
+                            const float alphaEffective = occluderSurfel.opacity * alphaGeomOccluder;
                             const float oneMinusAlpha = 1.0f - alphaEffective;
                             if (oneMinusAlpha <= 1e-8f) {
                                 break;
@@ -2203,7 +2400,6 @@ namespace Pale {
                             const float3 tangentV = occluderSurfel.tanV;
                             const float3 localBasisU = tangentU / scaleU;
                             const float3 localBasisV = tangentV / scaleV;
-                            const float alphaGeomOccluder = worldHit.alphaGeom;
 
                             const float denominator = dot(occluderNormal, dxy);
                             if (sycl::fabs(denominator) <= 1e-8f) {
@@ -2272,6 +2468,63 @@ namespace Pale {
                                     dAlphaGeomDu * dUiDspi +
                                     dAlphaGeomDv * dViDspi);
 
+                            const float dAlphaEffectiveDScaleU =
+                                (2.0f * betaScale * uOcc * uOcc * alphaEffective) /
+                                (scaleU * oneMinusRadiusSquared);
+
+                            const float dAlphaEffectiveDScaleV =
+                                (2.0f * betaScale * vOcc * vOcc * alphaEffective) /
+                                (scaleV * oneMinusRadiusSquared);
+
+                            const float dAlphaEffectiveDEta =
+                                alphaGeomOccluder;
+
+                            const float dAlphaEffectiveDBeta =
+                                betaScale * sycl::log(oneMinusRadiusSquared) * alphaEffective;
+
+                            float3 gradTangentUOcc = float3(0.0f);
+                            float3 gradTangentVOcc = float3(0.0f);
+
+                            const float nDotD = dot(occluderNormal, rayDirection);
+                            if (sycl::fabs(nDotD) > 1e-8f) {
+                                const float3 hitMinusSp =
+                                    worldHit.hitPositionW - occluderSurfel.position;
+                                const float3 aOcc =
+                                    occluderSurfel.position - yPosition;
+                                const float nDotA = dot(occluderNormal, aOcc);
+
+                                const float invNDotD = 1.0f / nDotD;
+                                const float invNDotDSquared = invNDotD * invNDotD;
+
+                                const float3 qOcc =
+                                    ((cross(occluderNormal, aOcc) * nDotD) -
+                                        (nDotA * cross(occluderNormal, rayDirection))) *
+                                    invNDotDSquared;
+
+                                const float3 duDRotation =
+                                    qOcc * (dot(rayDirection, tangentU) / scaleU) +
+                                    (cross(tangentU, hitMinusSp) / scaleU);
+
+                                const float3 dvDRotation =
+                                    qOcc * (dot(rayDirection, tangentV) / scaleV) +
+                                    (cross(tangentV, hitMinusSp) / scaleV);
+
+                                const float3 dAlphaEffectiveDRotation =
+                                    occluderSurfel.opacity * (
+                                        dAlphaGeomDu * duDRotation +
+                                        dAlphaGeomDv * dvDRotation);
+
+                                const float invOneMinusAlpha = 1.0f / oneMinusAlpha;
+                                const float3 rotationDerivativeZeta =
+                                    dAlphaEffectiveDRotation * invOneMinusAlpha;
+
+                                gradTangentUOcc =
+                                    cross(rotationDerivativeZeta, occluderSurfel.tanU);
+
+                                gradTangentVOcc =
+                                    cross(rotationDerivativeZeta, occluderSurfel.tanV);
+                            }
+
                             accumulatedAlphaDerivativeOverOneMinusAlphaStartPoint +=
                                 dAlphaEffectiveDx * (1.0f / oneMinusAlpha);
 
@@ -2279,16 +2532,28 @@ namespace Pale {
                                 dAlphaEffectiveDy * (1.0f / oneMinusAlpha);
 
                             if (storedOccluderCount < kMaxSplatEventsPerRay) {
-                                occluderDerivatives[storedOccluderCount].derivative =
-                                    dAlphaEffectiveDspi * (1.0f / oneMinusAlpha);
+                                const float invOneMinusAlpha = 1.0f / oneMinusAlpha;
+
+                                occluderDerivatives[storedOccluderCount].gradPosition =
+                                    dAlphaEffectiveDspi * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradScaleU =
+                                    dAlphaEffectiveDScaleU * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradScaleV =
+                                    dAlphaEffectiveDScaleV * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradEta =
+                                    dAlphaEffectiveDEta * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradBeta =
+                                    dAlphaEffectiveDBeta * invOneMinusAlpha;
+                                occluderDerivatives[storedOccluderCount].gradTangentU =
+                                    gradTangentUOcc;
+                                occluderDerivatives[storedOccluderCount].gradTangentV =
+                                    gradTangentVOcc;
                                 occluderDerivatives[storedOccluderCount].primitiveIndex =
                                     worldHit.primitiveIndex;
                                 storedOccluderCount++;
                             }
 
                             scalarWeightWithoutTauAndGeometric *= qNullInv;
-                            scalarWeightWithoutTauAndGeometricEtaX *= qNullInv;
-                            scalarWeightWithoutTauAndGeometricBetaX *= qNullInv;
                             albedoWeightWithoutTauAndGeometricX *= qNullInv;
                             scalarWeightWithoutTauAndGeometricEtaY *= qNullInv;
                             scalarWeightWithoutTauAndGeometricBetaY *= qNullInv;
@@ -2369,23 +2634,8 @@ namespace Pale {
                     }
 
                     // ---------------------------------------------------------------------
-                    // code xSurface (= math Y): eta / beta / albedo gradients
+                    // code xSurface (= math Y): albedo gradients
                     // ---------------------------------------------------------------------
-                    float etaXContribution =
-                        transmittance *
-                        geometricTermXY *
-                        scalarWeightWithoutTauAndGeometricEtaX *
-                        invSpp;
-
-                    float betaXContribution = 0.0f;
-                    if (oneMinusRadiusSquaredX > 1e-8f) {
-                        betaXContribution =
-                            transmittance *
-                            geometricTermXY *
-                            scalarWeightWithoutTauAndGeometricBetaX *
-                            invSpp;
-                    }
-
                     const float3 albedoXContribution =
                         transmittance *
                         geometricTermXY *
@@ -2486,9 +2736,6 @@ namespace Pale {
                     xRecord.gradTangentVY = tanVXContribution.y();
                     xRecord.gradTangentVZ = tanVXContribution.z();
 
-                    //xRecord.gradEta = etaXContribution;
-                    //xRecord.gradBeta = betaXContribution;
-
                     xRecord.gradAlbedoR = albedoXContribution.x();
                     xRecord.gradAlbedoG = albedoXContribution.y();
                     xRecord.gradAlbedoB = albedoXContribution.z();
@@ -2531,14 +2778,37 @@ namespace Pale {
 
                         const OccluderDerivative& occluderDerivative =
                             occluderDerivatives[occluderIndex];
-                        const float3 occluderContribution =
-                            occluderScale * occluderDerivative.derivative;
+
+                        const float3 occluderPositionContribution =
+                            occluderScale * occluderDerivative.gradPosition;
+                        const float3 occluderTanUContribution =
+                            occluderScale * occluderDerivative.gradTangentU;
+                        const float3 occluderTanVContribution =
+                            occluderScale * occluderDerivative.gradTangentV;
 
                         SurfelGradientRecord occluderRecord{};
                         occluderRecord.primitiveIndex = occluderDerivative.primitiveIndex;
-                        occluderRecord.gradPositionX = occluderContribution.x();
-                        occluderRecord.gradPositionY = occluderContribution.y();
-                        occluderRecord.gradPositionZ = occluderContribution.z();
+                        occluderRecord.gradPositionX = occluderPositionContribution.x();
+                        occluderRecord.gradPositionY = occluderPositionContribution.y();
+                        occluderRecord.gradPositionZ = occluderPositionContribution.z();
+
+                        occluderRecord.gradScaleU =
+                            occluderScale * occluderDerivative.gradScaleU;
+                        occluderRecord.gradScaleV =
+                            occluderScale * occluderDerivative.gradScaleV;
+
+                        occluderRecord.gradEta =
+                            occluderScale * occluderDerivative.gradEta;
+                        occluderRecord.gradBeta =
+                            occluderScale * occluderDerivative.gradBeta;
+
+                        occluderRecord.gradTangentUX = occluderTanUContribution.x();
+                        occluderRecord.gradTangentUY = occluderTanUContribution.y();
+                        occluderRecord.gradTangentUZ = occluderTanUContribution.z();
+
+                        occluderRecord.gradTangentVX = occluderTanVContribution.x();
+                        occluderRecord.gradTangentVY = occluderTanVContribution.y();
+                        occluderRecord.gradTangentVZ = occluderTanVContribution.z();
 
                         gradientRecords[occluderRecordIndex] = occluderRecord;
                     }

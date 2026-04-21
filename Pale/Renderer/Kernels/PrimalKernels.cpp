@@ -89,7 +89,7 @@ namespace Pale {
                     RayState currentRayState = intermediates.primaryRays[rayIndex];
 
                     // Guard against pathological transparent stacks or self-intersection loops.
-                    constexpr uint32_t maxInlineNullTraversals = 16;
+                    constexpr uint32_t maxInlineNullTraversals = 32;
 
                     for (uint32_t inlineTraversalIndex = 0; inlineTraversalIndex < maxInlineNullTraversals;
                          ++inlineTraversalIndex) {

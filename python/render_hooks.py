@@ -154,6 +154,66 @@ def orthonormalize_tangents_inplace(
         }
         return diagnostics
 
+def verify_tangents_inplace(
+    tangent_u: torch.Tensor,
+    tangent_v: torch.Tensor,
+    eps: float = 1e-8,
+) -> None:
+    """
+    Enforce an orthonormal in-plane frame in-place:
+    - normalize tangent_u
+    - make tangent_v orthogonal to tangent_u
+    - normalize tangent_v
+
+    Expects shape [N, 3].
+    """
+
+    if tangent_u.ndim != 2 or tangent_v.ndim != 2 or tangent_u.shape != tangent_v.shape:
+        raise ValueError(
+            f"Expected tangent_u and tangent_v to have same shape [N, 3], "
+            f"got {tangent_u.shape=} and {tangent_v.shape=}"
+        )
+    if tangent_u.shape[1] != 3:
+        raise ValueError(f"Expected tangent tensors of shape [N, 3], got {tangent_u.shape}")
+
+    with torch.no_grad():
+        # Normalize u, with fallback for degenerate rows
+        u_norm = torch.linalg.norm(tangent_u, dim=1, keepdim=True)
+        bad_u = u_norm.squeeze(1) < eps
+
+        if bad_u.any():
+            tangent_u[bad_u] = torch.tensor(
+                [1.0, 0.0, 0.0], device=tangent_u.device, dtype=tangent_u.dtype
+            )
+            u_norm = torch.linalg.norm(tangent_u, dim=1, keepdim=True)
+
+        tangent_u.div_(u_norm.clamp_min(eps))
+
+        # Remove projection of v onto u: v <- v - (u·v)u
+        proj = torch.sum(tangent_v * tangent_u, dim=1, keepdim=True)
+        tangent_v.sub_(proj * tangent_u)
+
+        # Normalize v, with fallback if v became degenerate
+        v_norm = torch.linalg.norm(tangent_v, dim=1, keepdim=True)
+        bad_v = v_norm.squeeze(1) < eps
+
+        if bad_v.any():
+            u_bad = tangent_u[bad_v]
+
+            # Build a safe auxiliary axis not parallel to u
+            use_x = torch.abs(u_bad[:, 0]) < 0.9
+            aux = torch.zeros_like(u_bad)
+            aux[use_x] = torch.tensor([1.0, 0.0, 0.0], device=tangent_v.device, dtype=tangent_v.dtype)
+            aux[~use_x] = torch.tensor([0.0, 1.0, 0.0], device=tangent_v.device, dtype=tangent_v.dtype)
+
+            # Project aux into plane orthogonal to u
+            aux = aux - torch.sum(aux * u_bad, dim=1, keepdim=True) * u_bad
+            aux = F.normalize(aux, dim=1, eps=eps)
+
+            tangent_v[bad_v] = aux
+            v_norm = torch.linalg.norm(tangent_v, dim=1, keepdim=True)
+
+        tangent_v.div_(v_norm.clamp_min(eps))
 
 def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
     """
@@ -167,11 +227,36 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.01, max=1.0) ## TODO Enforcing min size matching photon map min resolution
+        s_clamped = torch.clamp(s, min=0.01, max=0.025) ## TODO Enforcing min size matching photon map min resolution
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
         after_max = float(s.max().item())
+
+        return {
+            "before_min": before_min,
+            "before_max": before_max,
+            "after_min": after_min,
+            "after_max": after_max,
+        }
+
+def verify_positions_inplace(positions: torch.Tensor) -> dict[str, float]:
+    """
+    In-place verification/clamping of position values.
+
+    Enforces:
+        -10.0 <= x, y, z <= 10.0
+    """
+    with torch.no_grad():
+        p = positions.data
+        before_min = float(p.min().item())
+        before_max = float(p.max().item())
+
+        p_clamped = torch.clamp(p, min=-10.0, max=10.0)
+        p.copy_(p_clamped)
+
+        after_min = float(p.min().item())
+        after_max = float(p.max().item())
 
         return {
             "before_min": before_min,

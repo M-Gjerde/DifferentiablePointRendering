@@ -352,7 +352,7 @@ namespace Pale {
     void PathTracer::configurePhotonGrid(const AABB &sceneAabb) {
         auto &grid = m_intermediates.map;
 
-        grid.minimumGatherRadiusWorld = 0.02f;
+        grid.minimumGatherRadiusWorld = 0.01f;
         grid.maximumGatherRadiusWorld = 0.2f;
         grid.gatherPadWorld = 0.04f;
         const float cellSizeWorld = 0.02f;
@@ -381,9 +381,22 @@ namespace Pale {
         const std::uint64_t nz = static_cast<std::uint64_t>(grid.gridResolution.z());
         const std::uint64_t totalCells64 = nx * ny * nz;
 
-        if (totalCells64 == 0 || totalCells64 > std::numeric_limits<std::uint32_t>::max())
-            throw std::runtime_error("Photon grid resolution too high; increase r or tighten AABB.");
 
+        if (totalCells64 == 0 || totalCells64 > std::numeric_limits<std::uint32_t>::max()) {
+            std::ostringstream errorStream;
+            errorStream
+                << "Photon grid resolution too high; increase cell size or tighten AABB.\n"
+                << "sceneAabb.minP = (" << sceneAabb.minP.x() << ", " << sceneAabb.minP.y() << ", " << sceneAabb.minP.z() << ")\n"
+                << "sceneAabb.maxP = (" << sceneAabb.maxP.x() << ", " << sceneAabb.maxP.y() << ", " << sceneAabb.maxP.z() << ")\n"
+                << "gridOriginWorld = (" << grid.gridOriginWorld.x() << ", " << grid.gridOriginWorld.y() << ", " << grid.gridOriginWorld.z() << ")\n"
+                << "gridMax = (" << gridMax.x() << ", " << gridMax.y() << ", " << gridMax.z() << ")\n"
+                << "extent = (" << extent.x() << ", " << extent.y() << ", " << extent.z() << ")\n"
+                << "cellSizeWorld = " << cellSizeWorld << "\n"
+                << "gridResolution = (" << grid.gridResolution.x() << ", " << grid.gridResolution.y() << ", " << grid.gridResolution.z() << ")\n"
+                << "totalCells64 = " << totalCells64;
+
+            throw std::runtime_error(errorStream.str());
+        }
         grid.totalCellCount = static_cast<std::uint32_t>(totalCells64);
 
         ensurePhotonGridBuffersAllocatedAndInitialized(grid);

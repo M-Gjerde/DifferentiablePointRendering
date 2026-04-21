@@ -9,10 +9,10 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 3
-    forward_passes: int = 30
+    bounces: int = 2
+    forward_passes: int = 10
     gather_passes: int = 1
-    adjoint_bounces: int = 2
+    adjoint_bounces: int = 3
     adjoint_passes: int = 1
     logging: int = 3  # Spdlog enums
 
@@ -213,24 +213,29 @@ def parse_args() -> OptimizationConfig:
     base_lr = args.learning_rate
     lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log i
 
-    lr_scale = 1
     if args.optimizer == "sgd":
-        lr_scale = 10000
-
-    # 3DGS-inspired relative factors w.r.t. position LR
-    factor_position = lr_scale * 0.005  # ~rotation_lr / position_lr
-    factor_tangent  = lr_scale * 0.5    # ~rotation_lr / position_lr
-    factor_scale    = lr_scale * 0.001   # ~scaling_lr / position_lr
-    factor_albedo   = lr_scale * 0.05    # ~feature_lr / position_lr
-    factor_opacity  = lr_scale * 0.05    # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 0.005    # ~beta_lr / position_lr
+        # 3DGS-inspired relative factors w.r.t. position LR
+        factor_position = 3  # ~rotation_lr / position_lr
+        factor_tangent  = 1e4  # ~rotation_lr / position_lr
+        factor_scale    = 1e2  # ~scaling_lr / position_lr
+        factor_albedo   = 1e7 # ~feature_lr / position_lr
+        factor_opacity  = 5  # ~opacity_lr / position_lr
+        factor_beta     = 1  # ~beta_lr / position_lr
+    else:
+        # 3DGS-inspired relative factors w.r.t. position LR
+        factor_position = 0.001  # ~rotation_lr / position_lr
+        factor_tangent  = 0.01    # ~rotation_lr / position_lr
+        factor_scale    = 0.001   # ~scaling_lr / position_lr
+        factor_albedo   = 0.05    # ~feature_lr / position_lr
+        factor_opacity  = 0.005    # ~opacity_lr / position_lr
+        factor_beta     = 0.000001    # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr
     #factor_tangent  = lr_scale * 0  # ~rotation_lr / position_lr
     #factor_scale    = lr_scale * 0  # ~scaling_lr / position_lr
     #factor_albedo   = lr_scale * 0  # ~feature_lr / position_lr
-    #factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
+    # factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
     #factor_beta     = lr_scale * 0  # ~beta_lr / position_lr
 #
     lr_pos = args.learning_rate_position or (factor_position *  base_lr)

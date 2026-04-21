@@ -139,7 +139,11 @@ namespace Pale {
             } else {
                 const auto materialAsset = assetAccess.getMaterial(materialComponent.materialID);
                 if (!materialAsset) {
-                    throw std::runtime_error("Material does not exist");
+                    std::ostringstream errorStream;
+                    errorStream
+                        << "Material does not exist. Entity tag: " << tagComponent.tag << "\n";
+
+                    throw std::runtime_error(errorStream.str());
                 }
                 GPUMaterial gpuMaterial{};
                 gpuMaterial.baseColor = materialAsset->baseColor;

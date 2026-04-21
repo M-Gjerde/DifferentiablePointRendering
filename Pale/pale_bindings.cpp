@@ -91,7 +91,7 @@ public:
                                                    ? std::filesystem::path("initial.ply")
                                                    : std::filesystem::path(pointCloudFile);
         auto pointCloudHandle = assetIndexer.importPath(
-            "PointClouds" / pointCloudPath,
+            pointCloudPath,
             Pale::AssetType::PointCloud
         );
         auto gaussianEntity = scene->createEntity("Gaussian");
@@ -1514,13 +1514,12 @@ public:
         const glm::vec3& v,
         const glm::vec3& axisUnit,
         float angleRadians) {
-
         const float c = std::cos(angleRadians);
         const float s = std::sin(angleRadians);
 
         return v * c
-             + cross(axisUnit, v) * s
-             + axisUnit * (dot(axisUnit, v) * (1.0f - c));
+            + cross(axisUnit, v) * s
+            + axisUnit * (dot(axisUnit, v) * (1.0f - c));
     }
 
     void set_point_rotation_degrees(float angleDegrees, int axisIndex, int index) {
@@ -1561,8 +1560,8 @@ public:
 
         const float angleRadians = glm::radians(angleDegrees);
 
-        const glm::vec3 tanU0 = glm::vec3(0.0f, 1.0f, 0.0f);
-        const glm::vec3 tanV0 = glm::vec3(0.0f, 0.0f, 1.0f);
+        const glm::vec3 tanU0 = glm::vec3(1.0f, 0.0f, 0.0f);
+        const glm::vec3 tanV0 = glm::vec3(0.0f, 1.0f, 0.0f);
 
         glm::vec3 tanURot = rotateAxisAngle(tanU0, axis, angleRadians);
         glm::vec3 tanVRot = rotateAxisAngle(tanV0, axis, angleRadians);

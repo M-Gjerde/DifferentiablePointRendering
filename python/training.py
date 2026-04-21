@@ -39,11 +39,12 @@ from render_hooks import (
     remove_points,
     fetch_parameters,
     apply_point_parameters,
-    orthonormalize_tangents_inplace,
+    verify_tangents_inplace,
     verify_scales_inplace,
     verify_albedos_inplace,
     verify_opacities_inplace,
     verify_beta_inplace,
+    verify_positions_inplace,
     add_new_points,
     rebuild_bvh,
     get_camera_names,
@@ -228,6 +229,13 @@ def save_checkpoint_snapshot(
 
     print(f"[Iter {iteration:04d}] Saved checkpoint: {checkpoint_dir}")
 
+def rms_point(x):
+    n = max(x.shape[0], 1)
+    return float(np.linalg.norm(x) / np.sqrt(n))
+
+def rms_scalar(x):
+    return float(np.linalg.norm(x) / np.sqrt(max(x.size, 1)))
+
 
 def save_manual_snapshot(
         renderer: Pale.Renderer,
@@ -324,24 +332,25 @@ def refetch_parameters_as_torch(
 
 
 def verify_parameters_inplane(
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
-        scales: torch.Tensor,
-        albedos: torch.Tensor,
-        opacities: torch.Tensor,
-        betas: torch.Tensor,
+    positions: torch.Tensor,
+    tangent_u: torch.Tensor,
+    tangent_v: torch.Tensor,
+    scales: torch.Tensor,
+    albedos: torch.Tensor,
+    opacities: torch.Tensor,
+    betas: torch.Tensor,
 ) -> None:
     """
     Enforce parameter constraints in-place:
     - orthonormal tangents
     - valid scales, albedos, and opacities
     """
-    orthonormalize_tangents_inplace(tangent_u, tangent_v)
+    verify_tangents_inplace(tangent_u, tangent_v)
     verify_scales_inplace(scales)
+    verify_positions_inplace(positions)
     verify_albedos_inplace(albedos)
     verify_opacities_inplace(opacities)
     verify_beta_inplace(betas)
-
 
 def assign_numpy_gradients_to_tensors(
         device: torch.device,
@@ -429,20 +438,6 @@ def run_optimization(
                 f"  Camera '{camera_name}': loaded target {image_path} "
                 f"with shape {target_images[camera_name].shape}"
             )
-    else:
-        print(f"Loading target images from directory: {target_path}")
-        camera_ids = get_camera_names(renderer)
-        for camera_name in camera_ids:
-            image_path = target_path / f"{camera_name}" / "out_photonmap.png"
-            if not image_path.is_file():
-                raise RuntimeError(
-                    f"Missing target image for camera '{camera_name}': {image_path}"
-                )
-            target_images[camera_name] = load_target_image(image_path)
-            print(
-                f"  Camera '{camera_name}': loaded target {image_path} "
-                f"with shape {target_images[camera_name].shape}"
-            )
 
     # ------------------------------------------------------------------
     # Fetch initial parameters from renderer
@@ -520,7 +515,7 @@ def run_optimization(
     # ------------------------------------------------------------------
     # 2. Initial reparameterization and sync with renderer
     # ------------------------------------------------------------------
-    verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
+    verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas)
 
     apply_point_parameters(
         renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas
@@ -557,7 +552,7 @@ def run_optimization(
     initial_loss = 0.0
     clear_output_dir(config.output_dir)
     for camera_name in camera_ids:
-        img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")
+        img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")[..., :3]
         tgt_np = target_images[camera_name]
 
         loss_cam = compute_l2_loss(img_np, tgt_np)
@@ -584,13 +579,13 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 5
-    burnin_iterations = 10
+    prune_interval = 10
+    burnin_iterations = 50
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
 
-    opacity_prune_threshold = 0.0
+    opacity_prune_threshold = 0.05
     max_prune_fraction = 0.3
     rebuild_bvh_interval = 1
 
@@ -613,7 +608,7 @@ def run_optimization(
             ]
         )
 
-        #camera_name = camera_ids[0]
+        # camera_name = camera_ids[0]
         numCameras = len(camera_ids)
         total_start_time = time.perf_counter()
 
@@ -636,7 +631,7 @@ def run_optimization(
                         current_images[camera_name],
                         dtype=np.float32,
                         order="C",
-                    )
+                    )[..., :3]
                     target_rgb_np = target_images[camera_name]
 
                     ## Analytical first:
@@ -650,7 +645,6 @@ def run_optimization(
                     )
 
                     loss_value_float = float(loss_value)
-
 
                     total_loss_value += float(loss_value)
                     loss_grad_images[camera_name] = loss_grad
@@ -713,7 +707,7 @@ def run_optimization(
                 # --------------------------------------------------------------
                 # 8. Reparameterization, sync, BVH (unchanged logic)
                 # --------------------------------------------------------------
-                verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
+                verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas)
 
                 apply_point_parameters(
                     renderer,
@@ -755,8 +749,6 @@ def run_optimization(
                 densification_result: Optional[Dict[str, np.ndarray]] = None
                 indices_to_remove_list: List[int] = []
 
-
-
                 if iteration >= burnin_iterations and iteration % prune_interval == 0:
                     opacity_prune_indices = compute_prune_indices_by_opacity(
                         opacities,
@@ -785,7 +777,7 @@ def run_optimization(
                         betas,
                     ) = refetch_parameters_as_torch(renderer, device)
 
-                    verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
+                    verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas)
                     apply_point_parameters(
                         renderer,
                         positions,
@@ -808,7 +800,6 @@ def run_optimization(
                         opacities,
                         betas,
                     )
-
 
                 # --------------------------------------------------------------
                 # 10. Snapshots (per-camera images)
@@ -905,27 +896,50 @@ def run_optimization(
                 csv_file.flush()
 
                 if iteration % config.log_interval == 0 or iteration == 1:
-                    denom = max(num_points, 1)
-                    grad_norm = float(np.linalg.norm(grad_position_np) / denom)
-                    grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / denom)
-                    grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / denom)
-                    grad_scale = float(np.linalg.norm(grad_scales_np) / denom)
-                    grad_albedo = float(np.linalg.norm(grad_albedos_np) / denom)
-                    grad_opacity = float(np.linalg.norm(grad_opacities_np) / denom)
-                    grad_beta = float(np.linalg.norm(grad_betas_np) / denom)
+                    def rms_point(x: np.ndarray) -> float:
+                        n = max(x.shape[0], 1)
+                        return float(np.linalg.norm(x) / np.sqrt(n))
+
+                    def max_point_norm(x: np.ndarray) -> float:
+                        if x.ndim == 1:
+                            return float(np.max(np.abs(x))) if x.size > 0 else 0.0
+                        return float(np.max(np.linalg.norm(x, axis=1))) if x.shape[0] > 0 else 0.0
+
+                    grad_pos_rms = rms_point(grad_position_np)
+                    grad_tanu_rms = rms_point(grad_tangent_u_np)
+                    grad_tanv_rms = rms_point(grad_tangent_v_np)
+                    grad_scale_rms = rms_point(grad_scales_np)
+                    grad_albedo_rms = rms_point(grad_albedos_np)
+                    grad_opacity_rms = rms_point(grad_opacities_np)
+                    grad_beta_rms = rms_point(grad_betas_np)
+
+                    grad_pos_max = max_point_norm(grad_position_np)
+                    grad_tanu_max = max_point_norm(grad_tangent_u_np)
+                    grad_tanv_max = max_point_norm(grad_tangent_v_np)
+                    grad_scale_max = max_point_norm(grad_scales_np)
+                    grad_albedo_max = max_point_norm(grad_albedos_np)
+                    grad_opacity_max = max_point_norm(grad_opacities_np)
+                    grad_beta_max = max_point_norm(grad_betas_np)
 
                     print(
                         f"[Iter {iteration:04d}/{config.iterations}] "
-                        f"L2 Sum={total_loss_value:.6e}, "
-                        f"|trans|={grad_norm:.3e}, "
-                        f"|tu|={grad_tanu:.3e}, "
-                        f"|tv|={grad_tanv:.3e}, "
-                        f"|su,sv|={grad_scale:.3e}, "
-                        f"|albedo|={grad_albedo:.3e}, "
-                        f"|opacity|={grad_opacity:.3e}, "
-                        f"|beta|={grad_beta:.3e}, "
-                        f"pts={num_points}, "
+                        f"L2 Sum={total_loss_value:.3e}, "
                         f"t={iteration_time:.3f} s, "
+                        f"pos_rms={grad_pos_rms:.2e}, "
+                        f"tu_rms={grad_tanu_rms:.2e}, "
+                        f"tv_rms={grad_tanv_rms:.2e}, "
+                        f"su,sv_rms={grad_scale_rms:.2e}, "
+                        f"rho_rms={grad_albedo_rms:.2e}, "
+                        f"eta_rms={grad_opacity_rms:.2e}, "
+                        f"beta_rms={grad_beta_rms:.2e}, "
+                        f"pos_max={grad_pos_max:.2e}, "
+                        f"tu_max={grad_tanu_max:.2e}, "
+                        f"tv_max={grad_tanv_max:.2e}, "
+                        f"su,sv_max={grad_scale_max:.2e}, "
+                        f"rho_max={grad_albedo_max:.2e}, "
+                        f"eta_max={grad_opacity_max:.2e}, "
+                        f"beta_max={grad_beta_max:.2e}, "
+                        f"pts={num_points}, "
                         f"t_total={total_time:.1f} s"
                     )
 
@@ -989,7 +1003,7 @@ def run_optimization(
 
     final_loss = 0.0
     for camera_name in camera_ids:
-        img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")
+        img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")[..., :3]
         tgt_np = target_images[camera_name]
         loss_cam = compute_l2_loss(img_np, tgt_np)
         final_loss += float(loss_cam)
