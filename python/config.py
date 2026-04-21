@@ -10,10 +10,10 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
-    forward_passes: int = 10
+    forward_passes: int = 15
     gather_passes: int = 1
     adjoint_bounces: int = 3
-    adjoint_passes: int = 1
+    adjoint_passes: int = 4
     logging: int = 3  # Spdlog enums
 
     def as_dict(self, config: OptimizationConfig) -> Dict[str, float | int]:
@@ -214,13 +214,19 @@ def parse_args() -> OptimizationConfig:
     lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log i
 
     if args.optimizer == "sgd":
-        # 3DGS-inspired relative factors w.r.t. position LR
-        factor_position = 3  # ~rotation_lr / position_lr
-        factor_tangent  = 1e4  # ~rotation_lr / position_lr
-        factor_scale    = 1e2  # ~scaling_lr / position_lr
-        factor_albedo   = 1e7 # ~feature_lr / position_lr
-        factor_opacity  = 5  # ~opacity_lr / position_lr
-        factor_beta     = 1  # ~beta_lr / position_lr
+        # Faster but still reasonable
+        # position_lr = 1.0
+        # tangent_lr  = 600
+        # scale_lr    = 3.0
+        # albedo_lr   = 3000
+        # opacity_lr  = 5.0
+        # beta_lr     = 300
+        factor_position = 10.0
+        factor_tangent = 1000.0
+        factor_scale = 3.0
+        factor_albedo = 100.0
+        factor_opacity = 10.0
+        factor_beta = 1.0
     else:
         # 3DGS-inspired relative factors w.r.t. position LR
         factor_position = 0.001  # ~rotation_lr / position_lr
@@ -228,7 +234,7 @@ def parse_args() -> OptimizationConfig:
         factor_scale    = 0.001   # ~scaling_lr / position_lr
         factor_albedo   = 0.05    # ~feature_lr / position_lr
         factor_opacity  = 0.005    # ~opacity_lr / position_lr
-        factor_beta     = 0.000001    # ~beta_lr / position_lr
+        factor_beta     = 0.001    # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr

@@ -579,7 +579,7 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 10
+    prune_interval = 1e100
     burnin_iterations = 50
 
     reset_opacity_interval = int(1e10)
