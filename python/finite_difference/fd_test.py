@@ -51,6 +51,12 @@ def _extract_analytic_gradient(
         return float(gradients["position"][index][1])
     if parameter == "translation_z":
         return float(gradients["position"][index][2])
+    if parameter == "albedo_r":
+        return float(gradients["albedo"][index][0])
+    if parameter == "albedo_b":
+        return float(gradients["albedo"][index][2])
+    if parameter == "albedo_g":
+        return float(gradients["albedo"][index][1])
 
     if parameter == "scale_u":
         return float(gradients["scale"][index][0])
@@ -165,6 +171,12 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
         renderer.set_point_scale(scale=float(value), axis=0, index=int(index))
     elif parameter == "scale_v":
         renderer.set_point_scale(scale=float(value), axis=1, index=int(index))
+    elif parameter == "albedo_r":
+        renderer.set_point_albedo(intensity=float(value), axis=0, index=int(index))
+    elif parameter == "albedo_g":
+        renderer.set_point_albedo(intensity=float(value), axis=1, index=int(index))
+    elif parameter == "albedo_b":
+        renderer.set_point_albedo(intensity=float(value), axis=2, index=int(index))
     else:
         raise RuntimeError(f"FD currently not implemented for '{parameter}'.")
 
@@ -504,6 +516,9 @@ def parse_args() -> argparse.Namespace:
             "scale_v",
             "opacity",
             "beta",
+            "albedo_r",
+            "albedo_g",
+            "albedo_b",
         ],
         default="opacity",
     )

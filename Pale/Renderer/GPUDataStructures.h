@@ -509,9 +509,9 @@ namespace Pale {
         float gradBeta = 0.0f;
         float gradEta = 0.0f;
 
-        float gradRhoX = 0.0f;
-        float gradRhoY = 0.0f;
-        float gradRhoZ = 0.0f;
+        float gradAlbedoR = 0.0f;
+        float gradAlbedoG = 0.0f;
+        float gradAlbedoB = 0.0f;
 
         float gradPositionX = 0.0f;
         float gradPositionY = 0.0f;

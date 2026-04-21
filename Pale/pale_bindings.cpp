@@ -1474,6 +1474,31 @@ public:
         //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
     }
 
+    void set_point_albedo(float newIntensity, float axis, int index) {
+        if (!assetManager) {
+            throw std::runtime_error("set_point_albedo: assetManager is null");
+        }
+
+        auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
+        if (!pointAssetSharedPtr) {
+            throw std::runtime_error("set_point_albedo: failed to get PointAsset for dynamic point cloud");
+        }
+
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty()) {
+            throw std::runtime_error("set_point_albedo: PointAsset has no PointGeometry blocks");
+        }
+
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
+
+        const int pointCount = static_cast<int>(pointGeometry.positions.size());
+        if (index < 0 || index >= pointCount) {
+            throw std::runtime_error("set_point_albedo: index out of range");
+        }
+
+        pointGeometry.albedos[index][axis] = newIntensity;
+    }
+
     static inline void orthonormalizeFrame(glm::vec3& tanU, glm::vec3& tanV) {
         tanU = normalize(tanU);
 
@@ -1775,6 +1800,9 @@ PYBIND11_MODULE(pale, m) {
              py::arg("index"))
         .def("set_point_translation",
              &PythonRenderer::set_point_translation, py::arg("translation"), py::arg("axis"),
+             py::arg("index"))
+        .def("set_point_albedo",
+             &PythonRenderer::set_point_albedo, py::arg("intensity"), py::arg("axis"),
              py::arg("index"))
         .def("set_point_rotation_degrees",
              &PythonRenderer::set_point_rotation_degrees, py::arg("rotation_deg"), py::arg("axis"),
