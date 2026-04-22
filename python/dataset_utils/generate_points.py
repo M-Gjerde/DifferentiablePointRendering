@@ -191,7 +191,7 @@ def generate_volume_ply(
         pointCount, extentX, extentY, extentZ
     )
     generatedPointCount = gridX * gridY * gridZ
-    lightPointCount = 3
+    lightPointCount = 2
     totalPointCount = generatedPointCount + lightPointCount
 
     stepX = extentX / (gridX - 1) if gridX > 1 else 0.0
