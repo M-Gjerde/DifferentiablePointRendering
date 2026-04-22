@@ -13,7 +13,7 @@ class RendererSettingsConfig:
     forward_passes: int = 10
     gather_passes: int = 1
     adjoint_bounces: int = 3
-    adjoint_passes: int = 8
+    adjoint_passes: int = 6
     logging: int = 3  # Spdlog enums
 
     def as_dict(self, config: OptimizationConfig) -> Dict[str, float | int]:

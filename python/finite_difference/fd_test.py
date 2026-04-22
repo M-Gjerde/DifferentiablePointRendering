@@ -341,7 +341,7 @@ def main(args) -> None:
     grad_dir.mkdir(parents=True, exist_ok=True)
 
     renderer = pale.Renderer(str(assets_root), str(scene_xml), str(pointcloud_ply), renderer_settings)
-    renderer_cameras = list(renderer.get_camera_names())
+    renderer_cameras = list(renderer.get_training_camera_names())
     camera = args.camera
 
     for camera_name in renderer_cameras:

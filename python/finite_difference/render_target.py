@@ -44,7 +44,7 @@ def main(args) -> None:
         renderer_settings,
     )
 
-    camera_names = renderer.get_camera_names()
+    camera_names = renderer.get_training_camera_names()
     if renderer_settings["logging"] <= 4:
         print("Found following cameras in scene file:", camera_names)
 

@@ -89,7 +89,7 @@
             <string name="pixel_format" value="rgb" />
         </film>
     </sensor>
-
+    <!--
   <sensor type="perspective" id="DatasetCam_009">
       <string name="camera_model" value="pinhole_intrinsics" />
       <float name="near_clip" value="0.01" />
@@ -648,17 +648,17 @@
   </bsdf>
 
 
-    <!--
 
-   <shape type="obj" id="floor">
-       <string name="filename" value="meshes/rectangle.obj"/>
-       <transform name="to_world">
-           <translate x="0" y="0" z="-0.05"/>
-           <scale x="1.0" y="1.0" z="1.0"/>
 
-       </transform>
-       <ref id="blender_floor"/>
-   </shape>
-    -->
+  <shape type="obj" id="floor">
+      <string name="filename" value="meshes/rectangle.obj"/>
+      <transform name="to_world">
+          <translate x="0" y="0" z="-0.05"/>
+          <scale x="1.0" y="1.0" z="1.0"/>
+
+      </transform>
+      <ref id="blender_floor"/>
+  </shape>
+   -->
 
 </scene>

@@ -47,7 +47,7 @@ from render_hooks import (
     verify_positions_inplace,
     add_new_points,
     rebuild_bvh,
-    get_camera_names,
+    get_training_camera_names, get_all_camera_names,
 )
 from debug_init_utils import add_debug_noise_to_initial_parameters
 from repulsion import compute_elliptical_repulsion_loss  # noqa: F401  (kept for future use)
@@ -434,8 +434,9 @@ def run_optimization(
 
     if isColmap:
         print(f"Loading target images from directory: {target_path}")
-        camera_ids = get_camera_names(renderer)
-        for camera_name in camera_ids:
+        training_camera_ids = get_training_camera_names(renderer)
+        all_camera_ids = get_all_camera_names(renderer)
+        for camera_name in training_camera_ids:
             image_path = target_path / "images" / f"{camera_name}.png"
             if not image_path.is_file():
                 raise RuntimeError(
@@ -566,7 +567,7 @@ def run_optimization(
     initial_images = renderer.render_forward()
 
     initial_loss = 0.0
-    clear_output_dir(config.output_dir)
+    #clear_output_dir(config.output_dir)
 
     initial_points_path = config.output_dir / "initial_points.ply"
     save_gaussians_to_ply(
@@ -583,12 +584,8 @@ def run_optimization(
     )
     print(f"Initial parameters written to PLY: {initial_points_path}")
 
-    for camera_name in camera_ids:
+    for camera_name in all_camera_ids:
         img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")[..., :3]
-        tgt_np = target_images[camera_name]
-
-        loss_cam = compute_l2_loss(img_np, tgt_np)
-        initial_loss += loss_cam
 
         camera_base_dir = config.output_dir / camera_name
         camera_base_dir.mkdir(parents=True, exist_ok=True)
@@ -597,6 +594,16 @@ def run_optimization(
             config.output_dir / f"render_initial_{camera_name}.png",
             img_np,
         )
+
+        if camera_name not in target_images:
+            print(f"Warning: no target image found for camera '{camera_name}', skipping target save and loss.")
+            continue
+
+        tgt_np = target_images[camera_name]
+
+        loss_cam = compute_l2_loss(img_np, tgt_np)
+        initial_loss += loss_cam
+
         save_render(
             config.output_dir / f"render_target_{camera_name}.png",
             tgt_np,
@@ -640,7 +647,7 @@ def run_optimization(
         )
 
         # camera_name = camera_ids[0]
-        numCameras = len(camera_ids)
+        numCameras = len(training_camera_ids)
         total_start_time = time.perf_counter()
 
         try:
@@ -657,7 +664,7 @@ def run_optimization(
                 loss_grad_images: Dict[str, np.ndarray] = {}
                 loss_images: Dict[str, np.ndarray] = {}
 
-                for camera_name in camera_ids:
+                for camera_name in training_camera_ids:
                     current_rgb_np = np.asarray(
                         current_images[camera_name],
                         dtype=np.float32,
@@ -842,7 +849,7 @@ def run_optimization(
                 # 10. Snapshots (per-camera images)
                 # --------------------------------------------------------------
                 if iteration % config.save_interval == 0 or iteration == config.iterations:
-                    for camera_name in camera_ids:
+                    for camera_name in all_camera_ids:
                         camera_base_dir = config.output_dir / camera_name
                         camera_render_dir = camera_base_dir / "render"
                         camera_grad_dir = camera_base_dir / "grad"
@@ -921,8 +928,8 @@ def run_optimization(
                 csv_writer.writerow(
                     [
                         iteration,
-                        camera_name,
-                        loss_value_float,
+                        "ALL_CAMERAS",
+                        total_loss_value,
                         total_loss_value,
                         total_loss_value,
                         parameter_mse,
@@ -1001,7 +1008,7 @@ def run_optimization(
                             opacities,
                             betas,
                             powers,
-                            camera_ids,
+                            training_camera_ids,
                         )
                     elif hotkey == "g":
                         # Save gradients for all points
@@ -1043,7 +1050,7 @@ def run_optimization(
     final_images = renderer.render_forward()
 
     final_loss = 0.0
-    for camera_name in camera_ids:
+    for camera_name in training_camera_ids:
         img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")[..., :3]
         tgt_np = target_images[camera_name]
         loss_cam = compute_l2_loss(img_np, tgt_np)

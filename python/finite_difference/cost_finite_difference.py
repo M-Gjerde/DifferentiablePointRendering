@@ -629,7 +629,7 @@ def main(args) -> None:
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
     renderer = pale.Renderer(str(assets_root), scene_xml, pointcloud_ply, renderer_settings)
-    cameras = renderer.get_camera_names()
+    cameras = renderer.get_training_camera_names()
     camera = args.camera
     target_image = renderer.render_forward()[camera]
     save_rgb_preview_png(target_image, base_output_dir / args.param/ args.eps / args.axis /  "0_target_image.png")

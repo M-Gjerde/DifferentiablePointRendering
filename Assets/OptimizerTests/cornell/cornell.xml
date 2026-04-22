@@ -124,6 +124,9 @@
         <rgb name="reflectance" value="0.2,0.1,0.4"/>
     </bsdf>
 
+    <bsdf type="diffuse" id="blue">
+        <rgb name="reflectance" value="0.2,0.1,0.4"/>
+    </bsdf>
     <!--
           <shape type="obj" id="light">
               <string name="filename" value="meshes/rectangle.obj"/>

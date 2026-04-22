@@ -1426,6 +1426,15 @@ public:
         return names;
     }
 
+    std::vector<std::string> getTrainingCameras() {
+        std::vector<std::string> names;
+        for (const auto& camera : buildProducts.cameras()) {
+            if (camera.useForAdjointPass)
+                names.emplace_back(camera.name);
+        }
+        return names;
+    }
+
     void set_point_opacity(float newOpacity, int index) {
         if (!assetManager) {
             throw std::runtime_error("set_gaussian_opacity: assetManager is null");
@@ -1789,6 +1798,7 @@ PYBIND11_MODULE(pale, m) {
              py::arg("settings") = py::dict() // default empty
         )
         .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "")
+        .def("get_training_camera_names", &PythonRenderer::getTrainingCameras)
         .def("get_camera_names", &PythonRenderer::getCameraNames)
         .def("render_backward", &PythonRenderer::render_backward,
              py::arg("targetRgb32f"))

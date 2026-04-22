@@ -8,8 +8,46 @@ from pathlib import Path
 import pale
 from config import RendererSettingsConfig, parse_args
 from training import run_optimization
-from render_hooks import get_camera_names
+from render_hooks import get_training_camera_names
+import json
+from dataclasses import asdict, is_dataclass
+def _jsonify_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _jsonify_value(sub_value) for key, sub_value in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonify_value(item) for item in value]
+    return value
 
+
+def save_run_config(
+    output_dir: Path,
+    config,
+    renderer_settings,
+    run_folder_name: str,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    optimization_config_dict = asdict(config) if is_dataclass(config) else dict(config)
+    renderer_settings_dict = renderer_settings.as_dict(config)
+
+    run_config = {
+        "run_folder_name": run_folder_name,
+        "assets_root": str(Path(config.assets_root).resolve()),
+        "scene_xml": config.scene_xml,
+        "initial_pointcloud_ply": config.pointcloud_ply,
+        "dataset_path": str(config.dataset_path),
+        "output_dir": str(Path(config.output_dir).resolve()),
+        "optimization_config": _jsonify_value(optimization_config_dict),
+        "renderer_settings": _jsonify_value(renderer_settings_dict),
+    }
+
+    run_config_path = output_dir / "run_config.json"
+    with open(run_config_path, "w", encoding="utf-8") as json_file:
+        json.dump(run_config, json_file, indent=2)
+
+    print(f"Saved run config: {run_config_path}")
 
 def main() -> None:
     config = parse_args()
@@ -45,6 +83,13 @@ def main() -> None:
     # Override config.output_dir
     config.output_dir = config.assets_root / run_output_dir
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    save_run_config(
+        output_dir=config.output_dir,
+        config=config,
+        renderer_settings=renderer_settings,
+        run_folder_name=run_folder_name,
+    )
+
     # ------------------------------------------------------------------
     # 1. Initialize renderer once
     # ------------------------------------------------------------------
@@ -56,7 +101,7 @@ def main() -> None:
     )
 
     # Camera IDs from C++
-    camera_ids = get_camera_names(renderer)
+    camera_ids = get_training_camera_names(renderer)
     if len(camera_ids) == 0:
         raise RuntimeError("No cameras found in scene.")
     main_camera = camera_ids[0]
