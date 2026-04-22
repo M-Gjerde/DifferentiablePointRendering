@@ -123,7 +123,7 @@
       "forward_passes": 25,
       "bounces": 2,
       "adjoint_passes": 16,
-      "adjoint_bounces": 3,
+      "adjoint_bounces": 3
     },
     {
       "scene": "cornell",
@@ -136,7 +136,7 @@
       "forward_passes": 20,
       "bounces": 4,
       "adjoint_passes": 16,
-      "adjoint_bounces": 5,
+      "adjoint_bounces": 5
     }
   ]
 }

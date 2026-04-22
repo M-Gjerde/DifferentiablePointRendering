@@ -399,6 +399,7 @@ public:
         std::vector<float> gradOpacityHost(pointCount);
         std::vector<float> gradBetaHost(pointCount);
         std::vector<float> gradShapeHost(pointCount);
+        std::vector<float> gradPowerHost(pointCount);
 
         if (pointCount > 0) {
             if (gradients.gradPosition) {
@@ -569,6 +570,7 @@ public:
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
         gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
         gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+        gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
 
         // Top-level container for all images
         py::dict adjointImagesDictionary;
@@ -738,6 +740,7 @@ public:
         std::vector<float> opacityHost(pointCount);
         std::vector<float> betaHost(pointCount);
         std::vector<float> shapeHost(pointCount);
+        std::vector<float> powerHost(pointCount);
 
         for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
             const auto& point = buildProducts.points[pointIndex];
@@ -749,6 +752,7 @@ public:
             opacityHost[pointIndex] = point.opacity;
             betaHost[pointIndex] = point.beta;
             shapeHost[pointIndex] = point.shape;
+            powerHost[pointIndex] = point.power;
         }
 
         // Reuse the same makers as in render_backward (or define them once)
@@ -840,6 +844,7 @@ public:
         parameterDictionary["opacity"] = makeFloat1Array(opacityHost, pointCount);
         parameterDictionary["beta"] = makeFloat1Array(betaHost, pointCount);
         parameterDictionary["shape"] = makeFloat1Array(shapeHost, pointCount);
+        parameterDictionary["power"] = makeFloat1Array(powerHost, pointCount);
 
         return parameterDictionary;
     }
@@ -978,6 +983,7 @@ public:
         assignFloat3FieldFromArray("albedo", &Pale::Point::albedo);
         assignFloat1FieldFromArray("opacity", &Pale::Point::opacity);
         assignFloat1FieldFromArray("beta", &Pale::Point::beta);
+        assignFloat1FieldFromArray("power", &Pale::Point::power);
 
         // 4) Mirror changes back to the underlying point cloud asset
         if (!assetManager) {
@@ -1005,10 +1011,11 @@ public:
                         pointGeometry.scales.size() != pointCount ||
                         pointGeometry.albedos.size() != pointCount ||
                         pointGeometry.betas.size() != pointCount ||
-                        pointGeometry.opacities.size() != pointCount) {
+                        pointGeometry.opacities.size() != pointCount ||
+                        pointGeometry.powers.size() != pointCount) {
                         Pale::Log::PA_ERROR(
                             "apply_point_optimization: PointGeometry size mismatch. "
-                            "positions={}, tanU={}, tanV={}, scales={}, albedos={}, opacities={}, betas={}, expected={}",
+                            "positions={}, tanU={}, tanV={}, scales={}, albedos={}, opacities={}, betas={},  powers={}, expected={}",
                             pointGeometry.positions.size(),
                             pointGeometry.tanU.size(),
                             pointGeometry.tanV.size(),
@@ -1016,6 +1023,7 @@ public:
                             pointGeometry.albedos.size(),
                             pointGeometry.opacities.size(),
                             pointGeometry.betas.size(),
+                            pointGeometry.powers.size(),
                             pointCount
                         );
                         throw std::runtime_error(
@@ -1033,6 +1041,7 @@ public:
                         pointGeometry.opacities[pointIndex] = optimizedPoint.opacity;
                         // If you also keep beta/shape in the asset, mirror them here as well:
                         pointGeometry.betas[pointIndex] = optimizedPoint.beta;
+                        pointGeometry.powers[pointIndex] = optimizedPoint.power;
                         // pointGeometry.shapes[pointIndex]    = optimizedPoint.shape;
                     }
 
@@ -1199,6 +1208,7 @@ public:
         filterVectorInPlace(pointGeometry.opacities);
         filterVectorInPlace(pointGeometry.shapes);
         filterVectorInPlace(pointGeometry.betas);
+        filterVectorInPlace(pointGeometry.powers);
 
         Pale::Log::PA_INFO(
             "remove_points: removed {} points, new point count = {}",
@@ -1344,6 +1354,7 @@ public:
         reserveAttribute(pointGeometry.opacities);
         reserveAttribute(pointGeometry.shapes);
         reserveAttribute(pointGeometry.betas);
+        reserveAttribute(pointGeometry.powers);
 
         for (std::size_t pointIndex = 0; pointIndex < newPointCount; ++pointIndex) {
             const std::size_t basePositionIndex = pointIndex * 3;
@@ -1389,6 +1400,7 @@ public:
             pointGeometry.opacities.push_back(opacityValue);
 
             pointGeometry.betas.push_back(betaValue);
+            pointGeometry.powers.push_back(0.0f);
 
             // Defaults for other attributes of new Gaussians
             pointGeometry.shapes.push_back(0.0f);

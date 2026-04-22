@@ -590,7 +590,7 @@ namespace Pale {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
-        constexpr float rayEpsilon = 1e-5f;
+        constexpr float rayEpsilon = 1e-6f;
 
         bool hitAny = false;
         float bestTHit = std::numeric_limits<float>::infinity();

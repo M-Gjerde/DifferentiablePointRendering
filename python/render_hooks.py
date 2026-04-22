@@ -227,7 +227,7 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.005, max=0.025) ## TODO Enforcing min size matching photon map min resolution
+        s_clamped = torch.clamp(s, min=0.005, max=1.0) ## TODO Enforcing min size matching photon map min resolution
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -329,7 +329,7 @@ def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=-3.0, max=1.0)
+        s_clamped = torch.clamp(s, min=-5.0, max=5.0)
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -352,6 +352,7 @@ def apply_point_parameters(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        powers: torch.Tensor,
 ) -> None:
     """
     Push updated positions, tangent_u, tangent_v, scales, and albedos into the renderer.
@@ -381,6 +382,9 @@ def apply_point_parameters(
     betas_np = np.asarray(
         betas.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
+    powers_np = np.asarray(
+        powers.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
 
     if positions_np.shape != tangent_u_np.shape or positions_np.shape != tangent_v_np.shape:
         raise RuntimeError(
@@ -396,7 +400,8 @@ def apply_point_parameters(
             "scale": scales_np,
             "albedo": albedos_np,
             "opacity": opacities_np,
-            "beta": betas_np
+            "beta": betas_np,
+            "power": powers_np
         }
     )
 

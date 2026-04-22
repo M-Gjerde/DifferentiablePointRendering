@@ -193,6 +193,7 @@ def save_checkpoint_snapshot(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        powers: torch.Tensor,
         camera_name: str,
 ) -> None:
     """
@@ -215,6 +216,7 @@ def save_checkpoint_snapshot(
         albedos,
         opacities,
         betas,
+        powers,
         shape_default=0.0,
     )
 
@@ -248,6 +250,7 @@ def save_manual_snapshot(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        powers: torch.Tensor,
         camera_ids: List[str],
 ) -> None:
     """
@@ -271,6 +274,7 @@ def save_manual_snapshot(
         albedos,
         opacities,
         betas,
+        powers,
         shape_default=0.0,
     )
     print(
@@ -327,8 +331,11 @@ def refetch_parameters_as_torch(
     betas = torch.nn.Parameter(
         torch.tensor(updated["beta"], device=device, dtype=torch.float32)
     )
+    powers = torch.nn.Parameter(
+        torch.tensor(updated["power"], device=device, dtype=torch.float32)
+    )
 
-    return positions, tangent_u, tangent_v, scales, albedos, opacities, betas
+    return positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
 
 
 def verify_parameters_inplane(
@@ -419,6 +426,7 @@ def run_optimization(
 
     isColmap = True
     # Multi-camera mode: interpret dataset path as a directory
+    isDirectory = target_path.is_dir()
     if not target_path.is_dir():
         raise RuntimeError(
             f"Target path '{target_path}' must be a directory when multiple cameras are used."
@@ -450,6 +458,7 @@ def run_optimization(
     initial_albedo_np = initial_params["albedo"]
     initial_opacity_np = initial_params["opacity"]
     initial_beta_np = initial_params["beta"]
+    initial_power_np = initial_params["power"]
 
     num_points_initial = initial_positions_np.shape[0]
     print(f"Fetched {num_points_initial} initial points from PLY.")
@@ -463,6 +472,7 @@ def run_optimization(
         "albedo": initial_albedo_np.copy(),
         "opacity": initial_opacity_np.copy(),
         "beta": initial_beta_np.copy(),
+        "power": initial_power_np.copy(),
     }
 
     # (Optionally apply debug noise as before...)
@@ -511,6 +521,9 @@ def run_optimization(
     betas = torch.nn.Parameter(
         torch.tensor(initial_beta_np, device=device, dtype=torch.float32)
     )
+    powers = torch.nn.Parameter(
+        torch.tensor(initial_power_np, device=device, dtype=torch.float32)
+    )
 
     # ------------------------------------------------------------------
     # 2. Initial reparameterization and sync with renderer
@@ -518,7 +531,7 @@ def run_optimization(
     verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas)
 
     apply_point_parameters(
-        renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas
+        renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
     )
     rebuild_bvh(renderer)
 
@@ -530,7 +543,10 @@ def run_optimization(
         albedos,
         opacities,
         betas,
+        powers,
     ) = refetch_parameters_as_torch(renderer, device)
+
+    config.output_dir.mkdir(parents=True, exist_ok=True)
 
     optimizer = create_masked_optimizer(
         config,
@@ -541,16 +557,32 @@ def run_optimization(
         albedos,
         opacities,
         betas,
+        powers,
     )
 
     # ------------------------------------------------------------------
     # 3. Initial loss and output dir setup (multi-camera)
     # ------------------------------------------------------------------
-    # Forward pass: dict[name -> HxWx3]
     initial_images = renderer.render_forward()
 
     initial_loss = 0.0
     clear_output_dir(config.output_dir)
+
+    initial_points_path = config.output_dir / "initial_points.ply"
+    save_gaussians_to_ply(
+        initial_points_path,
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        albedos,
+        opacities,
+        betas,
+        powers,
+        shape_default=0.0,
+    )
+    print(f"Initial parameters written to PLY: {initial_points_path}")
+
     for camera_name in camera_ids:
         img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")[..., :3]
         tgt_np = target_images[camera_name]
@@ -561,7 +593,6 @@ def run_optimization(
         camera_base_dir = config.output_dir / camera_name
         camera_base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save per-camera initial render and target
         save_render(
             config.output_dir / f"render_initial_{camera_name}.png",
             img_np,
@@ -579,7 +610,7 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 1e100
+    prune_interval = 1000
     burnin_iterations = 50
 
     reset_opacity_interval = int(1e10)
@@ -718,6 +749,7 @@ def run_optimization(
                     albedos,
                     opacities,
                     betas,
+                    powers
                 )
 
                 if iteration % rebuild_bvh_interval == 0:
@@ -730,6 +762,7 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
+                        powers
                     ) = refetch_parameters_as_torch(renderer, device)
 
                     optimizer = create_masked_optimizer(
@@ -741,6 +774,7 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
+                        powers
                     )
 
                 # --------------------------------------------------------------
@@ -775,6 +809,7 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
+                        powers
                     ) = refetch_parameters_as_torch(renderer, device)
 
                     verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas)
@@ -787,6 +822,7 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
+                        powers
                     )
 
                     rebuild_bvh(renderer)
@@ -799,6 +835,7 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
+                        powers
                     )
 
                 # --------------------------------------------------------------
@@ -874,6 +911,7 @@ def run_optimization(
                     "albedo": albedos.detach().cpu().numpy(),
                     "opacity": opacities.detach().cpu().numpy(),
                     "beta": betas.detach().cpu().numpy(),
+                    "power": powers.detach().cpu().numpy(),
                 }
                 parameter_mse = compute_parameter_mse(
                     current_params_np,
@@ -940,7 +978,8 @@ def run_optimization(
                         f"eta_max={grad_opacity_max:.2e}, "
                         f"beta_max={grad_beta_max:.2e}, "
                         f"pts={num_points}, "
-                        f"t_total={total_time:.1f} s"
+                        f"t_total={total_time:.1f} s, "
+                        f"it/s={1.0 / iteration_time:.2f} s"
                     )
 
                     # Hotkey snapshot: use main camera for the image
@@ -961,6 +1000,7 @@ def run_optimization(
                             albedos,
                             opacities,
                             betas,
+                            powers,
                             camera_ids,
                         )
                     elif hotkey == "g":
@@ -997,6 +1037,7 @@ def run_optimization(
         albedos,
         opacities,
         betas,
+        powers
     )
 
     final_images = renderer.render_forward()
@@ -1022,6 +1063,7 @@ def run_optimization(
         albedos,
         opacities,
         betas,
+        powers,
         shape_default=0.0,
     )
     print(f"Final parameters written to PLY: {ply_path}")

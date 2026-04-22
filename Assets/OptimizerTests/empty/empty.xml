@@ -11,7 +11,7 @@
         <float name="focus_distance" value="100"/>
         <float name="fov" value="30.3077"/>
         <transform name="to_world">
-            <lookat origin="-0.0,-2.0, 0.5" target="0,0,0.5" up="0,0,1"/>
+            <lookat origin="-0.4,-2.0, 1.4" target="0,0,0.1" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
@@ -33,10 +33,10 @@
         <float name="near_clip" value="0.01"/>
         <float name="far_clip" value="100.0"/>
         <float name="focus_distance" value="100"/>
-        <float name="fov" value="90.3077"/>
+        <float name="fov" value="60.3077"/>
         <float name="adjoint_source" value="True"/>
         <transform name="to_world">
-            <lookat origin="-0.49, 0.5, 0.5" target="0,0.5,0.5" up="0,0,1"/>
+            <lookat origin="-0.49, 0.5, 1.5" target="0,0,0.1" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>
@@ -138,6 +138,15 @@
             <float name="power" value="25"/>
         </emitter>
      </shape>
-        -->
 
+
+
+    <shape type="obj" id="floor">
+        <string name="filename" value="meshes/rectangle.obj"/>
+        <transform name="to_world">
+            <translate x="0" y="0" z="0"/>
+        </transform>
+        <ref id="light_gray"/>
+    </shape>
+ -->
 </scene>

@@ -10,7 +10,7 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
-    forward_passes: int = 15
+    forward_passes: int = 10
     gather_passes: int = 1
     adjoint_bounces: int = 3
     adjoint_passes: int = 4
@@ -221,9 +221,9 @@ def parse_args() -> OptimizationConfig:
         # albedo_lr   = 3000
         # opacity_lr  = 5.0
         # beta_lr     = 300
-        factor_position = 10.0
-        factor_tangent = 1000.0
-        factor_scale = 3.0
+        factor_position = 0.1
+        factor_tangent = 100.0
+        factor_scale = 0.1
         factor_albedo = 100.0
         factor_opacity = 10.0
         factor_beta = 1.0
@@ -234,7 +234,7 @@ def parse_args() -> OptimizationConfig:
         factor_scale    = 0.001   # ~scaling_lr / position_lr
         factor_albedo   = 0.05    # ~feature_lr / position_lr
         factor_opacity  = 0.005    # ~opacity_lr / position_lr
-        factor_beta     = 0.001    # ~beta_lr / position_lr
+        factor_beta     = 0.05    # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr

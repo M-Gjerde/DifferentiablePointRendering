@@ -1322,20 +1322,20 @@ inline float3 gatherDiffuseIrradianceAtPoint(
                     const float3 offset = ph.position - queryPositionWorld;
 
                     const float cosine = dot(normalizedQueryNormal, -ph.incomingDirection);
-                    if (cosine < 0.0f)
-                        continue;
+                    //if (cosine < 0.0f)
+                    //    continue;
 
-                    const float signedPlaneDistance = dot(offset, normalizedQueryNormal);
-                    const float planeDistanceSquared =
-                        signedPlaneDistance * signedPlaneDistance;
-                    if (planeDistanceSquared > slabHalfThicknessSquared)
-                        continue;
-
-                    const float fullDistanceSquared = dot(offset, offset);
-                    const float tangentDistanceSquared =
-                        sycl::fmax(0.0f, fullDistanceSquared - planeDistanceSquared);
-                    if (tangentDistanceSquared > tangentRadiusSquared)
-                        continue;
+                    //const float signedPlaneDistance = dot(offset, normalizedQueryNormal);
+                    //const float planeDistanceSquared =
+                    //    signedPlaneDistance * signedPlaneDistance;
+                    //if (planeDistanceSquared > slabHalfThicknessSquared)
+                    //    continue;
+//
+                    //const float fullDistanceSquared = dot(offset, offset);
+                    //const float tangentDistanceSquared =
+                    //    sycl::fmax(0.0f, fullDistanceSquared - planeDistanceSquared);
+                    //if (tangentDistanceSquared > tangentRadiusSquared)
+                    //    continue;
 
                     irradiance += ph.power * inverseArea;
                 }
@@ -1531,7 +1531,7 @@ inline float3 gatherDiffuseIrradianceAtPoint(
         return value < 0 ? -value : value;
     }
 
-    static constexpr uint32_t kPhotonGatherNeighborCount = 128;
+    static constexpr uint32_t kPhotonGatherNeighborCount = 64;
 
     SYCL_EXTERNAL inline void tryInsertPhotonIntoNearestSet(
         const DevicePhotonSurface& candidatePhoton,
@@ -1568,7 +1568,7 @@ inline float3 gatherDiffuseIrradianceAtPoint(
             worstNeighborDistanceSquared);
     }
 
-    SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointAdaptiveRadiusKNN(
+    SYCL_EXTERNAL inline float3 gatherDiffuseIrradianceAtPointKNN(
         const float3& queryPositionWorld,
         const float3& queryNormalWorld,
         const DeviceSurfacePhotonMapGrid& grid) {

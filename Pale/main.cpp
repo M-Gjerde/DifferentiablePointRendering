@@ -164,7 +164,7 @@ int main(int argc, char **argv) {
 
 
     bool addPoints = true;
-    bool addModel = !true;
+    bool addModel = true;
     if (addPoints) {
         auto assetHandle = assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
         auto entityPointCloud = scene->createEntity("PointCloud");
@@ -182,8 +182,8 @@ int main(int argc, char **argv) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
         // 1) Transform
         auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
-        bunnyTransformComponent.setPosition(glm::vec3(0.45f, 0.6f, 0.3f));
-        bunnyTransformComponent.setRotationEuler(glm::vec3(4.0f, 0.0f, 0.0f));
+        bunnyTransformComponent.setPosition(glm::vec3(-0.3f, 0.4f, 0.3f));
+        bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 0.0f));
         bunnyTransformComponent.setScale(glm::vec3(0.7f, 0.7f, 0.7f));
 
         // 2) Mesh
@@ -273,9 +273,9 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 2;
-        settings.numForwardPasses = 5;
-        settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
+        settings.maxBounces = 3;
+        settings.numForwardPasses = 10;
+        settings.maxAdjointBounces = 4; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
         settings.adjointSamplesPerPixel = 1;
         settings.renderDebugGradientImages = true;
         settings.enableAdjointDirectLight = true;
@@ -331,7 +331,7 @@ int main(int argc, char **argv) {
                     }
                     Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
                     Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-                    pointGeometry.positions[5].z = 0.3f;
+                    //pointGeometry.positions[5].z = 0.3f;
                     rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
                 }
 
@@ -356,7 +356,7 @@ int main(int argc, char **argv) {
 
                     std::filesystem::create_directories(baseDir);
                     std::string fileName = sensor.name;
-                    fileName += "_photonmap";
+                    //fileName += "_photonmap";
                     std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
                     Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
 

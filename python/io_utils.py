@@ -158,6 +158,7 @@ def save_gaussians_to_ply(
         colors: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        powers: torch.Tensor,
         shape_default: float = 0.0,
 ) -> None:
     """
@@ -184,6 +185,7 @@ def save_gaussians_to_ply(
     property float opacity
     property float beta
     property float shape
+    property float power
     end_header
     ...
 
@@ -201,6 +203,7 @@ def save_gaussians_to_ply(
     col = colors.detach().cpu().numpy()
     opa = opacities.detach().cpu().numpy()
     betas = betas.detach().cpu().numpy()
+    powers = powers.detach().cpu().numpy()
 
     num_points = pos.shape[0]
 
@@ -242,6 +245,7 @@ def save_gaussians_to_ply(
         f.write("property float opacity\n")
         f.write("property float beta\n")
         f.write("property float shape\n")
+        f.write("property float power\n")
         f.write("end_header\n")
 
         # Data
@@ -253,6 +257,7 @@ def save_gaussians_to_ply(
             sv_i = sv[i]
             opa_i = opa[i]
             beta_i = betas[i]
+            power_i = powers[i]
             albedo_r, albedo_g, albedo_b = col[i]
 
             # Use general-format with enough precision, but still readable
@@ -262,6 +267,6 @@ def save_gaussians_to_ply(
                 f"{tv_x:.9g} {tv_y:.9g} {tv_z:.9g}  "
                 f"{su_i:.9g} {sv_i:.9g}  "
                 f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
-                f"{opa_i:.9g} {beta_i:.9g} {shape_default:.9g}\n"
+                f"{opa_i:.9g} {beta_i:.9g} {shape_default:.9g} {power_i:.9g}\n"
             )
             f.write(line)

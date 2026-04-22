@@ -201,8 +201,8 @@ def generate_volume_ply(
     defaultOpacity = 0.0
     defaultBeta = -0.0
     defaultShape = 0.0
-    defaultRGB = [0.5, 0.5, 0.5]
-    color_noise = 0.0
+    defaultRGB = [0.7, 0.7, 0.7]
+    color_noise = 0.1
 
     lines: list[str] = []
     lines.extend(
@@ -265,6 +265,14 @@ def generate_volume_ply(
                     f"{defaultPower:.6f}"
                 )
 
+    light_nx = 0.0
+    light_ny = 0.0
+    light_nz = -1.0
+
+    light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
+        compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
+    )
+
     light_x = 0.5
     light_y = -0.8
     light_z = 2.2
@@ -276,14 +284,7 @@ def generate_volume_ply(
     light_opacity = 1.0
     light_beta = 0.0
     light_shape = 0.0
-    light_power = 200.0
-    light_nx = 0.0
-    light_ny = 0.0
-    light_nz = -1.0
-
-    light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
-        compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
-    )
+    light_power = 50.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -306,7 +307,6 @@ def generate_volume_ply(
     light_opacity = 1.0
     light_beta = 0.0
     light_shape = 0.0
-    light_power = 200.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -317,6 +317,36 @@ def generate_volume_ply(
         f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
     )
     lines.append(light_line)
+    light_x = 0.0
+    light_y = 0.0
+    light_z = -2.0
+    light_su = 0.5
+    light_sv = 0.5
+    light_albedo_r = 1.0
+    light_albedo_g = 1.0
+    light_albedo_b = 1.0
+    light_opacity = 1.0
+    light_beta = 0.0
+    light_shape = 0.0
+
+    light_nx = 0.0
+    light_ny = 0.0
+    light_nz = 1.0
+
+    light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
+        compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
+    )
+
+    light_line = (
+        f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
+        f"{light_tu_x:.7f} {light_tu_y:.7f} {light_tu_z:.7f} "
+        f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
+        f"{light_su:.7f} {light_sv:.7f} "
+        f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+    )
+    lines.append(light_line)
+
 
     outputPath.parent.mkdir(parents=True, exist_ok=True)
     outputPath.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -341,40 +371,18 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "max_z": 0.55,
         "scale": 0.025,
         "position_noise_std": 0.05,
-        "tangent_noise_std": 0.0,
+        "tangent_noise_std": 90.0,
     },
     "bunny": {
-        "min_x": -0.5,
-        "max_x": 0.5,
-        "min_y": -0.35,
-        "max_y": 0.5,
-        "min_z": 0.25,
-        "max_z": 1.3,
+        "min_x": -1,
+        "max_x": 1,
+        "min_y": -1,
+        "max_y": 1,
+        "min_z": 0.0,
+        "max_z": 0.6,
         "scale": 0.02,
         "position_noise_std": 0.02,
-        "tangent_noise_std": 45.0,
-    },
-    "dragon": {
-        "min_x": -0.5,
-        "max_x": 0.5,
-        "min_y": -0.5,
-        "max_y": 0.5,
-        "min_z": 0.05,
-        "max_z": 0.75,
-        "scale": 0.008,
-        "position_noise_std": 0.02,
-        "tangent_noise_std": 0.0,
-    },
-    "cow": {
-        "min_x": -0.6,
-        "max_x": 0.6,
-        "min_y": -0.4,
-        "max_y": 0.7,
-        "min_z": 0.1,
-        "max_z": 0.73,
-        "scale": 0.01,
-        "position_noise_std": 0.05,
-        "tangent_noise_std": 90.0,
+        "tangent_noise_std": 5.0,
     },
 }
 

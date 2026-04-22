@@ -191,6 +191,7 @@ namespace Pale {
                         // Point cloud: null events are traversals only, reflect ends this call.
                         // ---------------------------------------------------------------------
                         if (instance.geometryType == GeometryType::PointCloud) {
+                            float rayAdvanceEpsilon = 1e-5f;
                             const Point &surfel = scene.points[worldHit.primitiveIndex];
                             const float randomNumber = stepRng.nextFloat();
 
@@ -203,7 +204,7 @@ namespace Pale {
                                 const float attenuation = 1.0f - effectiveOpacity;
                                 const float weight = attenuation / settings.sampling.qNull;
 
-                                currentRayState.ray.origin =worldHit.hitPositionW + (currentRayState.ray.direction * 1e-5f);
+                                currentRayState.ray.origin =worldHit.hitPositionW + (currentRayState.ray.direction * rayAdvanceEpsilon);
                                 currentRayState.traversalIndex = currentRayState.traversalIndex + 1;
                                 currentRayState.pathThroughput = currentRayState.pathThroughput * weight;
                                 continue;

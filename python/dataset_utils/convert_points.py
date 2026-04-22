@@ -194,7 +194,7 @@ def write_gaussian_ply(
             tv = -tv
         return tu, tv
 
-    total_vertex_count = len(vertices) + 2
+    total_vertex_count = len(vertices) + 3
 
     lines = [
         "ply",
@@ -241,9 +241,9 @@ def write_gaussian_ply(
         sv = float(args.scale)
 
         albedo = np.array([
-            vertex["r"] * 0 + 0.182,
-            vertex["g"] * 0 + 0.424,
-            vertex["b"] * 0 + 0.150
+            vertex["r"] * 0 + 0.782,
+            vertex["g"] * 0 + 0.724,
+            vertex["b"] * 0 + 0.750
         ], dtype=float)
 
         opacity = float(opacity_default)
@@ -305,7 +305,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = 0.0
     light_shape = 0.0
-    light_power = 200.0
+    light_power = 50.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -328,7 +328,37 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = 0.0
     light_shape = 0.0
-    light_power = 200.0
+
+    light_line = (
+        f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
+        f"{light_tu_x:.7f} {light_tu_y:.7f} {light_tu_z:.7f} "
+        f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
+        f"{light_su:.7f} {light_sv:.7f} "
+        f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+    )
+    lines.append(light_line)
+    light_x = 0.0
+    light_y = 0.0
+    light_z = -2.0
+    light_su = 0.5
+    light_sv = 0.5
+    light_albedo_r = 1.0
+    light_albedo_g = 1.0
+    light_albedo_b = 1.0
+    light_opacity = 1.0
+    light_beta = 0.0
+    light_shape = 0.0
+
+
+    light_nx = 0.0
+    light_ny = 0.0
+    light_nz = 1.0
+
+    light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
+        compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
+    )
+
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
