@@ -979,7 +979,7 @@ def run_optimization(
                         f"beta_max={grad_beta_max:.2e}, "
                         f"pts={num_points}, "
                         f"t_total={total_time:.1f} s, "
-                        f"it/s={1.0 / iteration_time:.2f} s"
+                        f"it/s={1.0 / iteration_time:.2f}"
                     )
 
                     # Hotkey snapshot: use main camera for the image

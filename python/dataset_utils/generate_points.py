@@ -191,7 +191,7 @@ def generate_volume_ply(
         pointCount, extentX, extentY, extentZ
     )
     generatedPointCount = gridX * gridY * gridZ
-    lightPointCount = 2
+    lightPointCount = 3
     totalPointCount = generatedPointCount + lightPointCount
 
     stepX = extentX / (gridX - 1) if gridX > 1 else 0.0
@@ -284,7 +284,7 @@ def generate_volume_ply(
     light_opacity = 1.0
     light_beta = 0.0
     light_shape = 0.0
-    light_power = 50.0
+    light_power = 5.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -367,7 +367,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "max_x": 0.55,
         "min_y": -0.4,
         "max_y": 0.4,
-        "min_z": 0.1,
+        "min_z": -0.01,
         "max_z": 0.55,
         "scale": 0.025,
         "position_noise_std": 0.05,

@@ -305,7 +305,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = 0.0
     light_shape = 0.0
-    light_power = 50.0
+    light_power = 5.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "

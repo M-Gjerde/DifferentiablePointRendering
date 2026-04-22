@@ -13,7 +13,7 @@ class RendererSettingsConfig:
     forward_passes: int = 10
     gather_passes: int = 1
     adjoint_bounces: int = 3
-    adjoint_passes: int = 4
+    adjoint_passes: int = 8
     logging: int = 3  # Spdlog enums
 
     def as_dict(self, config: OptimizationConfig) -> Dict[str, float | int]:
@@ -222,7 +222,7 @@ def parse_args() -> OptimizationConfig:
         # opacity_lr  = 5.0
         # beta_lr     = 300
         factor_position = 0.1
-        factor_tangent = 100.0
+        factor_tangent = 500.0
         factor_scale = 0.1
         factor_albedo = 100.0
         factor_opacity = 10.0
@@ -233,7 +233,7 @@ def parse_args() -> OptimizationConfig:
         factor_tangent  = 0.01    # ~rotation_lr / position_lr
         factor_scale    = 0.001   # ~scaling_lr / position_lr
         factor_albedo   = 0.05    # ~feature_lr / position_lr
-        factor_opacity  = 0.005    # ~opacity_lr / position_lr
+        factor_opacity  = 0.01    # ~opacity_lr / position_lr
         factor_beta     = 0.05    # ~beta_lr / position_lr
 
 
