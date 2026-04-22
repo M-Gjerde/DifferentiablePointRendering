@@ -221,7 +221,7 @@ def _finite_difference_loss(
     renderer.rebuild_bvh()
     L0, _, _ = _render_loss(renderer, camera, target_image)
 
-    if clamp_01 and parameter in {"opacity", "scale_u", "scale_v"}:
+    if clamp_01 and parameter in {"scale_u", "scale_v"}:
         lo = 0.0
         hi = 1.0
     else:
