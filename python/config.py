@@ -11,8 +11,8 @@ class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
     forward_passes: int = 5
-    primal_shadow_rays: int = 8
-    adjoint_shadow_rays: int = 8
+    primal_shadow_rays: int = 6
+    adjoint_shadow_rays: int = 6
     gather_passes: int = 1
     adjoint_bounces: int = 3
     adjoint_passes: int = 4
@@ -55,7 +55,7 @@ class OptimizationConfig:
     learning_rate_albedo: float = 0
     learning_rate_opacity: float = 0
     learning_rate_beta: float = 0
-    depth_distort_weight: float = 1
+    depth_distort_weight: float = 0.5
     normal_consistency_weight: float = 0.0
 
     optimizer_type: str = "adam"  # "adam" or "sgd"
