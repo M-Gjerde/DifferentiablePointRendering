@@ -102,7 +102,7 @@ namespace Pale {
                         rng::Xorshift128 stepRng(stepSeed);
 
                         WorldHit worldHit{};
-                        intersectScene(currentRayState.ray, &worldHit, scene, stepRng, SurfelIntersectMode::FirstHit);
+                        intersectScene(currentRayState.ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
 
                         if (!worldHit.hit) {
                             return;
@@ -320,6 +320,7 @@ namespace Pale {
     }
 
 
+    /*
     void launchContributionKernel(RenderPackage& pkg, uint32_t contributionCount, uint32_t cameraIndex) {
         auto& queue = pkg.queue;
         auto& scene = pkg.scene;
@@ -501,6 +502,7 @@ namespace Pale {
         });
     }
 
+*/
 
 
     void launchCameraGatherKernel(RenderPackage& pkg, uint32_t cameraIndex) {
@@ -515,6 +517,11 @@ namespace Pale {
         const std::uint32_t imageHeight = sensor.camera.height;
         const std::uint32_t pixelCount = imageWidth * imageHeight;
         pkg.queue.fill(sensor.framebuffer, float4{0}, pixelCount).wait();
+
+        if (settings.useDepthDistortion) {
+            pkg.queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount).wait();
+            pkg.queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount).wait();
+        }
 
         queue.submit([&](sycl::handler& cgh) {
             const uint64_t renderSeed = pkg.random.seed;
@@ -547,6 +554,13 @@ namespace Pale {
                     float transmittance = 1.0f;
                     const uint32_t maxTraversalRays = 32u;
 
+                    float sumW = 0.0f;
+                    float sumWT = 0.0f;
+                    float sumWT2 = 0.0f;
+
+                    const float3 rayOrigin0 = primaryRay.origin;
+                    const float3 rayDir0 = primaryRay.direction;
+
                     for (uint32_t traversalIndex = 0u;
                          traversalIndex < maxTraversalRays;
                          ++traversalIndex) {
@@ -555,7 +569,6 @@ namespace Pale {
                             primaryRay,
                             &worldHit,
                             scene,
-                            rng,
                             SurfelIntersectMode::FirstHit);
 
                         if (!worldHit.hit) {
@@ -611,11 +624,24 @@ namespace Pale {
 
                             const float3 outgoingRadiance =
                                 emittedRadiance + indirectRadiance + directRadiance;
-
                             accumulatedRadianceRGB += transmittance * outgoingRadiance;
 
-                            transmittance *= (1.0f - alphaEff);
 
+                            // Depth distortion
+                            if (settings.useDepthDistortion) {
+                                const float ai = surfel.opacity * worldHit.alphaGeom;
+                                const float wi = transmittance * ai;
+
+                                // Global depth along the original primary ray
+                                const float ti = dot(worldHit.hitPositionW - rayOrigin0, rayDir0);
+
+                                sumW += wi;
+                                sumWT += wi * ti;
+                                sumWT2 += wi * ti * ti;
+                            }
+
+                            // update
+                            transmittance *= (1.0f - alphaEff);
                             primaryRay.origin =
                                 worldHit.hitPositionW + primaryRay.direction * 1e-8f;
                             continue;
@@ -681,6 +707,17 @@ namespace Pale {
                         accumulatedRadianceRGB.y(),
                         accumulatedRadianceRGB.z(),
                         1.0f);
+
+                    float distortion = 0.0f;
+                    if (sumW > 1e-8f) {
+                        const float invSumW = 1.0f / sumW;
+                        const float meanT = sumWT * invSumW;
+                        distortion = sycl::fmax(0.0f, sumWT2 * invSumW - meanT * meanT);
+                    }
+
+                    if (settings.useDepthDistortion) {
+                        sensor.depthDistortionBuffer[pixelIndex] = distortion;
+                    }
 
                     sensor.framebuffer[framebufferIndex] += currentValue;
                 });

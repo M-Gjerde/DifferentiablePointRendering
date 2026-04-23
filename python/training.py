@@ -26,13 +26,9 @@ from losses import (
     compute_parameter_mse,
 )
 from optimizers import (
-    create_optimizer,
     create_masked_optimizer,
-    assign_numpy_gradients_to_tensors_masked,
-    compute_surfel_update_mask
 )
 from density_control import (
-    densify_points_long_axis_split,
     compute_prune_indices_by_opacity,
 )
 from render_hooks import (
@@ -50,7 +46,6 @@ from render_hooks import (
     get_training_camera_names, get_all_camera_names,
 )
 from debug_init_utils import add_debug_noise_to_initial_parameters
-from repulsion import compute_elliptical_repulsion_loss  # noqa: F401  (kept for future use)
 
 import sys
 import select
@@ -59,6 +54,61 @@ import select
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
+
+def get_forward_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    return np.asarray(
+        forward_out[camera_name]["image"],
+        dtype=np.float32,
+        order="C",
+    )
+
+def get_forward_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    return get_forward_rgba(forward_out, camera_name)[..., :3]
+
+def get_forward_depth_distortion(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    depth = np.asarray(
+        forward_out[camera_name]["depth_distortion"],
+        dtype=np.float32,
+        order="C",
+    )
+    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def make_mean_reduction_adjoint_image(
+    image_2d: np.ndarray,
+    loss_weight: float,
+) -> np.ndarray:
+    """
+    If loss_dist = loss_weight * mean(image_2d),
+    then d loss_dist / d image_2d[p] = loss_weight / N for every pixel p.
+    """
+    pixel_count = max(image_2d.size, 1)
+    return np.full(
+        image_2d.shape,
+        fill_value=loss_weight / float(pixel_count),
+        dtype=np.float32,
+    )
+
+
+def sum_gradient_dicts(
+    photo_gradients: Dict[str, np.ndarray],
+    regularizer_gradients: Dict[str, np.ndarray],
+) -> Dict[str, np.ndarray]:
+    """
+    Sum two renderer-produced gradient dictionaries parameter-wise.
+    Assumes both dicts contain the same keys and shapes.
+    """
+    result: Dict[str, np.ndarray] = {}
+    for key in photo_gradients.keys():
+        g_photo = np.asarray(photo_gradients[key], dtype=np.float32, order="C")
+        g_reg = np.asarray(regularizer_gradients[key], dtype=np.float32, order="C")
+        if g_photo.shape != g_reg.shape:
+            raise RuntimeError(
+                f"Gradient shape mismatch for '{key}': "
+                f"photo {g_photo.shape} vs reg {g_reg.shape}"
+            )
+        result[key] = g_photo + g_reg
+    return result
 
 def poll_hotkey() -> Optional[str]:
     """
@@ -180,7 +230,34 @@ def save_gradients_snapshot(
         f"saved gradients to:\n  {csv_path}\n  {npz_path}"
     )
 
+def save_depth_distortion_snapshot(
+        output_path_png: Path,
+        depth_distortion: np.ndarray,
+        quantile: float = 0.99,
+        save_npy: bool = True,
+) -> None:
+    """
+    Save a scalar depth-distortion map as:
+      - PNG visualization (grayscale, quantile-normalized)
+      - optional raw .npy next to it
+    """
+    depth = np.asarray(depth_distortion, dtype=np.float32, order="C")
+    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+    depth = np.maximum(depth, 0.0)
 
+    if depth.size == 0:
+        vis = np.zeros((1, 1, 3), dtype=np.float32)
+    else:
+        vmax = float(np.quantile(depth, quantile))
+        if not np.isfinite(vmax) or vmax <= 1e-12:
+            vmax = 1.0
+        vis_scalar = np.clip(depth / vmax, 0.0, 1.0)
+        vis = np.repeat(vis_scalar[..., None], 3, axis=2).astype(np.float32, copy=False)
+
+    save_render(output_path_png, vis)
+
+    if save_npy:
+        np.save(output_path_png.with_suffix(".npy"), depth)
 def save_checkpoint_snapshot(
         output_dir: Path,
         iteration: int,
@@ -199,8 +276,11 @@ def save_checkpoint_snapshot(
     """
     Save an iteration checkpoint:
       - output_dir/checkpoints/iter_XXXX/points.ply
-      - output_dir/checkpoints/iter_XXXX/render_<camera>.png (all cameras)
-      - output_dir/checkpoints/iter_XXXX/render_final.png (main camera convenience)
+      - output_dir/checkpoints/iter_XXXX/render_<camera>.png
+      - output_dir/checkpoints/iter_XXXX/depth_distortion_<camera>.png
+      - output_dir/checkpoints/iter_XXXX/depth_distortion_<camera>.npy
+      - output_dir/checkpoints/iter_XXXX/render_final.png
+      - output_dir/checkpoints/iter_XXXX/depth_distortion_final.png
     """
     checkpoint_dir = output_dir / "checkpoints" / f"iter_{iteration:04d}"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -220,24 +300,41 @@ def save_checkpoint_snapshot(
         shape_default=0.0,
     )
 
-    # Save renders (all cameras)
-    for camera_name in camera_ids:
-        image_numpy = np.asarray(current_images[camera_name], dtype=np.float32, order="C")
-        save_render(checkpoint_dir / f"render_{camera_name}.png", image_numpy)
+    # Save renders + depth distortion (all cameras)
+    for cam_name in camera_ids:
+        image_numpy = get_forward_rgb(current_images, cam_name)
+        save_render(checkpoint_dir / f"render_{cam_name}.png", image_numpy)
 
-    # Convenience: main camera as "render_final.png" inside the checkpoint dir
-    main_img = np.asarray(current_images[camera_name], dtype=np.float32, order="C")
+        depth_numpy = get_forward_depth_distortion(current_images, cam_name)
+        save_depth_distortion_snapshot(
+            checkpoint_dir / f"depth_distortion_{cam_name}.png",
+            depth_numpy,
+            quantile=0.99,
+            save_npy=True,
+        )
+
+    # Convenience: chosen/main camera
+    main_img = get_forward_rgb(current_images, camera_name)
     save_render(checkpoint_dir / "render_final.png", main_img)
 
+    main_depth = get_forward_depth_distortion(current_images, camera_name)
+    save_depth_distortion_snapshot(
+        checkpoint_dir / "depth_distortion_final.png",
+        main_depth,
+        quantile=0.99,
+        save_npy=True,
+    )
+
     print(f"[Iter {iteration:04d}] Saved checkpoint: {checkpoint_dir}")
+
 
 def rms_point(x):
     n = max(x.shape[0], 1)
     return float(np.linalg.norm(x) / np.sqrt(n))
 
+
 def rms_scalar(x):
     return float(np.linalg.norm(x) / np.sqrt(max(x.size, 1)))
-
 
 def save_manual_snapshot(
         renderer: Pale.Renderer,
@@ -259,9 +356,18 @@ def save_manual_snapshot(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     final_images = renderer.render_forward()
+
     for camera_name in camera_ids:
-        img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")
+        img_np = get_forward_rgb(final_images, camera_name)
         save_render(Path(output_dir / f"render_final_{camera_name}.png"), img_np)
+
+        depth_np = get_forward_depth_distortion(final_images, camera_name)
+        save_depth_distortion_snapshot(
+            Path(output_dir / f"depth_distortion_final_{camera_name}.png"),
+            depth_np,
+            quantile=0.99,
+            save_npy=True,
+        )
 
     # Save full parameter set as PLY
     ply_path = output_dir / "points_final.ply"
@@ -279,7 +385,7 @@ def save_manual_snapshot(
     )
     print(
         f"[Iter {iteration:04d}] Hotkey 's' pressed -> "
-        f"saved render_final.png and points_final.ply"
+        f"saved render_final_<camera>.png, depth_distortion_final_<camera>.png, and points_final.ply"
     )
 
 
@@ -299,6 +405,84 @@ def clear_output_dir(output_dir: Path) -> None:
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+
+def max_point_norm(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float32)
+    if x.size == 0:
+        return 0.0
+    if x.ndim == 1:
+        return float(np.max(np.abs(x)))
+    return float(np.max(np.linalg.norm(x, axis=1))) if x.shape[0] > 0 else 0.0
+
+
+def rms_any(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float32)
+    if x.size == 0:
+        return 0.0
+    return float(np.linalg.norm(x.ravel()) / np.sqrt(x.size))
+
+
+def gradient_stats_from_dict(gradient_dict: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
+    stats: Dict[str, Dict[str, float]] = {}
+    for key, value in gradient_dict.items():
+        g = np.asarray(value, dtype=np.float32, order="C")
+        stats[key] = {
+            "rms": rms_any(g),
+            "max": max_point_norm(g),
+        }
+    return stats
+
+
+def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
+    def s(name: str) -> str:
+        if name not in stats:
+            return f"{name}=NA"
+        return f"{name}_rms={stats[name]['rms']:.2e}, {name}_max={stats[name]['max']:.2e}"
+
+    return (
+        f"{tag}: "
+        f"{s('position')}, "
+        f"{s('tangent_u')}, "
+        f"{s('tangent_v')}, "
+        f"{s('scale')}, "
+        f"{s('albedo')}, "
+        f"{s('opacity')}, "
+        f"{s('beta')}"
+    )
+
+
+def summarize_depth_distortion_maps(
+    depth_maps: Dict[str, np.ndarray],
+    adjoint_maps: Dict[str, np.ndarray],
+) -> str:
+    if not depth_maps:
+        return "depth_distortion: no cameras"
+
+    means = []
+    maxs = []
+    p99s = []
+    adjoint_means = []
+    adjoint_maxs = []
+
+    for camera_name, depth in depth_maps.items():
+        d = np.asarray(depth, dtype=np.float32)
+        a = np.asarray(adjoint_maps[camera_name], dtype=np.float32)
+
+        means.append(float(np.mean(d)))
+        maxs.append(float(np.max(d)))
+        p99s.append(float(np.quantile(d, 0.99)))
+
+        adjoint_means.append(float(np.mean(a)))
+        adjoint_maxs.append(float(np.max(np.abs(a))))
+
+    return (
+        "depth_distortion_maps: "
+        f"mean(avg)={np.mean(means):.3e}, "
+        f"p99(avg)={np.mean(p99s):.3e}, "
+        f"max(global)={np.max(maxs):.3e}, "
+        f"adj_mean(avg)={np.mean(adjoint_means):.3e}, "
+        f"adj_max(global)={np.max(adjoint_maxs):.3e}"
+    )
 
 def refetch_parameters_as_torch(
         renderer: pale.Renderer,
@@ -339,13 +523,13 @@ def refetch_parameters_as_torch(
 
 
 def verify_parameters_inplane(
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    albedos: torch.Tensor,
-    opacities: torch.Tensor,
-    betas: torch.Tensor,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        betas: torch.Tensor,
 ) -> None:
     """
     Enforce parameter constraints in-place:
@@ -358,6 +542,7 @@ def verify_parameters_inplane(
     verify_albedos_inplace(albedos)
     verify_opacities_inplace(opacities)
     verify_beta_inplace(betas)
+
 
 def assign_numpy_gradients_to_tensors(
         device: torch.device,
@@ -448,6 +633,7 @@ def run_optimization(
                 f"with shape {target_images[camera_name].shape}"
             )
 
+    depth_distortion_weight = config.depth_distort_weight
     # ------------------------------------------------------------------
     # Fetch initial parameters from renderer
     # ------------------------------------------------------------------
@@ -567,7 +753,7 @@ def run_optimization(
     initial_images = renderer.render_forward()
 
     initial_loss = 0.0
-    #clear_output_dir(config.output_dir)
+    # clear_output_dir(config.output_dir)
 
     initial_points_path = config.output_dir / "initial_points.ply"
     save_gaussians_to_ply(
@@ -585,7 +771,7 @@ def run_optimization(
     print(f"Initial parameters written to PLY: {initial_points_path}")
 
     for camera_name in all_camera_ids:
-        img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")[..., :3]
+        img_np = get_forward_rgb(initial_images, camera_name)
 
         camera_base_dir = config.output_dir / camera_name
         camera_base_dir.mkdir(parents=True, exist_ok=True)
@@ -617,13 +803,13 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 1000
-    burnin_iterations = 50
+    prune_interval = 1e100
+    burnin_iterations = 1
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
 
-    opacity_prune_threshold = 0.05
+    opacity_prune_threshold = 0.4
     max_prune_fraction = 0.3
     rebuild_bvh_interval = 1
 
@@ -636,9 +822,9 @@ def run_optimization(
             [
                 "iteration",
                 "camera_name",
-                "loss_l2_current_camera",
-                "loss_l2_window_mean",
-                "loss_l2_window_sum_scaled",
+                "loss_rgb_sum",
+                "loss_depth_distortion_sum",
+                "loss_total_sum",
                 "parameter_mse",
                 "num_points",
                 "iteration_time_sec",
@@ -658,50 +844,74 @@ def run_optimization(
                 # 5. Forward pass and image-space loss (multi-camera)
                 # --------------------------------------------------------------
                 # dict[name -> HxWx3]
-                current_images = renderer.render_forward()
+                forward_out = renderer.render_forward()
 
+                total_rgb_loss_value = 0.0
+                total_depth_distortion_value = 0.0
                 total_loss_value = 0.0
+
                 loss_grad_images: Dict[str, np.ndarray] = {}
+                depth_distortion_grad_images: Dict[str, np.ndarray] = {}
                 loss_images: Dict[str, np.ndarray] = {}
+                depth_distortion_maps_for_logging: Dict[str, np.ndarray] = {}
 
                 for camera_name in training_camera_ids:
-                    current_rgb_np = np.asarray(
-                        current_images[camera_name],
-                        dtype=np.float32,
-                        order="C",
-                    )[..., :3]
+                    current_rgb_np = get_forward_rgb(forward_out, camera_name)
+                    current_depth_distortion_np = get_forward_depth_distortion(forward_out, camera_name)
                     target_rgb_np = target_images[camera_name]
+                    depth_distortion_maps_for_logging[camera_name] = current_depth_distortion_np
 
-                    ## Analytical first:
-                    loss_grad = compute_l2_grad(
-                        current_rgb_np,
-                        target_rgb_np
+                    # Photometric loss and image-space adjoint
+                    rgb_grad = compute_l2_grad(current_rgb_np, target_rgb_np)
+                    rgb_loss_value = float(compute_l2_loss(current_rgb_np, target_rgb_np))
+
+                    # Depth distortion loss from renderer-produced map
+                    depth_distortion_loss_value = float(current_depth_distortion_np.mean())
+
+                    total_rgb_loss_value += rgb_loss_value
+                    total_depth_distortion_value += depth_distortion_loss_value
+                    total_loss_value += rgb_loss_value + depth_distortion_weight * depth_distortion_loss_value
+
+                    loss_grad_images[camera_name] = rgb_grad
+
+                    # This is dL / d(distortionBuffer[pixel]) for:
+                    # L_dist = depth_distortion_weight * mean(distortionBuffer)
+                    depth_distortion_grad_images[camera_name] = make_mean_reduction_adjoint_image(
+                        current_depth_distortion_np,
+                        depth_distortion_weight,
                     )
-                    loss_value = compute_l2_loss(
-                        current_rgb_np,
-                        target_rgb_np
-                    )
 
-                    loss_value_float = float(loss_value)
+                    # For visualization only
+                    loss_images[camera_name] = rgb_grad
 
-                    total_loss_value += float(loss_value)
-                    loss_grad_images[camera_name] = loss_grad
-                    loss_images[camera_name] = loss_grad
+                # ------------------------------------------------------------------
+                # Photometric backward: transport adjoint gradient
+                # ------------------------------------------------------------------
+                photo_gradients, adjoint_images = renderer.render_backward(loss_grad_images)
 
-                # --------------------------------------------------------------
-                # 6. Backward pass in renderer (multi-camera)
-                # --------------------------------------------------------------
-                gradients, adjoint_images = renderer.render_backward(loss_grad_images)
-                # `adjoint_images` is dict[name -> HxWx4 float]
+                # ------------------------------------------------------------------
+                # Regularizer backward: explicit depth-distortion gradient
+                # ------------------------------------------------------------------
+                distortion_gradients = renderer.render_depth_distortion_backward(
+                    depth_distortion_grad_images
+                )
+
+                photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
+                distortion_gradient_stats = gradient_stats_from_dict(distortion_gradients)
+
+                # ------------------------------------------------------------------
+                # Blend the final update vector in Python
+                # ------------------------------------------------------------------
+                total_gradients = sum_gradient_dicts(photo_gradients, distortion_gradients)
 
                 # Extract numpy gradients
-                grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
-                grad_tangent_u_np = np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
-                grad_tangent_v_np = np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
-                grad_scales_np = np.asarray(gradients["scale"], dtype=np.float32, order="C")
-                grad_albedos_np = np.asarray(gradients["albedo"], dtype=np.float32, order="C")
-                grad_opacities_np = np.asarray(gradients["opacity"], dtype=np.float32, order="C")
-                grad_betas_np = np.asarray(gradients["beta"], dtype=np.float32, order="C")
+                grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
+                grad_tangent_u_np = np.asarray(total_gradients["tangent_u"], dtype=np.float32, order="C")
+                grad_tangent_v_np = np.asarray(total_gradients["tangent_v"], dtype=np.float32, order="C")
+                grad_scales_np = np.asarray(total_gradients["scale"], dtype=np.float32, order="C")
+                grad_albedos_np = np.asarray(total_gradients["albedo"], dtype=np.float32, order="C")
+                grad_opacities_np = np.asarray(total_gradients["opacity"], dtype=np.float32, order="C")
+                grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
 
                 # Sanity check shapes
                 current_positions_shape = tuple(positions.shape)
@@ -853,55 +1063,51 @@ def run_optimization(
                         camera_base_dir = config.output_dir / camera_name
                         camera_render_dir = camera_base_dir / "render"
                         camera_grad_dir = camera_base_dir / "grad"
+                        camera_depth_dir = camera_base_dir / "depth_distortion"
+
                         camera_render_dir.mkdir(parents=True, exist_ok=True)
                         camera_grad_dir.mkdir(parents=True, exist_ok=True)
+                        camera_depth_dir.mkdir(parents=True, exist_ok=True)
 
-                        # Per-camera render
-                        image_numpy = np.asarray(
-                            current_images[camera_name],
-                            dtype=np.float32,
-                            order="C",
-                        )
-                        render_path = (
-                                camera_render_dir
-                                / f"{iteration:04d}_render.png"
-                        )
+                        image_numpy = get_forward_rgb(forward_out, camera_name)
+                        render_path = camera_render_dir / f"{iteration:04d}_render.png"
                         save_render(render_path, image_numpy)
 
-                        # Per-camera adjoint/gradient visualization
+                        depth_distortion_numpy = get_forward_depth_distortion(forward_out, camera_name)
+                        depth_distortion_path = camera_depth_dir / f"{iteration:04d}_depth_distortion.png"
+                        save_depth_distortion_snapshot(
+                            depth_distortion_path,
+                            depth_distortion_numpy,
+                            quantile=0.99,
+                            save_npy=True,
+                        )
+
                         adjointSourceImages = adjoint_images.get("adjoint_source")
                         if adjointSourceImages is not None and camera_name in adjointSourceImages:
-                            grad_image_numpy = np.asarray(
+                            grad_img_np = np.asarray(
                                 adjointSourceImages[camera_name],
                                 dtype=np.float32,
                                 order="C",
                             )
-                            # proceed with saving gradImageNumpy
-
-                            grad_image_numpy = np.nan_to_num(
-                                grad_image_numpy,
+                            grad_img_np = np.nan_to_num(
+                                grad_img_np,
                                 nan=0.0,
                                 posinf=0.0,
                                 neginf=0.0,
                             )
 
-                            grad_path = (
-                                    camera_grad_dir
-                                    / f"{iteration:04d}_grad_099.png"
-                            )
+                            grad_path = camera_grad_dir / f"{iteration:04d}_grad_099.png"
                             save_gradient_sign_png_py(
                                 grad_path,
-                                grad_image_numpy,
+                                grad_img_np,
                                 adjoint_spp=renderer_settings.adjoint_passes,
                                 abs_quantile=0.999,
                                 flip_y=False,
                             )
 
-                            # Loss image: store under main camera
                             main_loss_image = loss_images[camera_name]
                             main_camera_loss_root = config.output_dir / camera_name
                             save_loss_image(main_camera_loss_root, main_loss_image, iteration)
-
                 # --------------------------------------------------------------
                 # 11. Metrics and logging
                 # --------------------------------------------------------------
@@ -929,8 +1135,8 @@ def run_optimization(
                     [
                         iteration,
                         "ALL_CAMERAS",
-                        total_loss_value,
-                        total_loss_value,
+                        total_rgb_loss_value,
+                        total_depth_distortion_value,
                         total_loss_value,
                         parameter_mse,
                         num_points,
@@ -968,7 +1174,9 @@ def run_optimization(
 
                     print(
                         f"[Iter {iteration:04d}/{config.iterations}] "
-                        f"L2 Sum={total_loss_value:.3e}, "
+                        f"RGB={total_rgb_loss_value:.3e}, "
+                        f"Ddist={total_depth_distortion_value:.3e}, "
+                        f"Total={total_loss_value:.3e}, "
                         f"t={iteration_time:.3f} s, "
                         f"pos_rms={grad_pos_rms:.2e}, "
                         f"tu_rms={grad_tanu_rms:.2e}, "
@@ -988,6 +1196,15 @@ def run_optimization(
                         f"t_total={total_time:.1f} s, "
                         f"it/s={1.0 / iteration_time:.2f}"
                     )
+
+                    #print(format_gradient_stats("photo_grads", photo_gradient_stats))
+                    #print(format_gradient_stats("dist_grads ", distortion_gradient_stats))
+                    #print(
+                    #    summarize_depth_distortion_maps(
+                    #        depth_distortion_maps_for_logging,
+                    #        depth_distortion_grad_images,
+                    #    )
+                    #)
 
                     # Hotkey snapshot: use main camera for the image
                     # --------------------------------------------------------------
@@ -1049,16 +1266,33 @@ def run_optimization(
 
     final_images = renderer.render_forward()
 
-    final_loss = 0.0
-    for camera_name in training_camera_ids:
-        img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")[..., :3]
-        tgt_np = target_images[camera_name]
-        loss_cam = compute_l2_loss(img_np, tgt_np)
-        final_loss += float(loss_cam)
-        save_render(Path(config.output_dir / f"render_final_{camera_name}.png"), img_np)
+    final_rgb_loss = 0.0
+    final_depth_distortion_loss = 0.0
+    final_total_loss = 0.0
 
-    print(f"Initial loss (sum over cameras): {initial_loss:.6e}")
-    print(f"Final loss   (sum over cameras): {final_loss:.6e}")
+    for camera_name in training_camera_ids:
+        img_np = get_forward_rgb(final_images, camera_name)
+        dist_np = get_forward_depth_distortion(final_images, camera_name)
+        tgt_np = target_images[camera_name]
+
+        rgb_loss_cam = float(compute_l2_loss(img_np, tgt_np))
+        dist_loss_cam = float(dist_np.mean())
+
+        final_rgb_loss += rgb_loss_cam
+        final_depth_distortion_loss += dist_loss_cam
+        final_total_loss += rgb_loss_cam + depth_distortion_weight * dist_loss_cam
+
+        save_render(Path(config.output_dir / f"render_final_{camera_name}.png"), img_np)
+        save_depth_distortion_snapshot(
+            Path(config.output_dir / f"depth_distortion_final_{camera_name}.png"),
+            dist_np,
+            quantile=0.99,
+            save_npy=True,
+        )
+    print(f"Initial RGB loss   (sum over cameras): {initial_loss:.6e}")
+    print(f"Final RGB loss     (sum over cameras): {final_rgb_loss:.6e}")
+    print(f"Final depth dist.  (sum over cameras): {final_depth_distortion_loss:.6e}")
+    print(f"Final total loss   (sum over cameras): {final_total_loss:.6e}")
 
     ply_path = config.output_dir / "points_final.ply"
     save_gaussians_to_ply(
@@ -1077,7 +1311,9 @@ def run_optimization(
 
     print("\nOptimization completed.")
     print(f"Initial loss (sum over cameras): {initial_loss:.6e}")
-    print(f"Final loss   (sum over cameras): {final_loss:.6e}")
+    print(f"Final loss   (sum over cameras): {final_total_loss:.6e}")
+    print(f"Final rgb loss   (sum over cameras): {final_rgb_loss:.6e}")
+    print(f"Final depth loss   (sum over cameras): {final_depth_distortion_loss:.6e}")
     print(f"Outputs saved in: {config.output_dir.resolve()}")
     total_elapsed = time.perf_counter() - total_start_time
     print(f"Total optimization wall time: {total_elapsed:.1f} s")

@@ -734,7 +734,7 @@ void loadEXRAsRGBAFloat(
     std::uint32_t imageWidth,
     std::uint32_t imageHeight,
     std::uint32_t channelIndex,          // 0=R, 1=G, 2=B, 3=A
-    float adjointSamplesPerPixel = 32.0f,
+    float adjointSamplesPerPixel = 1.0f,
     float absQuantile = 0.99f,
     bool flipY = false,
     bool useSeismic = true

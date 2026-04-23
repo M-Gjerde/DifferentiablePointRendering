@@ -533,6 +533,27 @@ namespace Pale {
         m_queue.wait();
     }
 
+    void PathTracer::renderDepthDistortionBackward(std::vector<SensorGPU>& sensors, PointGradients& gradients) {
+        m_settings.rayGenMode = RayGenMode::Adjoint;
+        Log::PA_DEBUG("Submitting Distortion loss kernel");
+
+        ScopedTimer adjointTimer("Distortion pass total", spdlog::level::debug);
+
+        RenderPackage renderPackage{
+            .queue = m_queue,
+            .settings = m_settings,
+            .scene = m_sceneGPU,
+            .intermediates = m_intermediates,
+            .gradients = gradients,
+            .sensors = sensors,
+            .numSensors = static_cast<uint32_t>(sensors.size()),
+        };
+
+        submitDepthDistortionKernel(renderPackage);
+
+        m_queue.wait();
+    }
+
     void PathTracer::reset() {
     }
 }

@@ -227,7 +227,7 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.005, max=0.1) ## TODO Enforcing min size matching photon map min resolution
+        s_clamped = torch.clamp(s, min=0.005, max=1.0) ## TODO Enforcing min size matching photon map min resolution
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())

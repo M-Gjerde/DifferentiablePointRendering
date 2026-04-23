@@ -23,6 +23,7 @@ export namespace Pale {
         void setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp);
         void renderForward(std::vector<SensorGPU>& sensors);
         void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages* debugImages);
+        void renderDepthDistortionBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients);
         void reset();
 
         PathTracerSettings& getSettings() { return m_settings; }

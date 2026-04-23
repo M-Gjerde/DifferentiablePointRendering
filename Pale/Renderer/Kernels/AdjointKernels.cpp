@@ -236,7 +236,6 @@ namespace Pale {
                             currentRayState.ray,
                             &worldHit,
                             scene,
-                            rng,
                             SurfelIntersectMode::FirstHit);
 
                         if (!worldHit.hit) {
@@ -749,7 +748,6 @@ namespace Pale {
                             shadowRay,
                             &shadowHit,
                             scene,
-                            rng,
                             SurfelIntersectMode::FirstHit);
 
                         if (!shadowHit.hit) {
@@ -907,7 +905,6 @@ namespace Pale {
                                 ray,
                                 &worldHit,
                                 scene,
-                                rng::Xorshift128(0.0),
                                 SurfelIntersectMode::FirstHit);
 
                             if (!worldHit.hit) {
@@ -1479,7 +1476,6 @@ namespace Pale {
                                 ray,
                                 &worldHit,
                                 scene,
-                                rng::Xorshift128(0.0),
                                 SurfelIntersectMode::FirstHit);
 
                             if (!worldHit.hit) {
@@ -2033,7 +2029,6 @@ namespace Pale {
                                 ray,
                                 &worldHit,
                                 scene,
-                                rng::Xorshift128(0.0),
                                 SurfelIntersectMode::FirstHit);
 
                             if (!worldHit.hit) {
@@ -2483,7 +2478,6 @@ namespace Pale {
                                 ray,
                                 &worldHit,
                                 scene,
-                                rng::Xorshift128(0.0),
                                 SurfelIntersectMode::FirstHit);
 
                             if (!worldHit.hit) {
@@ -3117,7 +3111,6 @@ namespace Pale {
                                 shadowRay,
                                 &worldHit,
                                 scene,
-                                rng::Xorshift128(0.0),
                                 SurfelIntersectMode::FirstHit);
 
                             if (!worldHit.hit) {
@@ -3834,5 +3827,209 @@ namespace Pale {
                 pkg,
                 ranges.totalCount);
         }
+    }
+
+    struct AlphaKernelEval {
+        float value = 0.0f; // alpha_geom
+        float dValue_dU = 0.0f; // d alpha_geom / du
+        float dValue_dV = 0.0f; // d alpha_geom / dv
+        float dValue_dBeta = 0.0f; // d alpha_geom / d beta
+    };
+
+    SYCL_EXTERNAL inline AlphaKernelEval evaluateAlphaKernelAndDerivatives(
+        const Point& surfel,
+        float u,
+        float v) {
+        AlphaKernelEval out{};
+
+        const float r2 = u * u + v * v;
+        if (r2 >= 1.0f) {
+            // Outside support: zero value, zero derivatives
+            return out;
+        }
+
+        const float s = 1.0f - r2;
+
+        // b(beta) = 4 * exp(beta)
+        const float b = 4.0f * sycl::exp(surfel.beta);
+
+        // alpha_geom = s^b
+        const float alphaGeom = sycl::pow(s, b);
+
+        out.value = alphaGeom;
+
+        // Guard against s -> 0 for numerical stability
+        const float sSafe = sycl::fmax(s, 1e-8f);
+
+        out.dValue_dU = -2.0f * b * u * alphaGeom / sSafe;
+        out.dValue_dV = -2.0f * b * v * alphaGeom / sSafe;
+        out.dValue_dBeta = b * sycl::log(sSafe) * alphaGeom;
+
+        return out;
+    }
+
+    struct DistortionHitPosOnly {
+        uint32_t primitiveIndex = kInvalidIndex;
+        float t = 0.0f; // global depth along original primary ray
+        float w = 0.0f; // forward compositing weight, detached in backward
+    };
+
+    void launchDepthDistortionBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex) {
+        auto& queue = pkg.queue;
+        auto& scene = pkg.scene;
+        auto& settings = pkg.settings;
+
+        SensorGPU sensor = pkg.sensors[cameraIndex];
+        auto& grads = pkg.gradients;
+
+        const uint32_t imageWidth = sensor.camera.width;
+        const uint32_t imageHeight = sensor.camera.height;
+        const uint32_t pixelCount = imageWidth * imageHeight;
+
+        queue.submit([&](sycl::handler& cgh) {
+            const uint64_t renderSeed = pkg.random.seed;
+
+            cgh.parallel_for<class DepthDistortionBackwardKernelDetachedPosOnly>(
+                sycl::range<1>(pixelCount),
+                [=](sycl::id<1> tid) {
+                    constexpr uint32_t kMaxHits = 32u;
+                    constexpr float kEps = 1e-8f;
+
+                    const uint32_t pixelIndex = tid[0];
+                    const uint32_t pixelX = pixelIndex % imageWidth;
+                    const uint32_t pixelY = pixelIndex / imageWidth;
+
+                    // This buffer must contain dL / d(distortion[pixel])
+                    const float pixelAdjoint =
+                        sensor.depthDistortionAdjointBuffer[pixelIndex];
+
+                    if (pixelAdjoint == 0.0f) {
+                        return;
+                    }
+
+                    // ---------------------------------------------------------
+                    // Recreate the same primary ray as in forward gather
+                    // ---------------------------------------------------------
+                    const uint64_t directionSeed =
+                        rng::makeSeed(renderSeed, pixelIndex, cameraIndex, rng::kStreamGather, 0u);
+                    rng::Xorshift128 rng(directionSeed);
+
+                    const float jitterX = rng.nextFloat() - 0.5f;
+                    const float jitterY = rng.nextFloat() - 0.5f;
+
+                    Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
+                        sensor.camera,
+                        static_cast<float>(pixelX),
+                        static_cast<float>(pixelY),
+                        jitterX,
+                        jitterY);
+
+                    const float3 rayOrigin0 = primaryRay.origin;
+                    const float3 rayDir0 = primaryRay.direction;
+
+                    // ---------------------------------------------------------
+                    // Retrace primary-ray surfel hits, collect detached weights
+                    // ---------------------------------------------------------
+                    DistortionHitPosOnly hits[kMaxHits];
+                    uint32_t hitCount = 0u;
+
+                    float transmittance = 1.0f;
+                    float sumW = 0.0f;
+                    float sumWT = 0.0f;
+
+                    for (uint32_t traversalIndex = 0u;
+                         traversalIndex < kMaxHits;
+                         ++traversalIndex) {
+                        WorldHit worldHit{};
+                        intersectScene(primaryRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
+
+                        if (!worldHit.hit) {
+                            break;
+                        }
+
+                        buildIntersectionNormal(scene, worldHit);
+                        const auto& instance = scene.instances[worldHit.instanceIndex];
+
+                        if (instance.geometryType == GeometryType::PointCloud) {
+                            const Point& surfel = scene.points[worldHit.primitiveIndex];
+
+                            const float ai = surfel.opacity * worldHit.alphaGeom;
+                            const float wi = transmittance * ai;
+
+                            // IMPORTANT:
+                            // use global depth along the ORIGINAL camera ray,
+                            // not worldHit.t after ray-origin updates.
+                            const float ti =
+                                dot(worldHit.hitPositionW - rayOrigin0, rayDir0);
+
+                            DistortionHitPosOnly rec{};
+                            rec.primitiveIndex = worldHit.primitiveIndex;
+                            rec.t = ti;
+                            rec.w = wi;
+                            hits[hitCount++] = rec;
+
+                            sumW += wi;
+                            sumWT += wi * ti;
+
+                            transmittance *= (1.0f - ai);
+                            primaryRay.origin =
+                                worldHit.hitPositionW + primaryRay.direction * 1e-8f;
+                            continue;
+                        }
+
+                        if (instance.geometryType == GeometryType::Mesh) {
+                            break;
+                        }
+
+                        break;
+                    }
+
+                    if (hitCount <= 1u || sumW <= kEps) {
+                        return;
+                    }
+
+                    // ---------------------------------------------------------
+                    // Detached normalized weights
+                    // ---------------------------------------------------------
+                    const float invSumW = 1.0f / sumW;
+                    const float meanT = sumWT * invSumW;
+
+                    // ---------------------------------------------------------
+                    // D_r = sum_i \hat{w}_i (t_i - meanT)^2
+                    // with detached \hat{w}_i = w_i / sumW
+                    //
+                    // d D_r / d t_i = 2 * \hat{w}_i * (t_i - meanT)
+                    // ---------------------------------------------------------
+                    for (uint32_t i = 0u; i < hitCount; ++i) {
+                        const DistortionHitPosOnly& hit = hits[i];
+                        const Point& surfel = scene.points[hit.primitiveIndex];
+
+                        const float wHat = hit.w * invSumW;
+                        const float barT =
+                            pixelAdjoint * 2.0f * wHat * (hit.t - meanT);
+
+                        // Plane normal treated as detached for this regularizer
+                        const float3 nRaw = cross(surfel.tanU, surfel.tanV);
+                        const float nLen2 = dot(nRaw, nRaw);
+                        if (nLen2 <= kEps) {
+                            continue;
+                        }
+
+                        const float3 n = nRaw / sycl::sqrt(nLen2);
+                        const float denom = dot(n, rayDir0);
+
+                        if (sycl::fabs(denom) <= kEps) {
+                            continue;
+                        }
+
+                        // t = n·(p - o0) / (n·d0), with n detached
+                        const float3 barP = (barT / denom) * n;
+
+                        atomicAddFloat3(grads.gradPosition[hit.primitiveIndex], barP);
+                    }
+                });
+        });
+
+        queue.wait();
     }
 }

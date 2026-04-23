@@ -45,6 +45,14 @@ export namespace Pale {
                 reinterpret_cast<float*>(
                     sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
 
+            float* depthDistortionBuffer =
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
+
+            float* depthDistortionAdjointBuffer =
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
+
             // Optional: check allocations
             if (deviceHighDynamicRangeFramebuffer == nullptr ||
                 deviceOutputFramebuffer == nullptr ||
@@ -63,7 +71,6 @@ export namespace Pale {
             }
 
             if (clearData) {
-
                 if (simulateAdjoint)
                     queue.fill(deviceHighDynamicRangeFramebuffer, float4{1.0f}, pixelCount);
                 else {
@@ -78,6 +85,14 @@ export namespace Pale {
                 queue.memset(deviceLdrFramebuffer,
                              0,
                              pixelCount * 4u * sizeof(float));
+                // LDR framebuffer initialized to zero
+                queue.memset(depthDistortionBuffer,
+                             0,
+                             pixelCount * sizeof(float));
+                // LDR framebuffer initialized to zero
+                queue.memset(depthDistortionAdjointBuffer,
+                             0,
+                             pixelCount * sizeof(float));
                 queue.wait();
             }
 
@@ -85,6 +100,8 @@ export namespace Pale {
             sensorGpu.framebuffer = deviceHighDynamicRangeFramebuffer;
             sensorGpu.outputFramebuffer = deviceOutputFramebuffer;
             sensorGpu.ldrFramebuffer = deviceLdrFramebuffer;
+            sensorGpu.depthDistortionBuffer = depthDistortionBuffer;
+            sensorGpu.depthDistortionAdjointBuffer = depthDistortionAdjointBuffer;
             sensorGpu.width = camera.width;
             sensorGpu.height = camera.height;
 
@@ -95,13 +112,10 @@ export namespace Pale {
     }
 
     void setBackgroundColor(sycl::queue queue, std::vector<SensorGPU> sensors, float4 color) {
-
         for (auto& sensor : sensors) {
             queue.fill(sensor.framebuffer, color, sensor.width * sensor.height);
             queue.wait();
         }
-
-
     }
 
     PointGradients
@@ -192,13 +206,13 @@ export namespace Pale {
                 reinterpret_cast<float4*>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
             debugImages[id].framebufferDepthLoss =
-                reinterpret_cast<float4 *>(
+                reinterpret_cast<float4*>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
             debugImages[id].framebufferDepthLossPos =
-                reinterpret_cast<float4 *>(
+                reinterpret_cast<float4*>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
             debugImages[id].framebufferNormalLoss =
-                reinterpret_cast<float4 *>(
+                reinterpret_cast<float4*>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
 
             debugImages[id].numPixels = pixelCount;
@@ -336,6 +350,7 @@ export namespace Pale {
 
         return hostSideFramebuffer;
     }
+
     inline std::vector<float>
     downloadSensorRGBARAW(sycl::queue queue, const SensorGPU& sensorGpu) {
         // Total number of float elements = width * height * 4 (RGBA channels)
@@ -351,6 +366,54 @@ export namespace Pale {
         queue.memcpy(
             hostSideFramebuffer.data(), // destination
             sensorGpu.framebuffer, // source (device pointer)
+            totalFloatCount * sizeof(float) // size in bytes
+        ).wait();
+
+        return hostSideFramebuffer;
+    }
+
+    inline std::vector<float> downloadFloatBuffer(
+        sycl::queue& queue,
+        const float* devicePtr,
+        std::size_t count) {
+        std::vector<float> host(count);
+        if (devicePtr != nullptr && count > 0) {
+            queue.memcpy(host.data(), devicePtr, count * sizeof(float)).wait();
+        }
+        return host;
+    }
+
+    inline void uploadFloatImage(
+    sycl::queue& queue,
+    float* devicePtr,
+    const std::vector<float>& hostData)
+    {
+        if (!devicePtr) {
+            throw std::runtime_error("uploadFloatImage: devicePtr is null");
+        }
+        if (!hostData.empty()) {
+            queue.memcpy(
+                devicePtr,
+                hostData.data(),
+                hostData.size() * sizeof(float)
+            ).wait();
+        }
+    }
+
+    inline std::vector<float>
+    downloadSensorDepthDistortionRAW(sycl::queue queue, const SensorGPU& sensorGpu) {
+        // Total number of float elements = width * height * 4 (RGBA channels)
+        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
+            * static_cast<size_t>(sensorGpu.height);
+        std::vector<float> hostSideFramebuffer(totalFloatCount);
+
+
+        // Allocate host-side buffer
+        queue.wait();
+        // Copy device framebuffer → host buffer
+        queue.memcpy(
+            hostSideFramebuffer.data(), // destination
+            sensorGpu.depthDistortionBuffer, // source (device pointer)
             totalFloatCount * sizeof(float) // size in bytes
         ).wait();
 

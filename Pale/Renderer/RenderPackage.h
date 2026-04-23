@@ -15,6 +15,10 @@ namespace Pale {
         float* ldrFramebuffer = nullptr; // Low Dynamic Range framebuffer
         sycl::uchar4* outputFramebuffer = nullptr; // uint8 converted framebuffer
         char name[16];
+
+        // Depth distortion buffer
+        float* depthDistortionBuffer = nullptr;
+        float* depthDistortionAdjointBuffer = nullptr;
     };
 
     // GPU Struct
@@ -28,6 +32,12 @@ namespace Pale {
         float  *gradBeta = nullptr;
         float  *gradShape = nullptr;
         size_t numPoints{0};
+    };
+
+    struct Storage {
+        float *distortionBuffer = nullptr;
+        float pixelCount;
+        char name[16];
     };
 
     struct DebugImages {

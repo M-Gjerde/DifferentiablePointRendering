@@ -217,60 +217,6 @@ int main(int argc, char** argv) {
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only
 
     bool renderPhotonMapping = true;
-    bool renderLightTracing = !true;
-
-    if (renderLightTracing) {
-        //  cuda/rocm
-        Pale::PathTracerSettings settings;
-        settings.integratorKind = Pale::IntegratorKind::lightTracing;
-        settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 2;
-        settings.numForwardPasses = 100;
-
-        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
-        tracer.setScene(gpu, buildProducts);
-        Pale::Log::PA_INFO("Forward Render Pass...");
-
-        std::vector<Pale::SensorGPU> sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
-
-        //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
-        //Pale::setBackgroundColor(deviceSelector.getQueue(), sensors, color);
-
-        tracer.renderForward(sensors); // films is span/array
-
-        for (const auto& sensor : sensors) {
-            std::vector<uint8_t> rgba =
-                Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-            std::vector<float> rgbaRaw =
-                Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
-            const uint32_t imageWidth = sensor.width;
-            const uint32_t imageHeight = sensor.height;
-
-            // Per-camera output directory: Output/<pointcloud>/<camera_name>/
-            std::filesystem::path baseDir =
-                std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
-
-            std::filesystem::create_directories(baseDir);
-            std::string fileName = sensor.name;
-            if (settings.integratorKind == Pale::IntegratorKind::lightTracing)
-                fileName += "_lightTracing";
-            std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
-            Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
-
-            std::filesystem::path rawFilePath =
-                baseDir / "images" / (fileName + "_raw.exr");
-
-            Pale::Log::PA_INFO("Saving image to: {}", (std::filesystem::current_path() / rawFilePath).string());
-
-            Pale::Utils::saveRGBAFloatAsEXR(
-                rawFilePath,
-                rgbaRaw,
-                imageWidth,
-                imageHeight
-            );
-        }
-    }
-
 
     if (renderPhotonMapping) {
         Pale::PathTracerSettings settings;
@@ -284,6 +230,8 @@ int main(int argc, char** argv) {
         settings.adjointSamplesPerPixel = 1;
         settings.renderDebugGradientImages = !true;
         settings.enableAdjointDirectLight = !true;
+        settings.useDepthDistortion = true;
+
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
 
@@ -321,6 +269,29 @@ int main(int argc, char** argv) {
                 imageWidth,
                 imageHeight
             );
+
+
+            std::vector<float> depthDistortionRaw =
+                Pale::downloadSensorDepthDistortionRAW(deviceSelector.getQueue(), sensor);
+            std::filesystem::path depthDistortionfilePath = baseDir / "images" / (fileName + "depth_distortion.exr");
+            std::vector<float> distortionRGBA(imageWidth * imageHeight * 4, 1.0f);
+            for (uint32_t i = 0; i < imageWidth * imageHeight; ++i) {
+                float v = depthDistortionRaw[i];
+                if (!std::isfinite(v)) v = 0.0f;
+
+                distortionRGBA[4 * i + 0] = v;
+                distortionRGBA[4 * i + 1] = v;
+                distortionRGBA[4 * i + 2] = v;
+                distortionRGBA[4 * i + 3] = 1.0f;
+            }
+
+            Pale::Utils::saveRGBAFloatAsEXR(
+                depthDistortionfilePath,
+                distortionRGBA,
+                imageWidth,
+                imageHeight
+            );
+
         }
 
         for (int i = 0; i < 1; ++i) {

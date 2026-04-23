@@ -198,7 +198,7 @@ def generate_volume_ply(
     stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
     stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    defaultOpacity = 1.0
+    defaultOpacity = 0.0
     defaultBeta = -0.0
     defaultShape = 0.0
     defaultRGB = [0.7, 0.7, 0.7]
@@ -276,13 +276,13 @@ def generate_volume_ply(
     light_x = 0.5
     light_y = -0.8
     light_z = 2.2
-    light_su = 0.5
-    light_sv = 0.5
+    light_su = 0.01
+    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = 0.0
+    light_beta = -0.0
     light_shape = 0.0
     light_power = 100.0
 
@@ -299,13 +299,13 @@ def generate_volume_ply(
     light_x = -0.5
     light_y = 0.8
     light_z = 2.2
-    light_su = 0.5
-    light_sv = 0.5
+    light_su = 0.01
+    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = 0.0
+    light_beta = -0.0
     light_shape = 0.0
 
     light_line = (
@@ -320,13 +320,13 @@ def generate_volume_ply(
     light_x = 0.0
     light_y = 0.0
     light_z = -2.0
-    light_su = 0.5
-    light_sv = 0.5
+    light_su = 0.01
+    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = 0.0
+    light_beta = -0.0
     light_shape = 0.0
 
     light_nx = 0.0
@@ -365,8 +365,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
     "teapot": {
         "min_x": -0.7,
         "max_x": 0.55,
-        "min_y": -0.4,
-        "max_y": 0.4,
+        "min_y": -0.5,
+        "max_y": 0.5,
         "min_z": -0.01,
         "max_z": 0.55,
         "scale": 0.025,

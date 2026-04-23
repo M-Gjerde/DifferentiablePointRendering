@@ -16,7 +16,7 @@ import pandas as pd
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Find the latest optimization run, plot the loss curve, "
+            "Find the latest optimization run, plot the loss curve(s), "
             "and re-render points_final.ply using the saved run_config.json."
         )
     )
@@ -45,7 +45,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional explicit loss column. "
-            "If omitted, tries loss_l2_window_mean, then loss_l2_current_camera, then loss_l2_window_sum_scaled."
+            "If omitted, tries loss_total_sum, then loss_rgb_sum, then "
+            "loss_depth_distortion_sum, then legacy columns."
         ),
     )
     parser.add_argument(
@@ -59,6 +60,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="loss_curve.png",
         help="Filename for the saved loss curve image inside the run folder.",
+    )
+    parser.add_argument(
+        "--plot-all-losses",
+        action="store_true",
+        help=(
+            "If set, plot all available main loss curves "
+            "(loss_total_sum, loss_rgb_sum, loss_depth_distortion_sum) together."
+        ),
     )
     return parser.parse_args()
 
@@ -118,6 +127,21 @@ def find_latest_run_dir(optimization_output_root: Path) -> Path:
     return candidate_run_dirs[0]["run_dir"]
 
 
+def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prefer the aggregated ALL_CAMERAS rows from the newer CSV format.
+    Fall back to the whole dataframe if camera_name does not exist.
+    """
+    if "camera_name" not in dataframe.columns:
+        return dataframe
+
+    all_cameras_mask = dataframe["camera_name"].astype(str) == "ALL_CAMERAS"
+    if all_cameras_mask.any():
+        return dataframe.loc[all_cameras_mask].copy()
+
+    return dataframe.copy()
+
+
 def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None) -> str:
     if explicit_loss_column is not None:
         if explicit_loss_column not in dataframe.columns:
@@ -128,6 +152,10 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         return explicit_loss_column
 
     preferred_columns = [
+        "loss_total_sum",
+        "loss_rgb_sum",
+        "loss_depth_distortion_sum",
+        # legacy fallback
         "loss_l2_window_mean",
         "loss_l2_current_camera",
         "loss_l2_window_sum_scaled",
@@ -147,11 +175,44 @@ def save_loss_curve(
     metrics_csv_path: Path,
     output_png_path: Path,
     explicit_loss_column: str | None,
+    plot_all_losses: bool,
 ) -> str:
     dataframe = pd.read_csv(metrics_csv_path)
+    dataframe = filter_metrics_rows(dataframe)
 
     if "iteration" not in dataframe.columns:
         raise ValueError("metrics.csv does not contain an 'iteration' column")
+
+    dataframe = dataframe.sort_values("iteration").reset_index(drop=True)
+
+    if plot_all_losses:
+        plotted_columns = [
+            column_name
+            for column_name in [
+                "loss_total_sum",
+                "loss_rgb_sum",
+                "loss_depth_distortion_sum",
+            ]
+            if column_name in dataframe.columns
+        ]
+
+        if not plotted_columns:
+            plotted_columns = [select_loss_column(dataframe, explicit_loss_column)]
+
+        plt.figure(figsize=(12, 5))
+        for column_name in plotted_columns:
+            plt.plot(dataframe["iteration"], dataframe[column_name], label=column_name)
+
+        plt.xlabel("Iteration")
+        plt.ylabel("Loss")
+        plt.title(f"Loss curves over iterations\n{metrics_csv_path.parent.name}")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(output_png_path, dpi=200)
+        plt.close()
+
+        return ", ".join(plotted_columns)
 
     loss_column_name = select_loss_column(dataframe, explicit_loss_column)
 
@@ -222,6 +283,32 @@ def load_run_config(run_config_path: Path) -> dict:
         return json.load(json_file)
 
 
+def get_forward_rgb(rendered_images: dict, camera_name: str) -> np.ndarray:
+    """
+    Handle the newer renderer output:
+        rendered_images[camera_name]["image"]
+    and keep a fallback for older direct-image output.
+    """
+    camera_output = rendered_images[camera_name]
+
+    if isinstance(camera_output, dict):
+        if "image" not in camera_output:
+            raise KeyError(
+                f"Rendered output for camera '{camera_name}' is a dict but does not contain 'image'. "
+                f"Available keys: {list(camera_output.keys())}"
+            )
+        image_numpy = np.asarray(camera_output["image"], dtype=np.float32)
+    else:
+        image_numpy = np.asarray(camera_output, dtype=np.float32)
+
+    if image_numpy.ndim != 3:
+        raise RuntimeError(
+            f"Unexpected image shape for camera '{camera_name}': {image_numpy.shape}"
+        )
+
+    return np.clip(image_numpy[..., :3], 0.0, 1.0)
+
+
 def render_points_final(
     pale_module,
     run_dir: Path,
@@ -239,7 +326,7 @@ def render_points_final(
     render_output_dir = run_dir / render_output_subdir
     render_output_dir.mkdir(parents=True, exist_ok=True)
 
-    renderer_settings["primal_shadow_rays"] = 256
+    renderer_settings["primal_shadow_rays"] = 64
     renderer_settings["forward_passes"] = 10
 
     renderer = pale_module.Renderer(
@@ -259,14 +346,7 @@ def render_points_final(
             print(f"Warning: rendered output for camera '{camera_name}' was not found. Skipping.")
             continue
 
-        image_numpy = np.asarray(rendered_images[camera_name], dtype=np.float32)
-
-        if image_numpy.ndim != 3:
-            raise RuntimeError(
-                f"Unexpected image shape for camera '{camera_name}': {image_numpy.shape}"
-            )
-
-        rgb_image = np.clip(image_numpy[..., :3], 0.0, 1.0)
+        rgb_image = get_forward_rgb(rendered_images, camera_name)
         output_png_path = render_output_dir / f"{camera_name}.png"
 
         plt.imsave(output_png_path, rgb_image)
@@ -298,9 +378,9 @@ def main() -> None:
         metrics_csv_path=metrics_csv_path,
         output_png_path=loss_curve_output_path,
         explicit_loss_column=args.loss_column,
+        plot_all_losses=args.plot_all_losses,
     )
 
-    import os  # local import to keep top clean
     pybind_dir = resolve_pybind_dir(args.pybind_dir)
     pale_module = import_pale(pybind_dir)
 
@@ -317,7 +397,7 @@ def main() -> None:
     print("Done.")
     print(f"Run folder          : {run_dir}")
     print(f"Metrics file        : {metrics_csv_path}")
-    print(f"Loss column used    : {loss_column_name}")
+    print(f"Loss column(s) used : {loss_column_name}")
     print(f"Loss curve written  : {loss_curve_output_path}")
     print(f"Pybind dir          : {pybind_dir}")
     print(f"Run config          : {run_config_path}")

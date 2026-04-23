@@ -11,11 +11,12 @@ class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
     forward_passes: int = 5
-    primal_shadow_rays: int = 64
-    adjoint_shadow_rays: int = 64
+    primal_shadow_rays: int = 8
+    adjoint_shadow_rays: int = 8
     gather_passes: int = 1
     adjoint_bounces: int = 3
     adjoint_passes: int = 4
+    useDepthDistortion: bool = True
     logging: int = 3  # Spdlog enums
 
     def as_dict(self, config: OptimizationConfig) -> Dict[str, float | int]:
@@ -29,6 +30,7 @@ class RendererSettingsConfig:
             "adjoint_bounces": self.adjoint_bounces,
             "adjoint_passes": self.adjoint_passes,
             "logging": self.logging,
+            "use_depth_distortion": self.useDepthDistortion,
             "depth_distort_weight": config.depth_distort_weight,
             "normal_consistency_weight": config.normal_consistency_weight,
         }
@@ -47,14 +49,15 @@ class OptimizationConfig:
     iterations: int = 50000
     learning_rate: float = 1e-2  # base LR (for convenience / default)
     # Defaults chosen to match 3DGS absolute values when base LR = 1.6e-4
-    learning_rate_position: float = 1.6e-4      # 1.0 × base
-    learning_rate_tangent: float = 1.0e-3       # 6.25 × base
-    learning_rate_scale: float = 5.0e-3         # 31.25 × base
-    learning_rate_albedo: float = 2.5e-3        # 15.625 × base
-    learning_rate_opacity: float = 5.0e-2       # 312.5 × base
-    learning_rate_beta: float = 5.0e-2       # 312.5 × base
-    depth_distort_weight: float = 0.1       # 312.5 × base
-    normal_consistency_weight: float = 0.1       # 312.5 × base
+    learning_rate_position: float = 0
+    learning_rate_tangent: float = 0
+    learning_rate_scale: float = 0
+    learning_rate_albedo: float = 0
+    learning_rate_opacity: float = 0
+    learning_rate_beta: float = 0
+    depth_distort_weight: float = 1
+    normal_consistency_weight: float = 0.0
+
     optimizer_type: str = "adam"  # "adam" or "sgd"
     log_interval: int = 1
     save_interval: int = 5
@@ -200,16 +203,9 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.0,
         help="",
     )
-    parser.add_argument(
-        "--normal-consistency-weight",
-        dest="normal_consistency_weight",
-        type=float,
-        default=0.0,
-        help="",
-    )
+
 
     args = parser.parse_args()
 
@@ -233,8 +229,8 @@ def parse_args() -> OptimizationConfig:
         factor_beta = 1.0
     else:
         # 3DGS-inspired relative factors w.r.t. position LR
-        factor_position = 0.001  # ~rotation_lr / position_lr
-        factor_tangent  = 0.01    # ~rotation_lr / position_lr
+        factor_position = 0.01  # ~rotation_lr / position_lr
+        factor_tangent  = 0.05    # ~rotation_lr / position_lr
         factor_scale    = 0.001   # ~scaling_lr / position_lr
         factor_albedo   = 0.02    # ~feature_lr / position_lr
         factor_opacity  = 0.01    # ~opacity_lr / position_lr
@@ -269,8 +265,6 @@ def parse_args() -> OptimizationConfig:
         learning_rate_albedo=lr_albedo,
         learning_rate_opacity=lr_opacity,
         learning_rate_beta=lr_beta,
-        depth_distort_weight=args.depth_distort_weight,
-        normal_consistency_weight=args.normal_consistency_weight,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,

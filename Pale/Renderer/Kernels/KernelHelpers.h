@@ -1516,4 +1516,5 @@ namespace Pale {
 
         return cosine_at_x * cosine_at_y * inverse_distance * inverse_distance;
     }
+
 }

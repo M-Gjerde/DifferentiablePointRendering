@@ -119,6 +119,7 @@ def main() -> None:
     print(f"  lr_color             : {config.learning_rate_albedo}")
     print(f"  lr_opacity           : {config.learning_rate_opacity}")
     print(f"  lr_beta              : {config.learning_rate_beta}")
+    print(f"  depth_distort_weight : {config.depth_distort_weight}")
     print(f"  optimizer            : {config.optimizer_type}")
     print(f"  suffix               : '{config.personal_suffix}'")
     print(f"  run_output_dir       : {config.output_dir}")

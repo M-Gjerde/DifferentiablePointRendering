@@ -134,6 +134,8 @@ public:
                 get_b(settingsDict, "debug_images", settings.renderDebugGradientImages);
             settings.enableAdjointDirectLight =
                 get_b(settingsDict, "enable_adjoint_shadow_rays", settings.enableAdjointDirectLight);
+            settings.useDepthDistortion =
+                get_b(settingsDict, "use_depth_distortion", settings.useDepthDistortion);
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
 
@@ -177,7 +179,6 @@ public:
 
 
     py::dict render_forward(std::string cameraName) {
-        // Release GIL while doing GPU work and host copies
         py::gil_scoped_release release;
 
         std::vector<Pale::SensorGPU> selectedSensors;
@@ -186,10 +187,10 @@ public:
                 selectedSensors.push_back(sensor);
             }
         }
-        if (cameraName.empty())
+        if (cameraName.empty()) {
             selectedSensors = sensorsForward;
+        }
 
-        // Render all forward sensors
         pathTracer->renderForward(selectedSensors);
 
         auto queue = deviceSelector->getQueue();
@@ -198,8 +199,10 @@ public:
             std::string cameraName;
             std::uint32_t imageWidth;
             std::uint32_t imageHeight;
-            std::vector<float> imageData; // H * W * 4, row-major RGB
-            std::vector<float> imageDataRAW; // H * W * 4, row-major RGB
+
+            std::vector<float> imageData; // H * W * 4
+            std::vector<float> imageDataRAW; // H * W * 4
+            std::vector<float> depthDistortionData; // H * W
         };
 
         std::vector<HostImage> hostImages;
@@ -208,20 +211,24 @@ public:
         for (const auto& sensor : selectedSensors) {
             HostImage hostImage;
 
-            // Safely build a std::string from char[16] (ensure zero-terminated on creation)
-            hostImage.cameraName = std::string(sensor.name,
-                                               strnlen(sensor.name, sizeof(sensor.name)));
+            hostImage.cameraName =
+                std::string(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
 
-            // Prefer the sensor fields you actually use for allocation
             hostImage.imageWidth = sensor.width;
             hostImage.imageHeight = sensor.height;
 
+            const std::size_t pixelCount =
+                static_cast<std::size_t>(hostImage.imageWidth) *
+                static_cast<std::size_t>(hostImage.imageHeight);
+
             hostImage.imageData = Pale::downloadSensorLDR(queue, sensor);
             hostImage.imageDataRAW = Pale::downloadSensorRGBARAW(queue, sensor);
+            hostImage.depthDistortionData =
+                Pale::downloadFloatBuffer(queue, sensor.depthDistortionBuffer, pixelCount);
+
             hostImages.push_back(std::move(hostImage));
         }
 
-        // Re-acquire GIL to create Python objects
         py::gil_scoped_acquire acquire;
 
         py::dict result;
@@ -230,26 +237,36 @@ public:
             const std::uint32_t imageWidth = hostImage.imageWidth;
             const std::uint32_t imageHeight = hostImage.imageHeight;
 
-            // Shape: (H, W, 4)
+            // RGBA image shape/strides
             std::vector<ssize_t> shape{
                 static_cast<ssize_t>(imageHeight),
                 static_cast<ssize_t>(imageWidth),
                 static_cast<ssize_t>(4)
             };
 
-            // Strides: row, col, channel (float32)
             std::vector<ssize_t> strides{
                 static_cast<ssize_t>(imageWidth * 4 * sizeof(float)),
                 static_cast<ssize_t>(4 * sizeof(float)),
                 static_cast<ssize_t>(sizeof(float))
             };
 
-            // Move imageData into a heap-allocated vector so NumPy can own it
+            // Distortion shape/strides
+            std::vector<ssize_t> distShape{
+                static_cast<ssize_t>(imageHeight),
+                static_cast<ssize_t>(imageWidth)
+            };
+
+            std::vector<ssize_t> distStrides{
+                static_cast<ssize_t>(imageWidth * sizeof(float)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
             auto* ownedBuffer =
                 new std::vector<float>(std::move(hostImage.imageData));
-            // Move imageData into a heap-allocated vector so NumPy can own it
             auto* ownedBuffer2 =
                 new std::vector<float>(std::move(hostImage.imageDataRAW));
+            auto* ownedDistortionBuffer =
+                new std::vector<float>(std::move(hostImage.depthDistortionData));
 
             py::array_t<float> numpyImage(
                 shape,
@@ -259,6 +276,7 @@ public:
                     delete static_cast<std::vector<float>*>(ptr);
                 })
             );
+
             py::array_t<float> numpyImage2(
                 shape,
                 strides,
@@ -268,8 +286,21 @@ public:
                 })
             );
 
-            result[py::str(hostImage.cameraName)] = std::move(numpyImage);
-            result[py::str(hostImage.cameraName + "_raw")] = std::move(numpyImage2);
+            py::array_t<float> numpyDepthDistortion(
+                distShape,
+                distStrides,
+                ownedDistortionBuffer->data(),
+                py::capsule(ownedDistortionBuffer, [](void* ptr) {
+                    delete static_cast<std::vector<float>*>(ptr);
+                })
+            );
+
+            py::dict cameraResult;
+            cameraResult[py::str("image")] = std::move(numpyImage);
+            cameraResult[py::str("raw")] = std::move(numpyImage2);
+            cameraResult[py::str("depth_distortion")] = std::move(numpyDepthDistortion);
+
+            result[py::str(hostImage.cameraName)] = std::move(cameraResult);
         }
 
         return result;
@@ -280,7 +311,6 @@ public:
         using std::size_t;
 
         auto syclQueue = deviceSelector->getQueue();
-
 
         struct HostAdjointImage {
             std::string cameraName;
@@ -731,6 +761,273 @@ public:
         return py::make_tuple(gradientDictionary, adjointImagesDictionary);
     }
 
+    py::dict render_depth_distortion_backward(const py::dict& distortionGradImagesDictionary) {
+        using std::int64_t;
+        using std::size_t;
+
+        auto syclQueue = deviceSelector->getQueue();
+
+
+        std::vector<Pale::SensorGPU> selectedCameras;
+        selectedCameras.reserve(sensorsForward.size());
+
+        std::unordered_map<std::string, std::vector<float>> distortionAdjointPerCamera;
+        distortionAdjointPerCamera.reserve(sensorsForward.size());
+
+        // ------------------------------------------------------------
+        // 1. WITH GIL: read Python dict, validate HxW float32 images
+        // ------------------------------------------------------------
+        for (std::size_t i = 0; i < sensorsForward.size(); ++i) {
+            const auto& sensor = sensorsForward[i];
+            std::string cameraName(
+                sensor.name,
+                strnlen(sensor.name, sizeof(sensor.name))
+            );
+
+            if (!distortionGradImagesDictionary.contains(py::str(cameraName))) {
+                continue;
+            }
+
+            py::array adjointArray =
+                distortionGradImagesDictionary[py::str(cameraName)].cast<py::array>();
+
+            py::buffer_info bufferInfo = adjointArray.request();
+
+            if (bufferInfo.ndim != 2) {
+                throw std::runtime_error(
+                    "render_depth_distortion_backward: adjoint image for camera '" +
+                    cameraName + "' must be HxW float32"
+                );
+            }
+            if (bufferInfo.itemsize != sizeof(float)) {
+                throw std::runtime_error(
+                    "render_depth_distortion_backward: adjoint image for camera '" +
+                    cameraName + "' must have dtype float32"
+                );
+            }
+
+            const int64_t height = static_cast<int64_t>(bufferInfo.shape[0]);
+            const int64_t width = static_cast<int64_t>(bufferInfo.shape[1]);
+
+            if (static_cast<std::uint32_t>(width) != sensor.width ||
+                static_cast<std::uint32_t>(height) != sensor.height) {
+                throw std::runtime_error(
+                    "render_depth_distortion_backward: resolution mismatch for camera '" +
+                    cameraName + "': adjoint image is " + std::to_string(width) +
+                    "x" + std::to_string(height) + ", but sensor is " +
+                    std::to_string(sensor.width) + "x" +
+                    std::to_string(sensor.height)
+                );
+            }
+
+            const auto* src = static_cast<const float*>(bufferInfo.ptr);
+            const std::size_t pixelCount =
+                static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+
+            std::vector<float> hostAdjoint(pixelCount);
+            std::memcpy(hostAdjoint.data(), src, pixelCount * sizeof(float));
+
+            distortionAdjointPerCamera.emplace(cameraName, std::move(hostAdjoint));
+
+            selectedCameras.push_back(sensor);
+        }
+
+        // Nothing to do
+        if (selectedCameras.empty()) {
+            py::dict emptyGradientDictionary;
+            return emptyGradientDictionary;
+        }
+
+        // ------------------------------------------------------------
+        // 2. WITHOUT GIL: upload adjoints, run backward pass, download gradients
+        // ------------------------------------------------------------
+        py::gil_scoped_release release;
+
+        // 2a. Upload per-camera HxW float adjoint images into storage buffers
+        for (auto& entry : selectedCameras) {
+            const std::string cameraName(
+                entry.name,
+                strnlen(entry.name, sizeof(entry.name))
+            );
+
+            auto it = distortionAdjointPerCamera.find(cameraName);
+            if (it == distortionAdjointPerCamera.end()) {
+                continue;
+            }
+            Pale::uploadFloatImage(
+                syclQueue,
+                entry.depthDistortionAdjointBuffer,
+                it->second
+            );
+        }
+
+        // 2c. Run regularizer backward pass
+        // Replace with your actual path tracer entry point if the signature differs.
+        pathTracer->renderDepthDistortionBackward(selectedCameras, gradients);
+
+        const std::size_t pointCount = gradients.numPoints;
+
+        std::vector<Pale::float3> gradPositionHost(pointCount);
+        std::vector<Pale::float3> gradTangentUHost(pointCount);
+        std::vector<Pale::float3> gradTangentVHost(pointCount);
+        std::vector<Pale::float2> gradScaleHost(pointCount);
+        std::vector<Pale::float3> gradColorHost(pointCount); // should remain zero
+        std::vector<float> gradOpacityHost(pointCount);
+        std::vector<float> gradBetaHost(pointCount);
+        std::vector<float> gradShapeHost(pointCount); // should remain zero
+        std::vector<float> gradPowerHost(pointCount); // should remain zero
+
+        if (pointCount > 0) {
+            if (gradients.gradPosition) {
+                syclQueue.memcpy(
+                    gradPositionHost.data(),
+                    gradients.gradPosition,
+                    pointCount * sizeof(Pale::float3)
+                );
+            }
+            if (gradients.gradTanU) {
+                syclQueue.memcpy(
+                    gradTangentUHost.data(),
+                    gradients.gradTanU,
+                    pointCount * sizeof(Pale::float3)
+                );
+            }
+            if (gradients.gradTanV) {
+                syclQueue.memcpy(
+                    gradTangentVHost.data(),
+                    gradients.gradTanV,
+                    pointCount * sizeof(Pale::float3)
+                );
+            }
+            if (gradients.gradScale) {
+                syclQueue.memcpy(
+                    gradScaleHost.data(),
+                    gradients.gradScale,
+                    pointCount * sizeof(Pale::float2)
+                );
+            }
+            if (gradients.gradAlbedo) {
+                syclQueue.memcpy(
+                    gradColorHost.data(),
+                    gradients.gradAlbedo,
+                    pointCount * sizeof(Pale::float3)
+                );
+            }
+            if (gradients.gradOpacity) {
+                syclQueue.memcpy(
+                    gradOpacityHost.data(),
+                    gradients.gradOpacity,
+                    pointCount * sizeof(float)
+                );
+            }
+            if (gradients.gradBeta) {
+                syclQueue.memcpy(
+                    gradBetaHost.data(),
+                    gradients.gradBeta,
+                    pointCount * sizeof(float)
+                );
+            }
+
+            syclQueue.wait_and_throw();
+        }
+
+        // ------------------------------------------------------------
+        // 3. WITH GIL: wrap gradients into NumPy arrays
+        // ------------------------------------------------------------
+        py::gil_scoped_acquire gilAcquire;
+
+        auto makeFloat3Array =
+            [](std::vector<Pale::float3>& hostVector, std::size_t elementCount) -> py::array {
+            auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(elementCount),
+                3
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    shape,
+                    strides
+                ),
+                py::capsule(ownedVector, [](void* pointer) {
+                    delete static_cast<std::vector<Pale::float3>*>(pointer);
+                })
+            );
+        };
+
+        auto makeFloat2Array =
+            [](std::vector<Pale::float2>& hostVector, std::size_t elementCount) -> py::array {
+            auto* ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(elementCount),
+                2
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(Pale::float2)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    shape,
+                    strides
+                ),
+                py::capsule(ownedVector, [](void* pointer) {
+                    delete static_cast<std::vector<Pale::float2>*>(pointer);
+                })
+            );
+        };
+
+        auto makeFloat1Array =
+            [](std::vector<float>& hostVector, std::size_t elementCount) -> py::array {
+            auto* ownedVector = new std::vector<float>(std::move(hostVector));
+            std::vector<ssize_t> shape{
+                static_cast<ssize_t>(elementCount)
+            };
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    1,
+                    shape,
+                    strides
+                ),
+                py::capsule(ownedVector, [](void* pointer) {
+                    delete static_cast<std::vector<float>*>(pointer);
+                })
+            );
+        };
+
+        py::dict gradientDictionary;
+        gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
+        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
+        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+        gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
+        gradientDictionary["albedo"] = makeFloat3Array(gradColorHost, pointCount);
+        gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
+        gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
+        gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+        gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
+
+        return gradientDictionary;
+    }
 
     py::dict get_point_parameters() {
         const std::size_t pointCount = buildProducts.points.size();
@@ -1809,6 +2106,9 @@ PYBIND11_MODULE(pale, m) {
         .def(
             "get_point_parameters", &PythonRenderer::get_point_parameters)
         .def("apply_point_optimization", &PythonRenderer::apply_point_optimization, py::arg("parameters"))
+        .def("render_depth_distortion_backward",
+             &PythonRenderer::render_depth_distortion_backward,
+             py::arg("depthDistortionGrad32f"))
         .def("add_points", &PythonRenderer::add_new_points,
              py::arg("parameters"))
         .def("remove_points", &PythonRenderer::remove_points,
