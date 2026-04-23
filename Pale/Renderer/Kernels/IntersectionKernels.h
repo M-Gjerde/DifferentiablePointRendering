@@ -934,4 +934,158 @@ namespace Pale {
         intersectScene(rayIn, &worldHit, scene, rng128);
         return worldHit;
     }
+
+
+    SYCL_EXTERNAL inline float traceShadowTransmissionToLight(
+        const GPUSceneBuffers& scene,
+        const float3& shadingPositionW,
+        const float3& shadingNormalW,
+        const float3& lightPositionW,
+        rng::Xorshift128& rng128) {
+        const float3 lightVector = lightPositionW - shadingPositionW;
+        const float lightDistanceSquared = dot(lightVector, lightVector);
+        if (lightDistanceSquared <= 1e-12f) {
+            return 0.0f;
+        }
+
+        const float lightDistance = sycl::sqrt(lightDistanceSquared);
+        const float3 lightDirection = lightVector / lightDistance;
+
+        constexpr float distanceEpsilon = 1e-4f;
+        constexpr uint32_t maxShadowTraversals = 32u;
+
+        Ray shadowRay{};
+        shadowRay.origin = shadingPositionW + shadingNormalW * distanceEpsilon;
+        shadowRay.direction = lightDirection;
+        shadowRay.normal = shadingNormalW;
+
+        float shadowTransmission = 1.0f;
+
+        for (uint32_t shadowTraversalIndex = 0u;
+             shadowTraversalIndex < maxShadowTraversals;
+             ++shadowTraversalIndex) {
+            WorldHit shadowHit{};
+            intersectScene(
+                shadowRay,
+                &shadowHit,
+                scene,
+                rng128,
+                SurfelIntersectMode::FirstHit);
+
+            if (!shadowHit.hit) {
+                break;
+            }
+
+            const float3 hitVector = shadowHit.hitPositionW - shadingPositionW;
+            const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
+
+            if (hitDistance >= lightDistance - distanceEpsilon) {
+                break;
+            }
+
+            const InstanceRecord& hitInstance = scene.instances[shadowHit.instanceIndex];
+
+            if (hitInstance.geometryType == GeometryType::Mesh) {
+                return 0.0f;
+            }
+
+            if (hitInstance.geometryType == GeometryType::PointCloud) {
+                const Point& surfel = scene.points[shadowHit.primitiveIndex];
+                const float oneMinusAlpha = 1.0f - surfel.opacity * shadowHit.alphaGeom;
+                shadowTransmission *= sycl::fmax(0.0f, oneMinusAlpha);
+
+                if (shadowTransmission <= 1e-4f) {
+                    return 0.0f;
+                }
+
+                shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * distanceEpsilon;
+                continue;
+            }
+
+            return 0.0f;
+        }
+
+        return shadowTransmission;
+    }
+
+
+
+    SYCL_EXTERNAL inline float3 estimateDirectLightAtDiffuseSurface(
+        const GPUSceneBuffers& scene,
+        const float3& shadingPositionW,
+        const float3& shadingNormalW,
+        const float3& diffuseAlbedo,
+        uint32_t numShadowRays,
+        rng::Xorshift128& rng128) {
+        if (numShadowRays == 0u) {
+            return float3(0.0f);
+        }
+
+        float3 accumulatedDirectRadiance(0.0f);
+
+        for (uint32_t shadowSampleIndex = 0u;
+             shadowSampleIndex < numShadowRays;
+             ++shadowSampleIndex) {
+            const AreaLightSample lightSample = sampleMeshAreaLight(scene, rng128);
+            if (!lightSample.valid) {
+                continue;
+            }
+
+            const float fullPdfArea = lightSample.pdfSelectLight * lightSample.pdfArea;
+            if (fullPdfArea <= 0.0f) {
+                continue;
+            }
+
+            const float3 lightVector = lightSample.positionW - shadingPositionW;
+            const float lightDistanceSquared = dot(lightVector, lightVector);
+            if (lightDistanceSquared <= 1e-12f) {
+                continue;
+            }
+
+            const float lightDistance = sycl::sqrt(lightDistanceSquared);
+            const float3 lightDirection = lightVector / lightDistance;
+
+            const float shadingCosine =
+                sycl::fmax(0.0f, dot(shadingNormalW, lightDirection));
+            if (shadingCosine <= 0.0f) {
+                continue;
+            }
+
+            const float lightCosine =
+                sycl::fmax(0.0f, dot(lightSample.normalW, -lightDirection));
+            if (lightCosine <= 0.0f) {
+                continue;
+            }
+
+            const float shadowTransmission = traceShadowTransmissionToLight(
+                scene,
+                shadingPositionW,
+                shadingNormalW,
+                lightSample.positionW,
+                rng128);
+
+            if (shadowTransmission <= 0.0f) {
+                continue;
+            }
+
+            const float geometricTerm =
+                (shadingCosine * lightCosine) / (lightDistanceSquared + 1e-8f);
+
+            const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
+
+            float3 radiance = lightSample.flux / (M_PIf * lightSample.totalAreaWorld);
+            // Here lightSample.power is treated as emitted radiance, to stay
+            // consistent with your existing mesh emissive branch:
+            // material.power * material.baseColor
+            const float3 sampleContribution =
+                diffuseBrdf *
+                radiance *
+                shadowTransmission *
+                (geometricTerm / fullPdfArea);
+
+            accumulatedDirectRadiance += sampleContribution;
+        }
+
+        return accumulatedDirectRadiance * (1.0f / static_cast<float>(numShadowRays));
+    }
 } // namespace Pale

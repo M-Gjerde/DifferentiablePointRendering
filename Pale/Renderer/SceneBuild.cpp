@@ -213,7 +213,7 @@ namespace Pale {
                 gpuPoint.alpha_t = 0.0f;
                 gpuPoint.beta = pointGeometry.betas[i];
                 gpuPoint.shape = glm::clamp(pointGeometry.shapes[i], -5.0f, 5.0f);
-                gpuPoint.power = pointGeometry.powers[i];
+                gpuPoint.flux = pointGeometry.powers[i];
 
                 //Log::PA_INFO("Point [{}]: {}, {}, {}", i, gpuPoint.position.x(), gpuPoint.position.y(), gpuPoint.position.z());
                 collectedPoints.push_back(gpuPoint);
@@ -334,7 +334,7 @@ namespace Pale {
             light.triangleOffset = triangleOffset;
             light.triangleCount = meshRange.triCount;
 
-            light.power = gpuMaterial.power;
+            light.flux = gpuMaterial.power;
             light.color = gpuMaterial.baseColor;
 
             // IMPORTANT: WORLD area, not object area.
@@ -367,7 +367,7 @@ namespace Pale {
                     GPULightRecord light{};
                     light.lightType = LightType::Surfel; // mesh area
                     light.primitiveIndex = firstPointIndex  + i;
-                    light.power = pointGeometry.powers[i];
+                    light.flux = pointGeometry.powers[i];
                     light.color = pointGeometry.albedos[i];
 
                     glm::vec3 tangentUWorld = pointGeometry.scales[i].x * pointGeometry.tanU[i];

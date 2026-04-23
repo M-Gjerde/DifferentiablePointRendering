@@ -11,6 +11,46 @@
     {
       "scene": "cornell",
       "camera": "camera1",
+      "parameter": "translation_x",
+      "index": 6,
+      "min": -0.2,
+      "max": 0.2,
+      "fd_epsilon": 5e-3,
+      "forward_passes": 25,
+      "bounces": 1,
+      "adjoint_passes": 6,
+      "adjoint_bounces": 2,
+      "enable_adjoint_shadow_rays": true
+    },
+    {
+      "scene": "cornell",
+      "camera": "camera1",
+      "parameter": "translation_y",
+      "index": 6,
+      "min": -0.4,
+      "max": 0.9,
+      "fd_epsilon": 5e-2,
+      "forward_passes": 15,
+      "bounces": 3,
+      "adjoint_passes": 8,
+      "adjoint_bounces": 4
+    },
+    {
+      "scene": "cornell",
+      "camera": "camera1",
+      "parameter": "translation_z",
+      "index": 6,
+      "min": 0.2,
+      "max": 0.8,
+      "fd_epsilon": 5e-3,
+      "forward_passes": 20,
+      "bounces": 4,
+      "adjoint_passes": 16,
+      "adjoint_bounces": 5
+    },
+    {
+      "scene": "cornell",
+      "camera": "camera1",
       "parameter": "opacity",
       "index": 6,
       "min": 0.01,
@@ -94,49 +134,10 @@
       "min": 0.1,
       "max": 0.9,
       "fd_epsilon": 5e-2,
-      "forward_passes": 50,
+      "forward_passes": 15,
       "bounces": 2,
       "adjoint_passes": 8,
       "adjoint_bounces": 3
-    },
-    {
-      "scene": "cornell",
-      "camera": "camera1",
-      "parameter": "translation_x",
-      "index": 6,
-      "min": -0.2,
-      "max": 0.2,
-      "fd_epsilon": 5e-3,
-      "forward_passes": 25,
-      "bounces": 2,
-      "adjoint_passes": 6,
-      "adjoint_bounces": 3
-    },
-    {
-      "scene": "cornell",
-      "camera": "camera1",
-      "parameter": "translation_y",
-      "index": 6,
-      "min": -0.4,
-      "max": 0.9,
-      "fd_epsilon": 5e-3,
-      "forward_passes": 25,
-      "bounces": 2,
-      "adjoint_passes": 16,
-      "adjoint_bounces": 3
-    },
-    {
-      "scene": "cornell",
-      "camera": "camera1",
-      "parameter": "translation_z",
-      "index": 6,
-      "min": 0.2,
-      "max": 0.8,
-      "fd_epsilon": 5e-3,
-      "forward_passes": 20,
-      "bounces": 4,
-      "adjoint_passes": 16,
-      "adjoint_bounces": 5
     }
   ]
 }

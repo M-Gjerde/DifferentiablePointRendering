@@ -50,7 +50,7 @@
     {
       "scene": "simple_1",
       "camera": "camera1",
-      "parameter": "rotation_z",
+      "parameter": "rotation_y",
       "index": 1,
       "min": -80,
       "max": 80,
@@ -94,7 +94,7 @@
       "min": -0.5,
       "max": 0.5,
       "fd_epsilon": 5e-2,
-      "forward_passes": 300,
+      "forward_passes": 100,
       "bounces": 1,
       "adjoint_passes": 8,
       "adjoint_bounces": 2,

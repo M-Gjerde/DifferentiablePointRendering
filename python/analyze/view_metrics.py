@@ -163,7 +163,6 @@ def save_loss_curve(
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(output_png_path, dpi=200)
-    plt.show()
     plt.close()
 
     return loss_column_name
@@ -240,6 +239,7 @@ def render_points_final(
     render_output_dir = run_dir / render_output_subdir
     render_output_dir.mkdir(parents=True, exist_ok=True)
 
+    renderer_settings["primal_shadow_rays"] = 256
     renderer_settings["forward_passes"] = 10
 
     renderer = pale_module.Renderer(

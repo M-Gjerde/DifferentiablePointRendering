@@ -10,10 +10,12 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
-    forward_passes: int = 10
+    forward_passes: int = 5
+    primal_shadow_rays: int = 64
+    adjoint_shadow_rays: int = 64
     gather_passes: int = 1
     adjoint_bounces: int = 3
-    adjoint_passes: int = 6
+    adjoint_passes: int = 4
     logging: int = 3  # Spdlog enums
 
     def as_dict(self, config: OptimizationConfig) -> Dict[str, float | int]:
@@ -22,6 +24,8 @@ class RendererSettingsConfig:
             "bounces": self.bounces,
             "forward_passes": self.forward_passes,
             "gather_passes": self.gather_passes,
+            "primal_shadow_rays": self.primal_shadow_rays,
+            "adjoint_shadow_rays": self.adjoint_shadow_rays,
             "adjoint_bounces": self.adjoint_bounces,
             "adjoint_passes": self.adjoint_passes,
             "logging": self.logging,
@@ -232,9 +236,9 @@ def parse_args() -> OptimizationConfig:
         factor_position = 0.001  # ~rotation_lr / position_lr
         factor_tangent  = 0.01    # ~rotation_lr / position_lr
         factor_scale    = 0.001   # ~scaling_lr / position_lr
-        factor_albedo   = 0.05    # ~feature_lr / position_lr
+        factor_albedo   = 0.02    # ~feature_lr / position_lr
         factor_opacity  = 0.01    # ~opacity_lr / position_lr
-        factor_beta     = 0.05    # ~beta_lr / position_lr
+        factor_beta     = 0.005    # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr

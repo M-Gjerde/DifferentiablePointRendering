@@ -379,27 +379,6 @@ namespace Pale {
         return dUVPosition;
     }
 
-    inline float computeGeometricTermValue(
-        const float3 &x_position,
-        const float3 &y_position,
-        const float3 &x_normal,
-        const float3 &y_normal) {
-        const float3 vector_from_x_to_y = y_position - x_position;
-        const float squared_distance = dot(vector_from_x_to_y, vector_from_x_to_y);
-
-        if (squared_distance <= 1e-12f) {
-            return 0.0f;
-        }
-
-        const float inverse_distance = sycl::rsqrt(squared_distance);
-        const float3 direction_from_x_to_y = vector_from_x_to_y * inverse_distance;
-
-        const float cosine_at_x = fmax(0.0f, dot(x_normal, direction_from_x_to_y));
-        const float cosine_at_y = fmax(0.0f, dot(y_normal, -direction_from_x_to_y));
-
-        return cosine_at_x * cosine_at_y * inverse_distance * inverse_distance;
-    }
-
     inline float computeGeometricAlphaDerivativeWrtScaleU(
         const Point &surfel,
         const float3 &worldPosition) {

@@ -125,6 +125,8 @@ public:
             settings.photonsPerLaunch = get_u64(settingsDict, "photons", settings.photonsPerLaunch);
             settings.maxBounces = get_i(settingsDict, "bounces", settings.maxBounces);
             settings.numForwardPasses = get_i(settingsDict, "forward_passes", settings.numForwardPasses);
+            settings.numShadowRays = get_i(settingsDict, "primal_shadow_rays", settings.numShadowRays);
+            settings.numAdjointShadowRays = get_i(settingsDict, "adjoint_shadow_rays", settings.numAdjointShadowRays);
             settings.maxAdjointBounces = get_i(settingsDict, "adjoint_bounces", settings.maxAdjointBounces);
             settings.adjointSamplesPerPixel = get_i(settingsDict, "adjoint_passes", settings.adjointSamplesPerPixel);
             settings.random.seed = get_i(settingsDict, "seed", settings.random.seed);
@@ -140,6 +142,8 @@ public:
         Pale::Log::PA_WARN("  Photons per launch        : {}", settings.photonsPerLaunch);
         Pale::Log::PA_WARN("  Max bounces               : {}", settings.maxBounces);
         Pale::Log::PA_WARN("  Forward passes            : {}", settings.numForwardPasses);
+        Pale::Log::PA_WARN("  Shadow Rays               : {}", settings.numShadowRays);
+        Pale::Log::PA_WARN("  Adjoint Shadow Rays       : {}", settings.numAdjointShadowRays);
         Pale::Log::PA_WARN("  Adjoint bounces           : {}", settings.maxAdjointBounces);
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
         Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", settings.enableAdjointDirectLight);
@@ -752,7 +756,7 @@ public:
             opacityHost[pointIndex] = point.opacity;
             betaHost[pointIndex] = point.beta;
             shapeHost[pointIndex] = point.shape;
-            powerHost[pointIndex] = point.power;
+            powerHost[pointIndex] = point.flux;
         }
 
         // Reuse the same makers as in render_backward (or define them once)
@@ -983,7 +987,7 @@ public:
         assignFloat3FieldFromArray("albedo", &Pale::Point::albedo);
         assignFloat1FieldFromArray("opacity", &Pale::Point::opacity);
         assignFloat1FieldFromArray("beta", &Pale::Point::beta);
-        assignFloat1FieldFromArray("power", &Pale::Point::power);
+        assignFloat1FieldFromArray("power", &Pale::Point::flux);
 
         // 4) Mirror changes back to the underlying point cloud asset
         if (!assetManager) {
@@ -1041,7 +1045,7 @@ public:
                         pointGeometry.opacities[pointIndex] = optimizedPoint.opacity;
                         // If you also keep beta/shape in the asset, mirror them here as well:
                         pointGeometry.betas[pointIndex] = optimizedPoint.beta;
-                        pointGeometry.powers[pointIndex] = optimizedPoint.power;
+                        pointGeometry.powers[pointIndex] = optimizedPoint.flux;
                         // pointGeometry.shapes[pointIndex]    = optimizedPoint.shape;
                     }
 

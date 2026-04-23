@@ -76,6 +76,7 @@ namespace Pale::rng {
     static constexpr uint32_t kStreamRoulette = 4u;
     static constexpr uint32_t kStreamDeposit = 5u;
     static constexpr uint32_t kStreamGather = 6u;
+    static constexpr uint32_t kStreamDirectLight = 7u;
 
     // ---------- Xorshift128 (32-bit state, very fast) ----------
     struct Xorshift128 {
@@ -777,6 +778,7 @@ namespace Pale {
         PointCloudSurfaceRecord surfaceRecord{};
         surfaceRecord.primitiveIndex = worldHit.primitiveIndex;
         surfaceRecord.alphaGeom = worldHit.alphaGeom;
+        surfaceRecord.pathId = rayState.pathId;
         surfaceRecord.incomingDirection = rayState.ray.direction;
 
         const Point& surfel = scene.points[worldHit.primitiveIndex];
@@ -825,28 +827,207 @@ namespace Pale {
         }
     }
 
-    inline float3 gatherDiffuseIrradianceAtPointNN(
+    inline float3 gatherDiffuseIrradianceAtPointKNN(
         const float3& queryPositionWorld,
         const float3& queryNormal,
         const DeviceSurfacePhotonMapGrid& grid) {
-        constexpr uint32_t kNearestPhotonCount = 32;
+        constexpr uint32_t kNearestPhotonCount = 64;
+        constexpr uint32_t maxRadiusExpansionSteps = 8u;
+        constexpr float minimumPlaneThickness = 1e-5f;
 
-        const float maxRadius = grid.maximumGatherRadiusWorld;
-        const float maxRadiusSquared = maxRadius * maxRadius;
+        const float3 normalizedQueryNormal = normalize(queryNormal);
 
-        const float3 supportOffset = float3{maxRadius, maxRadius, maxRadius};
+        const float minimumRadius = grid.minimumGatherRadiusWorld;
+        const float minimumRadiusSquared = minimumRadius * minimumRadius;
+
+        float currentSearchRadius = minimumRadius;
+
+        float nearestTangentialDistanceSquared[kNearestPhotonCount];
+        float3 nearestPhotonPower[kNearestPhotonCount];
+
+        uint32_t nearestPhotonCount = 0u;
+        float worstKeptDistanceSquared = 0.0f;
+        uint32_t worstKeptIndex = 0u;
+
+        auto reset_knn = [&]() {
+            nearestPhotonCount = 0u;
+            worstKeptDistanceSquared = 0.0f;
+            worstKeptIndex = 0u;
+
+            for (uint32_t photonIndex = 0u; photonIndex < kNearestPhotonCount; ++photonIndex) {
+                nearestTangentialDistanceSquared[photonIndex] = 0.0f;
+                nearestPhotonPower[photonIndex] = float3{0.0f};
+            }
+        };
+
+        auto recompute_worst_kept = [&]() {
+            if (nearestPhotonCount == 0u) {
+                worstKeptDistanceSquared = 0.0f;
+                worstKeptIndex = 0u;
+                return;
+            }
+
+            uint32_t newWorstIndex = 0u;
+            float newWorstDistanceSquared = nearestTangentialDistanceSquared[0];
+
+            for (uint32_t photonIndex = 1u; photonIndex < nearestPhotonCount; ++photonIndex) {
+                if (nearestTangentialDistanceSquared[photonIndex] > newWorstDistanceSquared) {
+                    newWorstDistanceSquared = nearestTangentialDistanceSquared[photonIndex];
+                    newWorstIndex = photonIndex;
+                }
+            }
+
+            worstKeptDistanceSquared = newWorstDistanceSquared;
+            worstKeptIndex = newWorstIndex;
+        };
+
+        auto try_insert_candidate = [&](float tangentialDistanceSquared, const float3& photonPower) {
+            if (nearestPhotonCount < kNearestPhotonCount) {
+                nearestTangentialDistanceSquared[nearestPhotonCount] = tangentialDistanceSquared;
+                nearestPhotonPower[nearestPhotonCount] = photonPower;
+                ++nearestPhotonCount;
+                recompute_worst_kept();
+                return;
+            }
+
+            if (tangentialDistanceSquared >= worstKeptDistanceSquared) {
+                return;
+            }
+
+            nearestTangentialDistanceSquared[worstKeptIndex] = tangentialDistanceSquared;
+            nearestPhotonPower[worstKeptIndex] = photonPower;
+            recompute_worst_kept();
+        };
+
+        bool foundEnoughPhotons = false;
+
+        for (uint32_t expansionStep = 0u;
+             expansionStep < maxRadiusExpansionSteps;
+             ++expansionStep) {
+            reset_knn();
+
+            const float currentSearchRadiusSquared =
+                currentSearchRadius * currentSearchRadius;
+
+            const float slabHalfThickness =
+                sycl::fmax(minimumPlaneThickness, 0.25f * currentSearchRadius);
+
+            const float supportExtent = currentSearchRadius + slabHalfThickness;
+            const float3 supportOffset = float3{
+                supportExtent, supportExtent, supportExtent
+            };
+
+            const sycl::int3 minCell =
+                worldToCellClamped(queryPositionWorld - supportOffset, grid);
+            const sycl::int3 maxCell =
+                worldToCellClamped(queryPositionWorld + supportOffset, grid);
+
+            for (int cellZ = minCell.z(); cellZ <= maxCell.z(); ++cellZ) {
+                for (int cellY = minCell.y(); cellY <= maxCell.y(); ++cellY) {
+                    for (int cellX = minCell.x(); cellX <= maxCell.x(); ++cellX) {
+                        const uint32_t cellId =
+                            linearCellIndex(sycl::int3{cellX, cellY, cellZ}, grid.gridResolution);
+
+                        const uint32_t start = grid.cellStart[cellId];
+                        if (start == kInvalidIndex) {
+                            continue;
+                        }
+
+                        const uint32_t end = grid.cellEnd[cellId];
+                        for (uint32_t sortedIndex = start; sortedIndex < end; ++sortedIndex) {
+                            const uint32_t photonIndex = grid.sortedPhotonIndex[sortedIndex];
+                            const DevicePhotonSurface photon = grid.photons[photonIndex];
+
+                            const float sameHemisphere =
+                                dot(normalizedQueryNormal, -photon.incomingDirection) > 0.0f ? 1.0f : 0.0f;
+                            if (sameHemisphere == 0.0f) {
+                                continue;
+                            }
+
+                            const float3 offsetWorld = photon.position - queryPositionWorld;
+                            const float signedPlaneDistance =
+                                dot(offsetWorld, normalizedQueryNormal);
+
+                            if (sycl::fabs(signedPlaneDistance) > slabHalfThickness) {
+                                continue;
+                            }
+
+                            const float3 tangentOffset =
+                                offsetWorld - signedPlaneDistance * normalizedQueryNormal;
+                            const float tangentialDistanceSquared =
+                                dot(tangentOffset, tangentOffset);
+
+                            if (tangentialDistanceSquared > currentSearchRadiusSquared) {
+                                continue;
+                            }
+
+                            try_insert_candidate(tangentialDistanceSquared, photon.power);
+                        }
+                    }
+                }
+            }
+
+            if (nearestPhotonCount >= kNearestPhotonCount) {
+                foundEnoughPhotons = true;
+                break;
+            }
+
+            currentSearchRadius *= 2.0f;
+        }
+
+        if (nearestPhotonCount == 0u) {
+            return float3{0.0f};
+        }
+
+        float adaptiveRadiusSquared = minimumRadiusSquared;
+
+        if (foundEnoughPhotons) {
+            adaptiveRadiusSquared =
+                sycl::fmax(minimumRadiusSquared, worstKeptDistanceSquared);
+        }
+        else {
+            // Fallback: not enough photons found, so use the final search radius
+            // rather than the farthest kept photon distance to avoid over-brightening.
+            adaptiveRadiusSquared =
+                sycl::fmax(minimumRadiusSquared, currentSearchRadius * currentSearchRadius);
+        }
+
+        float3 accumulatedFlux = float3{0.0f};
+
+        for (uint32_t photonIndex = 0u; photonIndex < nearestPhotonCount; ++photonIndex) {
+            accumulatedFlux += nearestPhotonPower[photonIndex];
+        }
+
+        const float gatherArea = M_PIf * adaptiveRadiusSquared;
+        const float inverseGatherArea = 1.0f / sycl::fmax(gatherArea, 1e-12f);
+
+        // Returns irradiance [W / m^2]
+        return accumulatedFlux * inverseGatherArea;
+    }
+
+    inline float3 gatherDiffuseIrradianceAtPoint(
+        const float3& queryPositionWorld,
+        const float3& queryNormal,
+        const DeviceSurfacePhotonMapGrid& grid) {
+        const float3 normalizedQueryNormal = normalize(queryNormal);
+
+        const float radius = grid.minimumGatherRadiusWorld;
+        const float radiusSquared = radius * radius;
+
+        const float slabHalfThickness = sycl::fmax(1e-5f, 0.25f * radius);
+
+        // 2D Epanechnikov-style normalization over the tangent disk.
+        const float kernelNormalization = 2.0f / (M_PIf * radiusSquared);
+
+        const float supportExtent = radius + slabHalfThickness;
+        const float3 supportOffset = float3{supportExtent, supportExtent, supportExtent};
 
         const sycl::int3 minCell =
             worldToCellClamped(queryPositionWorld - supportOffset, grid);
         const sycl::int3 maxCell =
             worldToCellClamped(queryPositionWorld + supportOffset, grid);
 
-        float nearestDistanceSquared[kNearestPhotonCount];
-        float3 nearestPhotonPower[kNearestPhotonCount];
-
-        uint32_t acceptedPhotonCount = 0;
-        uint32_t farthestPhotonSlot = 0;
-        float farthestDistanceSquared = -1.0f;
+        float3 irradiance = float3{0.0f};
 
         for (int cellZ = minCell.z(); cellZ <= maxCell.z(); ++cellZ) {
             for (int cellY = minCell.y(); cellY <= maxCell.y(); ++cellY) {
@@ -865,65 +1046,58 @@ namespace Pale {
                         const DevicePhotonSurface photon = grid.photons[photonIndex];
 
                         const float sameHemisphere =
-                            dot(queryNormal, -photon.incomingDirection) > 0.0f ? 1.0f : 0.0f;
-
-                        if (!sameHemisphere) {
+                            dot(normalizedQueryNormal, -photon.incomingDirection) > 0.0f ? 1.0f : 0.0f;
+                        if (sameHemisphere == 0.0f) {
                             continue;
                         }
 
-                        const float3 offset = photon.position - queryPositionWorld;
-                        const float distanceSquared = dot(offset, offset);
+                        const float3 offsetWorld = photon.position - queryPositionWorld;
 
-                        if (distanceSquared > maxRadiusSquared) {
+                        // Signed deviation from the tangent plane along the query normal.
+                        const float planeDistance =
+                            dot(offsetWorld, normalizedQueryNormal);
+                        const float absolutePlaneDistance = sycl::fabs(planeDistance);
+
+                        if (absolutePlaneDistance > slabHalfThickness) {
                             continue;
                         }
 
-                        if (acceptedPhotonCount < kNearestPhotonCount) {
-                            nearestDistanceSquared[acceptedPhotonCount] = distanceSquared;
-                            nearestPhotonPower[acceptedPhotonCount] = photon.power;
+                        // Tangential offset inside the local tangent plane.
+                        const float3 tangentialOffset =
+                            offsetWorld - planeDistance * normalizedQueryNormal;
+                        const float tangentialDistanceSquared =
+                            dot(tangentialOffset, tangentialOffset);
 
-                            if (distanceSquared > farthestDistanceSquared) {
-                                farthestDistanceSquared = distanceSquared;
-                                farthestPhotonSlot = acceptedPhotonCount;
-                            }
-
-                            ++acceptedPhotonCount;
+                        if (tangentialDistanceSquared > radiusSquared) {
+                            continue;
                         }
-                        else if (distanceSquared < farthestDistanceSquared) {
-                            nearestDistanceSquared[farthestPhotonSlot] = distanceSquared;
-                            nearestPhotonPower[farthestPhotonSlot] = photon.power;
 
-                            farthestPhotonSlot = 0;
-                            farthestDistanceSquared = nearestDistanceSquared[0];
+                        // Radial falloff in the tangent plane.
+                        const float radialWeight =
+                            1.0f - tangentialDistanceSquared / radiusSquared;
 
-                            for (uint32_t retainedIndex = 1; retainedIndex < kNearestPhotonCount; ++retainedIndex) {
-                                if (nearestDistanceSquared[retainedIndex] > farthestDistanceSquared) {
-                                    farthestDistanceSquared = nearestDistanceSquared[retainedIndex];
-                                    farthestPhotonSlot = retainedIndex;
-                                }
-                            }
-                        }
+                        // Penalize photons that deviate from the tangent plane.
+                        // Quadratic falloff suppresses near-slab-edge photons more strongly.
+                        const float normalizedPlaneDistance =
+                            absolutePlaneDistance / slabHalfThickness;
+                        const float tangentDeviationWeight =
+                            1.0f - normalizedPlaneDistance * normalizedPlaneDistance;
+
+                        const float kernelWeight =
+                            kernelNormalization *
+                            radialWeight *
+                            tangentDeviationWeight *
+                            sameHemisphere;
+
+                        irradiance += photon.power * kernelWeight;
                     }
                 }
             }
         }
-
-        if (acceptedPhotonCount == 0) {
-            return float3{0.0f};
-        }
-
-        const float gatherRadiusSquared = sycl::fmax(farthestDistanceSquared, 1e-12f);
-        const float area = 2.0f / (M_PIf * gatherRadiusSquared);
-
-        float3 irradiance = float3{0.0f};
-        for (uint32_t retainedIndex = 0; retainedIndex < acceptedPhotonCount; ++retainedIndex) {
-            irradiance += nearestPhotonPower[retainedIndex];
-        }
-
-        return irradiance * area;
+        return irradiance;
     }
 
-    inline float3 gatherDiffuseIrradianceAtPoint(
+    inline float3 gatherDiffuseIrradianceAtPointStandard(
         const float3& queryPositionWorld,
         const float3& queryNormal,
         const DeviceSurfacePhotonMapGrid& grid) {
@@ -965,15 +1139,15 @@ namespace Pale {
 
                         // Square the plane weight to aggressively suppress near-slab-edge photons.
                         const float kernelWeight =
-                            area;
+                            area * sameHemisphere;
 
                         irradiance += photon.power * kernelWeight;
                     }
                 }
             }
         }
-
-        return irradiance;
+        float3 radiance = irradiance * M_1_PIf; // Irradiance E[W/M²] -> L[W/(M²sr¹)
+        return radiance;
     }
 
     SYCL_EXTERNAL inline void depositPhotonSurface(
@@ -1012,57 +1186,6 @@ namespace Pale {
         photonEntry.isValid = 1u;
 
         photonMap.photons[slot] = photonEntry;
-    }
-
-
-    template <typename PhotonMapType>
-    SYCL_EXTERNAL inline float3 evaluateSurfelRadianceWithoutLocalAlpha(
-        const Point& surfel,
-        const PointCloudSurfaceRecord& surfaceRecord,
-        const ReconstructedSurfelState& reconstructedState,
-        const PhotonMapType& photonMap) {
-        const float3 irradiance = gatherDiffuseIrradianceAtPoint(
-            reconstructedState.position,
-            reconstructedState.orientedNormal,
-            photonMap);
-
-        const float3 reflectedRadiance =
-            irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf;
-
-        float3 emittedRadiance =
-            surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld));
-
-        if (surfel.power > 0.0f && surfaceRecord.sideSign < 0) {
-            emittedRadiance = float3{0.0f, 0.0f, 0.0f};
-        }
-
-        return emittedRadiance + reflectedRadiance;
-    }
-
-
-    template <typename PhotonMapType>
-    SYCL_EXTERNAL inline float3 evaluateOutgoingRadianceWithLocalAlpha(const Point& surfel,
-                                                                       const PointCloudSurfaceRecord& surfaceRecord,
-                                                                       const ReconstructedSurfelState&
-                                                                       reconstructedState,
-                                                                       const PhotonMapType& photonMap) {
-        const float3 irradiance = gatherDiffuseIrradianceAtPoint(
-            reconstructedState.position,
-            reconstructedState.orientedNormal,
-            photonMap);
-
-        const float alpha = surfaceRecord.alphaGeom * surfel.opacity;
-
-        const float3 reflectedRadiance =
-            irradiance * surfel.alpha_r * surfel.albedo * M_1_PIf * alpha;
-
-        float3 emittedRadiance = surfel.albedo * (surfel.power / (M_PIf * reconstructedState.areaWorld)) * alpha;
-
-        if (surfel.power > 0.0f && surfaceRecord.sideSign < 0) {
-            emittedRadiance = float3{0.0f, 0.0f, 0.0f};
-        }
-
-        return emittedRadiance + reflectedRadiance;
     }
 
 
@@ -1251,7 +1374,7 @@ namespace Pale {
             sample.normalW = normalWorld;
             sample.direction = sampledDirectionW;
             // Set as Radiant Flux (WATT)
-            sample.power = light.power * light.color;
+            sample.flux = light.flux * light.color;
             // Because we sampled proportional to triangle area, then uniformly on that triangle:
             // pdfArea is uniform over the whole emitter area.
             sample.pdfArea = 1.0f / light.totalAreaWorld;
@@ -1296,7 +1419,7 @@ namespace Pale {
             // Set as Radiant Flux (WATT)
             float alphaGeom = 1.0f;
             opacityBeta(localU, localV, surfel, &alphaGeom);
-            sample.power = light.power * light.color * alphaGeom * surfel.opacity;
+            sample.flux = light.flux * light.color * alphaGeom * surfel.opacity;
             // Because we sampled proportional to triangle area, then uniformly on that triangle:
             // pdfArea is uniform over the whole emitter area.
             sample.pdfArea = pdfArea;
@@ -1370,5 +1493,27 @@ namespace Pale {
         pendingCameraSegment.cameraPathThroughput = float3{0.0f, 0.0f, 0.0f};
         pendingCameraSegment.cameraOriginWorld = float3{0.0f, 0.0f, 0.0f};
         pendingCameraSegment.cameraDirectionWorld = float3{0.0f, 0.0f, 0.0f};
+    }
+
+
+    inline float computeGeometricTermValue(
+        const float3& x_position,
+        const float3& y_position,
+        const float3& x_normal,
+        const float3& y_normal) {
+        const float3 vector_from_x_to_y = y_position - x_position;
+        const float squared_distance = dot(vector_from_x_to_y, vector_from_x_to_y);
+
+        if (squared_distance <= 1e-12f) {
+            return 0.0f;
+        }
+
+        const float inverse_distance = sycl::rsqrt(squared_distance);
+        const float3 direction_from_x_to_y = vector_from_x_to_y * inverse_distance;
+
+        const float cosine_at_x = fmax(0.0f, dot(x_normal, direction_from_x_to_y));
+        const float cosine_at_y = fmax(0.0f, dot(y_normal, -direction_from_x_to_y));
+
+        return cosine_at_x * cosine_at_y * inverse_distance * inverse_distance;
     }
 }

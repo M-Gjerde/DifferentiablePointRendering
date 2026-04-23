@@ -9,35 +9,45 @@ import numpy as np
 import vtk
 
 
-def find_latest_points_ply(outputRootPath: Path) -> Path:
-    if not outputRootPath.exists():
-        raise FileNotFoundError(f"Output root '{outputRootPath}' does not exist.")
+def find_latest_points_ply(output_root_path: Path, use_initial: bool) -> Path:
+    if not output_root_path.exists():
+        raise FileNotFoundError(f"Output root '{output_root_path}' does not exist.")
 
-    if outputRootPath.is_file():
-        print(f"Using PLY file: {outputRootPath}")
-        return outputRootPath
+    target_filename = "initial_points.ply" if use_initial else "points_final.ply"
 
-    pointsInRoot = outputRootPath / "points_final.ply"
-    if pointsInRoot.is_file():
-        print(f"Using points_final.ply in run directory: {outputRootPath}")
-        return pointsInRoot
+    if output_root_path.is_file():
+        print(f"Using PLY file: {output_root_path}")
+        return output_root_path
 
-    candidateRunDirs: List[Path] = []
-    for childPath in outputRootPath.iterdir():
-        if childPath.is_dir() and (childPath / "points_final.ply").is_file():
-            candidateRunDirs.append(childPath)
+    points_in_root = output_root_path / target_filename
+    if points_in_root.is_file():
+        print(f"Using {target_filename} in run directory: {output_root_path}")
+        return points_in_root
 
-    if not candidateRunDirs:
-        raise FileNotFoundError(f"No subdirectories with points_final.ply found under '{outputRootPath}'.")
+    candidate_run_dirs: List[Path] = []
+    for child_path in output_root_path.iterdir():
+        candidate_ply_path = child_path / target_filename
+        if child_path.is_dir() and candidate_ply_path.is_file():
+            candidate_run_dirs.append(child_path)
 
-    latestRunDir = max(candidateRunDirs, key=lambda runPath: (runPath / "points_final.ply").stat().st_mtime)
-    latestPlyPath = latestRunDir / "points_final.ply"
-    print(f"Using latest run directory: {latestRunDir}")
-    print(f"points_final.ply: {latestPlyPath}")
-    return latestPlyPath
+    if not candidate_run_dirs:
+        raise FileNotFoundError(
+            f"No subdirectories with {target_filename} found under '{output_root_path}'."
+        )
+
+    latest_run_dir = max(
+        candidate_run_dirs,
+        key=lambda run_path: (run_path / target_filename).stat().st_mtime,
+    )
+    latest_ply_path = latest_run_dir / target_filename
+
+    print(f"Using latest run directory: {latest_run_dir}")
+    print(f"{target_filename}: {latest_ply_path}")
+    return latest_ply_path
 
 
-def numpy_rgb01_and_alpha01_to_vtk_u8_rgba(name: str, rgb01: np.ndarray, alpha01: np.ndarray) -> vtk.vtkUnsignedCharArray:
+def numpy_rgb01_and_alpha01_to_vtk_u8_rgba(name: str, rgb01: np.ndarray,
+                                           alpha01: np.ndarray) -> vtk.vtkUnsignedCharArray:
     rgbU8 = (np.asarray(rgb01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
     aU8 = (np.asarray(alpha01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
 
@@ -51,14 +61,14 @@ def numpy_rgb01_and_alpha01_to_vtk_u8_rgba(name: str, rgb01: np.ndarray, alpha01
         arrayHandle.SetTuple4(i, int(rgba[i, 0]), int(rgba[i, 1]), int(rgba[i, 2]), int(rgba[i, 3]))
     return arrayHandle
 
+
 # -----------------------------------------------------------------------------
 # Reused loader style, corrected for your PLY layout (albedo at 11..13, opacity at 14)
 # -----------------------------------------------------------------------------
 def load_surfels_from_ply(
-    plyPath: Path,
-    opacityThreshold: float,
+        plyPath: Path,
+        opacityThreshold: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-
     pkX: List[float] = []
     pkY: List[float] = []
     pkZ: List[float] = []
@@ -121,9 +131,9 @@ def load_surfels_from_ply(
             color1.append(float(parts[12]))
             color2.append(float(parts[13]))
 
-            #color0.append(float(0.7))
-            #color1.append(float(0.99))
-            #color2.append(float(0.99))
+            # color0.append(float(0.7))
+            # color1.append(float(0.99))
+            # color2.append(float(0.99))
 
     if len(pkX) == 0:
         raise RuntimeError(f"No points loaded from '{plyPath}'. Try lowering --opacity-threshold.")
@@ -257,10 +267,11 @@ def numpy_rgb01_to_vtk_u8_rgb(name: str, rgb01: np.ndarray) -> vtk.vtkUnsignedCh
     return arrayHandle
 
 
-
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="VTK viewer: render surfels as oriented ellipses (glyphs).")
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--initial", action="store_true",
+                        help="Load initial_points.ply instead of points_final.ply.")
     parser.add_argument("--opacity-threshold", type=float, default=0.0)
     parser.add_argument("--area-threshold", type=float, default=0.0)
     parser.add_argument("--max-ellipses", type=int, default=0)
@@ -269,31 +280,30 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--scale", type=float, default=1)
     return parser.parse_args()
 
-
 def main() -> None:
     args = parse_arguments()
-    plyPath = find_latest_points_ply(args.output_root)
+    ply_path = find_latest_points_ply(args.output_root, use_initial=args.initial)
 
-    positions, tangentU, tangentV, su, sv, colors, opacities = load_surfels_from_ply(
-        plyPath,
+    positions, tangent_u, tangent_v, su, sv, colors, opacities = load_surfels_from_ply(
+        ply_path,
         opacityThreshold=args.opacity_threshold,
     )
 
-    ellipseArea = su * sv
-    ellipseMask = ellipseArea >= float(args.area_threshold)
+    ellipse_area = su * sv
+    ellipse_mask = ellipse_area >= float(args.area_threshold)
 
-    positions = positions[ellipseMask]
-    tangentU = tangentU[ellipseMask]
-    tangentV = tangentV[ellipseMask]
-    su = su[ellipseMask] * args.scale
-    sv = sv[ellipseMask] * args.scale
-    colors = colors[ellipseMask]
-    opacities = opacities[ellipseMask]
+    positions = positions[ellipse_mask]
+    tangent_u = tangent_u[ellipse_mask]
+    tangent_v = tangent_v[ellipse_mask]
+    su = su[ellipse_mask] * args.scale
+    sv = sv[ellipse_mask] * args.scale
+    colors = colors[ellipse_mask]
+    opacities = opacities[ellipse_mask]
 
     if args.max_ellipses and positions.shape[0] > args.max_ellipses:
         positions = positions[: args.max_ellipses]
-        tangentU = tangentU[: args.max_ellipses]
-        tangentV = tangentV[: args.max_ellipses]
+        tangent_u = tangent_u[: args.max_ellipses]
+        tangent_v = tangent_v[: args.max_ellipses]
         su = su[: args.max_ellipses]
         sv = sv[: args.max_ellipses]
         colors = colors[: args.max_ellipses]
@@ -301,29 +311,25 @@ def main() -> None:
 
     print(f"Rendering {positions.shape[0]} surfels")
 
-    # PolyData
     points = vtk.vtkPoints()
     points.SetDataTypeToFloat()
     points.SetNumberOfPoints(int(positions.shape[0]))
     for i in range(int(positions.shape[0])):
         points.SetPoint(i, float(positions[i, 0]), float(positions[i, 1]), float(positions[i, 2]))
 
-    polyData = vtk.vtkPolyData()
-    polyData.SetPoints(points)
+    poly_data = vtk.vtkPolyData()
+    poly_data.SetPoints(points)
 
-    # Orientation as quaternion (w,x,y,z)
-    quaternions = build_orientation_quaternions_wxyz(tangentU, tangentV)  # (N,4)
-    polyData.GetPointData().AddArray(numpy_to_vtk_float_array("orientation", quaternions, 4))
+    quaternions = build_orientation_quaternions_wxyz(tangent_u, tangent_v)
+    poly_data.GetPointData().AddArray(numpy_to_vtk_float_array("orientation", quaternions, 4))
 
-    # Scale (su, sv, 1)
-    scaleTriples = np.stack([su, sv, np.ones_like(su)], axis=1).astype(np.float32)
-    polyData.GetPointData().AddArray(numpy_to_vtk_float_array("scale", scaleTriples, 3))
+    scale_triples = np.stack([su, sv, np.ones_like(su)], axis=1).astype(np.float32)
+    poly_data.GetPointData().AddArray(numpy_to_vtk_float_array("scale", scale_triples, 3))
 
-    # Color (u8)
-    polyData.GetPointData().AddArray(
+    poly_data.GetPointData().AddArray(
         numpy_rgb01_and_alpha01_to_vtk_u8_rgba("color_rgba", colors, opacities)
     )
-    # Disk source
+
     disk = vtk.vtkDiskSource()
     disk.SetInnerRadius(0.0)
     disk.SetOuterRadius(1.0)
@@ -332,16 +338,13 @@ def main() -> None:
     disk.Update()
 
     mapper = vtk.vtkGlyph3DMapper()
-    mapper.SetInputData(polyData)
+    mapper.SetInputData(poly_data)
     mapper.SetSourceConnection(disk.GetOutputPort())
-
     mapper.SetOrientationArray("orientation")
-    mapper.SetOrientationModeToQuaternion()  # <-- your VTK supports this
-
+    mapper.SetOrientationModeToQuaternion()
     mapper.SetScaleArray("scale")
     mapper.SetScaleModeToScaleByVectorComponents()
     mapper.ScalingOn()
-
     mapper.SetScalarModeToUsePointFieldData()
     mapper.SelectColorArray("color_rgba")
     mapper.SetColorModeToDirectScalars()
@@ -358,28 +361,27 @@ def main() -> None:
     renderer.SetBackground(0.2, 0.2, 0.25)
     renderer.SetUseDepthPeeling(True)
 
-    renderWindow = vtk.vtkRenderWindow()
-    renderWindow.AddRenderer(renderer)
-    renderWindow.SetSize(1200, 900)
-    renderWindow.SetAlphaBitPlanes(True)
-    renderWindow.SetMultiSamples(0)
+    render_window = vtk.vtkRenderWindow()
+    render_window.AddRenderer(renderer)
+    render_window.SetSize(1200, 900)
+    render_window.SetAlphaBitPlanes(True)
+    render_window.SetMultiSamples(0)
 
     renderer.SetMaximumNumberOfPeels(100)
     renderer.SetOcclusionRatio(0.1)
 
     interactor = vtk.vtkRenderWindowInteractor()
-    interactor.SetRenderWindow(renderWindow)
+    interactor.SetRenderWindow(render_window)
 
-    # Better navigation controls (Z-up, CAD-like)
     style = vtk.vtkInteractorStyleTrackballCamera()
     style.SetDefaultRenderer(renderer)
     interactor.SetInteractorStyle(style)
-    camera = renderer.GetActiveCamera()
-    camera.SetViewUp(0.0, 1.0, 0.0)   # Z-up
 
+    camera = renderer.GetActiveCamera()
+    camera.SetViewUp(0.0, 1.0, 0.0)
 
     renderer.ResetCamera()
-    renderWindow.Render()
+    render_window.Render()
     interactor.Start()
 
 

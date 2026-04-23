@@ -44,7 +44,7 @@ namespace Pale {
         float opacity{0.0f};
         float beta{0.0f};
         float shape{0.0f};
-        float power{0.0f};
+        float flux{0.0f};
 
         uint64_t pointId{0};
     };
@@ -157,7 +157,7 @@ namespace Pale {
         uint32_t triangleOffset; // into emissiveTriangles[]
         uint32_t triangleCount;
         float3 color; // lght color
-        float power;
+        float flux;
         float totalAreaWorld; // sum of worldArea of its triangles
 
         // Surfel
@@ -168,7 +168,7 @@ namespace Pale {
         float3 positionW;
         float3 normalW; // unit
         float3 direction;
-        float3 power;
+        float3 flux;
         uint32_t lightIndex;
         float pdfSelectLight; // 1 / lightCount
         float pdfDir;
@@ -352,6 +352,7 @@ namespace Pale {
         float alphaGeom = 0.0f;
         int32_t sideSign = 1;
         float3 incomingDirection = float3{0.0f, 0.0f, 0.0f};
+        uint32_t pathId;
     };
     struct DirectLightQuery {
         PointCloudSurfaceRecord surface{};
@@ -632,6 +633,8 @@ namespace Pale {
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
         uint32_t russianRouletteStart = 6; // Which bounce to start RR
+        uint32_t numShadowRays = 8;
+        uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
