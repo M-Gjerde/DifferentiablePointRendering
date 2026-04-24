@@ -205,7 +205,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.005,
+        default=0.1,
         help="Weight for the normal consistency regularizer.",
     )
 
@@ -213,7 +213,7 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.02,
+        default=0.5,
         help="Weight for the depth distortion regularizer.",
     )
 
@@ -241,11 +241,11 @@ def parse_args() -> OptimizationConfig:
     else:
         # 3DGS-inspired relative factors w.r.t. position LR
         factor_position = 0.01  # ~rotation_lr / position_lr
-        factor_tangent  = 0.09    # ~rotation_lr / position_lr
-        factor_scale    = 0.001   # ~scaling_lr / position_lr
-        factor_albedo   = 0.01    # ~feature_lr / position_lr
-        factor_opacity  = 0.2    # ~opacity_lr / position_lr
-        factor_beta     = 0.005    # ~beta_lr / position_lr
+        factor_tangent  = 0.1    # ~rotation_lr / position_lr
+        factor_scale    = 0.01   # ~scaling_lr / position_lr
+        factor_albedo   = 10.0    # ~feature_lr / position_lr
+        factor_opacity  = 1.0    # ~opacity_lr / position_lr
+        factor_beta     = 0.05    # ~beta_lr / position_lr
 
 
     #factor_position = lr_scale * 0  # ~rotation_lr / position_lr
