@@ -57,7 +57,7 @@ class OptimizationConfig:
     learning_rate_albedo: float = 0
     learning_rate_opacity: float = 0
     learning_rate_beta: float = 0
-    depth_distort_weight: float = 0.05
+    depth_distort_weight: float = 0.00
     normal_consistency_weight: float = 0.0
 
     optimizer_type: str = "adam"  # "adam" or "sgd"
@@ -205,7 +205,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=1.0,
+        default=0.005,
         help="Weight for the normal consistency regularizer.",
     )
 
@@ -213,7 +213,7 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.05,
+        default=0.02,
         help="Weight for the depth distortion regularizer.",
     )
 

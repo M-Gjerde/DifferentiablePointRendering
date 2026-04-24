@@ -7,8 +7,8 @@ import sys
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-import pale
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -18,14 +18,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Find the latest optimization run, plot the loss curve(s), "
-            "and re-render points_final.ply using the saved run_config.json."
+            "and optionally re-render points_final.ply using the saved run_config.json."
         )
     )
     parser.add_argument(
         "--optimization-output-root",
         type=Path,
         required=False,
-        default="../Assets/OptimizationOutput",
+        default=Path("../Assets/OptimizationOutput"),
         help="Path to the OptimizationOutput directory.",
     )
     parser.add_argument(
@@ -45,9 +45,8 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Optional explicit loss column. "
-            "If omitted, tries loss_total_sum, then loss_rgb_sum, then "
-            "loss_depth_distortion_sum, then legacy columns."
+            "Optional explicit loss column for the single-loss plot. "
+            "If omitted, defaults to loss_rgb_sum, then falls back to other columns."
         ),
     )
     parser.add_argument(
@@ -65,11 +64,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plot-all-losses",
         action="store_true",
+        default=True,
         help=(
-            "If set, plot all available main loss curves "
-            "(loss_total_sum, loss_rgb_sum, loss_depth_distortion_sum) together."
+            "If set, create a two-panel plot: "
+            "top = image/total loss, bottom = regularizer losses."
         ),
     )
+    parser.add_argument(
+        "--render-final",
+        action="store_true",
+        help=(
+            "If set, also re-render points_final.ply using run_config.json. "
+            "Disabled by default."
+        ),
+    )
+
+    parser.add_argument(
+        "--show-plots",
+        dest="show_plots",
+        action="store_true",
+        help="Show the matplotlib plot window. Enabled by default.",
+    )
+    parser.add_argument(
+        "--no-show-plots",
+        dest="show_plots",
+        action="store_false",
+        help="Do not open the matplotlib plot window.",
+    )
+    parser.set_defaults(show_plots=True)
+
     return parser.parse_args()
 
 
@@ -90,7 +113,7 @@ def find_latest_run_dir(optimization_output_root: Path) -> Path:
             f"OptimizationOutput folder does not exist: {optimization_output_root}"
         )
 
-    candidate_run_dirs: list[dict] = []
+    candidate_run_dirs: list[dict[str, Any]] = []
 
     for child in optimization_output_root.iterdir():
         if not child.is_dir():
@@ -153,10 +176,12 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         return explicit_loss_column
 
     preferred_columns = [
-        "loss_total_sum",
         "loss_rgb_sum",
-        "loss_depth_distortion_sum",
-        # legacy fallback
+        "loss_total_sum",
+        "loss_normal_consistency_weighted_sum",
+        "loss_depth_distortion_weighted_sum",
+        "loss_normal_consistency_raw_sum",
+        "loss_depth_distortion_raw_sum",
         "loss_l2_window_mean",
         "loss_l2_current_camera",
         "loss_l2_window_sum_scaled",
@@ -177,6 +202,7 @@ def save_loss_curve(
     output_png_path: Path,
     explicit_loss_column: str | None,
     plot_all_losses: bool,
+    show_plots: bool,
 ) -> str:
     dataframe = pd.read_csv(metrics_csv_path)
     dataframe = filter_metrics_rows(dataframe)
@@ -187,45 +213,124 @@ def save_loss_curve(
     dataframe = dataframe.sort_values("iteration").reset_index(drop=True)
 
     if plot_all_losses:
-        plotted_columns = [
+        fig, axes = plt.subplots(
+            2,
+            1,
+            figsize=(12, 8),
+            sharex=True,
+            gridspec_kw={"height_ratios": [1.2, 1.0]},
+        )
+
+        ax_top = axes[0]
+        ax_bottom = axes[1]
+
+        top_columns = [
             column_name
             for column_name in [
-                "loss_total_sum",
                 "loss_rgb_sum",
-                "loss_depth_distortion_sum",
+                "loss_total_sum",
             ]
             if column_name in dataframe.columns
         ]
 
-        if not plotted_columns:
-            plotted_columns = [select_loss_column(dataframe, explicit_loss_column)]
+        bottom_columns_weighted = [
+            column_name
+            for column_name in [
+                "loss_depth_distortion_weighted_sum",
+                "loss_normal_consistency_weighted_sum",
+            ]
+            if column_name in dataframe.columns
+        ]
 
-        plt.figure(figsize=(12, 5))
-        for column_name in plotted_columns:
-            plt.plot(dataframe["iteration"], dataframe[column_name], label=column_name)
+        bottom_columns_raw = [
+            column_name
+            for column_name in [
+                "loss_depth_distortion_raw_sum",
+                "loss_normal_consistency_raw_sum",
+            ]
+            if column_name in dataframe.columns
+        ]
 
-        plt.xlabel("Iteration")
-        plt.ylabel("Loss")
-        plt.title(f"Loss curves over iterations\n{metrics_csv_path.parent.name}")
-        plt.grid(True)
-        plt.legend()
+        if not top_columns and not bottom_columns_weighted and not bottom_columns_raw:
+            fallback_column = select_loss_column(dataframe, explicit_loss_column)
+            top_columns = [fallback_column]
+
+        style_map = {
+            "loss_rgb_sum": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
+            "loss_total_sum": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
+            "loss_depth_distortion_weighted_sum": dict(
+                color="tab:red", linewidth=1.8, alpha=0.95
+            ),
+            "loss_normal_consistency_weighted_sum": dict(
+                color="tab:green", linewidth=1.8, alpha=0.95
+            ),
+            "loss_depth_distortion_raw_sum": dict(
+                color="tab:red", linewidth=1.2, alpha=0.65, linestyle="--"
+            ),
+            "loss_normal_consistency_raw_sum": dict(
+                color="tab:green", linewidth=1.2, alpha=0.65, linestyle="--"
+            ),
+        }
+
+        for column_name in top_columns:
+            ax_top.plot(
+                dataframe["iteration"],
+                dataframe[column_name],
+                label=column_name,
+                **style_map.get(column_name, {}),
+            )
+
+        for column_name in bottom_columns_weighted + bottom_columns_raw:
+            ax_bottom.plot(
+                dataframe["iteration"],
+                dataframe[column_name],
+                label=column_name,
+                **style_map.get(column_name, {}),
+            )
+
+        ax_top.set_ylabel("Image / Total loss")
+        ax_top.set_title(f"Optimization losses\n{metrics_csv_path.parent.name}")
+        ax_top.grid(True)
+        if top_columns:
+            ax_top.legend()
+
+        ax_bottom.set_xlabel("Iteration")
+        ax_bottom.set_ylabel("Regularizer loss")
+        ax_bottom.grid(True)
+        if bottom_columns_weighted or bottom_columns_raw:
+            ax_bottom.legend()
+
         plt.tight_layout()
         plt.savefig(output_png_path, dpi=200)
-        plt.close()
 
+        if show_plots:
+            plt.show()
+
+        plt.close(fig)
+
+        plotted_columns = top_columns + bottom_columns_weighted + bottom_columns_raw
         return ", ".join(plotted_columns)
 
     loss_column_name = select_loss_column(dataframe, explicit_loss_column)
 
-    plt.figure(figsize=(12, 5))
-    plt.plot(dataframe["iteration"], dataframe[loss_column_name])
+    fig = plt.figure(figsize=(12, 5))
+    plt.plot(
+        dataframe["iteration"],
+        dataframe[loss_column_name],
+        linewidth=2.2,
+        color="tab:blue",
+    )
     plt.xlabel("Iteration")
     plt.ylabel(loss_column_name)
     plt.title(f"{loss_column_name} over iterations\n{metrics_csv_path.parent.name}")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(output_png_path, dpi=200)
-    plt.close()
+
+    if show_plots:
+        plt.show()
+
+    plt.close(fig)
 
     return loss_column_name
 
@@ -236,7 +341,6 @@ def resolve_pybind_dir(pybind_dir_argument: Path | None) -> Path:
             raise FileNotFoundError(f"Provided --pybind-dir does not exist: {pybind_dir_argument}")
         return pybind_dir_argument.resolve()
 
-    environment_candidate = None
     if "PALE_PYBIND_DIR" in os.environ:
         environment_candidate = Path(os.environ["PALE_PYBIND_DIR"])
         if environment_candidate.exists():
@@ -264,7 +368,7 @@ def import_pale(pybind_dir: Path):
         sys.path.insert(0, str(pybind_dir))
 
     try:
-        import pale  # noqa: WPS433
+        import pale
     except ModuleNotFoundError as exception:
         raise ModuleNotFoundError(
             f"Failed to import 'pale' even after adding pybind dir to sys.path: {pybind_dir}"
@@ -285,11 +389,6 @@ def load_run_config(run_config_path: Path) -> dict:
 
 
 def get_forward_rgb(rendered_images: dict, camera_name: str) -> np.ndarray:
-    """
-    Handle the newer renderer output:
-        rendered_images[camera_name]["image"]
-    and keep a fallback for older direct-image output.
-    """
     camera_output = rendered_images[camera_name]
 
     if isinstance(camera_output, dict):
@@ -311,6 +410,7 @@ def get_forward_rgb(rendered_images: dict, camera_name: str) -> np.ndarray:
 
 
 def render_points_final(
+    pale_module,
     run_dir: Path,
     run_config: dict,
     render_output_subdir: str,
@@ -329,7 +429,7 @@ def render_points_final(
     renderer_settings["primal_shadow_rays"] = 64
     renderer_settings["forward_passes"] = 10
 
-    renderer = pale.Renderer(
+    renderer = pale_module.Renderer(
         str(assets_root),
         str(scene_xml),
         str(points_final_ply_path),
@@ -368,7 +468,6 @@ def main() -> None:
         run_dir = find_latest_run_dir(optimization_output_root)
 
     metrics_csv_path = run_dir / "metrics.csv"
-    run_config_path = run_dir / "run_config.json"
     loss_curve_output_path = run_dir / args.loss_output_name
 
     if not metrics_csv_path.exists():
@@ -379,18 +478,25 @@ def main() -> None:
         output_png_path=loss_curve_output_path,
         explicit_loss_column=args.loss_column,
         plot_all_losses=args.plot_all_losses,
+        show_plots=args.show_plots,
     )
 
-    #pybind_dir = resolve_pybind_dir(args.pybind_dir)
-    #pale_module = import_pale(pybind_dir)
+    saved_render_paths: list[Path] = []
+    run_config_path: Path | None = None
+    pybind_dir: Path | None = None
 
-    run_config = load_run_config(run_config_path)
+    if args.render_final:
+        run_config_path = run_dir / "run_config.json"
+        pybind_dir = resolve_pybind_dir(args.pybind_dir)
+        pale_module = import_pale(pybind_dir)
+        run_config = load_run_config(run_config_path)
 
-    saved_render_paths = render_points_final(
-        run_dir=run_dir,
-        run_config=run_config,
-        render_output_subdir=args.render_output_subdir,
-    )
+        saved_render_paths = render_points_final(
+            pale_module=pale_module,
+            run_dir=run_dir,
+            run_config=run_config,
+            render_output_subdir=args.render_output_subdir,
+        )
 
     print()
     print("Done.")
@@ -398,10 +504,17 @@ def main() -> None:
     print(f"Metrics file        : {metrics_csv_path}")
     print(f"Loss column(s) used : {loss_column_name}")
     print(f"Loss curve written  : {loss_curve_output_path}")
-    print(f"Run config          : {run_config_path}")
-    print("Rendered images:")
-    for saved_render_path in saved_render_paths:
-        print(f"  {saved_render_path}")
+    print(f"Show plots          : {args.show_plots}")
+    print(f"Rendering enabled   : {args.render_final}")
+
+    if args.render_final:
+        print(f"Run config          : {run_config_path}")
+        print(f"Pybind dir          : {pybind_dir}")
+        print("Rendered images:")
+        for saved_render_path in saved_render_paths:
+            print(f"  {saved_render_path}")
+    else:
+        print("Rendered images     : skipped")
 
 
 if __name__ == "__main__":

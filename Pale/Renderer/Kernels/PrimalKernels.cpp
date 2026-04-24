@@ -838,7 +838,7 @@ namespace Pale {
                                     surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
 
                             if (surfel.flux > 0.0f && hitBackside) {
-                                emittedRadiance = float3(0.0f, 0.0f, 0.0f);
+                                //emittedRadiance = float3(0.0f, 0.0f, 0.0f);
                             }
 
                             const float3 directRadiance =

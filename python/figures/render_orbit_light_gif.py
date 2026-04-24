@@ -273,8 +273,8 @@ def parse_args() -> argparse.Namespace:
         help="Camera name to render from, e.g. DatasetCam_022. If omitted, the first camera is used.",
     )
 
-    parser.add_argument("--frames", type=int, default=24)
-    parser.add_argument("--fps", type=float, default=8.0)
+    parser.add_argument("--frames", type=int, default=30)
+    parser.add_argument("--fps", type=float, default=4.0)
     parser.add_argument("--radius", type=float, default=2.0)
     parser.add_argument("--power", type=float, default=20.0)
     parser.add_argument("--scale-u", type=float, default=0.05)

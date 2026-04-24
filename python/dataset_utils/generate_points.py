@@ -285,7 +285,7 @@ def generate_volume_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
-    light_power = 100.0
+    light_power = 20.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
