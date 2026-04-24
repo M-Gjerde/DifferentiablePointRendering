@@ -194,7 +194,7 @@ def write_gaussian_ply(
             tv = -tv
         return tu, tv
 
-    total_vertex_count = len(vertices) + 3
+    total_vertex_count = len(vertices) + 2
 
     lines = [
         "ply",
@@ -285,7 +285,6 @@ def write_gaussian_ply(
         )
         lines.append(line)
 
-
     light_nx = 0.0
     light_ny = 0.0
     light_nz = -1.0
@@ -297,15 +296,15 @@ def write_gaussian_ply(
     light_x = 0.5
     light_y = -0.8
     light_z = 2.2
-    light_su = 0.5
-    light_sv = 0.5
+    light_su = 0.01
+    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = 0.0
+    light_beta = -100.0
     light_shape = 0.0
-    light_power = 5.0
+    light_power = 12.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -320,13 +319,13 @@ def write_gaussian_ply(
     light_x = -0.5
     light_y = 0.8
     light_z = 2.2
-    light_su = 0.5
-    light_sv = 0.5
+    light_su = 0.01
+    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = 0.0
+    light_beta = -100.0
     light_shape = 0.0
 
     light_line = (
@@ -341,15 +340,14 @@ def write_gaussian_ply(
     light_x = 0.0
     light_y = 0.0
     light_z = -2.0
-    light_su = 0.5
-    light_sv = 0.5
+    light_su = 0.01
+    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = 0.0
+    light_beta = -100.0
     light_shape = 0.0
-
 
     light_nx = 0.0
     light_ny = 0.0
@@ -358,7 +356,6 @@ def write_gaussian_ply(
     light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
         compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
     )
-
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -393,7 +390,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.02,
+        default=0.015,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()

@@ -53,6 +53,34 @@ export namespace Pale {
                 reinterpret_cast<float*>(
                     sycl::malloc_device(pixelCount * sizeof(float), queue));
 
+            float* medianDepthBuffer =
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
+
+            float* medianDepthAdjointBuffer =
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
+
+            float4* medianWorldPositionBuffer =
+    reinterpret_cast<float4*>(
+        sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
+            float4* visibleNormalBuffer =
+    reinterpret_cast<float4*>(
+        sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
+            float4* normalFromDepthBuffer =
+    reinterpret_cast<float4*>(
+        sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
+            float4* normalFromDepthAdjointBuffer =
+    reinterpret_cast<float4*>(
+        sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
+            float4* visibleNormalAdjointBuffer =
+    reinterpret_cast<float4*>(
+        sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
             // Optional: check allocations
             if (deviceHighDynamicRangeFramebuffer == nullptr ||
                 deviceOutputFramebuffer == nullptr ||
@@ -85,14 +113,41 @@ export namespace Pale {
                 queue.memset(deviceLdrFramebuffer,
                              0,
                              pixelCount * 4u * sizeof(float));
-                // LDR framebuffer initialized to zero
+
+
                 queue.memset(depthDistortionBuffer,
                              0,
                              pixelCount * sizeof(float));
-                // LDR framebuffer initialized to zero
                 queue.memset(depthDistortionAdjointBuffer,
                              0,
                              pixelCount * sizeof(float));
+
+                queue.memset(medianDepthBuffer,
+                             0,
+                             pixelCount * sizeof(float));
+
+                queue.memset(medianDepthAdjointBuffer,
+                             0,
+                             pixelCount * sizeof(float));
+
+                queue.memset(medianWorldPositionBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+
+                queue.memset(visibleNormalBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+
+                queue.memset(normalFromDepthBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+                queue.memset(normalFromDepthAdjointBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+                queue.memset(visibleNormalAdjointBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+
                 queue.wait();
             }
 
@@ -102,6 +157,14 @@ export namespace Pale {
             sensorGpu.ldrFramebuffer = deviceLdrFramebuffer;
             sensorGpu.depthDistortionBuffer = depthDistortionBuffer;
             sensorGpu.depthDistortionAdjointBuffer = depthDistortionAdjointBuffer;
+            sensorGpu.medianDepthBuffer = medianDepthBuffer;
+            sensorGpu.medianWorldPositionBuffer = medianWorldPositionBuffer;
+            sensorGpu.visibleNormalBuffer = visibleNormalBuffer;
+            sensorGpu.normalFromDepthBuffer = normalFromDepthBuffer;
+
+            sensorGpu.medianDepthAdjointBuffer = medianDepthAdjointBuffer;
+            sensorGpu.normalFromDepthAdjointBuffer = normalFromDepthAdjointBuffer;
+            sensorGpu.visibleNormalAdjointBuffer = visibleNormalAdjointBuffer;
             sensorGpu.width = camera.width;
             sensorGpu.height = camera.height;
 
@@ -373,12 +436,22 @@ export namespace Pale {
     }
 
     inline std::vector<float> downloadFloatBuffer(
-        sycl::queue& queue,
+        sycl::queue queue,
         const float* devicePtr,
         std::size_t count) {
         std::vector<float> host(count);
         if (devicePtr != nullptr && count > 0) {
             queue.memcpy(host.data(), devicePtr, count * sizeof(float)).wait();
+        }
+        return host;
+    }
+    inline std::vector<float> downloadFloat4Buffer(
+        sycl::queue queue,
+        const float4* devicePtr,
+        std::size_t count) {
+        std::vector<float> host(count * 4);
+        if (devicePtr != nullptr && count > 0) {
+            queue.memcpy(host.data(), devicePtr, count * sizeof(float) * 4).wait();
         }
         return host;
     }

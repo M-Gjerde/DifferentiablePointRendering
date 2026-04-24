@@ -642,6 +642,7 @@ namespace Pale {
         bool enableAdjointDirectLight = false;
 
         bool useDepthDistortion = false;
+        bool useNormalConsistency = false;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

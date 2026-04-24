@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import pale
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -310,7 +311,6 @@ def get_forward_rgb(rendered_images: dict, camera_name: str) -> np.ndarray:
 
 
 def render_points_final(
-    pale_module,
     run_dir: Path,
     run_config: dict,
     render_output_subdir: str,
@@ -329,7 +329,7 @@ def render_points_final(
     renderer_settings["primal_shadow_rays"] = 64
     renderer_settings["forward_passes"] = 10
 
-    renderer = pale_module.Renderer(
+    renderer = pale.Renderer(
         str(assets_root),
         str(scene_xml),
         str(points_final_ply_path),
@@ -381,13 +381,12 @@ def main() -> None:
         plot_all_losses=args.plot_all_losses,
     )
 
-    pybind_dir = resolve_pybind_dir(args.pybind_dir)
-    pale_module = import_pale(pybind_dir)
+    #pybind_dir = resolve_pybind_dir(args.pybind_dir)
+    #pale_module = import_pale(pybind_dir)
 
     run_config = load_run_config(run_config_path)
 
     saved_render_paths = render_points_final(
-        pale_module=pale_module,
         run_dir=run_dir,
         run_config=run_config,
         render_output_subdir=args.render_output_subdir,
@@ -399,7 +398,6 @@ def main() -> None:
     print(f"Metrics file        : {metrics_csv_path}")
     print(f"Loss column(s) used : {loss_column_name}")
     print(f"Loss curve written  : {loss_curve_output_path}")
-    print(f"Pybind dir          : {pybind_dir}")
     print(f"Run config          : {run_config_path}")
     print("Rendered images:")
     for saved_render_path in saved_render_paths:

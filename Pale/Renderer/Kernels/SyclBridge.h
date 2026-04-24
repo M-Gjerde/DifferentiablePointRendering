@@ -13,6 +13,7 @@ namespace Pale {
     void submitLightTracingKernelCylinderRay(RenderPackage& renderPackage);
     void submitAdjointKernel(RenderPackage& renderPackage);
     void submitDepthDistortionKernel(RenderPackage& renderPackage);
+    void submitNormalConsistencyKernel(RenderPackage& renderPackage);
 
 }
 

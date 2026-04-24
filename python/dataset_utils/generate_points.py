@@ -174,6 +174,7 @@ def generate_volume_ply(
     scaleValue: float,
     positionNoiseStd: float,
     tangentNoiseStd: float,
+    opacity: float,
     seed: int | None,
 ) -> None:
     if seed is not None:
@@ -198,7 +199,7 @@ def generate_volume_ply(
     stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
     stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
 
-    defaultOpacity = 0.0
+    defaultOpacity = opacity
     defaultBeta = -0.0
     defaultShape = 0.0
     defaultRGB = [0.7, 0.7, 0.7]
@@ -282,7 +283,7 @@ def generate_volume_ply(
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = -0.0
+    light_beta = -100.0
     light_shape = 0.0
     light_power = 100.0
 
@@ -305,7 +306,7 @@ def generate_volume_ply(
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = -0.0
+    light_beta = -100.0
     light_shape = 0.0
 
     light_line = (
@@ -326,7 +327,7 @@ def generate_volume_ply(
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = -0.0
+    light_beta = -100.0
     light_shape = 0.0
 
     light_nx = 0.0
@@ -373,6 +374,17 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "position_noise_std": 0.05,
         "tangent_noise_std": 5.0,
     },
+    "teapot_plane": {
+        "min_x": -1.7,
+        "max_x": 1.55,
+        "min_y": -1.5,
+        "max_y": 1.5,
+        "min_z": -0.01,
+        "max_z": 0.55,
+        "scale": 0.025,
+        "position_noise_std": 0.05,
+        "tangent_noise_std": 5.0,
+    },
     "bunny": {
         "min_x": -1,
         "max_x": 1,
@@ -389,8 +401,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "max_x": 0.5,
         "min_y": -0.5,
         "max_y": 0.5,
-        "min_z": -0.1,
-        "max_z": 0.1,
+        "min_z": -0.01,
+        "max_z": 0.01,
         "scale": 0.02,
         "position_noise_std": 0.02,
         "tangent_noise_std": 5.0,
@@ -422,6 +434,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-z", type=float)
 
     parser.add_argument("--scale", type=float)
+    parser.add_argument("--opacity", type=float, default=0.5)
     parser.add_argument("--position-noise-std", type=float)
     parser.add_argument("--tangent-noise-std", type=float)
     parser.add_argument("--seed", type=int, default=None)
@@ -454,6 +467,7 @@ def main() -> None:
         scaleValue=args.scale,
         positionNoiseStd=args.position_noise_std,
         tangentNoiseStd=args.tangent_noise_std,
+        opacity=args.opacity,
         seed=args.seed,
     )
 

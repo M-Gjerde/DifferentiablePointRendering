@@ -19,6 +19,15 @@ namespace Pale {
         // Depth distortion buffer
         float* depthDistortionBuffer = nullptr;
         float* depthDistortionAdjointBuffer = nullptr;
+
+        float*  medianDepthBuffer;        // scalar visualization depth
+        float4* medianWorldPositionBuffer;        // xyz = world-space median point, w = valid
+        float4* visibleNormalBuffer;        // xyz = world-space median point, w = valid
+        float4* normalFromDepthBuffer;       // xyz = normal, w = valid
+
+        float * medianDepthAdjointBuffer;
+        float4 * visibleNormalAdjointBuffer;
+        float4 * normalFromDepthAdjointBuffer;
     };
 
     // GPU Struct

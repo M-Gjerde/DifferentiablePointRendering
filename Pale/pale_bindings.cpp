@@ -136,6 +136,9 @@ public:
                 get_b(settingsDict, "enable_adjoint_shadow_rays", settings.enableAdjointDirectLight);
             settings.useDepthDistortion =
                 get_b(settingsDict, "use_depth_distortion", settings.useDepthDistortion);
+            settings.useNormalConsistency =
+    get_b(settingsDict, "use_normal_consistency",
+          get_b(settingsDict, "useConsistencyLoss", settings.useNormalConsistency));
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
 
@@ -149,7 +152,7 @@ public:
         Pale::Log::PA_WARN("  Adjoint bounces           : {}", settings.maxAdjointBounces);
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
         Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", settings.enableAdjointDirectLight);
-
+        Pale::Log::PA_WARN("  Use normal consistency    : {}", settings.useNormalConsistency);
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorsForward.size(); ++i) {
             const auto& s = sensorsForward[i];
@@ -178,133 +181,163 @@ public:
     }
 
 
-    py::dict render_forward(std::string cameraName) {
-        py::gil_scoped_release release;
+   py::dict render_forward(std::string cameraName) {
+    py::gil_scoped_release release;
 
-        std::vector<Pale::SensorGPU> selectedSensors;
-        for (const auto& sensor : sensorsForward) {
-            if (cameraName == sensor.name) {
-                selectedSensors.push_back(sensor);
-            }
+    std::vector<Pale::SensorGPU> selectedSensors;
+    for (const auto& sensor : sensorsForward) {
+        if (cameraName == sensor.name) {
+            selectedSensors.push_back(sensor);
         }
-        if (cameraName.empty()) {
-            selectedSensors = sensorsForward;
-        }
+    }
+    if (cameraName.empty()) {
+        selectedSensors = sensorsForward;
+    }
 
-        pathTracer->renderForward(selectedSensors);
+    pathTracer->renderForward(selectedSensors);
 
-        auto queue = deviceSelector->getQueue();
+    auto queue = deviceSelector->getQueue();
+    const bool exposeNormalConsistency = pathTracer->getSettings().useNormalConsistency;
+    const bool exposeDepthDistortion = pathTracer->getSettings().useDepthDistortion;
 
-        struct HostImage {
-            std::string cameraName;
-            std::uint32_t imageWidth;
-            std::uint32_t imageHeight;
+    struct HostImage {
+        std::string cameraName;
+        std::uint32_t imageWidth;
+        std::uint32_t imageHeight;
 
-            std::vector<float> imageData; // H * W * 4
-            std::vector<float> imageDataRAW; // H * W * 4
-            std::vector<float> depthDistortionData; // H * W
-        };
+        std::vector<float> imageData;              // H * W * 4
+        std::vector<float> imageDataRAW;           // H * W * 4
+        std::vector<float> depthDistortionData;    // H * W
 
-        std::vector<HostImage> hostImages;
-        hostImages.reserve(selectedSensors.size());
+        std::vector<float> medianDepthData;        // H * W
+        std::vector<float> medianWorldPositionData; // H * W * 4
+        std::vector<float> visibleNormalData;      // H * W * 4
+        std::vector<float> normalFromDepthData;    // H * W * 4
+    };
 
-        for (const auto& sensor : selectedSensors) {
-            HostImage hostImage;
+    std::vector<HostImage> hostImages;
+    hostImages.reserve(selectedSensors.size());
 
-            hostImage.cameraName =
-                std::string(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
+    for (const auto& sensor : selectedSensors) {
+        HostImage hostImage;
 
-            hostImage.imageWidth = sensor.width;
-            hostImage.imageHeight = sensor.height;
+        hostImage.cameraName =
+            std::string(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
 
-            const std::size_t pixelCount =
-                static_cast<std::size_t>(hostImage.imageWidth) *
-                static_cast<std::size_t>(hostImage.imageHeight);
+        hostImage.imageWidth = sensor.width;
+        hostImage.imageHeight = sensor.height;
 
-            hostImage.imageData = Pale::downloadSensorLDR(queue, sensor);
-            hostImage.imageDataRAW = Pale::downloadSensorRGBARAW(queue, sensor);
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(hostImage.imageWidth) *
+            static_cast<std::size_t>(hostImage.imageHeight);
+
+        hostImage.imageData = Pale::downloadSensorLDR(queue, sensor);
+        hostImage.imageDataRAW = Pale::downloadSensorRGBARAW(queue, sensor);
+
+        if (exposeDepthDistortion) {
             hostImage.depthDistortionData =
                 Pale::downloadFloatBuffer(queue, sensor.depthDistortionBuffer, pixelCount);
-
-            hostImages.push_back(std::move(hostImage));
         }
 
-        py::gil_scoped_acquire acquire;
+        if (exposeNormalConsistency) {
+            hostImage.medianDepthData =
+                Pale::downloadFloatBuffer(queue, sensor.medianDepthBuffer, pixelCount);
 
-        py::dict result;
+            hostImage.medianWorldPositionData =
+                Pale::downloadFloat4Buffer(queue, sensor.medianWorldPositionBuffer, pixelCount);
 
-        for (auto& hostImage : hostImages) {
-            const std::uint32_t imageWidth = hostImage.imageWidth;
-            const std::uint32_t imageHeight = hostImage.imageHeight;
+            hostImage.visibleNormalData =
+                Pale::downloadFloat4Buffer(queue, sensor.visibleNormalBuffer, pixelCount);
 
-            // RGBA image shape/strides
-            std::vector<ssize_t> shape{
-                static_cast<ssize_t>(imageHeight),
-                static_cast<ssize_t>(imageWidth),
-                static_cast<ssize_t>(4)
-            };
+            hostImage.normalFromDepthData =
+                Pale::downloadFloat4Buffer(queue, sensor.normalFromDepthBuffer, pixelCount);
+        }
 
-            std::vector<ssize_t> strides{
-                static_cast<ssize_t>(imageWidth * 4 * sizeof(float)),
-                static_cast<ssize_t>(4 * sizeof(float)),
-                static_cast<ssize_t>(sizeof(float))
-            };
+        hostImages.push_back(std::move(hostImage));
+    }
 
-            // Distortion shape/strides
-            std::vector<ssize_t> distShape{
-                static_cast<ssize_t>(imageHeight),
-                static_cast<ssize_t>(imageWidth)
-            };
+    py::gil_scoped_acquire acquire;
 
-            std::vector<ssize_t> distStrides{
-                static_cast<ssize_t>(imageWidth * sizeof(float)),
-                static_cast<ssize_t>(sizeof(float))
-            };
+    py::dict result;
 
-            auto* ownedBuffer =
-                new std::vector<float>(std::move(hostImage.imageData));
-            auto* ownedBuffer2 =
-                new std::vector<float>(std::move(hostImage.imageDataRAW));
-            auto* ownedDistortionBuffer =
-                new std::vector<float>(std::move(hostImage.depthDistortionData));
+    for (auto& hostImage : hostImages) {
+        const std::uint32_t imageWidth = hostImage.imageWidth;
+        const std::uint32_t imageHeight = hostImage.imageHeight;
 
-            py::array_t<float> numpyImage(
-                shape,
-                strides,
+        std::vector<ssize_t> rgbaShape{
+            static_cast<ssize_t>(imageHeight),
+            static_cast<ssize_t>(imageWidth),
+            static_cast<ssize_t>(4)
+        };
+
+        std::vector<ssize_t> rgbaStrides{
+            static_cast<ssize_t>(imageWidth * 4 * sizeof(float)),
+            static_cast<ssize_t>(4 * sizeof(float)),
+            static_cast<ssize_t>(sizeof(float))
+        };
+
+        std::vector<ssize_t> scalarShape{
+            static_cast<ssize_t>(imageHeight),
+            static_cast<ssize_t>(imageWidth)
+        };
+
+        std::vector<ssize_t> scalarStrides{
+            static_cast<ssize_t>(imageWidth * sizeof(float)),
+            static_cast<ssize_t>(sizeof(float))
+        };
+
+        auto makeRGBAArray = [&](std::vector<float>& buffer) -> py::array_t<float> {
+            auto* ownedBuffer = new std::vector<float>(std::move(buffer));
+            return py::array_t<float>(
+                rgbaShape,
+                rgbaStrides,
                 ownedBuffer->data(),
                 py::capsule(ownedBuffer, [](void* ptr) {
                     delete static_cast<std::vector<float>*>(ptr);
                 })
             );
+        };
 
-            py::array_t<float> numpyImage2(
-                shape,
-                strides,
-                ownedBuffer2->data(),
-                py::capsule(ownedBuffer2, [](void* ptr) {
+        auto makeScalarArray = [&](std::vector<float>& buffer) -> py::array_t<float> {
+            auto* ownedBuffer = new std::vector<float>(std::move(buffer));
+            return py::array_t<float>(
+                scalarShape,
+                scalarStrides,
+                ownedBuffer->data(),
+                py::capsule(ownedBuffer, [](void* ptr) {
                     delete static_cast<std::vector<float>*>(ptr);
                 })
             );
+        };
 
-            py::array_t<float> numpyDepthDistortion(
-                distShape,
-                distStrides,
-                ownedDistortionBuffer->data(),
-                py::capsule(ownedDistortionBuffer, [](void* ptr) {
-                    delete static_cast<std::vector<float>*>(ptr);
-                })
-            );
+        py::dict cameraResult;
+        cameraResult[py::str("image")] = makeRGBAArray(hostImage.imageData);
+        cameraResult[py::str("raw")] = makeRGBAArray(hostImage.imageDataRAW);
 
-            py::dict cameraResult;
-            cameraResult[py::str("image")] = std::move(numpyImage);
-            cameraResult[py::str("raw")] = std::move(numpyImage2);
-            cameraResult[py::str("depth_distortion")] = std::move(numpyDepthDistortion);
-
-            result[py::str(hostImage.cameraName)] = std::move(cameraResult);
+        if (exposeDepthDistortion) {
+            cameraResult[py::str("depth_distortion")] =
+                makeScalarArray(hostImage.depthDistortionData);
         }
 
-        return result;
+        if (exposeNormalConsistency) {
+            cameraResult[py::str("median_depth")] =
+                makeScalarArray(hostImage.medianDepthData);
+
+            cameraResult[py::str("median_world_position")] =
+                makeRGBAArray(hostImage.medianWorldPositionData);
+
+            cameraResult[py::str("visible_normal")] =
+                makeRGBAArray(hostImage.visibleNormalData);
+
+            cameraResult[py::str("normal_from_depth")] =
+                makeRGBAArray(hostImage.normalFromDepthData);
+        }
+
+        result[py::str(hostImage.cameraName)] = std::move(cameraResult);
     }
+
+    return result;
+}
 
     py::tuple render_backward(const py::dict& targetImagesDictionary) {
         using std::int64_t;
@@ -1028,6 +1061,324 @@ public:
 
         return gradientDictionary;
     }
+
+    py::dict render_normal_consistency_backward(
+    const py::dict& visibleNormalGradImagesDictionary,
+    const py::dict& normalFromDepthGradImagesDictionary) {
+    using std::int64_t;
+    using std::size_t;
+
+    auto syclQueue = deviceSelector->getQueue();
+
+    if (!pathTracer->getSettings().useNormalConsistency) {
+        throw std::runtime_error(
+            "render_normal_consistency_backward called, but useNormalConsistency is disabled.");
+    }
+
+    std::vector<Pale::SensorGPU> selectedCameras;
+    selectedCameras.reserve(sensorsForward.size());
+
+    std::unordered_map<std::string, std::vector<float>> visibleNormalAdjointPerCamera;
+    std::unordered_map<std::string, std::vector<float>> normalFromDepthAdjointPerCamera;
+
+    auto packNormalAdjointToRGBA =
+        [](const py::array& adjointArray,
+           std::uint32_t expectedWidth,
+           std::uint32_t expectedHeight,
+           const std::string& cameraName,
+           const char* fieldName) -> std::vector<float> {
+        py::buffer_info info = adjointArray.request();
+
+        if (info.itemsize != sizeof(float)) {
+            throw std::runtime_error(
+                std::string("render_normal_consistency_backward: '") +
+                fieldName + "' for camera '" + cameraName + "' must have dtype float32");
+        }
+
+        if (info.ndim != 3) {
+            throw std::runtime_error(
+                std::string("render_normal_consistency_backward: '") +
+                fieldName + "' for camera '" + cameraName +
+                "' must have shape HxWx3 or HxWx4");
+        }
+
+        const int64_t height = static_cast<int64_t>(info.shape[0]);
+        const int64_t width = static_cast<int64_t>(info.shape[1]);
+        const int64_t channels = static_cast<int64_t>(info.shape[2]);
+
+        if (channels != 3 && channels != 4) {
+            throw std::runtime_error(
+                std::string("render_normal_consistency_backward: '") +
+                fieldName + "' for camera '" + cameraName +
+                "' must have shape HxWx3 or HxWx4");
+        }
+
+        if (static_cast<std::uint32_t>(width) != expectedWidth ||
+            static_cast<std::uint32_t>(height) != expectedHeight) {
+            throw std::runtime_error(
+                std::string("render_normal_consistency_backward: resolution mismatch for '") +
+                fieldName + "' camera '" + cameraName + "'");
+        }
+
+        const float* src = static_cast<const float*>(info.ptr);
+
+        std::vector<float> rgba(
+            static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0.0f);
+
+        for (int64_t y = 0; y < height; ++y) {
+            for (int64_t x = 0; x < width; ++x) {
+                const size_t srcBase = static_cast<size_t>((y * width + x) * channels);
+                const size_t dstBase = static_cast<size_t>((y * width + x) * 4);
+
+                rgba[dstBase + 0] = src[srcBase + 0];
+                rgba[dstBase + 1] = src[srcBase + 1];
+                rgba[dstBase + 2] = src[srcBase + 2];
+                rgba[dstBase + 3] = 0.0f;
+            }
+        }
+
+        return rgba;
+    };
+
+    for (const auto& sensor : sensorsForward) {
+        std::string cameraName(
+            sensor.name,
+            strnlen(sensor.name, sizeof(sensor.name)));
+
+        const bool hasVisible =
+            visibleNormalGradImagesDictionary.contains(py::str(cameraName));
+        const bool hasDepth =
+            normalFromDepthGradImagesDictionary.contains(py::str(cameraName));
+
+        if (!hasVisible && !hasDepth) {
+            continue;
+        }
+
+        if (!hasVisible || !hasDepth) {
+            throw std::runtime_error(
+                "render_normal_consistency_backward: both visible_normal and "
+                "normal_from_depth adjoints must be provided for camera '" + cameraName + "'");
+        }
+
+        py::array visibleAdjointArray =
+            visibleNormalGradImagesDictionary[py::str(cameraName)].cast<py::array>();
+
+        py::array depthAdjointArray =
+            normalFromDepthGradImagesDictionary[py::str(cameraName)].cast<py::array>();
+
+        visibleNormalAdjointPerCamera.emplace(
+            cameraName,
+            packNormalAdjointToRGBA(
+                visibleAdjointArray,
+                sensor.width,
+                sensor.height,
+                cameraName,
+                "visible_normal"));
+
+        normalFromDepthAdjointPerCamera.emplace(
+            cameraName,
+            packNormalAdjointToRGBA(
+                depthAdjointArray,
+                sensor.width,
+                sensor.height,
+                cameraName,
+                "normal_from_depth"));
+
+        selectedCameras.push_back(sensor);
+    }
+
+    if (selectedCameras.empty()) {
+        py::dict emptyGradientDictionary;
+        return emptyGradientDictionary;
+    }
+
+    py::gil_scoped_release release;
+
+    for (auto& sensor : selectedCameras) {
+        const std::string cameraName(
+            sensor.name,
+            strnlen(sensor.name, sizeof(sensor.name)));
+
+        auto visIt = visibleNormalAdjointPerCamera.find(cameraName);
+        auto depIt = normalFromDepthAdjointPerCamera.find(cameraName);
+
+        if (visIt == visibleNormalAdjointPerCamera.end() ||
+            depIt == normalFromDepthAdjointPerCamera.end()) {
+            continue;
+        }
+
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(sensor.width) *
+            static_cast<std::size_t>(sensor.height);
+
+        syclQueue.memcpy(
+            sensor.visibleNormalAdjointBuffer,
+            visIt->second.data(),
+            pixelCount * 4 * sizeof(float));
+
+        syclQueue.memcpy(
+            sensor.normalFromDepthAdjointBuffer,
+            depIt->second.data(),
+            pixelCount * 4 * sizeof(float));
+    }
+
+    syclQueue.wait_and_throw();
+
+    pathTracer->renderNormalConsistencyBackward(selectedCameras, gradients);
+
+    const std::size_t pointCount = gradients.numPoints;
+
+    std::vector<Pale::float3> gradPositionHost(pointCount);
+    std::vector<Pale::float3> gradTangentUHost(pointCount);
+    std::vector<Pale::float3> gradTangentVHost(pointCount);
+    std::vector<Pale::float2> gradScaleHost(pointCount);
+    std::vector<Pale::float3> gradColorHost(pointCount);
+    std::vector<float> gradOpacityHost(pointCount);
+    std::vector<float> gradBetaHost(pointCount);
+    std::vector<float> gradShapeHost(pointCount);
+    std::vector<float> gradPowerHost(pointCount);
+
+    if (pointCount > 0) {
+        if (gradients.gradPosition) {
+            syclQueue.memcpy(
+                gradPositionHost.data(),
+                gradients.gradPosition,
+                pointCount * sizeof(Pale::float3));
+        }
+        if (gradients.gradTanU) {
+            syclQueue.memcpy(
+                gradTangentUHost.data(),
+                gradients.gradTanU,
+                pointCount * sizeof(Pale::float3));
+        }
+        if (gradients.gradTanV) {
+            syclQueue.memcpy(
+                gradTangentVHost.data(),
+                gradients.gradTanV,
+                pointCount * sizeof(Pale::float3));
+        }
+        if (gradients.gradScale) {
+            syclQueue.memcpy(
+                gradScaleHost.data(),
+                gradients.gradScale,
+                pointCount * sizeof(Pale::float2));
+        }
+        if (gradients.gradAlbedo) {
+            syclQueue.memcpy(
+                gradColorHost.data(),
+                gradients.gradAlbedo,
+                pointCount * sizeof(Pale::float3));
+        }
+        if (gradients.gradOpacity) {
+            syclQueue.memcpy(
+                gradOpacityHost.data(),
+                gradients.gradOpacity,
+                pointCount * sizeof(float));
+        }
+        if (gradients.gradBeta) {
+            syclQueue.memcpy(
+                gradBetaHost.data(),
+                gradients.gradBeta,
+                pointCount * sizeof(float));
+        }
+
+        syclQueue.wait_and_throw();
+    }
+
+    py::gil_scoped_acquire gilAcquire;
+
+    auto makeFloat3Array =
+        [](std::vector<Pale::float3>& hostVector, std::size_t elementCount) -> py::array {
+        auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+        std::vector<ssize_t> shape{
+            static_cast<ssize_t>(elementCount),
+            3
+        };
+        std::vector<ssize_t> strides{
+            static_cast<ssize_t>(sizeof(Pale::float3)),
+            static_cast<ssize_t>(sizeof(float))
+        };
+
+        return py::array(
+            py::buffer_info(
+                ownedVector->data(),
+                sizeof(float),
+                py::format_descriptor<float>::format(),
+                2,
+                shape,
+                strides
+            ),
+            py::capsule(ownedVector, [](void* pointer) {
+                delete static_cast<std::vector<Pale::float3>*>(pointer);
+            })
+        );
+    };
+
+    auto makeFloat2Array =
+        [](std::vector<Pale::float2>& hostVector, std::size_t elementCount) -> py::array {
+        auto* ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+        std::vector<ssize_t> shape{
+            static_cast<ssize_t>(elementCount),
+            2
+        };
+        std::vector<ssize_t> strides{
+            static_cast<ssize_t>(sizeof(Pale::float2)),
+            static_cast<ssize_t>(sizeof(float))
+        };
+
+        return py::array(
+            py::buffer_info(
+                ownedVector->data(),
+                sizeof(float),
+                py::format_descriptor<float>::format(),
+                2,
+                shape,
+                strides
+            ),
+            py::capsule(ownedVector, [](void* pointer) {
+                delete static_cast<std::vector<Pale::float2>*>(pointer);
+            })
+        );
+    };
+
+    auto makeFloat1Array =
+        [](std::vector<float>& hostVector, std::size_t elementCount) -> py::array {
+        auto* ownedVector = new std::vector<float>(std::move(hostVector));
+        std::vector<ssize_t> shape{
+            static_cast<ssize_t>(elementCount)
+        };
+        std::vector<ssize_t> strides{
+            static_cast<ssize_t>(sizeof(float))
+        };
+
+        return py::array(
+            py::buffer_info(
+                ownedVector->data(),
+                sizeof(float),
+                py::format_descriptor<float>::format(),
+                1,
+                shape,
+                strides
+            ),
+            py::capsule(ownedVector, [](void* pointer) {
+                delete static_cast<std::vector<float>*>(pointer);
+            })
+        );
+    };
+
+    py::dict gradientDictionary;
+    gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
+    gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
+    gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+    gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
+    gradientDictionary["albedo"] = makeFloat3Array(gradColorHost, pointCount);
+    gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
+    gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
+    gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+    gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
+
+    return gradientDictionary;
+}
 
     py::dict get_point_parameters() {
         const std::size_t pointCount = buildProducts.points.size();
@@ -2088,31 +2439,31 @@ private:
 PYBIND11_MODULE(pale, m) {
     py::class_<PythonRenderer>(m, "Renderer")
         .def(py::init<
-                 const std::string&, // assetRootDir
-                 const std::string&, // sceneXml
-                 const std::string&, // pointCloudFile
-                 const py::dict& // settingsDict
+                 const std::string&,
+                 const std::string&,
+                 const std::string&,
+                 const py::dict&
              >(),
              py::arg("assetRootDir"),
              py::arg("sceneXml") = "cbox_custom.xml",
              py::arg("pointCloudFile") = "initial.ply",
-             py::arg("settings") = py::dict() // default empty
+             py::arg("settings") = py::dict()
         )
         .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "")
         .def("get_training_camera_names", &PythonRenderer::getTrainingCameras)
         .def("get_camera_names", &PythonRenderer::getCameraNames)
-        .def("render_backward", &PythonRenderer::render_backward,
-             py::arg("targetRgb32f"))
-        .def(
-            "get_point_parameters", &PythonRenderer::get_point_parameters)
-        .def("apply_point_optimization", &PythonRenderer::apply_point_optimization, py::arg("parameters"))
+        .def("render_backward", &PythonRenderer::render_backward, py::arg("targetRgb32f"))
         .def("render_depth_distortion_backward",
              &PythonRenderer::render_depth_distortion_backward,
              py::arg("depthDistortionGrad32f"))
-        .def("add_points", &PythonRenderer::add_new_points,
-             py::arg("parameters"))
-        .def("remove_points", &PythonRenderer::remove_points,
-             py::arg("parameters"))
+        .def("render_normal_consistency_backward",
+             &PythonRenderer::render_normal_consistency_backward,
+             py::arg("visibleNormalGrad32f"),
+             py::arg("normalFromDepthGrad32f"))
+        .def("get_point_parameters", &PythonRenderer::get_point_parameters)
+        .def("apply_point_optimization", &PythonRenderer::apply_point_optimization, py::arg("parameters"))
+        .def("add_points", &PythonRenderer::add_new_points, py::arg("parameters"))
+        .def("remove_points", &PythonRenderer::remove_points, py::arg("parameters"))
         .def("rebuild_bvh", &PythonRenderer::rebuild_bvh)
         .def("set_point_properties",
              &PythonRenderer::set_point_properties,
@@ -2120,22 +2471,10 @@ PYBIND11_MODULE(pale, m) {
              py::arg("scale3"), py::arg("albedo3"),
              py::arg("opacity"), py::arg("beta"),
              py::arg("index") = -1)
-        .def("set_point_opacity",
-             &PythonRenderer::set_point_opacity, py::arg("opacity"),
-             py::arg("index"))
-        .def("set_point_translation",
-             &PythonRenderer::set_point_translation, py::arg("translation"), py::arg("axis"),
-             py::arg("index"))
-        .def("set_point_albedo",
-             &PythonRenderer::set_point_albedo, py::arg("intensity"), py::arg("axis"),
-             py::arg("index"))
-        .def("set_point_rotation_degrees",
-             &PythonRenderer::set_point_rotation_degrees, py::arg("rotation_deg"), py::arg("axis"),
-             py::arg("index"))
-        .def("set_point_scale",
-             &PythonRenderer::set_point_scale, py::arg("scale"), py::arg("axis"),
-             py::arg("index"))
-        .def("set_point_beta",
-             &PythonRenderer::set_point_beta, py::arg("beta"),
-             py::arg("index"));
+        .def("set_point_opacity", &PythonRenderer::set_point_opacity, py::arg("opacity"), py::arg("index"))
+        .def("set_point_translation", &PythonRenderer::set_point_translation, py::arg("translation"), py::arg("axis"), py::arg("index"))
+        .def("set_point_albedo", &PythonRenderer::set_point_albedo, py::arg("intensity"), py::arg("axis"), py::arg("index"))
+        .def("set_point_rotation_degrees", &PythonRenderer::set_point_rotation_degrees, py::arg("rotation_deg"), py::arg("axis"), py::arg("index"))
+        .def("set_point_scale", &PythonRenderer::set_point_scale, py::arg("scale"), py::arg("axis"), py::arg("index"))
+        .def("set_point_beta", &PythonRenderer::set_point_beta, py::arg("beta"), py::arg("index"));
 }

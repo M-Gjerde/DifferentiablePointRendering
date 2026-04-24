@@ -10,14 +10,17 @@ export namespace Pale {
     class Log {
     public:
         static void init(int level = spdlog::level::trace) {
-            // create colour console sinks for core and client
-            s_coreLogger = spdlog::stdout_color_mt("PALE_CORE");
+            static std::atomic_uint64_t loggerInstanceCounter{0};
+
+            const uint64_t loggerInstanceIndex = loggerInstanceCounter.fetch_add(1, std::memory_order_relaxed);
+            const std::string loggerName = "PALE_CORE_" + std::to_string(loggerInstanceIndex);
+
+            s_coreLogger = spdlog::stdout_color_mt(loggerName);
             s_coreLogger->set_pattern("[CORE] [%H:%M:%S.%e] [%^%l%$] %v");
             s_coreLogger->set_level(static_cast<spdlog::level::level_enum>(level));
 
             s_coreLogger->info("Logger initialized");
         }
-
         template<typename... Args>
         static void PA_TRACE(spdlog::format_string_t<Args...> fmt,
                              Args &&... args) {

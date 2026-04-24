@@ -30,6 +30,7 @@ namespace Pale {
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
 
     void launchDepthDistortionBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
-
+    void launchNormalConsistencyBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
+    void launchNormalFromDepthAdjointKernel(RenderPackage& pkg, uint32_t cameraIndex);
     void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex);
 }

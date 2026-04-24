@@ -11,12 +11,13 @@ class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
     forward_passes: int = 5
-    primal_shadow_rays: int = 6
-    adjoint_shadow_rays: int = 6
+    primal_shadow_rays: int = 4
+    adjoint_shadow_rays: int = 4
     gather_passes: int = 1
     adjoint_bounces: int = 3
     adjoint_passes: int = 4
     useDepthDistortion: bool = True
+    useNormalConsistency: bool = True
     logging: int = 3  # Spdlog enums
 
     def as_dict(self, config: OptimizationConfig) -> Dict[str, float | int]:
@@ -31,6 +32,7 @@ class RendererSettingsConfig:
             "adjoint_passes": self.adjoint_passes,
             "logging": self.logging,
             "use_depth_distortion": self.useDepthDistortion,
+            "use_normal_consistency": self.useNormalConsistency,
             "depth_distort_weight": config.depth_distort_weight,
             "normal_consistency_weight": config.normal_consistency_weight,
         }
@@ -55,7 +57,7 @@ class OptimizationConfig:
     learning_rate_albedo: float = 0
     learning_rate_opacity: float = 0
     learning_rate_beta: float = 0
-    depth_distort_weight: float = 0.5
+    depth_distort_weight: float = 0.05
     normal_consistency_weight: float = 0.0
 
     optimizer_type: str = "adam"  # "adam" or "sgd"
@@ -200,10 +202,19 @@ def parse_args() -> OptimizationConfig:
     )
 
     parser.add_argument(
+        "--normal-consistency-weight",
+        dest="normal_consistency_weight",
+        type=float,
+        default=1.0,
+        help="Weight for the normal consistency regularizer.",
+    )
+
+    parser.add_argument(
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        help="",
+        default=0.05,
+        help="Weight for the depth distortion regularizer.",
     )
 
 
@@ -230,10 +241,10 @@ def parse_args() -> OptimizationConfig:
     else:
         # 3DGS-inspired relative factors w.r.t. position LR
         factor_position = 0.01  # ~rotation_lr / position_lr
-        factor_tangent  = 0.05    # ~rotation_lr / position_lr
+        factor_tangent  = 0.09    # ~rotation_lr / position_lr
         factor_scale    = 0.001   # ~scaling_lr / position_lr
-        factor_albedo   = 0.02    # ~feature_lr / position_lr
-        factor_opacity  = 0.01    # ~opacity_lr / position_lr
+        factor_albedo   = 0.01    # ~feature_lr / position_lr
+        factor_opacity  = 0.2    # ~opacity_lr / position_lr
         factor_beta     = 0.005    # ~beta_lr / position_lr
 
 
@@ -265,6 +276,8 @@ def parse_args() -> OptimizationConfig:
         learning_rate_albedo=lr_albedo,
         learning_rate_opacity=lr_opacity,
         learning_rate_beta=lr_beta,
+        depth_distort_weight=args.depth_distort_weight,
+        normal_consistency_weight=args.normal_consistency_weight,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,

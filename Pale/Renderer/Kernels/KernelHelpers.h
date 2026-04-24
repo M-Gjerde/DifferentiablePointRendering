@@ -1517,4 +1517,25 @@ namespace Pale {
         return cosine_at_x * cosine_at_y * inverse_distance * inverse_distance;
     }
 
+    static inline float3 reconstructWorldPositionFromDepthCenter(
+        const CameraGPU &camera,
+        const uint32_t pixelX,
+        const uint32_t pixelY,
+        const float depth) {
+        Ray ray = makePrimaryRayFromPixelJitteredFov(
+            camera,
+            static_cast<float>(pixelX),
+            static_cast<float>(pixelY),
+            0.0f, // center pixel in your convention
+            0.0f);
+
+        const float denom = dot(camera.forward, ray.direction);
+        if (sycl::fabs(denom) <= 1e-8f) {
+            return camera.pos;
+        }
+
+        const float t = depth / denom;
+        return ray.origin + ray.direction * t;
+    }
+
 }

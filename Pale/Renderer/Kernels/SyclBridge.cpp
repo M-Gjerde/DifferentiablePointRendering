@@ -381,4 +381,26 @@ namespace Pale {
             launchDepthDistortionBackwardKernel(pkg, cameraIndex);
         }
     }
+    void submitNormalConsistencyKernel(RenderPackage& pkg) {
+        pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.gradScale, float2{0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.gradBeta, 0.0f, pkg.gradients.numPoints);
+        pkg.queue.wait();
+
+        for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+            auto& sensor = pkg.sensors[cameraIndex];
+            const uint32_t pixelCount = sensor.width * sensor.height;
+
+            pkg.queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount).wait();
+
+            launchNormalFromDepthAdjointKernel(pkg, cameraIndex);
+            launchNormalConsistencyBackwardKernel(pkg, cameraIndex);
+        }
+
+        pkg.queue.wait();
+    }
 }
