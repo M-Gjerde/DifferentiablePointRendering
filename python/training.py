@@ -30,6 +30,7 @@ from optimizers import (
 )
 from density_control import (
     compute_prune_indices_by_opacity,
+    compute_prune_indices_by_degenerate_scale,
 )
 from render_hooks import (
     remove_points,
@@ -253,7 +254,6 @@ def poll_hotkey() -> Optional[str]:
     if line in ("s", "g"):
         return line
     return None
-
 
 def save_gradients_snapshot(
         output_dir: Path,
@@ -1130,13 +1130,13 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 1e100
-    burnin_iterations = 100
+    prune_interval = 10
+    burnin_iterations = 10
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
 
-    opacity_prune_threshold = 0.05
+    opacity_prune_threshold = 100.0
     max_prune_fraction = 0.3
     rebuild_bvh_interval = 1
 
@@ -1397,21 +1397,64 @@ def run_optimization(
                 densification_result: Optional[Dict[str, np.ndarray]] = None
                 indices_to_remove_list: List[int] = []
 
+                scale_prune_indices = np.zeros((0,), dtype=np.int64)
+                opacity_prune_indices = np.zeros((0,), dtype=np.int64)
+
                 if iteration >= burnin_iterations and iteration % prune_interval == 0:
-                    opacity_prune_indices = compute_prune_indices_by_opacity(
-                        opacities,
-                        min_opacity=opacity_prune_threshold,
-                        use_quantile=False,
-                        max_fraction_to_prune=max_prune_fraction,
+                    # ----------------------------------------------------------
+                    # Prune geometrically degenerate surfels.
+                    #
+                    # A surfel is degenerate if either:
+                    #   scale_u <= 1e-5
+                    #   scale_v <= 1e-5
+                    #
+                    # trainable_surfel_mask protects emissive/light surfels.
+                    # ----------------------------------------------------------
+                    scale_prune_indices = compute_prune_indices_by_degenerate_scale(
+                        scales,
+                        min_scale=1.0e-5,
+                        trainable_mask=trainable_surfel_mask,
+                        min_points_to_keep=1,
                     )
+
+                    if scale_prune_indices.size > 0:
+                        indices_to_remove_list.extend(int(i) for i in scale_prune_indices)
+
+                    # ----------------------------------------------------------
+                    # Prune low-opacity surfels.
+                    # ----------------------------------------------------------
+                    #opacity_prune_indices = compute_prune_indices_by_opacity(
+                    #    opacities,
+                    #    min_opacity=opacity_prune_threshold,
+                    #    use_quantile=False,
+                    #    max_fraction_to_prune=max_prune_fraction,
+                    #)
+
                     if opacity_prune_indices.size > 0:
                         indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
 
                 if indices_to_remove_list or densification_result is not None:
                     if indices_to_remove_list:
+                        scale_prune_set = set(int(i) for i in scale_prune_indices)
+                        opacity_prune_set = set(int(i) for i in opacity_prune_indices)
+
+                        scale_only_set = scale_prune_set - opacity_prune_set
+                        opacity_only_set = opacity_prune_set - scale_prune_set
+                        overlap_set = scale_prune_set & opacity_prune_set
+
                         indices_to_remove = np.unique(
                             np.asarray(indices_to_remove_list, dtype=np.int64)
                         )
+
+                        print(
+                            f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
+                            f"scale={len(scale_prune_set)}, "
+                            f"opacity={len(opacity_prune_set)}, "
+                            f"both={len(overlap_set)}, "
+                            f"scale_only={len(scale_only_set)}, "
+                            f"opacity_only={len(opacity_only_set)}"
+                        )
+
                         remove_points(renderer, indices_to_remove)
                         rebuild_bvh(renderer)
 
@@ -1426,11 +1469,19 @@ def run_optimization(
                         powers
                     ) = refetch_parameters_as_torch(renderer, device)
 
-                    verify_parameters_inplane(
-                        positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
-                        trainable_surfel_mask=trainable_surfel_mask,
+                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
 
+                    verify_parameters_inplane(
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        albedos,
+                        opacities,
+                        betas,
+                        trainable_surfel_mask=trainable_surfel_mask,
                     )
+
                     apply_point_parameters(
                         renderer,
                         positions,
@@ -1440,10 +1491,11 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
-                        powers
+                        powers,
                     )
 
                     rebuild_bvh(renderer)
+
                     optimizer = create_masked_optimizer(
                         config,
                         positions,
@@ -1453,7 +1505,7 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
-                        powers
+                        powers,
                     )
 
                     trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)

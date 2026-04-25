@@ -3534,7 +3534,7 @@ namespace Pale {
                         // Material-point X:
                         // world point moves directly with (s_p, s_u, s_v, t_u, t_v)
                         // -------------------------------------------------------------
-                        positionContribution += gradientWrtWorldHitPositionX * invSpp;
+                        //positionContribution += gradientWrtWorldHitPositionX * invSpp;
 
                         if (scaleXU > 1e-12f && scaleXV > 1e-12f) {
                             scaleXContributionU +=
@@ -3596,8 +3596,8 @@ namespace Pale {
                     xRecord.gradTangentVY = tanVXContribution.y();
                     xRecord.gradTangentVZ = tanVXContribution.z();
 
-                    xRecord.gradEta = etaXContribution;
-                    xRecord.gradBeta = betaXContribution;
+                    //xRecord.gradEta = etaXContribution;
+                    //xRecord.gradBeta = betaXContribution;
 
                     xRecord.gradAlbedoR = albedoXContribution.x();
                     xRecord.gradAlbedoG = albedoXContribution.y();

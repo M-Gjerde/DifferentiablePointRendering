@@ -11,12 +11,12 @@ class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 1
     forward_passes: int = 1
-    primal_shadow_rays: int = 6
+    primal_shadow_rays: int = 4
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_rays: int = 6
+    adjoint_shadow_rays: int = 4
     gather_passes: int = 1
-    adjoint_bounces: int = 2
-    adjoint_passes: int = 2
+    adjoint_bounces: int = 1
+    adjoint_passes: int = 1
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 3
@@ -214,7 +214,7 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.1,
+        default=0.2,
         help="Weight for the depth distortion regularizer.",
     )
 
@@ -228,19 +228,19 @@ def parse_args() -> OptimizationConfig:
         # - reduce position step substantially
         # - reduce tangent step drastically
         # - keep scale/albedo/opacity responsive
-        factor_position = 0.02
-        factor_tangent = 25.0
-        factor_scale = 0.2
-        factor_albedo = 25.0
-        factor_opacity = 2.0
-        factor_beta = 0.3
+        factor_position = 1.0
+        factor_tangent = 10.0
+        factor_scale = 0.5
+        factor_albedo = 200.0
+        factor_opacity = 200.0
+        factor_beta = 0.25
     else:
         factor_position = 0.001
-        factor_tangent = 0.01
-        factor_scale = 0.005
+        factor_tangent = 0.05
+        factor_scale = 0.001
         factor_albedo = 0.04
-        factor_opacity = 0.01
-        factor_beta = 0.001
+        factor_opacity = 0.001
+        factor_beta = 0.01
 
     lr_pos = args.learning_rate_position or (factor_position * base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)

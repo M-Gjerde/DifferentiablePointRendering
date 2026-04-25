@@ -16,8 +16,8 @@ from PIL import Image, ImageDraw, ImageFont
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a 4-panel optimization GIF from the latest optimization run.\n"
-            "Panels: target | final render | optimization sequence | loss curve"
+            "Create a 6-panel optimization GIF from the latest optimization run.\n"
+            "Panels: target | initial render | final render | optimization sequence | median depth | loss curve"
         )
     )
     parser.add_argument(
@@ -90,6 +90,7 @@ def parse_run_timestamp(run_dir_name: str) -> datetime | None:
     match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})", run_dir_name)
     if match is None:
         return None
+
     try:
         return datetime.strptime(match.group(1), "%Y-%m-%d_%H-%M-%S")
     except ValueError:
@@ -101,9 +102,11 @@ def find_latest_run_dir(optimization_output_root: Path) -> Path:
         raise FileNotFoundError(f"OptimizationOutput folder does not exist: {optimization_output_root}")
 
     candidate_run_dirs = []
+
     for child in optimization_output_root.iterdir():
         if not child.is_dir():
             continue
+
         metrics_csv_path = child / "metrics.csv"
         if not metrics_csv_path.exists():
             continue
@@ -129,15 +132,18 @@ def find_latest_run_dir(optimization_output_root: Path) -> Path:
         ),
         reverse=True,
     )
+
     return candidate_run_dirs[0]["run_dir"]
 
 
 def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
     if "camera_name" not in dataframe.columns:
         return dataframe
+
     mask = dataframe["camera_name"].astype(str) == "ALL_CAMERAS"
     if mask.any():
         return dataframe.loc[mask].copy()
+
     return dataframe.copy()
 
 
@@ -154,27 +160,34 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         "loss_total_sum",
         "loss_rgb_sum",
         "loss_depth_distortion_sum",
+        "loss_depth_distortion_weighted_sum",
+        "loss_normal_consistency_weighted_sum",
         "loss_l2_window_mean",
         "loss_l2_current_camera",
         "loss_l2_window_sum_scaled",
     ]
-    for col in preferred:
-        if col in dataframe.columns:
-            return col
+
+    for column_name in preferred:
+        if column_name in dataframe.columns:
+            return column_name
 
     raise ValueError(f"No supported loss column found. Available columns: {list(dataframe.columns)}")
 
 
 def discover_camera_names(run_dir: Path) -> List[str]:
     camera_names = []
+
     for child in sorted(run_dir.iterdir()):
         if not child.is_dir():
             continue
+
         render_dir = child / "render"
         if render_dir.is_dir():
             camera_names.append(child.name)
+
     if not camera_names:
         raise FileNotFoundError(f"No camera folders with a render/ subfolder found in: {run_dir}")
+
     return camera_names
 
 
@@ -210,23 +223,63 @@ def make_loss_curve_image(
 def load_image_rgb(path: Path) -> Image.Image:
     if not path.exists():
         raise FileNotFoundError(f"Missing image: {path}")
-    image = Image.open(path).convert("RGB")
+
+    return Image.open(path).convert("RGB")
+
+
+def make_placeholder_image(
+    text: str,
+    width: int,
+    height: int,
+    font: ImageFont.ImageFont,
+) -> Image.Image:
+    image = Image.new("RGB", (width, height), (20, 20, 20))
+    draw = ImageDraw.Draw(image)
+
+    lines = text.split("\n")
+    line_heights = []
+
+    for line in lines:
+        try:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_heights.append(bbox[3] - bbox[1])
+        except Exception:
+            _, line_height = draw.textsize(line, font=font)
+            line_heights.append(line_height)
+
+    total_height = sum(line_heights) + max(0, len(lines) - 1) * 8
+    y = (height - total_height) // 2
+
+    for line, line_height in zip(lines, line_heights):
+        try:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_width = bbox[2] - bbox[0]
+        except Exception:
+            text_width, _ = draw.textsize(line, font=font)
+
+        x = (width - text_width) // 2
+        draw.text((x, y), line, fill=(220, 220, 220), font=font)
+        y += line_height + 8
+
     return image
 
 
 def fit_image_to_panel(image: Image.Image, panel_width: int, panel_height: int) -> Image.Image:
-    src_w, src_h = image.size
-    if src_w <= 0 or src_h <= 0:
+    src_width, src_height = image.size
+
+    if src_width <= 0 or src_height <= 0:
         return Image.new("RGB", (panel_width, panel_height), (0, 0, 0))
 
-    scale = min(panel_width / src_w, panel_height / src_h)
-    new_w = max(1, int(round(src_w * scale)))
-    new_h = max(1, int(round(src_h * scale)))
+    scale = min(panel_width / src_width, panel_height / src_height)
+    new_width = max(1, int(round(src_width * scale)))
+    new_height = max(1, int(round(src_height * scale)))
 
-    resized = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
     canvas = Image.new("RGB", (panel_width, panel_height), (20, 20, 20))
-    offset_x = (panel_width - new_w) // 2
-    offset_y = (panel_height - new_h) // 2
+
+    offset_x = (panel_width - new_width) // 2
+    offset_y = (panel_height - new_height) // 2
+
     canvas.paste(resized, (offset_x, offset_y))
     return canvas
 
@@ -242,15 +295,17 @@ def draw_panel_title(
     out.paste(panel_image, (0, title_height))
 
     draw = ImageDraw.Draw(out)
+
     try:
         bbox = draw.textbbox((0, 0), title, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
     except Exception:
-        text_w, text_h = draw.textsize(title, font=font)
+        text_width, text_height = draw.textsize(title, font=font)
 
-    x = (panel_width - text_w) // 2
-    y = max(0, (title_height - text_h) // 2)
+    x = (panel_width - text_width) // 2
+    y = max(0, (title_height - text_height) // 2)
+
     draw.text((x, y), title, fill=(255, 255, 255), font=font)
     return out
 
@@ -267,16 +322,39 @@ def make_panel(
     return draw_panel_title(fitted, title, panel_width, title_height, font)
 
 
-def compose_row_panels(panels: List[Image.Image]) -> Image.Image:
-    widths = [p.width for p in panels]
-    heights = [p.height for p in panels]
-    out = Image.new("RGB", (sum(widths), max(heights)), (10, 10, 10))
+def compose_grid_panels(
+    rows: List[List[Image.Image]],
+    background_color: tuple[int, int, int] = (10, 10, 10),
+) -> Image.Image:
+    if not rows:
+        raise ValueError("Cannot compose an empty panel grid")
 
-    x = 0
-    for panel in panels:
-        out.paste(panel, (x, 0))
-        x += panel.width
-    return out
+    row_widths = [sum(panel.width for panel in row) for row in rows]
+    row_heights = [max(panel.height for panel in row) for row in rows]
+
+    output_width = max(row_widths)
+    output_height = sum(row_heights)
+
+    output_image = Image.new("RGB", (output_width, output_height), background_color)
+
+    y_offset = 0
+    for row, row_height in zip(rows, row_heights):
+        x_offset = 0
+        for panel in row:
+            output_image.paste(panel, (x_offset, y_offset))
+            x_offset += panel.width
+
+        y_offset += row_height
+
+    return output_image
+
+
+def parse_frame_index_from_name(path: Path, suffix: str) -> int | None:
+    match = re.match(rf"^(\d+)_{re.escape(suffix)}\.png$", path.name)
+    if match is None:
+        return None
+
+    return int(match.group(1))
 
 
 def discover_render_frames(camera_render_dir: Path) -> List[Path]:
@@ -285,15 +363,46 @@ def discover_render_frames(camera_render_dir: Path) -> List[Path]:
 
     frame_paths = sorted(
         camera_render_dir.glob("*_render.png"),
-        key=lambda p: int(re.match(r"^(\d+)_render\.png$", p.name).group(1))
-        if re.match(r"^(\d+)_render\.png$", p.name)
-        else p.name,
+        key=lambda path: (
+            parse_frame_index_from_name(path, "render") is None,
+            parse_frame_index_from_name(path, "render")
+            if parse_frame_index_from_name(path, "render") is not None
+            else path.name,
+        ),
     )
 
     if not frame_paths:
         raise FileNotFoundError(f"No optimization render frames found in: {camera_render_dir}")
 
     return frame_paths
+
+
+def discover_median_depth_frames(camera_median_depth_dir: Path) -> dict[int, Path]:
+    if not camera_median_depth_dir.exists():
+        return {}
+
+    median_depth_frame_paths = {}
+
+    for median_depth_path in camera_median_depth_dir.glob("*_median_depth.png"):
+        frame_index = parse_frame_index_from_name(median_depth_path, "median_depth")
+        if frame_index is None:
+            continue
+
+        median_depth_frame_paths[frame_index] = median_depth_path
+
+    return median_depth_frame_paths
+
+
+def get_matching_median_depth_path(
+    render_frame_path: Path,
+    median_depth_frame_paths: dict[int, Path],
+) -> Path | None:
+    render_frame_index = parse_frame_index_from_name(render_frame_path, "render")
+
+    if render_frame_index is None:
+        return None
+
+    return median_depth_frame_paths.get(render_frame_index)
 
 
 def build_gif(
@@ -308,14 +417,35 @@ def build_gif(
     loop: int,
 ) -> Path:
     target_path = run_dir / f"render_target_{camera_name}.png"
+    initial_path = run_dir / f"render_initial_{camera_name}.png"
     final_path = run_dir / f"render_final_{camera_name}.png"
+
     render_dir = run_dir / camera_name / "render"
+    median_depth_dir = run_dir / camera_name / "median_depth"
+
     metrics_csv_path = run_dir / "metrics.csv"
     loss_curve_path = run_dir / "loss_curve_for_gif.png"
 
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 20)
+    except Exception:
+        font = ImageFont.load_default()
+
     target_img = load_image_rgb(target_path)
     final_img = load_image_rgb(final_path)
+
+    if initial_path.exists():
+        initial_img = load_image_rgb(initial_path)
+    else:
+        initial_img = make_placeholder_image(
+            f"Missing initial render\n{initial_path.name}",
+            panel_width,
+            panel_height,
+            font,
+        )
+
     render_frame_paths = discover_render_frames(render_dir)
+    median_depth_frame_paths = discover_median_depth_frames(median_depth_dir)
 
     loss_curve_img_path, used_loss_column = make_loss_curve_image(
         metrics_csv_path=metrics_csv_path,
@@ -326,49 +456,102 @@ def build_gif(
     )
     loss_curve_img = load_image_rgb(loss_curve_img_path)
 
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 20)
-    except Exception:
-        font = ImageFont.load_default()
-
     target_panel = make_panel(
-        target_img, f"Target ({camera_name})",
-        panel_width, panel_height, title_height, font
+        target_img,
+        f"Target ({camera_name})",
+        panel_width,
+        panel_height,
+        title_height,
+        font,
     )
+
+    initial_panel = make_panel(
+        initial_img,
+        f"Initial render ({camera_name})",
+        panel_width,
+        panel_height,
+        title_height,
+        font,
+    )
+
     final_panel = make_panel(
-        final_img, f"Final render ({camera_name})",
-        panel_width, panel_height, title_height, font
+        final_img,
+        f"Final render ({camera_name})",
+        panel_width,
+        panel_height,
+        title_height,
+        font,
     )
+
     loss_panel = make_panel(
-        loss_curve_img, f"Loss curve ({used_loss_column})",
-        panel_width, panel_height, title_height, font
+        loss_curve_img,
+        f"Loss curve ({used_loss_column})",
+        panel_width,
+        panel_height,
+        title_height,
+        font,
+    )
+
+    no_median_depth_img = make_placeholder_image(
+        "Median depth unavailable",
+        panel_width,
+        panel_height,
+        font,
     )
 
     output_path = run_dir / output_name
-    duration_sec = 1.0 / max(fps, 1e-6)
+    duration_sec = 1.0 / max(fps, 1.0e-6)
 
     with imageio.get_writer(output_path, mode="I", duration=duration_sec, loop=loop) as writer:
         for frame_index, render_frame_path in enumerate(render_frame_paths):
             render_img = load_image_rgb(render_frame_path)
-            optimization_title = f"Optimization ({render_frame_path.stem})"
+
             optimization_panel = make_panel(
                 render_img,
-                optimization_title,
+                f"Optimization ({render_frame_path.stem})",
                 panel_width,
                 panel_height,
                 title_height,
                 font,
             )
 
-            row = compose_row_panels(
+            median_depth_path = get_matching_median_depth_path(
+                render_frame_path=render_frame_path,
+                median_depth_frame_paths=median_depth_frame_paths,
+            )
+
+            if median_depth_path is not None:
+                median_depth_img = load_image_rgb(median_depth_path)
+                median_depth_title = f"Median depth ({median_depth_path.stem})"
+            else:
+                median_depth_img = no_median_depth_img
+                median_depth_title = "Median depth"
+
+            median_depth_panel = make_panel(
+                median_depth_img,
+                median_depth_title,
+                panel_width,
+                panel_height,
+                title_height,
+                font,
+            )
+
+            grid = compose_grid_panels(
                 [
-                    target_panel,
-                    final_panel,
-                    optimization_panel,
-                    loss_panel,
+                    [
+                        target_panel,
+                        initial_panel,
+                        final_panel,
+                    ],
+                    [
+                        optimization_panel,
+                        median_depth_panel,
+                        loss_panel,
+                    ],
                 ]
             )
-            writer.append_data(np.asarray(row, dtype=np.uint8))
+
+            writer.append_data(np.asarray(grid, dtype=np.uint8))
 
     return output_path
 

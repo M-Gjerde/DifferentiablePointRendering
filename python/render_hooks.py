@@ -227,7 +227,7 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.005, max=0.05) ## TODO Enforcing min size matching photon map min resolution
+        s_clamped = torch.clamp(s, min=0.000, max=0.1) ## TODO Enforcing min size matching photon map min resolution
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -337,7 +337,7 @@ def verify_beta_inplace(
         before_max = float(beta_values.max().item())
 
         if trainable_surfel_mask is None:
-            beta_values.clamp_(min=-2.0, max=5.0)
+            beta_values.clamp_(min=-1.5, max=5.0)
         else:
             mask = trainable_surfel_mask.to(
                 device=beta_values.device,

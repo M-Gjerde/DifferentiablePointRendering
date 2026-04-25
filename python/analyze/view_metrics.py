@@ -78,7 +78,15 @@ def parse_args() -> argparse.Namespace:
             "Disabled by default."
         ),
     )
-
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=None,
+        help=(
+            "Only plot the last N iterations from metrics.csv. "
+            "Example: --iterations 100"
+        ),
+    )
     parser.add_argument(
         "--show-plots",
         dest="show_plots",
@@ -90,6 +98,11 @@ def parse_args() -> argparse.Namespace:
         dest="show_plots",
         action="store_false",
         help="Do not open the matplotlib plot window.",
+    )
+    parser.add_argument(
+        "--index",
+        type=int,
+        default=0,
     )
     parser.set_defaults(show_plots=True)
 
@@ -107,7 +120,7 @@ def parse_run_timestamp(run_dir_name: str) -> datetime | None:
         return None
 
 
-def find_latest_run_dir(optimization_output_root: Path) -> Path:
+def find_latest_run_dir(optimization_output_root: Path, index: int = 0) -> Path:
     if not optimization_output_root.exists():
         raise FileNotFoundError(
             f"OptimizationOutput folder does not exist: {optimization_output_root}"
@@ -148,7 +161,7 @@ def find_latest_run_dir(optimization_output_root: Path) -> Path:
         reverse=True,
     )
 
-    return candidate_run_dirs[0]["run_dir"]
+    return candidate_run_dirs[index]["run_dir"]
 
 
 def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -203,6 +216,7 @@ def save_loss_curve(
     explicit_loss_column: str | None,
     plot_all_losses: bool,
     show_plots: bool,
+    last_iterations: int | None,
 ) -> str:
     dataframe = pd.read_csv(metrics_csv_path)
     dataframe = filter_metrics_rows(dataframe)
@@ -211,6 +225,19 @@ def save_loss_curve(
         raise ValueError("metrics.csv does not contain an 'iteration' column")
 
     dataframe = dataframe.sort_values("iteration").reset_index(drop=True)
+
+    if last_iterations is not None:
+        if last_iterations <= 0:
+            raise ValueError(
+                f"--iterations must be a positive integer, got: {last_iterations}"
+            )
+
+        dataframe = dataframe.tail(last_iterations).reset_index(drop=True)
+
+        if dataframe.empty:
+            raise ValueError(
+                f"No rows left after applying --iterations {last_iterations}"
+            )
 
     if plot_all_losses:
         fig, axes = plt.subplots(
@@ -465,7 +492,7 @@ def main() -> None:
         if not run_dir.exists():
             raise FileNotFoundError(f"--run-dir does not exist: {run_dir}")
     else:
-        run_dir = find_latest_run_dir(optimization_output_root)
+        run_dir = find_latest_run_dir(optimization_output_root, args.index)
 
     metrics_csv_path = run_dir / "metrics.csv"
     loss_curve_output_path = run_dir / args.loss_output_name
@@ -479,8 +506,8 @@ def main() -> None:
         explicit_loss_column=args.loss_column,
         plot_all_losses=args.plot_all_losses,
         show_plots=args.show_plots,
+        last_iterations=args.iterations,
     )
-
     saved_render_paths: list[Path] = []
     run_config_path: Path | None = None
     pybind_dir: Path | None = None
@@ -504,6 +531,7 @@ def main() -> None:
     print(f"Metrics file        : {metrics_csv_path}")
     print(f"Loss column(s) used : {loss_column_name}")
     print(f"Loss curve written  : {loss_curve_output_path}")
+    print(f"Last iterations     : {args.iterations if args.iterations is not None else 'all'}")
     print(f"Show plots          : {args.show_plots}")
     print(f"Rendering enabled   : {args.render_final}")
 

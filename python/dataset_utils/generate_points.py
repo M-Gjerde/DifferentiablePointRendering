@@ -267,7 +267,7 @@ def generate_volume_ply(
                 )
 
 
-    light_power = 10.0
+    light_power = 35.0
 
     light_nx = 0.0
     light_ny = 0.0
@@ -280,8 +280,8 @@ def generate_volume_ply(
     light_x = 0.5
     light_y = -0.8
     light_z = 2.2
-    light_su = 0.01
-    light_sv = 0.01
+    light_su = 0.001
+    light_sv = 0.001
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
@@ -302,8 +302,6 @@ def generate_volume_ply(
     light_x = -0.5
     light_y = 0.8
     light_z = 2.2
-    light_su = 0.01
-    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
@@ -323,8 +321,6 @@ def generate_volume_ply(
     light_x = 0.0
     light_y = 0.0
     light_z = -2.0
-    light_su = 0.01
-    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
@@ -374,7 +370,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "max_z": 0.55,
         "scale": 0.025,
         "position_noise_std": 0.05,
-        "tangent_noise_std": 5.0,
+        "tangent_noise_std": 45.0,
     },
     "teapot_plane": {
         "min_x": -1.7,
@@ -405,7 +401,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "max_y": 0.5,
         "min_z": -0.01,
         "max_z": 0.01,
-        "scale": 0.02,
+        "scale": 0.05,
         "position_noise_std": 0.02,
         "tangent_noise_std": 5.0,
     },
@@ -436,7 +432,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-z", type=float)
 
     parser.add_argument("--scale", type=float)
-    parser.add_argument("--opacity", type=float, default=0.0)
+    parser.add_argument("--opacity", type=float, default=1.0)
     parser.add_argument("--position-noise-std", type=float)
     parser.add_argument("--tangent-noise-std", type=float)
     parser.add_argument("--seed", type=int, default=None)
