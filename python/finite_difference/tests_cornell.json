@@ -5,7 +5,7 @@
     "--ply",
     "pointcloud",
     "--seed",
-    "666"
+    "56"
   ],
   "cases": [
     {
@@ -29,7 +29,7 @@
       "index": 1,
       "min": -0.4,
       "max": 0.75,
-      "fd_epsilon": 1e-2,
+      "fd_epsilon": 1e-4,
       "forward_passes": 1,
       "bounces": 1,
       "adjoint_passes": 1,
@@ -46,7 +46,7 @@
       "fd_epsilon": 1e-2,
       "forward_passes": 1,
       "bounces": 1,
-      "adjoint_passes": 1,
+      "adjoint_passes": 64,
       "adjoint_bounces": 2,
       "enable_adjoint_shadow_rays": true
     },
@@ -114,11 +114,11 @@
       "min": 0.1,
       "max": 0.9,
       "fd_epsilon": 5e-2,
-      "forward_passes": 15,
-      "bounces": 2,
+      "forward_passes": 1,
+      "bounces": 1,
       "adjoint_passes": 8,
-      "adjoint_bounces": 3,
-      "enable_adjoint_shadow_rays": false
+      "adjoint_bounces": 2,
+      "enable_adjoint_shadow_rays": true
     },
     {
       "scene": "cornell",
@@ -128,10 +128,11 @@
       "min": 0.01,
       "max": 0.9,
       "fd_epsilon": 1e-2,
-      "forward_passes": 10,
+      "forward_passes": 1,
       "bounces": 1,
       "adjoint_passes": 4,
-      "adjoint_bounces": 2
+      "adjoint_bounces": 2,
+      "enable_adjoint_shadow_rays": true
     },
     {
       "scene": "cornell",
@@ -141,10 +142,11 @@
       "min": -3.0,
       "max": 3.0,
       "fd_epsilon": 1e-2,
-      "forward_passes": 15,
-      "bounces": 2,
+      "forward_passes": 1,
+      "bounces": 1,
       "adjoint_passes": 8,
-      "adjoint_bounces": 3
+      "adjoint_bounces": 2,
+      "enable_adjoint_shadow_rays": true
     }
   ]
 }

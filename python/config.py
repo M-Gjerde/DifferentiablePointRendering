@@ -10,12 +10,13 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 1
-    forward_passes: int = 10
-    primal_shadow_rays: int = 5
-    adjoint_shadow_rays: int = 5
+    forward_passes: int = 1
+    primal_shadow_rays: int = 6
+    enable_adjoint_shadow_rays: bool = True
+    adjoint_shadow_rays: int = 6
     gather_passes: int = 1
     adjoint_bounces: int = 2
-    adjoint_passes: int = 4
+    adjoint_passes: int = 2
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 3
@@ -28,6 +29,7 @@ class RendererSettingsConfig:
             "gather_passes": self.gather_passes,
             "primal_shadow_rays": self.primal_shadow_rays,
             "adjoint_shadow_rays": self.adjoint_shadow_rays,
+            "enable_adjoint_shadow_rays": self.enable_adjoint_shadow_rays,
             "adjoint_bounces": self.adjoint_bounces,
             "adjoint_passes": self.adjoint_passes,
             "logging": self.logging,
@@ -212,7 +214,7 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.0,
+        default=0.1,
         help="Weight for the depth distortion regularizer.",
     )
 
