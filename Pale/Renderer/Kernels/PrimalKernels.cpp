@@ -201,10 +201,10 @@ namespace Pale {
                             //   - does NOT increment bounceIndex
                             //   - does NOT enqueue a ray yet
                             //   - continues traversal immediately in this same kernel call
-                            if (randomNumber < settings.sampling.qNull) {
+                            if (randomNumber < settings.sampling.qNullRender) {
                                 const float effectiveOpacity = worldHit.alphaGeom * surfel.opacity;
                                 const float attenuation = 1.0f - effectiveOpacity;
-                                const float weight = attenuation / settings.sampling.qNull;
+                                const float weight = attenuation / settings.sampling.qNullRender;
 
                                 currentRayState.ray.origin = worldHit.hitPositionW + (currentRayState.ray.direction *
                                                                  rayAdvanceEpsilon);
@@ -217,7 +217,7 @@ namespace Pale {
                             //   - this is the first real interaction after any number of null events
                             //   - increment bounceIndex
                             //   - enqueue and return
-                            if (randomNumber < settings.sampling.qNull + settings.sampling.qReflect) {
+                            if (randomNumber < settings.sampling.qNullRender + settings.sampling.qReflectRender) {
                                 const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
                                 const float signedCosineIncident =
                                         dot(canonicalNormalW, -currentRayState.ray.direction);
@@ -229,7 +229,7 @@ namespace Pale {
                                         worldHit,
                                         currentRayState.ray.direction,
                                         orientedNormal,
-                                        currentRayState.pathThroughput / settings.sampling.qReflect,
+                                        currentRayState.pathThroughput / settings.sampling.qReflectRender,
                                         intermediates.map);
                                 }
 
@@ -247,7 +247,7 @@ namespace Pale {
                                         surfel.alpha_r * surfel.albedo * M_1_PIf;
                                 const float effectiveOpacity = worldHit.alphaGeom * surfel.opacity;
                                 const float3 reflectWeight =
-                                ((effectiveOpacity / settings.sampling.qReflect) *
+                                ((effectiveOpacity / settings.sampling.qReflectRender) *
                                  scatteringFunction *
                                  cosineTheta / sampledPdf);
 
@@ -610,7 +610,7 @@ namespace Pale {
                                     surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
 
                             if (surfel.flux > 0.0f && hitBackside) {
-                                emittedRadiance = float3(0.0f);
+                                //emittedRadiance = float3(0.0f);
                             }
 
                             const float3 directRadiance =

@@ -191,7 +191,7 @@ def _render_loss(
     rendered_rgb is float32 (H,W,3)
     """
     images = renderer.render_forward()
-    image = images[camera + "_raw"]
+    image = images[camera]["raw"]
     rendered = np.asarray(image, dtype=np.float32)[..., :3]
     loss_value = float(compute_l2_loss(rendered, target_image))
     return loss_value, rendered, images
@@ -280,11 +280,11 @@ def _make_target_image(
         return target_image.astype(np.float32), tuple(target_image.shape)
 
     reference_images = renderer.render_forward()
-    reference_rendered = np.asarray(reference_images[camera + "_raw"], dtype=np.float32)[..., :3]
+    reference_rendered = np.asarray(reference_images[camera]["raw"], dtype=np.float32)[..., :3]
     target_shape = tuple(reference_rendered.shape)
 
     if target_mode == "ones":
-        target_image = np.ones_like(reference_rendered, dtype=np.float32)
+        target_image = 100 * np.ones_like(reference_rendered, dtype=np.float32)
         return target_image, target_shape
 
     if target_mode == "random":
@@ -409,7 +409,7 @@ def main(args) -> None:
             _set_parameter(renderer, args.parameter, float(value), index)
             renderer.rebuild_bvh()
             images = renderer.render_forward()
-            rendered_image = np.asarray(images[camera + "_raw"], dtype=np.float32)[..., :3]
+            rendered_image = np.asarray(images[camera]["raw"], dtype=np.float32)[..., :3]
 
             loss_grad_image = compute_l2_grad(rendered_image, target_image)
 
@@ -427,7 +427,7 @@ def main(args) -> None:
                 )
 
             save_rgb_preview_png(
-                images[camera],
+                images[camera]["image"],
                 rendered_dir / f"{iteration_index}_{camera}.png",
                 exposure_stops=0.0,
             )
@@ -436,15 +436,10 @@ def main(args) -> None:
                 if camera_name not in images or args.camera == camera_name:
                     continue
 
-                raw_key = f"{camera_name}_raw"
-                if raw_key not in images:
-                    print(f"Skipping EXR for missing camera key: {raw_key}")
-                    continue
-
                 camera_output_dir = rendered_dir / camera_name
 
                 save_rgb_preview_png(
-                    images[camera_name],
+                    images[camera_name]["image"],
                     camera_output_dir / f"{iteration_index}_{camera_name}.png",
                     exposure_stops=0.0,
                 )

@@ -3362,6 +3362,7 @@ namespace Pale {
                         if (oneMinusRadiusSquaredX > 1e-8f &&
                             scaleXU > 1e-12f &&
                             scaleXV > 1e-12f) {
+                            /*
                             UVPositionJacobian uvPositionJacobian{};
                             uvPositionJacobian =
                                     computeDuvDSurfelTranslationJacobianForImplicitRayHit(
@@ -3389,10 +3390,12 @@ namespace Pale {
                                     transmittance *
                                     geometricTermXL;
 
+
                             positionContribution +=
                                     dAlphaEffectiveDPosition *
                                     scalarWeightNoLocalAlpha *
                                     invSpp;
+
 
                             const float dAlphaEffectiveDScaleU =
                                     surfelX.opacity *
@@ -3463,6 +3466,7 @@ namespace Pale {
                                 tanVXContribution +=
                                         cross(rotationGradientZeta, surfelX.tanV);
                             }
+                            */
                         }
 
                         // Segment translation via implicit hit jacobian

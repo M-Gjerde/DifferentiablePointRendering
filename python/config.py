@@ -9,12 +9,12 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 2
-    forward_passes: int = 5
-    primal_shadow_rays: int = 4
-    adjoint_shadow_rays: int = 4
+    bounces: int = 1
+    forward_passes: int = 10
+    primal_shadow_rays: int = 5
+    adjoint_shadow_rays: int = 5
     gather_passes: int = 1
-    adjoint_bounces: int = 3
+    adjoint_bounces: int = 2
     adjoint_passes: int = 4
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
@@ -204,7 +204,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.025,
+        default=0.05,
         help="Weight for the normal consistency regularizer.",
     )
 
@@ -212,7 +212,7 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.05,
+        default=0.0,
         help="Weight for the depth distortion regularizer.",
     )
 
@@ -235,9 +235,9 @@ def parse_args() -> OptimizationConfig:
     else:
         factor_position = 0.001
         factor_tangent = 0.01
-        factor_scale = 0.001
-        factor_albedo = 0.2
-        factor_opacity = 0.1
+        factor_scale = 0.005
+        factor_albedo = 0.04
+        factor_opacity = 0.01
         factor_beta = 0.001
 
     lr_pos = args.learning_rate_position or (factor_position * base_lr)

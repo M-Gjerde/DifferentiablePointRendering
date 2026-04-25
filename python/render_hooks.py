@@ -317,23 +317,53 @@ def verify_opacities_inplace(opacities: torch.Tensor) -> dict[str, float]:
             "after_max": after_max,
         }
 
-def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
+def verify_beta_inplace(
+        betas: torch.Tensor,
+        trainable_surfel_mask: Optional[torch.Tensor] = None,
+) -> dict[str, float]:
     """
-    In-place verification/clamping of albedo values.
+    In-place verification/clamping of beta values.
 
     Enforces:
-        0.0 <= c <= 1.0
+        -2.0 <= beta <= 5.0
+
+    If trainable_surfel_mask is provided, only trainable surfels are verified.
+    Frozen surfels are left untouched.
     """
     with torch.no_grad():
-        s = betas.data
-        before_min = float(s.min().item())
-        before_max = float(s.max().item())
+        beta_values = betas.data
 
-        s_clamped = torch.clamp(s, min=-2.0, max=5.0)
-        s.copy_(s_clamped)
+        before_min = float(beta_values.min().item())
+        before_max = float(beta_values.max().item())
 
-        after_min = float(s.min().item())
-        after_max = float(s.max().item())
+        if trainable_surfel_mask is None:
+            beta_values.clamp_(min=-2.0, max=5.0)
+        else:
+            mask = trainable_surfel_mask.to(
+                device=beta_values.device,
+                dtype=torch.bool,
+            )
+
+            if mask.ndim != 1:
+                raise RuntimeError(
+                    f"trainable_surfel_mask must be 1D, got shape {tuple(mask.shape)}"
+                )
+
+            if beta_values.shape[0] != mask.shape[0]:
+                raise RuntimeError(
+                    "Beta/mask shape mismatch: "
+                    f"betas has {beta_values.shape[0]} surfels, "
+                    f"mask has {mask.shape[0]}"
+                )
+
+            beta_values[mask] = torch.clamp(
+                beta_values[mask],
+                min=-2.0,
+                max=5.0,
+            )
+
+        after_min = float(beta_values.min().item())
+        after_max = float(beta_values.max().item())
 
         return {
             "before_min": before_min,
@@ -341,7 +371,6 @@ def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
             "after_min": after_min,
             "after_max": after_max,
         }
-
 
 def apply_point_parameters(
         renderer: pale.Renderer,

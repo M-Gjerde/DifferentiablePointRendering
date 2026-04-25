@@ -15,7 +15,7 @@ def main(args) -> None:
         "adjoint_bounces": 0,
         "adjoint_passes": 0,
         "logging": 4,
-        "seed": 666,
+        "seed": 42,
     }
 
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
@@ -64,20 +64,15 @@ def main(args) -> None:
             print("Rendering from camera:", args.camera)
 
     for camera_name in cameras_to_render:
-        raw_key = f"{camera_name}_raw"
-        png_key = camera_name
+        save_rgb_preview_exr(
+            rendered_images[camera_name]["raw"],
+            output_dir / f"{camera_name}_raw_target.exr",
+        )
 
-        if raw_key in rendered_images:
-            save_rgb_preview_exr(
-                rendered_images[raw_key],
-                output_dir / f"{camera_name}_raw_target.exr",
-            )
-
-        if png_key in rendered_images:
-            save_rgb_preview_png(
-                rendered_images[png_key],
-                output_dir / f"{camera_name}_target.png",
-            )
+        save_rgb_preview_png(
+            rendered_images[camera_name]["image"],
+            output_dir / f"{camera_name}_target.png",
+        )
 
 
 def parse_args() -> argparse.Namespace:

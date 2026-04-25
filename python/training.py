@@ -135,6 +135,7 @@ def save_normal_map_snapshot(
     if save_npy:
         np.save(output_path_png.with_suffix(".npy"), normal_rgba)
 
+
 def make_trainable_surfel_mask_from_powers(
         powers: torch.Tensor,
         eps: float = 0.0,
@@ -180,6 +181,7 @@ def zero_frozen_surfel_gradients_np(
     grad_albedos_np[frozen_mask_np] = 0.0
     grad_opacities_np[frozen_mask_np] = 0.0
     grad_betas_np[frozen_mask_np] = 0.0
+
 
 def make_mean_reduction_adjoint_image(
         image_2d: np.ndarray,
@@ -500,6 +502,7 @@ def get_forward_median_depth(forward_out: Dict[str, dict], camera_name: str) -> 
     )
     return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
 
+
 def save_median_depth_snapshot(
         output_path_png: Path,
         median_depth: np.ndarray,
@@ -536,6 +539,7 @@ def save_median_depth_snapshot(
         vis[~valid] = 0.0
 
     save_render(output_path_png, vis)
+
 
 def save_manual_snapshot(
         renderer: Pale.Renderer,
@@ -776,18 +780,24 @@ def verify_parameters_inplane(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        trainable_surfel_mask: Optional[torch.Tensor] = None,
 ) -> None:
     """
-    Enforce parameter constraints in-place:
-    - orthonormal tangents
-    - valid scales, albedos, and opacities
+    Enforce parameter constraints in-place.
+
+    For now, trainable_surfel_mask is only applied to beta verification.
+    Frozen emissive surfels are therefore not beta-clamped.
     """
     verify_tangents_inplace(tangent_u, tangent_v)
     verify_scales_inplace(scales)
     verify_positions_inplace(positions)
     verify_albedos_inplace(albedos)
     verify_opacities_inplace(opacities)
-    verify_beta_inplace(betas)
+
+    verify_beta_inplace(
+        betas,
+        trainable_surfel_mask=trainable_surfel_mask,
+    )
 
 
 def assign_numpy_gradients_to_tensors(
@@ -989,7 +999,17 @@ def run_optimization(
     # ------------------------------------------------------------------
     # 2. Initial reparameterization and sync with renderer
     # ------------------------------------------------------------------
-    verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas)
+
+    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+
+    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
+    print(
+        f"Frozen emissive surfels: {frozen_surfel_count} / "
+        f"{int(trainable_surfel_mask.numel())}"
+    )
+    verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
+                              trainable_surfel_mask=trainable_surfel_mask,
+                              )
 
     apply_point_parameters(
         renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
@@ -1045,14 +1065,6 @@ def run_optimization(
     )
     print(f"Initial parameters written to PLY: {initial_points_path}")
 
-    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
-
-    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
-    print(
-        f"Frozen emissive surfels: {frozen_surfel_count} / "
-        f"{int(trainable_surfel_mask.numel())}"
-    )
-
     for camera_name in all_camera_ids:
         img_np = get_forward_rgb(initial_images, camera_name)
 
@@ -1092,8 +1104,6 @@ def run_optimization(
                 1.0,
             )
             initial_normal_loss_raw += raw_normal_loss_value
-
-
 
     initial_depth_distortion_loss_weighted = (
             depth_distortion_weight * initial_depth_distortion_loss_raw
@@ -1339,7 +1349,9 @@ def run_optimization(
                 # 8. Reparameterization, sync, BVH
                 # --------------------------------------------------------------
                 verify_parameters_inplane(
-                    positions, tangent_u, tangent_v, scales, albedos, opacities, betas
+                    positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
+                    trainable_surfel_mask=trainable_surfel_mask,
+
                 )
 
                 apply_point_parameters(
@@ -1415,7 +1427,9 @@ def run_optimization(
                     ) = refetch_parameters_as_torch(renderer, device)
 
                     verify_parameters_inplane(
-                        positions, tangent_u, tangent_v, scales, albedos, opacities, betas
+                        positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
+                        trainable_surfel_mask=trainable_surfel_mask,
+
                     )
                     apply_point_parameters(
                         renderer,
