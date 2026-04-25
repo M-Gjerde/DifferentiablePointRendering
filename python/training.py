@@ -135,6 +135,51 @@ def save_normal_map_snapshot(
     if save_npy:
         np.save(output_path_png.with_suffix(".npy"), normal_rgba)
 
+def make_trainable_surfel_mask_from_powers(
+        powers: torch.Tensor,
+        eps: float = 0.0,
+) -> torch.Tensor:
+    """
+    Returns True for surfels that are allowed to receive gradient updates.
+
+    Surfels with non-zero power are treated as light/emissive surfels and frozen.
+    """
+    with torch.no_grad():
+        power_values = powers.detach()
+
+        if power_values.ndim == 1:
+            emissive_mask = torch.abs(power_values) > eps
+        else:
+            emissive_mask = torch.any(torch.abs(power_values) > eps, dim=1)
+
+        return ~emissive_mask
+
+
+def zero_frozen_surfel_gradients_np(
+        trainable_mask: torch.Tensor,
+        grad_position_np: np.ndarray,
+        grad_tangent_u_np: np.ndarray,
+        grad_tangent_v_np: np.ndarray,
+        grad_scales_np: np.ndarray,
+        grad_albedos_np: np.ndarray,
+        grad_opacities_np: np.ndarray,
+        grad_betas_np: np.ndarray,
+) -> None:
+    """
+    In-place zeroing of gradients for frozen surfels.
+
+    Frozen surfels are typically emissive surfels where power != 0.
+    """
+    trainable_mask_np = trainable_mask.detach().cpu().numpy().astype(bool)
+    frozen_mask_np = ~trainable_mask_np
+
+    grad_position_np[frozen_mask_np] = 0.0
+    grad_tangent_u_np[frozen_mask_np] = 0.0
+    grad_tangent_v_np[frozen_mask_np] = 0.0
+    grad_scales_np[frozen_mask_np] = 0.0
+    grad_albedos_np[frozen_mask_np] = 0.0
+    grad_opacities_np[frozen_mask_np] = 0.0
+    grad_betas_np[frozen_mask_np] = 0.0
 
 def make_mean_reduction_adjoint_image(
         image_2d: np.ndarray,
@@ -1000,6 +1045,14 @@ def run_optimization(
     )
     print(f"Initial parameters written to PLY: {initial_points_path}")
 
+    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+
+    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
+    print(
+        f"Frozen emissive surfels: {frozen_surfel_count} / "
+        f"{int(trainable_surfel_mask.numel())}"
+    )
+
     for camera_name in all_camera_ids:
         img_np = get_forward_rgb(initial_images, camera_name)
 
@@ -1067,13 +1120,13 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 50
+    prune_interval = 1e100
     burnin_iterations = 100
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
 
-    opacity_prune_threshold = 0.4
+    opacity_prune_threshold = 0.05
     max_prune_fraction = 0.3
     rebuild_bvh_interval = 1
 
@@ -1246,6 +1299,17 @@ def run_optimization(
                 # --------------------------------------------------------------
                 optimizer.zero_grad(set_to_none=True)
 
+                zero_frozen_surfel_gradients_np(
+                    trainable_surfel_mask,
+                    grad_position_np,
+                    grad_tangent_u_np,
+                    grad_tangent_v_np,
+                    grad_scales_np,
+                    grad_albedos_np,
+                    grad_opacities_np,
+                    grad_betas_np,
+                )
+
                 assign_numpy_gradients_to_tensors(
                     device,
                     positions,
@@ -1378,6 +1442,13 @@ def run_optimization(
                         powers
                     )
 
+                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+
+                    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
+                    print(
+                        f"Frozen emissive surfels: {frozen_surfel_count} / "
+                        f"{int(trainable_surfel_mask.numel())}"
+                    )
                 # --------------------------------------------------------------
                 # 10. Snapshots
                 # --------------------------------------------------------------
@@ -1457,10 +1528,6 @@ def run_optimization(
                                 abs_quantile=0.999,
                                 flip_y=False,
                             )
-
-                            main_loss_image = loss_images[camera_name]
-                            main_camera_loss_root = config.output_dir / camera_name
-                            save_loss_image(main_camera_loss_root, main_loss_image, iteration)
 
                 # --------------------------------------------------------------
                 # 11. Metrics and logging

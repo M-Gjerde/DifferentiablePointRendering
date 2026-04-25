@@ -145,7 +145,7 @@ def write_gaussian_ply(
     vertices,
     output_path,
     args,
-    opacity_default=1.0,
+    opacity_default=0.5,
     beta_default=-0.0,
     shape_default=0.0,
 
@@ -304,7 +304,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
-    light_power = 12.0
+    light_power = 25.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "

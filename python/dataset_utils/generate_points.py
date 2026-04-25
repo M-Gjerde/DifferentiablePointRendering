@@ -1,272 +1,478 @@
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+import math
+import random
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Any
 
 
-@dataclass
-class RendererSettingsConfig:
-    photons: float = 1e6
-    bounces: int = 2
-    forward_passes: int = 5
-    primal_shadow_rays: int = 4
-    adjoint_shadow_rays: int = 4
-    gather_passes: int = 1
-    adjoint_bounces: int = 3
-    adjoint_passes: int = 4
-    useDepthDistortion: bool = True
-    useNormalConsistency: bool = True
-    logging: int = 3
-
-    def as_dict(self, config: "OptimizationConfig") -> Dict[str, float | int]:
-        return {
-            "photons": self.photons,
-            "bounces": self.bounces,
-            "forward_passes": self.forward_passes,
-            "gather_passes": self.gather_passes,
-            "primal_shadow_rays": self.primal_shadow_rays,
-            "adjoint_shadow_rays": self.adjoint_shadow_rays,
-            "adjoint_bounces": self.adjoint_bounces,
-            "adjoint_passes": self.adjoint_passes,
-            "logging": self.logging,
-            "use_depth_distortion": self.useDepthDistortion,
-            "use_normal_consistency": self.useNormalConsistency,
-            "depth_distort_weight": config.depth_distort_weight,
-            "normal_consistency_weight": config.normal_consistency_weight,
-        }
+def normalize3(x: float, y: float, z: float) -> tuple[float, float, float]:
+    length = math.sqrt(x * x + y * y + z * z)
+    if length <= 0.0:
+        return 1.0, 0.0, 0.0
+    inv = 1.0 / length
+    return x * inv, y * inv, z * inv
 
 
-@dataclass
-class OptimizationConfig:
-    assets_root: Path
-    scene_xml: str
-    pointcloud_ply: str
-    dataset_path: Path
-    output_dir: Path
-    personal_suffix: str = ""
-    personal_prefix: str = ""
-
-    iterations: int = 50000
-    learning_rate: float = 1e-2
-    learning_rate_position: float = 0
-    learning_rate_tangent: float = 0
-    learning_rate_scale: float = 0
-    learning_rate_albedo: float = 0
-    learning_rate_opacity: float = 0
-    learning_rate_beta: float = 0
-
-    depth_distort_weight: float = 0.2
-    normal_consistency_weight: float = 0.05
-
-    optimizer_type: str = "adam"
-    log_interval: int = 1
-    save_interval: int = 5
-    device: str = "cpu"
+def orthonormalize_tangents(
+    tu: tuple[float, float, float],
+    tv: tuple[float, float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    tu_x, tu_y, tu_z = normalize3(*tu)
+    dot = tv[0] * tu_x + tv[1] * tu_y + tv[2] * tu_z
+    tv_x = tv[0] - dot * tu_x
+    tv_y = tv[1] - dot * tu_y
+    tv_z = tv[2] - dot * tu_z
+    tv_x, tv_y, tv_z = normalize3(tv_x, tv_y, tv_z)
+    return (tu_x, tu_y, tu_z), (tv_x, tv_y, tv_z)
 
 
-def parse_args() -> OptimizationConfig:
+def rotate_tangent_frame_with_noise(
+    tangentNoiseStd: float,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    tu = (1.0, 0.0, 0.0)
+    tv = (0.0, 1.0, 0.0)
+
+    if tangentNoiseStd <= 0.0:
+        return tu, tv
+
+    tangentNoiseStdRadians = math.radians(tangentNoiseStd)
+
+    angle = random.gauss(0.0, tangentNoiseStdRadians)
+    axis_x = random.gauss(0.0, 1.0)
+    axis_y = random.gauss(0.0, 1.0)
+    axis_z = random.gauss(0.0, 1.0)
+    axis_x, axis_y, axis_z = normalize3(axis_x, axis_y, axis_z)
+
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+
+    def rotate(v):
+        vx, vy, vz = v
+        rx = (
+            vx * cos_a
+            + (axis_y * vz - axis_z * vy) * sin_a
+            + axis_x * (axis_x * vx + axis_y * vy + axis_z * vz) * (1.0 - cos_a)
+        )
+        ry = (
+            vy * cos_a
+            + (axis_z * vx - axis_x * vz) * sin_a
+            + axis_y * (axis_x * vx + axis_y * vy + axis_z * vz) * (1.0 - cos_a)
+        )
+        rz = (
+            vz * cos_a
+            + (axis_x * vy - axis_y * vx) * sin_a
+            + axis_z * (axis_x * vx + axis_y * vy + axis_z * vz) * (1.0 - cos_a)
+        )
+        return rx, ry, rz
+
+    tu_rot = rotate(tu)
+    tv_rot = rotate(tv)
+    return orthonormalize_tangents(tu_rot, tv_rot)
+
+def normalize_vector(vector):
+    x, y, z = vector
+    length = math.sqrt(x * x + y * y + z * z)
+    if length < 1e-8:
+        return None
+    return [x / length, y / length, z / length]
+
+
+def cross_product(a, b):
+    ax, ay, az = a
+    bx, by, bz = b
+    return [
+        ay * bz - az * by,
+        az * bx - ax * bz,
+        ax * by - ay * bx,
+    ]
+
+
+def compute_tangent_basis_from_normal(nx, ny, nz,
+                                      tu_fallback=(1.0, 0.0, 0.0),
+                                      tv_fallback=(0.0, 1.0, 0.0)):
+    """
+    Given a normal (nx, ny, nz), compute an orthonormal tangent basis (tu, tv).
+    Returns (tu_x, tu_y, tu_z, tv_x, tv_y, tv_z).
+    If the normal is degenerate, fall back to defaults.
+    """
+    normal = normalize_vector([nx, ny, nz])
+    if normal is None:
+        return (*tu_fallback, *tv_fallback)
+
+    nx, ny, nz = normal
+
+    # Choose helper vector that is not parallel to normal
+    if abs(nz) < 0.999:
+        helper = [0.0, 0.0, 1.0]
+    else:
+        helper = [0.0, 1.0, 0.0]
+
+    # tu = normalize(n × helper)
+    tu = cross_product(normal, helper)
+    tu = normalize_vector(tu)
+    if tu is None:
+        # Fallback if cross-product degenerates
+        return (*tu_fallback, *tv_fallback)
+
+    # tv = n × tu
+    tv = cross_product(normal, tu)
+    tv = normalize_vector(tv)
+    if tv is None:
+        return (*tu_fallback, *tv_fallback)
+
+    return tu[0], tu[1], tu[2], tv[0], tv[1], tv[2]
+
+
+
+def compute_grid_dimensions_for_volume(
+    targetPointCount: int,
+    extentX: float,
+    extentY: float,
+    extentZ: float,
+) -> tuple[int, int, int]:
+    targetPointCount = max(1, int(targetPointCount))
+    extentX = max(1e-12, extentX)
+    extentY = max(1e-12, extentY)
+    extentZ = max(1e-12, extentZ)
+
+    volume = extentX * extentY * extentZ
+    idealCellVolume = volume / float(targetPointCount)
+    idealSpacing = idealCellVolume ** (1.0 / 3.0)
+
+    nx = max(1, int(round(extentX / idealSpacing)))
+    ny = max(1, int(round(extentY / idealSpacing)))
+    nz = max(1, int(round(extentZ / idealSpacing)))
+
+    best = (nx, ny, nz)
+    bestError = abs(nx * ny * nz - targetPointCount)
+
+    for dx in range(-2, 3):
+        for dy in range(-2, 3):
+            for dz in range(-2, 3):
+                cx = max(1, nx + dx)
+                cy = max(1, ny + dy)
+                cz = max(1, nz + dz)
+                err = abs(cx * cy * cz - targetPointCount)
+                if err < bestError:
+                    bestError = err
+                    best = (cx, cy, cz)
+
+    return best
+
+def generate_volume_ply(
+    outputPath: Path,
+    minX: float,
+    maxX: float,
+    minY: float,
+    maxY: float,
+    minZ: float,
+    maxZ: float,
+    pointCount: int,
+    scaleValue: float,
+    positionNoiseStd: float,
+    tangentNoiseStd: float,
+    opacity: float,
+    seed: int | None,
+) -> None:
+    if seed is not None:
+        random.seed(seed)
+
+    minX, maxX = sorted((minX, maxX))
+    minY, maxY = sorted((minY, maxY))
+    minZ, maxZ = sorted((minZ, maxZ))
+
+    extentX = maxX - minX
+    extentY = maxY - minY
+    extentZ = maxZ - minZ
+
+    gridX, gridY, gridZ = compute_grid_dimensions_for_volume(
+        pointCount, extentX, extentY, extentZ
+    )
+    generatedPointCount = gridX * gridY * gridZ
+    lightPointCount = 2
+    totalPointCount = generatedPointCount + lightPointCount
+
+    stepX = extentX / (gridX - 1) if gridX > 1 else 0.0
+    stepY = extentY / (gridY - 1) if gridY > 1 else 0.0
+    stepZ = extentZ / (gridZ - 1) if gridZ > 1 else 0.0
+
+    defaultOpacity = opacity
+    defaultBeta = -0.0
+    defaultShape = 0.0
+    defaultRGB = [0.7, 0.7, 0.7]
+    color_noise = 0.1
+
+    lines: list[str] = []
+    lines.extend(
+        [
+            "ply",
+            "format ascii 1.0",
+            "comment Volume-initialized Gaussian surfels",
+            "comment Includes one emissive point at (0, 0, 2.2)",
+            f"element vertex {totalPointCount}",
+            "property float x",
+            "property float y",
+            "property float z",
+            "property float tu_x",
+            "property float tu_y",
+            "property float tu_z",
+            "property float tv_x",
+            "property float tv_y",
+            "property float tv_z",
+            "property float su",
+            "property float sv",
+            "property float albedo_r",
+            "property float albedo_g",
+            "property float albedo_b",
+            "property float opacity",
+            "property float beta",
+            "property float shape",
+            "property float power",
+            "end_header",
+        ]
+    )
+
+    for kz in range(gridZ):
+        z0 = minZ + kz * stepZ if gridZ > 1 else 0.5 * (minZ + maxZ)
+        for jy in range(gridY):
+            y0 = minY + jy * stepY if gridY > 1 else 0.5 * (minY + maxY)
+            for ix in range(gridX):
+                x0 = minX + ix * stepX if gridX > 1 else 0.5 * (minX + maxX)
+
+                x = x0 + random.gauss(0.0, positionNoiseStd)
+                y = y0 + random.gauss(0.0, positionNoiseStd)
+                z = z0 + random.gauss(0.0, positionNoiseStd)
+
+                (tu_x, tu_y, tu_z), (tv_x, tv_y, tv_z) = rotate_tangent_frame_with_noise(
+                    tangentNoiseStd
+                )
+
+                r = defaultRGB[0] + random.gauss(0.0, color_noise)
+                g = defaultRGB[1] + random.gauss(0.0, color_noise)
+                b = defaultRGB[2] + random.gauss(0.0, color_noise)
+
+                defaultPower = 0.0
+
+                lines.append(
+                    f"{x:.6f} {y:.6f} {z:.6f} "
+                    f"{tu_x:.6f} {tu_y:.6f} {tu_z:.6f} "
+                    f"{tv_x:.6f} {tv_y:.6f} {tv_z:.6f} "
+                    f"{scaleValue:.6f} {scaleValue:.6f} "
+                    f"{r:.6f} {g:.6f} {b:.6f} "
+                    f"{defaultOpacity:.6f} {defaultBeta:.6f} {defaultShape:.6f} "
+                    f"{defaultPower:.6f}"
+                )
+
+
+    light_power = 10.0
+
+    light_nx = 0.0
+    light_ny = 0.0
+    light_nz = -1.0
+
+    light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
+        compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
+    )
+
+    light_x = 0.5
+    light_y = -0.8
+    light_z = 2.2
+    light_su = 0.01
+    light_sv = 0.01
+    light_albedo_r = 1.0
+    light_albedo_g = 1.0
+    light_albedo_b = 1.0
+    light_opacity = 1.0
+    light_beta = -100.0
+    light_shape = 0.0
+
+    light_line = (
+        f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
+        f"{light_tu_x:.7f} {light_tu_y:.7f} {light_tu_z:.7f} "
+        f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
+        f"{light_su:.7f} {light_sv:.7f} "
+        f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+    )
+    lines.append(light_line)
+
+    light_x = -0.5
+    light_y = 0.8
+    light_z = 2.2
+    light_su = 0.01
+    light_sv = 0.01
+    light_albedo_r = 1.0
+    light_albedo_g = 1.0
+    light_albedo_b = 1.0
+    light_opacity = 1.0
+    light_beta = -100.0
+    light_shape = 0.0
+
+    light_line = (
+        f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
+        f"{light_tu_x:.7f} {light_tu_y:.7f} {light_tu_z:.7f} "
+        f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
+        f"{light_su:.7f} {light_sv:.7f} "
+        f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+    )
+    lines.append(light_line)
+    light_x = 0.0
+    light_y = 0.0
+    light_z = -2.0
+    light_su = 0.01
+    light_sv = 0.01
+    light_albedo_r = 1.0
+    light_albedo_g = 1.0
+    light_albedo_b = 1.0
+    light_opacity = 1.0
+    light_beta = -100.0
+    light_shape = 0.0
+
+    light_nx = 0.0
+    light_ny = 0.0
+    light_nz = 1.0
+
+    light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
+        compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
+    )
+
+    light_line = (
+        f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
+        f"{light_tu_x:.7f} {light_tu_y:.7f} {light_tu_z:.7f} "
+        f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
+        f"{light_su:.7f} {light_sv:.7f} "
+        f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+    )
+    lines.append(light_line)
+
+
+    outputPath.parent.mkdir(parents=True, exist_ok=True)
+    outputPath.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    print(
+        f"Written {totalPointCount} points "
+        f"({generatedPointCount} grid points + 1 light point, requested {pointCount} grid points)\n"
+        f"Grid: {gridX} x {gridY} x {gridZ}\n"
+        f"AABB: x[{minX}, {maxX}] y[{minY}, {maxY}] z[{minZ}, {maxZ}]\n"
+        f"Light point: position=(0.0, 0.0, 2.2), power"
+    )
+
+
+
+PRESETS: Dict[str, Dict[str, Any]] = {
+    "teapot": {
+        "min_x": -0.7,
+        "max_x": 0.55,
+        "min_y": -0.5,
+        "max_y": 0.5,
+        "min_z": -0.01,
+        "max_z": 0.55,
+        "scale": 0.025,
+        "position_noise_std": 0.05,
+        "tangent_noise_std": 5.0,
+    },
+    "teapot_plane": {
+        "min_x": -1.7,
+        "max_x": 1.55,
+        "min_y": -1.5,
+        "max_y": 1.5,
+        "min_z": -0.01,
+        "max_z": 0.55,
+        "scale": 0.025,
+        "position_noise_std": 0.05,
+        "tangent_noise_std": 5.0,
+    },
+    "bunny": {
+        "min_x": -1,
+        "max_x": 1,
+        "min_y": -1,
+        "max_y": 1,
+        "min_z": 0.0,
+        "max_z": 0.6,
+        "scale": 0.02,
+        "position_noise_std": 0.02,
+        "tangent_noise_std": 5.0,
+    },
+    "plane": {
+        "min_x": -0.5,
+        "max_x": 0.5,
+        "min_y": -0.5,
+        "max_y": 0.5,
+        "min_z": -0.01,
+        "max_z": 0.01,
+        "scale": 0.02,
+        "position_noise_std": 0.02,
+        "tangent_noise_std": 5.0,
+    },
+}
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Optimize point positions using a custom differentiable renderer."
+        description="Fill an axis-aligned volume with default-initialized Gaussian surfel points."
     )
 
-    parser.add_argument(
-        "--assets-root",
-        type=Path,
-        required=False,
-        default=Path("../Assets"),
-        help="Path to the Assets directory used by the renderer.",
-    )
-    parser.add_argument(
-        "--scene-xml",
-        type=str,
-        default="cbox_custom.xml",
-        help="Scene XML file name (relative to assets-root).",
-    )
-    parser.add_argument(
-        "--pointcloud",
-        type=str,
-        default="initial.ply",
-        help="Point cloud PLY file used by the renderer.",
-    )
-    parser.add_argument(
-        "--dataset-path",
-        type=Path,
-        required=False,
-        default=Path("./Output/target"),
-        help="Path to target RGB image directory.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("OptimizationOutput"),
-        help="Directory where intermediate and final outputs are saved.",
-    )
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--count", type=int, required=True)
 
     parser.add_argument(
-        "--suffix",
+        "--preset",
         type=str,
-        default="",
-        help="Optional string appended to the run output folder.",
-    )
-    parser.add_argument(
-        "--prefix",
-        type=str,
-        default="",
-        help="Optional string prepended to the run output folder.",
+        choices=PRESETS.keys(),
+        default="teapot",
+        help="Preset that defines default volume and noise parameters",
     )
 
-    parser.add_argument(
-        "--iterations",
-        type=int,
-        default=int(1e5),
-        help="Number of optimization iterations.",
-    )
-    parser.add_argument(
-        "--optimizer",
-        type=str,
-        default="sgd",
-        choices=["adam", "sgd"],
-        help="Which optimizer to use.",
-    )
-    parser.add_argument(
-        "--log-interval",
-        type=int,
-        default=1,
-        help="Print log every N iterations.",
-    )
-    parser.add_argument(
-        "--save-interval",
-        type=int,
-        default=5,
-        help="Save render and positions every N iterations.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cpu",
-        help="Torch device for parameter storage.",
-    )
+    parser.add_argument("--min-x", type=float)
+    parser.add_argument("--max-x", type=float)
+    parser.add_argument("--min-y", type=float)
+    parser.add_argument("--max-y", type=float)
+    parser.add_argument("--min-z", type=float)
+    parser.add_argument("--max-z", type=float)
 
-    parser.add_argument(
-        "--lr",
-        "--learning-rate",
-        dest="learning_rate",
-        type=float,
-        default=1.0,
-        help="Base learning rate before per-parameter multipliers.",
-    )
-    parser.add_argument(
-        "--lr-pos",
-        dest="learning_rate_position",
-        type=float,
-        default=None,
-        help="Learning rate for positions.",
-    )
-    parser.add_argument(
-        "--lr-tan",
-        dest="learning_rate_tangent",
-        type=float,
-        default=None,
-        help="Learning rate for tangents.",
-    )
-    parser.add_argument(
-        "--lr-scale",
-        dest="learning_rate_scale",
-        type=float,
-        default=None,
-        help="Learning rate for scales.",
-    )
-    parser.add_argument(
-        "--lr-albedo",
-        dest="learning_rate_albedo",
-        type=float,
-        default=None,
-        help="Learning rate for albedos.",
-    )
-    parser.add_argument(
-        "--lr-opacity",
-        dest="learning_rate_opacity",
-        type=float,
-        default=None,
-        help="Learning rate for opacities.",
-    )
-    parser.add_argument(
-        "--lr-beta",
-        dest="learning_rate_beta",
-        type=float,
-        default=None,
-        help="Learning rate for beta.",
-    )
-
-    parser.add_argument(
-        "--normal-consistency-weight",
-        dest="normal_consistency_weight",
-        type=float,
-        default=0.05,
-        help="Weight for the normal consistency regularizer.",
-    )
-
-    parser.add_argument(
-        "--depth-distort-weight",
-        dest="depth_distort_weight",
-        type=float,
-        default=0.2,
-        help="Weight for the depth distortion regularizer.",
-    )
+    parser.add_argument("--scale", type=float)
+    parser.add_argument("--opacity", type=float, default=0.0)
+    parser.add_argument("--position-noise-std", type=float)
+    parser.add_argument("--tangent-noise-std", type=float)
+    parser.add_argument("--seed", type=int, default=None)
 
     args = parser.parse_args()
+    apply_preset_defaults(args)
+    return args
 
-    base_lr = args.learning_rate
-    lr_base = args.learning_rate
 
-    if args.optimizer == "sgd":
-        # Tuned for your current gradient magnitudes:
-        # - reduce position step substantially
-        # - reduce tangent step drastically
-        # - keep scale/albedo/opacity responsive
-        factor_position = 0.02
-        factor_tangent = 25.0
-        factor_scale = 0.2
-        factor_albedo = 25.0
-        factor_opacity = 2.0
-        factor_beta = 0.3
-    else:
-        factor_position = 0.001
-        factor_tangent = 0.01
-        factor_scale = 0.001
-        factor_albedo = 0.1
-        factor_opacity = 0.1
-        factor_beta = 0.01
+def apply_preset_defaults(args: argparse.Namespace) -> None:
+    preset_values = PRESETS[args.preset]
 
-    lr_pos = args.learning_rate_position or (factor_position * base_lr)
-    lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)
-    lr_scale = args.learning_rate_scale or (factor_scale * base_lr)
-    lr_albedo = args.learning_rate_albedo or (factor_albedo * base_lr)
-    lr_opacity = args.learning_rate_opacity or (factor_opacity * base_lr)
-    lr_beta = args.learning_rate_beta or (factor_beta * base_lr)
+    for key, value in preset_values.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
 
-    return OptimizationConfig(
-        assets_root=args.assets_root,
-        scene_xml=args.scene_xml,
-        pointcloud_ply=args.pointcloud,
-        dataset_path=args.dataset_path,
-        output_dir=args.output_dir,
-        iterations=args.iterations,
-        learning_rate=lr_base,
-        learning_rate_position=lr_pos,
-        learning_rate_tangent=lr_tan,
-        learning_rate_scale=lr_scale,
-        learning_rate_albedo=lr_albedo,
-        learning_rate_opacity=lr_opacity,
-        learning_rate_beta=lr_beta,
-        depth_distort_weight=args.depth_distort_weight,
-        normal_consistency_weight=args.normal_consistency_weight,
-        optimizer_type=args.optimizer,
-        log_interval=args.log_interval,
-        save_interval=args.save_interval,
-        device=args.device,
-        personal_suffix=args.suffix,
-        personal_prefix=args.prefix,
+
+def main() -> None:
+    args = parse_args()
+
+    generate_volume_ply(
+        outputPath=args.out,
+        minX=args.min_x,
+        maxX=args.max_x,
+        minY=args.min_y,
+        maxY=args.max_y,
+        minZ=args.min_z,
+        maxZ=args.max_z,
+        pointCount=args.count,
+        scaleValue=args.scale,
+        positionNoiseStd=args.position_noise_std,
+        tangentNoiseStd=args.tangent_noise_std,
+        opacity=args.opacity,
+        seed=args.seed,
     )
+
+
+if __name__ == "__main__":
+    main()

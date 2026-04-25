@@ -138,10 +138,46 @@ def save_loss_image(
         loss_image: np.ndarray,
         iteration: int,
 ) -> None:
-    loss_image_vis = np.clip(
-        loss_image / np.percentile(loss_image, 99.0), 0.0, 1.0
-    )
-    loss_image_u8 = (loss_image_vis * 255).astype(np.uint8)
+    loss_image = np.asarray(loss_image, dtype=np.float32)
+
+    # If a multi-channel residual image is passed, reduce it to one value per pixel
+    # for visualization.
+    if loss_image.ndim == 3:
+        if loss_image.shape[2] == 1:
+            loss_image = loss_image[..., 0]
+        else:
+            loss_image = np.mean(loss_image, axis=2)
+
+    finite_mask = np.isfinite(loss_image)
+
+    # Default to white image
+    height, width = loss_image.shape
+    loss_image_rgb = np.ones((height, width, 3), dtype=np.float32)
+
+    if np.any(finite_mask):
+        scale = np.percentile(np.abs(loss_image[finite_mask]), 99.0)
+
+        if scale > 1.0e-12:
+            normalized_loss = np.clip(loss_image / scale, -1.0, 1.0)
+
+            positive_mask = normalized_loss > 0.0
+            negative_mask = normalized_loss < 0.0
+
+            positive_strength = normalized_loss[positive_mask]          # 0 .. 1
+            negative_strength = -normalized_loss[negative_mask]         # 0 .. 1
+
+            # Positive residuals: white -> red
+            # [1, 1, 1] -> [1, 0, 0]
+            loss_image_rgb[positive_mask, 1] = 1.0 - positive_strength
+            loss_image_rgb[positive_mask, 2] = 1.0 - positive_strength
+
+            # Negative residuals: white -> blue
+            # [1, 1, 1] -> [0, 0, 1]
+            loss_image_rgb[negative_mask, 0] = 1.0 - negative_strength
+            loss_image_rgb[negative_mask, 1] = 1.0 - negative_strength
+
+    loss_image_u8 = (np.clip(loss_image_rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+
     os.makedirs(output_dir / "loss", exist_ok=True)
     iio.imwrite(
         (output_dir / "loss" / f"loss_image_iter_{iteration:04d}.png").as_posix(),
