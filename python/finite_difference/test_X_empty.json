@@ -5,7 +5,7 @@
     "--ply",
     "pointcloud",
     "--seed",
-    "12"
+    "666"
   ],
   "cases": [
     {
@@ -56,14 +56,15 @@
       "camera": "camera1",
       "parameter": "rotation_x",
       "index": 0,
-      "min": 0,
-      "max": 75,
+      "min": 5,
+      "max": 90,
       "fd_epsilon": 1,
       "forward_passes": 1,
       "bounces": 1,
-      "adjoint_bounces": 2,
-      "adjoint_passes": 64,
-      "enable_adjoint_shadow_rays": false
+      "adjoint_bounces": 1,
+      "adjoint_passes": 1 ,
+      "enable_adjoint_shadow_rays": true,
+      "target_mode": "original"
     },
     {
       "scene": "empty",
@@ -76,8 +77,9 @@
       "forward_passes": 1,
       "bounces": 1,
       "adjoint_bounces": 2,
-      "adjoint_passes": 4,
-      "enable_adjoint_shadow_rays": true
+      "adjoint_passes": 64,
+      "enable_adjoint_shadow_rays": false,
+      "target_mode": "filled"
     },
     {
       "scene": "empty",
@@ -175,8 +177,9 @@
       "forward_passes": 1,
       "bounces": 1,
       "adjoint_bounces": 2,
-      "adjoint_passes": 4,
-      "enable_adjoint_shadow_rays": true
+      "adjoint_passes": 32,
+      "enable_adjoint_shadow_rays": false,
+      "target_mode": "filled"
     }
   ]
 }

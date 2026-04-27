@@ -1191,19 +1191,19 @@ namespace Pale {
 
     SYCL_EXTERNAL inline void clearPendingAdjointVertex(PendingAdjointVertex& v) {
         v.surface = {};
-        v.bounceIndex = 0u;
-        v.pathThroughput = float3{0.0f, 0.0f, 0.0f};
-        v.transmission = 1.0f;
-        v.geometryFromPrevious = 1.0f;
-        v.areaPdfFromPrevious = 1.0f;
-        v.bsdf = float3{0.0f, 0.0f, 0.0f};
-        v.cosineFromPrevious = 0.0f;
+        v.bounceIndex = UINT32_MAX;
+        v.pathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        v.transmissionFromPrevious = FLT_MAX;
+        v.geometryFromPrevious = FLT_MAX;
+        v.areaPdfFromPrevious = FLT_MAX;
+        v.bsdf = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        v.cosineFromPrevious = FLT_MAX;
     }
 
     SYCL_EXTERNAL inline void clearPendingAdjointStageX(PendingAdjointStageX& s) {
         s.valid = false;
         s.pathId = 0u;
-        s.pixelIndex = 0u;
+        s.pixelIndex = UINT32_MAX;
         s.useImplicitRayHitJacobian = false;
         s.hasPrevious = false;
         clearPendingAdjointVertex(s.previous);
@@ -1223,7 +1223,7 @@ namespace Pale {
         v.surface = surface;
         v.bounceIndex = bounceIndex;
         v.pathThroughput = pathThroughput;
-        v.transmission = transmissionFromPrevious;
+        v.transmissionFromPrevious = transmissionFromPrevious;
         v.geometryFromPrevious = geometryFromPrevious;
         v.areaPdfFromPrevious = areaPdfFromPrevious;
         v.bsdf = bsdf;
@@ -1427,6 +1427,10 @@ namespace Pale {
             sample.pdfDir = pdfDir;
             sample.valid = true;
             sample.lightIndex = light_index;
+            sample.surface.primitiveIndex = light.primitiveIndex;
+            sample.surface.alphaGeom = alphaGeom;
+            sample.surface.uv = {localU, localV};
+
         }
         return sample;
     }

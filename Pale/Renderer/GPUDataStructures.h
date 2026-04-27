@@ -164,20 +164,6 @@ namespace Pale {
         uint32_t primitiveIndex;
     };
 
-    struct AreaLightSample {
-        float3 positionW;
-        float3 normalW; // unit
-        float3 direction;
-        float3 flux;
-        uint32_t lightIndex;
-        float pdfSelectLight; // 1 / lightCount
-        float pdfDir;
-        float pdfArea; // 1 / (triangleCount * triArea)
-        float totalAreaWorld;
-        bool valid;
-    };
-
-    CHECK_16(AreaLightSample);
 
     struct GPUEmissiveTriangle {
         uint32_t globalTriangleIndex;
@@ -340,20 +326,39 @@ namespace Pale {
     struct PendingCameraSegment {
         bool valid = false;
         uint32_t pathId = 0u;
-        uint32_t pixelIndex = 0u;
-        float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
-        float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
-        float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
+        uint32_t pixelIndex = UINT32_MAX;
+        float3 cameraPathThroughput{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 cameraOriginWorld{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 cameraDirectionWorld{FLT_MAX, FLT_MAX, FLT_MAX};
     };
 
     struct PointCloudSurfaceRecord {
-        uint32_t primitiveIndex = 0;
-        float2 uv = float2{0.0f, 0.0f};
-        float alphaGeom = 0.0f;
+        uint32_t primitiveIndex = UINT32_MAX;
+        float2 uv = float2{FLT_MAX, FLT_MAX};
+        float alphaGeom = FLT_MAX;
         int32_t sideSign = 1;
-        float3 incomingDirection = float3{0.0f, 0.0f, 0.0f};
-        uint32_t pathId;
+        float3 incomingDirection = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        uint32_t pathId = UINT32_MAX;
     };
+
+
+    struct AreaLightSample {
+        float3 positionW;
+        float3 normalW; // unit
+        float3 direction;
+        float3 flux;
+        uint32_t lightIndex;
+        float pdfSelectLight; // 1 / lightCount
+        float pdfDir;
+        float pdfArea; // 1 / (triangleCount * triArea)
+        float totalAreaWorld;
+        bool valid;
+
+        PointCloudSurfaceRecord surface;
+    };
+
+    CHECK_16(AreaLightSample);
+
     struct DirectLightQuery {
         PointCloudSurfaceRecord surface{};
 
@@ -402,13 +407,6 @@ namespace Pale {
         bool useImplicitRayHitJacobian = false;
     };
 
-    struct CameraToSurfaceScatterEvent {
-        PointCloudSurfaceRecord xSurface{};
-        float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
-        float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
-        float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
-    };
-
     struct PendingAdjointVertex {
         PointCloudSurfaceRecord surface{};
 
@@ -416,24 +414,24 @@ namespace Pale {
 
         // Throughput stored before the reflect-sampling factor of the current vertex
         // is applied in the next state update. This preserves your current convention.
-        float3 pathThroughput = float3{0.0f, 0.0f, 0.0f};
+        float3 pathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
 
         // Segment metadata for the segment arriving at this vertex from the previous one.
-        float transmission = 1.0f;
-        float geometryFromPrevious = 1.0f;
-        float areaPdfFromPrevious = 1.0f;
+        float transmissionFromPrevious = FLT_MAX;
+        float geometryFromPrevious = FLT_MAX;
+        float areaPdfFromPrevious = FLT_MAX;
 
         // Local scattering factor stored at this vertex.
-        float3 bsdf = float3{0.0f, 0.0f, 0.0f};
+        float3 bsdf = float3{FLT_MAX, FLT_MAX, FLT_MAX};
 
         // Only used for the camera-attached path case.
-        float cosineFromPrevious = 0.0f;
+        float cosineFromPrevious = FLT_MAX;
     };
 
     struct PendingAdjointStageX {
         bool valid = false;
         uint32_t pathId = 0u;
-        uint32_t pixelIndex = 0u;
+        uint32_t pixelIndex = UINT32_MAX;
 
         // Whether the CURRENT stored vertex was produced from the camera-attached
         // branch that uses the implicit ray-hit Jacobian convention.
@@ -456,22 +454,24 @@ namespace Pale {
     struct MeasurementGradientEventXY {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+        float3 xPathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
         float transmission = 1.0f;
-        float transmissionPreviousSegment = 1.0f;
-        float geometryPreviousSegment = 1.0f;
-        float cosinePreviousSegment = 1.0f;
+        float transmissionPreviousSegment = FLT_MAX;
+        float geometryPreviousSegment = FLT_MAX;
+        float cosinePreviousSegment = FLT_MAX;
         bool useImplicitRayHitJacobian = false;
+        bool isDirectLightSample = false;
+        float3 directLightRadiance{FLT_MAX, FLT_MAX, FLT_MAX};
     };
 
     struct CameraAttachedBridgeGradientEvent {
         PointCloudSurfaceRecord xSurface;   // first camera hit
         PointCloudSurfaceRecord ySurface;   // sampled next surfel
 
-        float3 xPathThroughput;
-        float transmissionPreviousSegment{};  // tau(camera, X)
-        float geometryPreviousSegment{};  // tau(camera, X)
-        float transmission{};                 // tau(X, Y)
+        float3 xPathThroughput{FLT_MAX};
+        float transmissionPreviousSegment{FLT_MAX};  // tau(camera, X)
+        float geometryPreviousSegment{FLT_MAX};  // tau(camera, X)
+        float transmission{FLT_MAX};                 // tau(X, Y)
     };
 
     struct RecursiveBridgeGradientEvent {
@@ -485,47 +485,47 @@ namespace Pale {
     };
 
     struct ReconstructedSurfelState {
-        float3 position = float3{0.0f, 0.0f, 0.0f};
-        float3 canonicalNormal = float3{0.0f, 0.0f, 1.0f};
-        float3 orientedNormal = float3{0.0f, 0.0f, 1.0f};
-        float3 tangentUWorld = float3{0.0f, 0.0f, 0.0f};
-        float3 tangentVWorld = float3{0.0f, 0.0f, 0.0f};
-        float areaWorld = 0.0f;
+        float3 position = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 canonicalNormal = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 orientedNormal = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 tangentUWorld = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 tangentVWorld = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float areaWorld = FLT_MAX;
     };
 
     struct SurfelGradientPayload {
-        float gradBeta = 0.0f;
-        float gradEta = 0.0f;
-        float3 gradRho = float3{0.0f, 0.0f, 0.0f};
-        float3 gradPosition = float3{0.0f, 0.0f, 0.0f};
-        float gradScaleU = 0.0f;
-        float gradScaleV = 0.0f;
-        float3 gradTangentU = float3{0.0f, 0.0f, 0.0f};
-        float3 gradTangentV = float3{0.0f, 0.0f, 0.0f};
+        float gradBeta = FLT_MAX;
+        float gradEta = FLT_MAX;
+        float3 gradRho = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 gradPosition = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float gradScaleU = FLT_MAX;
+        float gradScaleV = FLT_MAX;
+        float3 gradTangentU = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 gradTangentV = float3{FLT_MAX, FLT_MAX, FLT_MAX};
     };
 
     struct SurfelGradientRecord {
         uint32_t primitiveIndex = UINT32_MAX;
 
-        float gradBeta = 0.0f;
-        float gradEta = 0.0f;
+        float gradBeta = FLT_MAX;
+        float gradEta = FLT_MAX;
 
-        float gradAlbedoR = 0.0f;
-        float gradAlbedoG = 0.0f;
-        float gradAlbedoB = 0.0f;
+        float gradAlbedoR = FLT_MAX;
+        float gradAlbedoG = FLT_MAX;
+        float gradAlbedoB = FLT_MAX;
 
-        float gradPositionX = 0.0f;
-        float gradPositionY = 0.0f;
-        float gradPositionZ = 0.0f;
+        float gradPositionX = FLT_MAX;
+        float gradPositionY = FLT_MAX;
+        float gradPositionZ = FLT_MAX;
 
-        float gradScaleU = 0.0f;
-        float gradScaleV = 0.0f;
-        float gradTangentUX = 0.0f;
-        float gradTangentUY = 0.0f;
-        float gradTangentUZ = 0.0f;
-        float gradTangentVX = 0.0f;
-        float gradTangentVY = 0.0f;
-        float gradTangentVZ = 0.0f;
+        float gradScaleU = FLT_MAX;
+        float gradScaleV = FLT_MAX;
+        float gradTangentUX = FLT_MAX;
+        float gradTangentUY = FLT_MAX;
+        float gradTangentUZ = FLT_MAX;
+        float gradTangentVX = FLT_MAX;
+        float gradTangentVY = FLT_MAX;
+        float gradTangentVZ = FLT_MAX;
     };
 
     struct GradientRecordRanges {
@@ -640,6 +640,7 @@ namespace Pale {
         float normalConsistencyWeight = 0.0f;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
+        uint32_t numAdjointPathShadowRays = 8;
 
         bool useDepthDistortion = false;
         bool useNormalConsistency = false;
