@@ -142,6 +142,31 @@ def save_rgb_png(output_path: Path, rgb: np.ndarray) -> None:
     image_uint8 = np.clip(np.round(rgb * 255.0), 0.0, 255.0).astype(np.uint8)
     Image.fromarray(image_uint8, mode="RGB").save(output_path)
 
+def collect_existing_frame_paths(
+    frames_dir: Path,
+    requested_frame_count: int | None,
+) -> list[Path]:
+    if not frames_dir.exists():
+        raise FileNotFoundError(f"Frames directory does not exist: {frames_dir}")
+
+    frame_paths = sorted(frames_dir.glob("frame_*.png"))
+
+    if not frame_paths:
+        raise FileNotFoundError(f"No existing frame_*.png files found in: {frames_dir}")
+
+    if requested_frame_count is not None:
+        if requested_frame_count <= 0:
+            raise ValueError("--frames must be positive when provided.")
+
+        if len(frame_paths) < requested_frame_count:
+            raise FileNotFoundError(
+                f"--frames requested {requested_frame_count} frames, "
+                f"but only found {len(frame_paths)} existing frames in: {frames_dir}"
+            )
+
+        frame_paths = frame_paths[:requested_frame_count]
+
+    return frame_paths
 
 def build_gif_from_pngs(frame_paths: Sequence[Path], output_gif_path: Path, fps: float) -> None:
     duration_sec = 1.0 / max(fps, 1e-6)
@@ -273,7 +298,22 @@ def parse_args() -> argparse.Namespace:
         help="Camera name to render from, e.g. DatasetCam_022. If omitted, the first camera is used.",
     )
 
-    parser.add_argument("--frames", type=int, default=30)
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=None,
+        help=(
+            "Number of frames to render. If omitted, render mode uses 30 frames. "
+            "With --skip-render, omitted means use all existing frame_*.png files."
+        ),
+    )
+
+    parser.add_argument(
+        "--skip-render",
+        action="store_true",
+        help="Skip renderer setup and frame rendering. Rebuild the GIF from existing PNG frames only.",
+    )
+
     parser.add_argument("--fps", type=float, default=4.0)
     parser.add_argument("--radius", type=float, default=2.0)
     parser.add_argument("--power", type=float, default=20.0)
@@ -338,6 +378,33 @@ def main() -> None:
     else:
         run_dir = find_latest_run_dir(args.optimization_output_root.resolve())
 
+    output_dir = run_dir / args.output_subdir
+    frames_dir = output_dir / "frames"
+    output_gif_path = output_dir / args.gif_name
+
+    if args.skip_render:
+        frame_paths = collect_existing_frame_paths(
+            frames_dir=frames_dir,
+            requested_frame_count=args.frames,
+        )
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        build_gif_from_pngs(frame_paths, output_gif_path, fps=args.fps)
+
+        print()
+        print("Done.")
+        print("Skipped rendering.")
+        print(f"Run folder : {run_dir}")
+        print(f"Frames     : {frames_dir}")
+        print(f"Frame count: {len(frame_paths)}")
+        print(f"FPS        : {args.fps}")
+        print(f"GIF        : {output_gif_path}")
+        return
+
+    frame_count = 30 if args.frames is None else args.frames
+    if frame_count <= 0:
+        raise ValueError("--frames must be positive.")
+
     run_config = load_run_config(run_dir / "run_config.json")
 
     renderer_settings = dict(run_config["renderer_settings"])
@@ -373,14 +440,10 @@ def main() -> None:
             )
         camera_name = args.camera_name
 
-    output_dir = run_dir / args.output_subdir
-    frames_dir = output_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) disable all existing emissive points
     zero_existing_lights(renderer)
 
-    # 2) add one moving emissive point once
     light_index = add_light_point(
         renderer,
         scale_u=args.scale_u,
@@ -389,13 +452,12 @@ def main() -> None:
         beta=args.beta,
     )
 
-    # 3) fetch once, then update in-place each frame
     params = fetch_parameters(renderer)
 
     frame_paths: list[Path] = []
 
-    for frame_index in range(args.frames):
-        t = 0.0 if args.frames <= 1 else frame_index / float(args.frames - 1)
+    for frame_index in range(frame_count):
+        t = 0.0 if frame_count <= 1 else frame_index / float(frame_count - 1)
 
         light_position = orbit_position_on_yz_arc(
             t=t,
@@ -434,14 +496,13 @@ def main() -> None:
         frame_paths.append(frame_png_path)
 
         print(
-            f"[{frame_index + 1:03d}/{args.frames:03d}] "
+            f"[{frame_index + 1:03d}/{frame_count:03d}] "
             f"camera={camera_name} "
             f"pos=({light_position[0]:.3f}, {light_position[1]:.3f}, {light_position[2]:.3f}) "
             f"color=({light_color[0]:.3f}, {light_color[1]:.3f}, {light_color[2]:.3f}) "
             f"-> {frame_png_path.name}"
         )
 
-    output_gif_path = output_dir / args.gif_name
     build_gif_from_pngs(frame_paths, output_gif_path, fps=args.fps)
 
     print()
