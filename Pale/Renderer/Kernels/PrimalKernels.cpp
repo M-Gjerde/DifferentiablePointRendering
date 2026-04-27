@@ -557,7 +557,7 @@ namespace Pale {
                     const std::uint32_t framebufferIndex =
                             pixelY * imageWidth + pixelX;
 
-                    accumulatedRadianceRGB *= cameraCosine;
+                    //accumulatedRadianceRGB *= cameraCosine;
 
                     const float4 currentValue(
                         accumulatedRadianceRGB.x(),

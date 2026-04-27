@@ -19,8 +19,9 @@
       "forward_passes": 1,
       "bounces": 1,
       "adjoint_bounces": 2,
-      "adjoint_passes": 1,
-      "enable_adjoint_shadow_rays": true
+      "adjoint_passes": 256,
+      "enable_adjoint_shadow_rays": false,
+      "target_mode": "filled"
     },
     {
       "scene": "transmit",

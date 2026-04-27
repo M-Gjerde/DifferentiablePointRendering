@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     argument_parser.add_argument(
         "--rel_threshold",
         type=float,
-        default=0.10,
+        default=0.03,
         help="Maximum allowed relative error for an individual scored row to pass.",
     )
     argument_parser.add_argument(
@@ -493,7 +493,7 @@ def validate_case(case: dict[str, Any]) -> None:
         raise RuntimeError(f"adjoint_bounces must be >= 0. Case: {case}")
 
     target_mode = str(case.get("target_mode", "original"))
-    valid_target_modes = {"original", "ones", "random"}
+    valid_target_modes = {"original", "filled", "random"}
     if target_mode not in valid_target_modes:
         raise RuntimeError(
             f"Invalid target_mode '{target_mode}'. "

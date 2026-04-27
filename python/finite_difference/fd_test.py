@@ -283,8 +283,8 @@ def _make_target_image(
     reference_rendered = np.asarray(reference_images[camera]["raw"], dtype=np.float32)[..., :3]
     target_shape = tuple(reference_rendered.shape)
 
-    if target_mode == "ones":
-        target_image = 100 * np.ones_like(reference_rendered, dtype=np.float32)
+    if target_mode == "filled":
+        target_image = 5 * np.ones_like(reference_rendered, dtype=np.float32)
         return target_image, target_shape
 
     if target_mode == "random":
@@ -300,8 +300,8 @@ def main(args) -> None:
         "photons": 1e6,
         "bounces": args.bounces,
         "forward_passes": args.forward_passes,
-        "primal_shadow_rays": 6,
-        "adjoint_shadow_rays": 6,
+        "primal_shadow_rays": 64,
+        "adjoint_shadow_rays": 64,
         "gather_passes": 1,
         "adjoint_bounces": args.adjoint_bounces,
         "adjoint_passes": args.adjoint_passes,
@@ -589,9 +589,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target_mode",
         type=str,
-        choices=["original", "ones", "random"],
+        choices=["original", "filled", "random"],
         default="original",
-        help="How to construct the target image: original EXR, all ones, or deterministic random noise.",
+        help="How to construct the target image: original EXR, all filled values of 5, or deterministic random noise.",
     )
     parser.add_argument(
         "--enable_adjoint_shadow_rays",

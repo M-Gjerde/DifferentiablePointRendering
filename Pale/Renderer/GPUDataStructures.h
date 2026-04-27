@@ -419,7 +419,7 @@ namespace Pale {
         float3 pathThroughput = float3{0.0f, 0.0f, 0.0f};
 
         // Segment metadata for the segment arriving at this vertex from the previous one.
-        float transmissionFromPrevious = 1.0f;
+        float transmission = 1.0f;
         float geometryFromPrevious = 1.0f;
         float areaPdfFromPrevious = 1.0f;
 

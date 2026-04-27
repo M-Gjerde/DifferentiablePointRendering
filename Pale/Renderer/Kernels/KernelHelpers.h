@@ -1193,7 +1193,7 @@ namespace Pale {
         v.surface = {};
         v.bounceIndex = 0u;
         v.pathThroughput = float3{0.0f, 0.0f, 0.0f};
-        v.transmissionFromPrevious = 1.0f;
+        v.transmission = 1.0f;
         v.geometryFromPrevious = 1.0f;
         v.areaPdfFromPrevious = 1.0f;
         v.bsdf = float3{0.0f, 0.0f, 0.0f};
@@ -1223,7 +1223,7 @@ namespace Pale {
         v.surface = surface;
         v.bounceIndex = bounceIndex;
         v.pathThroughput = pathThroughput;
-        v.transmissionFromPrevious = transmissionFromPrevious;
+        v.transmission = transmissionFromPrevious;
         v.geometryFromPrevious = geometryFromPrevious;
         v.areaPdfFromPrevious = areaPdfFromPrevious;
         v.bsdf = bsdf;
