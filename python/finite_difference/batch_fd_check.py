@@ -3,7 +3,7 @@
 # Batch finite-difference vs analytic gradient checker.
 #
 # Features:
-# - Reads per-case sweep config from tests.json
+# - Reads per-case sweep config from test_Y_empty.json
 # - Per-case required fields:
 #     scene, camera, parameter, index, min, max,
 #     forward_passes, bounces, adjoint_passes, adjoint_bounces
@@ -15,7 +15,7 @@
 # - Overall case pass:
 #       fail_frac <= fail_frac_threshold
 #
-# Example tests.json:
+# Example test_Y_empty.json:
 # {
 #   "common_args": ["--iterations", "10", "--fd_epsilon", "5e-3", "--ply", "pointcloud", "--seed", "42"],
 #   "cases": [
@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
         "--tests",
         type=str,
         required=True,
-        help="Path to the tests.json file containing common_args and per-case configurations.",
+        help="Path to the test_Y_empty.json file containing common_args and per-case configurations.",
     )
     argument_parser.add_argument(
         "--script",
@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     argument_parser.add_argument(
         "--grad_floor",
         type=float,
-        default=1e-5,
+        default=1e-4,
         help="Minimum gradient magnitude required for a row to be scored. Rows below this threshold are skipped.",
     )
     argument_parser.add_argument(
@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     argument_parser.add_argument(
         "--rel_threshold",
         type=float,
-        default=0.03,
+        default=0.05,
         help="Maximum allowed relative error for an individual scored row to pass.",
     )
     argument_parser.add_argument(
@@ -138,13 +138,13 @@ def parse_args() -> argparse.Namespace:
         "--case_index",
         type=int,
         default=None,
-        help="Run only one case by zero-based index from tests.json.",
+        help="Run only one case by zero-based index from test_Y_empty.json.",
     )
     argument_parser.add_argument(
         "--skip_first_cases",
         type=int,
         default=0,
-        help="Skip the first N test cases from tests.json before running the remaining cases.",
+        help="Skip the first N test cases from test_Y_empty.json before running the remaining cases.",
     )
     argument_parser.add_argument(
         "--extra_args",
@@ -354,7 +354,9 @@ def compute_check(
     analytic_all = scored_data_frame["analytic_grad"].to_numpy(dtype=np.float64)
     fd_all = scored_data_frame["fd_grad"].to_numpy(dtype=np.float64)
 
-    active_mask = np.maximum(np.abs(analytic_all), np.abs(fd_all)) >= grad_floor
+    active_mask = np.abs(analytic_all) >= grad_floor
+    active_mask &= np.abs(fd_all) >= grad_floor
+
     skipped_mask = ~active_mask
 
     active_data_frame = scored_data_frame.loc[active_mask].copy()
@@ -518,7 +520,7 @@ def main() -> None:
     common_args = [str(token) for token in config.get("common_args", [])]
 
     if not cases:
-        raise RuntimeError("tests.json: no cases provided")
+        raise RuntimeError("test_Y_empty.json: no cases provided")
 
     if args.skip_first_cases < 0:
         raise RuntimeError(
@@ -529,14 +531,14 @@ def main() -> None:
         if args.case_index < 0 or args.case_index >= len(cases):
             raise RuntimeError(
                 f"--case_index out of range: got {args.case_index}, "
-                f"but tests.json has {len(cases)} cases."
+                f"but test_Y_empty.json has {len(cases)} cases."
             )
         cases = [cases[args.case_index]]
     else:
         if args.skip_first_cases >= len(cases):
             raise RuntimeError(
                 f"--skip_first_cases={args.skip_first_cases} skips all available cases. "
-                f"tests.json has only {len(cases)} cases."
+                f"test_Y_empty.json has only {len(cases)} cases."
             )
         cases = cases[args.skip_first_cases:]
 

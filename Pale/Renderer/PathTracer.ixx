@@ -43,7 +43,7 @@ export namespace Pale {
         GPUSceneBuffers m_sceneGPU{};
         RenderIntermediatesGPU m_intermediates{};
         PathTracerSettings m_settings{};
-        uint64_t m_rayQueueCapacity = 0;
+        uint32_t m_rayQueueCapacity = 0;
         uint64_t m_sessionSeed = 42;
     };
 

@@ -528,6 +528,18 @@ namespace Pale {
         float gradTangentVZ = FLT_MAX;
     };
 
+    struct MaterialVertexGradientEvent {
+        PointCloudSurfaceRecord surface;
+
+        // Adjoint weight arriving at this material vertex.
+        // This should include previous path throughput and previous segment transmission,
+        // but not the local alpha/surface BSDF of this vertex.
+        float3 adjointWeightAtVertex{0.0f, 0.0f, 0.0f};
+
+        uint32_t pathId = kInvalidIndex;
+        uint32_t bounceIndex = 0u;
+    };
+
     struct GradientRecordRanges {
         uint32_t measurementOffset = 0u;
         uint32_t measurementCount = 0u;
@@ -535,16 +547,21 @@ namespace Pale {
         uint32_t measurementTwoPointOffset = 0u;
         uint32_t measurementTwoPointCount = 0u;
 
-        uint32_t cameraAttachedBridgeOffset = 0u;
-        uint32_t cameraAttachedBridgeCount = 0u;
-
-        uint32_t recursiveBridgeOffset = 0u;
-        uint32_t recursiveBridgeCount = 0u;
-
-        uint32_t directLightOffset = 0u;
-        uint32_t directLightCount = 0u;
+        uint32_t materialVertexOffset = 0u;
+        uint32_t materialVertexCount = 0u;
 
         uint32_t totalCount = 0u;
+    };
+
+    struct OccluderDerivative {
+        float3 gradPosition{0.0f};
+        float gradScaleU = 0.0f;
+        float gradScaleV = 0.0f;
+        float gradEta = 0.0f;
+        float gradBeta = 0.0f;
+        float3 gradTangentU{0.0f};
+        float3 gradTangentV{0.0f};
+        uint32_t primitiveIndex = kInvalidIndex;
     };
 
     struct CompletedGradientEvent {
@@ -719,29 +736,22 @@ namespace Pale {
 
         MeasurementGradientEvent* measurementEvents;
         MeasurementGradientEventXY *measurementTwoPointEvents = nullptr;
-        CameraAttachedBridgeGradientEvent *cameraAttachedBridgeEvents = nullptr;
+
+        MaterialVertexGradientEvent* materialVertexEvents = nullptr;
+        uint32_t* countMaterialVertexEvents = nullptr;
+        uint32_t maxMaterialVertexEventCount = 0u;
+
         RecursiveBridgeGradientEvent *recursiveBridgeEvents = nullptr;
         SurfelGradientRecord *gradientRecords = nullptr;
         PendingCameraSegment* pendingCameraSegments = nullptr;
 
         uint32_t* countMeasurementEvents = nullptr;
         uint32_t *countMeasurementTwoPointEvents = nullptr;
-        uint32_t *countAttachedBridgeEvents = nullptr;
         uint32_t *countRecursiveBridgeEvents = nullptr;
-
-        DirectLightQuery* directLightQueries = nullptr;
-        uint32_t* countDirectLightQueries = nullptr;
-        uint32_t maxDirectLightQueryCount = 0u;
-
-        DirectLightGradientEvent* directLightEvents = nullptr;
-        uint32_t* countDirectLightEvents = nullptr;
-        uint32_t maxDirectLightEventCount = 0u;
 
         // capacities
         uint32_t maxMeasurementEventCount = 0u;
         uint32_t maxMeasurementTwoPointEventCount = 0u;
-        uint32_t maxCameraAttachedEvents = 0;
-        uint32_t maxRecursiveBridgeEvent = 0;
         uint32_t maxGradientRecordCount = 0;
         uint32_t maxRayQueueCapacity = 0;
 

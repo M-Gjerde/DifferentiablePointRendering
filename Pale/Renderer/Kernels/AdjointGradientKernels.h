@@ -249,6 +249,41 @@ namespace Pale {
         return numerator / denom;
     }
 
+    inline float3 computeGeometricTermGradientWrtEndpointFixedDirection(
+        const float3& xPosition,
+        const float3& yPosition,
+        const float3& xNormal,
+        const float3& yNormal) {
+
+        const float3 vectorFromXToY = yPosition - xPosition;
+        const float squaredDistance = dot(vectorFromXToY, vectorFromXToY);
+
+        if (squaredDistance <= 1e-12f) {
+            return float3{0.0f};
+        }
+
+        const float distance = sycl::sqrt(squaredDistance);
+        const float inverseDistance = 1.0f / distance;
+        const float inverseDistanceCubed =
+            inverseDistance * inverseDistance * inverseDistance;
+
+        const float3 directionFromXToY =
+            vectorFromXToY * inverseDistance;
+
+        const float cosineAtX =
+            dot(xNormal, directionFromXToY);
+
+        const float cosineAtY =
+            dot(yNormal, -directionFromXToY);
+
+        return
+            -2.0f *
+            cosineAtX *
+            cosineAtY *
+            inverseDistanceCubed *
+            directionFromXToY;
+    }
+
     inline float3 computeGeometricTermGradientWrtStartpoint(
         const float3 &xPosition,
         const float3 &yPosition,

@@ -269,7 +269,7 @@ def numpy_rgb01_to_vtk_u8_rgb(name: str, rgb01: np.ndarray) -> vtk.vtkUnsignedCh
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="VTK viewer: render surfels as oriented ellipses (glyphs).")
-    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=False, default=Path("../Assets/OptimizationOutput"))
     parser.add_argument("--initial", action="store_true",
                         help="Load initial_points.ply instead of points_final.ply.")
     parser.add_argument("--opacity-threshold", type=float, default=0.0)

@@ -235,12 +235,7 @@ namespace Pale {
                     pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countMeasurementEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countMeasurementTwoPointEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countAttachedBridgeEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countRecursiveBridgeEvents, static_cast<uint32_t>(0), 1);
-
-                    // Always reset these so stale values never survive across bounces.
-                    pkg.queue.fill(pkg.intermediates.countDirectLightQueries, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countDirectLightEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countMaterialVertexEvents, static_cast<uint32_t>(0), 1);
 
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeRayCount);
                     pkg.queue.wait();
@@ -251,10 +246,9 @@ namespace Pale {
                         launchAdjointIntersectKernel(pkg, spp, activeRayCount, cameraIndex);
                     }
 
-                    uint32_t measurementEventCount = 0;
-                    uint32_t measurementTwoPointEventCount = 0;
-                    uint32_t cameraAttachedBridgeEventCount = 0;
-                    uint32_t recursiveBridgeEventCount = 0;
+                    uint32_t measurementEventCount = 0u;
+                    uint32_t measurementTwoPointEventCount = 0u;
+                    uint32_t materialVertexEventCount = 0u;
 
                     pkg.queue.memcpy(
                         &measurementEventCount,
@@ -267,52 +261,35 @@ namespace Pale {
                         sizeof(uint32_t)).wait();
 
                     pkg.queue.memcpy(
-                        &cameraAttachedBridgeEventCount,
-                        pkg.intermediates.countAttachedBridgeEvents,
+                        &materialVertexEventCount,
+                        pkg.intermediates.countMaterialVertexEvents,
                         sizeof(uint32_t)).wait();
 
-                    pkg.queue.memcpy(
-                        &recursiveBridgeEventCount,
-                        pkg.intermediates.countRecursiveBridgeEvents,
-                        sizeof(uint32_t)).wait();
-
-                    measurementEventCount = sycl::min(
+                    measurementEventCount = std::min(
                         measurementEventCount,
                         pkg.intermediates.maxMeasurementEventCount);
 
-                    measurementTwoPointEventCount = sycl::min(
+                    measurementTwoPointEventCount = std::min(
                         measurementTwoPointEventCount,
                         pkg.intermediates.maxMeasurementTwoPointEventCount);
 
-                    cameraAttachedBridgeEventCount = sycl::min(
-                        cameraAttachedBridgeEventCount,
-                        pkg.intermediates.maxCameraAttachedEvents);
+                    materialVertexEventCount = std::min(
+                        materialVertexEventCount,
+                        pkg.intermediates.maxMaterialVertexEventCount);
 
-                    recursiveBridgeEventCount = sycl::min(
-                        recursiveBridgeEventCount,
-                        pkg.intermediates.maxRecursiveBridgeEvent);
-
-                    uint32_t directLightEventCount = 0;
-
-                    if (cameraAttachedBridgeEventCount > 0 ||
-                        recursiveBridgeEventCount > 0 ||
-                        measurementEventCount > 0 ||
-                        measurementTwoPointEventCount > 0 ||
-                        directLightEventCount > 0) {
+                    if (measurementEventCount > 0u ||
+                        measurementTwoPointEventCount > 0u ||
+                        materialVertexEventCount > 0u) {
                         ScopedTimer timer(
                             "Total adjointContributionKernels bounce: " + std::to_string(adjointBounceIndex),
                             spdlog::level::debug);
-
 
                         adjointContributionKernels(
                             pkg,
                             measurementEventCount,
                             measurementTwoPointEventCount,
-                            cameraAttachedBridgeEventCount,
-                            recursiveBridgeEventCount,
-                            directLightEventCount,
+                            materialVertexEventCount,
                             static_cast<uint32_t>(cameraIndex));
-
                     }
 
                     pkg.queue.memset(
@@ -353,6 +330,7 @@ namespace Pale {
             launchDepthDistortionBackwardKernel(pkg, cameraIndex);
         }
     }
+
     void submitNormalConsistencyKernel(RenderPackage& pkg) {
         pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);

@@ -284,7 +284,7 @@ def _make_target_image(
     target_shape = tuple(reference_rendered.shape)
 
     if target_mode == "filled":
-        target_image = 5 * np.ones_like(reference_rendered, dtype=np.float32)
+        target_image = 1 * np.ones_like(reference_rendered, dtype=np.float32)
         return target_image, target_shape
 
     if target_mode == "random":
@@ -300,14 +300,15 @@ def main(args) -> None:
         "photons": 1e6,
         "bounces": args.bounces,
         "forward_passes": args.forward_passes,
-        "primal_shadow_rays": 4,
-        "adjoint_shadow_rays": 4,
+        "primal_shadow_rays":  256,
+        "adjoint_shadow_rays": 256,
         "gather_passes": 1,
         "adjoint_bounces": args.adjoint_bounces,
         "adjoint_passes": args.adjoint_passes,
         "logging": 4,
         "seed": args.seed,
         "enable_adjoint_shadow_rays": args.enable_adjoint_shadow_rays,
+        "adjoint_shadow_path_rays": 4,
     }
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
 
@@ -412,6 +413,8 @@ def main(args) -> None:
             rendered_image = np.asarray(images[camera]["raw"], dtype=np.float32)[..., :3]
 
             loss_grad_image = compute_l2_grad(rendered_image, target_image)
+            #if args.target_mode == "filled":
+            #    loss_grad_image = np.ones_like(loss_grad_image, dtype=np.float32)
 
             save_seismic_signed(
                 loss_grad_image,

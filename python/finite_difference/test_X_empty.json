@@ -19,7 +19,7 @@
       "forward_passes": 1,
       "bounces": 1,
       "adjoint_bounces": 1,
-      "adjoint_passes": 1 ,
+      "adjoint_passes": 8 ,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"
     },
@@ -49,7 +49,7 @@
       "forward_passes": 1,
       "bounces": 1,
       "adjoint_bounces": 1,
-      "adjoint_passes": 1 ,
+      "adjoint_passes": 8 ,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"
     },
@@ -64,7 +64,7 @@
       "forward_passes": 1,
       "bounces": 1,
       "adjoint_bounces": 1,
-      "adjoint_passes": 1 ,
+      "adjoint_passes": 8 ,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"
     },
@@ -79,7 +79,7 @@
       "forward_passes": 1,
       "bounces": 1,
       "adjoint_bounces": 1,
-      "adjoint_passes": 4 ,
+      "adjoint_passes": 8 ,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"
     },

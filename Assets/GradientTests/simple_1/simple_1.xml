@@ -9,9 +9,9 @@
         <float name="near_clip" value="0.01"/>
         <float name="far_clip" value="100.0"/>
         <float name="focus_distance" value="100"/>
-        <float name="fov" value="30.3077"/>
+        <float name="fov" value="80.3077"/>
         <transform name="to_world">
-            <lookat origin="0.3, 0.0, 0.1" target="-0.5, 0, 0.00" up="0,0,1"/>
+            <lookat origin="-0.2, 0.0, 0.1" target="-0.5, 0, 0.00" up="0,0,1"/>
         </transform>
         <sampler type="independent">
             <integer name="sample_count" value="128"/>

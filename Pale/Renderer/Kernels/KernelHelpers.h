@@ -1403,7 +1403,7 @@ namespace Pale {
                 localU * tangentUWorld +
                 localV * tangentVWorld;
 
-            float totalAreaWorld = M_PIf * length(cross(tangentUWorld, tangentVWorld));
+            float totalAreaWorld = M_PIf * surfel.scale.x() * surfel.scale.y();
             float pdfArea = 1.0f / totalAreaWorld;
 
             const float3 normalWorld = normalize(cross(surfel.tanU, surfel.tanV));
@@ -1430,18 +1430,14 @@ namespace Pale {
             sample.surface.primitiveIndex = light.primitiveIndex;
             sample.surface.alphaGeom = alphaGeom;
             sample.surface.uv = {localU, localV};
-
         }
         return sample;
     }
 
-
     SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
         uint32_t measurementEventCount,
         uint32_t measurementTwoPointEventCount,
-        uint32_t cameraAttachedBridgeEventCount,
-        uint32_t recursiveBridgeEventCount,
-        uint32_t directLightEventCount) {
+        uint32_t materialVertexEventCount) {
         GradientRecordRanges ranges{};
 
         static constexpr uint32_t measurementRecordsPerEvent =
@@ -1450,14 +1446,8 @@ namespace Pale {
         static constexpr uint32_t measurementTwoPointRecordsPerEvent =
             1u + kMaxSplatEventsPerRay;
 
-        static constexpr uint32_t cameraAttachedBridgeRecordsPerEvent =
+        static constexpr uint32_t materialVertexRecordsPerEvent =
             1u;
-
-        static constexpr uint32_t recursiveBridgeRecordsPerEvent =
-            2u + kMaxSplatEventsPerRay;
-
-        static constexpr uint32_t directLightRecordsPerEvent =
-            1u + kMaxSplatEventsPerRay;
 
         ranges.measurementOffset = 0u;
         ranges.measurementCount =
@@ -1465,30 +1455,21 @@ namespace Pale {
 
         ranges.measurementTwoPointOffset =
             ranges.measurementOffset + ranges.measurementCount;
+
         ranges.measurementTwoPointCount =
             measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
 
-        ranges.cameraAttachedBridgeOffset =
+        ranges.materialVertexOffset =
             ranges.measurementTwoPointOffset + ranges.measurementTwoPointCount;
-        ranges.cameraAttachedBridgeCount =
-            cameraAttachedBridgeRecordsPerEvent * cameraAttachedBridgeEventCount;
 
-        ranges.recursiveBridgeOffset =
-            ranges.cameraAttachedBridgeOffset + ranges.cameraAttachedBridgeCount;
-        ranges.recursiveBridgeCount =
-            recursiveBridgeRecordsPerEvent * recursiveBridgeEventCount;
-
-        ranges.directLightOffset =
-            ranges.recursiveBridgeOffset + ranges.recursiveBridgeCount;
-        ranges.directLightCount =
-            directLightRecordsPerEvent * directLightEventCount;
+        ranges.materialVertexCount =
+            materialVertexRecordsPerEvent * materialVertexEventCount;
 
         ranges.totalCount =
-            ranges.directLightOffset + ranges.directLightCount;
+            ranges.materialVertexOffset + ranges.materialVertexCount;
 
         return ranges;
     }
-
 
     inline void clearPendingCameraSegment(PendingCameraSegment& pendingCameraSegment) {
         pendingCameraSegment.valid = false;
@@ -1522,7 +1503,7 @@ namespace Pale {
     }
 
     static inline float3 reconstructWorldPositionFromDepthCenter(
-        const CameraGPU &camera,
+        const CameraGPU& camera,
         const uint32_t pixelX,
         const uint32_t pixelY,
         const float depth) {
@@ -1541,5 +1522,4 @@ namespace Pale {
         const float t = depth / denom;
         return ray.origin + ray.direction * t;
     }
-
 }
