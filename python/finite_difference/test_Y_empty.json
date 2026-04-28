@@ -19,7 +19,7 @@
       "forward_passes": 50,
       "bounces": 2,
       "adjoint_passes": 32,
-      "adjoint_bounces": 1,
+      "adjoint_bounces": 2,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"
     },

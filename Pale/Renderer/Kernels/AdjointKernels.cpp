@@ -430,7 +430,6 @@ namespace Pale {
                                     measurementEvent.transmission = currentRayState.transmission;
                                     measurementEvent.xPathThroughput = currentRayState.pathThroughput / qReflect;
 
-
                                     appendEventAtomic(
                                         intermediates.countMeasurementEvents,
                                         intermediates.measurementEvents,
@@ -539,7 +538,8 @@ namespace Pale {
                                                 measurementTwoPointEvent.ySurface.pathId = currentRayState.pathId;
                                                 measurementTwoPointEvent.xPathThroughput =
                                                     currentRayState.transmission * currentRayState.pathThroughput /
-                                                    (lightSample.pdfArea * qReflect) * invSampleCount * 2;
+                                                    (lightSample.pdfArea * lightSample.pdfSelectLight * qReflect) *
+                                                    invSampleCount;
                                                 measurementTwoPointEvent.transmission = transmission;
                                                 measurementTwoPointEvent.directLightRadiance =
                                                     lightSample.flux / (M_PIf * lightSample.totalAreaWorld);
@@ -553,7 +553,6 @@ namespace Pale {
                                             }
                                         }
                                     }
-
                                 }
 
                                 // -------------------------------------------------------------
@@ -774,11 +773,11 @@ namespace Pale {
                     const uint32_t eventIndex =
                         static_cast<uint32_t>(globalId[0]);
 
-                    static constexpr uint32_t recordsPerEvent =1u + kMaxSplatEventsPerRay;
+                    static constexpr uint32_t recordsPerEvent = 1u + kMaxSplatEventsPerRay;
 
-                    const uint32_t eventRecordBase =baseOffset + recordsPerEvent * eventIndex;
+                    const uint32_t eventRecordBase = baseOffset + recordsPerEvent * eventIndex;
 
-                    const uint32_t recordIndex =eventRecordBase;
+                    const uint32_t recordIndex = eventRecordBase;
 
                     for (uint32_t recordOffset = 0u;
                          recordOffset < recordsPerEvent;
@@ -789,10 +788,10 @@ namespace Pale {
                             invalidRecord;
                     }
 
-                    const MeasurementGradientEvent eventRecord =measurementEvents[eventIndex];
+                    const MeasurementGradientEvent eventRecord = measurementEvents[eventIndex];
 
-                    const Point& surfelX =scene.points[eventRecord.xSurface.primitiveIndex];
-                    const ReconstructedSurfelState xState =reconstructSurfelState(surfelX, eventRecord.xSurface);
+                    const Point& surfelX = scene.points[eventRecord.xSurface.primitiveIndex];
+                    const ReconstructedSurfelState xState = reconstructSurfelState(surfelX, eventRecord.xSurface);
 
                     const uint64_t directLightSeed = rng::makeSeed(
                         settings.random.seed,
@@ -813,19 +812,19 @@ namespace Pale {
                             settings.numAdjointShadowRays,
                             directLightRng);
 
-                    const float3 vectorCameraToX =xState.position - sensor.camera.pos;
+                    const float3 vectorCameraToX = xState.position - sensor.camera.pos;
 
-                    const float distanceSquared =dot(vectorCameraToX, vectorCameraToX);
+                    const float distanceSquared = dot(vectorCameraToX, vectorCameraToX);
 
                     if (distanceSquared <= 1e-12f) {
                         return;
                     }
 
-                    const float distance =sycl::sqrt(distanceSquared);
+                    const float distance = sycl::sqrt(distanceSquared);
 
-                    const float targetDistance =distance;
+                    const float targetDistance = distance;
 
-                    constexpr float distanceEpsilon =1e-4f;
+                    constexpr float distanceEpsilon = 1e-4f;
 
                     struct OccluderDerivative {
                         float3 gradPosition{0.0f, 0.0f, 0.0f};
@@ -856,10 +855,10 @@ namespace Pale {
                             normalize(vectorCameraToX);
 
                         Ray ray{};
-                        ray.origin =sensor.camera.pos + rayDirection * distanceEpsilon;
-                        ray.direction =rayDirection;
+                        ray.origin = sensor.camera.pos + rayDirection * distanceEpsilon;
+                        ray.direction = rayDirection;
 
-                        const float3 segmentOrigin =sensor.camera.pos;
+                        const float3 segmentOrigin = sensor.camera.pos;
 
                         while (true) {
                             WorldHit worldHit{};
@@ -873,7 +872,7 @@ namespace Pale {
                                 break;
                             }
 
-                            const float hitDistance =length(worldHit.hitPositionW - sensor.camera.pos);
+                            const float hitDistance = length(worldHit.hitPositionW - sensor.camera.pos);
 
                             if (hitDistance >= targetDistance - distanceEpsilon) {
                                 break;
@@ -889,36 +888,36 @@ namespace Pale {
                                 break;
                             }
 
-                            const Point& occluderSurfel =scene.points[worldHit.primitiveIndex];
+                            const Point& occluderSurfel = scene.points[worldHit.primitiveIndex];
 
                             float3 occluderNormal =
-                                normalize(cross(occluderSurfel.tanU,occluderSurfel.tanV));
+                                normalize(cross(occluderSurfel.tanU, occluderSurfel.tanV));
 
-                            const bool hitBackside =dot(occluderNormal, -ray.direction) < 0.0f;
+                            const bool hitBackside = dot(occluderNormal, -ray.direction) < 0.0f;
 
                             if (hitBackside) {
                                 occluderNormal = -occluderNormal;
                             }
 
-                            const float alphaGeomOccluder =worldHit.alphaGeom;
-                            const float alphaEffective =occluderSurfel.opacity * alphaGeomOccluder;
-                            const float oneMinusAlpha =sycl::fmax(0.0f, 1.0f - alphaEffective);
-                            const float prefixTransmittance =segmentTransmittance;
+                            const float alphaGeomOccluder = worldHit.alphaGeom;
+                            const float alphaEffective = occluderSurfel.opacity * alphaGeomOccluder;
+                            const float oneMinusAlpha = sycl::fmax(0.0f, 1.0f - alphaEffective);
+                            const float prefixTransmittance = segmentTransmittance;
                             segmentTransmittance *= oneMinusAlpha;
-                            ray.origin =worldHit.hitPositionW + ray.direction * distanceEpsilon;
-                            const float2 uv =phiInverse(worldHit.hitPositionW, occluderSurfel);
-                            const float uOcc =uv.x();
-                            const float vOcc =uv.y();
-                            const float scaleU =occluderSurfel.scale.x();
-                            const float scaleV =occluderSurfel.scale.y();
+                            ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
+                            const float2 uv = phiInverse(worldHit.hitPositionW, occluderSurfel);
+                            const float uOcc = uv.x();
+                            const float vOcc = uv.y();
+                            const float scaleU = occluderSurfel.scale.x();
+                            const float scaleV = occluderSurfel.scale.y();
                             if (scaleU <= 1e-12f || scaleV <= 1e-12f) {
                                 continue;
                             }
-                            const float3 tangentU =occluderSurfel.tanU;
-                            const float3 tangentV =occluderSurfel.tanV;
-                            const float3 localBasisU =tangentU / scaleU;
-                            const float3 localBasisV =tangentV / scaleV;
-                            const float3 dxy =segmentOrigin - xState.position;
+                            const float3 tangentU = occluderSurfel.tanU;
+                            const float3 tangentV = occluderSurfel.tanV;
+                            const float3 localBasisU = tangentU / scaleU;
+                            const float3 localBasisV = tangentV / scaleV;
+                            const float3 dxy = segmentOrigin - xState.position;
 
                             const float denominator =
                                 dot(occluderNormal, dxy);
@@ -1079,21 +1078,21 @@ namespace Pale {
                             settings.numAdjointShadowRays,
                             directLightRng);
 
-                    const float u =eventRecord.xSurface.uv.x();
+                    const float u = eventRecord.xSurface.uv.x();
 
-                    const float v =eventRecord.xSurface.uv.y();
+                    const float v = eventRecord.xSurface.uv.y();
 
-                    const float radiusSquared =u * u + v * v;
+                    const float radiusSquared = u * u + v * v;
 
-                    const float oneMinusRadiusSquared =1.0f - radiusSquared;
+                    const float oneMinusRadiusSquared = 1.0f - radiusSquared;
 
                     if (oneMinusRadiusSquared <= 1e-8f) {
                         return;
                     }
 
-                    const float scaleU =surfelX.scale.x();
+                    const float scaleU = surfelX.scale.x();
 
-                    const float scaleV =surfelX.scale.y();
+                    const float scaleV = surfelX.scale.y();
 
                     const UVPositionJacobian uvPositionJacobian =
                         computeDuvDSurfelTranslationJacobianForImplicitRayHit(
@@ -1108,7 +1107,7 @@ namespace Pale {
                         u * uvPositionJacobian.du_d_surfel_translation +
                         v * uvPositionJacobian.dv_d_surfel_translation;
 
-                    const float betaScale =4.0f * sycl::exp(surfelX.beta);
+                    const float betaScale = 4.0f * sycl::exp(surfelX.beta);
 
                     const float factor =
                         -2.0f *
@@ -1121,9 +1120,10 @@ namespace Pale {
                     const float3 dAlphaEffectiveDPosition =
                         surfelX.opacity * dAlphaGeomDPosition;
 
-                    const float scalarWeightNoAlpha =segmentTransmittance * dot(eventRecord.xPathThroughput, outgoingRadianceXNoAlpha);
+                    const float scalarWeightNoAlpha = segmentTransmittance * dot(
+                        eventRecord.xPathThroughput, outgoingRadianceXNoAlpha);
 
-                    const float3 positionGradient =dAlphaEffectiveDPosition *scalarWeightNoAlpha *invSpp;
+                    const float3 positionGradient = dAlphaEffectiveDPosition * scalarWeightNoAlpha * invSpp;
 
                     float dAlphaGeomDScaleU = 0.0f;
                     float dAlphaGeomDScaleV = 0.0f;
@@ -1171,9 +1171,9 @@ namespace Pale {
                         scaleV > 1e-12f) {
                         const float3 xMinusSp = u * scaleU * surfelX.tanU + v * scaleV * surfelX.tanV;
                         const float3 a = xState.position - sensor.camera.pos - xMinusSp;
-                        const float nDotA =dot(normalX, a);
-                        const float invNDotD =1.0f / nDotD;
-                        const float invNDotDSquared =invNDotD * invNDotD;
+                        const float nDotA = dot(normalX, a);
+                        const float invNDotD = 1.0f / nDotD;
+                        const float invNDotDSquared = invNDotD * invNDotD;
 
                         const float3 q =
                         (
@@ -1208,7 +1208,7 @@ namespace Pale {
                             cross(rotationGradientZeta, surfelX.tanV);
                     }
 
-                    const float alphaGeomX =eventRecord.xSurface.alphaGeom;
+                    const float alphaGeomX = eventRecord.xSurface.alphaGeom;
 
                     const float opacityGradient =
                         alphaGeomX *
