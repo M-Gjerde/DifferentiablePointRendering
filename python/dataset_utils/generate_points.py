@@ -267,7 +267,7 @@ def generate_volume_ply(
                 )
 
 
-    light_power = 35.0
+    light_power = 60.0
 
     light_nx = 0.0
     light_ny = 0.0
@@ -432,7 +432,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-z", type=float)
 
     parser.add_argument("--scale", type=float)
-    parser.add_argument("--opacity", type=float, default=1.0)
+    parser.add_argument("--opacity", type=float, default=0.1)
     parser.add_argument("--position-noise-std", type=float)
     parser.add_argument("--tangent-noise-std", type=float)
     parser.add_argument("--seed", type=int, default=None)

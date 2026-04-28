@@ -26,6 +26,39 @@ namespace Pale {
         atomicAddFloat(destination.y(), valueToAdd.y());
     }
 
+    SYCL_EXTERNAL inline void accumulateSurfelGradientAtomic(
+        const PointGradients &gradients,
+        uint32_t primitiveIndex,
+        const float3 &gradPosition,
+        const float2 &gradScale,
+        const float3 &gradTanU,
+        const float3 &gradTanV,
+        float gradEta,
+        float gradBeta,
+        const float3 &gradAlbedo = float3{0.0f, 0.0f, 0.0f})
+    {
+        atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradPosition.x());
+        atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradPosition.y());
+        atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradPosition.z());
+
+        atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradScale.x());
+        atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradScale.y());
+
+        atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradTanU.x());
+        atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradTanU.y());
+        atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradTanU.z());
+
+        atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradTanV.x());
+        atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradTanV.y());
+        atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradTanV.z());
+
+        atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradEta);
+        atomicAddFloat(gradients.gradBeta[primitiveIndex], gradBeta);
+
+        atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradAlbedo.x());
+        atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradAlbedo.y());
+        atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradAlbedo.z());
+    }
 
     /*
     inline float3 gradTransmissionPosition(const Ray &ray, const SplatEvent &splatEvent, const Point &surfel,

@@ -1131,7 +1131,7 @@ def run_optimization(
 
     densification_interval = 1e100
     prune_interval = 10
-    burnin_iterations = 10
+    burnin_iterations = 50
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9

@@ -11,15 +11,16 @@ class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 1
     forward_passes: int = 1
-    primal_shadow_rays: int = 4
+    primal_shadow_rays: int =  4 # Li
+    adjoint_shadow_rays: int = 4 # Li
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_rays: int = 4
+    adjoint_shadow_path_rays: int = 4 #Pi
     gather_passes: int = 1
     adjoint_bounces: int = 1
-    adjoint_passes: int = 1
+    adjoint_passes: int = 6
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
-    logging: int = 3
+    logging: int = 4
 
     def as_dict(self, config: "OptimizationConfig") -> Dict[str, float | int]:
         return {
@@ -30,6 +31,7 @@ class RendererSettingsConfig:
             "primal_shadow_rays": self.primal_shadow_rays,
             "adjoint_shadow_rays": self.adjoint_shadow_rays,
             "enable_adjoint_shadow_rays": self.enable_adjoint_shadow_rays,
+            "adjoint_shadow_path_rays": self.adjoint_shadow_path_rays,
             "adjoint_bounces": self.adjoint_bounces,
             "adjoint_passes": self.adjoint_passes,
             "logging": self.logging,
@@ -214,7 +216,7 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.2,
+        default=0.1,
         help="Weight for the depth distortion regularizer.",
     )
 

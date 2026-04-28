@@ -294,36 +294,6 @@ namespace Pale {
 
                     uint32_t directLightEventCount = 0;
 
-                    if (enableAdjointDirectLight) {
-                        uint32_t directLightQueryCount = 0;
-                        pkg.queue.memcpy(
-                            &directLightQueryCount,
-                            pkg.intermediates.countDirectLightQueries,
-                            sizeof(uint32_t)).wait();
-
-                        directLightQueryCount = sycl::min(
-                            directLightQueryCount,
-                            pkg.intermediates.maxDirectLightQueryCount);
-
-                        if (directLightQueryCount > 0) {
-                            ScopedTimer timer("launchAdjointDirectLightKernel", spdlog::level::debug);
-                            launchAdjointDirectLightKernel(
-                                pkg,
-                                spp,
-                                directLightQueryCount,
-                                static_cast<uint32_t>(cameraIndex));
-                        }
-
-                        pkg.queue.memcpy(
-                            &directLightEventCount,
-                            pkg.intermediates.countDirectLightEvents,
-                            sizeof(uint32_t)).wait();
-
-                        directLightEventCount = sycl::min(
-                            directLightEventCount,
-                            pkg.intermediates.maxDirectLightEventCount);
-                    }
-
                     if (cameraAttachedBridgeEventCount > 0 ||
                         recursiveBridgeEventCount > 0 ||
                         measurementEventCount > 0 ||
@@ -333,6 +303,7 @@ namespace Pale {
                             "Total adjointContributionKernels bounce: " + std::to_string(adjointBounceIndex),
                             spdlog::level::debug);
 
+
                         adjointContributionKernels(
                             pkg,
                             measurementEventCount,
@@ -341,6 +312,7 @@ namespace Pale {
                             recursiveBridgeEventCount,
                             directLightEventCount,
                             static_cast<uint32_t>(cameraIndex));
+
                     }
 
                     pkg.queue.memset(

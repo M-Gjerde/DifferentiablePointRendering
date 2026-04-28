@@ -134,6 +134,8 @@ public:
                 get_b(settingsDict, "debug_images", settings.renderDebugGradientImages);
             settings.enableAdjointDirectLight =
                 get_b(settingsDict, "enable_adjoint_shadow_rays", settings.enableAdjointDirectLight);
+            settings.numAdjointPathShadowRays =
+                get_i(settingsDict, "adjoint_shadow_path_rays", settings.numAdjointPathShadowRays);
             settings.useDepthDistortion =
                 get_b(settingsDict, "use_depth_distortion", settings.useDepthDistortion);
             settings.useNormalConsistency =
@@ -152,6 +154,7 @@ public:
         Pale::Log::PA_WARN("  Adjoint bounces           : {}", settings.maxAdjointBounces);
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
         Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", settings.enableAdjointDirectLight);
+        Pale::Log::PA_WARN("  Adjoint Shadow ray count  : {}", settings.numAdjointPathShadowRays);
         Pale::Log::PA_WARN("  Use normal consistency    : {}", settings.useNormalConsistency);
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorsForward.size(); ++i) {

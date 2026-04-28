@@ -640,7 +640,7 @@ namespace Pale {
         float normalConsistencyWeight = 0.0f;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
-        uint32_t numAdjointPathShadowRays = 8;
+        uint32_t numAdjointPathShadowRays = 4;
 
         bool useDepthDistortion = false;
         bool useNormalConsistency = false;
