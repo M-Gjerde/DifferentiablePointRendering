@@ -910,7 +910,7 @@ namespace Pale {
                 currentSearchRadius * currentSearchRadius;
 
             const float slabHalfThickness =
-                sycl::fmax(minimumPlaneThickness, 0.25f * currentSearchRadius);
+                sycl::fmax(minimumPlaneThickness, 0.025f * currentSearchRadius);
 
             const float supportExtent = currentSearchRadius + slabHalfThickness;
             const float3 supportOffset = float3{

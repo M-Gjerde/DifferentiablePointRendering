@@ -267,7 +267,7 @@ def generate_volume_ply(
                 )
 
 
-    light_power = 20.0
+    light_power = 60.0
 
     light_nx = 0.0
     light_ny = 0.0
