@@ -444,7 +444,7 @@ namespace Pale {
                             float3 emittedRadiance =
                                 surfel.albedo * (surfel.flux / (M_PIf * surfelArea)) * alphaEff;
 
-                            if (surfel.flux > 0.0f && hitBackside) {
+                            if (surfel.isEmissive() && hitBackside) {
                                 //emittedRadiance = float3(0.0f, 0.0f, 0.0f);
                             }
 

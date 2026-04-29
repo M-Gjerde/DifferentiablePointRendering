@@ -335,12 +335,12 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 2;
-        settings.numForwardPasses = 50;
-        settings.numShadowRays = 12;
-        settings.numAdjointShadowRays = 12;
-        settings.maxAdjointBounces = 1; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
+        settings.numForwardPasses = 1;
+        settings.numShadowRays = 4;
+        settings.numAdjointShadowRays = 4;
+        settings.maxAdjointBounces = 2; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
         settings.adjointSamplesPerPixel = 1;
-        settings.renderDebugGradientImages = !true;
+        settings.renderDebugGradientImages = true;
         settings.enableAdjointDirectLight = true;
         settings.useDepthDistortion = true;
         settings.useNormalConsistency = true;
@@ -382,6 +382,7 @@ int main(int argc, char **argv) {
                 imageWidth,
                 imageHeight
             );
+
 
 
             std::vector<float> depthDistortionRaw =
