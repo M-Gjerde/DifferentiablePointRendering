@@ -236,6 +236,7 @@ namespace Pale {
                     pkg.queue.fill(pkg.intermediates.countMeasurementEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countMeasurementTwoPointEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countMaterialVertexEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countMaterialEdgeEvents, static_cast<uint32_t>(0), 1);
 
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeRayCount);
                     pkg.queue.wait();
@@ -249,6 +250,7 @@ namespace Pale {
                     uint32_t measurementEventCount = 0u;
                     uint32_t measurementTwoPointEventCount = 0u;
                     uint32_t materialVertexEventCount = 0u;
+                    uint32_t materialEdgeEventCount = 0u;
 
                     pkg.queue.memcpy(
                         &measurementEventCount,
@@ -265,6 +267,11 @@ namespace Pale {
                         pkg.intermediates.countMaterialVertexEvents,
                         sizeof(uint32_t)).wait();
 
+                    pkg.queue.memcpy(
+                        &materialEdgeEventCount,
+                        pkg.intermediates.countMaterialEdgeEvents,
+                        sizeof(uint32_t)).wait();
+
                     measurementEventCount = std::min(
                         measurementEventCount,
                         pkg.intermediates.maxMeasurementEventCount);
@@ -277,9 +284,14 @@ namespace Pale {
                         materialVertexEventCount,
                         pkg.intermediates.maxMaterialVertexEventCount);
 
+                    materialEdgeEventCount = std::min(
+                        materialEdgeEventCount,
+                        pkg.intermediates.maxMaterialEdgeEventCount);
+
                     if (measurementEventCount > 0u ||
                         measurementTwoPointEventCount > 0u ||
-                        materialVertexEventCount > 0u) {
+                        materialVertexEventCount > 0u||
+                        materialEdgeEventCount > 0u) {
                         ScopedTimer timer(
                             "Total adjointContributionKernels bounce: " + std::to_string(adjointBounceIndex),
                             spdlog::level::debug);
@@ -289,6 +301,7 @@ namespace Pale {
                             measurementEventCount,
                             measurementTwoPointEventCount,
                             materialVertexEventCount,
+                            materialEdgeEventCount,
                             static_cast<uint32_t>(cameraIndex));
                     }
 

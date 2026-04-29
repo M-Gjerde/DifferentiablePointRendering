@@ -143,9 +143,9 @@ void accumulatePhotonEnergyPerSurfelDebug(RenderPackage& renderPackage)
                 const DevicePhotonSurface photon = photonsDevicePtr[photonIndex];
 
                 // Skip unused photon slots (adapt sentinel as needed)
-                if (photon.power.x() == 0.0f &&
-                    photon.power.y() == 0.0f &&
-                    photon.power.z() == 0.0f)
+                if (photon.flux.x() == 0.0f &&
+                    photon.flux.y() == 0.0f &&
+                    photon.flux.z() == 0.0f)
                 {
                     return;
                 }

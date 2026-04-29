@@ -477,7 +477,7 @@ namespace Pale {
         const float lightDistance = sycl::sqrt(lightDistanceSquared);
         const float3 lightDirection = lightVector / lightDistance;
 
-        constexpr float distanceEpsilon = 1e-4f;
+        constexpr float distanceEpsilon = 1e-6f;
         constexpr uint32_t maxShadowTraversals = 32u;
 
         Ray shadowRay{};

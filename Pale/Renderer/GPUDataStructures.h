@@ -47,6 +47,10 @@ namespace Pale {
         float flux{0.0f};
 
         uint64_t pointId{0};
+
+        bool isEmissive() const {
+            return flux > 0.0f;
+        };
     };
 
     CHECK_16(Point);
@@ -314,12 +318,14 @@ namespace Pale {
         ProjectionScatter,
         Projection,
     };
+
     enum class SampledPointEventType : uint32_t {
         None = 0u,
         Null = 1u,
         Reflect = 2u,
         Transmit = 3u
     };
+
     static constexpr uint32_t kMaxSegmentOccluders = 5;
 
 
@@ -422,7 +428,7 @@ namespace Pale {
         float areaPdfFromPrevious = FLT_MAX;
 
         // Local scattering factor stored at this vertex.
-        float3 bsdf = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 bsdfAlpha = float3{FLT_MAX, FLT_MAX, FLT_MAX};
 
         // Only used for the camera-attached path case.
         float cosineFromPrevious = FLT_MAX;
@@ -464,24 +470,31 @@ namespace Pale {
         float3 directLightRadiance{FLT_MAX, FLT_MAX, FLT_MAX};
     };
 
-    struct CameraAttachedBridgeGradientEvent {
-        PointCloudSurfaceRecord xSurface;   // first camera hit
-        PointCloudSurfaceRecord ySurface;   // sampled next surfel
-
-        float3 xPathThroughput{FLT_MAX};
-        float transmissionPreviousSegment{FLT_MAX};  // tau(camera, X)
-        float geometryPreviousSegment{FLT_MAX};  // tau(camera, X)
-        float transmission{FLT_MAX};                 // tau(X, Y)
+    struct MaterialVertexGradientEvent {
+        PointCloudSurfaceRecord surface;
+        float3 adjointWeightAtVertex{0.0f, 0.0f, 0.0f};
+        uint32_t pathId = kInvalidIndex;
+        uint32_t bounceIndex = 0u;
     };
 
-    struct RecursiveBridgeGradientEvent {
-        PointCloudSurfaceRecord xSurface;   // bridge start
-        PointCloudSurfaceRecord ySurface;   // bridge end
 
-        float3 xPathThroughput;
-        float transmissionPreviousSegment{};  // tau(prev, A)
-        float geometryPreviousSegment{};  // tau(prev, A)
-        float transmission{};                 // tau(A, B)
+    struct MaterialEdgeGradientEvent {
+        PointCloudSurfaceRecord startSurface{};
+        PointCloudSurfaceRecord endSurface{};
+
+        float3 sampledEdgeThroughput{0.0f, 0.0f, 0.0f};
+
+        float segmentTransmittance = 1.0f;
+        float segmentGeometricTerm = 1.0f;
+        float segmentAreaPdf = 1.0f;
+
+        float3 directLightRadiance{0.0f, 0.0f, 0.0f};
+        bool isDirectLightSample = false;
+
+        bool isEndPointOnly = false; // True only for the first time as we handled camera rays spearately
+
+        uint32_t pathId = kInvalidIndex;
+        uint32_t startBounceIndex = 0u;
     };
 
     struct ReconstructedSurfelState {
@@ -528,17 +541,6 @@ namespace Pale {
         float gradTangentVZ = FLT_MAX;
     };
 
-    struct MaterialVertexGradientEvent {
-        PointCloudSurfaceRecord surface;
-
-        // Adjoint weight arriving at this material vertex.
-        // This should include previous path throughput and previous segment transmission,
-        // but not the local alpha/surface BSDF of this vertex.
-        float3 adjointWeightAtVertex{0.0f, 0.0f, 0.0f};
-
-        uint32_t pathId = kInvalidIndex;
-        uint32_t bounceIndex = 0u;
-    };
 
     struct GradientRecordRanges {
         uint32_t measurementOffset = 0u;
@@ -549,6 +551,9 @@ namespace Pale {
 
         uint32_t materialVertexOffset = 0u;
         uint32_t materialVertexCount = 0u;
+
+        uint32_t materialEdgeOffset = 0u;
+        uint32_t materialEdgeCount = 0u;
 
         uint32_t totalCount = 0u;
     };
@@ -672,7 +677,7 @@ namespace Pale {
         // Positions in world space
         float3 position{0.0f};
         // Photon power (throughput × emission), RGB channels
-        float3 power{0.0f};
+        float3 flux{0.0f};
         float3 incomingDirection{0.0f};
         //float3 normal{0.0f};
         // |n · ω_i| at the hit (used to convert flux→irradiance)
@@ -734,24 +739,25 @@ namespace Pale {
         PendingAdjointStageX *pendingStageX = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
 
-        MeasurementGradientEvent* measurementEvents;
+        MeasurementGradientEvent *measurementEvents;
         MeasurementGradientEventXY *measurementTwoPointEvents = nullptr;
 
-        MaterialVertexGradientEvent* materialVertexEvents = nullptr;
-        uint32_t* countMaterialVertexEvents = nullptr;
-        uint32_t maxMaterialVertexEventCount = 0u;
+        MaterialVertexGradientEvent *materialVertexEvents = nullptr;
+        MaterialEdgeGradientEvent *materialEdgeEvents = nullptr;
 
-        RecursiveBridgeGradientEvent *recursiveBridgeEvents = nullptr;
         SurfelGradientRecord *gradientRecords = nullptr;
-        PendingCameraSegment* pendingCameraSegments = nullptr;
+        PendingCameraSegment *pendingCameraSegments = nullptr;
 
-        uint32_t* countMeasurementEvents = nullptr;
+        uint32_t *countMeasurementEvents = nullptr;
         uint32_t *countMeasurementTwoPointEvents = nullptr;
-        uint32_t *countRecursiveBridgeEvents = nullptr;
+        uint32_t *countMaterialVertexEvents = nullptr;
+        uint32_t *countMaterialEdgeEvents = nullptr;
 
         // capacities
         uint32_t maxMeasurementEventCount = 0u;
         uint32_t maxMeasurementTwoPointEventCount = 0u;
+        uint32_t maxMaterialVertexEventCount = 0u;
+        uint32_t maxMaterialEdgeEventCount = 0u;
         uint32_t maxGradientRecordCount = 0;
         uint32_t maxRayQueueCapacity = 0;
 

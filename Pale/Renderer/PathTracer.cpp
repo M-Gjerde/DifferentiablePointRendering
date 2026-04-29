@@ -114,17 +114,18 @@ namespace Pale {
         m_intermediates.maxMeasurementTwoPointEventCount = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 2;
 
         const std::size_t cameraAttachedBridgeEventSize =
-            sizeof(CameraAttachedBridgeGradientEvent) * m_rayQueueCapacity;
+            sizeof(MaterialVertexGradientEvent) * m_rayQueueCapacity;
         m_intermediates.materialVertexEvents =
             sycl::malloc_device<MaterialVertexGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated projectionScatterEvents: {}", Utils::formatBytes(cameraAttachedBridgeEventSize));
         m_intermediates.maxMaterialVertexEventCount = m_rayQueueCapacity;
 
-        const std::size_t sizeRecursiveBridgeEvent =
-            sizeof(RecursiveBridgeGradientEvent) * m_rayQueueCapacity;
-        m_intermediates.recursiveBridgeEvents =
-            sycl::malloc_device<RecursiveBridgeGradientEvent>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(sizeRecursiveBridgeEvent));
+        const std::size_t materialEdgeEventsSize =
+            sizeof(MaterialEdgeGradientEvent) * m_rayQueueCapacity;
+        m_intermediates.materialEdgeEvents =
+            sycl::malloc_device<MaterialEdgeGradientEvent>(m_rayQueueCapacity, m_queue);
+        Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(materialEdgeEventsSize));
+        m_intermediates.maxMaterialEdgeEventCount = m_rayQueueCapacity;
 
         // --- pending adjoint states ---
         const std::size_t sizePendingAdjointStatesXBytes =
@@ -158,18 +159,18 @@ namespace Pale {
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMaterialVertexEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countRecursiveBridgeEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMeasurementEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMeasurementTwoPointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countMaterialEdgeEvents = sycl::malloc_device<uint32_t>(1, m_queue);
 
         m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countMaterialVertexEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countRecursiveBridgeEvents, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countMeasurementEvents, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.countMeasurementTwoPointEvents, 0, sizeof(uint32_t));
+        m_queue.memset(m_intermediates.countMaterialEdgeEvents, 0, sizeof(uint32_t));
         m_queue.wait();
 
         const std::size_t counterBytes =
@@ -183,7 +184,7 @@ namespace Pale {
             sizeMeasurementEventsBytes +
             sizeMeasurementEventsTwoPointBytes +
             cameraAttachedBridgeEventSize +
-            sizeRecursiveBridgeEvent +
+            materialEdgeEventsSize +
             sizePendingAdjointStatesXBytes +
             sizeGradientRecordsBytes +
             counterBytes;
@@ -247,7 +248,7 @@ namespace Pale {
         freeDevicePtr(m_intermediates.measurementEvents, m_queue);
         freeDevicePtr(m_intermediates.measurementTwoPointEvents, m_queue);
         freeDevicePtr(m_intermediates.materialVertexEvents, m_queue);
-        freeDevicePtr(m_intermediates.recursiveBridgeEvents, m_queue);
+        freeDevicePtr(m_intermediates.materialEdgeEvents, m_queue);
         freeDevicePtr(m_intermediates.pendingCameraSegments, m_queue);
         freeDevicePtr(m_intermediates.countMeasurementEvents, m_queue);
         freeDevicePtr(m_intermediates.countMeasurementTwoPointEvents, m_queue);
@@ -258,7 +259,7 @@ namespace Pale {
         freeDevicePtr(m_intermediates.countPrimary, m_queue);
         freeDevicePtr(m_intermediates.countContributions, m_queue);
         freeDevicePtr(m_intermediates.countMaterialVertexEvents, m_queue);
-        freeDevicePtr(m_intermediates.countRecursiveBridgeEvents, m_queue);
+        freeDevicePtr(m_intermediates.countMaterialEdgeEvents, m_queue);
         freeDevicePtr(m_intermediates.countExtensionOut, m_queue);
         freeDevicePtr(m_intermediates.gradientRecords, m_queue);
 
@@ -270,14 +271,14 @@ namespace Pale {
         m_intermediates.measurementEvents = nullptr;
         m_intermediates.measurementTwoPointEvents = nullptr;
         m_intermediates.materialVertexEvents = nullptr;
-        m_intermediates.recursiveBridgeEvents = nullptr;
+        m_intermediates.materialEdgeEvents = nullptr;
 
         m_intermediates.pendingStageX = nullptr;
 
         m_intermediates.countPrimary = nullptr;
         m_intermediates.countContributions = nullptr;
         m_intermediates.countMaterialVertexEvents = nullptr;
-        m_intermediates.countRecursiveBridgeEvents = nullptr;
+        m_intermediates.countMaterialEdgeEvents = nullptr;
         m_intermediates.countExtensionOut = nullptr;
         m_intermediates.pendingCameraSegments = nullptr;
         m_intermediates.countMeasurementEvents = nullptr;
@@ -290,6 +291,7 @@ namespace Pale {
         m_intermediates.maxGradientRecordCount = 0;
         m_intermediates.maxMeasurementTwoPointEventCount = 0;
         m_intermediates.maxRayQueueCapacity = 0;
+        m_intermediates.maxMaterialEdgeEventCount = 0;
 
         m_rayQueueCapacity = 0;
     }

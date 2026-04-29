@@ -961,7 +961,7 @@ namespace Pale {
                                 continue;
                             }
 
-                            try_insert_candidate(tangentialDistanceSquared, photon.power);
+                            try_insert_candidate(tangentialDistanceSquared, photon.flux);
                         }
                     }
                 }
@@ -1089,7 +1089,7 @@ namespace Pale {
                             tangentDeviationWeight *
                             sameHemisphere;
 
-                        irradiance += photon.power * kernelWeight;
+                        irradiance += photon.flux * kernelWeight;
                     }
                 }
             }
@@ -1141,7 +1141,7 @@ namespace Pale {
                         const float kernelWeight =
                             area * sameHemisphere;
 
-                        irradiance += photon.power * kernelWeight;
+                        irradiance += photon.flux * kernelWeight;
                     }
                 }
             }
@@ -1181,7 +1181,7 @@ namespace Pale {
         //photonEntry.normal = normal;
 
         // Power carried by the photon
-        photonEntry.power = flux;
+        photonEntry.flux = flux;
 
         photonEntry.isValid = 1u;
 
@@ -1196,7 +1196,7 @@ namespace Pale {
         v.transmissionFromPrevious = FLT_MAX;
         v.geometryFromPrevious = FLT_MAX;
         v.areaPdfFromPrevious = FLT_MAX;
-        v.bsdf = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        v.bsdfAlpha = float3{FLT_MAX, FLT_MAX, FLT_MAX};
         v.cosineFromPrevious = FLT_MAX;
     }
 
@@ -1226,7 +1226,7 @@ namespace Pale {
         v.transmissionFromPrevious = transmissionFromPrevious;
         v.geometryFromPrevious = geometryFromPrevious;
         v.areaPdfFromPrevious = areaPdfFromPrevious;
-        v.bsdf = bsdf;
+        v.bsdfAlpha = bsdf;
         v.cosineFromPrevious = cosineFromPrevious;
         return v;
     }
@@ -1276,7 +1276,6 @@ namespace Pale {
         const float distance = sycl::sqrt(distanceSquared);
         const float3 directionFromTo = vectorFromTo / distance;
         const float cosineAtTo = dot(toState.orientedNormal, -directionFromTo);
-
         return hemispherePdf * cosineAtTo / distanceSquared;
     }
 
@@ -1437,36 +1436,44 @@ namespace Pale {
     SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
         uint32_t measurementEventCount,
         uint32_t measurementTwoPointEventCount,
-        uint32_t materialVertexEventCount) {
+        uint32_t materialVertexEventCount,
+        uint32_t materialEdgeEventCount) {
         GradientRecordRanges ranges{};
 
         static constexpr uint32_t measurementRecordsPerEvent =
-            1u + kMaxSplatEventsPerRay;
+                1u + kMaxSplatEventsPerRay;
 
         static constexpr uint32_t measurementTwoPointRecordsPerEvent =
-            1u + kMaxSplatEventsPerRay;
+                1u + kMaxSplatEventsPerRay;
 
         static constexpr uint32_t materialVertexRecordsPerEvent =
-            1u;
+                1u;
+
+        // Start + end surface records, plus optional occluder/transmittance records.
+        static constexpr uint32_t materialEdgeRecordsPerEvent =
+                2u + kMaxSplatEventsPerRay;
 
         ranges.measurementOffset = 0u;
         ranges.measurementCount =
-            measurementRecordsPerEvent * measurementEventCount;
+                measurementRecordsPerEvent * measurementEventCount;
 
         ranges.measurementTwoPointOffset =
-            ranges.measurementOffset + ranges.measurementCount;
-
+                ranges.measurementOffset + ranges.measurementCount;
         ranges.measurementTwoPointCount =
-            measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
+                measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
 
         ranges.materialVertexOffset =
-            ranges.measurementTwoPointOffset + ranges.measurementTwoPointCount;
-
+                ranges.measurementTwoPointOffset + ranges.measurementTwoPointCount;
         ranges.materialVertexCount =
-            materialVertexRecordsPerEvent * materialVertexEventCount;
+                materialVertexRecordsPerEvent * materialVertexEventCount;
+
+        ranges.materialEdgeOffset =
+                ranges.materialVertexOffset + ranges.materialVertexCount;
+        ranges.materialEdgeCount =
+                materialEdgeRecordsPerEvent * materialEdgeEventCount;
 
         ranges.totalCount =
-            ranges.materialVertexOffset + ranges.materialVertexCount;
+                ranges.materialEdgeOffset + ranges.materialEdgeCount;
 
         return ranges;
     }

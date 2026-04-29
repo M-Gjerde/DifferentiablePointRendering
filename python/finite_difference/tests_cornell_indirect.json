@@ -8,17 +8,17 @@
     "666"
   ],
   "cases": [
-    {
+   {
       "scene": "cornell_indirect",
       "camera": "camera1",
-      "parameter": "translation_z",
+      "parameter": "translation_x",
       "index": 1,
-      "min": 0.3,
-      "max": 0.8,
+      "min": -0.3,
+      "max": 0.5,
       "fd_epsilon": 1e-2,
-      "forward_passes": 10,
-      "bounces": 1,
-      "adjoint_passes": 32,
+      "forward_passes": 15,
+      "bounces": 2,
+      "adjoint_passes": 64,
       "adjoint_bounces": 1,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"
@@ -26,15 +26,15 @@
     {
       "scene": "cornell_indirect",
       "camera": "camera1",
-      "parameter": "translation_z",
+      "parameter": "translation_x",
       "index": 1,
-      "min": 0.3,
-      "max": 0.8,
+      "min": -0.3,
+      "max": 0.5,
       "fd_epsilon": 1e-2,
-      "forward_passes": 10,
+      "forward_passes": 15,
       "bounces": 2,
-      "adjoint_passes": 32,
-      "adjoint_bounces": 1,
+      "adjoint_passes": 64,
+      "adjoint_bounces": 3,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"
     }

@@ -137,7 +137,11 @@ namespace Pale {
                                     contribution);
                             }
 
-                            if (settings.integratorKind == IntegratorKind::photonMapping && isIndirect) {
+                            const GPUMaterial material = scene.materials[instance.materialIndex];
+
+                            if (settings.integratorKind == IntegratorKind::photonMapping &&
+                                isIndirect &&
+                                !material.isEmissive()) {
                                 depositPhotonSurface(
                                     worldHit,
                                     currentRayState.ray.direction,
@@ -154,7 +158,6 @@ namespace Pale {
                                 sampledOutgoingDirectionW,
                                 sampledPdf);
 
-                            const GPUMaterial material = scene.materials[instance.materialIndex];
                             const float3 throughputMultiplier = material.baseColor;
 
                             RayState nextRayState{};
@@ -224,7 +227,7 @@ namespace Pale {
                                 const int sideSign = signNonZero(signedCosineIncident);
                                 const float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
 
-                                if (settings.integratorKind == IntegratorKind::photonMapping && isIndirect) {
+                                if (settings.integratorKind == IntegratorKind::photonMapping && isIndirect && !surfel.isEmissive()) {
                                     depositPhotonSurface(
                                         worldHit,
                                         currentRayState.ray.direction,
@@ -430,7 +433,7 @@ namespace Pale {
                             const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
                                 worldHit.hitPositionW,
                                 normalW,
-                                photonMap) * M_1_PIf;
+                                photonMap);
 
                             const float3 indirectRadiance =
                                 indirectIrradiance *
