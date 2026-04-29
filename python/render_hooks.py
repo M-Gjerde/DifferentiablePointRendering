@@ -337,7 +337,7 @@ def verify_beta_inplace(
         before_max = float(beta_values.max().item())
 
         if trainable_surfel_mask is None:
-            beta_values.clamp_(min=-1.5, max=5.0)
+            beta_values.clamp_(min=-0.5, max=5.0)
         else:
             mask = trainable_surfel_mask.to(
                 device=beta_values.device,

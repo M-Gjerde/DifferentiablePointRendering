@@ -83,6 +83,19 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="GIF loop count. 0 = infinite.",
     )
+    parser.add_argument(
+        "--frame-stride",
+        type=int,
+        default=1,
+        help="Use every N-th render frame. Example: 10 means use frames 0, 10, 20, ...",
+    )
+    parser.add_argument(
+        "--max-gif-frames",
+        type=int,
+        default=None,
+        help="Optional maximum number of GIF frames. Frames are evenly sampled.",
+    )
+
     return parser.parse_args()
 
 
@@ -376,6 +389,44 @@ def discover_render_frames(camera_render_dir: Path) -> List[Path]:
 
     return frame_paths
 
+def select_render_frames_for_gif(
+    render_frame_paths: List[Path],
+    frame_stride: int,
+    max_gif_frames: int | None,
+) -> List[Path]:
+    if frame_stride < 1:
+        raise ValueError(f"--frame-stride must be >= 1, got {frame_stride}")
+
+    selected_frame_paths = render_frame_paths[::frame_stride]
+
+    if render_frame_paths[-1] not in selected_frame_paths:
+        selected_frame_paths.append(render_frame_paths[-1])
+
+    if max_gif_frames is not None:
+        if max_gif_frames < 2:
+            raise ValueError(f"--max-gif-frames must be >= 2, got {max_gif_frames}")
+
+        if len(selected_frame_paths) > max_gif_frames:
+            sampled_indices = np.linspace(
+                0,
+                len(selected_frame_paths) - 1,
+                max_gif_frames,
+                dtype=int,
+            )
+
+            deduplicated_frame_paths = []
+            seen_indices = set()
+
+            for sampled_index in sampled_indices:
+                if sampled_index in seen_indices:
+                    continue
+
+                seen_indices.add(sampled_index)
+                deduplicated_frame_paths.append(selected_frame_paths[sampled_index])
+
+            selected_frame_paths = deduplicated_frame_paths
+
+    return selected_frame_paths
 
 def discover_median_depth_frames(camera_median_depth_dir: Path) -> dict[int, Path]:
     if not camera_median_depth_dir.exists():
@@ -415,6 +466,8 @@ def build_gif(
     panel_height: int,
     title_height: int,
     loop: int,
+    frame_stride: int,
+    max_gif_frames: int | None,
 ) -> Path:
     target_path = run_dir / f"render_target_{camera_name}.png"
     initial_path = run_dir / f"render_initial_{camera_name}.png"
@@ -444,7 +497,17 @@ def build_gif(
             font,
         )
 
-    render_frame_paths = discover_render_frames(render_dir)
+    all_render_frame_paths = discover_render_frames(render_dir)
+    render_frame_paths = select_render_frames_for_gif(
+        render_frame_paths=all_render_frame_paths,
+        frame_stride=frame_stride,
+        max_gif_frames=max_gif_frames,
+    )
+
+    print(
+        f"GIF frame sampling: using {len(render_frame_paths)} / "
+        f"{len(all_render_frame_paths)} render frames"
+    )
     median_depth_frame_paths = discover_median_depth_frames(median_depth_dir)
 
     loss_curve_img_path, used_loss_column = make_loss_curve_image(
@@ -586,6 +649,8 @@ def main() -> None:
         panel_height=args.panel_height,
         title_height=args.title_height,
         loop=args.loop,
+        frame_stride=args.frame_stride,
+        max_gif_frames=args.max_gif_frames,
     )
 
     print()

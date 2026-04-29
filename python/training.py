@@ -663,6 +663,74 @@ def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
         f"{s('beta')}"
     )
 
+def compute_opacity_albedo_preference_regularizer_and_gradients(
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        trainable_surfel_mask: torch.Tensor,
+        albedo_soft_max: float = 0.65,
+        opacity_target: float = 0.95,
+        albedo_weight: float = 1.0e-3,
+        opacity_weight: float = 1.0e-4,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """
+    Regularizer that encourages opacity to explain coverage before albedo explains brightness.
+
+    Albedo term:
+        penalizes only albedo values above albedo_soft_max.
+
+    Opacity term:
+        softly pulls trainable opacities toward opacity_target.
+
+    Returns:
+        loss_value,
+        grad_albedo_np,
+        grad_opacity_np
+    """
+    albedo_np = albedos.detach().cpu().numpy().astype(np.float32, copy=False)
+    opacity_np = opacities.detach().cpu().numpy().astype(np.float32, copy=False)
+
+    trainable_mask_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool)
+
+    grad_albedo_np = np.zeros_like(albedo_np, dtype=np.float32)
+    grad_opacity_np = np.zeros_like(opacity_np, dtype=np.float32)
+
+    if trainable_mask_np.size == 0 or not np.any(trainable_mask_np):
+        return 0.0, grad_albedo_np, grad_opacity_np
+
+    active_albedos = albedo_np[trainable_mask_np]
+    active_opacities = opacity_np[trainable_mask_np]
+
+    # ------------------------------------------------------------
+    # 1. Penalize high albedo only above a soft threshold.
+    # ------------------------------------------------------------
+    albedo_excess = np.maximum(active_albedos - albedo_soft_max, 0.0)
+    albedo_value_count = max(albedo_excess.size, 1)
+
+    albedo_loss = float(albedo_weight * np.mean(albedo_excess * albedo_excess))
+
+    grad_active_albedo = (
+            (2.0 * albedo_weight / float(albedo_value_count)) * albedo_excess
+    ).astype(np.float32)
+
+    grad_albedo_np[trainable_mask_np] = grad_active_albedo
+
+    # ------------------------------------------------------------
+    # 2. Pull opacity upward toward opacity_target.
+    # ------------------------------------------------------------
+    opacity_error = active_opacities - opacity_target
+    opacity_value_count = max(opacity_error.size, 1)
+
+    opacity_loss = float(opacity_weight * np.mean(opacity_error * opacity_error))
+
+    grad_active_opacity = (
+            (2.0 * opacity_weight / float(opacity_value_count)) * opacity_error
+    ).astype(np.float32)
+
+    grad_opacity_np[trainable_mask_np] = grad_active_opacity
+
+    total_regularizer_loss = albedo_loss + opacity_loss
+
+    return total_regularizer_loss, grad_albedo_np, grad_opacity_np
 
 def compute_normal_consistency_loss_and_adjoints(
         visible_normal_rgba: np.ndarray,
@@ -1297,6 +1365,22 @@ def run_optimization(
                 grad_opacities_np = np.asarray(total_gradients["opacity"], dtype=np.float32, order="C")
                 grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
 
+                appearance_regularizer_loss, grad_albedo_regularizer_np, grad_opacity_regularizer_np = (
+                    compute_opacity_albedo_preference_regularizer_and_gradients(
+                        albedos=albedos,
+                        opacities=opacities,
+                        trainable_surfel_mask=trainable_surfel_mask,
+                        albedo_soft_max=0.65,
+                        opacity_target=0.95,
+                        albedo_weight=1.0e-3,
+                        opacity_weight=1.0e-4,
+                    )
+                )
+
+                grad_albedos_np += grad_albedo_regularizer_np
+                grad_opacities_np += grad_opacity_regularizer_np
+                total_loss_value += appearance_regularizer_loss
+
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
                     raise RuntimeError(
@@ -1412,7 +1496,7 @@ def run_optimization(
                     # ----------------------------------------------------------
                     scale_prune_indices = compute_prune_indices_by_degenerate_scale(
                         scales,
-                        min_scale=1.0e-5,
+                        min_scale=1.0e-6,
                         trainable_mask=trainable_surfel_mask,
                         min_points_to_keep=1,
                     )

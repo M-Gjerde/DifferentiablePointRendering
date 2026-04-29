@@ -241,15 +241,16 @@ def save_loss_curve(
 
     if plot_all_losses:
         fig, axes = plt.subplots(
-            2,
+            3,
             1,
-            figsize=(12, 8),
+            figsize=(12, 10),
             sharex=True,
-            gridspec_kw={"height_ratios": [1.2, 1.0]},
+            gridspec_kw={"height_ratios": [1.2, 1.0, 1.0]},
         )
 
         ax_top = axes[0]
-        ax_bottom = axes[1]
+        ax_weighted = axes[1]
+        ax_raw = axes[2]
 
         top_columns = [
             column_name
@@ -260,7 +261,7 @@ def save_loss_curve(
             if column_name in dataframe.columns
         ]
 
-        bottom_columns_weighted = [
+        weighted_columns = [
             column_name
             for column_name in [
                 "loss_depth_distortion_weighted_sum",
@@ -269,7 +270,7 @@ def save_loss_curve(
             if column_name in dataframe.columns
         ]
 
-        bottom_columns_raw = [
+        raw_columns = [
             column_name
             for column_name in [
                 "loss_depth_distortion_raw_sum",
@@ -278,25 +279,17 @@ def save_loss_curve(
             if column_name in dataframe.columns
         ]
 
-        if not top_columns and not bottom_columns_weighted and not bottom_columns_raw:
+        if not top_columns and not weighted_columns and not raw_columns:
             fallback_column = select_loss_column(dataframe, explicit_loss_column)
             top_columns = [fallback_column]
 
         style_map = {
             "loss_rgb_sum": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
             "loss_total_sum": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
-            "loss_depth_distortion_weighted_sum": dict(
-                color="tab:red", linewidth=1.8, alpha=0.95
-            ),
-            "loss_normal_consistency_weighted_sum": dict(
-                color="tab:green", linewidth=1.8, alpha=0.95
-            ),
-            "loss_depth_distortion_raw_sum": dict(
-                color="tab:red", linewidth=1.2, alpha=0.65, linestyle="--"
-            ),
-            "loss_normal_consistency_raw_sum": dict(
-                color="tab:green", linewidth=1.2, alpha=0.65, linestyle="--"
-            ),
+            "loss_depth_distortion_weighted_sum": dict(color="tab:red", linewidth=1.8, alpha=0.95),
+            "loss_normal_consistency_weighted_sum": dict(color="tab:green", linewidth=1.8, alpha=0.95),
+            "loss_depth_distortion_raw_sum": dict(color="tab:red", linewidth=1.2, alpha=0.75, linestyle="--"),
+            "loss_normal_consistency_raw_sum": dict(color="tab:green", linewidth=1.2, alpha=0.75, linestyle="--"),
         }
 
         for column_name in top_columns:
@@ -307,25 +300,42 @@ def save_loss_curve(
                 **style_map.get(column_name, {}),
             )
 
-        for column_name in bottom_columns_weighted + bottom_columns_raw:
-            ax_bottom.plot(
+        for column_name in weighted_columns:
+            ax_weighted.plot(
                 dataframe["iteration"],
                 dataframe[column_name],
                 label=column_name,
                 **style_map.get(column_name, {}),
             )
 
-        ax_top.set_ylabel("Image / Total loss")
+        for column_name in raw_columns:
+            values = dataframe[column_name].to_numpy(dtype=np.float64)
+            positive_values = np.where(values > 0.0, values, np.nan)
+
+            ax_raw.plot(
+                dataframe["iteration"],
+                positive_values,
+                label=column_name,
+                **style_map.get(column_name, {}),
+            )
+
+        ax_top.set_ylabel("Image / total loss")
         ax_top.set_title(f"Optimization losses\n{metrics_csv_path.parent.name}")
         ax_top.grid(True)
         if top_columns:
             ax_top.legend()
 
-        ax_bottom.set_xlabel("Iteration")
-        ax_bottom.set_ylabel("Regularizer loss")
-        ax_bottom.grid(True)
-        if bottom_columns_weighted or bottom_columns_raw:
-            ax_bottom.legend()
+        ax_weighted.set_ylabel("Weighted regularizers")
+        ax_weighted.grid(True)
+        if weighted_columns:
+            ax_weighted.legend()
+
+        ax_raw.set_xlabel("Iteration")
+        ax_raw.set_ylabel("Raw diagnostics")
+        ax_raw.set_yscale("log")
+        ax_raw.grid(True)
+        if raw_columns:
+            ax_raw.legend()
 
         plt.tight_layout()
         plt.savefig(output_png_path, dpi=200)
@@ -335,7 +345,7 @@ def save_loss_curve(
 
         plt.close(fig)
 
-        plotted_columns = top_columns + bottom_columns_weighted + bottom_columns_raw
+        plotted_columns = top_columns + weighted_columns + raw_columns
         return ", ".join(plotted_columns)
 
     loss_column_name = select_loss_column(dataframe, explicit_loss_column)

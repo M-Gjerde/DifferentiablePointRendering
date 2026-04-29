@@ -9,15 +9,15 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 3
+    bounces: int = 2
     forward_passes: int = 1
-    primal_shadow_rays: int =  16 # Li
-    adjoint_shadow_rays: int = 16 # Li
+    primal_shadow_rays: int =  4 # Li
+    adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
-    adjoint_bounces: int = 1
-    adjoint_passes: int = 1
+    adjoint_bounces: int = 2
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_path_rays: int = 2 #Pi
+    adjoint_shadow_path_rays: int = 4 #Pi
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 4
@@ -208,7 +208,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.05,
+        default=0.01,
         help="Weight for the normal consistency regularizer.",
     )
 
@@ -240,9 +240,9 @@ def parse_args() -> OptimizationConfig:
         factor_position = 0.001
         factor_tangent = 0.05
         factor_scale = 0.001
-        factor_albedo = 0.04
+        factor_albedo = 0.001
         factor_opacity = 0.001
-        factor_beta = 0.01
+        factor_beta = 0.0005
 
     lr_pos = args.learning_rate_position or (factor_position * base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)

@@ -495,7 +495,6 @@ int main(int argc, char **argv) {
 
 
                 std::string fileName = selectedSensor.name;
-                fileName += "_photonmap";
                 std::filesystem::path targetImagePath = baseDir / "images" / (fileName + "_raw.exr");
 
                 uint32_t width, height;

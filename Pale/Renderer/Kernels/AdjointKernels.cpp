@@ -2647,6 +2647,7 @@ namespace Pale {
                                     occluderSurfel.opacity * (dAlphaGeomDu * dUiDx + dAlphaGeomDv * dViDx);
                             const float3 dAlphaEffectiveDy =
                                     occluderSurfel.opacity * (dAlphaGeomDu * dUiDy + dAlphaGeomDv * dViDy);
+
                             const float3 dAlphaEffectiveDspi =
                                     occluderSurfel.opacity * (dAlphaGeomDu * dUiDspi + dAlphaGeomDv * dViDspi);
                             const float dAlphaEffectiveDScaleU =
@@ -2906,9 +2907,9 @@ namespace Pale {
                     startRecord.gradTangentVZ = startTangentVGradient.z();
                     startRecord.gradEta = 0.0f;
                     startRecord.gradBeta = 0.0f;
-                    startRecord.gradAlbedoR = startAlbedoGradient.x();
-                    startRecord.gradAlbedoG = startAlbedoGradient.y();
-                    startRecord.gradAlbedoB = startAlbedoGradient.z();
+                    startRecord.gradAlbedoR = 0.0f;
+                    startRecord.gradAlbedoG = 0.0f;
+                    startRecord.gradAlbedoB = 0.0f;
 
                     SurfelGradientRecord endRecord{};
                     endRecord.primitiveIndex = endPrimitiveIndex;
