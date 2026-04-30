@@ -255,6 +255,7 @@ def poll_hotkey() -> Optional[str]:
         return line
     return None
 
+
 def save_gradients_snapshot(
         output_dir: Path,
         iteration: int,
@@ -663,60 +664,32 @@ def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
         f"{s('beta')}"
     )
 
-def compute_opacity_albedo_preference_regularizer_and_gradients(
-        albedos: torch.Tensor,
+
+def compute_opacity_one_regularizer_and_gradients(
         opacities: torch.Tensor,
         trainable_surfel_mask: torch.Tensor,
-        albedo_soft_max: float = 0.65,
-        opacity_target: float = 0.95,
-        albedo_weight: float = 1.0e-3,
-        opacity_weight: float = 1.0e-4,
-) -> tuple[float, np.ndarray, np.ndarray]:
+        opacity_target: float = 1.0,
+        opacity_weight: float = 1.0e-2,
+) -> tuple[float, np.ndarray]:
     """
-    Regularizer that encourages opacity to explain coverage before albedo explains brightness.
+    Regularizer that strongly encourages all trainable surfels to have opacity 1.
 
-    Albedo term:
-        penalizes only albedo values above albedo_soft_max.
-
-    Opacity term:
-        softly pulls trainable opacities toward opacity_target.
+    L = opacity_weight * mean((opacity - opacity_target)^2)
 
     Returns:
         loss_value,
-        grad_albedo_np,
         grad_opacity_np
     """
-    albedo_np = albedos.detach().cpu().numpy().astype(np.float32, copy=False)
     opacity_np = opacities.detach().cpu().numpy().astype(np.float32, copy=False)
-
     trainable_mask_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool)
 
-    grad_albedo_np = np.zeros_like(albedo_np, dtype=np.float32)
     grad_opacity_np = np.zeros_like(opacity_np, dtype=np.float32)
 
     if trainable_mask_np.size == 0 or not np.any(trainable_mask_np):
-        return 0.0, grad_albedo_np, grad_opacity_np
+        return 0.0, grad_opacity_np
 
-    active_albedos = albedo_np[trainable_mask_np]
     active_opacities = opacity_np[trainable_mask_np]
 
-    # ------------------------------------------------------------
-    # 1. Penalize high albedo only above a soft threshold.
-    # ------------------------------------------------------------
-    albedo_excess = np.maximum(active_albedos - albedo_soft_max, 0.0)
-    albedo_value_count = max(albedo_excess.size, 1)
-
-    albedo_loss = float(albedo_weight * np.mean(albedo_excess * albedo_excess))
-
-    grad_active_albedo = (
-            (2.0 * albedo_weight / float(albedo_value_count)) * albedo_excess
-    ).astype(np.float32)
-
-    grad_albedo_np[trainable_mask_np] = grad_active_albedo
-
-    # ------------------------------------------------------------
-    # 2. Pull opacity upward toward opacity_target.
-    # ------------------------------------------------------------
     opacity_error = active_opacities - opacity_target
     opacity_value_count = max(opacity_error.size, 1)
 
@@ -728,9 +701,8 @@ def compute_opacity_albedo_preference_regularizer_and_gradients(
 
     grad_opacity_np[trainable_mask_np] = grad_active_opacity
 
-    total_regularizer_loss = albedo_loss + opacity_loss
+    return opacity_loss, grad_opacity_np
 
-    return total_regularizer_loss, grad_albedo_np, grad_opacity_np
 
 def compute_normal_consistency_loss_and_adjoints(
         visible_normal_rgba: np.ndarray,
@@ -985,6 +957,7 @@ def run_optimization(
 
     depth_distortion_weight = float(getattr(config, "depth_distort_weight", 0.0))
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
+    opacity_regularizer_weight = 1.0
 
     use_depth_distortion = depth_distortion_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
@@ -1179,10 +1152,20 @@ def run_optimization(
     initial_normal_loss_weighted = (
             normal_consistency_weight * initial_normal_loss_raw
     )
+    initial_opacity_regularizer_loss, _ = (
+        compute_opacity_one_regularizer_and_gradients(
+            opacities=opacities,
+            trainable_surfel_mask=trainable_surfel_mask,
+            opacity_target=1.0,
+            opacity_weight=opacity_regularizer_weight,
+        )
+    )
+
     initial_total_loss = (
             initial_rgb_loss +
             initial_depth_distortion_loss_weighted +
-            initial_normal_loss_weighted
+            initial_normal_loss_weighted +
+            initial_opacity_regularizer_loss
     )
 
     print(f"Initial RGB loss                       : {initial_rgb_loss:.6e}")
@@ -1190,6 +1173,7 @@ def run_optimization(
     print(f"Initial depth distortion loss (weighted): {initial_depth_distortion_loss_weighted:.6e}")
     print(f"Initial normal consistency loss (raw)  : {initial_normal_loss_raw:.6e}")
     print(f"Initial normal consistency loss (weighted): {initial_normal_loss_weighted:.6e}")
+    print(f"Initial opacity regularizer loss        : {initial_opacity_regularizer_loss:.6e}")
     print(f"Initial total loss                     : {initial_total_loss:.6e}")
 
     # ------------------------------------------------------------------
@@ -1198,15 +1182,15 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 10
-    burnin_iterations = 50
+    prune_interval = 50
+    burnin_iterations = 100
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
 
     opacity_prune_threshold = 100.0
     max_prune_fraction = 0.3
-    rebuild_bvh_interval = 1
+    rebuild_bvh_interval = 5
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1222,6 +1206,7 @@ def run_optimization(
                 "loss_depth_distortion_weighted_sum",
                 "loss_normal_consistency_raw_sum",
                 "loss_normal_consistency_weighted_sum",
+                "loss_opacity_regularizer",
                 "loss_total_sum",
                 "parameter_mse",
                 "num_points",
@@ -1365,21 +1350,18 @@ def run_optimization(
                 grad_opacities_np = np.asarray(total_gradients["opacity"], dtype=np.float32, order="C")
                 grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
 
-                appearance_regularizer_loss, grad_albedo_regularizer_np, grad_opacity_regularizer_np = (
-                    compute_opacity_albedo_preference_regularizer_and_gradients(
-                        albedos=albedos,
+                opacity_regularizer_loss, grad_opacity_regularizer_np = (
+                    compute_opacity_one_regularizer_and_gradients(
                         opacities=opacities,
                         trainable_surfel_mask=trainable_surfel_mask,
-                        albedo_soft_max=0.65,
-                        opacity_target=0.95,
-                        albedo_weight=1.0e-3,
-                        opacity_weight=1.0e-4,
+                        opacity_target=1.0,
+                        opacity_weight=opacity_regularizer_weight,
                     )
                 )
 
-                grad_albedos_np += grad_albedo_regularizer_np
                 grad_opacities_np += grad_opacity_regularizer_np
-                total_loss_value += appearance_regularizer_loss
+                total_loss_value += opacity_regularizer_loss
+
 
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
@@ -1452,29 +1434,6 @@ def run_optimization(
 
                 if iteration % rebuild_bvh_interval == 0:
                     rebuild_bvh(renderer)
-                    (
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        albedos,
-                        opacities,
-                        betas,
-                        powers
-                    ) = refetch_parameters_as_torch(renderer, device)
-
-                    optimizer = create_masked_optimizer(
-                        config,
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        albedos,
-                        opacities,
-                        betas,
-                        powers
-                    )
-
                 # --------------------------------------------------------------
                 # 9. Densification + pruning
                 # --------------------------------------------------------------
@@ -1507,12 +1466,12 @@ def run_optimization(
                     # ----------------------------------------------------------
                     # Prune low-opacity surfels.
                     # ----------------------------------------------------------
-                    #opacity_prune_indices = compute_prune_indices_by_opacity(
+                    # opacity_prune_indices = compute_prune_indices_by_opacity(
                     #    opacities,
                     #    min_opacity=opacity_prune_threshold,
                     #    use_quantile=False,
                     #    max_fraction_to_prune=max_prune_fraction,
-                    #)
+                    # )
 
                     if opacity_prune_indices.size > 0:
                         indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
@@ -1711,6 +1670,7 @@ def run_optimization(
                         total_depth_distortion_loss_weighted,
                         total_normal_loss_raw,
                         total_normal_loss_weighted,
+                        opacity_regularizer_loss,
                         total_loss_value,
                         parameter_mse,
                         num_points,
@@ -1753,6 +1713,7 @@ def run_optimization(
                         f"DdistW={total_depth_distortion_loss_weighted:.3e}, "
                         f"NconsRaw={total_normal_loss_raw:.3e}, "
                         f"NconsW={total_normal_loss_weighted:.3e}, "
+                        f"OpacityReg={opacity_regularizer_loss:.3e}, "
                         f"Total={total_loss_value:.3e}, "
                         f"t={iteration_time:.3f} s, "
                         f"pos_rms={grad_pos_rms:.2e}, "
@@ -1909,11 +1870,23 @@ def run_optimization(
                 save_npy=True,
             )
 
+    final_opacity_regularizer_loss, _ = (
+        compute_opacity_one_regularizer_and_gradients(
+            opacities=opacities,
+            trainable_surfel_mask=trainable_surfel_mask,
+            opacity_target=1.0,
+            opacity_weight=opacity_regularizer_weight,
+        )
+    )
+
+    final_total_loss += final_opacity_regularizer_loss
+
     print(f"Initial RGB loss                        : {initial_rgb_loss:.6e}")
     print(f"Initial depth distortion loss (raw)     : {initial_depth_distortion_loss_raw:.6e}")
     print(f"Initial depth distortion loss (weighted): {initial_depth_distortion_loss_weighted:.6e}")
     print(f"Initial normal consistency loss (raw)   : {initial_normal_loss_raw:.6e}")
     print(f"Initial normal consistency loss (weighted): {initial_normal_loss_weighted:.6e}")
+    print(f"Initial opacity regularizer loss         : {initial_opacity_regularizer_loss:.6e}")
     print(f"Initial total loss                      : {initial_total_loss:.6e}")
 
     print(f"Final RGB loss                          : {final_rgb_loss:.6e}")
@@ -1921,6 +1894,7 @@ def run_optimization(
     print(f"Final depth distortion loss (weighted)  : {final_depth_distortion_loss_weighted:.6e}")
     print(f"Final normal consistency loss (raw)     : {final_normal_loss_raw:.6e}")
     print(f"Final normal consistency loss (weighted): {final_normal_loss_weighted:.6e}")
+    print(f"Final opacity regularizer loss           : {final_opacity_regularizer_loss:.6e}")
     print(f"Final total loss                        : {final_total_loss:.6e}")
 
     ply_path = config.output_dir / "points_final.ply"

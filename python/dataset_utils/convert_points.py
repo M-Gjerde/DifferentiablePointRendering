@@ -145,7 +145,7 @@ def write_gaussian_ply(
     vertices,
     output_path,
     args,
-    opacity_default=0.5,
+    opacity_default=1.0,
     beta_default=-1.0,
     shape_default=0.0,
 
@@ -241,9 +241,9 @@ def write_gaussian_ply(
         sv = float(args.scale)
 
         albedo = np.array([
-            vertex["r"] * 0 + 0.10,
-            vertex["g"] * 0 + 0.10,
-            vertex["b"] * 0 + 0.10
+            vertex["r"] * 0 + 0.90,
+            vertex["g"] * 0 + 0.90,
+            vertex["b"] * 0 + 0.90
         ], dtype=float)
 
         rng = np.random.default_rng(42)
@@ -307,7 +307,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
-    light_power = 80.0
+    light_power = 50.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -330,6 +330,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
+    light_power = 25.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -393,7 +394,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.015,
+        default=0.01,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()

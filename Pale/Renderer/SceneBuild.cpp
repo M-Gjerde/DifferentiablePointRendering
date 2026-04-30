@@ -61,7 +61,7 @@ namespace Pale {
         buildProducts.bottomLevelNodes.clear();
         buildProducts.bottomLevelRanges.clear();
         buildProducts.topLevelNodes.clear();
-
+        buildProducts.pointPermutation.clear();
         // Note: we do NOT touch vertices/triangles/points/instances/etc.
         buildBottomLevelBVHs(buildProducts, buildOptions);
         buildTopLevelBVH(buildProducts, buildOptions);

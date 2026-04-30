@@ -27,15 +27,19 @@ def parse_run_timestamp(run_dir_name: str) -> datetime | None:
     except ValueError:
         return None
 
+def find_run_dir_by_index(optimization_output_root: Path, run_index: int) -> Path:
+    if run_index < 0:
+        raise ValueError(f"--index must be >= 0, got {run_index}")
 
-def find_latest_run_dir(optimization_output_root: Path) -> Path:
     if not optimization_output_root.exists():
         raise FileNotFoundError(f"OptimizationOutput folder does not exist: {optimization_output_root}")
 
     candidate_run_dirs: list[dict] = []
+
     for child in optimization_output_root.iterdir():
         if not child.is_dir():
             continue
+
         metrics_csv_path = child / "metrics.csv"
         if not metrics_csv_path.exists():
             continue
@@ -47,6 +51,34 @@ def find_latest_run_dir(optimization_output_root: Path) -> Path:
                 "modified_time": metrics_csv_path.stat().st_mtime,
             }
         )
+
+    if not candidate_run_dirs:
+        raise FileNotFoundError(
+            f"No run folders with metrics.csv found under: {optimization_output_root}"
+        )
+
+    candidate_run_dirs.sort(
+        key=lambda item: (
+            item["parsed_timestamp"] is not None,
+            item["parsed_timestamp"] if item["parsed_timestamp"] is not None else datetime.min,
+            item["modified_time"],
+        ),
+        reverse=True,
+    )
+
+    if run_index >= len(candidate_run_dirs):
+        available_runs = [
+            f"[{candidate_index}] {candidate['run_dir'].name}"
+            for candidate_index, candidate in enumerate(candidate_run_dirs)
+        ]
+
+        raise IndexError(
+            f"--index {run_index} is out of range. "
+            f"Found {len(candidate_run_dirs)} run folders with metrics.csv.\n"
+            "Available runs:\n" + "\n".join(available_runs)
+        )
+
+    return candidate_run_dirs[run_index]["run_dir"]
 
     if not candidate_run_dirs:
         raise FileNotFoundError(
@@ -364,6 +396,15 @@ def parse_args() -> argparse.Namespace:
         default=180.0,
         help="Angular sweep of the light path in degrees. 180 = dome arc, 360 = full circle.",
     )
+    parser.add_argument(
+        "--index",
+        type=int,
+        default=0,
+        help=(
+            "Zero-based index of the run to use when --run-dir is omitted. "
+            "0 = latest, 1 = second latest, 2 = third latest, ..."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -376,7 +417,10 @@ def main() -> None:
         if not run_dir.exists():
             raise FileNotFoundError(f"--run-dir does not exist: {run_dir}")
     else:
-        run_dir = find_latest_run_dir(args.optimization_output_root.resolve())
+        run_dir = find_run_dir_by_index(
+            optimization_output_root=args.optimization_output_root.resolve(),
+            run_index=args.index,
+        )
 
     output_dir = run_dir / args.output_subdir
     frames_dir = output_dir / "frames"
@@ -395,10 +439,12 @@ def main() -> None:
         print("Done.")
         print("Skipped rendering.")
         print(f"Run folder : {run_dir}")
+        print(f"Run index  : {args.index if args.run_dir is None else 'explicit --run-dir'}")
         print(f"Frames     : {frames_dir}")
         print(f"Frame count: {len(frame_paths)}")
         print(f"FPS        : {args.fps}")
         print(f"GIF        : {output_gif_path}")
+        return
         return
 
     frame_count = 30 if args.frames is None else args.frames
@@ -507,12 +553,14 @@ def main() -> None:
 
     print()
     print("Done.")
-    print(f"Scene XML   : {scene_xml}")
+    print("Skipped rendering.")
     print(f"Run folder : {run_dir}")
-    print(f"Camera     : {camera_name}")
-    print(f"Light index: {light_index}")
+    print(f"Run index  : {args.index if args.run_dir is None else 'explicit --run-dir'}")
     print(f"Frames     : {frames_dir}")
+    print(f"Frame count: {len(frame_paths)}")
+    print(f"FPS        : {args.fps}")
     print(f"GIF        : {output_gif_path}")
+    return
 
 if __name__ == "__main__":
     main()

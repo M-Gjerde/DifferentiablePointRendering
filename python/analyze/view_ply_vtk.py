@@ -278,6 +278,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--disk-resolution", type=int, default=16)
     parser.add_argument("--alpha", type=float, default=0.95)
     parser.add_argument("--scale", type=float, default=1)
+    parser.add_argument("--solid", action="store_true")
     return parser.parse_args()
 
 def main() -> None:
@@ -299,6 +300,9 @@ def main() -> None:
     sv = sv[ellipse_mask] * args.scale
     colors = colors[ellipse_mask]
     opacities = opacities[ellipse_mask]
+
+    if args.solid:
+        opacities = np.ones_like(opacities)
 
     if args.max_ellipses and positions.shape[0] > args.max_ellipses:
         positions = positions[: args.max_ellipses]

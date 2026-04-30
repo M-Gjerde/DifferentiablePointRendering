@@ -228,13 +228,14 @@ def generate_points_ply_minimal(
     )
 
 
+
 PRESETS: Dict[str, Dict[str, Any]] = {
     "teapot": {
-        "min_x": -0.55,
+        "min_x": -0.7,
         "max_x": 0.55,
-        "min_y": -0.40,
-        "max_y": 0.40,
-        "min_z": 0.10,
+        "min_y": -0.5,
+        "max_y": 0.5,
+        "min_z": -0.01,
         "max_z": 0.55,
         "position_noise_std": 0.05,
         "normal_noise_deg": 45.0,
