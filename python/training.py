@@ -957,10 +957,11 @@ def run_optimization(
 
     depth_distortion_weight = float(getattr(config, "depth_distort_weight", 0.0))
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
-    opacity_regularizer_weight = 1.0
+    opacity_regularizer_weight = 0.0
 
     use_depth_distortion = depth_distortion_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
+    #opacity_regularizer_weight = opacity_regularizer_weight != 0.0
 
     # ------------------------------------------------------------------
     # Fetch initial parameters from renderer
@@ -1183,7 +1184,7 @@ def run_optimization(
 
     densification_interval = 1e100
     prune_interval = 50
-    burnin_iterations = 100
+    burnin_iterations = 50
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9

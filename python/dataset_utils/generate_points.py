@@ -372,6 +372,17 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "position_noise_std": 0.05,
         "tangent_noise_std": 45.0,
     },
+    "plant": {
+        "min_x": -0.45,
+        "max_x": 0.45,
+        "min_y": -0.45,
+        "max_y": 0.45,
+        "min_z": -0.01,
+        "max_z": 0.6,
+        "scale": 0.025,
+        "position_noise_std": 0.05,
+        "tangent_noise_std": 45.0,
+    },
     "teapot_plane": {
         "min_x": -1.7,
         "max_x": 1.55,

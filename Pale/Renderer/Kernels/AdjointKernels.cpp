@@ -3069,10 +3069,11 @@ namespace Pale {
         return out;
     }
 
+
+
     void launchDepthDistortionBackwardKernel(RenderPackage &pkg, uint32_t cameraIndex) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
-        auto &settings = pkg.settings;
 
         SensorGPU sensor = pkg.sensors[cameraIndex];
         auto &grads = pkg.gradients;
@@ -3082,56 +3083,37 @@ namespace Pale {
         const std::uint32_t pixelCount = imageWidth * imageHeight;
 
         queue.submit([&](sycl::handler &cgh) {
-            const uint64_t renderSeed = pkg.random.seed;
-
             cgh.parallel_for<class DepthDistortionBackwardKernel>(
                 sycl::range<1>(pixelCount),
                 [=](sycl::id<1> tid) {
                     constexpr uint32_t kMaxHits = 32u;
-                    constexpr float kDenomEps = 1e-8f;
+                    constexpr float kDenomEps = 1.0e-8f;
 
                     const uint32_t pixelIndex = tid[0];
                     const uint32_t pixelX = pixelIndex % imageWidth;
                     const uint32_t pixelY = pixelIndex / imageWidth;
 
-                    // This must be dL / d(distortion[pixel]), not the forward distortion itself.
-                    const float pixelAdjoint =
-                            sensor.depthDistortionAdjointBuffer[pixelIndex];
+                    const float pixelAdjoint = sensor.depthDistortionAdjointBuffer[pixelIndex];
 
                     if (pixelAdjoint == 0.0f) {
                         return;
                     }
 
-                    // ---------------------------------------------------------
-                    // Recreate the same primary ray as in launchCameraGatherKernel
-                    // ---------------------------------------------------------
-                    const uint64_t directionSeed =
-                            rng::makeSeed(renderSeed, pixelIndex, cameraIndex, rng::kStreamGather, 0u);
-                    rng::Xorshift128 rng(directionSeed);
-
-                    const float jitterX = rng.nextFloat() - 0.5f;
-                    const float jitterY = rng.nextFloat() - 0.5f;
-
                     Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
                         sensor.camera,
                         static_cast<float>(pixelX),
                         static_cast<float>(pixelY),
-                        jitterX,
-                        jitterY);
+                        0.0f,
+                        0.0f);
 
                     const float3 rayOrigin0 = primaryRay.origin;
                     const float3 rayDir0 = primaryRay.direction;
 
-                    // ---------------------------------------------------------
-                    // Forward retrace: collect ordered surfel hits
-                    // ---------------------------------------------------------
                     DistortionHit hits[kMaxHits];
                     uint32_t hitCount = 0u;
                     float transmittance = 1.0f;
 
-                    for (uint32_t traversalIndex = 0u;
-                         traversalIndex < kMaxHits;
-                         ++traversalIndex) {
+                    for (uint32_t traversalIndex = 0u; traversalIndex < kMaxHits; ++traversalIndex) {
                         WorldHit worldHit{};
                         intersectScene(primaryRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
 
@@ -3149,15 +3131,10 @@ namespace Pale {
                             const float u = uv.x();
                             const float v = uv.y();
 
-                            // Must match forward kernel/support exactly
-                            const AlphaKernelEval kernelEval =
-                                    evaluateAlphaKernelAndDerivatives(surfel, u, v);
-
-                            const float alphaGeom = worldHit.alphaGeom; // forward-consistent
+                            const float alphaGeom = worldHit.alphaGeom;
                             const float ai = surfel.opacity * alphaGeom;
                             const float wi = transmittance * ai;
-                            const float zi =
-                                    dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+                            const float zi = dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
 
                             DistortionHit rec{};
                             rec.primitiveIndex = worldHit.primitiveIndex;
@@ -3171,11 +3148,12 @@ namespace Pale {
                             rec.alphaGeom = alphaGeom;
                             rec.u = u;
                             rec.v = v;
+
                             hits[hitCount++] = rec;
 
                             transmittance *= (1.0f - ai);
-                            primaryRay.origin =
-                                    worldHit.hitPositionW + primaryRay.direction * 1e-8f;
+                            primaryRay.origin = worldHit.hitPositionW + primaryRay.direction * 1.0e-8f;
+
                             continue;
                         }
 
@@ -3188,47 +3166,47 @@ namespace Pale {
                         return;
                     }
 
-                    // ---------------------------------------------------------
-                    // Hit-level adjoints for
-                    // d = sum_{i,j} w_i w_j |z_i - z_j|
-                    // ---------------------------------------------------------
                     float barW[kMaxHits];
+                    float barM[kMaxHits];
                     float barZ[kMaxHits];
                     float barA[kMaxHits];
 
                     for (uint32_t i = 0u; i < hitCount; ++i) {
                         barW[i] = 0.0f;
+                        barM[i] = 0.0f;
                         barZ[i] = 0.0f;
                         barA[i] = 0.0f;
                     }
 
+                    // L = sum_i sum_{j<i} w_i w_j (m_i - m_j)^2
                     for (uint32_t i = 0u; i < hitCount; ++i) {
                         for (uint32_t j = i + 1u; j < hitCount; ++j) {
-                            const float zi = hits[i].zi;
-                            const float zj = hits[j].zi;
+                            const float mi = depthDistortionNdc01(hits[i].zi);
+                            const float mj = depthDistortionNdc01(hits[j].zi);
+
                             const float wi = hits[i].wi;
                             const float wj = hits[j].wi;
 
-                            const float diff = zi - zj;
-                            const float absDiff = sycl::fabs(diff);
-                            const float signDiff = (diff >= 0.0f) ? 1.0f : -1.0f;
+                            const float depthDifference = mi - mj;
+                            const float depthDifferenceSquared = depthDifference * depthDifference;
 
-                            // contribution = 2 * wi * wj * |zi - zj|
-                            const float pairScale = 2.0f * pixelAdjoint;
+                            barW[i] += pixelAdjoint * wj * depthDifferenceSquared;
+                            barW[j] += pixelAdjoint * wi * depthDifferenceSquared;
 
-                            barW[i] += pairScale * wj * absDiff;
-                            barW[j] += pairScale * wi * absDiff;
-
-                            barZ[i] += pairScale * wi * wj * signDiff;
-                            barZ[j] -= pairScale * wi * wj * signDiff;
+                            const float depthAdjointScale = 2.0f * pixelAdjoint * wi * wj;
+                            barM[i] += depthAdjointScale * depthDifference;
+                            barM[j] -= depthAdjointScale * depthDifference;
                         }
                     }
 
-                    // ---------------------------------------------------------
-                    // Reverse through compositing
+                    for (uint32_t i = 0u; i < hitCount; ++i) {
+                        const float dMiDZi = depthDistortionDndc01Ddepth(hits[i].zi);
+                        barZ[i] += barM[i] * dMiDZi;
+                    }
+
+                    // Reverse through front-to-back alpha compositing:
                     // wi = Tprev_i * ai
-                    // Tnext = Tprev * (1 - ai)
-                    // ---------------------------------------------------------
+                    // Tnext_i = Tprev_i * (1 - ai)
                     float barTnext = 0.0f;
 
                     for (int i = int(hitCount) - 1; i >= 0; --i) {
@@ -3238,11 +3216,9 @@ namespace Pale {
                         float barAi = 0.0f;
                         float barTprev = 0.0f;
 
-                        // wi = Tprev * ai
                         barAi += Tprev * barW[i];
                         barTprev += ai * barW[i];
 
-                        // Tnext = Tprev * (1 - ai)
                         barAi += -Tprev * barTnext;
                         barTprev += (1.0f - ai) * barTnext;
 
@@ -3250,9 +3226,6 @@ namespace Pale {
                         barTnext = barTprev;
                     }
 
-                    // ---------------------------------------------------------
-                    // Chain to surfel parameters
-                    // ---------------------------------------------------------
                     for (uint32_t i = 0u; i < hitCount; ++i) {
                         const DistortionHit &hit = hits[i];
                         const Point &surfel = scene.points[hit.primitiveIndex];
@@ -3264,42 +3237,40 @@ namespace Pale {
                         const float sv = surfel.scale.y();
                         const float eta = surfel.opacity;
 
+                        if (sycl::fabs(su) <= kDenomEps || sycl::fabs(sv) <= kDenomEps) {
+                            continue;
+                        }
+
                         const float3 x = hit.hitPositionW;
                         const float3 q = x - p;
 
                         const AlphaKernelEval kernelEval =
                                 evaluateAlphaKernelAndDerivatives(surfel, hit.u, hit.v);
 
-                        // a_i = eta * alphaGeom
                         const float barAlphaGeom = barA[i] * eta;
                         const float barEta = barA[i] * hit.alphaGeom;
 
-                        float barU = barAlphaGeom * kernelEval.dValue_dU;
-                        float barV = barAlphaGeom * kernelEval.dValue_dV;
+                        const float barU = barAlphaGeom * kernelEval.dValue_dU;
+                        const float barV = barAlphaGeom * kernelEval.dValue_dV;
                         const float barBeta = barAlphaGeom * kernelEval.dValue_dBeta;
 
-                        // z_i = dot(x_i - camPos, camForward)
                         float3 barX = barZ[i] * sensor.camera.forward;
 
-                        // u = dot(q, tu) / su
-                        // v = dot(q, tv) / sv
-                        float3 barQ(0.0f);
-
+                        float3 barQ{0.0f, 0.0f, 0.0f};
                         barQ += (barU / su) * tu;
                         barQ += (barV / sv) * tv;
 
                         float3 barTu = (barU / su) * q;
                         float3 barTv = (barV / sv) * q;
 
-                        float barSu = -barU * hit.u / su;
-                        float barSv = -barV * hit.v / sv;
+                        const float barSu = -barU * hit.u / su;
+                        const float barSv = -barV * hit.v / sv;
 
-                        // q = x - p
                         barX += barQ;
                         float3 barP = -barQ;
 
                         // x = rayOrigin0 + lambda * rayDir0
-                        // lambda = n·(p - rayOrigin0) / (n·rayDir0)
+                        // lambda = dot(n, p - rayOrigin0) / dot(n, rayDir0)
                         const float3 nRaw = cross(tu, tv);
                         const float nRawLen = sycl::sqrt(dot(nRaw, nRaw));
 
@@ -3310,25 +3281,16 @@ namespace Pale {
                             if (sycl::fabs(denom) > kDenomEps) {
                                 const float barLambda = dot(barX, rayDir0);
 
-                                // d lambda / d p = n / (n·d)
                                 barP += (barLambda / denom) * n;
 
-                                // d lambda / d n = (p - x) / (n·d)
-                                float3 barN = (barLambda / denom) * (p - x);
+                                const float3 barN = (barLambda / denom) * (p - x);
+                                const float3 barNRaw = (barN - n * dot(n, barN)) / nRawLen;
 
-                                // n = normalize(nRaw)
-                                const float3 barNRaw =
-                                        (barN - n * dot(n, barN)) / nRawLen;
-
-                                // nRaw = tu x tv
                                 barTu += cross(tv, barNRaw);
                                 barTv += cross(barNRaw, tu);
                             }
                         }
 
-                        // -------------------------------------------------
-                        // Atomic accumulation into global gradient buffers
-                        // -------------------------------------------------
                         atomicAddFloat3(grads.gradPosition[hit.primitiveIndex], barP);
                         atomicAddFloat3(grads.gradTanU[hit.primitiveIndex], barTu);
                         atomicAddFloat3(grads.gradTanV[hit.primitiveIndex], barTv);

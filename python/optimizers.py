@@ -317,7 +317,7 @@ def create_masked_optimizer(
     lr_albedo = config.learning_rate_albedo
     lr_opacity = config.learning_rate_opacity
     lr_beta = config.learning_rate_beta
-    lr_power = config.learning_rate_beta
+    lr_power = 0
 
     param_groups = [
         {"params": [positions], "lr": lr_pos},

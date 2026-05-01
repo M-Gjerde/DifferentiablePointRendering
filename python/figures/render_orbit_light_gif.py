@@ -323,12 +323,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optimization-output-root", type=Path, default=Path("../Assets/OptimizationOutput"))
     parser.add_argument("--run-dir", type=Path, default=None)
 
-    parser.add_argument(
-        "--camera-name",
-        type=str,
-        default=None,
-        help="Camera name to render from, e.g. DatasetCam_022. If omitted, the first camera is used.",
-    )
 
     parser.add_argument(
         "--frames",
@@ -348,7 +342,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fps", type=float, default=4.0)
     parser.add_argument("--radius", type=float, default=2.0)
-    parser.add_argument("--power", type=float, default=20.0)
+    parser.add_argument("--power", type=float, default=150.0)
     parser.add_argument("--scale-u", type=float, default=0.05)
     parser.add_argument("--scale-v", type=float, default=0.05)
     parser.add_argument("--opacity", type=float, default=1.0)
@@ -378,11 +372,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scene-xml",
         type=str,
-        default=None,
+        default="../Assets/view_cameras.xml",
         help=(
             "Optional scene XML override. If omitted, uses scene_xml from run_config.json. "
             "Example: cbox_custom_alt_views.xml"
         ),
+    )
+
+    parser.add_argument(
+        "--camera-name",
+        type=str,
+        default="view_camera",
+        help="Camera name to render from, e.g. DatasetCam_022. If omitted, the first camera is used.",
     )
     parser.add_argument(
         "--rebuild-every-frame",

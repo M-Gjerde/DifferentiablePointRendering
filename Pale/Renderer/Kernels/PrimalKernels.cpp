@@ -387,8 +387,9 @@ namespace Pale {
 
                     // Depth distortion accumulation
                     float distortion = 0.0f;
-                    float prefixW = 0.0f;
-                    float prefixWZ = 0.0f;
+                    float prefixWeight = 0.0f;
+                    float prefixWeightDepth = 0.0f;
+                    float prefixWeightDepthSquared = 0.0f;
 
                     // Median-depth tracking
                     float accumulatedCompositeWeight = 0.0f;
@@ -468,7 +469,7 @@ namespace Pale {
                                 dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
 
                             if (settings.useNormalConsistency && !medianFound && (accumulatedCompositeWeight + wi) >=
-                                0.5f) {
+                                0.3f) {
                                 medianFound = true;
                                 medianDepth = zi;
                                 medianWorldPosition = worldHit.hitPositionW;
@@ -479,10 +480,16 @@ namespace Pale {
 
                             // Depth distortion
                             if (settings.useDepthDistortion) {
-                                const float ai = alphaEff;
-                                distortion += 2.0f * wi * (zi * prefixW - prefixWZ);
-                                prefixW += wi;
-                                prefixWZ += wi * zi;
+                                const float mi = depthDistortionNdc01(zi);
+
+                                distortion += wi * (
+                                    mi * mi * prefixWeight
+                                    + prefixWeightDepthSquared
+                                    - 2.0f * mi * prefixWeightDepth);
+
+                                prefixWeight += wi;
+                                prefixWeightDepth += wi * mi;
+                                prefixWeightDepthSquared += wi * mi * mi;
                             }
 
                             transmittance *= (1.0f - alphaEff);

@@ -8,8 +8,14 @@ from typing import List, Tuple
 import numpy as np
 import vtk
 
+def find_latest_points_ply(
+    output_root_path: Path,
+    use_initial: bool,
+    index: int = 0,
+) -> Path:
+    if index < 0:
+        raise ValueError(f"index must be >= 0, got {index}.")
 
-def find_latest_points_ply(output_root_path: Path, use_initial: bool) -> Path:
     if not output_root_path.exists():
         raise FileNotFoundError(f"Output root '{output_root_path}' does not exist.")
 
@@ -21,6 +27,12 @@ def find_latest_points_ply(output_root_path: Path, use_initial: bool) -> Path:
 
     points_in_root = output_root_path / target_filename
     if points_in_root.is_file():
+        if index != 0:
+            raise ValueError(
+                f"output_root_path points directly to a run directory containing {target_filename}, "
+                f"so only index=0 is valid. Got index={index}."
+            )
+
         print(f"Using {target_filename} in run directory: {output_root_path}")
         return points_in_root
 
@@ -35,15 +47,25 @@ def find_latest_points_ply(output_root_path: Path, use_initial: bool) -> Path:
             f"No subdirectories with {target_filename} found under '{output_root_path}'."
         )
 
-    latest_run_dir = max(
+    sorted_run_dirs = sorted(
         candidate_run_dirs,
         key=lambda run_path: (run_path / target_filename).stat().st_mtime,
+        reverse=True,
     )
-    latest_ply_path = latest_run_dir / target_filename
 
-    print(f"Using latest run directory: {latest_run_dir}")
-    print(f"{target_filename}: {latest_ply_path}")
-    return latest_ply_path
+    if index >= len(sorted_run_dirs):
+        raise IndexError(
+            f"Requested index={index}, but only {len(sorted_run_dirs)} run directories "
+            f"with {target_filename} were found under '{output_root_path}'."
+        )
+
+    selected_run_dir = sorted_run_dirs[index]
+    selected_ply_path = selected_run_dir / target_filename
+
+    print(f"Using run index {index}: {selected_run_dir}")
+    print(f"{target_filename}: {selected_ply_path}")
+
+    return selected_ply_path
 
 
 def numpy_rgb01_and_alpha01_to_vtk_u8_rgba(name: str, rgb01: np.ndarray,
@@ -276,6 +298,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--area-threshold", type=float, default=0.0)
     parser.add_argument("--max-ellipses", type=int, default=0)
     parser.add_argument("--disk-resolution", type=int, default=16)
+    parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--alpha", type=float, default=0.95)
     parser.add_argument("--scale", type=float, default=1)
     parser.add_argument("--solid", action="store_true")
@@ -283,7 +306,7 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_arguments()
-    ply_path = find_latest_points_ply(args.output_root, use_initial=args.initial)
+    ply_path = find_latest_points_ply(args.output_root, use_initial=args.initial, index=args.index)
 
     positions, tangent_u, tangent_v, su, sv, colors, opacities = load_surfels_from_ply(
         ply_path,

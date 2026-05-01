@@ -335,9 +335,9 @@ int main(int argc, char **argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 2;
-        settings.numForwardPasses = 10;
-        settings.numShadowRays = 4;
-        settings.numAdjointShadowRays = 4;
+        settings.numForwardPasses = 5;
+        settings.numShadowRays = 32;
+        settings.numAdjointShadowRays = 32;
         settings.maxAdjointBounces = 2; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
         settings.adjointSamplesPerPixel = 1;
         settings.renderDebugGradientImages = !true;

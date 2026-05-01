@@ -11,13 +11,13 @@ class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
     forward_passes: int = 1
-    primal_shadow_rays: int =  6 # Li
-    adjoint_shadow_rays: int = 6 # Li
+    primal_shadow_rays: int =  4 # Li
+    adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
     adjoint_bounces: int = 2
-    adjoint_passes: int = 8
+    adjoint_passes: int = 16
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_path_rays: int = 6 #Pi
+    adjoint_shadow_path_rays: int = 4 #Pi
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 4
@@ -216,7 +216,7 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.00,
+        default=0.1,
         help="Weight for the depth distortion regularizer.",
     )
 
