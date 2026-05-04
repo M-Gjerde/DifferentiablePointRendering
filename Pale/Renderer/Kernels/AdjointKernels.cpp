@@ -397,10 +397,38 @@ namespace Pale {
                                 const PendingCameraSegment previousCameraSegment = pendingCameraSegment;
                                 const PendingAdjointStageX previousAdjointStage = pendingAdjointStage;
 
-                                const bool isCameraAttachedSecondHit =
-                                    previousAdjointStage.valid &&
-                                    previousAdjointStage.useImplicitRayHitJacobian &&
-                                    currentRayState.bounceIndex == 1u;
+
+                                // -------------------------------------------------------------
+                                // Camera-attached two-point event
+                                // -------------------------------------------------------------
+                                if (previousAdjointStage.valid) {
+                                    const Point& storedSurfel =
+                                        scene.points[previousAdjointStage.current.surface.primitiveIndex];
+
+                                    const ReconstructedSurfelState storedState =
+                                        reconstructSurfelState(
+                                            storedSurfel,
+                                            previousAdjointStage.current.surface);
+
+                                    const ReconstructedSurfelState liveState =
+                                        reconstructSurfelState(
+                                            surfel,
+                                            currentSurface);
+
+                                    segmentGeometryFromStoredVertex = computeGeometricTermValue(
+                                        storedState.position,
+                                        liveState.position,
+                                        storedState.orientedNormal,
+                                        liveState.orientedNormal);
+
+                                    segmentAreaPdfFromStoredVertex =
+                                        computeSegmentAreaPdfFromUniformHemisphere(
+                                            storedState,
+                                            liveState,
+                                            uniformHemispherePdf);
+
+                                    segmentLocalPdfFromStoredVertex = surfel.scale.x() * surfel.scale.y();
+                                }
 
                                 // -------------------------------------------------------------
                                 // Measurement event
@@ -536,40 +564,34 @@ namespace Pale {
                                     }
                                 }
 
+                                const bool isCameraAttachedRandomContinuation =
+                                    previousAdjointStage.valid &&
+                                    currentRayState.bounceIndex == 1u;
 
-                                // -------------------------------------------------------------
-                                // Camera-attached two-point event
-                                // -------------------------------------------------------------
-                                if (previousAdjointStage.valid) {
-                                    const Point& storedSurfel =
-                                        scene.points[previousAdjointStage.current.surface.primitiveIndex];
+                                if (isCameraAttachedRandomContinuation) {
+                                    MeasurementGradientEventXY measurementTwoPointEvent{};
+                                    measurementTwoPointEvent.xSurface = previousAdjointStage.current.surface;
+                                    measurementTwoPointEvent.ySurface = currentSurface;
+                                    measurementTwoPointEvent.xPathThroughput =
+                                        previousAdjointStage.current.transmissionFromPrevious *
+                                        previousAdjointStage.current.pathThroughput /
+                                        (segmentAreaPdfFromStoredVertex * qReflect);
 
-                                    const ReconstructedSurfelState storedState =
-                                        reconstructSurfelState(
-                                            storedSurfel,
-                                            previousAdjointStage.current.surface);
+                                    measurementTwoPointEvent.transmissionPreviousSegment =
+                                        previousAdjointStage.current.transmissionFromPrevious;
+                                    measurementTwoPointEvent.transmission =
+                                        currentRayState.transmission;
 
-                                    const ReconstructedSurfelState liveState =
-                                        reconstructSurfelState(
-                                            surfel,
-                                            currentSurface);
-
-                                    segmentGeometryFromStoredVertex = computeGeometricTermValue(
-                                        storedState.position,
-                                        liveState.position,
-                                        storedState.orientedNormal,
-                                        liveState.orientedNormal);
-
-                                    segmentAreaPdfFromStoredVertex =
-                                        computeSegmentAreaPdfFromUniformHemisphere(
-                                            storedState,
-                                            liveState,
-                                            uniformHemispherePdf);
-
-                                    segmentLocalPdfFromStoredVertex = surfel.scale.x() * surfel.scale.y();
+                                    appendEventAtomic(
+                                        intermediates.countMeasurementTwoPointEvents,
+                                        intermediates.measurementTwoPointEvents,
+                                        intermediates.maxMeasurementTwoPointEventCount,
+                                        measurementTwoPointEvent);
                                 }
 
-                                if (previousAdjointStage.valid && currentRayState.bounceIndex > 0) {
+
+                                // First material point after camera attached point with direct light sample
+                                if (previousAdjointStage.valid && currentRayState.bounceIndex == 1) {
                                     MaterialVertexGradientEvent materialVertexEvent{};
                                     materialVertexEvent.surface = currentSurface;
                                     // Adjoint at p1 we have:
@@ -605,23 +627,17 @@ namespace Pale {
                                         (qReflect * segmentAreaPdfFromStoredVertex *
                                             segmentLocalPdfFromStoredVertex);
 
-
                                     materialEdgeEventXY.isDirectLightSample = false;
                                     materialEdgeEventXY.isEndPointOnly = true;
                                     materialEdgeEventXY.pathId = currentRayState.pathId;
                                     materialEdgeEventXY.startBounceIndex = currentRayState.bounceIndex;
-
-
                                     appendEventAtomic(
                                         intermediates.countMaterialEdgeEvents,
                                         intermediates.materialEdgeEvents,
                                         intermediates.maxMaterialEdgeEventCount,
                                         materialEdgeEventXY);
-
-
                                     // second event:
                                     // Then make a new event on the YZ leg wit a direct light sample but differentiate now with respect to start point.
-
                                     const ReconstructedSurfelState& startState = reconstructSurfelState(
                                         surfel, currentSurface);
                                     const float invSampleCount =
@@ -761,29 +777,8 @@ namespace Pale {
                                     }
                                 }
 
-                                /*
-                                if (isCameraAttachedSecondHit) {
-                                    MeasurementGradientEventXY measurementTwoPointEvent{};
-                                    measurementTwoPointEvent.xSurface = previousAdjointStage.current.surface;
-                                    measurementTwoPointEvent.ySurface = currentSurface;
-                                    measurementTwoPointEvent.xPathThroughput =
-                                        previousAdjointStage.current.transmissionFromPrevious *
-                                        previousAdjointStage.current.pathThroughput /
-                                        (segmentAreaPdfFromStoredVertex * qReflect);
-
-                                    measurementTwoPointEvent.transmissionPreviousSegment =
-                                        previousAdjointStage.current.transmissionFromPrevious;
-                                    measurementTwoPointEvent.transmission =
-                                        currentRayState.transmission;
-
-                                    appendEventAtomic(
-                                        intermediates.countMeasurementTwoPointEvents,
-                                        intermediates.measurementTwoPointEvents,
-                                        intermediates.maxMeasurementTwoPointEventCount,
-                                        measurementTwoPointEvent);
-                                }
-
-                                if (previousAdjointStage.valid && currentRayState.bounceIndex > 0u) {
+                                // Material point at depth = 3.
+                                if (previousAdjointStage.valid && currentRayState.bounceIndex > 1) {
                                     MaterialEdgeGradientEvent materialEdgeEvent{};
                                     materialEdgeEvent.startSurface =
                                             previousAdjointStage.current.surface;
@@ -792,7 +787,7 @@ namespace Pale {
                                     materialEdgeEvent.sampledEdgeThroughput =
                                             currentRayState.pathThroughput *
                                             currentRayState.transmission /
-                                            qReflect;
+                                            (qReflect * segmentAreaPdfFromStoredVertex * segmentLocalPdfFromStoredVertex);
                                     materialEdgeEvent.segmentTransmittance = currentRayState.transmission;
                                     materialEdgeEvent.segmentGeometricTerm = segmentGeometryFromStoredVertex;
                                     materialEdgeEvent.segmentAreaPdf = segmentAreaPdfFromStoredVertex;
@@ -804,7 +799,7 @@ namespace Pale {
                                         intermediates.materialEdgeEvents,
                                         intermediates.maxMaterialEdgeEventCount,
                                         materialEdgeEvent);
-                                } */
+                                }
 
 
                                 clearPendingCameraSegment(pendingCameraSegment);
@@ -1532,7 +1527,6 @@ namespace Pale {
                             settings.surfelIndexForDebugImages,
                             eventRecord.xSurface.pathId,
                             occluderRecord);
-
                     }
 
 
@@ -1542,7 +1536,6 @@ namespace Pale {
                         settings.surfelIndexForDebugImages,
                         eventRecord.xSurface.pathId,
                         gradientRecord);
-
                 });
         }).wait();
     }
@@ -2335,7 +2328,6 @@ namespace Pale {
                             settings.surfelIndexForDebugImages,
                             eventRecord.xSurface.pathId,
                             occluderRecord);
-
                     }
 
                     accumulateDebugGradientIfSelected(
@@ -2939,16 +2931,16 @@ namespace Pale {
                         suffixTransmittance *= occluderDerivative.oneMinusAlpha;
 
                         accumulateDebugGradientIfSelected(
-                        debugImages,
-                        settings.renderDebugGradientImages,
-                        settings.surfelIndexForDebugImages,
-                        eventRecord.pathId,
-                        occluderRecord);
+                            debugImages,
+                            settings.renderDebugGradientImages,
+                            settings.surfelIndexForDebugImages,
+                            eventRecord.pathId,
+                            occluderRecord);
                     }
 
                     SurfelGradientRecord startRecord{};
                     startRecord.primitiveIndex = startPrimitiveIndex;
-                    startRecord.gradPositionX = startTranslationGradient.x();
+                    startRecord.gradPositionX = 0.0f;
                     startRecord.gradPositionY = startTranslationGradient.y();
                     startRecord.gradPositionZ = startTranslationGradient.z();
                     startRecord.gradScaleU = startScaleUGradient;
@@ -2967,7 +2959,7 @@ namespace Pale {
 
                     SurfelGradientRecord endRecord{};
                     endRecord.primitiveIndex = endPrimitiveIndex;
-                    endRecord.gradPositionX = endTranslationGradient.x();
+                    endRecord.gradPositionX = 0.0f;
                     endRecord.gradPositionY = endTranslationGradient.y();
                     endRecord.gradPositionZ = endTranslationGradient.z();
                     endRecord.gradScaleU = endScaleUGradient;

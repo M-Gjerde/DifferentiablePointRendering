@@ -65,7 +65,7 @@ namespace Pale {
 
 
         //atomicAddFloat(debugImages->framebufferRot[pathId], rotationGradientMagnitude);
-        atomicAddFloat(debugImages->framebufferScale[pathId], scaleGradientMagnitude);
+        atomicAddFloat(debugImages->framebufferScale[pathId], gradientRecord.gradScaleU);
         atomicAddFloat(debugImages->framebufferOpacity[pathId], gradientRecord.gradEta);
         atomicAddFloat(debugImages->framebufferAlbedo[pathId], albedoGradientMagnitude);
         atomicAddFloat(debugImages->framebufferBeta[pathId], gradientRecord.gradBeta);
