@@ -105,7 +105,6 @@ namespace Pale {
     }
 
 
-
     // ----------------------------------------------------------------------------
     // Point-cloud BLAS: single closest-hit query (no event list, no sorting).
     // Returns the first (nearest) surfel intersection in (ray.tMin, ray.tMax).
@@ -165,7 +164,7 @@ namespace Pale {
             // Leaf: test surfels
             for (uint32_t primitiveOffset = 0; primitiveOffset < node.triCount; ++primitiveOffset) {
                 const uint32_t primitiveIndex =
-                    scene.pointPermutation[node.leftFirst + primitiveOffset];
+                        scene.pointPermutation[node.leftFirst + primitiveOffset];
 
                 const Point &surfel = scene.points[primitiveIndex];
 
@@ -262,7 +261,7 @@ namespace Pale {
                 // Leaf: test surfels
                 for (uint32_t primitiveOffset = 0; primitiveOffset < node.triCount; ++primitiveOffset) {
                     const uint32_t primitiveIndex =
-                        scene.pointPermutation[node.leftFirst + primitiveOffset];
+                            scene.pointPermutation[node.leftFirst + primitiveOffset];
 
                     const Point &surfel = scene.points[primitiveIndex];
 
@@ -416,7 +415,6 @@ namespace Pale {
                 // If NOT normalized:
 
                 if (tWorld > 0.0f && tWorld < bestWorldTHit) {
-
                     bestWorldTHit = tWorld;
                     foundAnySurfaceHit = true;
 
@@ -427,7 +425,7 @@ namespace Pale {
                     worldHitOut->primitiveIndex = localHit.primitiveIndex;
                     worldHitOut->alphaGeom = localHit.alpha;
 
-                    if (instance.geometryType == GeometryType::PointCloud){
+                    if (instance.geometryType == GeometryType::PointCloud) {
                         transmittanceProduct *= localHit.transmissivity;
                     }
                 }
@@ -463,11 +461,11 @@ namespace Pale {
 
 
     SYCL_EXTERNAL inline float traceShadowTransmissionToLight(
-        const GPUSceneBuffers& scene,
-        const float3& shadingPositionW,
-        const float3& shadingNormalW,
-        const float3& lightPositionW,
-        rng::Xorshift128& rng128) {
+        const GPUSceneBuffers &scene,
+        const float3 &shadingPositionW,
+        const float3 &shadingNormalW,
+        const float3 &lightPositionW,
+        rng::Xorshift128 &rng128) {
         const float3 lightVector = lightPositionW - shadingPositionW;
         const float lightDistanceSquared = dot(lightVector, lightVector);
         if (lightDistanceSquared <= 1e-12f) {
@@ -477,11 +475,11 @@ namespace Pale {
         const float lightDistance = sycl::sqrt(lightDistanceSquared);
         const float3 lightDirection = lightVector / lightDistance;
 
-        constexpr float distanceEpsilon = 1e-6f;
+        constexpr float distanceEpsilon = 1e-5f;
         constexpr uint32_t maxShadowTraversals = 32u;
 
         Ray shadowRay{};
-        shadowRay.origin = shadingPositionW + shadingNormalW * distanceEpsilon;
+        shadowRay.origin = shadingPositionW + lightDirection * distanceEpsilon;
         shadowRay.direction = lightDirection;
         shadowRay.normal = shadingNormalW;
 
@@ -508,19 +506,19 @@ namespace Pale {
                 break;
             }
 
-            const InstanceRecord& hitInstance = scene.instances[shadowHit.instanceIndex];
+            const InstanceRecord &hitInstance = scene.instances[shadowHit.instanceIndex];
 
             if (hitInstance.geometryType == GeometryType::Mesh) {
                 return 0.0f;
             }
 
             if (hitInstance.geometryType == GeometryType::PointCloud) {
-                const Point& surfel = scene.points[shadowHit.primitiveIndex];
+                const Point &surfel = scene.points[shadowHit.primitiveIndex];
                 const float oneMinusAlpha = 1.0f - surfel.opacity * shadowHit.alphaGeom;
                 shadowTransmission *= sycl::fmax(0.0f, oneMinusAlpha);
 
-                if (shadowTransmission <= 1e-4f) {
-                    return 0.0f;
+                if (shadowTransmission <= 1e-6f) {
+                    return shadowTransmission;
                 }
 
                 shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * distanceEpsilon;
@@ -534,14 +532,13 @@ namespace Pale {
     }
 
 
-
     SYCL_EXTERNAL inline float3 estimateDirectLightAtDiffuseSurface(
-        const GPUSceneBuffers& scene,
-        const float3& shadingPositionW,
-        const float3& shadingNormalW,
-        const float3& diffuseAlbedo,
+        const GPUSceneBuffers &scene,
+        const float3 &shadingPositionW,
+        const float3 &shadingNormalW,
+        const float3 &diffuseAlbedo,
         uint32_t numShadowRays,
-        rng::Xorshift128& rng128) {
+        rng::Xorshift128 &rng128) {
         if (numShadowRays == 0u) {
             return float3(0.0f);
         }
@@ -571,13 +568,13 @@ namespace Pale {
             const float3 lightDirection = lightVector / lightDistance;
 
             const float shadingCosine =
-                sycl::fmax(0.0f, dot(shadingNormalW, lightDirection));
+                    sycl::fmax(0.0f, dot(shadingNormalW, lightDirection));
             if (shadingCosine <= 0.0f) {
                 continue;
             }
 
             const float lightCosine =
-                sycl::fmax(0.0f, dot(lightSample.normalW, -lightDirection));
+                    sycl::fmax(0.0f, dot(lightSample.normalW, -lightDirection));
             if (lightCosine <= 0.0f) {
                 continue;
             }
@@ -594,7 +591,7 @@ namespace Pale {
             }
 
             const float geometricTerm =
-                (shadingCosine * lightCosine) / (lightDistanceSquared + 1e-8f);
+                    (shadingCosine * lightCosine) / (lightDistanceSquared + 1e-8f);
 
             const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
 
