@@ -957,7 +957,7 @@ def run_optimization(
 
     depth_distortion_weight = float(getattr(config, "depth_distort_weight", 0.0))
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
-    opacity_regularizer_weight = 0.0
+    opacity_regularizer_weight = 1.0
 
     use_depth_distortion = depth_distortion_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0

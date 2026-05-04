@@ -342,7 +342,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fps", type=float, default=4.0)
     parser.add_argument("--radius", type=float, default=2.0)
-    parser.add_argument("--power", type=float, default=150.0)
+    parser.add_argument("--power", type=float, default=75.0)
     parser.add_argument("--scale-u", type=float, default=0.05)
     parser.add_argument("--scale-v", type=float, default=0.05)
     parser.add_argument("--opacity", type=float, default=1.0)

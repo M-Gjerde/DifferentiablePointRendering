@@ -10,14 +10,14 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
-    forward_passes: int = 1
-    primal_shadow_rays: int =  4 # Li
-    adjoint_shadow_rays: int = 4 # Li
+    forward_passes: int = 5
+    primal_shadow_rays: int =  12 # Li
+    adjoint_shadow_rays: int = 12 # Li
     gather_passes: int = 1
     adjoint_bounces: int = 2
-    adjoint_passes: int = 16
+    adjoint_passes: int = 12
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_path_rays: int = 4 #Pi
+    adjoint_shadow_path_rays: int = 6 #Pi
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 4
@@ -208,7 +208,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.05,
+        default=0.0005,
         help="Weight for the normal consistency regularizer.",
     )
 
