@@ -26,6 +26,51 @@ namespace Pale {
         atomicAddFloat(destination.y(), valueToAdd.y());
     }
 
+    SYCL_EXTERNAL inline void accumulateDebugGradientIfSelected(
+        DebugImages* debugImages,
+        bool renderDebugGradientImages,
+        uint32_t selectedPrimitiveIndex,
+        uint32_t pathId,
+        const SurfelGradientRecord& gradientRecord) {
+        if (!renderDebugGradientImages) {
+            return;
+        }
+
+        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex) {
+            return;
+        }
+
+        atomicAddFloat(debugImages->framebufferPosX[pathId], gradientRecord.gradPositionX);
+        atomicAddFloat(debugImages->framebufferPosY[pathId], gradientRecord.gradPositionY);
+        atomicAddFloat(debugImages->framebufferPosZ[pathId], gradientRecord.gradPositionZ);
+
+        const float3 tangentUGradient{
+            gradientRecord.gradTangentUX,
+            gradientRecord.gradTangentUY,
+            gradientRecord.gradTangentUZ
+        };
+
+        const float3 tangentVGradient{
+            gradientRecord.gradTangentVX,
+            gradientRecord.gradTangentVY,
+            gradientRecord.gradTangentVZ
+        };
+
+        const float scaleGradientMagnitude =
+            sycl::sqrt(
+                gradientRecord.gradScaleU * gradientRecord.gradScaleU +
+                gradientRecord.gradScaleV * gradientRecord.gradScaleV);
+
+        const float albedoGradientMagnitude = gradientRecord.gradAlbedoR;
+
+
+        //atomicAddFloat(debugImages->framebufferRot[pathId], rotationGradientMagnitude);
+        atomicAddFloat(debugImages->framebufferScale[pathId], scaleGradientMagnitude);
+        atomicAddFloat(debugImages->framebufferOpacity[pathId], gradientRecord.gradEta);
+        atomicAddFloat(debugImages->framebufferAlbedo[pathId], albedoGradientMagnitude);
+        atomicAddFloat(debugImages->framebufferBeta[pathId], gradientRecord.gradBeta);
+    }
+
     SYCL_EXTERNAL inline void accumulateSurfelGradientAtomic(
         const PointGradients &gradients,
         uint32_t primitiveIndex,

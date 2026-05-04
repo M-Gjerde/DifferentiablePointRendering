@@ -336,14 +336,16 @@ int main(int argc, char **argv) {
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 2;
         settings.numForwardPasses = 5;
-        settings.numShadowRays = 32;
-        settings.numAdjointShadowRays = 32;
+        settings.numShadowRays = 8;
+        settings.numAdjointShadowRays = 8;
         settings.maxAdjointBounces = 2; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
-        settings.adjointSamplesPerPixel = 1;
-        settings.renderDebugGradientImages = !true;
+        settings.adjointSamplesPerPixel = 256;
         settings.enableAdjointDirectLight = true;
         settings.useDepthDistortion = true;
         settings.useNormalConsistency = true;
+
+        settings.renderDebugGradientImages = true;
+        settings.surfelIndexForDebugImages = 1;
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
@@ -500,6 +502,18 @@ int main(int argc, char **argv) {
                 uint32_t width, height;
                 Pale::Utils::loadEXRAsRGBAFloat(targetImagePath, rgbaHostAdjointTarget, width, height);
 
+                for (std::uint32_t y = 0; y < height; ++y) {
+                    for (std::uint32_t x = 0; x < width; ++x) {
+                        const std::size_t pixelIndex = static_cast<std::size_t>(y) * width + x;
+                        const std::size_t dstIndex = pixelIndex * 4ull;
+                        // Imf::Rgba stores half by default; implicit conversion to float is fine.
+                        float value = -1.0f;
+                        rgbaHostAdjointTarget[dstIndex + 0] = value;
+                        rgbaHostAdjointTarget[dstIndex + 1] = value;
+                        rgbaHostAdjointTarget[dstIndex + 2] = value;
+                        rgbaHostAdjointTarget[dstIndex + 3] = value;
+                    }
+                }
                 std::vector<float> rgbaHostRendered =
                         Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), selectedSensor);
 
@@ -632,8 +646,13 @@ int main(int argc, char **argv) {
                         }
                     };
 
-                    saveGradientSet(debugImagesHost.positionX, "translation_x");
+                    saveGradientSet(debugImagesHost.positionX, "posX");
+                    saveGradientSet(debugImagesHost.positionY, "posY");
+                    saveGradientSet(debugImagesHost.positionZ, "posZ");
+                    saveGradientSet(debugImagesHost.rotation, "rot");
+                    saveGradientSet(debugImagesHost.scale, "scale");
                     saveGradientSet(debugImagesHost.opacity, "opacity");
+                    saveGradientSet(debugImagesHost.albedo, "albedo");
                     saveGradientSet(debugImagesHost.beta, "beta");
                 }
             }

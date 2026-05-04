@@ -658,6 +658,7 @@ namespace Pale {
         uint32_t numShadowRays = 8;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
+        uint32_t surfelIndexForDebugImages = 1;
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
         AdjointSampleSettings sampling;
