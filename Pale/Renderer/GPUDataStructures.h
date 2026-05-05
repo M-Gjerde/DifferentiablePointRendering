@@ -356,11 +356,13 @@ namespace Pale {
         uint32_t lightIndex;
         float pdfSelectLight; // 1 / lightCount
         float pdfDir;
+        float pdfLocalCoordsSample;
         float pdfArea; // 1 / (triangleCount * triArea)
         float totalAreaWorld;
         bool valid;
 
         PointCloudSurfaceRecord surface;
+        float lightJacobian;
     };
 
     CHECK_16(AreaLightSample);
@@ -481,18 +483,13 @@ namespace Pale {
     struct MaterialEdgeGradientEvent {
         PointCloudSurfaceRecord startSurface{};
         PointCloudSurfaceRecord endSurface{};
-
         float3 sampledEdgeThroughput{0.0f, 0.0f, 0.0f};
-
         float segmentTransmittance = 1.0f;
         float segmentGeometricTerm = 1.0f;
         float segmentAreaPdf = 1.0f;
-
         float3 directLightRadiance{0.0f, 0.0f, 0.0f};
         bool isDirectLightSample = false;
-
-        bool isEndPointOnly = false; // True only for the first time as we handled camera rays spearately
-
+        bool writeOcclusionGradients = true; // True only for the first time as we handled camera rays spearately
         uint32_t pathId = kInvalidIndex;
         uint32_t startBounceIndex = 0u;
     };
@@ -552,8 +549,11 @@ namespace Pale {
         uint32_t materialVertexOffset = 0u;
         uint32_t materialVertexCount = 0u;
 
-        uint32_t materialEdgeOffset = 0u;
-        uint32_t materialEdgeCount = 0u;
+        uint32_t materialEndEdgeOffset = 0u;
+        uint32_t materialEndEdgeCount = 0u;
+
+        uint32_t materialStartEdgeOffset = 0u;
+        uint32_t materialStartEdgeCount = 0u;
 
         uint32_t totalCount = 0u;
     };
@@ -744,7 +744,8 @@ namespace Pale {
         MeasurementGradientEventXY *measurementTwoPointEvents = nullptr;
 
         MaterialVertexGradientEvent *materialVertexEvents = nullptr;
-        MaterialEdgeGradientEvent *materialEdgeEvents = nullptr;
+        MaterialEdgeGradientEvent *materialEndEdgeEvents = nullptr;
+        MaterialEdgeGradientEvent *materialStartEdgeEvents = nullptr;
 
         SurfelGradientRecord *gradientRecords = nullptr;
         PendingCameraSegment *pendingCameraSegments = nullptr;
@@ -752,13 +753,15 @@ namespace Pale {
         uint32_t *countMeasurementEvents = nullptr;
         uint32_t *countMeasurementTwoPointEvents = nullptr;
         uint32_t *countMaterialVertexEvents = nullptr;
-        uint32_t *countMaterialEdgeEvents = nullptr;
+        uint32_t *countMaterialEndEdgeEvents = nullptr;
+        uint32_t *countMaterialStartEdgeEvents = nullptr;
 
         // capacities
         uint32_t maxMeasurementEventCount = 0u;
         uint32_t maxMeasurementTwoPointEventCount = 0u;
         uint32_t maxMaterialVertexEventCount = 0u;
-        uint32_t maxMaterialEdgeEventCount = 0u;
+        uint32_t maxMaterialEndEdgeEventCount = 0u;
+        uint32_t maxMaterialStartEdgeEventCount = 0u;
         uint32_t maxGradientRecordCount = 0;
         uint32_t maxRayQueueCapacity = 0;
 

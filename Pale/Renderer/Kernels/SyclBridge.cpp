@@ -236,7 +236,8 @@ namespace Pale {
                     pkg.queue.fill(pkg.intermediates.countMeasurementEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countMeasurementTwoPointEvents, static_cast<uint32_t>(0), 1);
                     pkg.queue.fill(pkg.intermediates.countMaterialVertexEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countMaterialEdgeEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countMaterialEndEdgeEvents, static_cast<uint32_t>(0), 1);
+                    pkg.queue.fill(pkg.intermediates.countMaterialStartEdgeEvents, static_cast<uint32_t>(0), 1);
 
                     pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeRayCount);
                     pkg.queue.wait();
@@ -250,7 +251,8 @@ namespace Pale {
                     uint32_t measurementEventCount = 0u;
                     uint32_t measurementTwoPointEventCount = 0u;
                     uint32_t materialVertexEventCount = 0u;
-                    uint32_t materialEdgeEventCount = 0u;
+                    uint32_t materialEndEdgeEventCount = 0u;
+                    uint32_t materialStartEdgeEventCount = 0u;
 
                     pkg.queue.memcpy(
                         &measurementEventCount,
@@ -268,8 +270,13 @@ namespace Pale {
                         sizeof(uint32_t)).wait();
 
                     pkg.queue.memcpy(
-                        &materialEdgeEventCount,
-                        pkg.intermediates.countMaterialEdgeEvents,
+                        &materialEndEdgeEventCount,
+                        pkg.intermediates.countMaterialEndEdgeEvents,
+                        sizeof(uint32_t)).wait();
+
+                    pkg.queue.memcpy(
+                        &materialStartEdgeEventCount,
+                        pkg.intermediates.countMaterialStartEdgeEvents,
                         sizeof(uint32_t)).wait();
 
                     measurementEventCount = std::min(
@@ -284,14 +291,19 @@ namespace Pale {
                         materialVertexEventCount,
                         pkg.intermediates.maxMaterialVertexEventCount);
 
-                    materialEdgeEventCount = std::min(
-                        materialEdgeEventCount,
-                        pkg.intermediates.maxMaterialEdgeEventCount);
+                    materialEndEdgeEventCount = std::min(
+                        materialEndEdgeEventCount,
+                        pkg.intermediates.maxMaterialEndEdgeEventCount);
+
+                    materialStartEdgeEventCount = std::min(
+                        materialStartEdgeEventCount,
+                        pkg.intermediates.maxMaterialStartEdgeEventCount);
 
                     if (measurementEventCount > 0u ||
                         measurementTwoPointEventCount > 0u ||
                         materialVertexEventCount > 0u||
-                        materialEdgeEventCount > 0u) {
+                        materialEndEdgeEventCount > 0u ||
+                        materialStartEdgeEventCount > 0u) {
                         ScopedTimer timer(
                             "Total adjointContributionKernels bounce: " + std::to_string(adjointBounceIndex),
                             spdlog::level::debug);
@@ -301,7 +313,8 @@ namespace Pale {
                             measurementEventCount,
                             measurementTwoPointEventCount,
                             materialVertexEventCount,
-                            materialEdgeEventCount,
+                            materialEndEdgeEventCount,
+                            materialStartEdgeEventCount,
                             static_cast<uint32_t>(cameraIndex));
                     }
 

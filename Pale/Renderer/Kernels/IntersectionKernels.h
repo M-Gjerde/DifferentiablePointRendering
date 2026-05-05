@@ -172,7 +172,7 @@ namespace Pale {
                 float alphaGeom = 0.0f;
                 float3 hitLocal{0.0f};
 
-                if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
+                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
                     continue;
 
                 // Keep closest

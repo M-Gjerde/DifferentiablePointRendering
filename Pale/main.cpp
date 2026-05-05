@@ -337,16 +337,16 @@ int main(int argc, char** argv) {
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 2;
         settings.numForwardPasses = 5;
-        settings.numShadowRays = 8;
-        settings.numAdjointShadowRays = 8;
-        settings.maxAdjointBounces = 3; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
+        settings.numShadowRays = 4;
+        settings.numAdjointShadowRays = 4;
+        settings.maxAdjointBounces = 2; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
         settings.adjointSamplesPerPixel = 32;
         settings.enableAdjointDirectLight = true;
         settings.useDepthDistortion = true;
         settings.useNormalConsistency = true;
 
         settings.renderDebugGradientImages = true;
-        settings.surfelIndexForDebugImages = 2;
+        settings.surfelIndexForDebugImages = 1;
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);

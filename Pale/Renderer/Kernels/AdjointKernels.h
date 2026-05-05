@@ -23,7 +23,8 @@ namespace Pale {
         uint32_t measurementEventCount,
         uint32_t measurementTwoPointCount,
         uint32_t materialMaterialEventCount,
-        uint32_t materialEdgeEventCount,
+        uint32_t materialEndEdgeEventCount,
+        uint32_t materialStartEdgeEventCount,
         uint32_t cameraIndex);
 
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
