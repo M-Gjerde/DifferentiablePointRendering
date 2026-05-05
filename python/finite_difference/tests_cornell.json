@@ -30,7 +30,7 @@
       "index": 1,
       "min": -0.25,
       "max": 0.3,
-      "fd_epsilon": 5e-3,
+      "fd_epsilon": 1e-3,
       "forward_passes": 20,
       "bounces": 2,
       "adjoint_passes": 64,
