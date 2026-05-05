@@ -46,7 +46,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional explicit loss column for the single-loss plot. "
-            "If omitted, defaults to loss_rgb_sum, then falls back to other columns."
+            "If omitted, defaults to loss_total_sum, then falls back to loss_rgb_sum "
+            "and other available loss columns."
         ),
     )
     parser.add_argument(
@@ -63,12 +64,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--plot-all-losses",
+        dest="plot_all_losses",
         action="store_true",
-        default=True,
         help=(
-            "If set, create a two-panel plot: "
-            "top = image/total loss, bottom = regularizer losses."
+            "Create a multi-panel plot with image loss, total loss, regularizers, "
+            "raw diagnostics, and opacity-gradient diagnostics when available."
         ),
+    )
+    parser.add_argument(
+        "--no-plot-all-losses",
+        dest="plot_all_losses",
+        action="store_false",
+        help="Create only a single loss-curve plot.",
     )
     parser.add_argument(
         "--render-final",
@@ -103,8 +110,13 @@ def parse_args() -> argparse.Namespace:
         "--index",
         type=int,
         default=0,
+        help="Use the N-th latest run when --run-dir is omitted. 0 means latest.",
     )
-    parser.set_defaults(show_plots=True)
+
+    parser.set_defaults(
+        show_plots=True,
+        plot_all_losses=True,
+    )
 
     return parser.parse_args()
 
@@ -125,6 +137,9 @@ def find_latest_run_dir(optimization_output_root: Path, index: int = 0) -> Path:
         raise FileNotFoundError(
             f"OptimizationOutput folder does not exist: {optimization_output_root}"
         )
+
+    if index < 0:
+        raise ValueError(f"--index must be non-negative, got: {index}")
 
     candidate_run_dirs: list[dict[str, Any]] = []
 
@@ -161,6 +176,12 @@ def find_latest_run_dir(optimization_output_root: Path, index: int = 0) -> Path:
         reverse=True,
     )
 
+    if index >= len(candidate_run_dirs):
+        raise IndexError(
+            f"Requested --index {index}, but only {len(candidate_run_dirs)} run(s) "
+            f"with metrics.csv were found under {optimization_output_root}."
+        )
+
     return candidate_run_dirs[index]["run_dir"]
 
 
@@ -170,13 +191,24 @@ def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
     Fall back to the whole dataframe if camera_name does not exist.
     """
     if "camera_name" not in dataframe.columns:
-        return dataframe
+        return dataframe.copy()
 
     all_cameras_mask = dataframe["camera_name"].astype(str) == "ALL_CAMERAS"
     if all_cameras_mask.any():
         return dataframe.loc[all_cameras_mask].copy()
 
     return dataframe.copy()
+
+
+def get_available_columns(
+    dataframe: pd.DataFrame,
+    candidate_columns: list[str],
+) -> list[str]:
+    return [
+        column_name
+        for column_name in candidate_columns
+        if column_name in dataframe.columns
+    ]
 
 
 def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None) -> str:
@@ -189,8 +221,9 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         return explicit_loss_column
 
     preferred_columns = [
-        "loss_rgb_sum",
         "loss_total_sum",
+        "loss_rgb_sum",
+        "loss_opacity_regularizer",
         "loss_normal_consistency_weighted_sum",
         "loss_depth_distortion_weighted_sum",
         "loss_normal_consistency_raw_sum",
@@ -208,6 +241,55 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         "Could not find a supported loss column in metrics.csv. "
         f"Available columns: {list(dataframe.columns)}"
     )
+
+
+def dataframe_column_as_float_array(
+    dataframe: pd.DataFrame,
+    column_name: str,
+) -> np.ndarray:
+    return pd.to_numeric(dataframe[column_name], errors="coerce").to_numpy(dtype=np.float64)
+
+
+def plot_linear_columns(
+    axis,
+    dataframe: pd.DataFrame,
+    columns: list[str],
+    style_map: dict[str, dict[str, Any]],
+) -> None:
+    for column_name in columns:
+        values = dataframe_column_as_float_array(dataframe, column_name)
+
+        axis.plot(
+            dataframe["iteration"],
+            values,
+            label=column_name,
+            **style_map.get(column_name, {}),
+        )
+
+
+def plot_positive_log_columns(
+    axis,
+    dataframe: pd.DataFrame,
+    columns: list[str],
+    style_map: dict[str, dict[str, Any]],
+) -> bool:
+    plotted_any_positive_values = False
+
+    for column_name in columns:
+        values = dataframe_column_as_float_array(dataframe, column_name)
+        positive_values = np.where(values > 0.0, values, np.nan)
+
+        if np.any(np.isfinite(positive_values)):
+            plotted_any_positive_values = True
+
+        axis.plot(
+            dataframe["iteration"],
+            positive_values,
+            label=column_name,
+            **style_map.get(column_name, {}),
+        )
+
+    return plotted_any_positive_values
 
 
 def save_loss_curve(
@@ -240,84 +322,110 @@ def save_loss_curve(
             )
 
     if plot_all_losses:
-        fig, axes = plt.subplots(
-            3,
-            1,
-            figsize=(12, 10),
-            sharex=True,
-            gridspec_kw={"height_ratios": [1.2, 1.0, 1.0]},
-        )
-
-        ax_top = axes[0]
-        ax_weighted = axes[1]
-        ax_raw = axes[2]
-
-        top_columns = [
-            column_name
-            for column_name in [
+        top_columns = get_available_columns(
+            dataframe,
+            [
                 "loss_rgb_sum",
                 "loss_total_sum",
-            ]
-            if column_name in dataframe.columns
-        ]
+            ],
+        )
 
-        weighted_columns = [
-            column_name
-            for column_name in [
+        weighted_regularizer_columns = get_available_columns(
+            dataframe,
+            [
                 "loss_depth_distortion_weighted_sum",
                 "loss_normal_consistency_weighted_sum",
-            ]
-            if column_name in dataframe.columns
-        ]
+                "loss_opacity_regularizer",
+            ],
+        )
 
-        raw_columns = [
-            column_name
-            for column_name in [
+        raw_diagnostic_columns = get_available_columns(
+            dataframe,
+            [
                 "loss_depth_distortion_raw_sum",
                 "loss_normal_consistency_raw_sum",
-            ]
-            if column_name in dataframe.columns
-        ]
+            ],
+        )
 
-        if not top_columns and not weighted_columns and not raw_columns:
+        opacity_gradient_columns = get_available_columns(
+            dataframe,
+            [
+                "grad_opacity_total_rms",
+                "grad_opacity_regularizer_rms",
+                "grad_opacity_total_max",
+                "grad_opacity_regularizer_max",
+            ],
+        )
+
+        if (
+            not top_columns
+            and not weighted_regularizer_columns
+            and not raw_diagnostic_columns
+            and not opacity_gradient_columns
+        ):
             fallback_column = select_loss_column(dataframe, explicit_loss_column)
             top_columns = [fallback_column]
 
         style_map = {
             "loss_rgb_sum": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
             "loss_total_sum": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
+
             "loss_depth_distortion_weighted_sum": dict(color="tab:red", linewidth=1.8, alpha=0.95),
             "loss_normal_consistency_weighted_sum": dict(color="tab:green", linewidth=1.8, alpha=0.95),
+            "loss_opacity_regularizer": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
+
             "loss_depth_distortion_raw_sum": dict(color="tab:red", linewidth=1.2, alpha=0.75, linestyle="--"),
             "loss_normal_consistency_raw_sum": dict(color="tab:green", linewidth=1.2, alpha=0.75, linestyle="--"),
+
+            "grad_opacity_total_rms": dict(color="tab:blue", linewidth=1.8, alpha=0.95),
+            "grad_opacity_regularizer_rms": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
+            "grad_opacity_total_max": dict(color="tab:blue", linewidth=1.2, alpha=0.75, linestyle="--"),
+            "grad_opacity_regularizer_max": dict(color="tab:purple", linewidth=1.2, alpha=0.75, linestyle="--"),
         }
 
-        for column_name in top_columns:
-            ax_top.plot(
-                dataframe["iteration"],
-                dataframe[column_name],
-                label=column_name,
-                **style_map.get(column_name, {}),
-            )
+        include_opacity_gradient_panel = len(opacity_gradient_columns) > 0
+        num_panels = 4 if include_opacity_gradient_panel else 3
 
-        for column_name in weighted_columns:
-            ax_weighted.plot(
-                dataframe["iteration"],
-                dataframe[column_name],
-                label=column_name,
-                **style_map.get(column_name, {}),
-            )
+        fig, axes = plt.subplots(
+            num_panels,
+            1,
+            figsize=(12, 12 if include_opacity_gradient_panel else 10),
+            sharex=True,
+            gridspec_kw={
+                "height_ratios": [1.2, 1.0, 1.0, 1.0]
+                if include_opacity_gradient_panel
+                else [1.2, 1.0, 1.0]
+            },
+        )
 
-        for column_name in raw_columns:
-            values = dataframe[column_name].to_numpy(dtype=np.float64)
-            positive_values = np.where(values > 0.0, values, np.nan)
+        if num_panels == 1:
+            axes = [axes]
 
-            ax_raw.plot(
-                dataframe["iteration"],
-                positive_values,
-                label=column_name,
-                **style_map.get(column_name, {}),
-            )
+        ax_top = axes[0]
+        ax_weighted = axes[1]
+        ax_raw = axes[2]
+        ax_opacity_gradient = axes[3] if include_opacity_gradient_panel else None
+
+        plot_linear_columns(
+            ax_top,
+            dataframe,
+            top_columns,
+            style_map,
+        )
+
+        plot_linear_columns(
+            ax_weighted,
+            dataframe,
+            weighted_regularizer_columns,
+            style_map,
+        )
+
+        raw_has_positive_values = plot_positive_log_columns(
+            ax_raw,
+            dataframe,
+            raw_diagnostic_columns,
+            style_map,
+        )
 
         ax_top.set_ylabel("Image / total loss")
         ax_top.set_title(f"Optimization losses\n{metrics_csv_path.parent.name}")
@@ -327,15 +435,32 @@ def save_loss_curve(
 
         ax_weighted.set_ylabel("Weighted regularizers")
         ax_weighted.grid(True)
-        if weighted_columns:
+        if weighted_regularizer_columns:
             ax_weighted.legend()
 
-        ax_raw.set_xlabel("Iteration")
         ax_raw.set_ylabel("Raw diagnostics")
-        ax_raw.set_yscale("log")
+        if raw_has_positive_values:
+            ax_raw.set_yscale("log")
         ax_raw.grid(True)
-        if raw_columns:
+        if raw_diagnostic_columns:
             ax_raw.legend()
+
+        if ax_opacity_gradient is not None:
+            opacity_grad_has_positive_values = plot_positive_log_columns(
+                ax_opacity_gradient,
+                dataframe,
+                opacity_gradient_columns,
+                style_map,
+            )
+
+            ax_opacity_gradient.set_xlabel("Iteration")
+            ax_opacity_gradient.set_ylabel("Opacity gradients")
+            if opacity_grad_has_positive_values:
+                ax_opacity_gradient.set_yscale("log")
+            ax_opacity_gradient.grid(True)
+            ax_opacity_gradient.legend()
+        else:
+            ax_raw.set_xlabel("Iteration")
 
         plt.tight_layout()
         plt.savefig(output_png_path, dpi=200)
@@ -345,7 +470,13 @@ def save_loss_curve(
 
         plt.close(fig)
 
-        plotted_columns = top_columns + weighted_columns + raw_columns
+        plotted_columns = (
+            top_columns
+            + weighted_regularizer_columns
+            + raw_diagnostic_columns
+            + opacity_gradient_columns
+        )
+
         return ", ".join(plotted_columns)
 
     loss_column_name = select_loss_column(dataframe, explicit_loss_column)
@@ -353,7 +484,7 @@ def save_loss_curve(
     fig = plt.figure(figsize=(12, 5))
     plt.plot(
         dataframe["iteration"],
-        dataframe[loss_column_name],
+        dataframe_column_as_float_array(dataframe, loss_column_name),
         linewidth=2.2,
         color="tab:blue",
     )
@@ -518,6 +649,7 @@ def main() -> None:
         show_plots=args.show_plots,
         last_iterations=args.iterations,
     )
+
     saved_render_paths: list[Path] = []
     run_config_path: Path | None = None
     pybind_dir: Path | None = None

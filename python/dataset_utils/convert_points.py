@@ -394,7 +394,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.01,
+        default=0.02,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()

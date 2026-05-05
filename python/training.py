@@ -664,44 +664,62 @@ def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
         f"{s('beta')}"
     )
 
-
-def compute_opacity_one_regularizer_and_gradients(
+def compute_opacity_target_regularizer_and_gradients(
         opacities: torch.Tensor,
         trainable_surfel_mask: torch.Tensor,
-        opacity_target: float = 1.0,
-        opacity_weight: float = 1.0e-2,
+        opacity_target: float,
+        opacity_weight: float,
+        use_opacity_loss: bool,
 ) -> tuple[float, np.ndarray]:
     """
-    Regularizer that strongly encourages all trainable surfels to have opacity 1.
+    Quadratic opacity target regularizer.
 
     L = opacity_weight * mean((opacity - opacity_target)^2)
 
+    Only trainable surfels are included in the mean and receive gradients.
+    Frozen emissive surfels receive zero gradient.
+
     Returns:
         loss_value,
-        grad_opacity_np
+        grad_opacity_np with same shape as opacities
     """
     opacity_np = opacities.detach().cpu().numpy().astype(np.float32, copy=False)
-    trainable_mask_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool)
-
     grad_opacity_np = np.zeros_like(opacity_np, dtype=np.float32)
 
-    if trainable_mask_np.size == 0 or not np.any(trainable_mask_np):
+    if not use_opacity_loss or opacity_weight == 0.0:
         return 0.0, grad_opacity_np
 
-    active_opacities = opacity_np[trainable_mask_np]
+    trainable_mask_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
 
-    opacity_error = active_opacities - opacity_target
-    opacity_value_count = max(opacity_error.size, 1)
+    opacity_flat = opacity_np.reshape(-1)
+    grad_opacity_flat = grad_opacity_np.reshape(-1)
 
-    opacity_loss = float(opacity_weight * np.mean(opacity_error * opacity_error))
+    if opacity_flat.shape[0] != trainable_mask_np.shape[0]:
+        raise RuntimeError(
+            "Opacity regularizer shape mismatch: "
+            f"opacities has {opacity_flat.shape[0]} scalar values, "
+            f"but trainable_surfel_mask has {trainable_mask_np.shape[0]} entries."
+        )
 
-    grad_active_opacity = (
-            (2.0 * opacity_weight / float(opacity_value_count)) * opacity_error
-    ).astype(np.float32)
+    if not np.any(trainable_mask_np):
+        return 0.0, grad_opacity_np
 
-    grad_opacity_np[trainable_mask_np] = grad_active_opacity
+    active_opacities = opacity_flat[trainable_mask_np]
+    opacity_error = active_opacities - float(opacity_target)
 
-    return opacity_loss, grad_opacity_np
+    active_count = max(int(opacity_error.size), 1)
+
+    loss_value = float(
+        float(opacity_weight) * np.mean(opacity_error * opacity_error)
+    )
+
+    grad_active = (
+        2.0 * float(opacity_weight) / float(active_count)
+    ) * opacity_error
+
+    grad_opacity_flat[trainable_mask_np] = grad_active.astype(np.float32, copy=False)
+
+    return loss_value, grad_opacity_np
 
 
 def compute_normal_consistency_loss_and_adjoints(
@@ -957,11 +975,21 @@ def run_optimization(
 
     depth_distortion_weight = float(getattr(config, "depth_distort_weight", 0.0))
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
-    opacity_regularizer_weight = 1.0
+
+    opacity_loss_weight = float(getattr(config, "opacity_loss_weight", 0.0))
+    opacity_target = 1.0
 
     use_depth_distortion = depth_distortion_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
-    #opacity_regularizer_weight = opacity_regularizer_weight != 0.0
+    use_opacity_loss = opacity_loss_weight != 0.0
+
+    print(
+        "Loss terms: "
+        f"depth_distortion={use_depth_distortion} weight={depth_distortion_weight:.3e}, "
+        f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
+        f"opacity_loss_weight={opacity_loss_weight:.3e}, "
+        f"opacity_target={opacity_target:.3f}"
+    )
 
     # ------------------------------------------------------------------
     # Fetch initial parameters from renderer
@@ -1154,11 +1182,12 @@ def run_optimization(
             normal_consistency_weight * initial_normal_loss_raw
     )
     initial_opacity_regularizer_loss, _ = (
-        compute_opacity_one_regularizer_and_gradients(
+        compute_opacity_target_regularizer_and_gradients(
             opacities=opacities,
             trainable_surfel_mask=trainable_surfel_mask,
-            opacity_target=1.0,
-            opacity_weight=opacity_regularizer_weight,
+            opacity_target=opacity_target,
+            opacity_weight=opacity_loss_weight,
+            use_opacity_loss=use_opacity_loss,
         )
     )
 
@@ -1213,6 +1242,10 @@ def run_optimization(
                 "num_points",
                 "iteration_time_sec",
                 "total_time",
+                "grad_opacity_total_rms",
+                "grad_opacity_total_max",
+                "grad_opacity_regularizer_rms",
+                "grad_opacity_regularizer_max",
             ]
         )
 
@@ -1352,17 +1385,25 @@ def run_optimization(
                 grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
 
                 opacity_regularizer_loss, grad_opacity_regularizer_np = (
-                    compute_opacity_one_regularizer_and_gradients(
+                    compute_opacity_target_regularizer_and_gradients(
                         opacities=opacities,
                         trainable_surfel_mask=trainable_surfel_mask,
-                        opacity_target=1.0,
-                        opacity_weight=opacity_regularizer_weight,
+                        opacity_target=opacity_target,
+                        opacity_weight=opacity_loss_weight,
+                        use_opacity_loss=use_opacity_loss,
                     )
                 )
-
+                opacity_regularizer_gradient_stats = gradient_stats_from_dict(
+                    {"opacity": grad_opacity_regularizer_np}
+                )
                 grad_opacities_np += grad_opacity_regularizer_np
                 total_loss_value += opacity_regularizer_loss
 
+                grad_opacity_regularizer_rms = rms_any(grad_opacity_regularizer_np)
+                grad_opacity_regularizer_max = max_point_norm(grad_opacity_regularizer_np)
+
+                grad_opacity_total_rms = rms_any(grad_opacities_np)
+                grad_opacity_total_max = max_point_norm(grad_opacities_np)
 
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
@@ -1677,20 +1718,15 @@ def run_optimization(
                         num_points,
                         iteration_time,
                         total_time,
+                        grad_opacity_total_rms,
+                        grad_opacity_total_max,
+                        grad_opacity_regularizer_rms,
+                        grad_opacity_regularizer_max,
                     ]
                 )
                 csv_file.flush()
 
                 if iteration % config.log_interval == 0 or iteration == 1:
-                    def rms_point(x: np.ndarray) -> float:
-                        n = max(x.shape[0], 1)
-                        return float(np.linalg.norm(x) / np.sqrt(n))
-
-                    def max_point_norm(x: np.ndarray) -> float:
-                        if x.ndim == 1:
-                            return float(np.max(np.abs(x))) if x.size > 0 else 0.0
-                        return float(np.max(np.linalg.norm(x, axis=1))) if x.shape[0] > 0 else 0.0
-
                     grad_pos_rms = rms_point(grad_position_np)
                     grad_tanu_rms = rms_point(grad_tangent_u_np)
                     grad_tanv_rms = rms_point(grad_tangent_v_np)
@@ -1751,6 +1787,9 @@ def run_optimization(
                                 depth_distortion_grad_images,
                             )
                         )
+
+                    if use_opacity_loss:
+                        print(format_gradient_stats("opacity_reg", opacity_regularizer_gradient_stats))
 
                     hotkey = poll_hotkey()
                     if hotkey == "s":
@@ -1872,11 +1911,12 @@ def run_optimization(
             )
 
     final_opacity_regularizer_loss, _ = (
-        compute_opacity_one_regularizer_and_gradients(
+        compute_opacity_target_regularizer_and_gradients(
             opacities=opacities,
             trainable_surfel_mask=trainable_surfel_mask,
-            opacity_target=1.0,
-            opacity_weight=opacity_regularizer_weight,
+            opacity_target=opacity_target,
+            opacity_weight=opacity_loss_weight,
+            use_opacity_loss=use_opacity_loss,
         )
     )
 

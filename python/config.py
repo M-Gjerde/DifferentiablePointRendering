@@ -15,7 +15,7 @@ class RendererSettingsConfig:
     adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
     adjoint_bounces: int = 3
-    adjoint_passes: int = 4
+    adjoint_passes: int = 12
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 4 #Pi
     useDepthDistortion: bool = True
@@ -63,6 +63,7 @@ class OptimizationConfig:
 
     depth_distort_weight: float = 0.2
     normal_consistency_weight: float = 0.05
+    opacity_loss_weight: float = 10
 
     optimizer_type: str = "adam"
     log_interval: int = 1
@@ -219,6 +220,13 @@ def parse_args() -> OptimizationConfig:
         default=0.1,
         help="Weight for the depth distortion regularizer.",
     )
+    parser.add_argument(
+        "--opacity-weight",
+        dest="opacity_loss_weight",
+        type=float,
+        default=10,
+        help="Weight for the favoring opacity = 1.",
+    )
 
     args = parser.parse_args()
 
@@ -239,10 +247,10 @@ def parse_args() -> OptimizationConfig:
     else:
         factor_position = 0.0005
         factor_tangent = 0.005
-        factor_scale = 0.005
-        factor_albedo = 0.01
+        factor_scale = 0.00001
+        factor_albedo = 0.001
         factor_opacity = 0.001
-        factor_beta = 0.00
+        factor_beta = 0.000
 
     lr_pos = args.learning_rate_position or (factor_position * base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)
@@ -267,6 +275,7 @@ def parse_args() -> OptimizationConfig:
         learning_rate_beta=lr_beta,
         depth_distort_weight=args.depth_distort_weight,
         normal_consistency_weight=args.normal_consistency_weight,
+        opacity_loss_weight=args.opacity_loss_weight,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
