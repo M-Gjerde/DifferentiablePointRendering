@@ -15,9 +15,9 @@ class RendererSettingsConfig:
     adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
     adjoint_bounces: int = 3
-    adjoint_passes: int = 12
+    adjoint_passes: int = 6
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_path_rays: int = 4 #Pi
+    adjoint_shadow_path_rays: int = 2 #Pi
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 4
@@ -209,7 +209,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.0005,
+        default=0.5,
         help="Weight for the normal consistency regularizer.",
     )
 
@@ -217,7 +217,7 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.1,
+        default=100.0,
         help="Weight for the depth distortion regularizer.",
     )
     parser.add_argument(
@@ -246,9 +246,9 @@ def parse_args() -> OptimizationConfig:
         factor_beta = 0.25
     else:
         factor_position = 0.0005
-        factor_tangent = 0.005
-        factor_scale = 0.00001
-        factor_albedo = 0.001
+        factor_tangent = 0.002
+        factor_scale = 0.0002
+        factor_albedo = 0.005
         factor_opacity = 0.001
         factor_beta = 0.000
 

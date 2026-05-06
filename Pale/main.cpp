@@ -340,13 +340,13 @@ int main(int argc, char** argv) {
         settings.numShadowRays = 4;
         settings.numAdjointShadowRays = 4;
         settings.maxAdjointBounces = 2; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
-        settings.adjointSamplesPerPixel = 32;
+        settings.adjointSamplesPerPixel = 8;
         settings.enableAdjointDirectLight = true;
         settings.useDepthDistortion = true;
         settings.useNormalConsistency = true;
 
         settings.renderDebugGradientImages = true;
-        settings.surfelIndexForDebugImages = 1;
+        settings.surfelIndexForDebugImages = UINT32_MAX;
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
@@ -474,7 +474,7 @@ int main(int argc, char** argv) {
                 std::vector<Pale::SensorGPU> selectedAdjointSensors;
                 Pale::SensorGPU selectedSensor;
                 for (int i = 0; const auto& sensor : availableSensors) {
-                    if (sensor.camera.useForAdjointPass) {
+                    if (sensor.camera.useForAdjointPass && std::string(sensor.camera.name) == "DatasetCam_022") {
                         selectedAdjointSensors.push_back(sensor);
                         for (const auto& forwardSensor : sensors) {
                             if (std::string(sensor.camera.name) == std::string(forwardSensor.camera.name))

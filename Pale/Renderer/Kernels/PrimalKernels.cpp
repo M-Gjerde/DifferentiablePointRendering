@@ -463,7 +463,7 @@ namespace Pale {
 
                             accumulatedRadianceRGB += transmittance * outgoingRadiance;
 
-                            // Median depth using compositing weights w_i = T_i * alpha_i
+                      https://teams.microsoft.com/v2/      // Median depth using compositing weights w_i = T_i * alpha_i
                             const float wi = transmittance * alphaEff;
                             const float zi =
                                 dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);

@@ -36,7 +36,7 @@ namespace Pale {
             return;
         }
 
-        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex) {
+        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex && selectedPrimitiveIndex != UINT32_MAX) {
             return;
         }
 

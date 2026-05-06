@@ -322,8 +322,6 @@ def write_gaussian_ply(
     light_x = -0.5
     light_y = 0.8
     light_z = 2.2
-    light_su = 0.001
-    light_sv = 0.001
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
@@ -344,8 +342,6 @@ def write_gaussian_ply(
     light_x = 0.0
     light_y = 0.0
     light_z = -2.0
-    light_su = 0.01
-    light_sv = 0.01
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
@@ -394,7 +390,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.02,
+        default=0.012,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()
