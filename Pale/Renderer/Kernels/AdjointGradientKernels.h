@@ -1870,82 +1870,40 @@ SYCL_EXTERNAL inline MaterialEdgeVisibilityDerivativeResult traceMaterialEdgeVis
         bool renderDebugGradientImages,
         uint32_t selectedPrimitiveIndex,
         uint32_t pathId) {
-        float suffixTransmittance =
-            1.0f;
-
+        float suffixTransmittance =1.0f;
         for (uint32_t reverseIndex = visibilityResult.storedOccluderCount;
              reverseIndex > 0u;
              --reverseIndex) {
-            const uint32_t occluderIndex =
-                reverseIndex - 1u;
-
-            const uint32_t occluderRecordIndex =
-                firstOccluderRecordIndex + occluderIndex;
-
-            const MaterialEdgeOccluderDerivative& occluderDerivative =
-                visibilityResult.occluderDerivatives[occluderIndex];
-
+            const uint32_t occluderIndex =reverseIndex - 1u;
+            const uint32_t occluderRecordIndex =firstOccluderRecordIndex + occluderIndex;
+            const MaterialEdgeOccluderDerivative& occluderDerivative =visibilityResult.occluderDerivatives[occluderIndex];
             const float visibilityDerivativeScale =
-                -occluderDerivative.prefixTransmittance *
-                suffixTransmittance *
-                geometricTerm *
-                scalarMaterialEdgeWeight *
-                invSpp;
+                -occluderDerivative.prefixTransmittance *suffixTransmittance *geometricTerm *scalarMaterialEdgeWeight *invSpp;
 
             SurfelGradientRecord occluderRecord{};
-            occluderRecord.primitiveIndex =
-                occluderDerivative.primitiveIndex;
-
-            const float3 positionContribution =
-                visibilityDerivativeScale *
-                occluderDerivative.gradPosition;
-
-            const float3 tangentUContribution =
-                visibilityDerivativeScale *
-                occluderDerivative.gradTangentU;
-
-            const float3 tangentVContribution =
-                visibilityDerivativeScale *
-                occluderDerivative.gradTangentV;
+            occluderRecord.primitiveIndex =occluderDerivative.primitiveIndex;
+            const float3 positionContribution =visibilityDerivativeScale *occluderDerivative.gradPosition;
+            const float3 tangentUContribution =visibilityDerivativeScale *occluderDerivative.gradTangentU;
+            const float3 tangentVContribution =visibilityDerivativeScale *occluderDerivative.gradTangentV;
 
             occluderRecord.gradPositionX = positionContribution.x();
             occluderRecord.gradPositionY = positionContribution.y();
             occluderRecord.gradPositionZ = positionContribution.z();
-
-            occluderRecord.gradScaleU =
-                visibilityDerivativeScale *
-                occluderDerivative.gradScaleU;
-
-            occluderRecord.gradScaleV =
-                visibilityDerivativeScale *
-                occluderDerivative.gradScaleV;
-
+            occluderRecord.gradScaleU =visibilityDerivativeScale *occluderDerivative.gradScaleU;
+            occluderRecord.gradScaleV =visibilityDerivativeScale *occluderDerivative.gradScaleV;
             occluderRecord.gradTangentUX = tangentUContribution.x();
             occluderRecord.gradTangentUY = tangentUContribution.y();
             occluderRecord.gradTangentUZ = tangentUContribution.z();
-
             occluderRecord.gradTangentVX = tangentVContribution.x();
             occluderRecord.gradTangentVY = tangentVContribution.y();
             occluderRecord.gradTangentVZ = tangentVContribution.z();
-
-            occluderRecord.gradEta =
-                visibilityDerivativeScale *
-                occluderDerivative.gradEta;
-
-            occluderRecord.gradBeta =
-                visibilityDerivativeScale *
-                occluderDerivative.gradBeta;
-
+            occluderRecord.gradEta =visibilityDerivativeScale *occluderDerivative.gradEta;
+            occluderRecord.gradBeta =visibilityDerivativeScale *occluderDerivative.gradBeta;
             occluderRecord.gradAlbedoR = 0.0f;
             occluderRecord.gradAlbedoG = 0.0f;
             occluderRecord.gradAlbedoB = 0.0f;
-
-            gradientRecords[occluderRecordIndex] =
-                occluderRecord;
-
-            suffixTransmittance *=
-                occluderDerivative.oneMinusAlpha;
-
+            gradientRecords[occluderRecordIndex] =occluderRecord;
+            suffixTransmittance *=occluderDerivative.oneMinusAlpha;
             accumulateDebugGradientIfSelected(
                 debugImages,
                 renderDebugGradientImages,

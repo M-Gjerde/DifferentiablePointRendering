@@ -238,7 +238,8 @@ namespace Pale {
 
                                 float3 sampledOutgoingDirectionW = currentRayState.ray.direction;
                                 float sampledPdf = 0.0f;
-                                sampleUniformHemisphereAroundNormal(
+
+                                sampleCosineHemisphere(
                                     stepRng,
                                     orientedNormal,
                                     sampledOutgoingDirectionW,
@@ -249,10 +250,11 @@ namespace Pale {
                                 const float3 scatteringFunction =
                                     surfel.alpha_r * surfel.albedo * M_1_PIf;
                                 const float effectiveOpacity = worldHit.alphaGeom * surfel.opacity;
+
                                 const float3 reflectWeight =
-                                ((effectiveOpacity / settings.sampling.qReflect) *
-                                    scatteringFunction *
-                                    cosineTheta / sampledPdf);
+                                    (effectiveOpacity / settings.sampling.qReflect) *
+                                    (surfel.alpha_r * surfel.albedo);
+
 
                                 const float3 nextPathThroughput =
                                     currentRayState.pathThroughput * reflectWeight;
@@ -463,7 +465,7 @@ namespace Pale {
 
                             accumulatedRadianceRGB += transmittance * outgoingRadiance;
 
-                      https://teams.microsoft.com/v2/      // Median depth using compositing weights w_i = T_i * alpha_i
+                           // Median depth using compositing weights w_i = T_i * alpha_i
                             const float wi = transmittance * alphaEff;
                             const float zi =
                                 dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);

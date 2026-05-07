@@ -1169,10 +1169,11 @@ namespace Pale {
         v.surface = {};
         v.bounceIndex = UINT32_MAX;
         v.pathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        v.transmissionFromPrevious = FLT_MAX;
+        v.transmission = FLT_MAX;
         v.geometryFromPrevious = FLT_MAX;
         v.areaPdfFromPrevious = FLT_MAX;
-        v.bsdfAlpha = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        v.bsdf = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        v.alpha = FLT_MAX;
         v.cosineFromPrevious = FLT_MAX;
     }
 
@@ -1193,16 +1194,18 @@ namespace Pale {
         float transmissionFromPrevious,
         float geometryFromPrevious,
         float areaPdfFromPrevious,
-        const float3& bsdfAlpha,
+        const float3& bsdf,
+        const float alpha,
         float cosineFromPrevious) {
         PendingAdjointVertex v{};
         v.surface = surface;
         v.bounceIndex = bounceIndex;
         v.pathThroughput = pathThroughput;
-        v.transmissionFromPrevious = transmissionFromPrevious;
+        v.transmission = transmissionFromPrevious;
         v.geometryFromPrevious = geometryFromPrevious;
         v.areaPdfFromPrevious = areaPdfFromPrevious;
-        v.bsdfAlpha = bsdfAlpha;
+        v.bsdf = bsdf;
+        v.alpha = alpha;
         v.cosineFromPrevious = cosineFromPrevious;
         return v;
     }

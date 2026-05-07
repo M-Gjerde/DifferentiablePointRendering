@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--iterations",
+        "--iterations", "--it",
         type=int,
         default=None,
         help=(
@@ -267,6 +267,56 @@ def plot_linear_columns(
         )
 
 
+def plot_top_loss_columns_with_dual_axis(
+    left_axis,
+    dataframe: pd.DataFrame,
+    columns: list[str],
+    style_map: dict[str, dict[str, Any]],
+):
+    rgb_columns = [column_name for column_name in columns if column_name == "loss_rgb_sum"]
+    total_columns = [column_name for column_name in columns if column_name == "loss_total_sum"]
+    fallback_columns = [
+        column_name
+        for column_name in columns
+        if column_name not in {"loss_rgb_sum", "loss_total_sum"}
+    ]
+
+    plot_linear_columns(
+        left_axis,
+        dataframe,
+        rgb_columns + fallback_columns,
+        style_map,
+    )
+
+    right_axis = None
+
+    if total_columns:
+        right_axis = left_axis.twinx()
+        plot_linear_columns(
+            right_axis,
+            dataframe,
+            total_columns,
+            style_map,
+        )
+
+    return right_axis
+
+
+def set_combined_legend(left_axis, right_axis=None) -> None:
+    left_handles, left_labels = left_axis.get_legend_handles_labels()
+
+    if right_axis is not None:
+        right_handles, right_labels = right_axis.get_legend_handles_labels()
+    else:
+        right_handles, right_labels = [], []
+
+    handles = left_handles + right_handles
+    labels = left_labels + right_labels
+
+    if handles:
+        left_axis.legend(handles, labels)
+
+
 def plot_positive_log_columns(
     axis,
     dataframe: pd.DataFrame,
@@ -406,7 +456,7 @@ def save_loss_curve(
         ax_raw = axes[2]
         ax_opacity_gradient = axes[3] if include_opacity_gradient_panel else None
 
-        plot_linear_columns(
+        ax_top_right = plot_top_loss_columns_with_dual_axis(
             ax_top,
             dataframe,
             top_columns,
@@ -427,11 +477,17 @@ def save_loss_curve(
             style_map,
         )
 
-        ax_top.set_ylabel("Image / total loss")
+        if "loss_rgb_sum" in top_columns:
+            ax_top.set_ylabel("RGB loss")
+        else:
+            ax_top.set_ylabel("Image loss")
+
+        if ax_top_right is not None:
+            ax_top_right.set_ylabel("Total loss")
+
         ax_top.set_title(f"Optimization losses\n{metrics_csv_path.parent.name}")
         ax_top.grid(True)
-        if top_columns:
-            ax_top.legend()
+        set_combined_legend(ax_top, ax_top_right)
 
         ax_weighted.set_ylabel("Weighted regularizers")
         ax_weighted.grid(True)

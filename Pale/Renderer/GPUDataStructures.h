@@ -425,12 +425,13 @@ namespace Pale {
         float3 pathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
 
         // Segment metadata for the segment arriving at this vertex from the previous one.
-        float transmissionFromPrevious = FLT_MAX;
+        float transmission = FLT_MAX;
         float geometryFromPrevious = FLT_MAX;
         float areaPdfFromPrevious = FLT_MAX;
 
         // Local scattering factor stored at this vertex.
-        float3 bsdfAlpha = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 bsdf = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float alpha = FLT_MAX;
 
         // Only used for the camera-attached path case.
         float cosineFromPrevious = FLT_MAX;
@@ -483,7 +484,11 @@ namespace Pale {
     struct MaterialEdgeGradientEvent {
         PointCloudSurfaceRecord startSurface{};
         PointCloudSurfaceRecord endSurface{};
-        float3 sampledEdgeThroughput{0.0f, 0.0f, 0.0f};
+        float3 sampledEdgeThroughput{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 betaIncrement{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 bsdf{FLT_MAX, FLT_MAX, FLT_MAX};
+        float alpha = FLT_MAX;
+        float invSamplePDF = FLT_MAX;
         float segmentTransmittance = 1.0f;
         float segmentGeometricTerm = 1.0f;
         float segmentAreaPdf = 1.0f;
@@ -654,7 +659,7 @@ namespace Pale {
         uint32_t numForwardPasses = 6;
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
-        uint32_t russianRouletteStart = 6; // Which bounce to start RR
+        uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;

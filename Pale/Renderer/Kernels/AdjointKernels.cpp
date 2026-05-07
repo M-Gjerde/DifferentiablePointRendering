@@ -177,6 +177,9 @@ namespace Pale {
                     //primaryRay.direction = normalize(float3{-0.01, 1.0, 0.04}); // b
                     //primaryRay.origin = float3{0.0, -4.0, 1.0};
 
+                    float cameraCosine = dot(sensor.camera.forward,
+                                             primaryRay.direction);
+                    initialAdjointWeight *= cameraCosine;
 
                     RayState rayState{};
                     rayState.ray = primaryRay;
@@ -328,6 +331,7 @@ namespace Pale {
 
                             const float qNull = settings.sampling.qNull;
                             const float qReflect = settings.sampling.qReflect;
+                            const float invQReflect = 1.0f / settings.sampling.qReflect;
 
                             const float3 orientedNormal =
                                     computePointCloudOrientedNormal(surfel, currentRayState.ray.direction);
@@ -562,11 +566,11 @@ namespace Pale {
                                     measurementTwoPointEvent.xSurface = previousAdjointStage.current.surface;
                                     measurementTwoPointEvent.ySurface = currentSurface;
                                     measurementTwoPointEvent.xPathThroughput =
-                                            previousAdjointStage.current.transmissionFromPrevious *
+                                            previousAdjointStage.current.transmission *
                                             previousAdjointStage.current.pathThroughput /
                                             (segmentAreaPdfFromStoredVertex * qReflect);
                                     measurementTwoPointEvent.transmissionPreviousSegment =
-                                            previousAdjointStage.current.transmissionFromPrevious;
+                                            previousAdjointStage.current.transmission;
                                     measurementTwoPointEvent.transmission =
                                             currentRayState.transmission;
                                     appendEventAtomic(
@@ -578,21 +582,22 @@ namespace Pale {
 
 
                                 // First material point after camera attached point with direct light sample
-                                if (previousAdjointStage.valid && currentRayState.bounceIndex == 1) {
+                                if (previousAdjointStage.valid && currentRayState.bounceIndex >= 1) {
                                     // This event collects gradient with respet to surface Y at the first material vertex event
                                     // Bounce index == 1, then pair with p1
                                     // Bounce index == 2, then pair with p2
                                     MaterialVertexGradientEvent materialVertexEvent{};
                                     materialVertexEvent.surface = currentSurface;
+
+
                                     materialVertexEvent.adjointWeightAtVertex =
                                             currentRayState.pathThroughput *
-                                            currentRayState.transmission;
+                                            currentRayState.transmission / qReflect;
 
                                     materialVertexEvent.pathId = currentRayState.pathId;
                                     materialVertexEvent.bounceIndex = currentRayState.bounceIndex;
                                     materialVertexEvent.pathId = currentRayState.pathId;
                                     materialVertexEvent.bounceIndex = currentRayState.bounceIndex;
-
 
                                     appendEventAtomic(
                                         intermediates.countMaterialVertexEvents,
@@ -605,7 +610,7 @@ namespace Pale {
                                 // Direct-light material edge samples: current material vertex -> light
                                 // -------------------------------------------------------------
                                 if (previousAdjointStage.valid &&
-                                    currentRayState.bounceIndex == 1) {
+                                    currentRayState.bounceIndex >= 1) {
                                     // Geometric gradient bettwen XYZ where Z is a light source we have two edge events for Y
                                     // Firs tbetween X and Y, which is adjoint path weight p0.
                                     // Second is between YZ which is adjoint path weight p1.
@@ -621,11 +626,12 @@ namespace Pale {
 
                                     materialEdgeEventXY.sampledEdgeThroughput =
                                             previousAdjointStage.current.pathThroughput *
-                                            previousAdjointStage.current.transmissionFromPrevious *
-                                            previousAdjointStage.current.bsdfAlpha
+                                            previousAdjointStage.current.transmission *
+                                            previousAdjointStage.current.bsdf *
+                                            previousAdjointStage.current.alpha
                                             * invSegmentUvPdf / qReflect;
                                     materialEdgeEventXY.isDirectLightSample = false;
-                                    materialEdgeEventXY.writeOcclusionGradients = false;
+                                    materialEdgeEventXY.writeOcclusionGradients = currentRayState.bounceIndex > 1; // Start writing occlusion gradients only on x2->x3 transport, x1->x2 is handled by measurement terms
                                     materialEdgeEventXY.pathId = currentRayState.pathId;
                                     materialEdgeEventXY.startBounceIndex = previousAdjointStage.current.bounceIndex;
 
@@ -733,8 +739,9 @@ namespace Pale {
                                         if (blockedByOpaqueGeometry) {
                                             continue;
                                         }
-                                        const float3 directLightRadiance = lightSample.flux / (M_PIf * lightSample.
-                                                                               totalAreaWorld);
+                                        const float3 directLightRadiance =
+                                                lightSample.flux / (M_PIf * lightSample.totalAreaWorld);
+
                                         MaterialEdgeGradientEvent materialDirectLightEdgeEvent{};
                                         materialDirectLightEdgeEvent.startSurface = currentSurface;
                                         materialDirectLightEdgeEvent.endSurface = lightSample.surface;
@@ -744,20 +751,23 @@ namespace Pale {
                                         // DO NOT multiply by segmentGeometryFromStoredVertex / segmentAreaPdfFromStoredVertex again.
                                         // ---------------------------------------------------------------------
                                         const float3 betaIncX2 =
-                                                currentRayState.pathThroughput *
-                                                currentRayState.transmission;
+                                                currentRayState.pathThroughput * currentRayState.transmission;
+
                                         const float alphaX2 = worldHit.alphaGeom * surfel.opacity;
-                                        const float reflectiveModeWeight = (alphaX2 * surfel.alpha_r) / qReflect;
-                                        const float lightPdfArea = lightSample.pdfSelectLight * lightSample.pdfArea;
-                                        materialDirectLightEdgeEvent.sampledEdgeThroughput =
-                                                betaIncX2 *
-                                                (reflectiveModeWeight / lightPdfArea) *
-                                                invSampleCount;
+                                        const float invLightPdfArea =
+                                                1.0f / (lightSample.pdfSelectLight * lightSample.pdfArea);
+                                        const float invSamplePDF = invLightPdfArea * invQReflect * invSampleCount;
+
+                                        materialDirectLightEdgeEvent.betaIncrement = betaIncX2;
+                                        materialDirectLightEdgeEvent.alpha = alphaX2;
+                                        materialDirectLightEdgeEvent.bsdf = surfelBsdf;
+                                        materialDirectLightEdgeEvent.invSamplePDF = invSamplePDF;
 
 
                                         materialDirectLightEdgeEvent.segmentTransmittance = shadowTransmission;
                                         materialDirectLightEdgeEvent.directLightRadiance = directLightRadiance;
                                         materialDirectLightEdgeEvent.isDirectLightSample = true;
+                                        materialDirectLightEdgeEvent.writeOcclusionGradients = true;
                                         materialDirectLightEdgeEvent.pathId = currentRayState.pathId;
                                         materialDirectLightEdgeEvent.startBounceIndex = currentRayState.bounceIndex;
 
@@ -770,38 +780,7 @@ namespace Pale {
                                 }
 
 
-                                // Material point at depth = 3. YZ w.r.t Y changes when Z is a random direction sample.
-                                if (previousAdjointStage.valid && currentRayState.bounceIndex >= 2) {
-                                    MaterialEdgeGradientEvent materialEdgeEvent{};
-                                    materialEdgeEvent.startSurface =
-                                            previousAdjointStage.current.surface;
-                                    materialEdgeEvent.endSurface = currentSurface;
-
-                                    float invSegmentUvPdf =
-                                            1.0f / (segmentAreaPdfFromStoredVertex *
-                                                    segmentUvJacobianAtEnd); // really J_Z, not a PDF
-
-                                    materialEdgeEvent.sampledEdgeThroughput =
-                                            previousAdjointStage.current.pathThroughput *
-                                            previousAdjointStage.current.bsdfAlpha *
-                                            invSegmentUvPdf / qReflect;
-
-                                    materialEdgeEvent.segmentTransmittance = currentRayState.transmission;
-                                    materialEdgeEvent.segmentGeometricTerm = segmentGeometryFromStoredVertex;
-                                    materialEdgeEvent.segmentAreaPdf = segmentAreaPdfFromStoredVertex;
-                                    materialEdgeEvent.pathId = currentRayState.pathId;
-                                    materialEdgeEvent.startBounceIndex = previousAdjointStage.current.bounceIndex;
-
-                                    appendEventAtomic(
-                                        intermediates.countMaterialStartEdgeEvents,
-                                        intermediates.materialStartEdgeEvents,
-                                        intermediates.maxMaterialStartEdgeEventCount,
-                                        materialEdgeEvent);
-                                }
-
-
                                 clearPendingCameraSegment(pendingCameraSegment);
-
                                 // -------------------------------------------------------------
                                 // Build segment metadata for stored-vertex -> currentSurface
                                 // -------------------------------------------------------------
@@ -830,11 +809,11 @@ namespace Pale {
                                 const float cosineFromPrevious = previousCameraSegment.valid
                                                                      ? dot(sensor.camera.forward,
                                                                            currentRayState.ray.direction)
-                                                                     : 0.0f;
+                                                                     : 1.0f;
                                 const PendingAdjointVertex newCurrentVertex = makePendingAdjointVertex(
                                     currentSurface, currentRayState.bounceIndex,
                                     currentRayState.pathThroughput / qReflect, currentRayState.transmission,
-                                    segmentGeometryFromStoredVertex, segmentAreaPdfFromStoredVertex, alpha * surfelBsdf,
+                                    segmentGeometryFromStoredVertex, segmentAreaPdfFromStoredVertex, surfelBsdf, alpha,
                                     cosineFromPrevious);
                                 pushPendingAdjointVertex(pendingAdjointStage, currentRayState.pathId,
                                                          currentRayState.pixelIndex, previousCameraSegment.valid,
@@ -1926,11 +1905,8 @@ namespace Pale {
                                                           outgoingRadianceWithoutLocalAlpha);
                     const float opacityGradient = alphaGeom * scalarWeightNoAlpha * invSpp;
                     const float betaGradient =
-                            dot(
-                                eventRecord.adjointWeightAtVertex,
-                                outgoingRadianceWithoutLocalAlpha *
-                                dAlphaEffectiveDBeta) *
-                            invSpp;
+                            dot(eventRecord.adjointWeightAtVertex,
+                                outgoingRadianceWithoutLocalAlpha * dAlphaEffectiveDBeta) * invSpp;
 
                     gradientRecord.primitiveIndex = primitiveIndex;
                     gradientRecord.gradPositionX = 0.0f;
@@ -2273,20 +2249,29 @@ namespace Pale {
                                 qNullInv);
                     const float endScaleU = endSurfel.scale.x();
                     const float endScaleV = endSurfel.scale.y();
-                    const float endSurfaceMeasureJacobian = endScaleU * endScaleV;
-                    const float scalarEdgeWeightBase = dot(eventRecord.sampledEdgeThroughput, endRadiance);
+
+                    const float3 edgePrefix =
+                            eventRecord.betaIncrement *
+                            eventRecord.alpha *
+                            eventRecord.bsdf *
+                            eventRecord.invSamplePDF;
+                    const float scalarEdgeWeightBase =
+                        dot(edgePrefix, endRadiance);
+
                     const float scalarEdgeWeight = scalarEdgeWeightBase * visibilityResult.nullSamplingWeight;
-                    const float scalarMaterialEdgeWeight = scalarEdgeWeight * endSurfaceMeasureJacobian;
+
                     const float3 dGeometricTermDStartPosition = computeGeometricTermGradientWrtStartpoint(
                         startState.position,
                         endState.position,
                         startState.orientedNormal,
                         endState.orientedNormal);
-                    const float3 gradientWrtStartPositionBeforeSpp = scalarMaterialEdgeWeight * (
+
+                    const float3 gradientWrtStartPositionBeforeSpp = scalarEdgeWeight * (
                                                                          visibilityResult.segmentTransmittance *
                                                                          dGeometricTermDStartPosition +
                                                                          geometricTerm * visibilityResult.
                                                                          gradTauWrtStartPoint);
+
                     const float startU = eventRecord.startSurface.uv.x();
                     const float startV = eventRecord.startSurface.uv.y();
                     const float startScaleU = startSurfel.scale.x();
@@ -2296,12 +2281,48 @@ namespace Pale {
                                                 invSpp;
                     float startScaleVGradient = dot(gradientWrtStartPositionBeforeSpp, startV * startSurfel.tanV) *
                                                 invSpp;
+
+                    const float u = eventRecord.startSurface.uv.x();
+                    const float v = eventRecord.startSurface.uv.y();
+                    const float r2 = u * u + v * v;
+                    const float oneMinusR2 = 1.0f - r2;
+
+                    if (oneMinusR2 > 1.0e-8f) {
+                        const float alphaGeom = eventRecord.startSurface.alphaGeom;
+                        const float eta = startSurfel.opacity;
+                        const float betaScale = 4.0f * sycl::exp(startSurfel.beta);
+
+                        // Weight with alpha removed
+                        const float3 prefixNoAlpha =
+                            eventRecord.betaIncrement *
+                            eventRecord.bsdf *
+                            eventRecord.invSamplePDF;
+
+                        const float scalarLocalAlphaWeight =
+                            dot(prefixNoAlpha, endRadiance) *
+                            visibilityResult.nullSamplingWeight *
+                            visibilityResult.segmentTransmittance *
+                            geometricTerm *
+                            invSpp;
+
+                        const float dAlphaEffectiveDScaleU =
+                            eta * (2.0f * betaScale * u * u * alphaGeom) /
+                            (startScaleU * oneMinusR2);
+
+                        const float dAlphaEffectiveDScaleV =
+                            eta * (2.0f * betaScale * v * v * alphaGeom) /
+                            (startScaleV * oneMinusR2);
+
+                        startScaleUGradient += scalarLocalAlphaWeight * dAlphaEffectiveDScaleU;
+                        startScaleVGradient += scalarLocalAlphaWeight * dAlphaEffectiveDScaleV;
+                    }
+
                     float3 startTangentUGradient = gradientWrtStartPositionBeforeSpp * (startU * startScaleU * invSpp);
                     float3 startTangentVGradient = gradientWrtStartPositionBeforeSpp * (startV * startScaleV * invSpp);
                     const float3 directionStartToEnd = startToEnd / sycl::sqrt(distanceSquared);
                     const float cosineAtEnd = dot(endState.orientedNormal, -directionStartToEnd);
                     const float3 dGeometricTermDStartNormal = directionStartToEnd * (cosineAtEnd / distanceSquared);
-                    const float3 gradientWrtStartOrientedNormal = scalarMaterialEdgeWeight * visibilityResult.
+                    const float3 gradientWrtStartOrientedNormal = scalarEdgeWeight * visibilityResult.
                                                                   segmentTransmittance * dGeometricTermDStartNormal;
                     const float3 rawStartNormal = cross(startSurfel.tanU, startSurfel.tanV);
                     const float rawStartNormalLength = length(rawStartNormal);
@@ -2318,13 +2339,19 @@ namespace Pale {
                         startTangentVGradient += cross(gradientWrtStartCross, startSurfel.tanU) * invSpp;
                     }
 
-                    const float albedoGradientScale = visibilityResult.nullSamplingWeight * visibilityResult.
-                                                      segmentTransmittance * geometricTerm * endSurfaceMeasureJacobian *
-                                                      invSpp;
+                    const float transportScale =
+                            visibilityResult.nullSamplingWeight *
+                            visibilityResult.segmentTransmittance *
+                            geometricTerm *
+                            invSpp;
+
+                    float3 albedoGradientThroughput = eventRecord.betaIncrement * (startSurfel.alpha_r * M_1_PIf) *
+                                                      eventRecord.alpha * eventRecord.invSamplePDF;
+
                     const float3 startAlbedoGradient{
-                        eventRecord.sampledEdgeThroughput.x() * endRadiance.x() * albedoGradientScale,
-                        eventRecord.sampledEdgeThroughput.y() * endRadiance.y() * albedoGradientScale,
-                        eventRecord.sampledEdgeThroughput.z() * endRadiance.z() * albedoGradientScale
+                        albedoGradientThroughput.x() * endRadiance.x() * transportScale,
+                        albedoGradientThroughput.y() * endRadiance.y() * transportScale,
+                        albedoGradientThroughput.z() * endRadiance.z() * transportScale
                     };
                     SurfelGradientRecord startRecord{};
                     startRecord.primitiveIndex = startPrimitiveIndex;
@@ -2348,20 +2375,19 @@ namespace Pale {
                     startRecord.gradBeta = 0.0f;
 
                     startRecord.gradAlbedoR = startAlbedoGradient.x();
-                    //startRecord.gradAlbedoR = 0.0f;
                     startRecord.gradAlbedoG = startAlbedoGradient.y();
                     startRecord.gradAlbedoB = startAlbedoGradient.z();
 
                     gradientRecords[eventRecordBase] = startRecord;
 
 
-                    if (eventRecord.isDirectLightSample) {
+                    if (eventRecord.writeOcclusionGradients) {
                         writeMaterialEdgeOccluderGradientRecords(
                             gradientRecords,
                             eventRecordBase + 1u,
                             visibilityResult,
                             geometricTerm,
-                            scalarMaterialEdgeWeight,
+                            scalarEdgeWeight,
                             invSpp,
                             debugImages,
                             settings.renderDebugGradientImages,
@@ -2393,66 +2419,26 @@ namespace Pale {
                 [=](sycl::id<1> globalId) {
                     const uint32_t recordIndex = globalId[0];
                     const SurfelGradientRecord gradientRecord = gradientRecords[recordIndex];
-
                     if (gradientRecord.primitiveIndex == kInvalidIndex) {
                         return;
                     }
-
                     const uint32_t primitiveIndex = gradientRecord.primitiveIndex;
-
-                    atomicAddFloat(
-                        gradients.gradPosition[primitiveIndex].x(),
-                        gradientRecord.gradPositionX);
-                    atomicAddFloat(
-                        gradients.gradPosition[primitiveIndex].y(),
-                        gradientRecord.gradPositionY);
-                    atomicAddFloat(
-                        gradients.gradPosition[primitiveIndex].z(),
-                        gradientRecord.gradPositionZ);
-
-                    atomicAddFloat(
-                        gradients.gradScale[primitiveIndex].x(),
-                        gradientRecord.gradScaleU);
-                    atomicAddFloat(
-                        gradients.gradScale[primitiveIndex].y(),
-                        gradientRecord.gradScaleV);
-
-                    atomicAddFloat(
-                        gradients.gradTanU[primitiveIndex].x(),
-                        gradientRecord.gradTangentUX);
-                    atomicAddFloat(
-                        gradients.gradTanU[primitiveIndex].y(),
-                        gradientRecord.gradTangentUY);
-                    atomicAddFloat(
-                        gradients.gradTanU[primitiveIndex].z(),
-                        gradientRecord.gradTangentUZ);
-
-                    atomicAddFloat(
-                        gradients.gradTanV[primitiveIndex].x(),
-                        gradientRecord.gradTangentVX);
-                    atomicAddFloat(
-                        gradients.gradTanV[primitiveIndex].y(),
-                        gradientRecord.gradTangentVY);
-                    atomicAddFloat(
-                        gradients.gradTanV[primitiveIndex].z(),
-                        gradientRecord.gradTangentVZ);
-
-                    atomicAddFloat(
-                        gradients.gradOpacity[primitiveIndex],
-                        gradientRecord.gradEta);
-                    atomicAddFloat(
-                        gradients.gradBeta[primitiveIndex],
-                        gradientRecord.gradBeta);
-
-                    atomicAddFloat(
-                        gradients.gradAlbedo[primitiveIndex].x(),
-                        gradientRecord.gradAlbedoR);
-                    atomicAddFloat(
-                        gradients.gradAlbedo[primitiveIndex].y(),
-                        gradientRecord.gradAlbedoG);
-                    atomicAddFloat(
-                        gradients.gradAlbedo[primitiveIndex].z(),
-                        gradientRecord.gradAlbedoB);
+                    atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradientRecord.gradPositionX);
+                    atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradientRecord.gradPositionY);
+                    atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradientRecord.gradPositionZ);
+                    atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
+                    atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradientRecord.gradScaleV);
+                    atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradientRecord.gradTangentUX);
+                    atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradientRecord.gradTangentUY);
+                    atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradientRecord.gradTangentUZ);
+                    atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradientRecord.gradTangentVX);
+                    atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradientRecord.gradTangentVY);
+                    atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradientRecord.gradTangentVZ);
+                    atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradientRecord.gradEta);
+                    atomicAddFloat(gradients.gradBeta[primitiveIndex], gradientRecord.gradBeta);
+                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradientRecord.gradAlbedoR);
+                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradientRecord.gradAlbedoG);
+                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradientRecord.gradAlbedoB);
                 });
         }).wait();
     }
@@ -2462,7 +2448,6 @@ namespace Pale {
         float3 hitPositionW{0.0f};
         float3 rayOrigin0{0.0f};
         float3 rayDir0{0.0f};
-
         float ai = 0.0f; // a_i = eta_i * alphaGeom_i
         float wi = 0.0f; // w_i = T_{i-1} * a_i
         float Tprev = 1.0f; // T_{i-1}

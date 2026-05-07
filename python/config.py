@@ -14,10 +14,10 @@ class RendererSettingsConfig:
     primal_shadow_rays: int =  4 # Li
     adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
-    adjoint_bounces: int = 3
+    adjoint_bounces: int = 2
     adjoint_passes: int = 6
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_path_rays: int = 2 #Pi
+    adjoint_shadow_path_rays: int = 4 #Pi
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 4
@@ -224,7 +224,7 @@ def parse_args() -> OptimizationConfig:
         "--opacity-weight",
         dest="opacity_loss_weight",
         type=float,
-        default=10,
+        default=0.5,
         help="Weight for the favoring opacity = 1.",
     )
 
@@ -247,7 +247,7 @@ def parse_args() -> OptimizationConfig:
     else:
         factor_position = 0.0005
         factor_tangent = 0.002
-        factor_scale = 0.0002
+        factor_scale = 0.002
         factor_albedo = 0.005
         factor_opacity = 0.001
         factor_beta = 0.000
