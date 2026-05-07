@@ -138,10 +138,46 @@ def save_loss_image(
         loss_image: np.ndarray,
         iteration: int,
 ) -> None:
-    loss_image_vis = np.clip(
-        loss_image / np.percentile(loss_image, 99.0), 0.0, 1.0
-    )
-    loss_image_u8 = (loss_image_vis * 255).astype(np.uint8)
+    loss_image = np.asarray(loss_image, dtype=np.float32)
+
+    # If a multi-channel residual image is passed, reduce it to one value per pixel
+    # for visualization.
+    if loss_image.ndim == 3:
+        if loss_image.shape[2] == 1:
+            loss_image = loss_image[..., 0]
+        else:
+            loss_image = np.mean(loss_image, axis=2)
+
+    finite_mask = np.isfinite(loss_image)
+
+    # Default to white image
+    height, width = loss_image.shape
+    loss_image_rgb = np.ones((height, width, 3), dtype=np.float32)
+
+    if np.any(finite_mask):
+        scale = np.percentile(np.abs(loss_image[finite_mask]), 99.0)
+
+        if scale > 1.0e-12:
+            normalized_loss = np.clip(loss_image / scale, -1.0, 1.0)
+
+            positive_mask = normalized_loss > 0.0
+            negative_mask = normalized_loss < 0.0
+
+            positive_strength = normalized_loss[positive_mask]          # 0 .. 1
+            negative_strength = -normalized_loss[negative_mask]         # 0 .. 1
+
+            # Positive residuals: white -> red
+            # [1, 1, 1] -> [1, 0, 0]
+            loss_image_rgb[positive_mask, 1] = 1.0 - positive_strength
+            loss_image_rgb[positive_mask, 2] = 1.0 - positive_strength
+
+            # Negative residuals: white -> blue
+            # [1, 1, 1] -> [0, 0, 1]
+            loss_image_rgb[negative_mask, 0] = 1.0 - negative_strength
+            loss_image_rgb[negative_mask, 1] = 1.0 - negative_strength
+
+    loss_image_u8 = (np.clip(loss_image_rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+
     os.makedirs(output_dir / "loss", exist_ok=True)
     iio.imwrite(
         (output_dir / "loss" / f"loss_image_iter_{iteration:04d}.png").as_posix(),
@@ -158,6 +194,7 @@ def save_gaussians_to_ply(
         colors: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        powers: torch.Tensor,
         shape_default: float = 0.0,
 ) -> None:
     """
@@ -184,6 +221,7 @@ def save_gaussians_to_ply(
     property float opacity
     property float beta
     property float shape
+    property float power
     end_header
     ...
 
@@ -201,6 +239,7 @@ def save_gaussians_to_ply(
     col = colors.detach().cpu().numpy()
     opa = opacities.detach().cpu().numpy()
     betas = betas.detach().cpu().numpy()
+    powers = powers.detach().cpu().numpy()
 
     num_points = pos.shape[0]
 
@@ -225,23 +264,24 @@ def save_gaussians_to_ply(
             "comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity\n"
         )
         f.write(f"element vertex {num_points}\n")
-        f.write("property float x          # pk.x\n")
-        f.write("property float y          # pk.y\n")
-        f.write("property float z          # pk.z\n")
-        f.write("property float tu_x       # tangential axis u (unit)\n")
+        f.write("property float x         \n")
+        f.write("property float y          \n")
+        f.write("property float z          \n")
+        f.write("property float tu_x       \n")
         f.write("property float tu_y\n")
         f.write("property float tu_z\n")
-        f.write("property float tv_x       # tangential axis v (unit, orthonormal to tu)\n")
+        f.write("property float tv_x       \n")
         f.write("property float tv_y\n")
         f.write("property float tv_z\n")
-        f.write("property float su         # scale along tu\n")
-        f.write("property float sv         # scale along tv\n")
-        f.write("property float albedo_r   # diffuse BRDF albedo\n")
+        f.write("property float su         \n")
+        f.write("property float sv      \n")
+        f.write("property float albedo_r \n")
         f.write("property float albedo_g\n")
         f.write("property float albedo_b\n")
         f.write("property float opacity\n")
         f.write("property float beta\n")
         f.write("property float shape\n")
+        f.write("property float power\n")
         f.write("end_header\n")
 
         # Data
@@ -253,6 +293,7 @@ def save_gaussians_to_ply(
             sv_i = sv[i]
             opa_i = opa[i]
             beta_i = betas[i]
+            power_i = powers[i]
             albedo_r, albedo_g, albedo_b = col[i]
 
             # Use general-format with enough precision, but still readable
@@ -262,6 +303,6 @@ def save_gaussians_to_ply(
                 f"{tv_x:.9g} {tv_y:.9g} {tv_z:.9g}  "
                 f"{su_i:.9g} {sv_i:.9g}  "
                 f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
-                f"{opa_i:.9g} {beta_i:.9g} {shape_default:.9g}\n"
+                f"{opa_i:.9g} {beta_i:.9g} {shape_default:.9g} {power_i:.9g}\n"
             )
             f.write(line)

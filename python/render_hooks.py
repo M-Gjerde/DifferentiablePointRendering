@@ -154,6 +154,66 @@ def orthonormalize_tangents_inplace(
         }
         return diagnostics
 
+def verify_tangents_inplace(
+    tangent_u: torch.Tensor,
+    tangent_v: torch.Tensor,
+    eps: float = 1e-8,
+) -> None:
+    """
+    Enforce an orthonormal in-plane frame in-place:
+    - normalize tangent_u
+    - make tangent_v orthogonal to tangent_u
+    - normalize tangent_v
+
+    Expects shape [N, 3].
+    """
+
+    if tangent_u.ndim != 2 or tangent_v.ndim != 2 or tangent_u.shape != tangent_v.shape:
+        raise ValueError(
+            f"Expected tangent_u and tangent_v to have same shape [N, 3], "
+            f"got {tangent_u.shape=} and {tangent_v.shape=}"
+        )
+    if tangent_u.shape[1] != 3:
+        raise ValueError(f"Expected tangent tensors of shape [N, 3], got {tangent_u.shape}")
+
+    with torch.no_grad():
+        # Normalize u, with fallback for degenerate rows
+        u_norm = torch.linalg.norm(tangent_u, dim=1, keepdim=True)
+        bad_u = u_norm.squeeze(1) < eps
+
+        if bad_u.any():
+            tangent_u[bad_u] = torch.tensor(
+                [1.0, 0.0, 0.0], device=tangent_u.device, dtype=tangent_u.dtype
+            )
+            u_norm = torch.linalg.norm(tangent_u, dim=1, keepdim=True)
+
+        tangent_u.div_(u_norm.clamp_min(eps))
+
+        # Remove projection of v onto u: v <- v - (u·v)u
+        proj = torch.sum(tangent_v * tangent_u, dim=1, keepdim=True)
+        tangent_v.sub_(proj * tangent_u)
+
+        # Normalize v, with fallback if v became degenerate
+        v_norm = torch.linalg.norm(tangent_v, dim=1, keepdim=True)
+        bad_v = v_norm.squeeze(1) < eps
+
+        if bad_v.any():
+            u_bad = tangent_u[bad_v]
+
+            # Build a safe auxiliary axis not parallel to u
+            use_x = torch.abs(u_bad[:, 0]) < 0.9
+            aux = torch.zeros_like(u_bad)
+            aux[use_x] = torch.tensor([1.0, 0.0, 0.0], device=tangent_v.device, dtype=tangent_v.dtype)
+            aux[~use_x] = torch.tensor([0.0, 1.0, 0.0], device=tangent_v.device, dtype=tangent_v.dtype)
+
+            # Project aux into plane orthogonal to u
+            aux = aux - torch.sum(aux * u_bad, dim=1, keepdim=True) * u_bad
+            aux = F.normalize(aux, dim=1, eps=eps)
+
+            tangent_v[bad_v] = aux
+            v_norm = torch.linalg.norm(tangent_v, dim=1, keepdim=True)
+
+        tangent_v.div_(v_norm.clamp_min(eps))
 
 def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
     """
@@ -167,11 +227,36 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.01, max=1.0) ## TODO Enforcing min size matching photon map min resolution
+        s_clamped = torch.clamp(s, min=0.00, max=0.1) ## TODO Enforcing min size matching photon map min resolution
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
         after_max = float(s.max().item())
+
+        return {
+            "before_min": before_min,
+            "before_max": before_max,
+            "after_min": after_min,
+            "after_max": after_max,
+        }
+
+def verify_positions_inplace(positions: torch.Tensor) -> dict[str, float]:
+    """
+    In-place verification/clamping of position values.
+
+    Enforces:
+        -10.0 <= x, y, z <= 10.0
+    """
+    with torch.no_grad():
+        p = positions.data
+        before_min = float(p.min().item())
+        before_max = float(p.max().item())
+
+        p_clamped = torch.clamp(p, min=-10.0, max=10.0)
+        p.copy_(p_clamped)
+
+        after_min = float(p.min().item())
+        after_max = float(p.max().item())
 
         return {
             "before_min": before_min,
@@ -232,23 +317,54 @@ def verify_opacities_inplace(opacities: torch.Tensor) -> dict[str, float]:
             "after_max": after_max,
         }
 
-def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
+def verify_beta_inplace(
+        betas: torch.Tensor,
+        trainable_surfel_mask: Optional[torch.Tensor] = None,
+) -> dict[str, float]:
     """
-    In-place verification/clamping of albedo values.
+    In-place verification/clamping of beta values.
 
     Enforces:
-        0.0 <= c <= 1.0
+        -2.0 <= beta <= 5.0
+
+    If trainable_surfel_mask is provided, only trainable surfels are verified.
+    Frozen surfels are left untouched.
     """
+    min_beta_value = -0.0
     with torch.no_grad():
-        s = betas.data
-        before_min = float(s.min().item())
-        before_max = float(s.max().item())
+        beta_values = betas.data
 
-        s_clamped = torch.clamp(s, min=-3.0, max=1.0)
-        s.copy_(s_clamped)
+        before_min = float(beta_values.min().item())
+        before_max = float(beta_values.max().item())
 
-        after_min = float(s.min().item())
-        after_max = float(s.max().item())
+        if trainable_surfel_mask is None:
+            beta_values.clamp_(min=min_beta_value, max=5.0)
+        else:
+            mask = trainable_surfel_mask.to(
+                device=beta_values.device,
+                dtype=torch.bool,
+            )
+
+            if mask.ndim != 1:
+                raise RuntimeError(
+                    f"trainable_surfel_mask must be 1D, got shape {tuple(mask.shape)}"
+                )
+
+            if beta_values.shape[0] != mask.shape[0]:
+                raise RuntimeError(
+                    "Beta/mask shape mismatch: "
+                    f"betas has {beta_values.shape[0]} surfels, "
+                    f"mask has {mask.shape[0]}"
+                )
+
+            beta_values[mask] = torch.clamp(
+                beta_values[mask],
+                min=min_beta_value,
+                max=5.0,
+            )
+
+        after_min = float(beta_values.min().item())
+        after_max = float(beta_values.max().item())
 
         return {
             "before_min": before_min,
@@ -256,7 +372,6 @@ def verify_beta_inplace(betas: torch.Tensor) -> dict[str, float]:
             "after_min": after_min,
             "after_max": after_max,
         }
-
 
 def apply_point_parameters(
         renderer: pale.Renderer,
@@ -267,6 +382,7 @@ def apply_point_parameters(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        powers: torch.Tensor,
 ) -> None:
     """
     Push updated positions, tangent_u, tangent_v, scales, and albedos into the renderer.
@@ -296,6 +412,9 @@ def apply_point_parameters(
     betas_np = np.asarray(
         betas.detach().cpu().numpy(), dtype=np.float32, order="C"
     )
+    powers_np = np.asarray(
+        powers.detach().cpu().numpy(), dtype=np.float32, order="C"
+    )
 
     if positions_np.shape != tangent_u_np.shape or positions_np.shape != tangent_v_np.shape:
         raise RuntimeError(
@@ -311,7 +430,8 @@ def apply_point_parameters(
             "scale": scales_np,
             "albedo": albedos_np,
             "opacity": opacities_np,
-            "beta": betas_np
+            "beta": betas_np,
+            "power": powers_np
         }
     )
 
@@ -370,5 +490,8 @@ def rebuild_bvh(renderer: pale.Renderer) -> None:
     """
     renderer.rebuild_bvh()  # C++ binding you implement
 
-def get_camera_names(renderer: pale.Renderer) -> dict:
+def get_training_camera_names(renderer: pale.Renderer) -> dict:
+    return renderer.get_training_camera_names()  # C++ binding you implement
+
+def get_all_camera_names(renderer: pale.Renderer) -> dict:
     return renderer.get_camera_names()  # C++ binding you implement

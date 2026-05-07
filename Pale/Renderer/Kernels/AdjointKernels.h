@@ -12,14 +12,25 @@ namespace Pale {
 
     void launchAdjointProjectionKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex);
 
-    void adjointContributionKernels(RenderPackage &pkg,
-                                    uint32_t projectionEventCount,
-                                    uint32_t projectionScatterEventCount,
-                                    uint32_t reflectScatterEventCount,
-                                    uint32_t cameraToSurfaceScatterEventCount,
-                                    uint32_t cameraIndex);
+    void launchAdjointDirectLightKernel(
+        RenderPackage& pkg,
+        uint32_t spp,
+        uint32_t activeQueryCount,
+        uint32_t cameraIndex);
+
+    void adjointContributionKernels(
+        RenderPackage& pkg,
+        uint32_t measurementEventCount,
+        uint32_t measurementTwoPointCount,
+        uint32_t materialMaterialEventCount,
+        uint32_t materialEndEdgeEventCount,
+        uint32_t materialStartEdgeEventCount,
+        uint32_t cameraIndex);
 
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
 
-    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount);
+    void launchDepthDistortionBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
+    void launchNormalConsistencyBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
+    void launchNormalFromDepthAdjointKernel(RenderPackage& pkg, uint32_t cameraIndex);
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex);
 }

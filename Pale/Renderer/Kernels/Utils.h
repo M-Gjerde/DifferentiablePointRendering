@@ -40,7 +40,7 @@ static float computeAutoExposureScale(const std::vector<Pale::DevicePhotonSurfac
     std::vector<float> luminanceValues;
     luminanceValues.reserve(photons.size());
     for (const auto& ph : photons) {
-        float L = 0.2126f * ph.power.x() + 0.7152f * ph.power.y() + 0.0722f * ph.power.z();
+        float L = 0.2126f * ph.flux.x() + 0.7152f * ph.flux.y() + 0.0722f * ph.flux.z();
         if (std::isfinite(L) && L > 0.0f) luminanceValues.push_back(L);
     }
     if (luminanceValues.empty()) return 1.0f;
@@ -102,9 +102,9 @@ static void dumpPhotonMapToPLY(sycl::queue &queue,
         }
 
         // Color from power → simple exposure then sRGB
-        float rLin = ph.power.x() * exposureScale;
-        float gLin = ph.power.y() * exposureScale;
-        float bLin = ph.power.z() * exposureScale;
+        float rLin = ph.flux.x() * exposureScale;
+        float gLin = ph.flux.y() * exposureScale;
+        float bLin = ph.flux.z() * exposureScale;
 
         uint8_t r = linearToSRGB8(rLin);
         uint8_t g = linearToSRGB8(gLin);

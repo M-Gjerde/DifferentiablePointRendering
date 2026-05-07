@@ -307,6 +307,7 @@ def create_masked_optimizer(
     albedos: torch.nn.Parameter,
     opacities: torch.nn.Parameter,
     betas: torch.nn.Parameter,
+    powers: torch.nn.Parameter,
 ) -> torch.optim.Optimizer:
     opt_type = config.optimizer_type.lower()
 
@@ -316,6 +317,7 @@ def create_masked_optimizer(
     lr_albedo = config.learning_rate_albedo
     lr_opacity = config.learning_rate_opacity
     lr_beta = config.learning_rate_beta
+    lr_power = 0
 
     param_groups = [
         {"params": [positions], "lr": lr_pos},
@@ -324,6 +326,7 @@ def create_masked_optimizer(
         {"params": [albedos], "lr": lr_albedo},
         {"params": [opacities], "lr": lr_opacity},
         {"params": [betas], "lr": lr_beta},
+        {"params": [powers], "lr": lr_power},
     ]
 
     if opt_type == "sgd":

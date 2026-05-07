@@ -45,6 +45,42 @@ export namespace Pale {
                 reinterpret_cast<float*>(
                     sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
 
+            float* depthDistortionBuffer =
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
+
+            float* depthDistortionAdjointBuffer =
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
+
+            float* medianDepthBuffer =
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
+
+            float* medianDepthAdjointBuffer =
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
+
+            float4* medianWorldPositionBuffer =
+                reinterpret_cast<float4*>(
+                    sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
+            float4* visibleNormalBuffer =
+                reinterpret_cast<float4*>(
+                    sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
+            float4* normalFromDepthBuffer =
+                reinterpret_cast<float4*>(
+                    sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
+            float4* normalFromDepthAdjointBuffer =
+                reinterpret_cast<float4*>(
+                    sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
+            float4* visibleNormalAdjointBuffer =
+                reinterpret_cast<float4*>(
+                    sycl::malloc_device(pixelCount * sizeof(float) * 4, queue));
+
             // Optional: check allocations
             if (deviceHighDynamicRangeFramebuffer == nullptr ||
                 deviceOutputFramebuffer == nullptr ||
@@ -63,7 +99,6 @@ export namespace Pale {
             }
 
             if (clearData) {
-
                 if (simulateAdjoint)
                     queue.fill(deviceHighDynamicRangeFramebuffer, float4{1.0f}, pixelCount);
                 else {
@@ -78,6 +113,41 @@ export namespace Pale {
                 queue.memset(deviceLdrFramebuffer,
                              0,
                              pixelCount * 4u * sizeof(float));
+
+
+                queue.memset(depthDistortionBuffer,
+                             0,
+                             pixelCount * sizeof(float));
+                queue.memset(depthDistortionAdjointBuffer,
+                             0,
+                             pixelCount * sizeof(float));
+
+                queue.memset(medianDepthBuffer,
+                             0,
+                             pixelCount * sizeof(float));
+
+                queue.memset(medianDepthAdjointBuffer,
+                             0,
+                             pixelCount * sizeof(float));
+
+                queue.memset(medianWorldPositionBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+
+                queue.memset(visibleNormalBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+
+                queue.memset(normalFromDepthBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+                queue.memset(normalFromDepthAdjointBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+                queue.memset(visibleNormalAdjointBuffer,
+                             0,
+                             pixelCount * 4u * sizeof(float));
+
                 queue.wait();
             }
 
@@ -85,6 +155,16 @@ export namespace Pale {
             sensorGpu.framebuffer = deviceHighDynamicRangeFramebuffer;
             sensorGpu.outputFramebuffer = deviceOutputFramebuffer;
             sensorGpu.ldrFramebuffer = deviceLdrFramebuffer;
+            sensorGpu.depthDistortionBuffer = depthDistortionBuffer;
+            sensorGpu.depthDistortionAdjointBuffer = depthDistortionAdjointBuffer;
+            sensorGpu.medianDepthBuffer = medianDepthBuffer;
+            sensorGpu.medianWorldPositionBuffer = medianWorldPositionBuffer;
+            sensorGpu.visibleNormalBuffer = visibleNormalBuffer;
+            sensorGpu.normalFromDepthBuffer = normalFromDepthBuffer;
+
+            sensorGpu.medianDepthAdjointBuffer = medianDepthAdjointBuffer;
+            sensorGpu.normalFromDepthAdjointBuffer = normalFromDepthAdjointBuffer;
+            sensorGpu.visibleNormalAdjointBuffer = visibleNormalAdjointBuffer;
             sensorGpu.width = camera.width;
             sensorGpu.height = camera.height;
 
@@ -95,13 +175,10 @@ export namespace Pale {
     }
 
     void setBackgroundColor(sycl::queue queue, std::vector<SensorGPU> sensors, float4 color) {
-
         for (auto& sensor : sensors) {
             queue.fill(sensor.framebuffer, color, sensor.width * sensor.height);
             queue.wait();
         }
-
-
     }
 
     PointGradients
@@ -168,37 +245,37 @@ export namespace Pale {
             );
 
             debugImages[id].framebufferPosX =
-                reinterpret_cast<float4*>(
-                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
             debugImages[id].framebufferPosY =
-                reinterpret_cast<float4*>(
-                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
             debugImages[id].framebufferPosZ =
-                reinterpret_cast<float4*>(
-                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
             debugImages[id].framebufferRot =
-                reinterpret_cast<float4*>(
-                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
             debugImages[id].framebufferScale =
-                reinterpret_cast<float4*>(
-                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
             debugImages[id].framebufferOpacity =
-                reinterpret_cast<float4*>(
-                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
             debugImages[id].framebufferAlbedo =
-                reinterpret_cast<float4*>(
-                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
             debugImages[id].framebufferBeta =
-                reinterpret_cast<float4*>(
-                    sycl::malloc_device(pixelCount * sizeof(float4), queue));
+                reinterpret_cast<float*>(
+                    sycl::malloc_device(pixelCount * sizeof(float), queue));
             debugImages[id].framebufferDepthLoss =
-                reinterpret_cast<float4 *>(
+                reinterpret_cast<float4*>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
             debugImages[id].framebufferDepthLossPos =
-                reinterpret_cast<float4 *>(
+                reinterpret_cast<float4*>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
             debugImages[id].framebufferNormalLoss =
-                reinterpret_cast<float4 *>(
+                reinterpret_cast<float4*>(
                     sycl::malloc_device(pixelCount * sizeof(float4), queue));
 
             debugImages[id].numPixels = pixelCount;
@@ -336,6 +413,7 @@ export namespace Pale {
 
         return hostSideFramebuffer;
     }
+
     inline std::vector<float>
     downloadSensorRGBARAW(sycl::queue queue, const SensorGPU& sensorGpu) {
         // Total number of float elements = width * height * 4 (RGBA channels)
@@ -351,6 +429,64 @@ export namespace Pale {
         queue.memcpy(
             hostSideFramebuffer.data(), // destination
             sensorGpu.framebuffer, // source (device pointer)
+            totalFloatCount * sizeof(float) // size in bytes
+        ).wait();
+
+        return hostSideFramebuffer;
+    }
+
+    inline std::vector<float> downloadFloatBuffer(
+        sycl::queue queue,
+        const float* devicePtr,
+        std::size_t count) {
+        std::vector<float> host(count);
+        if (devicePtr != nullptr && count > 0) {
+            queue.memcpy(host.data(), devicePtr, count * sizeof(float)).wait();
+        }
+        return host;
+    }
+
+    inline std::vector<float> downloadFloat4Buffer(
+        sycl::queue queue,
+        const float4* devicePtr,
+        std::size_t count) {
+        std::vector<float> host(count * 4);
+        if (devicePtr != nullptr && count > 0) {
+            queue.memcpy(host.data(), devicePtr, count * sizeof(float) * 4).wait();
+        }
+        return host;
+    }
+
+    inline void uploadFloatImage(
+        sycl::queue& queue,
+        float* devicePtr,
+        const std::vector<float>& hostData) {
+        if (!devicePtr) {
+            throw std::runtime_error("uploadFloatImage: devicePtr is null");
+        }
+        if (!hostData.empty()) {
+            queue.memcpy(
+                devicePtr,
+                hostData.data(),
+                hostData.size() * sizeof(float)
+            ).wait();
+        }
+    }
+
+    inline std::vector<float>
+    downloadSensorDepthDistortionRAW(sycl::queue queue, const SensorGPU& sensorGpu) {
+        // Total number of float elements = width * height * 4 (RGBA channels)
+        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
+            * static_cast<size_t>(sensorGpu.height);
+        std::vector<float> hostSideFramebuffer(totalFloatCount);
+
+
+        // Allocate host-side buffer
+        queue.wait();
+        // Copy device framebuffer → host buffer
+        queue.memcpy(
+            hostSideFramebuffer.data(), // destination
+            sensorGpu.depthDistortionBuffer, // source (device pointer)
             totalFloatCount * sizeof(float) // size in bytes
         ).wait();
 
@@ -377,46 +513,57 @@ export namespace Pale {
         const SensorGPU& sensorGpu,
         const DebugImages& debugImages
     ) {
-        const std::size_t pixelCount = static_cast<std::size_t>(sensorGpu.width)
-            * static_cast<std::size_t>(sensorGpu.height);
-        const std::size_t totalFloatCount = pixelCount * 4u; // RGBA
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(sensorGpu.width) *
+            static_cast<std::size_t>(sensorGpu.height);
+
+        const std::size_t rgbaFloatCount = pixelCount * 4u;
 
         DebugGradientImagesHost images;
-        images.positionX.resize(totalFloatCount);
-        images.positionY.resize(totalFloatCount);
-        images.positionZ.resize(totalFloatCount);
-        images.rotation.resize(totalFloatCount);
-        images.scale.resize(totalFloatCount);
-        images.opacity.resize(totalFloatCount);
-        images.albedo.resize(totalFloatCount);
-        images.beta.resize(totalFloatCount);
-        images.depthLoss.resize(totalFloatCount);
-        images.depthLossPos.resize(totalFloatCount);
-        images.normalLoss.resize(totalFloatCount);
+        images.positionX.resize(rgbaFloatCount);
+        images.positionY.resize(rgbaFloatCount);
+        images.positionZ.resize(rgbaFloatCount);
+        images.rotation.resize(rgbaFloatCount);
+        images.scale.resize(rgbaFloatCount);
+        images.opacity.resize(rgbaFloatCount);
+        images.albedo.resize(rgbaFloatCount);
+        images.beta.resize(rgbaFloatCount);
+        images.depthLoss.resize(rgbaFloatCount);
+        images.depthLossPos.resize(rgbaFloatCount);
+        images.normalLoss.resize(rgbaFloatCount);
 
-        auto copyBuffer = [&](std::vector<float>& hostBuffer, const float4* deviceBuffer) {
+        auto downloadScalarImageAsGrayscaleRgba =
+            [&](std::vector<float>& hostRgbaBuffer, const float* deviceScalarBuffer) {
+            std::vector<float> hostScalarBuffer(pixelCount);
+
             queue.memcpy(
-                hostBuffer.data(), // destination (host)
-                deviceBuffer, // source (device)
-                totalFloatCount * sizeof(float)
-            );
+                hostScalarBuffer.data(),
+                deviceScalarBuffer,
+                pixelCount * sizeof(float)
+            ).wait();
+
+            for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+                const float value = hostScalarBuffer[pixelIndex];
+                const std::size_t rgbaIndex = pixelIndex * 4u;
+
+                hostRgbaBuffer[rgbaIndex + 0u] = value;
+                hostRgbaBuffer[rgbaIndex + 1u] = value;
+                hostRgbaBuffer[rgbaIndex + 2u] = value;
+                hostRgbaBuffer[rgbaIndex + 3u] = 1.0f;
+            }
         };
 
-        copyBuffer(images.positionX, debugImages.framebufferPosX);
-        copyBuffer(images.positionY, debugImages.framebufferPosY);
-        copyBuffer(images.positionZ, debugImages.framebufferPosZ);
-        copyBuffer(images.rotation, debugImages.framebufferRot);
-        copyBuffer(images.scale, debugImages.framebufferScale);
-        copyBuffer(images.opacity, debugImages.framebufferOpacity);
-        copyBuffer(images.albedo, debugImages.framebufferAlbedo);
-        copyBuffer(images.beta, debugImages.framebufferBeta);
-        copyBuffer(images.depthLoss, debugImages.framebufferDepthLoss);
-        copyBuffer(images.depthLossPos, debugImages.framebufferDepthLossPos);
-        copyBuffer(images.normalLoss, debugImages.framebufferNormalLoss);
-
-
-        // Ensure all copies are completed before returning
-        queue.wait();
+        downloadScalarImageAsGrayscaleRgba(images.positionX, debugImages.framebufferPosX);
+        downloadScalarImageAsGrayscaleRgba(images.positionY, debugImages.framebufferPosY);
+        downloadScalarImageAsGrayscaleRgba(images.positionZ, debugImages.framebufferPosZ);
+        downloadScalarImageAsGrayscaleRgba(images.rotation, debugImages.framebufferRot);
+        downloadScalarImageAsGrayscaleRgba(images.scale, debugImages.framebufferScale);
+        downloadScalarImageAsGrayscaleRgba(images.opacity, debugImages.framebufferOpacity);
+        downloadScalarImageAsGrayscaleRgba(images.albedo, debugImages.framebufferAlbedo);
+        downloadScalarImageAsGrayscaleRgba(images.beta, debugImages.framebufferBeta);
+        //downloadScalarImageAsGrayscaleRgba(images.depthLoss, debugImages.framebufferDepthLoss);
+        //downloadScalarImageAsGrayscaleRgba(images.depthLossPos, debugImages.framebufferDepthLossPos);
+        //downloadScalarImageAsGrayscaleRgba(images.normalLoss, debugImages.framebufferNormalLoss);
 
         return images;
     }

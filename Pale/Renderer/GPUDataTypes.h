@@ -223,7 +223,15 @@ namespace Pale {
         float &z() { return v.z(); }
         float w() const { return v.w(); }
         float &w() { return v.w(); }
+
+
+        float4 &operator+=(const float4 &rhs) noexcept {
+            v += rhs.v;
+            return *this;
+        }
+
     };
+
 
     /* ---------- 2. arithmetic that delegates to sycl::vec --------------------- */
     inline float3 operator+(float3 a, float3 b) {

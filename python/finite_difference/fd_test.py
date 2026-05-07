@@ -16,7 +16,95 @@ from finite_difference.finite_diff_helpers import (
     save_seismic_signed,
 )
 
+def safe_rel_err(value_a: float, value_b: float, eps: float = 1e-12) -> float:
+    denominator = max(eps, abs(value_a) + abs(value_b))
+    return abs(value_a - value_b) / denominator
 
+def _rotation_axis_from_parameter(parameter: str) -> np.ndarray:
+    if parameter == "rotation_x":
+        return np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    if parameter == "rotation_y":
+        return np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    if parameter == "rotation_z":
+        return np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    raise RuntimeError(f"Not a rotation parameter: '{parameter}'")
+
+
+def _rotate_axis_angle(v: np.ndarray, axis_unit: np.ndarray, angle_radians: float) -> np.ndarray:
+    c = np.cos(angle_radians)
+    s = np.sin(angle_radians)
+    return (
+        v * c
+        + np.cross(axis_unit, v) * s
+        + axis_unit * (np.dot(axis_unit, v) * (1.0 - c))
+    )
+
+def _extract_analytic_gradient(
+    gradients: dict,
+    parameter: str,
+    index: int,
+    parameter_value: float,
+) -> float:
+    if parameter == "translation_x":
+        return float(gradients["position"][index][0])
+    if parameter == "translation_y":
+        return float(gradients["position"][index][1])
+    if parameter == "translation_z":
+        return float(gradients["position"][index][2])
+    if parameter == "albedo_r":
+        return float(gradients["albedo"][index][0])
+    if parameter == "albedo_b":
+        return float(gradients["albedo"][index][2])
+    if parameter == "albedo_g":
+        return float(gradients["albedo"][index][1])
+
+    if parameter == "scale_u":
+        return float(gradients["scale"][index][0])
+    if parameter == "scale_v":
+        return float(gradients["scale"][index][1])
+
+    if parameter == "opacity":
+        return float(gradients["opacity"][index])
+
+    if parameter == "beta":
+        return float(gradients["beta"][index])
+
+    if parameter in {"rotation_x", "rotation_y", "rotation_z"}:
+        axis = _rotation_axis_from_parameter(parameter)
+
+        g_tan_u = np.asarray(gradients["tangent_u"][index], dtype=np.float64)
+        g_tan_v = np.asarray(gradients["tangent_v"][index], dtype=np.float64)
+
+        tan_u0 = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        tan_v0 = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+
+        angle_radians = np.deg2rad(float(parameter_value))
+        tan_u = _rotate_axis_angle(tan_u0, axis, angle_radians)
+        tan_v = _rotate_axis_angle(tan_v0, axis, angle_radians)
+
+        d_tan_u_d_theta_rad = np.cross(axis, tan_u)
+        d_tan_v_d_theta_rad = np.cross(axis, tan_v)
+
+        dL_d_theta_rad = (
+            np.dot(g_tan_u, d_tan_u_d_theta_rad)
+            + np.dot(g_tan_v, d_tan_v_d_theta_rad)
+        )
+
+        dL_d_theta_deg = dL_d_theta_rad * (np.pi / 180.0)
+        return float(dL_d_theta_deg)
+
+    raise RuntimeError(f"Unsupported parameter '{parameter}'.")
+
+def parse_bool_arg(value: str) -> bool:
+    normalized_value = str(value).strip().lower()
+    if normalized_value in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized_value in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        f"Invalid boolean value '{value}'. Expected one of: "
+        f"true/false, yes/no, 1/0, on/off."
+    )
 def create_latest_run_dir(base_output_dir: Path) -> Path:
     """
     Always writes the newest run to:  base_output_dir/0
@@ -32,7 +120,6 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
     """
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect existing integer-named run dirs
     run_indices: list[int] = []
     for child in base_output_dir.iterdir():
         if not child.is_dir():
@@ -45,7 +132,6 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
     if 0 in run_indices:
         run0 = base_output_dir / "0"
 
-        # Shift N -> N+1 for N>=1 (descending to avoid collisions)
         for idx in sorted((i for i in run_indices if i != 0), reverse=True):
             src = base_output_dir / str(idx)
             dst = base_output_dir / str(idx + 1)
@@ -53,27 +139,18 @@ def create_latest_run_dir(base_output_dir: Path) -> Path:
                 shutil.rmtree(dst)
             src.rename(dst)
 
-        # Copy old 0 -> 1 (instead of rename), then remove old 0 contents/path.
         run1 = base_output_dir / "1"
         if run1.exists():
             shutil.rmtree(run1)
         shutil.copytree(run0, run1)
 
-        # Remove old 0 so we can recreate a fresh one
-        #shutil.rmtree(run0)
-
-    # Create a fresh 0
     run_dir = base_output_dir / "0"
-    #if run_dir.exists():
-    #    shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Using latest run_dir: {run_dir}")
     return run_dir
 
 
 def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, index: int) -> None:
-    # Extend this if you later want FD for translation/rotation/scale.
     if parameter == "opacity":
         renderer.set_point_opacity(opacity=float(value), index=int(index))
     elif parameter == "beta":
@@ -84,57 +161,67 @@ def _set_parameter(renderer: "pale.Renderer", parameter: str, value: float, inde
         renderer.set_point_translation(translation=float(value), axis=1, index=int(index))
     elif parameter == "translation_z":
         renderer.set_point_translation(translation=float(value), axis=2, index=int(index))
+    elif parameter == "rotation_x":
+        renderer.set_point_rotation_degrees(rotation_deg=float(value), axis=0, index=int(index))
+    elif parameter == "rotation_y":
+        renderer.set_point_rotation_degrees(rotation_deg=float(value), axis=1, index=int(index))
+    elif parameter == "rotation_z":
+        renderer.set_point_rotation_degrees(rotation_deg=float(value), axis=2, index=int(index))
     elif parameter == "scale_u":
         renderer.set_point_scale(scale=float(value), axis=0, index=int(index))
     elif parameter == "scale_v":
         renderer.set_point_scale(scale=float(value), axis=1, index=int(index))
+    elif parameter == "albedo_r":
+        renderer.set_point_albedo(intensity=float(value), axis=0, index=int(index))
+    elif parameter == "albedo_g":
+        renderer.set_point_albedo(intensity=float(value), axis=1, index=int(index))
+    elif parameter == "albedo_b":
+        renderer.set_point_albedo(intensity=float(value), axis=2, index=int(index))
     else:
-        raise RuntimeError(f"FD currently not implemented for'{parameter}'.")
+        raise RuntimeError(f"FD currently not implemented for '{parameter}'.")
 
 
 def _render_loss(
-        renderer: "pale.Renderer",
-        camera: str,
-        target_image: np.ndarray,
+    renderer: "pale.Renderer",
+    camera: str,
+    target_image: np.ndarray,
 ) -> tuple[float, np.ndarray, dict]:
     """
     Returns (loss_value, rendered_rgb, images_dict).
     rendered_rgb is float32 (H,W,3)
     """
     images = renderer.render_forward()
-    image = images[camera + "_raw"]
-    rendered = np.asarray(image, dtype=np.float32)[..., :3]  # drop alpha
+    image = images[camera]["raw"]
+    rendered = np.asarray(image, dtype=np.float32)[..., :3]
     loss_value = float(compute_l2_loss(rendered, target_image))
     return loss_value, rendered, images
 
 
 def _finite_difference_loss(
-        renderer: "pale.Renderer",
-        parameter: str,
-        base_value: float,
-        eps: float,
-        index: int,
-        camera: str,
-        target_image: np.ndarray,
-        clamp_01: bool = True,
+    renderer: "pale.Renderer",
+    parameter: str,
+    base_value: float,
+    eps: float,
+    index: int,
+    camera: str,
+    target_image: np.ndarray,
+    clamp_01: bool = True,
 ) -> tuple[float, float, float]:
     """
     Computes L(base), and a finite-difference derivative dL/dparam at base_value.
 
     Uses:
-      - central difference if possible (base-eps >= 0 and base+eps <= 1 for opacity, if clamp_01)
+      - central difference if possible
       - otherwise one-sided difference.
 
     Returns (L0, fd_grad, fd_kind_code)
       fd_kind_code: 0=central, 1=forward, 2=backward
     """
-    # Base
     _set_parameter(renderer, parameter, base_value, index)
     renderer.rebuild_bvh()
     L0, _, _ = _render_loss(renderer, camera, target_image)
 
-    # Decide stencil
-    if clamp_01 and parameter == "opacity" or parameter == "scale":
+    if clamp_01 and parameter in {"scale_u", "scale_v"}:
         lo = 0.0
         hi = 1.0
     else:
@@ -158,7 +245,6 @@ def _finite_difference_loss(
         fd = (Lp - Lm) / (2.0 * eps)
         return L0, float(fd), 0.0
 
-    # One-sided
     if (base_value + eps) <= hi:
         v_plus = base_value + eps
         _set_parameter(renderer, parameter, v_plus, index)
@@ -175,48 +261,109 @@ def _finite_difference_loss(
         fd = (L0 - Lm) / eps
         return L0, float(fd), 2.0
 
-    # Should never happen for opacity in [0,1] with eps>0
     raise RuntimeError("Could not form any finite difference stencil.")
+
+def _make_target_image(
+    renderer: "pale.Renderer",
+    camera: str,
+    output_dir: Path,
+    target_mode: str,
+) -> tuple[np.ndarray, tuple[int, int, int]]:
+    """
+    Returns:
+        target_image, target_shape
+
+    target_shape is always (H, W, 3).
+    """
+    if target_mode == "original":
+        target_image = read_rgb_exr(output_dir.parent.parent / Path(camera + "_raw_target.exr"))
+        return target_image.astype(np.float32), tuple(target_image.shape)
+
+    reference_images = renderer.render_forward()
+    reference_rendered = np.asarray(reference_images[camera]["raw"], dtype=np.float32)[..., :3]
+    target_shape = tuple(reference_rendered.shape)
+
+    if target_mode == "filled":
+        target_image = 1 * np.ones_like(reference_rendered, dtype=np.float32)
+        return target_image, target_shape
+
+    if target_mode == "random":
+        # Initial value only. Per-iteration random target is generated inside the sweep loop.
+        target_image = np.zeros_like(reference_rendered, dtype=np.float32)
+        return target_image, target_shape
+
+    raise RuntimeError(f"Unknown target_mode '{target_mode}'.")
 
 
 def main(args) -> None:
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 2,
-        "forward_passes": 100,
+        "bounces": args.bounces,
+        "forward_passes": args.forward_passes,
+        "primal_shadow_rays":  8,
+        "adjoint_shadow_rays": 8,
         "gather_passes": 1,
-        "adjoint_bounces": 3,
-        "adjoint_passes": 32,
-        "logging": 3,
-        "seed": args.seed
+        "adjoint_bounces": args.adjoint_bounces,
+        "adjoint_passes": args.adjoint_passes,
+        "logging": 4,
+        "seed": args.seed,
+        "enable_adjoint_shadow_rays": args.enable_adjoint_shadow_rays,
+        "adjoint_shadow_path_rays": 4,
     }
-
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
 
-    scene_path = Path(args.scene).parent
-    scene_xml = assets_root / "GradientTests" / f"{args.scene}" / f"{args.scene}.xml"
-    pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.scene}" / f"{args.ply}.ply"
-    print("Assets root:", assets_root)
-    print("Scene:", scene_xml)
-    print("Ply:", pointcloud_ply)
-    print("Index:", args.index)
-    print("Parameter:", args.parameter)
+    scene_xml = assets_root / "GradientTests" / args.scene / f"{args.scene}.xml"
+    pointcloud_ply = assets_root / "GradientTests" / args.scene / f"{args.ply}.ply"
+
+    if renderer_settings["logging"] < 4:
+        print("Assets root:", assets_root)
+        print("Scene:", scene_xml)
+        print("Ply:", pointcloud_ply)
+        print("Index:", args.index)
+        print("Parameter:", args.parameter)
+
     fd_epsilon = args.fd_epsilon
+    index = int(args.index)
 
-    print("FD epsilon:", fd_epsilon)
+    if renderer_settings["logging"] < 4:
+        print("FD epsilon:", fd_epsilon)
 
-    output_dir = Path(__file__).parent / "Output" / scene_path / f"{args.scene}" / args.parameter
-    output_dir = create_latest_run_dir(output_dir)
+    base_output_dir = (
+        Path(__file__).parent
+        / "Output"
+        / args.scene
+        / args.parameter
+        / str(index)
+    )
 
-    # Create subfolders
-    (output_dir / "rendered").mkdir(parents=True, exist_ok=True)
-    (output_dir / "grad").mkdir(parents=True, exist_ok=True)
+    output_dir = create_latest_run_dir(base_output_dir)
+
+    rendered_dir = output_dir / "rendered"
+    grad_dir = output_dir / "grad"
+    rendered_dir.mkdir(parents=True, exist_ok=True)
+    grad_dir.mkdir(parents=True, exist_ok=True)
 
     renderer = pale.Renderer(str(assets_root), str(scene_xml), str(pointcloud_ply), renderer_settings)
-
+    renderer_cameras = list(renderer.get_camera_names())
     camera = args.camera
-    target_image = read_rgb_exr(output_dir.parent / Path(camera + "_raw_target.exr"))
-    print("Target image path:", output_dir.parent / Path(camera + "_raw_target.exr"))
+
+    for camera_name in renderer_cameras:
+        if camera_name == camera:
+            continue
+        (rendered_dir / camera_name).mkdir(parents=True, exist_ok=True)
+
+    target_image, target_shape = _make_target_image(
+        renderer=renderer,
+        camera=camera,
+        output_dir=output_dir,
+        target_mode=args.target_mode,
+    )
+
+    if renderer_settings["logging"] < 4:
+        print(f"Using run_dir: {output_dir}")
+        print("Target image path:", output_dir.parent.parent / Path(camera + "_raw_target.exr"))
+        print("Renderer cameras:", renderer_cameras)
+        print("Target mode:", args.target_mode)
 
     csv_path = output_dir / f"{camera}_{args.parameter}_sweep.csv"
     fieldnames = [
@@ -225,55 +372,30 @@ def main(args) -> None:
         "loss",
         "analytic_grad",
         "fd_grad",
-        "fd_kind",  # 0=central, 1=forward, 2=backward
+        "fd_kind",
         "fd_epsilon",
     ]
 
     iterations = int(args.iterations)
-    index = int(args.index if args.index >= 0 else 0)  # keep your prior behavior
 
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
         for iteration_index in range(iterations + 1):
-            if args.scene == "empty":
-                if args.parameter == "opacity":
-                    value = (iteration_index) / iterations  # 0..1
-                elif args.parameter == "beta":
-                    value = 6 - (iteration_index * 12) / iterations
-                elif args.parameter == "translation_x":
-                    value = -2 + (iteration_index) / (iterations) * 4  # -0.5..0.5
-                elif args.parameter == "translation_y":
-                    value = -2 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
-                elif args.parameter == "translation_z":
-                    value = -2.0 + (iteration_index) / (iterations * 1) * 4  # -0.5..0.5
-                elif args.parameter == "scale_u":
-                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
-                elif args.parameter == "scale_v":
-                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
-                else:
-                    raise RuntimeError("This script doesn't support parameter: " + args.parameter)
-            else:
-                if args.parameter == "opacity":
-                    value = (iteration_index) / iterations  # 0..1
-                elif args.parameter == "beta":
-                    value = 6 - (iteration_index * 12) / iterations
-                elif args.parameter == "translation_x":
-                    value = -1 + (iteration_index) / (iterations) * 2  # -0.5..0.5
-                elif args.parameter == "translation_y":
-                    value = -1.5 + (iteration_index) / (iterations * 1) * 3   # -0.5..0.5
-                elif args.parameter == "translation_z":
-                    value = -2.0 + (iteration_index) / (iterations * 1) * 2  # -0.5..0.5
-                elif args.parameter == "scale_u":
-                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
-                elif args.parameter == "scale_v":
-                    value = (iteration_index) / (iterations * 1)  # -0.5..0.5
-                else:
-                    raise RuntimeError("This script doesn't support parameter: " + args.parameter)
+            if iterations <= 0:
+                raise RuntimeError("--iterations must be > 0.")
+            t = iteration_index / iterations
+            value = args.min + t * (args.max - args.min)
 
-            # --- Finite difference derivative of LOSS at 'value' ---
-            # Note: this renders multiple times per iteration (central = 3 total renders).
+            if args.target_mode == "random":
+                random_number_generator = np.random.default_rng(iteration_index)
+                target_image = random_number_generator.uniform(
+                    0.0,
+                    1.0,
+                    size=target_shape
+                ).astype(np.float32)
+
             loss_value, fd_grad, fd_kind = _finite_difference_loss(
                 renderer=renderer,
                 parameter=args.parameter,
@@ -285,67 +407,54 @@ def main(args) -> None:
                 clamp_01=True,
             )
 
-            # Restore base state and render once more for:
-            #  - saving previews
-            #  - computing per-pixel dLoss/dI for adjoint
             _set_parameter(renderer, args.parameter, float(value), index)
             renderer.rebuild_bvh()
             images = renderer.render_forward()
-            rendered_image = np.asarray(images[camera + "_raw"], dtype=np.float32)[..., :3]
+            rendered_image = np.asarray(images[camera]["raw"], dtype=np.float32)[..., :3]
 
             loss_grad_image = compute_l2_grad(rendered_image, target_image)
+            #if args.target_mode == "filled":
+            #    loss_grad_image = np.ones_like(loss_grad_image, dtype=np.float32)
 
-            # Save previews
-            save_rgb_preview_png(
-                images[camera],
-                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".png"),
-                exposure_stops=0.0,
-            )
-
-            ## Secondary cameras
-            # Save previews
-            #save_rgb_preview_png(
-            #    images["camera2"],
-            #    output_dir / "rendered" / camera / Path(f"{iteration_index}_" + camera + ".png"),
-            #    exposure_stops=0.0,
-            #)
-
-            save_rgb_preview_exr(
-                rendered_image,
-                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + ".exr"),
-                exposure_stops=0.0,
-            )
-            save_rgb_preview_exr(
-                target_image,
-                output_dir / "rendered" / Path(f"{iteration_index}_" + camera + f"_target" + ".exr"),
-                exposure_stops=0.0,
-            )
             save_seismic_signed(
                 loss_grad_image,
-                output_dir / "grad" / Path(f"{iteration_index}_" + camera + ".png"),
+                grad_dir / f"{iteration_index}_{camera}.png",
                 0.99,
             )
 
-            # Adjoint / analytic gradient
+            if iterations <= 0:
+                save_rgb_preview_exr(
+                    target_image,
+                    rendered_dir / f"{camera}_target.exr",
+                    exposure_stops=0.0,
+                )
+
+            save_rgb_preview_png(
+                images[camera]["image"],
+                rendered_dir / f"{iteration_index}_{camera}.png",
+                exposure_stops=0.0,
+            )
+
+            for camera_name in renderer_cameras:
+                if camera_name not in images or args.camera == camera_name:
+                    continue
+
+                camera_output_dir = rendered_dir / camera_name
+
+                save_rgb_preview_png(
+                    images[camera_name]["image"],
+                    camera_output_dir / f"{iteration_index}_{camera_name}.png",
+                    exposure_stops=0.0,
+                )
+
             gradients, _adjoint_images = renderer.render_backward({camera: loss_grad_image})
-            if args.parameter == "translation_x":
-                param_gradients = gradients["position"]
-                param_gradient = param_gradients[args.index][0]
-            elif args.parameter == "translation_y":
-                param_gradients = gradients["position"]
-                param_gradient = param_gradients[args.index][1]
-            elif args.parameter == "translation_z":
-                param_gradients = gradients["position"]
-                param_gradient = param_gradients[args.index][2]
-            elif args.parameter == "scale_u":
-                param_gradients = gradients["scale"]
-                param_gradient = param_gradients[args.index][0]
-            elif args.parameter == "scale_v":
-                param_gradients = gradients["scale"]
-                param_gradient = param_gradients[args.index][1]
-            else:
-                param_gradients = gradients[args.parameter]
-                param_gradient = param_gradients[args.index]
+            param_gradient = _extract_analytic_gradient(
+                gradients=gradients,
+                parameter=args.parameter,
+                index=args.index,
+                parameter_value=float(value),
+            )
+
             writer.writerow(
                 {
                     "iter": iteration_index,
@@ -358,9 +467,13 @@ def main(args) -> None:
                 }
             )
 
+            relative_error = safe_rel_err(float(param_gradient), float(fd_grad))
+            relative_error_percent = 100.0 * relative_error
+
             print(
                 f"{iteration_index}/{iterations}, {args.parameter}: {value:.2f}, "
-                f"Loss: {loss_value:.6f}, AN: {param_gradient:.6f}, FD: {fd_grad:.6f} (kind={int(fd_kind)})"
+                f"Loss: {loss_value:.6f}, AN: {param_gradient:.6f}, FD: {fd_grad:.6f}, "
+                f"RelErr: {relative_error_percent:.2f}% (kind={int(fd_kind)})"
             )
             f.flush()
 
@@ -387,20 +500,41 @@ def parse_args() -> argparse.Namespace:
         "--index",
         type=int,
         default=0,
-        help="Gaussian index to perturb (>=0 for single, -1 for all). Default: -1.",
+        help="Point index to perturb. Default: 0.",
     )
     parser.add_argument(
         "--parameter",
         type=str,
-        choices=["translation_x", "translation_y", "translation_z", "scale_u",  "scale_v", "opacity"],
+        choices=[
+            "translation_x",
+            "translation_y",
+            "translation_z",
+            "rotation_x",
+            "rotation_y",
+            "rotation_z",
+            "scale_u",
+            "scale_v",
+            "opacity",
+            "beta",
+            "albedo_r",
+            "albedo_g",
+            "albedo_b",
+        ],
         default="opacity",
     )
     parser.add_argument(
-        "--axis",
-        type=str,
-        choices=["x", "y", "z"],
-        default="x",
-        help="Which axis to finite-difference: 'translation', 'rotation', or 'scale'.",
+        "--min",
+        type=float,
+        required=True,
+        default=0.0,
+        help="Minimum sweep value for the selected parameter.",
+    )
+    parser.add_argument(
+        "--max",
+        type=float,
+        required=True,
+        default=1.0,
+        help="Maximum sweep value for the selected parameter.",
     )
     parser.add_argument(
         "--output",
@@ -422,7 +556,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fd_epsilon",
         type=float,
-        default=1e-3,
+        default=1e-2,
         help="Finite difference epsilon.",
     )
     parser.add_argument(
@@ -430,6 +564,44 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=42,
         help="random seed for renderer",
+    )
+    parser.add_argument(
+        "--forward_passes",
+        type=int,
+        default=50,
+        help="Number of forward passes.",
+    )
+    parser.add_argument(
+        "--bounces",
+        type=int,
+        default=1,
+        help="Number of forward bounces.",
+    )
+    parser.add_argument(
+        "--adjoint_passes",
+        type=int,
+        default=64,
+        help="Number of adjoint passes.",
+    )
+    parser.add_argument(
+        "--adjoint_bounces",
+        type=int,
+        default=2,
+        help="Number of adjoint bounces.",
+    )
+    parser.add_argument(
+        "--target_mode",
+        type=str,
+        choices=["original", "filled", "random"],
+        default="original",
+        help="How to construct the target image: original EXR, all filled values of 5, or deterministic random noise.",
+    )
+    parser.add_argument(
+        "--enable_adjoint_shadow_rays",
+        type=parse_bool_arg,
+        default=False,
+        help="Enable adjoint shadow rays during the backward pass. "
+             "Accepted values: true/false, yes/no, 1/0, on/off.",
     )
     return parser.parse_args()
 

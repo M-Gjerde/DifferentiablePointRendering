@@ -9,22 +9,34 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 3
-    forward_passes: int = 30
+    bounces: int = 2
+    forward_passes: int = 5
+    primal_shadow_rays: int =  4 # Li
+    adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
-    adjoint_bounces: int = 2
-    adjoint_passes: int = 1
-    logging: int = 3  # Spdlog enums
+    adjoint_bounces: int = 3
+    adjoint_passes: int = 6
+    enable_adjoint_shadow_rays: bool = True
+    adjoint_shadow_path_rays: int = 2 #Pi
+    useDepthDistortion: bool = True
+    useNormalConsistency: bool = True
+    logging: int = 4
 
-    def as_dict(self, config: OptimizationConfig) -> Dict[str, float | int]:
+    def as_dict(self, config: "OptimizationConfig") -> Dict[str, float | int]:
         return {
             "photons": self.photons,
             "bounces": self.bounces,
             "forward_passes": self.forward_passes,
             "gather_passes": self.gather_passes,
+            "primal_shadow_rays": self.primal_shadow_rays,
+            "adjoint_shadow_rays": self.adjoint_shadow_rays,
+            "enable_adjoint_shadow_rays": self.enable_adjoint_shadow_rays,
+            "adjoint_shadow_path_rays": self.adjoint_shadow_path_rays,
             "adjoint_bounces": self.adjoint_bounces,
             "adjoint_passes": self.adjoint_passes,
             "logging": self.logging,
+            "use_depth_distortion": self.useDepthDistortion,
+            "use_normal_consistency": self.useNormalConsistency,
             "depth_distort_weight": config.depth_distort_weight,
             "normal_consistency_weight": config.normal_consistency_weight,
         }
@@ -41,20 +53,22 @@ class OptimizationConfig:
     personal_prefix: str = ""
 
     iterations: int = 50000
-    learning_rate: float = 1e-2  # base LR (for convenience / default)
-    # Defaults chosen to match 3DGS absolute values when base LR = 1.6e-4
-    learning_rate_position: float = 1.6e-4      # 1.0 × base
-    learning_rate_tangent: float = 1.0e-3       # 6.25 × base
-    learning_rate_scale: float = 5.0e-3         # 31.25 × base
-    learning_rate_albedo: float = 2.5e-3        # 15.625 × base
-    learning_rate_opacity: float = 5.0e-2       # 312.5 × base
-    learning_rate_beta: float = 5.0e-2       # 312.5 × base
-    depth_distort_weight: float = 0.1       # 312.5 × base
-    normal_consistency_weight: float = 0.1       # 312.5 × base
-    optimizer_type: str = "adam"  # "adam" or "sgd"
+    learning_rate: float = 1e-2
+    learning_rate_position: float = 0
+    learning_rate_tangent: float = 0
+    learning_rate_scale: float = 0
+    learning_rate_albedo: float = 0
+    learning_rate_opacity: float = 0
+    learning_rate_beta: float = 0
+
+    depth_distort_weight: float = 0.2
+    normal_consistency_weight: float = 0.05
+    opacity_loss_weight: float = 10
+
+    optimizer_type: str = "adam"
     log_interval: int = 1
     save_interval: int = 5
-    device: str = "cpu"  # torch device for parameter storage
+    device: str = "cpu"
 
 
 def parse_args() -> OptimizationConfig:
@@ -86,7 +100,7 @@ def parse_args() -> OptimizationConfig:
         type=Path,
         required=False,
         default=Path("./Output/target"),
-        help="Path to target RGB image (PNG, JPG, EXR, etc.).",
+        help="Path to target RGB image directory.",
     )
     parser.add_argument(
         "--output-dir",
@@ -99,14 +113,13 @@ def parse_args() -> OptimizationConfig:
         "--suffix",
         type=str,
         default="",
-        help="Optional string appended to the run output folder (e.g. 'no_shadows', 'debug', 'v2').",
+        help="Optional string appended to the run output folder.",
     )
-
     parser.add_argument(
         "--prefix",
         type=str,
         default="",
-        help="Optional string appended to the run output folder (e.g. 'no_shadows', 'debug', 'v2').",
+        help="Optional string prepended to the run output folder.",
     )
 
     parser.add_argument(
@@ -138,7 +151,7 @@ def parse_args() -> OptimizationConfig:
         "--device",
         type=str,
         default="cpu",
-        help="Torch device for parameters (e.g. 'cpu' or 'cuda').",
+        help="Torch device for parameter storage.",
     )
 
     parser.add_argument(
@@ -153,87 +166,93 @@ def parse_args() -> OptimizationConfig:
         "--lr-pos",
         dest="learning_rate_position",
         type=float,
-        default=None,  # derive from base LR if not set
-        help="Learning rate for positions (defaults to ~0.1 * base LR if omitted).",
+        default=None,
+        help="Learning rate for positions.",
     )
     parser.add_argument(
         "--lr-tan",
         dest="learning_rate_tangent",
         type=float,
         default=None,
-        help="Learning rate for tangents (defaults to ~0.2 * base LR if omitted).",
+        help="Learning rate for tangents.",
     )
     parser.add_argument(
         "--lr-scale",
         dest="learning_rate_scale",
         type=float,
         default=None,
-        help="Learning rate for scales (defaults to ~0.2 * base LR if omitted).",
+        help="Learning rate for scales.",
     )
     parser.add_argument(
         "--lr-albedo",
         dest="learning_rate_albedo",
         type=float,
         default=None,
-        help="Learning rate for albedos (defaults to ~0.5 * base LR if omitted).",
+        help="Learning rate for albedos.",
     )
     parser.add_argument(
         "--lr-opacity",
         dest="learning_rate_opacity",
         type=float,
         default=None,
-        help="Learning rate for opacities (defaults to ~0.5 * base LR if omitted).",
+        help="Learning rate for opacities.",
     )
     parser.add_argument(
         "--lr-beta",
         dest="learning_rate_beta",
         type=float,
         default=None,
-        help="Learning rate for opacities (defaults to ~0.5 * base LR if omitted).",
+        help="Learning rate for beta.",
+    )
+
+    parser.add_argument(
+        "--normal-consistency-weight",
+        dest="normal_consistency_weight",
+        type=float,
+        default=0.5,
+        help="Weight for the normal consistency regularizer.",
     )
 
     parser.add_argument(
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.0,
-        help="",
+        default=100.0,
+        help="Weight for the depth distortion regularizer.",
     )
     parser.add_argument(
-        "--normal-consistency-weight",
-        dest="normal_consistency_weight",
+        "--opacity-weight",
+        dest="opacity_loss_weight",
         type=float,
-        default=0.0,
-        help="",
+        default=10,
+        help="Weight for the favoring opacity = 1.",
     )
 
     args = parser.parse_args()
 
-    # Base LR (position LR), with optional global multiplier
     base_lr = args.learning_rate
-    lr_base = args.learning_rate  # store the *unmultiplied* base, if you want to log i
+    lr_base = args.learning_rate
 
-    lr_scale = 1
     if args.optimizer == "sgd":
-        lr_scale = 10000
+        # Tuned for your current gradient magnitudes:
+        # - reduce position step substantially
+        # - reduce tangent step drastically
+        # - keep scale/albedo/opacity responsive
+        factor_position = 1.0
+        factor_tangent = 10.0
+        factor_scale = 0.5
+        factor_albedo = 200.0
+        factor_opacity = 200.0
+        factor_beta = 0.25
+    else:
+        factor_position = 0.0005
+        factor_tangent = 0.002
+        factor_scale = 0.0002
+        factor_albedo = 0.005
+        factor_opacity = 0.001
+        factor_beta = 0.000
 
-    # 3DGS-inspired relative factors w.r.t. position LR
-    factor_position = lr_scale * 0.005  # ~rotation_lr / position_lr
-    factor_tangent  = lr_scale * 0.5    # ~rotation_lr / position_lr
-    factor_scale    = lr_scale * 0.001   # ~scaling_lr / position_lr
-    factor_albedo   = lr_scale * 0.05    # ~feature_lr / position_lr
-    factor_opacity  = lr_scale * 0.05    # ~opacity_lr / position_lr
-    factor_beta     = lr_scale * 0.005    # ~beta_lr / position_lr
-
-
-    #factor_position = lr_scale * 0  # ~rotation_lr / position_lr
-    #factor_tangent  = lr_scale * 0  # ~rotation_lr / position_lr
-    #factor_scale    = lr_scale * 0  # ~scaling_lr / position_lr
-    #factor_albedo   = lr_scale * 0  # ~feature_lr / position_lr
-    #factor_opacity  = lr_scale * 0  # ~opacity_lr / position_lr
-    #factor_beta     = lr_scale * 0  # ~beta_lr / position_lr
-#
-    lr_pos = args.learning_rate_position or (factor_position *  base_lr)
+    lr_pos = args.learning_rate_position or (factor_position * base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)
     lr_scale = args.learning_rate_scale or (factor_scale * base_lr)
     lr_albedo = args.learning_rate_albedo or (factor_albedo * base_lr)
@@ -256,6 +275,7 @@ def parse_args() -> OptimizationConfig:
         learning_rate_beta=lr_beta,
         depth_distort_weight=args.depth_distort_weight,
         normal_consistency_weight=args.normal_consistency_weight,
+        opacity_loss_weight=args.opacity_loss_weight,
         optimizer_type=args.optimizer,
         log_interval=args.log_interval,
         save_interval=args.save_interval,

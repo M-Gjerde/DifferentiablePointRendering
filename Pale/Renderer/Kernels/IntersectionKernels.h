@@ -104,479 +104,6 @@ namespace Pale {
         return hitAnyTriangle;
     }
 
-    // -----------------------------------------------------------------------------
-    // Point-cloud BLAS with ordered Bernoulli thinning and depth grouping
-    // -----------------------------------------------------------------------------
-    /*
-    SYCL_EXTERNAL static bool intersectBLASPointCloud(const Ray &rayObject,
-                                                      uint32_t blasRangeIndex,
-                                                      LocalHit &localHitOut,
-                                                      const GPUSceneBuffers &scene,
-                                                      rng::Xorshift128 &rng128,
-                                                      const Transform &transform,
-                                                      const Ray &rayWorld,
-                                                      RayIntersectMode rayIntersectMode,
-                                                      uint32_t scatterOnPrimitiveIndex) {
-        const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
-        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
-
-        float bestAcceptedTHit = std::numeric_limits<float>::infinity();
-        bool foundAcceptedScatter = false;
-        const float3 inverseDirection = safeInvDir(rayObject.direction);
-        constexpr float rayEpsilon = 1e-5f;
-        constexpr float sameDepthEpsilon = 1e-3f;
-
-        float cumulativeTransmittanceBefore = 1.0f;
-
-        SmallStack<256> traversalStack;
-        traversalStack.push(0);
-
-        BoundedVector<float, kMaxSplatEventsPerRay> groupDepthKeys;
-        BoundedVector<float, kMaxSplatEventsPerRay> groupLocalTs;
-        BoundedVector<float, kMaxSplatEventsPerRay> groupAlphas;
-        BoundedVector<uint32_t, kMaxSplatEventsPerRay> groupIndices;
-
-        auto clearCurrentGroup = [&]() {
-            groupDepthKeys.clear();
-            groupLocalTs.clear();
-            groupAlphas.clear();
-            groupIndices.clear();
-        };
-
-        auto scatterCurrentGroup = [&](rng::Xorshift128 &randomNumberGenerator) -> bool {
-            if (groupLocalTs.empty()) return false;
-
-            // 1) Push this slice’s events into LocalHit (depth-sorted already)
-            float runningTransmittanceWithinSlice = 1.0f;
-
-            for (size_t groupIndex = 0; groupIndex < groupLocalTs.size(); ++groupIndex) {
-                if (localHitOut.splatEventCount >= kMaxSplatEventsPerRay)
-                    continue;
-
-                const uint32_t surfelIndex = groupIndices[groupIndex];
-
-                // This matches how you compute eventAlpha later in the thinning step
-                const float surfelOpacity = scene.points[surfelIndex].opacity;
-                const float eventAlphaEff = groupAlphas[groupIndex] * surfelOpacity; // α_i^eff
-
-                const int eventIndex = localHitOut.splatEventCount++;
-                localHitOut.splatEvents[eventIndex].t = groupLocalTs[groupIndex];
-                localHitOut.splatEvents[eventIndex].alpha = groupAlphas[groupIndex];
-                localHitOut.splatEvents[eventIndex].primitiveIndex = surfelIndex;
-
-                // Global τ_front for this event:
-                // τ_before_event = cumulativeTransmittanceBefore * Π_{prev events in this slice}(1 - α_eff)
-                const float tauBeforeThisEvent =
-                        cumulativeTransmittanceBefore * runningTransmittanceWithinSlice;
-                localHitOut.splatEvents[eventIndex].tau = tauBeforeThisEvent;
-
-                // Update within-slice transmittance for the *next* event
-                runningTransmittanceWithinSlice *= (1.0f - eventAlphaEff);
-            }
-
-
-            // 2) Composite alpha at this depth slice
-            float productOneMinusAlphaEff = 1.0f;
-            for (size_t groupIndex = 0; groupIndex < groupAlphas.size(); ++groupIndex) {
-                productOneMinusAlphaEff *= (1.0f - groupAlphas[groupIndex] * scene.points[groupIndices[groupIndex]].
-                                            opacity);
-            }
-
-            float compositeAlphaEff = 1.0f - productOneMinusAlphaEff;
-            compositeAlphaEff = sycl::clamp(compositeAlphaEff, 0.0f, 1.0f);
-
-            if (compositeAlphaEff <= 0.0f) {
-                // No opacity contribution at this slice
-                clearCurrentGroup();
-                return false;
-            }
-
-            // 3) Forced-scatter debug: check if this slice contains the target surfel
-            const bool forceScatterOnSpecificSurfel =
-                    (rayIntersectMode == RayIntersectMode::Scatter) &&
-                    (scatterOnPrimitiveIndex != UINT32_MAX);
-
-            int forcedGroupIndex = -1;
-            if (forceScatterOnSpecificSurfel) {
-                for (size_t groupIndex = 0; groupIndex < groupIndices.size(); ++groupIndex) {
-                    if (groupIndices[groupIndex] == scatterOnPrimitiveIndex) {
-                        forcedGroupIndex = static_cast<int>(groupIndex);
-                        break;
-                    }
-                }
-            }
-
-            // 4) Handle mode-specific logic
-            bool mustScatter = false;
-            bool mustTransmit = false;
-
-            switch (rayIntersectMode) {
-                case RayIntersectMode::Transmit: {
-                    mustTransmit = true;
-                    break;
-                }
-                case RayIntersectMode::Random: {
-                    // Original behavior: stochastic choice between transmit and scatter
-                    const float uniformSample = randomNumberGenerator.nextFloat();
-                    if (uniformSample < compositeAlphaEff) {
-                        mustScatter = true;
-                    } else {
-                        mustTransmit = true;
-                    }
-                    break;
-                }
-                case RayIntersectMode::Scatter: {
-                    if (forceScatterOnSpecificSurfel) {
-                        if (forcedGroupIndex >= 0) {
-                            // This slice contains the requested surfel: we must scatter on it
-                            mustScatter = true;
-                            mustTransmit = false;
-                        } else {
-                            // This slice does *not* contain the requested surfel: pure transmit
-                            mustScatter = false;
-                            mustTransmit = true;
-                        }
-                    } else {
-                        // Debug / forced-scatter mode without a specific primitive:
-                        // if there is any opacity in this slice, we must scatter on one event.
-                        mustScatter = true;
-                    }
-                    break;
-                }
-            }
-
-            if (mustTransmit) {
-                // Pure transmission through this slice
-                cumulativeTransmittanceBefore *= (1.0f - compositeAlphaEff);
-                clearCurrentGroup();
-                return false;
-            }
-
-            if (!mustScatter) {
-                // Defensive, but logically we should always be either scatter or transmit
-                clearCurrentGroup();
-                return false;
-            }
-
-            // 5) We are in a "scatter" mode
-            if (forceScatterOnSpecificSurfel && forcedGroupIndex >= 0) {
-                // Deterministic scatter on the requested surfel
-                localHitOut.t = groupLocalTs[forcedGroupIndex];
-                localHitOut.primitiveIndex = groupIndices[forcedGroupIndex];
-                localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                // Do not count this as an extra splat event; it is the main hit.
-
-                clearCurrentGroup();
-                return true;
-            }
-
-            // 6) Default scatter behavior: pick one event in this group via sequential thinning
-            float survivalInsideGroup = 1.0f;
-            const float safeCompositeAlpha = sycl::fmax(compositeAlphaEff, 1e-8f);
-
-            for (size_t groupIndex = 0; groupIndex < groupAlphas.size(); ++groupIndex) {
-                const float opacity = scene.points[groupIndices[groupIndex]].opacity;
-
-                const float eventAlpha = groupAlphas[groupIndex] * opacity;
-                const float probabilityFirstHere =
-                        eventAlpha * survivalInsideGroup / safeCompositeAlpha;
-
-                if (randomNumberGenerator.nextFloat() < probabilityFirstHere) {
-                    localHitOut.t = groupLocalTs[groupIndex];
-                    localHitOut.primitiveIndex = groupIndices[groupIndex];
-                    localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                    // Do not count this as a splat event, only as the main hit.
-
-                    clearCurrentGroup();
-                    return true; // accepted scatter at this depth
-                }
-
-                survivalInsideGroup *= (1.0f - eventAlpha);
-            }
-
-            // 7) Fallback: numerics might occasionally skip everything; enforce one event
-            localHitOut.t = groupLocalTs.back();
-            localHitOut.primitiveIndex = groupIndices.back();
-            localHitOut.transmissivity = cumulativeTransmittanceBefore;
-
-            clearCurrentGroup();
-            return true;
-        };
-
-        BoundedVector<float,    kMaxSplatEventsPerRay> candidateLocalTs;
-        BoundedVector<float,    kMaxSplatEventsPerRay> candidateAlphas;
-        BoundedVector<float,    kMaxSplatEventsPerRay> candidateDepthKeys;
-        BoundedVector<uint32_t, kMaxSplatEventsPerRay> candidateIndices;
-
-
-        while (!traversalStack.empty()) {
-            const int nodeIndex = traversalStack.pop();
-            const BVHNode &node = bvhNodes[nodeIndex];
-
-            float nodeTEntry = 0.0f;
-            if (!slabIntersectAABB(rayObject, node, inverseDirection, bestAcceptedTHit, nodeTEntry))
-                continue;
-
-            if (node.triCount == 0) {
-                const int leftIndex = node.leftFirst;
-                const int rightIndex = node.leftFirst + 1;
-
-                float leftTEntry = std::numeric_limits<float>::infinity();
-                float rightTEntry = std::numeric_limits<float>::infinity();
-
-                const bool hitLeft = computeAabbEntry(rayObject, bvhNodes[leftIndex], inverseDirection,
-                                                      bestAcceptedTHit, leftTEntry);
-                const bool hitRight = computeAabbEntry(rayObject, bvhNodes[rightIndex], inverseDirection,
-                                                       bestAcceptedTHit, rightTEntry);
-
-                if (hitLeft && hitRight) {
-                    pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                } else if (hitLeft) {
-                    traversalStack.push(leftIndex);
-                } else if (hitRight) {
-                    traversalStack.push(rightIndex);
-                }
-                continue;
-            }
-
-            // Leaf: just collect candidates, DO NOT clear the global arrays here
-            for (uint32_t local = 0; local < node.triCount; ++local) {
-                if (candidateLocalTs.size() >= kMaxSplatEventsPerRay)
-                    break;
-
-                const uint32_t surfelIndex = node.leftFirst + local;
-                const Point& surfel = scene.points[surfelIndex];
-
-                float tHitLocal = 0.0f;
-                float opacity = 0.0f;
-                float3 outHitLocal;
-                if (!intersectSurfel(rayObject, surfel, rayEpsilon, FLT_MAX, tHitLocal, outHitLocal, opacity))
-                    continue;
-
-                const float3 worldPoint = toWorldPoint(outHitLocal, transform);
-                const float depthKey = dot(worldPoint - rayWorld.origin, rayWorld.direction);
-                const float alphaAtHit = sycl::clamp(opacity, 0.0f, 1.0f);
-
-                candidateLocalTs.pushBack(tHitLocal);
-                candidateAlphas.pushBack(alphaAtHit);
-                candidateDepthKeys.pushBack(depthKey);
-                candidateIndices.pushBack(surfelIndex);
-            }
-        }
-
-        const int candidateCount = candidateLocalTs.size();
-        BoundedVector<int,   kMaxSplatEventsPerRay> order;
-        BoundedVector<float, kMaxSplatEventsPerRay> tempKeys;
-
-        order.clear();
-        tempKeys.clear();
-        for (int i = 0; i < candidateCount; ++i) {
-            order.pushBack(i);
-            tempKeys.pushBack(candidateDepthKeys[i]);
-        }
-
-        // Same insertionSortByKeyTie you already have
-        insertionSortByKeyTie(tempKeys.data(),
-                              candidateAlphas.data(),
-                              order.data(),
-                              candidateCount,
-                              sameDepthEpsilon);
-
-        float currentGroupDepthKey = -std::numeric_limits<float>::infinity();
-        groupDepthKeys.clear();
-        groupLocalTs.clear();
-        groupAlphas.clear();
-        groupIndices.clear();
-
-        for (int k = 0; k < candidateCount; ++k) {
-            const int i = order[k];
-            const float depthKey   = candidateDepthKeys[i];
-            const float localTHit  = candidateLocalTs[i];
-            const float alphaAtHit = candidateAlphas[i];
-            const uint32_t surfelIndex = candidateIndices[i];
-
-            if (groupDepthKeys.size() == 0 ||
-                sycl::fabs(depthKey - currentGroupDepthKey) <= sameDepthEpsilon) {
-
-                if (groupDepthKeys.size() == 0)
-                    currentGroupDepthKey = depthKey;
-
-                groupDepthKeys.pushBack(depthKey);
-                groupLocalTs.pushBack(localTHit);
-                groupAlphas.pushBack(alphaAtHit);
-                groupIndices.pushBack(surfelIndex);
-                } else {
-                    // finalize previous slice
-                    if (scatterCurrentGroup(rng128)) {
-                        foundAcceptedScatter = true;
-                        bestAcceptedTHit = localHitOut.t;
-                        break;
-                    }
-
-                    // start new slice
-                    currentGroupDepthKey = depthKey;
-                    groupDepthKeys.clear();
-                    groupLocalTs.clear();
-                    groupAlphas.clear();
-                    groupIndices.clear();
-
-                    groupDepthKeys.pushBack(depthKey);
-                    groupLocalTs.pushBack(localTHit);
-                    groupAlphas.pushBack(alphaAtHit);
-                    groupIndices.pushBack(surfelIndex);
-                }
-        }
-
-        // tail slice
-        if (!foundAcceptedScatter && groupLocalTs.size() > 0) {
-            if (scatterCurrentGroup(rng128)) {
-                foundAcceptedScatter = true;
-                bestAcceptedTHit = localHitOut.t;
-            }
-        }
-
-
-        // Pure transmission through this BLAS
-        if (!foundAcceptedScatter) {
-            localHitOut.transmissivity = cumulativeTransmittanceBefore;
-            // do not set t / primitiveIndex
-        }
-
-        return foundAcceptedScatter;
-    }
-    */
-
-    // ----------------------------------------------------------------------------
-    // Point-cloud BLAS without per-ray event list:
-    // Repeated closest-hit queries + stochastic accept/reject.
-    // - No candidate arrays
-    // - No sorting
-    // - Correct front-to-back behavior by construction (tMin advances)
-    // ----------------------------------------------------------------------------
-    SYCL_EXTERNAL static bool intersectBLASPointCloudStochastic(const Ray &rayObject,
-                                                                uint32_t blasRangeIndex,
-                                                                LocalHit &localHitOut,
-                                                                const GPUSceneBuffers &scene,
-                                                                rng::Xorshift128 &rng128,
-                                                                SurfelIntersectMode rayIntersectMode,
-                                                                uint32_t scatterOnPrimitiveIndex) {
-        const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
-        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
-
-        constexpr float rayEpsilon = 1e-5f;
-        constexpr float tAdvanceEpsilon = 1e-4f; // advance after a rejected hit to avoid re-hitting same surfel
-        constexpr uint32_t maxRejections = 256; // cap work per ray (tune)
-
-        float cumulativeTransmittanceBefore = 1.0f;
-
-        // Find next closest surfel hit with t in (tMin, tMax).
-        auto findNextClosestSurfel = [&](float tMin,
-                                         float tMax,
-                                         float &outTHit,
-                                         uint32_t &outSurfelIndex,
-                                         float &outAlphaGeomAtHit) -> bool {
-            bool hitAny = false;
-            float bestTHit = tMax;
-
-            const float3 inverseDirection = safeInvDir(rayObject.direction);
-
-            SmallStack<256> traversalStack;
-            traversalStack.push(0);
-
-            while (!traversalStack.empty()) {
-                const int nodeIndex = traversalStack.pop();
-                const BVHNode &node = bvhNodes[nodeIndex];
-
-                float nodeTEntry = 0.0f;
-                if (!slabIntersectAABB(rayObject, node, inverseDirection, bestTHit, nodeTEntry))
-                    continue;
-
-                if (node.triCount == 0) {
-                    const int leftIndex = node.leftFirst;
-                    const int rightIndex = node.leftFirst + 1;
-
-                    float leftTEntry = std::numeric_limits<float>::infinity();
-                    float rightTEntry = std::numeric_limits<float>::infinity();
-
-                    const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
-                                                           leftTEntry);
-                    const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
-                                                            rightTEntry);
-
-                    if (hitLeft && hitRight)
-                        pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                    else if (hitLeft) traversalStack.push(leftIndex);
-                    else if (hitRight) traversalStack.push(rightIndex);
-                    continue;
-                }
-
-                // Leaf: test surfels
-                for (uint32_t local = 0; local < node.triCount; ++local) {
-                    const uint32_t surfelIndex = node.leftFirst + local;
-                    const Point &surfel = scene.points[surfelIndex];
-
-                    float tHitLocal = 0.0f;
-                    float alphaGeom = 0.0f;
-                    float3 hitLocal{};
-                    if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
-                        continue;
-
-                    if (tHitLocal <= tMin)
-                        continue;
-
-                    // Keep closest
-                    bestTHit = tHitLocal;
-                    outSurfelIndex = surfelIndex;
-                    outAlphaGeomAtHit = alphaGeom;
-                    hitAny = true;
-                }
-            }
-
-            if (!hitAny)
-                return false;
-
-            outTHit = bestTHit;
-            return true;
-        };
-
-        // Stochastic accept/reject loop over successive closest hits
-        float tMin = rayEpsilon;
-
-        for (uint32_t rejectionCount = 0; rejectionCount < maxRejections; ++rejectionCount) {
-            float tHit = 0.0f;
-            uint32_t surfelIndex = 0;
-            float alphaGeomAtHit = 0.0f;
-
-            if (!findNextClosestSurfel(tMin, std::numeric_limits<float>::infinity(), tHit, surfelIndex,
-                                       alphaGeomAtHit)) {
-                // No more candidates: pure transmission through this BLAS
-                localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                return false;
-            }
-
-            const Point &surfel = scene.points[surfelIndex];
-
-            // Effective interaction probability at this candidate
-            const float alphaEff = surfel.opacity * alphaGeomAtHit;
-
-            // Random mode: accept with probability alphaEff, otherwise transmit and continue
-            const float u = rng128.nextFloat();
-            if (u < alphaEff) {
-                localHitOut.t = tHit;
-                localHitOut.primitiveIndex = surfelIndex;
-                localHitOut.transmissivity = cumulativeTransmittanceBefore;
-                return true;
-            }
-
-            cumulativeTransmittanceBefore *= (1.0f - alphaEff);
-            tMin = tHit + tAdvanceEpsilon;
-        }
-
-        // Work cap reached: return whatever transmittance we accumulated (biases slightly if cap triggers often)
-        localHitOut.transmissivity = cumulativeTransmittanceBefore;
-        return false;
-    }
-
 
     // ----------------------------------------------------------------------------
     // Point-cloud BLAS: single closest-hit query (no event list, no sorting).
@@ -590,7 +117,7 @@ namespace Pale {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
-        constexpr float rayEpsilon = 1e-5f;
+        constexpr float rayEpsilon = 1e-6f;
 
         bool hitAny = false;
         float bestTHit = std::numeric_limits<float>::infinity();
@@ -637,7 +164,7 @@ namespace Pale {
             // Leaf: test surfels
             for (uint32_t primitiveOffset = 0; primitiveOffset < node.triCount; ++primitiveOffset) {
                 const uint32_t primitiveIndex =
-                    scene.pointPermutation[node.leftFirst + primitiveOffset];
+                        scene.pointPermutation[node.leftFirst + primitiveOffset];
 
                 const Point &surfel = scene.points[primitiveIndex];
 
@@ -645,7 +172,7 @@ namespace Pale {
                 float alphaGeom = 0.0f;
                 float3 hitLocal{0.0f};
 
-                if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
+                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
                     continue;
 
                 // Keep closest
@@ -734,7 +261,7 @@ namespace Pale {
                 // Leaf: test surfels
                 for (uint32_t primitiveOffset = 0; primitiveOffset < node.triCount; ++primitiveOffset) {
                     const uint32_t primitiveIndex =
-                        scene.pointPermutation[node.leftFirst + primitiveOffset];
+                            scene.pointPermutation[node.leftFirst + primitiveOffset];
 
                     const Point &surfel = scene.points[primitiveIndex];
 
@@ -799,9 +326,7 @@ namespace Pale {
     SYCL_EXTERNAL static bool intersectScene(const Ray &rayWorld,
                                              WorldHit *worldHitOut,
                                              const GPUSceneBuffers &scene,
-                                             rng::Xorshift128 &rng128,
-                                             SurfelIntersectMode rayIntersectMode = SurfelIntersectMode::Bernoulli,
-                                             uint32_t scatterOnPrimitiveIndex = UINT32_MAX) {
+                                             SurfelIntersectMode rayIntersectMode = SurfelIntersectMode::FirstHit) {
         const TLASNode *tlasNodes = scene.tlasNodes;
         const InstanceRecord *instanceRecords = scene.instances;
         const Transform *transforms = scene.transforms;
@@ -890,7 +415,6 @@ namespace Pale {
                 // If NOT normalized:
 
                 if (tWorld > 0.0f && tWorld < bestWorldTHit) {
-
                     bestWorldTHit = tWorld;
                     foundAnySurfaceHit = true;
 
@@ -901,7 +425,7 @@ namespace Pale {
                     worldHitOut->primitiveIndex = localHit.primitiveIndex;
                     worldHitOut->alphaGeom = localHit.alpha;
 
-                    if (instance.geometryType == GeometryType::PointCloud){
+                    if (instance.geometryType == GeometryType::PointCloud) {
                         transmittanceProduct *= localHit.transmissivity;
                     }
                 }
@@ -931,7 +455,159 @@ namespace Pale {
                                                   const GPUSceneBuffers &scene,
                                                   rng::Xorshift128 &rng128) {
         WorldHit worldHit{};
-        intersectScene(rayIn, &worldHit, scene, rng128);
+        intersectScene(rayIn, &worldHit, scene);
         return worldHit;
+    }
+
+
+    SYCL_EXTERNAL inline float traceShadowTransmissionToLight(
+        const GPUSceneBuffers &scene,
+        const float3 &shadingPositionW,
+        const float3 &shadingNormalW,
+        const float3 &lightPositionW,
+        rng::Xorshift128 &rng128) {
+        const float3 lightVector = lightPositionW - shadingPositionW;
+        const float lightDistanceSquared = dot(lightVector, lightVector);
+        if (lightDistanceSquared <= 1e-12f) {
+            return 0.0f;
+        }
+
+        const float lightDistance = sycl::sqrt(lightDistanceSquared);
+        const float3 lightDirection = lightVector / lightDistance;
+
+        constexpr float distanceEpsilon = 1e-5f;
+        constexpr uint32_t maxShadowTraversals = 32u;
+
+        Ray shadowRay{};
+        shadowRay.origin = shadingPositionW + lightDirection * distanceEpsilon;
+        shadowRay.direction = lightDirection;
+        shadowRay.normal = shadingNormalW;
+
+        float shadowTransmission = 1.0f;
+
+        for (uint32_t shadowTraversalIndex = 0u;
+             shadowTraversalIndex < maxShadowTraversals;
+             ++shadowTraversalIndex) {
+            WorldHit shadowHit{};
+            intersectScene(
+                shadowRay,
+                &shadowHit,
+                scene,
+                SurfelIntersectMode::FirstHit);
+
+            if (!shadowHit.hit) {
+                break;
+            }
+
+            const float3 hitVector = shadowHit.hitPositionW - shadingPositionW;
+            const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
+
+            if (hitDistance >= lightDistance - distanceEpsilon) {
+                break;
+            }
+
+            const InstanceRecord &hitInstance = scene.instances[shadowHit.instanceIndex];
+
+            if (hitInstance.geometryType == GeometryType::Mesh) {
+                return 0.0f;
+            }
+
+            if (hitInstance.geometryType == GeometryType::PointCloud) {
+                const Point &surfel = scene.points[shadowHit.primitiveIndex];
+                const float oneMinusAlpha = 1.0f - surfel.opacity * shadowHit.alphaGeom;
+                shadowTransmission *= sycl::fmax(0.0f, oneMinusAlpha);
+
+                if (shadowTransmission <= 1e-6f) {
+                    return shadowTransmission;
+                }
+
+                shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * distanceEpsilon;
+                continue;
+            }
+
+            return 0.0f;
+        }
+
+        return shadowTransmission;
+    }
+
+
+    SYCL_EXTERNAL inline float3 estimateDirectLightAtDiffuseSurface(
+        const GPUSceneBuffers &scene,
+        const float3 &shadingPositionW,
+        const float3 &shadingNormalW,
+        const float3 &diffuseAlbedo,
+        uint32_t numShadowRays,
+        rng::Xorshift128 &rng128) {
+        if (numShadowRays == 0u) {
+            return float3(0.0f);
+        }
+
+        float3 accumulatedDirectRadiance(0.0f);
+
+        for (uint32_t shadowSampleIndex = 0u;
+             shadowSampleIndex < numShadowRays;
+             ++shadowSampleIndex) {
+            const AreaLightSample lightSample = sampleMeshAreaLight(scene, rng128);
+            if (!lightSample.valid) {
+                continue;
+            }
+
+            const float fullPdfArea = lightSample.pdfSelectLight * lightSample.pdfArea;
+            if (fullPdfArea <= 0.0f) {
+                continue;
+            }
+
+            const float3 lightVector = lightSample.positionW - shadingPositionW;
+            const float lightDistanceSquared = dot(lightVector, lightVector);
+            if (lightDistanceSquared <= 1e-12f) {
+                continue;
+            }
+
+            const float lightDistance = sycl::sqrt(lightDistanceSquared);
+            const float3 lightDirection = lightVector / lightDistance;
+
+            const float shadingCosine =
+                    sycl::fmax(0.0f, dot(shadingNormalW, lightDirection));
+            if (shadingCosine <= 0.0f) {
+                continue;
+            }
+
+            const float lightCosine =
+                    sycl::fmax(0.0f, dot(lightSample.normalW, -lightDirection));
+            if (lightCosine <= 0.0f) {
+                continue;
+            }
+
+            const float shadowTransmission = traceShadowTransmissionToLight(
+                scene,
+                shadingPositionW,
+                shadingNormalW,
+                lightSample.positionW,
+                rng128);
+
+            if (shadowTransmission <= 0.0f) {
+                continue;
+            }
+
+            const float geometricTerm =
+                    (shadingCosine * lightCosine) / (lightDistanceSquared + 1e-8f);
+
+            const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
+
+            float3 radiance = lightSample.flux / (M_PIf * lightSample.totalAreaWorld);
+            // Here lightSample.power is treated as emitted radiance, to stay
+            // consistent with your existing mesh emissive branch:
+            // material.power * material.baseColor
+            const float3 sampleContribution =
+                diffuseBrdf *
+                radiance *
+                shadowTransmission *
+                (geometricTerm / fullPdfArea);
+
+            accumulatedDirectRadiance += sampleContribution;
+        }
+
+        return accumulatedDirectRadiance * (1.0f / static_cast<float>(numShadowRays));
     }
 } // namespace Pale

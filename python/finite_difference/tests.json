@@ -1,6 +1,0 @@
-{
-  "common_args": ["--iterations", "10", "--fd_epsilon", "5e-3", "--ply", "pointcloud", "--index", "0"],
-  "cases": [
-    {"scene": "transmit", "camera": "camera1", "parameter": "translation_z"}
-  ]
-}

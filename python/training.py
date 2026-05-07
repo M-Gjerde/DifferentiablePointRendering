@@ -26,30 +26,27 @@ from losses import (
     compute_parameter_mse,
 )
 from optimizers import (
-    create_optimizer,
     create_masked_optimizer,
-    assign_numpy_gradients_to_tensors_masked,
-    compute_surfel_update_mask
 )
 from density_control import (
-    densify_points_long_axis_split,
     compute_prune_indices_by_opacity,
+    compute_prune_indices_by_degenerate_scale,
 )
 from render_hooks import (
     remove_points,
     fetch_parameters,
     apply_point_parameters,
-    orthonormalize_tangents_inplace,
+    verify_tangents_inplace,
     verify_scales_inplace,
     verify_albedos_inplace,
     verify_opacities_inplace,
     verify_beta_inplace,
+    verify_positions_inplace,
     add_new_points,
     rebuild_bvh,
-    get_camera_names,
+    get_training_camera_names, get_all_camera_names,
 )
 from debug_init_utils import add_debug_noise_to_initial_parameters
-from repulsion import compute_elliptical_repulsion_loss  # noqa: F401  (kept for future use)
 
 import sys
 import select
@@ -58,6 +55,182 @@ import select
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
+
+def get_forward_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    return np.asarray(
+        forward_out[camera_name]["image"],
+        dtype=np.float32,
+        order="C",
+    )
+
+
+def get_forward_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    return get_forward_rgba(forward_out, camera_name)[..., :3]
+
+
+def _infer_hw_from_forward(forward_out: Dict[str, dict], camera_name: str) -> tuple[int, int]:
+    image = np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
+    return int(image.shape[0]), int(image.shape[1])
+
+
+def get_forward_depth_distortion(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "depth_distortion" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+
+    depth = np.asarray(
+        camera_out["depth_distortion"],
+        dtype=np.float32,
+        order="C",
+    )
+    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def get_forward_visible_normal(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "visible_normal" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w, 4), dtype=np.float32)
+
+    normal = np.asarray(
+        camera_out["visible_normal"],
+        dtype=np.float32,
+        order="C",
+    )
+    return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def get_forward_normal_from_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "normal_from_depth" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w, 4), dtype=np.float32)
+
+    normal = np.asarray(
+        camera_out["normal_from_depth"],
+        dtype=np.float32,
+        order="C",
+    )
+    return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def save_normal_map_snapshot(
+        output_path_png: Path,
+        normal_rgba: np.ndarray,
+        save_npy: bool = True,
+) -> None:
+    normal_rgba = np.asarray(normal_rgba, dtype=np.float32, order="C")
+    normal_rgb = np.clip(normal_rgba[..., :3], -1.0, 1.0)
+
+    if normal_rgba.shape[-1] >= 4:
+        valid = normal_rgba[..., 3] > 0.0
+    else:
+        valid = np.ones(normal_rgb.shape[:2], dtype=bool)
+
+    vis = 0.5 * (normal_rgb + 1.0)
+    vis[~valid] = 0.0
+
+    save_render(output_path_png, vis)
+
+    if save_npy:
+        np.save(output_path_png.with_suffix(".npy"), normal_rgba)
+
+
+def make_trainable_surfel_mask_from_powers(
+        powers: torch.Tensor,
+        eps: float = 0.0,
+) -> torch.Tensor:
+    """
+    Returns True for surfels that are allowed to receive gradient updates.
+
+    Surfels with non-zero power are treated as light/emissive surfels and frozen.
+    """
+    with torch.no_grad():
+        power_values = powers.detach()
+
+        if power_values.ndim == 1:
+            emissive_mask = torch.abs(power_values) > eps
+        else:
+            emissive_mask = torch.any(torch.abs(power_values) > eps, dim=1)
+
+        return ~emissive_mask
+
+
+def zero_frozen_surfel_gradients_np(
+        trainable_mask: torch.Tensor,
+        grad_position_np: np.ndarray,
+        grad_tangent_u_np: np.ndarray,
+        grad_tangent_v_np: np.ndarray,
+        grad_scales_np: np.ndarray,
+        grad_albedos_np: np.ndarray,
+        grad_opacities_np: np.ndarray,
+        grad_betas_np: np.ndarray,
+) -> None:
+    """
+    In-place zeroing of gradients for frozen surfels.
+
+    Frozen surfels are typically emissive surfels where power != 0.
+    """
+    trainable_mask_np = trainable_mask.detach().cpu().numpy().astype(bool)
+    frozen_mask_np = ~trainable_mask_np
+
+    grad_position_np[frozen_mask_np] = 0.0
+    grad_tangent_u_np[frozen_mask_np] = 0.0
+    grad_tangent_v_np[frozen_mask_np] = 0.0
+    grad_scales_np[frozen_mask_np] = 0.0
+    grad_albedos_np[frozen_mask_np] = 0.0
+    grad_opacities_np[frozen_mask_np] = 0.0
+    grad_betas_np[frozen_mask_np] = 0.0
+
+
+def make_mean_reduction_adjoint_image(
+        image_2d: np.ndarray,
+        loss_weight: float,
+) -> np.ndarray:
+    """
+    If loss_dist = loss_weight * mean(image_2d),
+    then d loss_dist / d image_2d[p] = loss_weight / N for every pixel p.
+    """
+    pixel_count = max(image_2d.size, 1)
+    return np.full(
+        image_2d.shape,
+        fill_value=loss_weight / float(pixel_count),
+        dtype=np.float32,
+    )
+
+
+def sum_gradient_dicts(*gradient_dicts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    """
+    Sum any number of renderer-produced gradient dictionaries parameter-wise.
+    All dicts must contain the same keys and shapes.
+    """
+    active = [g for g in gradient_dicts if g is not None and len(g) > 0]
+    if not active:
+        return {}
+
+    result: Dict[str, np.ndarray] = {
+        key: np.asarray(value, dtype=np.float32, order="C").copy()
+        for key, value in active[0].items()
+    }
+
+    for gradient_dict in active[1:]:
+        if set(gradient_dict.keys()) != set(result.keys()):
+            raise RuntimeError(
+                f"Gradient key mismatch: {set(result.keys())} vs {set(gradient_dict.keys())}"
+            )
+
+        for key in result.keys():
+            g = np.asarray(gradient_dict[key], dtype=np.float32, order="C")
+            if result[key].shape != g.shape:
+                raise RuntimeError(
+                    f"Gradient shape mismatch for '{key}': "
+                    f"{result[key].shape} vs {g.shape}"
+                )
+            result[key] += g
+
+    return result
+
 
 def poll_hotkey() -> Optional[str]:
     """
@@ -180,6 +353,49 @@ def save_gradients_snapshot(
     )
 
 
+from pathlib import Path
+
+import numpy as np
+import matplotlib
+
+
+def save_depth_distortion_snapshot(
+        output_path_png: Path,
+        depth_distortion: np.ndarray,
+        quantile: float = 0.99,
+        save_npy: bool = True,
+        cmap: str = "inferno",  # or "seismic"
+) -> None:
+    """
+    Save a scalar depth-distortion map as:
+      - PNG visualization (colormap applied, quantile-normalized)
+      - optional raw .npy next to it
+    """
+    depth = np.asarray(depth_distortion, dtype=np.float32, order="C")
+    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+    depth = np.maximum(depth, 0.0)
+
+    if save_npy:
+        np.save(output_path_png.with_suffix(".npy"), depth)
+
+    if depth.size == 0:
+        vis = np.zeros((1, 1, 3), dtype=np.float32)
+    else:
+        vmax = float(np.quantile(depth, quantile))
+        if not np.isfinite(vmax) or vmax <= 1e-12:
+            vmax = 1.0
+
+        vis_scalar = np.clip(depth / vmax, 0.0, 1.0)
+
+        cmap_fn = matplotlib.colormaps[cmap]
+        vis = cmap_fn(vis_scalar)[..., :3].astype(np.float32, copy=False)
+
+    save_render(output_path_png, vis)
+
+    if save_npy:
+        np.save(output_path_png.with_suffix(".npy"), depth)
+
+
 def save_checkpoint_snapshot(
         output_dir: Path,
         iteration: int,
@@ -192,13 +408,17 @@ def save_checkpoint_snapshot(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        powers: torch.Tensor,
         camera_name: str,
 ) -> None:
     """
     Save an iteration checkpoint:
       - output_dir/checkpoints/iter_XXXX/points.ply
-      - output_dir/checkpoints/iter_XXXX/render_<camera>.png (all cameras)
-      - output_dir/checkpoints/iter_XXXX/render_final.png (main camera convenience)
+      - output_dir/checkpoints/iter_XXXX/render_<camera>.png
+      - output_dir/checkpoints/iter_XXXX/depth_distortion_<camera>.png
+      - output_dir/checkpoints/iter_XXXX/depth_distortion_<camera>.npy
+      - output_dir/checkpoints/iter_XXXX/render_final.png
+      - output_dir/checkpoints/iter_XXXX/depth_distortion_final.png
     """
     checkpoint_dir = output_dir / "checkpoints" / f"iter_{iteration:04d}"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -214,19 +434,112 @@ def save_checkpoint_snapshot(
         albedos,
         opacities,
         betas,
+        powers,
         shape_default=0.0,
     )
 
-    # Save renders (all cameras)
-    for camera_name in camera_ids:
-        image_numpy = np.asarray(current_images[camera_name], dtype=np.float32, order="C")
-        save_render(checkpoint_dir / f"render_{camera_name}.png", image_numpy)
+    # Save renders + depth distortion (all cameras)
+    for cam_name in camera_ids:
+        image_numpy = get_forward_rgb(current_images, cam_name)
+        save_render(checkpoint_dir / f"render_{cam_name}.png", image_numpy)
 
-    # Convenience: main camera as "render_final.png" inside the checkpoint dir
-    main_img = np.asarray(current_images[camera_name], dtype=np.float32, order="C")
+        depth_numpy = get_forward_depth_distortion(current_images, cam_name)
+        save_depth_distortion_snapshot(
+            checkpoint_dir / f"depth_distortion_{cam_name}.png",
+            depth_numpy,
+            quantile=0.99,
+            save_npy=True,
+        )
+        median_depth_numpy = get_forward_median_depth(current_images, cam_name)
+        save_median_depth_snapshot(
+            checkpoint_dir / f"median_depth_{cam_name}.png",
+            median_depth_numpy,
+            quantile=0.99,
+            save_npy=True,
+        )
+
+    # Convenience: chosen/main camera
+    main_img = get_forward_rgb(current_images, camera_name)
     save_render(checkpoint_dir / "render_final.png", main_img)
 
+    main_depth = get_forward_depth_distortion(current_images, camera_name)
+    save_depth_distortion_snapshot(
+        checkpoint_dir / "depth_distortion_final.png",
+        main_depth,
+        quantile=0.99,
+        save_npy=True,
+    )
+
+    main_median_depth = get_forward_median_depth(current_images, camera_name)
+    save_median_depth_snapshot(
+        checkpoint_dir / "median_depth_final.png",
+        main_median_depth,
+        quantile=0.99,
+        save_npy=True,
+    )
+
     print(f"[Iter {iteration:04d}] Saved checkpoint: {checkpoint_dir}")
+
+
+def rms_point(x):
+    n = max(x.shape[0], 1)
+    return float(np.linalg.norm(x) / np.sqrt(n))
+
+
+def rms_scalar(x):
+    return float(np.linalg.norm(x) / np.sqrt(max(x.size, 1)))
+
+
+def get_forward_median_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "median_depth" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+
+    depth = np.asarray(
+        camera_out["median_depth"],
+        dtype=np.float32,
+        order="C",
+    )
+    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def save_median_depth_snapshot(
+        output_path_png: Path,
+        median_depth: np.ndarray,
+        quantile: float = 0.99,
+        save_npy: bool = True,
+        cmap: str = "viridis",
+) -> None:
+    depth = np.asarray(median_depth, dtype=np.float32, order="C")
+    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if save_npy:
+        np.save(output_path_png.with_suffix(".npy"), depth)
+
+    valid = depth > 0.0
+
+    if depth.size == 0 or not np.any(valid):
+        vis = np.zeros((max(depth.shape[0], 1), max(depth.shape[1], 1), 3), dtype=np.float32)
+    else:
+        valid_depth = depth[valid]
+
+        vmin = float(np.min(valid_depth))
+        vmax = float(np.quantile(valid_depth, quantile))
+
+        if not np.isfinite(vmin):
+            vmin = 0.0
+        if not np.isfinite(vmax) or vmax <= vmin + 1e-12:
+            vmax = vmin + 1.0
+
+        vis_scalar = np.zeros_like(depth, dtype=np.float32)
+        vis_scalar[valid] = np.clip((depth[valid] - vmin) / (vmax - vmin), 0.0, 1.0)
+
+        cmap_fn = matplotlib.colormaps[cmap]
+        vis = cmap_fn(vis_scalar)[..., :3].astype(np.float32, copy=False)
+        vis[~valid] = 0.0
+
+    save_render(output_path_png, vis)
 
 
 def save_manual_snapshot(
@@ -240,6 +553,7 @@ def save_manual_snapshot(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        powers: torch.Tensor,
         camera_ids: List[str],
 ) -> None:
     """
@@ -248,9 +562,26 @@ def save_manual_snapshot(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     final_images = renderer.render_forward()
+
     for camera_name in camera_ids:
-        img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")
+        img_np = get_forward_rgb(final_images, camera_name)
         save_render(Path(output_dir / f"render_final_{camera_name}.png"), img_np)
+
+        depth_np = get_forward_depth_distortion(final_images, camera_name)
+        save_depth_distortion_snapshot(
+            Path(output_dir / f"depth_distortion_final_{camera_name}.png"),
+            depth_np,
+            quantile=0.99,
+            save_npy=True,
+        )
+
+        median_depth_np = get_forward_median_depth(final_images, camera_name)
+        save_median_depth_snapshot(
+            Path(output_dir / f"median_depth_final_{camera_name}.png"),
+            median_depth_np,
+            quantile=0.99,
+            save_npy=True,
+        )
 
     # Save full parameter set as PLY
     ply_path = output_dir / "points_final.ply"
@@ -263,11 +594,12 @@ def save_manual_snapshot(
         albedos,
         opacities,
         betas,
+        powers,
         shape_default=0.0,
     )
     print(
         f"[Iter {iteration:04d}] Hotkey 's' pressed -> "
-        f"saved render_final.png and points_final.ply"
+        f"saved render_final_<camera>.png, depth_distortion_final_<camera>.png, and points_final.ply"
     )
 
 
@@ -286,6 +618,178 @@ def clear_output_dir(output_dir: Path) -> None:
                         sub_item.unlink()
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def max_point_norm(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float32)
+    if x.size == 0:
+        return 0.0
+    if x.ndim == 1:
+        return float(np.max(np.abs(x)))
+    return float(np.max(np.linalg.norm(x, axis=1))) if x.shape[0] > 0 else 0.0
+
+
+def rms_any(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float32)
+    if x.size == 0:
+        return 0.0
+    return float(np.linalg.norm(x.ravel()) / np.sqrt(x.size))
+
+
+def gradient_stats_from_dict(gradient_dict: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
+    stats: Dict[str, Dict[str, float]] = {}
+    for key, value in gradient_dict.items():
+        g = np.asarray(value, dtype=np.float32, order="C")
+        stats[key] = {
+            "rms": rms_any(g),
+            "max": max_point_norm(g),
+        }
+    return stats
+
+
+def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
+    def s(name: str) -> str:
+        if name not in stats:
+            return f"{name}=NA"
+        return f"{name}_rms={stats[name]['rms']:.2e}, {name}_max={stats[name]['max']:.2e}"
+
+    return (
+        f"{tag}: "
+        f"{s('position')}, "
+        f"{s('tangent_u')}, "
+        f"{s('tangent_v')}, "
+        f"{s('scale')}, "
+        f"{s('albedo')}, "
+        f"{s('opacity')}, "
+        f"{s('beta')}"
+    )
+
+def compute_opacity_target_regularizer_and_gradients(
+        opacities: torch.Tensor,
+        trainable_surfel_mask: torch.Tensor,
+        opacity_target: float,
+        opacity_weight: float,
+        use_opacity_loss: bool,
+) -> tuple[float, np.ndarray]:
+    """
+    Quadratic opacity target regularizer.
+
+    L = opacity_weight * mean((opacity - opacity_target)^2)
+
+    Only trainable surfels are included in the mean and receive gradients.
+    Frozen emissive surfels receive zero gradient.
+
+    Returns:
+        loss_value,
+        grad_opacity_np with same shape as opacities
+    """
+    opacity_np = opacities.detach().cpu().numpy().astype(np.float32, copy=False)
+    grad_opacity_np = np.zeros_like(opacity_np, dtype=np.float32)
+
+    if not use_opacity_loss or opacity_weight == 0.0:
+        return 0.0, grad_opacity_np
+
+    trainable_mask_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
+
+    opacity_flat = opacity_np.reshape(-1)
+    grad_opacity_flat = grad_opacity_np.reshape(-1)
+
+    if opacity_flat.shape[0] != trainable_mask_np.shape[0]:
+        raise RuntimeError(
+            "Opacity regularizer shape mismatch: "
+            f"opacities has {opacity_flat.shape[0]} scalar values, "
+            f"but trainable_surfel_mask has {trainable_mask_np.shape[0]} entries."
+        )
+
+    if not np.any(trainable_mask_np):
+        return 0.0, grad_opacity_np
+
+    active_opacities = opacity_flat[trainable_mask_np]
+    opacity_error = active_opacities - float(opacity_target)
+
+    active_count = max(int(opacity_error.size), 1)
+
+    loss_value = float(
+        float(opacity_weight) * np.mean(opacity_error * opacity_error)
+    )
+
+    grad_active = (
+        2.0 * float(opacity_weight) / float(active_count)
+    ) * opacity_error
+
+    grad_opacity_flat[trainable_mask_np] = grad_active.astype(np.float32, copy=False)
+
+    return loss_value, grad_opacity_np
+
+
+def compute_normal_consistency_loss_and_adjoints(
+        visible_normal_rgba: np.ndarray,
+        depth_normal_rgba: np.ndarray,
+        weight: float,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    vis_rgba = np.asarray(visible_normal_rgba, dtype=np.float32, order="C")
+    dep_rgba = np.asarray(depth_normal_rgba, dtype=np.float32, order="C")
+
+    vis = vis_rgba[..., :3]
+    dep = dep_rgba[..., :3]
+
+    vis_valid = vis_rgba[..., 3] > 0.0
+    dep_valid = dep_rgba[..., 3] > 0.0
+
+    vis_finite = np.isfinite(vis).all(axis=-1)
+    dep_finite = np.isfinite(dep).all(axis=-1)
+
+    mask = vis_valid & dep_valid & vis_finite & dep_finite
+    valid_count = max(int(mask.sum()), 1)
+
+    scale = float(weight) / float(valid_count)
+
+    dot_nd = np.sum(vis * dep, axis=-1)
+    loss_map = np.zeros_like(dot_nd, dtype=np.float32)
+    loss_map[mask] = scale * (1.0 - dot_nd[mask])
+    loss = float(loss_map.sum())
+
+    dL_dvis = np.zeros_like(vis, dtype=np.float32)
+    dL_ddep = np.zeros_like(dep, dtype=np.float32)
+
+    dL_dvis[mask] = -scale * dep[mask]
+    dL_ddep[mask] = -scale * vis[mask]
+
+    return loss, dL_dvis, dL_ddep
+
+
+def summarize_depth_distortion_maps(
+        depth_maps: Dict[str, np.ndarray],
+        adjoint_maps: Dict[str, np.ndarray],
+) -> str:
+    if not depth_maps:
+        return "depth_distortion: no cameras"
+
+    means = []
+    maxs = []
+    p99s = []
+    adjoint_means = []
+    adjoint_maxs = []
+
+    for camera_name, depth in depth_maps.items():
+        d = np.asarray(depth, dtype=np.float32)
+        a = np.asarray(adjoint_maps[camera_name], dtype=np.float32)
+
+        means.append(float(np.mean(d)))
+        maxs.append(float(np.max(d)))
+        p99s.append(float(np.quantile(d, 0.99)))
+
+        adjoint_means.append(float(np.mean(a)))
+        adjoint_maxs.append(float(np.max(np.abs(a))))
+
+    return (
+        "depth_distortion_maps: "
+        f"mean(avg)={np.mean(means):.3e}, "
+        f"p99(avg)={np.mean(p99s):.3e}, "
+        f"max(global)={np.max(maxs):.3e}, "
+        f"adj_mean(avg)={np.mean(adjoint_means):.3e}, "
+        f"adj_max(global)={np.max(adjoint_maxs):.3e}"
+    )
 
 
 def refetch_parameters_as_torch(
@@ -319,28 +823,39 @@ def refetch_parameters_as_torch(
     betas = torch.nn.Parameter(
         torch.tensor(updated["beta"], device=device, dtype=torch.float32)
     )
+    powers = torch.nn.Parameter(
+        torch.tensor(updated["power"], device=device, dtype=torch.float32)
+    )
 
-    return positions, tangent_u, tangent_v, scales, albedos, opacities, betas
+    return positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
 
 
 def verify_parameters_inplane(
+        positions: torch.Tensor,
         tangent_u: torch.Tensor,
         tangent_v: torch.Tensor,
         scales: torch.Tensor,
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
+        trainable_surfel_mask: Optional[torch.Tensor] = None,
 ) -> None:
     """
-    Enforce parameter constraints in-place:
-    - orthonormal tangents
-    - valid scales, albedos, and opacities
+    Enforce parameter constraints in-place.
+
+    For now, trainable_surfel_mask is only applied to beta verification.
+    Frozen emissive surfels are therefore not beta-clamped.
     """
-    orthonormalize_tangents_inplace(tangent_u, tangent_v)
+    verify_tangents_inplace(tangent_u, tangent_v)
     verify_scales_inplace(scales)
+    verify_positions_inplace(positions)
     verify_albedos_inplace(albedos)
     verify_opacities_inplace(opacities)
-    verify_beta_inplace(betas)
+
+    verify_beta_inplace(
+        betas,
+        trainable_surfel_mask=trainable_surfel_mask,
+    )
 
 
 def assign_numpy_gradients_to_tensors(
@@ -393,56 +908,88 @@ def compute_density_importance(
     return torch.from_numpy(importance_np)
 
 
-# ---------------------------------------------------------------------------
-# Main optimization
-# ---------------------------------------------------------------------------
-
 def run_optimization(
         renderer: Pale.Renderer,
         config: OptimizationConfig,
         renderer_settings: RendererSettingsConfig,
 ) -> None:
+    def sum_gradient_dicts_any(*gradient_dicts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        nonempty = [g for g in gradient_dicts if g]
+        if not nonempty:
+            return {}
+
+        reference_keys = list(nonempty[0].keys())
+        result: Dict[str, np.ndarray] = {}
+
+        for key in reference_keys:
+            accumulated = None
+            reference_shape = None
+
+            for gradient_dict in nonempty:
+                if key not in gradient_dict:
+                    raise RuntimeError(f"Missing gradient key '{key}' in one of the gradient dictionaries.")
+
+                grad = np.asarray(gradient_dict[key], dtype=np.float32, order="C")
+
+                if reference_shape is None:
+                    reference_shape = grad.shape
+                    accumulated = np.array(grad, dtype=np.float32, copy=True, order="C")
+                else:
+                    if grad.shape != reference_shape:
+                        raise RuntimeError(
+                            f"Gradient shape mismatch for '{key}': "
+                            f"expected {reference_shape}, got {grad.shape}"
+                        )
+                    accumulated += grad
+
+            result[key] = accumulated
+
+        return result
+
     # ------------------------------------------------------------------
     # 1a. Load target images per camera
     # ------------------------------------------------------------------
     target_path = Path(config.dataset_path)
     target_images: Dict[str, np.ndarray] = {}
 
-    isColmap = True
-    # Multi-camera mode: interpret dataset path as a directory
     if not target_path.is_dir():
         raise RuntimeError(
             f"Target path '{target_path}' must be a directory when multiple cameras are used."
         )
 
-    if isColmap:
-        print(f"Loading target images from directory: {target_path}")
-        camera_ids = get_camera_names(renderer)
-        for camera_name in camera_ids:
-            image_path = target_path / "images" / f"{camera_name}.png"
-            if not image_path.is_file():
-                raise RuntimeError(
-                    f"Missing target image for camera '{camera_name}': {image_path}"
-                )
-            target_images[camera_name] = load_target_image(image_path)
-            print(
-                f"  Camera '{camera_name}': loaded target {image_path} "
-                f"with shape {target_images[camera_name].shape}"
+    print(f"Loading target images from directory: {target_path}")
+    training_camera_ids = get_training_camera_names(renderer)
+    all_camera_ids = get_all_camera_names(renderer)
+
+    for camera_name in training_camera_ids:
+        image_path = target_path / "images" / f"{camera_name}.png"
+        if not image_path.is_file():
+            raise RuntimeError(
+                f"Missing target image for camera '{camera_name}': {image_path}"
             )
-    else:
-        print(f"Loading target images from directory: {target_path}")
-        camera_ids = get_camera_names(renderer)
-        for camera_name in camera_ids:
-            image_path = target_path / f"{camera_name}" / "out_photonmap.png"
-            if not image_path.is_file():
-                raise RuntimeError(
-                    f"Missing target image for camera '{camera_name}': {image_path}"
-                )
-            target_images[camera_name] = load_target_image(image_path)
-            print(
-                f"  Camera '{camera_name}': loaded target {image_path} "
-                f"with shape {target_images[camera_name].shape}"
-            )
+        target_images[camera_name] = load_target_image(image_path)
+        print(
+            f"  Camera '{camera_name}': loaded target {image_path} "
+            f"with shape {target_images[camera_name].shape}"
+        )
+
+    depth_distortion_weight = float(getattr(config, "depth_distort_weight", 0.0))
+    normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
+
+    opacity_loss_weight = float(getattr(config, "opacity_loss_weight", 0.0))
+    opacity_target = 1.0
+
+    use_depth_distortion = depth_distortion_weight != 0.0
+    use_normal_consistency = normal_consistency_weight != 0.0
+    use_opacity_loss = opacity_loss_weight != 0.0
+
+    print(
+        "Loss terms: "
+        f"depth_distortion={use_depth_distortion} weight={depth_distortion_weight:.3e}, "
+        f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
+        f"opacity_loss_weight={opacity_loss_weight:.3e}, "
+        f"opacity_target={opacity_target:.3f}"
+    )
 
     # ------------------------------------------------------------------
     # Fetch initial parameters from renderer
@@ -455,11 +1002,11 @@ def run_optimization(
     initial_albedo_np = initial_params["albedo"]
     initial_opacity_np = initial_params["opacity"]
     initial_beta_np = initial_params["beta"]
+    initial_power_np = initial_params["power"]
 
     num_points_initial = initial_positions_np.shape[0]
     print(f"Fetched {num_points_initial} initial points from PLY.")
 
-    # Immutable reference for parameter MSE
     initial_params_reference: Dict[str, np.ndarray] = {
         "position": initial_positions_np.copy(),
         "tangent_u": initial_tangent_u_np.copy(),
@@ -468,9 +1015,9 @@ def run_optimization(
         "albedo": initial_albedo_np.copy(),
         "opacity": initial_opacity_np.copy(),
         "beta": initial_beta_np.copy(),
+        "power": initial_power_np.copy(),
     }
 
-    # (Optionally apply debug noise as before...)
     apply_noise = False
     if apply_noise:
         (
@@ -494,7 +1041,6 @@ def run_optimization(
 
     device = torch.device(config.device)
 
-    # Create initial trainable tensors from numpy (unchanged)
     positions = torch.nn.Parameter(
         torch.tensor(initial_positions_np, device=device, dtype=torch.float32)
     )
@@ -516,14 +1062,27 @@ def run_optimization(
     betas = torch.nn.Parameter(
         torch.tensor(initial_beta_np, device=device, dtype=torch.float32)
     )
+    powers = torch.nn.Parameter(
+        torch.tensor(initial_power_np, device=device, dtype=torch.float32)
+    )
 
     # ------------------------------------------------------------------
     # 2. Initial reparameterization and sync with renderer
     # ------------------------------------------------------------------
-    verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
+
+    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+
+    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
+    print(
+        f"Frozen emissive surfels: {frozen_surfel_count} / "
+        f"{int(trainable_surfel_mask.numel())}"
+    )
+    verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
+                              trainable_surfel_mask=trainable_surfel_mask,
+                              )
 
     apply_point_parameters(
-        renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas
+        renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
     )
     rebuild_bvh(renderer)
 
@@ -535,7 +1094,10 @@ def run_optimization(
         albedos,
         opacities,
         betas,
+        powers,
     ) = refetch_parameters_as_torch(renderer, device)
+
+    config.output_dir.mkdir(parents=True, exist_ok=True)
 
     optimizer = create_masked_optimizer(
         config,
@@ -546,37 +1108,103 @@ def run_optimization(
         albedos,
         opacities,
         betas,
+        powers,
     )
 
     # ------------------------------------------------------------------
     # 3. Initial loss and output dir setup (multi-camera)
     # ------------------------------------------------------------------
-    # Forward pass: dict[name -> HxWx3]
     initial_images = renderer.render_forward()
 
-    initial_loss = 0.0
-    clear_output_dir(config.output_dir)
-    for camera_name in camera_ids:
-        img_np = np.asarray(initial_images[camera_name], dtype=np.float32, order="C")
-        tgt_np = target_images[camera_name]
+    initial_rgb_loss = 0.0
+    initial_depth_distortion_loss_raw = 0.0
+    initial_normal_loss_raw = 0.0
 
-        loss_cam = compute_l2_loss(img_np, tgt_np)
-        initial_loss += loss_cam
+    initial_points_path = config.output_dir / "initial_points.ply"
+    save_gaussians_to_ply(
+        initial_points_path,
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        albedos,
+        opacities,
+        betas,
+        powers,
+        shape_default=0.0,
+    )
+    print(f"Initial parameters written to PLY: {initial_points_path}")
+
+    for camera_name in all_camera_ids:
+        img_np = get_forward_rgb(initial_images, camera_name)
 
         camera_base_dir = config.output_dir / camera_name
         camera_base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save per-camera initial render and target
         save_render(
             config.output_dir / f"render_initial_{camera_name}.png",
             img_np,
         )
+
+        if camera_name not in target_images:
+            print(
+                f"Warning: no target image found for camera '{camera_name}', "
+                f"skipping target save and loss."
+            )
+            continue
+
+        tgt_np = target_images[camera_name]
+        initial_rgb_loss += float(compute_l2_loss(img_np, tgt_np))
+
         save_render(
             config.output_dir / f"render_target_{camera_name}.png",
             tgt_np,
         )
 
-    print(f"Initial loss (L2, summed over cameras): {initial_loss:.6e}")
+        if use_depth_distortion:
+            dist_np = get_forward_depth_distortion(initial_images, camera_name)
+            initial_depth_distortion_loss_raw += float(dist_np.mean())
+
+        if use_normal_consistency:
+            visible_normal = get_forward_visible_normal(initial_images, camera_name)
+            normal_from_depth = get_forward_normal_from_depth(initial_images, camera_name)
+            raw_normal_loss_value, _, _ = compute_normal_consistency_loss_and_adjoints(
+                visible_normal,
+                normal_from_depth,
+                1.0,
+            )
+            initial_normal_loss_raw += raw_normal_loss_value
+
+    initial_depth_distortion_loss_weighted = (
+            depth_distortion_weight * initial_depth_distortion_loss_raw
+    )
+    initial_normal_loss_weighted = (
+            normal_consistency_weight * initial_normal_loss_raw
+    )
+    initial_opacity_regularizer_loss, _ = (
+        compute_opacity_target_regularizer_and_gradients(
+            opacities=opacities,
+            trainable_surfel_mask=trainable_surfel_mask,
+            opacity_target=opacity_target,
+            opacity_weight=opacity_loss_weight,
+            use_opacity_loss=use_opacity_loss,
+        )
+    )
+
+    initial_total_loss = (
+            initial_rgb_loss +
+            initial_depth_distortion_loss_weighted +
+            initial_normal_loss_weighted +
+            initial_opacity_regularizer_loss
+    )
+
+    print(f"Initial RGB loss                       : {initial_rgb_loss:.6e}")
+    print(f"Initial depth distortion loss (raw)    : {initial_depth_distortion_loss_raw:.6e}")
+    print(f"Initial depth distortion loss (weighted): {initial_depth_distortion_loss_weighted:.6e}")
+    print(f"Initial normal consistency loss (raw)  : {initial_normal_loss_raw:.6e}")
+    print(f"Initial normal consistency loss (weighted): {initial_normal_loss_weighted:.6e}")
+    print(f"Initial opacity regularizer loss        : {initial_opacity_regularizer_loss:.6e}")
+    print(f"Initial total loss                     : {initial_total_loss:.6e}")
 
     # ------------------------------------------------------------------
     # 4. Density control / scheduling hyperparameters
@@ -584,15 +1212,15 @@ def run_optimization(
     iteration = 0
 
     densification_interval = 1e100
-    prune_interval = 5
-    burnin_iterations = 10
+    prune_interval = 50
+    burnin_iterations = 50
 
     reset_opacity_interval = int(1e10)
     densification_grad_threshold = 1e-9
 
-    opacity_prune_threshold = 0.0
+    opacity_prune_threshold = 100.0
     max_prune_fraction = 0.3
-    rebuild_bvh_interval = 1
+    rebuild_bvh_interval = 5
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -603,18 +1231,24 @@ def run_optimization(
             [
                 "iteration",
                 "camera_name",
-                "loss_l2_current_camera",
-                "loss_l2_window_mean",
-                "loss_l2_window_sum_scaled",
+                "loss_rgb_sum",
+                "loss_depth_distortion_raw_sum",
+                "loss_depth_distortion_weighted_sum",
+                "loss_normal_consistency_raw_sum",
+                "loss_normal_consistency_weighted_sum",
+                "loss_opacity_regularizer",
+                "loss_total_sum",
                 "parameter_mse",
                 "num_points",
                 "iteration_time_sec",
                 "total_time",
+                "grad_opacity_total_rms",
+                "grad_opacity_total_max",
+                "grad_opacity_regularizer_rms",
+                "grad_opacity_regularizer_max",
             ]
         )
 
-        #camera_name = camera_ids[0]
-        numCameras = len(camera_ids)
         total_start_time = time.perf_counter()
 
         try:
@@ -624,54 +1258,153 @@ def run_optimization(
                 # --------------------------------------------------------------
                 # 5. Forward pass and image-space loss (multi-camera)
                 # --------------------------------------------------------------
-                # dict[name -> HxWx3]
-                current_images = renderer.render_forward()
+                forward_out = renderer.render_forward()
 
+                total_rgb_loss_value = 0.0
+                total_depth_distortion_loss_raw = 0.0
+                total_depth_distortion_loss_weighted = 0.0
+                total_normal_loss_raw = 0.0
+                total_normal_loss_weighted = 0.0
                 total_loss_value = 0.0
-                loss_grad_images: Dict[str, np.ndarray] = {}
-                loss_images: Dict[str, np.ndarray] = {}
 
-                for camera_name in camera_ids:
-                    current_rgb_np = np.asarray(
-                        current_images[camera_name],
-                        dtype=np.float32,
-                        order="C",
-                    )
+                visible_normal_adjoints: Dict[str, np.ndarray] = {}
+                depth_normal_adjoints: Dict[str, np.ndarray] = {}
+
+                loss_grad_images: Dict[str, np.ndarray] = {}
+                depth_distortion_grad_images: Dict[str, np.ndarray] = {}
+                loss_images: Dict[str, np.ndarray] = {}
+                depth_distortion_maps_for_logging: Dict[str, np.ndarray] = {}
+                visible_normal_maps_for_logging: Dict[str, np.ndarray] = {}
+                depth_normal_maps_for_logging: Dict[str, np.ndarray] = {}
+
+                for camera_name in training_camera_ids:
+                    current_rgb_np = get_forward_rgb(forward_out, camera_name)
                     target_rgb_np = target_images[camera_name]
 
-                    ## Analytical first:
-                    loss_grad = compute_l2_grad(
-                        current_rgb_np,
-                        target_rgb_np
+                    rgb_grad = compute_l2_grad(current_rgb_np, target_rgb_np)
+                    rgb_loss_value = float(compute_l2_loss(current_rgb_np, target_rgb_np))
+
+                    total_rgb_loss_value += rgb_loss_value
+                    total_loss_value += rgb_loss_value
+
+                    loss_grad_images[camera_name] = rgb_grad
+                    loss_images[camera_name] = rgb_grad
+
+                    if use_depth_distortion:
+                        current_depth_distortion_np = get_forward_depth_distortion(forward_out, camera_name)
+                        depth_distortion_maps_for_logging[camera_name] = current_depth_distortion_np
+
+                        depth_distortion_loss_raw = float(current_depth_distortion_np.mean())
+                        depth_distortion_loss_weighted = (
+                                depth_distortion_weight * depth_distortion_loss_raw
+                        )
+
+                        total_depth_distortion_loss_raw += depth_distortion_loss_raw
+                        total_depth_distortion_loss_weighted += depth_distortion_loss_weighted
+                        total_loss_value += depth_distortion_loss_weighted
+
+                        depth_distortion_grad_images[camera_name] = make_mean_reduction_adjoint_image(
+                            current_depth_distortion_np,
+                            depth_distortion_weight,
+                        )
+
+                    if use_normal_consistency:
+                        visible_normal = get_forward_visible_normal(forward_out, camera_name)
+                        normal_from_depth = get_forward_normal_from_depth(forward_out, camera_name)
+
+                        visible_normal_maps_for_logging[camera_name] = visible_normal
+                        depth_normal_maps_for_logging[camera_name] = normal_from_depth
+
+                        raw_normal_loss_value, dvis_raw, ddepth_raw = (
+                            compute_normal_consistency_loss_and_adjoints(
+                                visible_normal,
+                                normal_from_depth,
+                                1.0,
+                            )
+                        )
+
+                        weighted_normal_loss_value = (
+                                normal_consistency_weight * raw_normal_loss_value
+                        )
+
+                        total_normal_loss_raw += raw_normal_loss_value
+                        total_normal_loss_weighted += weighted_normal_loss_value
+                        total_loss_value += weighted_normal_loss_value
+
+                        visible_normal_adjoints[camera_name] = (
+                                normal_consistency_weight * dvis_raw
+                        ).astype(np.float32, copy=False)
+                        depth_normal_adjoints[camera_name] = (
+                                normal_consistency_weight * ddepth_raw
+                        ).astype(np.float32, copy=False)
+
+                # ------------------------------------------------------------------
+                # Backward passes
+                # ------------------------------------------------------------------
+                photo_gradients, adjoint_images = renderer.render_backward(loss_grad_images)
+
+                distortion_gradients: Dict[str, np.ndarray] = {}
+                normal_gradients: Dict[str, np.ndarray] = {}
+
+                if use_depth_distortion and len(depth_distortion_grad_images) > 0:
+                    distortion_gradients = renderer.render_depth_distortion_backward(
+                        depth_distortion_grad_images
                     )
-                    loss_value = compute_l2_loss(
-                        current_rgb_np,
-                        target_rgb_np
+
+                if use_normal_consistency and len(visible_normal_adjoints) > 0:
+                    normal_gradients = renderer.render_normal_consistency_backward(
+                        visible_normal_adjoints,
+                        depth_normal_adjoints,
                     )
 
-                    loss_value_float = float(loss_value)
+                photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
+                distortion_gradient_stats = (
+                    gradient_stats_from_dict(distortion_gradients)
+                    if distortion_gradients else {}
+                )
+                normal_gradient_stats = (
+                    gradient_stats_from_dict(normal_gradients)
+                    if normal_gradients else {}
+                )
 
+                # ------------------------------------------------------------------
+                # Blend the final update vector in Python
+                # ------------------------------------------------------------------
+                total_gradients = sum_gradient_dicts_any(
+                    photo_gradients,
+                    distortion_gradients,
+                    normal_gradients,
+                )
 
-                    total_loss_value += float(loss_value)
-                    loss_grad_images[camera_name] = loss_grad
-                    loss_images[camera_name] = loss_grad
+                grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
+                grad_tangent_u_np = np.asarray(total_gradients["tangent_u"], dtype=np.float32, order="C")
+                grad_tangent_v_np = np.asarray(total_gradients["tangent_v"], dtype=np.float32, order="C")
+                grad_scales_np = np.asarray(total_gradients["scale"], dtype=np.float32, order="C")
+                grad_albedos_np = np.asarray(total_gradients["albedo"], dtype=np.float32, order="C")
+                grad_opacities_np = np.asarray(total_gradients["opacity"], dtype=np.float32, order="C")
+                grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
 
-                # --------------------------------------------------------------
-                # 6. Backward pass in renderer (multi-camera)
-                # --------------------------------------------------------------
-                gradients, adjoint_images = renderer.render_backward(loss_grad_images)
-                # `adjoint_images` is dict[name -> HxWx4 float]
+                opacity_regularizer_loss, grad_opacity_regularizer_np = (
+                    compute_opacity_target_regularizer_and_gradients(
+                        opacities=opacities,
+                        trainable_surfel_mask=trainable_surfel_mask,
+                        opacity_target=opacity_target,
+                        opacity_weight=opacity_loss_weight,
+                        use_opacity_loss=use_opacity_loss,
+                    )
+                )
+                opacity_regularizer_gradient_stats = gradient_stats_from_dict(
+                    {"opacity": grad_opacity_regularizer_np}
+                )
+                grad_opacities_np += grad_opacity_regularizer_np
+                total_loss_value += opacity_regularizer_loss
 
-                # Extract numpy gradients
-                grad_position_np = np.asarray(gradients["position"], dtype=np.float32, order="C")
-                grad_tangent_u_np = np.asarray(gradients["tangent_u"], dtype=np.float32, order="C")
-                grad_tangent_v_np = np.asarray(gradients["tangent_v"], dtype=np.float32, order="C")
-                grad_scales_np = np.asarray(gradients["scale"], dtype=np.float32, order="C")
-                grad_albedos_np = np.asarray(gradients["albedo"], dtype=np.float32, order="C")
-                grad_opacities_np = np.asarray(gradients["opacity"], dtype=np.float32, order="C")
-                grad_betas_np = np.asarray(gradients["beta"], dtype=np.float32, order="C")
+                grad_opacity_regularizer_rms = rms_any(grad_opacity_regularizer_np)
+                grad_opacity_regularizer_max = max_point_norm(grad_opacity_regularizer_np)
 
-                # Sanity check shapes
+                grad_opacity_total_rms = rms_any(grad_opacities_np)
+                grad_opacity_total_max = max_point_norm(grad_opacities_np)
+
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
                     raise RuntimeError(
@@ -683,6 +1416,17 @@ def run_optimization(
                 # 7. Optimizer step
                 # --------------------------------------------------------------
                 optimizer.zero_grad(set_to_none=True)
+
+                zero_frozen_surfel_gradients_np(
+                    trainable_surfel_mask,
+                    grad_position_np,
+                    grad_tangent_u_np,
+                    grad_tangent_v_np,
+                    grad_scales_np,
+                    grad_albedos_np,
+                    grad_opacities_np,
+                    grad_betas_np,
+                )
 
                 assign_numpy_gradients_to_tensors(
                     device,
@@ -704,16 +1448,19 @@ def run_optimization(
 
                 optimizer.step()
 
-                # Reset opacities on schedule (unchanged)
                 if iteration % reset_opacity_interval == 0:
                     with torch.no_grad():
                         opacities[:] = 0.1
                     print(f"[Iter {iteration:04d}] Resetting all opacities to 0.1")
 
                 # --------------------------------------------------------------
-                # 8. Reparameterization, sync, BVH (unchanged logic)
+                # 8. Reparameterization, sync, BVH
                 # --------------------------------------------------------------
-                verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
+                verify_parameters_inplane(
+                    positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
+                    trainable_surfel_mask=trainable_surfel_mask,
+
+                )
 
                 apply_point_parameters(
                     renderer,
@@ -724,54 +1471,75 @@ def run_optimization(
                     albedos,
                     opacities,
                     betas,
+                    powers
                 )
 
                 if iteration % rebuild_bvh_interval == 0:
                     rebuild_bvh(renderer)
-                    (
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        albedos,
-                        opacities,
-                        betas,
-                    ) = refetch_parameters_as_torch(renderer, device)
-
-                    optimizer = create_masked_optimizer(
-                        config,
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        albedos,
-                        opacities,
-                        betas,
-                    )
-
                 # --------------------------------------------------------------
-                # 9. Densification + pruning (unchanged)
+                # 9. Densification + pruning
                 # --------------------------------------------------------------
                 densification_result: Optional[Dict[str, np.ndarray]] = None
                 indices_to_remove_list: List[int] = []
 
-
+                scale_prune_indices = np.zeros((0,), dtype=np.int64)
+                opacity_prune_indices = np.zeros((0,), dtype=np.int64)
 
                 if iteration >= burnin_iterations and iteration % prune_interval == 0:
-                    opacity_prune_indices = compute_prune_indices_by_opacity(
-                        opacities,
-                        min_opacity=opacity_prune_threshold,
-                        use_quantile=False,
-                        max_fraction_to_prune=max_prune_fraction,
+                    # ----------------------------------------------------------
+                    # Prune geometrically degenerate surfels.
+                    #
+                    # A surfel is degenerate if either:
+                    #   scale_u <= 1e-5
+                    #   scale_v <= 1e-5
+                    #
+                    # trainable_surfel_mask protects emissive/light surfels.
+                    # ----------------------------------------------------------
+                    scale_prune_indices = compute_prune_indices_by_degenerate_scale(
+                        scales,
+                        min_scale=1.0e-6,
+                        trainable_mask=trainable_surfel_mask,
+                        min_points_to_keep=1,
                     )
+
+                    if scale_prune_indices.size > 0:
+                        indices_to_remove_list.extend(int(i) for i in scale_prune_indices)
+
+                    # ----------------------------------------------------------
+                    # Prune low-opacity surfels.
+                    # ----------------------------------------------------------
+                    # opacity_prune_indices = compute_prune_indices_by_opacity(
+                    #    opacities,
+                    #    min_opacity=opacity_prune_threshold,
+                    #    use_quantile=False,
+                    #    max_fraction_to_prune=max_prune_fraction,
+                    # )
+
                     if opacity_prune_indices.size > 0:
                         indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
 
                 if indices_to_remove_list or densification_result is not None:
                     if indices_to_remove_list:
+                        scale_prune_set = set(int(i) for i in scale_prune_indices)
+                        opacity_prune_set = set(int(i) for i in opacity_prune_indices)
+
+                        scale_only_set = scale_prune_set - opacity_prune_set
+                        opacity_only_set = opacity_prune_set - scale_prune_set
+                        overlap_set = scale_prune_set & opacity_prune_set
+
                         indices_to_remove = np.unique(
                             np.asarray(indices_to_remove_list, dtype=np.int64)
                         )
+
+                        print(
+                            f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
+                            f"scale={len(scale_prune_set)}, "
+                            f"opacity={len(opacity_prune_set)}, "
+                            f"both={len(overlap_set)}, "
+                            f"scale_only={len(scale_only_set)}, "
+                            f"opacity_only={len(opacity_only_set)}"
+                        )
+
                         remove_points(renderer, indices_to_remove)
                         rebuild_bvh(renderer)
 
@@ -783,9 +1551,22 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
+                        powers
                     ) = refetch_parameters_as_torch(renderer, device)
 
-                    verify_parameters_inplane(tangent_u, tangent_v, scales, albedos, opacities, betas)
+                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+
+                    verify_parameters_inplane(
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        albedos,
+                        opacities,
+                        betas,
+                        trainable_surfel_mask=trainable_surfel_mask,
+                    )
+
                     apply_point_parameters(
                         renderer,
                         positions,
@@ -795,9 +1576,11 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
+                        powers,
                     )
 
                     rebuild_bvh(renderer)
+
                     optimizer = create_masked_optimizer(
                         config,
                         positions,
@@ -807,65 +1590,95 @@ def run_optimization(
                         albedos,
                         opacities,
                         betas,
+                        powers,
                     )
 
+                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
 
+                    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
+                    print(
+                        f"Frozen emissive surfels: {frozen_surfel_count} / "
+                        f"{int(trainable_surfel_mask.numel())}"
+                    )
                 # --------------------------------------------------------------
-                # 10. Snapshots (per-camera images)
+                # 10. Snapshots
                 # --------------------------------------------------------------
                 if iteration % config.save_interval == 0 or iteration == config.iterations:
-                    for camera_name in camera_ids:
+                    for camera_name in all_camera_ids:
                         camera_base_dir = config.output_dir / camera_name
                         camera_render_dir = camera_base_dir / "render"
                         camera_grad_dir = camera_base_dir / "grad"
+                        camera_depth_dir = camera_base_dir / "depth_distortion"
+                        camera_visible_normal_dir = camera_base_dir / "visible_normal"
+                        camera_depth_normal_dir = camera_base_dir / "normal_from_depth"
+                        camera_median_depth_dir = camera_base_dir / "median_depth"
                         camera_render_dir.mkdir(parents=True, exist_ok=True)
                         camera_grad_dir.mkdir(parents=True, exist_ok=True)
 
-                        # Per-camera render
-                        image_numpy = np.asarray(
-                            current_images[camera_name],
-                            dtype=np.float32,
-                            order="C",
-                        )
-                        render_path = (
-                                camera_render_dir
-                                / f"{iteration:04d}_render.png"
-                        )
+                        image_numpy = get_forward_rgb(forward_out, camera_name)
+                        render_path = camera_render_dir / f"{iteration:04d}_render.png"
                         save_render(render_path, image_numpy)
 
-                        # Per-camera adjoint/gradient visualization
-                        adjointSourceImages = adjoint_images.get("adjoint_source")
-                        if adjointSourceImages is not None and camera_name in adjointSourceImages:
-                            grad_image_numpy = np.asarray(
-                                adjointSourceImages[camera_name],
+                        if use_depth_distortion:
+                            camera_depth_dir.mkdir(parents=True, exist_ok=True)
+                            depth_distortion_numpy = get_forward_depth_distortion(forward_out, camera_name)
+                            depth_distortion_path = camera_depth_dir / f"{iteration:04d}_depth_distortion.png"
+                            save_depth_distortion_snapshot(
+                                depth_distortion_path,
+                                depth_distortion_numpy,
+                                quantile=0.99,
+                                save_npy=True,
+                            )
+
+                        if use_normal_consistency:
+                            camera_median_depth_dir.mkdir(parents=True, exist_ok=True)
+                            camera_visible_normal_dir.mkdir(parents=True, exist_ok=True)
+                            camera_depth_normal_dir.mkdir(parents=True, exist_ok=True)
+
+                            median_depth_numpy = get_forward_median_depth(forward_out, camera_name)
+                            visible_normal_numpy = get_forward_visible_normal(forward_out, camera_name)
+                            normal_from_depth_numpy = get_forward_normal_from_depth(forward_out, camera_name)
+
+                            save_median_depth_snapshot(
+                                camera_median_depth_dir / f"{iteration:04d}_median_depth.png",
+                                median_depth_numpy,
+                                quantile=0.99,
+                                save_npy=True,
+                            )
+
+                            save_normal_map_snapshot(
+                                camera_visible_normal_dir / f"{iteration:04d}_visible_normal.png",
+                                visible_normal_numpy,
+                                save_npy=True,
+                            )
+
+                            save_normal_map_snapshot(
+                                camera_depth_normal_dir / f"{iteration:04d}_normal_from_depth.png",
+                                normal_from_depth_numpy,
+                                save_npy=True,
+                            )
+                        adjoint_source_images = adjoint_images.get("adjoint_source")
+                        if adjoint_source_images is not None and camera_name in adjoint_source_images:
+                            grad_img_np = np.asarray(
+                                adjoint_source_images[camera_name],
                                 dtype=np.float32,
                                 order="C",
                             )
-                            # proceed with saving gradImageNumpy
-
-                            grad_image_numpy = np.nan_to_num(
-                                grad_image_numpy,
+                            grad_img_np = np.nan_to_num(
+                                grad_img_np,
                                 nan=0.0,
                                 posinf=0.0,
                                 neginf=0.0,
                             )
 
-                            grad_path = (
-                                    camera_grad_dir
-                                    / f"{iteration:04d}_grad_099.png"
-                            )
+                            grad_path = camera_grad_dir / f"{iteration:04d}_grad_099.png"
                             save_gradient_sign_png_py(
                                 grad_path,
-                                grad_image_numpy,
+                                grad_img_np,
                                 adjoint_spp=renderer_settings.adjoint_passes,
                                 abs_quantile=0.999,
                                 flip_y=False,
                             )
-
-                            # Loss image: store under main camera
-                            main_loss_image = loss_images[camera_name]
-                            main_camera_loss_root = config.output_dir / camera_name
-                            save_loss_image(main_camera_loss_root, main_loss_image, iteration)
 
                 # --------------------------------------------------------------
                 # 11. Metrics and logging
@@ -883,6 +1696,7 @@ def run_optimization(
                     "albedo": albedos.detach().cpu().numpy(),
                     "opacity": opacities.detach().cpu().numpy(),
                     "beta": betas.detach().cpu().numpy(),
+                    "power": powers.detach().cpu().numpy(),
                 }
                 parameter_mse = compute_parameter_mse(
                     current_params_np,
@@ -892,50 +1706,93 @@ def run_optimization(
                 csv_writer.writerow(
                     [
                         iteration,
-                        camera_name,
-                        loss_value_float,
-                        total_loss_value,
+                        "ALL_CAMERAS",
+                        total_rgb_loss_value,
+                        total_depth_distortion_loss_raw,
+                        total_depth_distortion_loss_weighted,
+                        total_normal_loss_raw,
+                        total_normal_loss_weighted,
+                        opacity_regularizer_loss,
                         total_loss_value,
                         parameter_mse,
                         num_points,
                         iteration_time,
                         total_time,
+                        grad_opacity_total_rms,
+                        grad_opacity_total_max,
+                        grad_opacity_regularizer_rms,
+                        grad_opacity_regularizer_max,
                     ]
                 )
                 csv_file.flush()
 
                 if iteration % config.log_interval == 0 or iteration == 1:
-                    denom = max(num_points, 1)
-                    grad_norm = float(np.linalg.norm(grad_position_np) / denom)
-                    grad_tanu = float(np.linalg.norm(grad_tangent_u_np) / denom)
-                    grad_tanv = float(np.linalg.norm(grad_tangent_v_np) / denom)
-                    grad_scale = float(np.linalg.norm(grad_scales_np) / denom)
-                    grad_albedo = float(np.linalg.norm(grad_albedos_np) / denom)
-                    grad_opacity = float(np.linalg.norm(grad_opacities_np) / denom)
-                    grad_beta = float(np.linalg.norm(grad_betas_np) / denom)
+                    grad_pos_rms = rms_point(grad_position_np)
+                    grad_tanu_rms = rms_point(grad_tangent_u_np)
+                    grad_tanv_rms = rms_point(grad_tangent_v_np)
+                    grad_scale_rms = rms_point(grad_scales_np)
+                    grad_albedo_rms = rms_point(grad_albedos_np)
+                    grad_opacity_rms = rms_point(grad_opacities_np)
+                    grad_beta_rms = rms_point(grad_betas_np)
+
+                    grad_pos_max = max_point_norm(grad_position_np)
+                    grad_tanu_max = max_point_norm(grad_tangent_u_np)
+                    grad_tanv_max = max_point_norm(grad_tangent_v_np)
+                    grad_scale_max = max_point_norm(grad_scales_np)
+                    grad_albedo_max = max_point_norm(grad_albedos_np)
+                    grad_opacity_max = max_point_norm(grad_opacities_np)
+                    grad_beta_max = max_point_norm(grad_betas_np)
 
                     print(
                         f"[Iter {iteration:04d}/{config.iterations}] "
-                        f"L2 Sum={total_loss_value:.6e}, "
-                        f"|trans|={grad_norm:.3e}, "
-                        f"|tu|={grad_tanu:.3e}, "
-                        f"|tv|={grad_tanv:.3e}, "
-                        f"|su,sv|={grad_scale:.3e}, "
-                        f"|albedo|={grad_albedo:.3e}, "
-                        f"|opacity|={grad_opacity:.3e}, "
-                        f"|beta|={grad_beta:.3e}, "
-                        f"pts={num_points}, "
+                        f"RGB={total_rgb_loss_value:.3e}, "
+                        f"DdistRaw={total_depth_distortion_loss_raw:.3e}, "
+                        f"DdistW={total_depth_distortion_loss_weighted:.3e}, "
+                        f"NconsRaw={total_normal_loss_raw:.3e}, "
+                        f"NconsW={total_normal_loss_weighted:.3e}, "
+                        f"OpacityReg={opacity_regularizer_loss:.3e}, "
+                        f"Total={total_loss_value:.3e}, "
                         f"t={iteration_time:.3f} s, "
-                        f"t_total={total_time:.1f} s"
+                        f"pos_rms={grad_pos_rms:.2e}, "
+                        f"tu_rms={grad_tanu_rms:.2e}, "
+                        f"tv_rms={grad_tanv_rms:.2e}, "
+                        f"su,sv_rms={grad_scale_rms:.2e}, "
+                        f"rho_rms={grad_albedo_rms:.2e}, "
+                        f"eta_rms={grad_opacity_rms:.2e}, "
+                        f"beta_rms={grad_beta_rms:.2e}, "
+                        f"pos_max={grad_pos_max:.2e}, "
+                        f"tu_max={grad_tanu_max:.2e}, "
+                        f"tv_max={grad_tanv_max:.2e}, "
+                        f"su,sv_max={grad_scale_max:.2e}, "
+                        f"rho_max={grad_albedo_max:.2e}, "
+                        f"eta_max={grad_opacity_max:.2e}, "
+                        f"beta_max={grad_beta_max:.2e}, "
+                        f"pts={num_points}, "
+                        f"t_total={total_time:.1f} s, "
+                        f"it/s={1.0 / iteration_time:.2f}"
                     )
 
-                    # Hotkey snapshot: use main camera for the image
-                    # --------------------------------------------------------------
-                    # 12. Hotkeys (snapshot + gradient dump)
-                    # --------------------------------------------------------------
+                    print(format_gradient_stats("photo_grads", photo_gradient_stats))
+
+                    if distortion_gradients:
+                        print(format_gradient_stats("dist_grads ", distortion_gradient_stats))
+
+                    if normal_gradients:
+                        print(format_gradient_stats("norm_grads ", normal_gradient_stats))
+
+                    if use_depth_distortion and depth_distortion_maps_for_logging:
+                        print(
+                            summarize_depth_distortion_maps(
+                                depth_distortion_maps_for_logging,
+                                depth_distortion_grad_images,
+                            )
+                        )
+
+                    if use_opacity_loss:
+                        print(format_gradient_stats("opacity_reg", opacity_regularizer_gradient_stats))
+
                     hotkey = poll_hotkey()
                     if hotkey == "s":
-                        # Save current state (render + PLY) using main camera
                         save_manual_snapshot(
                             renderer,
                             config.output_dir,
@@ -947,10 +1804,10 @@ def run_optimization(
                             albedos,
                             opacities,
                             betas,
-                            camera_ids,
+                            powers,
+                            training_camera_ids,
                         )
                     elif hotkey == "g":
-                        # Save gradients for all points
                         save_gradients_snapshot(
                             config.output_dir,
                             iteration,
@@ -983,20 +1840,103 @@ def run_optimization(
         albedos,
         opacities,
         betas,
+        powers
     )
 
     final_images = renderer.render_forward()
 
-    final_loss = 0.0
-    for camera_name in camera_ids:
-        img_np = np.asarray(final_images[camera_name], dtype=np.float32, order="C")
+    final_rgb_loss = 0.0
+    final_depth_distortion_loss_raw = 0.0
+    final_depth_distortion_loss_weighted = 0.0
+    final_normal_loss_raw = 0.0
+    final_normal_loss_weighted = 0.0
+    final_total_loss = 0.0
+
+    for camera_name in training_camera_ids:
+        img_np = get_forward_rgb(final_images, camera_name)
         tgt_np = target_images[camera_name]
-        loss_cam = compute_l2_loss(img_np, tgt_np)
-        final_loss += float(loss_cam)
+
+        rgb_loss_cam = float(compute_l2_loss(img_np, tgt_np))
+        final_rgb_loss += rgb_loss_cam
+        final_total_loss += rgb_loss_cam
+
         save_render(Path(config.output_dir / f"render_final_{camera_name}.png"), img_np)
 
-    print(f"Initial loss (sum over cameras): {initial_loss:.6e}")
-    print(f"Final loss   (sum over cameras): {final_loss:.6e}")
+        if use_depth_distortion:
+            dist_np = get_forward_depth_distortion(final_images, camera_name)
+            dist_loss_cam_raw = float(dist_np.mean())
+            dist_loss_cam_weighted = depth_distortion_weight * dist_loss_cam_raw
+
+            final_depth_distortion_loss_raw += dist_loss_cam_raw
+            final_depth_distortion_loss_weighted += dist_loss_cam_weighted
+            final_total_loss += dist_loss_cam_weighted
+
+            save_depth_distortion_snapshot(
+                Path(config.output_dir / f"depth_distortion_final_{camera_name}.png"),
+                dist_np,
+                quantile=0.99,
+                save_npy=True,
+            )
+
+        if use_normal_consistency:
+            median_depth = get_forward_median_depth(final_images, camera_name)
+            visible_normal = get_forward_visible_normal(final_images, camera_name)
+            normal_from_depth = get_forward_normal_from_depth(final_images, camera_name)
+
+            normal_loss_cam_raw, _, _ = compute_normal_consistency_loss_and_adjoints(
+                visible_normal,
+                normal_from_depth,
+                1.0,
+            )
+            normal_loss_cam_weighted = normal_consistency_weight * normal_loss_cam_raw
+
+            final_normal_loss_raw += normal_loss_cam_raw
+            final_normal_loss_weighted += normal_loss_cam_weighted
+            final_total_loss += normal_loss_cam_weighted
+
+            save_median_depth_snapshot(
+                Path(config.output_dir / f"median_depth_final_{camera_name}.png"),
+                median_depth,
+                save_npy=True,
+            )
+            save_normal_map_snapshot(
+                Path(config.output_dir / f"visible_normal_final_{camera_name}.png"),
+                visible_normal,
+                save_npy=True,
+            )
+            save_normal_map_snapshot(
+                Path(config.output_dir / f"normal_from_depth_final_{camera_name}.png"),
+                normal_from_depth,
+                save_npy=True,
+            )
+
+    final_opacity_regularizer_loss, _ = (
+        compute_opacity_target_regularizer_and_gradients(
+            opacities=opacities,
+            trainable_surfel_mask=trainable_surfel_mask,
+            opacity_target=opacity_target,
+            opacity_weight=opacity_loss_weight,
+            use_opacity_loss=use_opacity_loss,
+        )
+    )
+
+    final_total_loss += final_opacity_regularizer_loss
+
+    print(f"Initial RGB loss                        : {initial_rgb_loss:.6e}")
+    print(f"Initial depth distortion loss (raw)     : {initial_depth_distortion_loss_raw:.6e}")
+    print(f"Initial depth distortion loss (weighted): {initial_depth_distortion_loss_weighted:.6e}")
+    print(f"Initial normal consistency loss (raw)   : {initial_normal_loss_raw:.6e}")
+    print(f"Initial normal consistency loss (weighted): {initial_normal_loss_weighted:.6e}")
+    print(f"Initial opacity regularizer loss         : {initial_opacity_regularizer_loss:.6e}")
+    print(f"Initial total loss                      : {initial_total_loss:.6e}")
+
+    print(f"Final RGB loss                          : {final_rgb_loss:.6e}")
+    print(f"Final depth distortion loss (raw)       : {final_depth_distortion_loss_raw:.6e}")
+    print(f"Final depth distortion loss (weighted)  : {final_depth_distortion_loss_weighted:.6e}")
+    print(f"Final normal consistency loss (raw)     : {final_normal_loss_raw:.6e}")
+    print(f"Final normal consistency loss (weighted): {final_normal_loss_weighted:.6e}")
+    print(f"Final opacity regularizer loss           : {final_opacity_regularizer_loss:.6e}")
+    print(f"Final total loss                        : {final_total_loss:.6e}")
 
     ply_path = config.output_dir / "points_final.ply"
     save_gaussians_to_ply(
@@ -1008,13 +1948,12 @@ def run_optimization(
         albedos,
         opacities,
         betas,
+        powers,
         shape_default=0.0,
     )
     print(f"Final parameters written to PLY: {ply_path}")
 
     print("\nOptimization completed.")
-    print(f"Initial loss (sum over cameras): {initial_loss:.6e}")
-    print(f"Final loss   (sum over cameras): {final_loss:.6e}")
     print(f"Outputs saved in: {config.output_dir.resolve()}")
     total_elapsed = time.perf_counter() - total_start_time
     print(f"Total optimization wall time: {total_elapsed:.1f} s")

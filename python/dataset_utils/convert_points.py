@@ -146,11 +146,11 @@ def write_gaussian_ply(
     output_path,
     args,
     opacity_default=1.0,
-    beta_default=-3.0,
+    beta_default=-1.0,
     shape_default=0.0,
 
     # -----------------------------------------------------------
-    # Noise parameters (set these yourself)
+    # Noise parameters
     # -----------------------------------------------------------
     noise_sigma_translation=0.00,
     noise_sigma_rotation=0.00,
@@ -168,11 +168,13 @@ def write_gaussian_ply(
         - beta
         - shape
     Scale (su,sv) is NOT perturbed.
+
+    Also appends one emissive light point at:
+        position = (0, 0, 2.2)
+        normal   = (0, 0, -1)
+        power    = 50
     """
 
-    # ------------------------------
-    # Small utility functions
-    # ------------------------------
     def add_noise(value, sigma):
         if sigma == 0.0:
             return value
@@ -188,21 +190,18 @@ def write_gaussian_ply(
         tu = renormalize(tu)
         tv = tv - np.dot(tv, tu) * tu
         tv = renormalize(tv)
-        # Ensure right-handed frame
         if np.dot(np.cross(tu, tv), normal) < 0:
             tv = -tv
         return tu, tv
 
-    # ------------------------------
-    # Build header
-    # ------------------------------
-    vertex_count = len(vertices)
+    total_vertex_count = len(vertices) + 2
 
     lines = [
         "ply",
         "format ascii 1.0",
         "comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity",
-        f"element vertex {vertex_count}",
+        "comment Includes one emissive light point at (0, 0, 2.2) with normal (0, 0, -1)",
+        f"element vertex {total_vertex_count}",
         "property float x",
         "property float y",
         "property float z",
@@ -224,11 +223,7 @@ def write_gaussian_ply(
         "end_header",
     ]
 
-    # ------------------------------
-    # Vertex loop
-    # ------------------------------
     for vertex in vertices:
-        # Base position
         x = float(vertex["x"])
         y = float(vertex["y"])
         z = float(vertex["z"])
@@ -237,77 +232,142 @@ def write_gaussian_ply(
         ny = float(vertex["ny"])
         nz = float(vertex["nz"])
 
-        # Compute tangent basis from normal
         tu_x, tu_y, tu_z, tv_x, tv_y, tv_z = compute_tangent_basis_from_normal(nx, ny, nz)
         tu = np.array([tu_x, tu_y, tu_z], dtype=float)
         tv = np.array([tv_x, tv_y, tv_z], dtype=float)
         normal = np.array([nx, ny, nz], dtype=float)
 
-        # Scales (unchanged)
         su = float(args.scale)
         sv = float(args.scale)
 
-        # Albedo 0..1
         albedo = np.array([
-            vertex["r"] * 0 + 0.182,
-            vertex["g"] * 0 + 0.424,
-            vertex["b"] * 0 + 0.150
+            vertex["r"] * 0 + 0.05,
+            vertex["g"] * 0 + 0.05,
+            vertex["b"] * 0 + 0.05
         ], dtype=float)
+
+        rng = np.random.default_rng(42)
+        #albedo = rng.random(3, dtype=np.float32).astype(float)
 
         opacity = float(opacity_default)
         beta = float(beta_default)
         shape = float(shape_default)
+        power = 0.0
 
-        # -------------------------------------------------------
-        # Noise injection
-        # -------------------------------------------------------
-
-        # Translation
         if noise_sigma_translation > 0.0:
             x = add_noise(x, noise_sigma_translation)
             y = add_noise(y, noise_sigma_translation)
             z = add_noise(z, noise_sigma_translation)
 
-        # Rotation
         if noise_sigma_rotation > 0.0:
             tu = tu + np.random.normal(0.0, noise_sigma_rotation, size=3)
             tv = tv + np.random.normal(0.0, noise_sigma_rotation, size=3)
             tu, tv = orthonormalize(tu, tv, normal)
 
-        # Albedo
         if noise_sigma_albedo > 0.0:
             albedo = albedo + np.random.normal(0.0, noise_sigma_albedo, size=3)
             albedo = np.clip(albedo, 0.0, 1.0)
 
-        # Opacity
         if noise_sigma_opacity > 0.0:
             opacity = add_noise(opacity, noise_sigma_opacity)
             opacity = float(np.clip(opacity, 0.0, 1.0))
 
-        # Beta
         if noise_sigma_beta > 0.0:
             beta = add_noise(beta, noise_sigma_beta)
 
-        # Shape
         if noise_sigma_shape > 0.0:
             shape = add_noise(shape, noise_sigma_shape)
 
-        # ------------------------------
-        # Emit line
-        # ------------------------------
         line = (
             f"{x:.7f} {y:.7f} {z:.7f} "
             f"{tu[0]:.7f} {tu[1]:.7f} {tu[2]:.7f} "
             f"{tv[0]:.7f} {tv[1]:.7f} {tv[2]:.7f} "
             f"{su:.7f} {sv:.7f} "
             f"{albedo[0]:.7f} {albedo[1]:.7f} {albedo[2]:.7f} "
-            f"{opacity:.7f} {beta:.7f} {shape:.7f} {0.0:.7f}"
+            f"{opacity:.7f} {beta:.7f} {shape:.7f} {power:.7f}"
         )
         lines.append(line)
 
-    # Save file
-    output_path.write_text("\n".join(lines) + "\n")
+    light_nx = 0.0
+    light_ny = 0.0
+    light_nz = -1.0
 
+    light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
+        compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
+    )
+
+    light_x = 0.5
+    light_y = -0.8
+    light_z = 2.2
+    light_su = 0.001
+    light_sv = 0.001
+    light_albedo_r = 1.0
+    light_albedo_g = 1.0
+    light_albedo_b = 1.0
+    light_opacity = 1.0
+    light_beta = -100.0
+    light_shape = 0.0
+    light_power = 150.0
+
+    light_line = (
+        f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
+        f"{light_tu_x:.7f} {light_tu_y:.7f} {light_tu_z:.7f} "
+        f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
+        f"{light_su:.7f} {light_sv:.7f} "
+        f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+    )
+    lines.append(light_line)
+
+    light_x = -0.5
+    light_y = 0.8
+    light_z = 2.2
+    light_albedo_r = 1.0
+    light_albedo_g = 1.0
+    light_albedo_b = 1.0
+    light_opacity = 1.0
+    light_beta = -100.0
+    light_shape = 0.0
+    light_power = 75.0
+
+    light_line = (
+        f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
+        f"{light_tu_x:.7f} {light_tu_y:.7f} {light_tu_z:.7f} "
+        f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
+        f"{light_su:.7f} {light_sv:.7f} "
+        f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+    )
+    lines.append(light_line)
+    light_x = 0.0
+    light_y = 0.0
+    light_z = -2.0
+    light_albedo_r = 1.0
+    light_albedo_g = 1.0
+    light_albedo_b = 1.0
+    light_opacity = 1.0
+    light_beta = -100.0
+    light_shape = 0.0
+
+    light_nx = 0.0
+    light_ny = 0.0
+    light_nz = 1.0
+
+    light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
+        compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
+    )
+
+    light_line = (
+        f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
+        f"{light_tu_x:.7f} {light_tu_y:.7f} {light_tu_z:.7f} "
+        f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
+        f"{light_su:.7f} {light_sv:.7f} "
+        f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+    )
+    lines.append(light_line)
+
+    output_path.write_text("\n".join(lines) + "\n")
 
 
 def main():
@@ -330,7 +390,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.01,
+        default=0.012,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()

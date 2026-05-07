@@ -44,9 +44,13 @@ namespace Pale {
         float opacity{0.0f};
         float beta{0.0f};
         float shape{0.0f};
-        float power{0.0f};
+        float flux{0.0f};
 
         uint64_t pointId{0};
+
+        bool isEmissive() const {
+            return flux > 0.0f;
+        };
     };
 
     CHECK_16(Point);
@@ -157,27 +161,13 @@ namespace Pale {
         uint32_t triangleOffset; // into emissiveTriangles[]
         uint32_t triangleCount;
         float3 color; // lght color
-        float power;
+        float flux;
         float totalAreaWorld; // sum of worldArea of its triangles
 
         // Surfel
         uint32_t primitiveIndex;
     };
 
-    struct AreaLightSample {
-        float3 positionW;
-        float3 normalW; // unit
-        float3 direction;
-        float3 power;
-        uint32_t lightIndex;
-        float pdfSelectLight; // 1 / lightCount
-        float pdfDir;
-        float pdfArea; // 1 / (triangleCount * triArea)
-        float totalAreaWorld;
-        bool valid;
-    };
-
-    CHECK_16(AreaLightSample);
 
     struct GPUEmissiveTriangle {
         uint32_t globalTriangleIndex;
@@ -252,7 +242,10 @@ namespace Pale {
     struct alignas(16) RayState {
         Ray ray{};
         float3 pathThroughput{0.0f};
+        float transmission = 1.0f;
         uint32_t bounceIndex{0};
+        uint32_t traversalIndex{0};
+        float openSegmentProposalInverse = 1.0f;
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
         uint32_t lightIndex = UINT32_MAX;
         uint32_t hasTrackedParameter = UINT32_MAX;
@@ -264,7 +257,7 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr int kMaxSplatEventsPerRay = 16;
+    constexpr int kMaxSplatEventsPerRay = 5;
 
 
     struct SurfelEvent {
@@ -321,169 +314,259 @@ namespace Pale {
         NullTransmittance,
         ReflectScatter,
         TransmitScatter,
-
         // Projection states
         ProjectionScatter,
         Projection,
     };
+
     enum class SampledPointEventType : uint32_t {
         None = 0u,
         Null = 1u,
         Reflect = 2u,
         Transmit = 3u
     };
+
     static constexpr uint32_t kMaxSegmentOccluders = 5;
 
-    static constexpr uint32_t kMaxCachedSegmentOccluderCount = 10u;
-
-
-    struct CachedSegmentOccluderRecord {
-        uint32_t primitiveIndex = kInvalidIndex;
-        float2 uv{0.0f, 0.0f};
-        float alphaGeom = 0.0f;
-        float distanceFromSegmentStart = 0.0f;
-    };
-
-    struct CachedSegmentTransmittance {
-        uint32_t occluderCount = 0u;
-        bool overflowed = false;
-        CachedSegmentOccluderRecord occluders[kMaxCachedSegmentOccluderCount];
-    };
 
     struct PendingCameraSegment {
         bool valid = false;
         uint32_t pathId = 0u;
-        uint32_t pixelIndex = 0u;
-        float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
-        float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
-        float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
-
-        CachedSegmentTransmittance segmentOccludersToFirstScatter{};
+        uint32_t pixelIndex = UINT32_MAX;
+        float3 cameraPathThroughput{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 cameraOriginWorld{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 cameraDirectionWorld{FLT_MAX, FLT_MAX, FLT_MAX};
     };
 
     struct PointCloudSurfaceRecord {
-        uint32_t primitiveIndex = 0;
-        float2 uv = float2{0.0f, 0.0f};
-        float alphaGeom = 0.0f;
+        uint32_t primitiveIndex = UINT32_MAX;
+        float2 uv = float2{FLT_MAX, FLT_MAX};
+        float alphaGeom = FLT_MAX;
         int32_t sideSign = 1;
-        float3 incomingDirection = float3{0.0f, 0.0f, 0.0f};
+        float3 incomingDirection = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        uint32_t pathId = UINT32_MAX;
     };
 
-    struct CameraToSurfaceScatterEvent {
-        PointCloudSurfaceRecord ySurface{};
 
-        float3 cameraPathThroughput{0.0f, 0.0f, 0.0f};
-        float3 cameraOriginWorld{0.0f, 0.0f, 0.0f};
-        float3 cameraDirectionWorld{0.0f, 0.0f, 0.0f};
+    struct AreaLightSample {
+        float3 positionW;
+        float3 normalW; // unit
+        float3 direction;
+        float3 flux;
+        uint32_t lightIndex;
+        float pdfSelectLight; // 1 / lightCount
+        float pdfDir;
+        float pdfLocalCoordsSample;
+        float pdfArea; // 1 / (triangleCount * triArea)
+        float totalAreaWorld;
+        bool valid;
 
-        CachedSegmentTransmittance segmentCameraToY{};
+        PointCloudSurfaceRecord surface;
+        float lightJacobian;
+    };
+
+    CHECK_16(AreaLightSample);
+
+    struct DirectLightQuery {
+        PointCloudSurfaceRecord surface{};
+
+        // Adjoint weight transported to the current surface before local direct-light evaluation.
+        float3 adjointWeight{0.0f, 0.0f, 0.0f};
+
+        // Open-segment transmission on the incoming path up to this surface.
+        float transmissionToSurface = 1.0f;
+
+        // Local scattering factor at the current surface.
+        float3 localBsdf{0.0f, 0.0f, 0.0f};
+
+        // For non-Lambertian extensions. For diffuse this is not strictly needed,
+        // but it is useful to keep.
+        float3 outgoingDirectionWorld{0.0f, 0.0f, 0.0f};
+
+        // Sampled emitter point.
+        float3 lightPositionWorld{0.0f, 0.0f, 0.0f};
+        float3 lightNormalWorld{0.0f, 0.0f, 0.0f};
+        float3 lightRadiance{0.0f, 0.0f, 0.0f};
+        float lightPdfArea = 1.0f;
+
+        uint32_t pixelIndex = 0u;
+        uint32_t pathId = 0u;
+        uint32_t bounceIndex = 0u;
+    };
+
+    struct DirectLightGradientEvent {
+        PointCloudSurfaceRecord surface{};
+
+        // Prefix weight up to the current surface x.
+        float3 xPathThroughput{0.0f, 0.0f, 0.0f};
+        float3 localBsdf{0.0f, 0.0f, 0.0f};
+
+        // Surface-to-light sample.
+        float3 lightPositionWorld{0.0f, 0.0f, 0.0f};
+        float3 lightNormalWorld{0.0f, 0.0f, 0.0f};
+        float3 lightRadiance{0.0f, 0.0f, 0.0f};
+        float lightPdfArea = 1.0f;
+
+        // Prefix transmission up to x, kept separate for readability if you want it.
+        float transmissionToSurface = 1.0f;
+
+        // Optional, currently binary and not differentiated.
+        float visibility = 1.0f;
+        bool useImplicitRayHitJacobian = false;
+    };
+
+    struct PendingAdjointVertex {
+        PointCloudSurfaceRecord surface{};
+
+        uint32_t bounceIndex = 0u;
+
+        // Throughput stored before the reflect-sampling factor of the current vertex
+        // is applied in the next state update. This preserves your current convention.
+        float3 pathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+
+        // Segment metadata for the segment arriving at this vertex from the previous one.
+        float transmissionFromPrevious = FLT_MAX;
+        float geometryFromPrevious = FLT_MAX;
+        float areaPdfFromPrevious = FLT_MAX;
+
+        // Local scattering factor stored at this vertex.
+        float3 bsdfAlpha = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+
+        // Only used for the camera-attached path case.
+        float cosineFromPrevious = FLT_MAX;
     };
 
     struct PendingAdjointStageX {
         bool valid = false;
-        bool isTransmit = false;
-        uint32_t pathId = 0;
-        uint32_t pixelIndex = 0;
-        PointCloudSurfaceRecord xSurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        bool applyIncomingRayHitJacobianToX = false;
+        uint32_t pathId = 0u;
+        uint32_t pixelIndex = UINT32_MAX;
 
-        float3 segmentStartPositionWorld{0.0f, 0.0f, 0.0f};
-        CachedSegmentTransmittance segmentOccludersToNextHit{};
+        // Whether the CURRENT stored vertex was produced from the camera-attached
+        // branch that uses the implicit ray-hit Jacobian convention.
+        bool useImplicitRayHitJacobian = false;
+
+        // Rolling two-vertex history:
+        // previous = X, current = Y, live hit = Z
+        bool hasPrevious = false;
+        PendingAdjointVertex previous{};
+        PendingAdjointVertex current{};
     };
 
-    struct PendingAdjointStageXY {
-        bool valid = false;
-        uint32_t pathId = 0;
-        uint32_t pixelIndex = 0;
+    struct MeasurementGradientEvent {
+        PointCloudSurfaceRecord xSurface;
+        float transmission{};
+        float3 xPathThroughput;
+        bool useImplicitRayHitJacobian = false;
+    };
+
+    struct MeasurementGradientEventXY {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        bool applyIncomingRayHitJacobianToX = false;
-
-        float3 segmentStartPositionWorld{0.0f, 0.0f, 0.0f};
-        CachedSegmentTransmittance segmentOccludersToNextHit{};
+        float3 xPathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float transmission = 1.0f;
+        float transmissionPreviousSegment = FLT_MAX;
+        float geometryPreviousSegment = FLT_MAX;
+        float cosinePreviousSegment = FLT_MAX;
+        bool useImplicitRayHitJacobian = false;
+        bool isDirectLightSample = false;
+        float3 directLightRadiance{FLT_MAX, FLT_MAX, FLT_MAX};
     };
 
-    struct AttachedGradientProjectionEvent {
-        PointCloudSurfaceRecord xSurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
+    struct MaterialVertexGradientEvent {
+        PointCloudSurfaceRecord surface;
+        float3 adjointWeightAtVertex{0.0f, 0.0f, 0.0f};
+        uint32_t pathId = kInvalidIndex;
+        uint32_t bounceIndex = 0u;
     };
 
-    struct AttachedGradientScatterEvent {
-        PointCloudSurfaceRecord xSurface;
-        PointCloudSurfaceRecord ySurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        bool applyIncomingRayHitJacobianToX = false;
-        CachedSegmentTransmittance segmentXY{};
-    };
 
-    struct DetachedThreePointGradientEvent {
-        PointCloudSurfaceRecord xSurface;
-        PointCloudSurfaceRecord ySurface;
-        PointCloudSurfaceRecord zSurface;
-        float3 xPathThroughput = float3{0.0f, 0.0f, 0.0f};
-        CachedSegmentTransmittance segmentYZ{};
+    struct MaterialEdgeGradientEvent {
+        PointCloudSurfaceRecord startSurface{};
+        PointCloudSurfaceRecord endSurface{};
+        float3 sampledEdgeThroughput{0.0f, 0.0f, 0.0f};
+        float segmentTransmittance = 1.0f;
+        float segmentGeometricTerm = 1.0f;
+        float segmentAreaPdf = 1.0f;
+        float3 directLightRadiance{0.0f, 0.0f, 0.0f};
+        bool isDirectLightSample = false;
+        bool writeOcclusionGradients = true; // True only for the first time as we handled camera rays spearately
+        uint32_t pathId = kInvalidIndex;
+        uint32_t startBounceIndex = 0u;
     };
 
     struct ReconstructedSurfelState {
-        float3 position = float3{0.0f, 0.0f, 0.0f};
-        float3 canonicalNormal = float3{0.0f, 0.0f, 1.0f};
-        float3 orientedNormal = float3{0.0f, 0.0f, 1.0f};
-        float3 tangentUWorld = float3{0.0f, 0.0f, 0.0f};
-        float3 tangentVWorld = float3{0.0f, 0.0f, 0.0f};
-        float areaWorld = 0.0f;
+        float3 position = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 canonicalNormal = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 orientedNormal = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 tangentUWorld = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 tangentVWorld = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float areaWorld = FLT_MAX;
     };
 
     struct SurfelGradientPayload {
-        float gradBeta = 0.0f;
-        float gradEta = 0.0f;
-        float3 gradRho = float3{0.0f, 0.0f, 0.0f};
-        float3 gradPosition = float3{0.0f, 0.0f, 0.0f};
-        float gradScaleU = 0.0f;
-        float gradScaleV = 0.0f;
-        float3 gradTangentU = float3{0.0f, 0.0f, 0.0f};
-        float3 gradTangentV = float3{0.0f, 0.0f, 0.0f};
+        float gradBeta = FLT_MAX;
+        float gradEta = FLT_MAX;
+        float3 gradRho = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 gradPosition = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float gradScaleU = FLT_MAX;
+        float gradScaleV = FLT_MAX;
+        float3 gradTangentU = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 gradTangentV = float3{FLT_MAX, FLT_MAX, FLT_MAX};
     };
 
     struct SurfelGradientRecord {
         uint32_t primitiveIndex = UINT32_MAX;
 
-        float gradBeta = 0.0f;
-        float gradEta = 0.0f;
+        float gradBeta = FLT_MAX;
+        float gradEta = FLT_MAX;
 
-        float gradRhoX = 0.0f;
-        float gradRhoY = 0.0f;
-        float gradRhoZ = 0.0f;
+        float gradAlbedoR = FLT_MAX;
+        float gradAlbedoG = FLT_MAX;
+        float gradAlbedoB = FLT_MAX;
 
-        float gradPositionX = 0.0f;
-        float gradPositionY = 0.0f;
-        float gradPositionZ = 0.0f;
+        float gradPositionX = FLT_MAX;
+        float gradPositionY = FLT_MAX;
+        float gradPositionZ = FLT_MAX;
 
-        float gradScaleU = 0.0f;
-        float gradScaleV = 0.0f;
-        float gradTangentUX = 0.0f;
-        float gradTangentUY = 0.0f;
-        float gradTangentUZ = 0.0f;
-        float gradTangentVX = 0.0f;
-        float gradTangentVY = 0.0f;
-        float gradTangentVZ = 0.0f;
+        float gradScaleU = FLT_MAX;
+        float gradScaleV = FLT_MAX;
+        float gradTangentUX = FLT_MAX;
+        float gradTangentUY = FLT_MAX;
+        float gradTangentUZ = FLT_MAX;
+        float gradTangentVX = FLT_MAX;
+        float gradTangentVY = FLT_MAX;
+        float gradTangentVZ = FLT_MAX;
     };
 
+
     struct GradientRecordRanges {
-        uint32_t projectionOffset = 0;
-        uint32_t projectionCount = 0;
+        uint32_t measurementOffset = 0u;
+        uint32_t measurementCount = 0u;
 
-        uint32_t projectionTransmitOffset = 0;
-        uint32_t projectionTransmitCount = 0;
+        uint32_t measurementTwoPointOffset = 0u;
+        uint32_t measurementTwoPointCount = 0u;
 
-        uint32_t projectionScatterOffset = 0;
-        uint32_t projectionScatterCount = 0;
+        uint32_t materialVertexOffset = 0u;
+        uint32_t materialVertexCount = 0u;
 
-        uint32_t detachedOffset = 0;
-        uint32_t detachedCount = 0;
+        uint32_t materialEndEdgeOffset = 0u;
+        uint32_t materialEndEdgeCount = 0u;
 
-        uint32_t totalCount = 0;
+        uint32_t materialStartEdgeOffset = 0u;
+        uint32_t materialStartEdgeCount = 0u;
+
+        uint32_t totalCount = 0u;
+    };
+
+    struct OccluderDerivative {
+        float3 gradPosition{0.0f};
+        float gradScaleU = 0.0f;
+        float gradScaleV = 0.0f;
+        float gradEta = 0.0f;
+        float gradBeta = 0.0f;
+        float3 gradTangentU{0.0f};
+        float3 gradTangentV{0.0f};
+        uint32_t primitiveIndex = kInvalidIndex;
     };
 
     struct CompletedGradientEvent {
@@ -514,7 +597,6 @@ namespace Pale {
         float3 yNormal{0.0f};
         Ray yIncomingRay{};
         float3 yPathThroughput{0.0f};
-
         // Z = final mesh hit
         uint32_t zInstanceIndex = UINT32_MAX;
         uint32_t zPrimitiveIndex = UINT32_MAX;
@@ -557,8 +639,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.5f;
-        float qReflect = 0.5f;
+        float qNull = 0.4f;
+        float qReflect = 0.6f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
@@ -570,33 +652,39 @@ namespace Pale {
         RayGenMode rayGenMode = RayGenMode::Emitter;
         uint32_t maxBounces = 6;
         uint32_t numForwardPasses = 6;
-        uint32_t numGatherPasses = 1;
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
         uint32_t russianRouletteStart = 6; // Which bounce to start RR
+        uint32_t numShadowRays = 8;
+        uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
+        uint32_t surfelIndexForDebugImages = 1;
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
         AdjointSampleSettings sampling;
+        bool enableAdjointDirectLight = false;
+        uint32_t numAdjointPathShadowRays = 4;
+
+        bool useDepthDistortion = false;
+        bool useNormalConsistency = false;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
     static_assert(sycl::is_device_copyable<PathTracerSettings>::value);
-
     // -------------------- Photon storage (device) --------------------------
     // Filled during the emitter pass by appending at an atomic counter.
     // One entry per stored photon (only diffuse hits).
-    struct alignas(16) DevicePhotonSurface {
+    struct DevicePhotonSurface {
         // Positions in world space
         float3 position{0.0f};
         // Photon power (throughput × emission), RGB channels
-        float3 power{0.0f};
+        float3 flux{0.0f};
         float3 incomingDirection{0.0f};
+        //float3 normal{0.0f};
         // |n · ω_i| at the hit (used to convert flux→irradiance)
         //int sideSign{}; // +1 or -1: hemisphere relative to canonical surfel normal
         //GeometryType geometryType{GeometryType::InvalidType};
         //float3 incomingDirection{0.0f};
-
         std::uint32_t isValid = 0;
     };
 
@@ -604,7 +692,9 @@ namespace Pale {
 
     // ----------------- Full surface photon map handle (device) -------------------
     struct DeviceSurfacePhotonMapGrid {
-        float gatherRadiusWorld = 0.00f;
+        float minimumGatherRadiusWorld = 0.00f;
+        float maximumGatherRadiusWorld = 0.00f;
+        float gatherPadWorld = 0.00f;
         float3 cellSizeWorld = float3{0};
         float3 gridOriginWorld = float3{0};
         sycl::int3 gridResolution = sycl::int3{0};
@@ -614,7 +704,7 @@ namespace Pale {
         DevicePhotonSurface *photons = nullptr;
         std::uint32_t photonCapacity = 0;
         std::uint32_t *photonCountDevicePtr = nullptr;
-
+        std::uint32_t *photonStreamCountDevicePtr = nullptr;
         std::uint32_t allocatedCellCount = 0;
         std::uint32_t allocatedPhotonCapacity = 0;
         std::uint32_t allocatedBlockCount = 0;
@@ -648,29 +738,32 @@ namespace Pale {
         uint32_t *countContributions;
 
         PendingAdjointStageX *pendingStageX = nullptr;
-        PendingAdjointStageXY *pendingStageXY = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
 
-        AttachedGradientProjectionEvent *projectionEvents = nullptr;
-        AttachedGradientScatterEvent *projectionScatterEvents = nullptr;
-        DetachedThreePointGradientEvent *reflectScatterEvents = nullptr;
+        MeasurementGradientEvent *measurementEvents;
+        MeasurementGradientEventXY *measurementTwoPointEvents = nullptr;
+
+        MaterialVertexGradientEvent *materialVertexEvents = nullptr;
+        MaterialEdgeGradientEvent *materialEndEdgeEvents = nullptr;
+        MaterialEdgeGradientEvent *materialStartEdgeEvents = nullptr;
 
         SurfelGradientRecord *gradientRecords = nullptr;
-        uint32_t maxGradientRecordCount = 0;
+        PendingCameraSegment *pendingCameraSegments = nullptr;
 
-        PendingCameraSegment* pendingCameraSegments = nullptr;
-        CameraToSurfaceScatterEvent* cameraToSurfaceScatterEvents = nullptr;
-        uint32_t* countCameraToSurfaceScatterEvents = nullptr;
-        uint32_t maxCameraToSurfaceScatterEventCount = 0u;
-
-        uint32_t *countProjectionEvents = nullptr;
-        uint32_t *countProjectionScatterEvents = nullptr;
-        uint32_t *countReflectScatterEvents = nullptr;
+        uint32_t *countMeasurementEvents = nullptr;
+        uint32_t *countMeasurementTwoPointEvents = nullptr;
+        uint32_t *countMaterialVertexEvents = nullptr;
+        uint32_t *countMaterialEndEdgeEvents = nullptr;
+        uint32_t *countMaterialStartEdgeEvents = nullptr;
 
         // capacities
-        uint32_t maxProjectionEventCount = 0;
-        uint32_t maxProjectionScatterEventCount = 0;
-        uint32_t maxReflectScatterEventCount = 0;
+        uint32_t maxMeasurementEventCount = 0u;
+        uint32_t maxMeasurementTwoPointEventCount = 0u;
+        uint32_t maxMaterialVertexEventCount = 0u;
+        uint32_t maxMaterialEndEdgeEventCount = 0u;
+        uint32_t maxMaterialStartEdgeEventCount = 0u;
+        uint32_t maxGradientRecordCount = 0;
+        uint32_t maxRayQueueCapacity = 0;
 
         uint32_t *countPrimary;
         uint32_t *countExtensionOut;

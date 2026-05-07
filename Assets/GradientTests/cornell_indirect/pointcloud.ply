@@ -1,0 +1,38 @@
+ply
+format ascii 1.0
+comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity
+element vertex 7
+property float x
+property float y
+property float z
+property float tu_x
+property float tu_y
+property float tu_z
+property float tv_x
+property float tv_y
+property float tv_z
+property float su
+property float sv
+property float albedo_r
+property float albedo_g
+property float albedo_b
+property float opacity
+property float beta
+property float shape
+property float power
+end_header
+
+0.0 0.5 0.9  1.0 0.0 0.0   0.0 -1.0 0.0  0.01 0.01  1.0 1.0 1.0   1.0  -0.0 0.0   20.0
+
+0.0 0.8 0.8   1.0 0.0 0.0  0.0 1.0 0.0   0.3 0.3  0.5 0.5 1.0  1.0  -0.0 0.0   0.0
+
+0.0 0.5 5.0   1.0 0.0 0.0   0.0 1.0 0.0   1.0 1.0   1.0 1.0 1.0 1.0     -100.0 0.0   0.0
+
+0.0 0.5 1.0   1.0 0.0 0.0   0.0 -1.0 0.0  1.0 1.0   1.0 1.0 1.0   1.0   -100.0 0.0   0.0
+
+0.0 1.0 5.5   1.0 0.0 0.0   0.0 0.0 1.0   1.0 1.0   1.0 1.0 1.0   1.0   -100.0 0.0   0.0
+
+-0.5 0.5 5.5  0.0 1.0 0.0   0.0 0.0 1.0   1.0 1.0   0.8 0.1 0.1   1.0   -100.0 0.0   0.0
+
+0.5 0.5 5.5   0.0 0.0 1.0   0.0 1.0 0.0   1.0 1.0   0.1 0.8 0.1   1.0   -100.0 0.0   0.0
+

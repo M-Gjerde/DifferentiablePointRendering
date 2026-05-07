@@ -199,7 +199,7 @@ def densify_points_long_axis_split(
 def compute_prune_indices_by_opacity(
         opacities: torch.Tensor,
         min_opacity: float,
-        use_quantile: bool = True,
+        use_quantile: bool = False,
         max_fraction_to_prune: float = 0.3,
         min_points_to_keep: int = 1,
 ) -> np.ndarray:
@@ -261,3 +261,77 @@ def compute_prune_indices_by_opacity(
     order = np.argsort(opa[candidate_indices])  # ascending by opacity
     selected = candidate_indices[order[:max_prune]]
     return selected.astype(np.int64)
+
+
+def compute_prune_indices_by_degenerate_scale(
+        scales: torch.Tensor,
+        *,
+        min_scale: float = 1.0e-5,
+        trainable_mask: Optional[torch.Tensor] = None,
+        min_points_to_keep: int = 1,
+) -> np.ndarray:
+    """
+    Prune surfels where either scale parameter is degenerate.
+
+    A surfel is considered degenerate if:
+
+        scale_u <= min_scale OR scale_v <= min_scale
+
+    Non-finite scale values are also treated as degenerate.
+
+    Args:
+        scales:
+            Torch tensor with shape (N, 2).
+
+        min_scale:
+            Minimum valid scale. Use 1.0e-5 to prune zero-scale and near-zero-scale surfels.
+
+        trainable_mask:
+            Optional bool tensor with shape (N,). If provided, only trainable surfels
+            are eligible for pruning. This protects emissive/light surfels.
+
+        min_points_to_keep:
+            Safety guard to avoid pruning all points.
+
+    Returns:
+        np.ndarray[int64] of indices to prune.
+    """
+    with torch.no_grad():
+        scales_np = scales.detach().cpu().numpy().astype(np.float32, copy=False)
+
+        if trainable_mask is not None:
+            trainable_mask_np = trainable_mask.detach().cpu().numpy().astype(bool)
+        else:
+            trainable_mask_np = np.ones((scales_np.shape[0],), dtype=bool)
+
+    if scales_np.ndim != 2 or scales_np.shape[1] != 2:
+        raise ValueError(
+            f"Expected scales to have shape (N, 2), got: {scales_np.shape}"
+        )
+
+    num_points = scales_np.shape[0]
+    if num_points == 0:
+        return np.zeros((0,), dtype=np.int64)
+
+    finite_mask = np.isfinite(scales_np).all(axis=1)
+    degenerate_mask = (
+        (~finite_mask)
+        | (scales_np[:, 0] <= min_scale)
+        | (scales_np[:, 1] <= min_scale)
+    )
+
+    candidate_mask = degenerate_mask & trainable_mask_np
+    candidate_indices = np.nonzero(candidate_mask)[0].astype(np.int64)
+
+    if candidate_indices.size == 0:
+        return np.zeros((0,), dtype=np.int64)
+
+    max_prune_by_min_points = max(0, num_points - min_points_to_keep)
+
+    if max_prune_by_min_points <= 0:
+        return np.zeros((0,), dtype=np.int64)
+
+    if candidate_indices.size <= max_prune_by_min_points:
+        return candidate_indices.astype(np.int64)
+
+    return candidate_indices[:max_prune_by_min_points].astype(np.int64)

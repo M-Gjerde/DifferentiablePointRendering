@@ -1,28 +1,21 @@
-# main.py
-import time
-from pathlib import Path
 import argparse
+from pathlib import Path
 
-import numpy as np
-from PIL import Image
 import pale
-from matplotlib import cm
 
 from finite_difference.finite_diff_helpers import save_rgb_preview_png, save_rgb_preview_exr
-from losses import compute_l2_grad, compute_l2_loss
 
 
 def main(args) -> None:
-    # --- settings ---
     renderer_settings = {
         "photons": 1e6,
-        "bounces": 3,
-        "forward_passes": 1000,
+        "bounces": args.bounces,
+        "forward_passes": args.forward_passes,
         "gather_passes": 1,
         "adjoint_bounces": 0,
         "adjoint_passes": 0,
-        "logging": 2,
-        "seed": 42
+        "logging": 4,
+        "seed": 42,
     }
 
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
@@ -32,55 +25,54 @@ def main(args) -> None:
     scene_xml = assets_root / "GradientTests" / f"{args.scene}" / f"{args.scene}.xml"
     pointcloud_ply = assets_root / "GradientTests" / scene_path / f"{args.scene}" / f"{args.ply}.ply"
 
-    print("Assets root:", assets_root)
-    print("Scene:", args.scene)
-    print("Ply:", args.ply)
-    print("Index:", args.index)
-    print("Parameter:", args.parameter)
+    if renderer_settings["logging"] < 4:
+        print("Assets root:", assets_root)
+        print("Scene:", args.scene)
+        print("Ply:", args.ply)
+        print("Index:", args.index)
+        print("Parameter:", args.parameter)
+        print("Forward passes:", args.forward_passes)
+        print("Bounces:", args.bounces)
 
     output_dir = Path(__file__).parent / "Output" / scene_path / f"{args.scene}" / args.parameter
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- init renderer ---
     renderer = pale.Renderer(
         str(assets_root),
         str(scene_xml),
         str(pointcloud_ply),
-        renderer_settings
+        renderer_settings,
     )
 
     camera_names = renderer.get_camera_names()
-    print("Cameras:", camera_names)
+    if renderer_settings["logging"] <= 4:
+        print("Found following cameras in scene file:", camera_names)
 
     rendered_images = renderer.render_forward()
 
     if args.camera is None:
         cameras_to_render = camera_names
-        print("Rendering from all cameras")
+        if renderer_settings["logging"] < 4:
+            print("Rendering from all cameras")
     else:
         if args.camera not in camera_names:
             raise ValueError(
                 f"Camera '{args.camera}' not found. Available cameras: {camera_names}"
             )
         cameras_to_render = [args.camera]
-        print("Rendering from camera:", args.camera)
+        if renderer_settings["logging"] < 4:
+            print("Rendering from camera:", args.camera)
 
     for camera_name in cameras_to_render:
-        raw_key = f"{camera_name}_raw"
-        png_key = camera_name
+        save_rgb_preview_exr(
+            rendered_images[camera_name]["raw"],
+            output_dir / f"{camera_name}_raw_target.exr",
+        )
 
-        if raw_key in rendered_images:
-            save_rgb_preview_exr(
-                rendered_images[raw_key],
-                output_dir / f"{camera_name}_raw_target.exr"
-            )
-
-        if png_key in rendered_images:
-            print(rendered_images[png_key].shape)
-            save_rgb_preview_png(
-                rendered_images[png_key],
-                output_dir / f"{camera_name}_target.png"
-            )
+        save_rgb_preview_png(
+            rendered_images[camera_name]["image"],
+            output_dir / f"{camera_name}_target.png",
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,38 +83,57 @@ def parse_args() -> argparse.Namespace:
         "--ply",
         type=str,
         default="pointcloud",
-        help="Points (PLY without extension). Default: 'initial'.",
+        help="Points (PLY without extension).",
     )
-
     parser.add_argument(
         "--scene",
         type=str,
         default="empty",
-        help="Which scene file to use (without extension). Default: empty",
+        help="Which scene file to use (without extension).",
     )
     parser.add_argument(
         "--index",
         type=int,
         default=-1,
-        help="Gaussian index to perturb (>=0 for single, -1 for all). Default: -1.",
+        help="Gaussian index to perturb (>=0 for single, -1 for all).",
     )
-
     parser.add_argument(
-        "--parameter", "--param",
-        type=str
+        "--parameter",
+        "--param",
+        type=str,
+        required=True,
     )
-
     parser.add_argument(
         "--output",
         type=str,
-        help="Where to output files",
-        default="output"
+        default="output",
+        help="Where to output files.",
+    )
+    parser.add_argument(
+        "--min",
+        type=float,
+    )
+    parser.add_argument(
+        "--max",
+        type=float,
     )
     parser.add_argument(
         "--camera",
         type=str,
         default=None,
-        help="Which camera (in the xml file) to render from. If omitted, render all cameras.",
+        help="Which camera to render from. If omitted, render all cameras.",
+    )
+    parser.add_argument(
+        "--forward_passes",
+        type=int,
+        default=100,
+        help="Number of forward passes for target rendering.",
+    )
+    parser.add_argument(
+        "--bounces",
+        type=int,
+        default=2,
+        help="Number of forward bounces for target rendering.",
     )
     return parser.parse_args()
 
