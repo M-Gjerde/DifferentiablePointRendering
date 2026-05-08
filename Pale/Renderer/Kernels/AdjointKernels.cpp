@@ -179,7 +179,7 @@ namespace Pale {
 
                     float cameraCosine = dot(sensor.camera.forward,
                                              primaryRay.direction);
-                    initialAdjointWeight *= cameraCosine;
+                    //initialAdjointWeight *= cameraCosine;
 
                     RayState rayState{};
                     rayState.ray = primaryRay;
@@ -631,7 +631,8 @@ namespace Pale {
                                             previousAdjointStage.current.alpha
                                             * invSegmentUvPdf / qReflect;
                                     materialEdgeEventXY.isDirectLightSample = false;
-                                    materialEdgeEventXY.writeOcclusionGradients = currentRayState.bounceIndex > 1; // Start writing occlusion gradients only on x2->x3 transport, x1->x2 is handled by measurement terms
+                                    materialEdgeEventXY.writeOcclusionGradients = currentRayState.bounceIndex > 1;
+                                    // Start writing occlusion gradients only on x2->x3 transport, x1->x2 is handled by measurement terms
                                     materialEdgeEventXY.pathId = currentRayState.pathId;
                                     materialEdgeEventXY.startBounceIndex = previousAdjointStage.current.bounceIndex;
 
@@ -776,6 +777,195 @@ namespace Pale {
                                             intermediates.materialStartEdgeEvents,
                                             intermediates.maxMaterialStartEdgeEventCount,
                                             materialDirectLightEdgeEvent);
+                                    }
+
+                                    // third event:
+                                    // Auxiliary recursive start-edge sample at the current vertex Y.
+                                    // Sample a direction at Y, then perform the same front-to-back
+                                    // null/reflect selection logic along that ray to obtain Z_aux.
+                                    // Finally convert the directional PDF to area measure.
+                                    {
+                                        const uint64_t auxiliaryRecursiveSeed =
+                                                rng::makeSeed(
+                                                    renderSeed,
+                                                    currentRayState.pathId,
+                                                    spp,
+                                                    rng::kStreamDirection,
+                                                    currentRayState.traversalIndex * 2246822519u + 0x51ed270bu);
+
+                                        rng::Xorshift128 auxiliaryRecursiveRng(auxiliaryRecursiveSeed);
+
+                                        float3 auxiliaryDirectionWorld{0.0f, 0.0f, 0.0f};
+                                        float auxiliaryDirectionPdf = 0.0f;
+
+                                        sampleUniformHemisphereAroundNormal(
+                                            auxiliaryRecursiveRng,
+                                            startState.orientedNormal,
+                                            auxiliaryDirectionWorld,
+                                            auxiliaryDirectionPdf);
+
+                                        if (auxiliaryDirectionPdf > 1.0e-12f) {
+                                            constexpr float distanceEpsilon = 1.0e-4f;
+                                            constexpr uint32_t maxAuxiliaryTraversals = 32u;
+
+                                            Ray auxiliaryRay{};
+                                            auxiliaryRay.origin =
+                                                    startState.position + startState.orientedNormal * distanceEpsilon;
+                                            auxiliaryRay.direction = auxiliaryDirectionWorld;
+                                            auxiliaryRay.normal = startState.orientedNormal;
+
+                                            float auxiliaryDiscreteSelectionPdf = 1.0f;
+                                            bool foundAuxiliarySurface = false;
+                                            PointCloudSurfaceRecord auxiliarySurface{};
+
+                                            for (uint32_t auxiliaryTraversalIndex = 0u;
+                                                 auxiliaryTraversalIndex < maxAuxiliaryTraversals;
+                                                 ++auxiliaryTraversalIndex) {
+                                                WorldHit auxiliaryHit{};
+                                                intersectScene(
+                                                    auxiliaryRay,
+                                                    &auxiliaryHit,
+                                                    scene,
+                                                    SurfelIntersectMode::FirstHit);
+
+                                                if (!auxiliaryHit.hit) {
+                                                    break;
+                                                }
+
+                                                buildIntersectionNormal(scene, auxiliaryHit);
+                                                const InstanceRecord &auxiliaryInstance =
+                                                        scene.instances[auxiliaryHit.instanceIndex];
+
+                                                // Opaque mesh terminates the auxiliary sample.
+                                                if (auxiliaryInstance.geometryType == GeometryType::Mesh) {
+                                                    break;
+                                                }
+
+                                                if (auxiliaryInstance.geometryType != GeometryType::PointCloud) {
+                                                    break;
+                                                }
+
+                                                // Avoid immediate self-hit on the current start surface.
+                                                if (auxiliaryHit.primitiveIndex == currentSurface.primitiveIndex) {
+                                                    auxiliaryRay.origin =
+                                                            auxiliaryHit.hitPositionW + auxiliaryDirectionWorld *
+                                                            distanceEpsilon;
+                                                    continue;
+                                                }
+
+                                                const Point &auxiliarySurfel = scene.points[auxiliaryHit.
+                                                    primitiveIndex];
+
+                                                // Mirror the same Bernoulli null/reflect selection used by the actual path walk.
+                                                const float randomNumber = auxiliaryRecursiveRng.nextFloat();
+
+                                                if (randomNumber < qNull) {
+                                                    // Null event: continue front-to-back.
+                                                    auxiliaryDiscreteSelectionPdf *= qNull;
+                                                    auxiliaryRay.origin =
+                                                            auxiliaryHit.hitPositionW + auxiliaryDirectionWorld *
+                                                            distanceEpsilon;
+                                                    auxiliaryRay.normal =
+                                                            computePointCloudOrientedNormal(
+                                                                auxiliarySurfel, auxiliaryDirectionWorld);
+                                                    continue;
+                                                }
+
+                                                // If you ever allow qNull + qReflect < 1, add a termination branch here.
+                                                // For now this mirrors the current actual traversal logic:
+                                                auxiliaryDiscreteSelectionPdf *= qReflect;
+
+                                                RayState auxiliaryRayState{};
+                                                auxiliaryRayState.ray = auxiliaryRay;
+                                                auxiliaryRayState.pathId = currentRayState.pathId;
+                                                auxiliaryRayState.pixelIndex = currentRayState.pixelIndex;
+
+                                                auxiliarySurface =
+                                                        makePointCloudSurfaceRecord(
+                                                            auxiliaryHit,
+                                                            auxiliaryRayState,
+                                                            scene);
+
+                                                foundAuxiliarySurface = true;
+                                                break;
+                                            }
+
+                                            if (foundAuxiliarySurface) {
+                                                const Point &auxiliarySurfel =
+                                                        scene.points[auxiliarySurface.primitiveIndex];
+
+                                                const ReconstructedSurfelState auxiliaryState =
+                                                        reconstructSurfelState(
+                                                            auxiliarySurfel,
+                                                            auxiliarySurface);
+
+                                                const float3 yzVector =
+                                                        auxiliaryState.position - startState.position;
+
+                                                const float yzDistanceSquared = dot(yzVector, yzVector);
+                                                if (yzDistanceSquared > 1.0e-12f) {
+                                                    const float yzDistance = sycl::sqrt(yzDistanceSquared);
+                                                    const float3 yzDirection = yzVector / yzDistance;
+
+                                                    const float cosineAtEnd = sycl::fmax(
+                                                        0.0f,
+                                                        dot(auxiliaryState.orientedNormal, -yzDirection));
+
+                                                    if (cosineAtEnd > 1.0e-8f) {
+                                                        // Full auxiliary area PDF:
+                                                        // q_A(z | y) = q_omega(omega | y) * P_sel(z | omega, y) * |n_z . (-omega)| / ||z-y||^2
+                                                        const float auxiliaryAreaPdf =
+                                                                auxiliaryDirectionPdf *
+                                                                auxiliaryDiscreteSelectionPdf *
+                                                                cosineAtEnd / yzDistanceSquared;
+
+                                                        if (auxiliaryAreaPdf > 1.0e-12f) {
+                                                            MaterialEdgeGradientEvent innerIntegralStartEdge{};
+                                                            innerIntegralStartEdge.startSurface = currentSurface; // Y
+                                                            innerIntegralStartEdge.endSurface = auxiliarySurface;
+                                                            // Z_aux
+
+                                                            const float3 betaIncrementAtStart =
+                                                                    currentRayState.pathThroughput * currentRayState.
+                                                                    transmission;
+
+                                                            const float alphaAtStart =
+                                                                    worldHit.alphaGeom * surfel.opacity;
+
+                                                            // Local reflect selection at Y is separate from the auxiliary inner-integral sample PDF.
+                                                            const float inverseAuxiliarySamplePdf =
+                                                                    1.0f / (qReflect * auxiliaryAreaPdf);
+
+                                                            innerIntegralStartEdge.betaIncrement =
+                                                                    betaIncrementAtStart;
+                                                            innerIntegralStartEdge.alpha = alphaAtStart;
+                                                            innerIntegralStartEdge.bsdf = surfelBsdf;
+                                                            innerIntegralStartEdge.invSamplePDF =
+                                                                    inverseAuxiliarySamplePdf;
+
+                                                            innerIntegralStartEdge.segmentTransmittance = 1.0f;
+                                                            innerIntegralStartEdge.directLightRadiance = float3{
+                                                                0.0f, 0.0f, 0.0f
+                                                            };
+                                                            innerIntegralStartEdge.isDirectLightSample = false;
+
+                                                            // This auxiliary Y -> Z edge owns its own tau / occlusion derivative.
+                                                            innerIntegralStartEdge.writeOcclusionGradients = true;
+
+                                                            innerIntegralStartEdge.pathId = currentRayState.pathId;
+                                                            innerIntegralStartEdge.startBounceIndex = currentRayState.
+                                                                    bounceIndex;
+
+                                                            appendEventAtomic(
+                                                                intermediates.countMaterialStartEdgeEvents,
+                                                                intermediates.materialStartEdgeEvents,
+                                                                intermediates.maxMaterialStartEdgeEventCount,
+                                                                innerIntegralStartEdge);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 
@@ -2256,7 +2446,7 @@ namespace Pale {
                             eventRecord.bsdf *
                             eventRecord.invSamplePDF;
                     const float scalarEdgeWeightBase =
-                        dot(edgePrefix, endRadiance);
+                            dot(edgePrefix, endRadiance);
 
                     const float scalarEdgeWeight = scalarEdgeWeightBase * visibilityResult.nullSamplingWeight;
 
@@ -2294,24 +2484,24 @@ namespace Pale {
 
                         // Weight with alpha removed
                         const float3 prefixNoAlpha =
-                            eventRecord.betaIncrement *
-                            eventRecord.bsdf *
-                            eventRecord.invSamplePDF;
+                                eventRecord.betaIncrement *
+                                eventRecord.bsdf *
+                                eventRecord.invSamplePDF;
 
                         const float scalarLocalAlphaWeight =
-                            dot(prefixNoAlpha, endRadiance) *
-                            visibilityResult.nullSamplingWeight *
-                            visibilityResult.segmentTransmittance *
-                            geometricTerm *
-                            invSpp;
+                                dot(prefixNoAlpha, endRadiance) *
+                                visibilityResult.nullSamplingWeight *
+                                visibilityResult.segmentTransmittance *
+                                geometricTerm *
+                                invSpp;
 
                         const float dAlphaEffectiveDScaleU =
-                            eta * (2.0f * betaScale * u * u * alphaGeom) /
-                            (startScaleU * oneMinusR2);
+                                eta * (2.0f * betaScale * u * u * alphaGeom) /
+                                (startScaleU * oneMinusR2);
 
                         const float dAlphaEffectiveDScaleV =
-                            eta * (2.0f * betaScale * v * v * alphaGeom) /
-                            (startScaleV * oneMinusR2);
+                                eta * (2.0f * betaScale * v * v * alphaGeom) /
+                                (startScaleV * oneMinusR2);
 
                         startScaleUGradient += scalarLocalAlphaWeight * dAlphaEffectiveDScaleU;
                         startScaleVGradient += scalarLocalAlphaWeight * dAlphaEffectiveDScaleV;
