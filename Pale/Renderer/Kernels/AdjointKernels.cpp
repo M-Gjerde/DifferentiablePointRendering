@@ -179,7 +179,7 @@ namespace Pale {
 
                     float cameraCosine = dot(sensor.camera.forward,
                                              primaryRay.direction);
-                    //initialAdjointWeight *= cameraCosine;
+                    initialAdjointWeight *= cameraCosine;
 
                     RayState rayState{};
                     rayState.ray = primaryRay;
