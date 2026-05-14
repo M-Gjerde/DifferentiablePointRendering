@@ -241,9 +241,9 @@ def write_gaussian_ply(
         sv = float(args.scale)
 
         albedo = np.array([
-            vertex["r"] * 0 + 0.05,
-            vertex["g"] * 0 + 0.05,
-            vertex["b"] * 0 + 0.05
+            vertex["r"] * 0 + 0.15,
+            vertex["g"] * 0 + 0.15,
+            vertex["b"] * 0 + 0.15
         ], dtype=float)
 
         rng = np.random.default_rng(42)

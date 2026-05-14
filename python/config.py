@@ -10,12 +10,12 @@ from typing import Dict
 class RendererSettingsConfig:
     photons: float = 1e6
     bounces: int = 2
+    adjoint_bounces: int = 2
     forward_passes: int = 5
     primal_shadow_rays: int =  4 # Li
     adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
-    adjoint_bounces: int = 2
-    adjoint_passes: int = 6
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 4 #Pi
     useDepthDistortion: bool = True

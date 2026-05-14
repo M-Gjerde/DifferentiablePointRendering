@@ -10,7 +10,7 @@ namespace Pale {
         float4 *framebuffer = nullptr; // RAW framebuffer
         uint32_t width{}, height{};
 
-        float gammaCorrection = 2.2f;
+        float gammaCorrection = 1.0f;
         float exposureCorrection = 1.0f;
         float* ldrFramebuffer = nullptr; // Low Dynamic Range framebuffer
         sycl::uchar4* outputFramebuffer = nullptr; // uint8 converted framebuffer
