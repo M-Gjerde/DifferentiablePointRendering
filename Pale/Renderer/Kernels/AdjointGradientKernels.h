@@ -1707,6 +1707,8 @@ namespace Pale {
         float3 gradTauWrtStartPoint{0.0f, 0.0f, 0.0f};
         float3 gradTauWrtEndPoint{0.0f, 0.0f, 0.0f};
     };
+
+
 SYCL_EXTERNAL inline MaterialEdgeVisibilityDerivativeResult traceMaterialEdgeVisibilityDerivatives(
     const GPUSceneBuffers& scene,
     const float3& startPositionWorld,
