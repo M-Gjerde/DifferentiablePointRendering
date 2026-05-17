@@ -393,8 +393,6 @@ namespace Pale {
                             if (hasPendingState) {
                                 const PendingCameraSegment previousCameraSegment = pendingCameraSegment;
                                 const PendingAdjointStageX previousAdjointStage = pendingAdjointStage;
-
-
                                 // -------------------------------------------------------------
                                 // Camera-attached two-point event
                                 // -------------------------------------------------------------
@@ -637,11 +635,13 @@ namespace Pale {
                                     materialEdgeEventXY.pathId = currentRayState.pathId;
                                     materialEdgeEventXY.startBounceIndex = previousAdjointStage.current.bounceIndex;
 
+
                                     appendEventAtomic(
                                         intermediates.countMaterialEndEdgeEvents,
                                         intermediates.materialEndEdgeEvents,
                                         intermediates.maxMaterialEndEdgeEventCount,
                                         materialEdgeEventXY);
+
 
                                     // second event:
                                     // Then make a new event on the YZ leg wit a direct light sample but differentiate now with respect to start point.
@@ -771,11 +771,15 @@ namespace Pale {
                                         materialDirectLightEdgeEvent.pathId = currentRayState.pathId;
                                         materialDirectLightEdgeEvent.startBounceIndex = currentRayState.bounceIndex;
 
+
+                                        /*
                                         appendEventAtomic(
                                             intermediates.countMaterialStartEdgeEvents,
                                             intermediates.materialStartEdgeEvents,
                                             intermediates.maxMaterialStartEdgeEventCount,
                                             materialDirectLightEdgeEvent);
+                                        */
+
 
                                     }
                                     // third event:
@@ -919,11 +923,13 @@ namespace Pale {
                                                                     bounceIndex;
 
 
+                                                            /*
                                                             appendEventAtomic(
                                                                 intermediates.countMaterialStartEdgeEvents,
                                                                 intermediates.materialStartEdgeEvents,
                                                                 intermediates.maxMaterialStartEdgeEventCount,
                                                                 innerIntegralStartEdge);
+                                                            */
                                                         }
                                                     }
                                                 }
@@ -2209,7 +2215,7 @@ namespace Pale {
                             computeGeometricTermGradientWrtEndpoint(startState.position, endState.position,
                                                                     startState.orientedNormal, endState.orientedNormal);
                     const float3 gradientWrtEndPositionBeforeSpp =
-                            scalarMaterialEdgeWeight *
+                            scalarEdgeWeight *
                             (
                                 visibilityResult.segmentTransmittance *
                                 dGeometricTermDEndPosition +
@@ -2221,7 +2227,7 @@ namespace Pale {
                             dot(
                                 gradientWrtEndPositionBeforeSpp,
                                 endU * endSurfel.tanU) *
-                            invSpp;
+                            invSpp * endSurfaceMeasureJacobian;
                     float endScaleVGradient =
                             dot(
                                 gradientWrtEndPositionBeforeSpp,
@@ -2232,7 +2238,8 @@ namespace Pale {
                             visibilityResult.segmentTransmittance *
                             geometricTerm *
                             dEndSurfaceMeasureJacobianDScaleU *
-                            invSpp;
+                            invSpp * endSurfaceMeasureJacobian;
+
                     endScaleVGradient +=
                             scalarEdgeWeight *
                             visibilityResult.segmentTransmittance *
