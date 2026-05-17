@@ -9,13 +9,13 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 2
-    adjoint_bounces: int = 2
+    bounces: int = 4
+    adjoint_bounces: int = 4
     forward_passes: int = 5
     primal_shadow_rays: int =  4 # Li
     adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
+    adjoint_passes: int = 8
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 4 #Pi
     useDepthDistortion: bool = True
@@ -209,7 +209,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.5,
+        default=0.01,
         help="Weight for the normal consistency regularizer.",
     )
 
@@ -217,14 +217,14 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=100.0,
+        default=0.5,
         help="Weight for the depth distortion regularizer.",
     )
     parser.add_argument(
         "--opacity-weight",
         dest="opacity_loss_weight",
         type=float,
-        default=0.5,
+        default=10.0,
         help="Weight for the favoring opacity = 1.",
     )
 
