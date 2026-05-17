@@ -346,7 +346,7 @@ int main(int argc, char** argv) {
         settings.useNormalConsistency = true;
 
         settings.renderDebugGradientImages = true;
-        settings.surfelIndexForDebugImages = UINT32_MAX;
+        settings.surfelIndexForDebugImages = 2;
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);
@@ -474,7 +474,7 @@ int main(int argc, char** argv) {
                 std::vector<Pale::SensorGPU> selectedAdjointSensors;
                 Pale::SensorGPU selectedSensor;
                 for (int i = 0; const auto& sensor : availableSensors) {
-                    if (sensor.camera.useForAdjointPass && std::string(sensor.camera.name) == "DatasetCam_022") {
+                    if (sensor.camera.useForAdjointPass) {
                         selectedAdjointSensors.push_back(sensor);
                         for (const auto& forwardSensor : sensors) {
                             if (std::string(sensor.camera.name) == std::string(forwardSensor.camera.name))
