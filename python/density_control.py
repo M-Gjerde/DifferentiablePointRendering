@@ -44,11 +44,11 @@ def make_under_reconstruction_clones(
         grad_position_np,
         trainable_surfel_mask,
         grad_threshold,
-        small_scale_threshold,
         max_clone_fraction=0.05,
         clone_offset_scale=0.25,
         clone_scale_factor=1.6,
-        normal_perturbation=2.0e-5,
+        normal_perturbation_min=1.0e-5,
+        normal_perturbation_max=3.0e-5,
         tangent_project_position_grad=True,
         selection_score_np=None
 ) -> dict[str, dict[str, Any] | Any] | None:
@@ -82,12 +82,10 @@ def make_under_reconstruction_clones(
                 device=device,
                 dtype=torch.float32,
             ).reshape(-1)
-        max_scale = torch.max(scales, dim=1).values
 
         selected = (
                 torch.isfinite(selection_score)
                 & (selection_score >= grad_threshold)
-                & (max_scale <= small_scale_threshold)
                 & trainable_surfel_mask
         )
 
@@ -148,8 +146,39 @@ def make_under_reconstruction_clones(
         normal_dir = torch.zeros_like(normal)
         normal_dir[valid_normal[:, 0]] = normal[valid_normal[:, 0]] / normal_norm[valid_normal[:, 0]]
 
-        normal_offset = float(normal_perturbation) * normal_dir
+        # Random signed normal perturbation to avoid systematic drift along +normal.
+        # This is only for BVH/coincident-primitive robustness, not density placement.
+        eps_min = float(normal_perturbation_min)
+        eps_max = float(normal_perturbation_max)
 
+        if eps_min < 0.0 or eps_max < 0.0:
+            raise ValueError("normal perturbation bounds must be non-negative")
+
+        if eps_max < eps_min:
+            raise ValueError(
+                f"normal_perturbation_max must be >= normal_perturbation_min, "
+                f"got {eps_max} < {eps_min}"
+            )
+
+        random_unit = torch.rand(
+            (selected_idx.numel(), 1),
+            device=device,
+            dtype=torch.float32,
+        )
+
+        random_magnitude = eps_min + (eps_max - eps_min) * random_unit
+
+        random_sign = torch.where(
+            torch.rand(
+                (selected_idx.numel(), 1),
+                device=device,
+                dtype=torch.float32,
+            ) < 0.5,
+            torch.full((selected_idx.numel(), 1), -1.0, device=device, dtype=torch.float32),
+            torch.full((selected_idx.numel(), 1), 1.0, device=device, dtype=torch.float32),
+        )
+
+        normal_offset = random_sign * random_magnitude * normal_dir
         new_positions = p + tangent_offset + normal_offset
 
         # Optional 3DGS split-like shrinkage for the clone.

@@ -1214,18 +1214,21 @@ def run_optimization(
     # ------------------------------------------------------------------
     iteration = 0
 
-    densification_interval = 10
+    densification_interval = 50
     prune_interval = 10
-    burnin_iterations = 25
+    burnin_iterations = 10
     densify_until_iteration = int(0.7 * config.iterations)
 
     reset_opacity_interval = int(1e10)
 
     # Start adaptive. Absolute thresholds are hard because your gradients
     # are renderer- and loss-scale dependent.
-    densification_grad_quantile = 0.98
-    densification_grad_abs_min = 8.0e-3
-    small_scale_quantile = 0.50
+    densification_verbose = True
+    densification_grad_quantile = 0.6
+    densification_grad_abs_min = 2.0e-3
+    densify_bsdf_floor = 5.0e-2
+    densify_bsdf_gamma = 1 / 3.2
+
     point_birth_iteration_np = np.zeros(
         (positions.shape[0],),
         dtype=np.int64,
@@ -1242,8 +1245,6 @@ def run_optimization(
         tuple(positions.shape),
         dtype=np.float32,
     )
-
-    clone_cooldown_iterations = 25
 
     max_clone_fraction = 0.5
     clone_offset_scale = 0.5
@@ -1453,8 +1454,20 @@ def run_optimization(
                     tangent_v=tangent_v,
                 )
 
+                with torch.no_grad():
+                    albedo_np = albedos.detach().cpu().numpy().astype(np.float32)
+                linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
+                bsdf_normalizer_np = np.maximum(
+                    linear_rgb_bsdf_scale_np,
+                    densify_bsdf_floor,
+                ) ** densify_bsdf_gamma
+
+                density_grad_position_np_for_score = (
+                        density_grad_position_np / bsdf_normalizer_np[:, None]
+                )
+
                 add_densification_stats_np(
-                    grad_position_np=density_grad_position_np,
+                    grad_position_np=density_grad_position_np_for_score,
                     trainable_surfel_mask=trainable_surfel_mask,
                     accum_np=densify_position_grad_accum_np,
                     denom_np=densify_position_grad_denom_np,
@@ -1463,13 +1476,6 @@ def run_optimization(
 
                 # Accumulate vector direction too.
                 with torch.no_grad():
-                    density_grad_position_np = np.nan_to_num(
-                        density_grad_position_np,
-                        nan=0.0,
-                        posinf=0.0,
-                        neginf=0.0,
-                    )
-
                     trainable_np_for_density = (
                         trainable_surfel_mask
                         .detach()
@@ -1480,7 +1486,7 @@ def run_optimization(
                     )
 
                     grad_norm_for_density_np = np.linalg.norm(
-                        density_grad_position_np,
+                        density_grad_position_np_for_score,
                         axis=1,
                     )
 
@@ -1491,7 +1497,7 @@ def run_optimization(
                     )
 
                     densify_position_grad_vector_accum_np[update_density_vector_mask_np] += (
-                        density_grad_position_np[update_density_vector_mask_np]
+                        density_grad_position_np_for_score[update_density_vector_mask_np]
                     )
 
                 # --------------------------------------------------------------
@@ -1565,8 +1571,7 @@ def run_optimization(
                 indices_to_remove_list: List[int] = []
 
                 if (
-                        iteration >= burnin_iterations
-                        and iteration <= densify_until_iteration
+                        burnin_iterations <= iteration <= densify_until_iteration
                         and iteration % densification_interval == 0
                 ):
                     with torch.no_grad():
@@ -1602,18 +1607,46 @@ def run_optimization(
                         trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool)
 
                         point_age_np = iteration - point_birth_iteration_np
-                        cooldown_mask_np = point_age_np >= clone_cooldown_iterations
-
                         finite_grad = np.isfinite(grad_pos_norm_np)
 
                         candidate_mask_np = (
                                 finite_grad
                                 & trainable_np
-                                & cooldown_mask_np
                                 & (grad_pos_norm_np >= densification_grad_abs_min)
                         )
 
-                        if np.any(candidate_mask_np):
+                        n_new_from_densification = 0
+                        densify_reason = "not_attempted"
+
+                        finite_count = int(np.count_nonzero(finite_grad))
+                        trainable_count = int(np.count_nonzero(trainable_np))
+                        above_abs_count = int(np.count_nonzero(grad_pos_norm_np >= densification_grad_abs_min))
+                        candidate_count = int(np.count_nonzero(candidate_mask_np))
+                        valid_denom_count = int(np.count_nonzero(valid_denom_np))
+
+                        grad_threshold = float("nan")
+                        grad_quantile_threshold = float("nan")
+
+                        if grad_pos_norm_np.size > 0:
+                            finite_signal_np = grad_pos_norm_np[np.isfinite(grad_pos_norm_np)]
+                        else:
+                            finite_signal_np = np.zeros((0,), dtype=np.float32)
+
+                        if finite_signal_np.size > 0:
+                            signal_min = float(np.min(finite_signal_np))
+                            signal_p50 = float(np.quantile(finite_signal_np, 0.50))
+                            signal_p90 = float(np.quantile(finite_signal_np, 0.90))
+                            signal_p95 = float(np.quantile(finite_signal_np, 0.95))
+                            signal_p98 = float(np.quantile(finite_signal_np, 0.98))
+                            signal_max = float(np.max(finite_signal_np))
+                        else:
+                            signal_min = signal_p50 = signal_p90 = signal_p95 = signal_p98 = signal_max = 0.0
+
+                        if not np.any(valid_denom_np):
+                            densify_reason = "no_density_samples"
+                        elif candidate_count == 0:
+                            densify_reason = "no_candidates_after_grad_trainable"
+                        else:
                             active_grad = grad_pos_norm_np[candidate_mask_np]
 
                             grad_quantile_threshold = float(
@@ -1625,59 +1658,70 @@ def run_optimization(
                                 grad_quantile_threshold,
                             )
 
-                            # If even the best active point is below the absolute floor, skip.
-                            if float(np.max(active_grad)) < densification_grad_abs_min:
-                                densification_result = None
+                            densify_mask_torch = torch.as_tensor(
+                                candidate_mask_np,
+                                device=positions.device,
+                                dtype=torch.bool,
+                            )
+
+                            densification_result = make_under_reconstruction_clones(
+                                positions=positions,
+                                tangent_u=tangent_u,
+                                tangent_v=tangent_v,
+                                scales=scales,
+                                albedos=albedos,
+                                opacities=opacities,
+                                betas=betas,
+                                powers=powers,
+                                grad_position_np=avg_density_grad_vector_np,
+                                selection_score_np=grad_pos_norm_np,
+                                trainable_surfel_mask=densify_mask_torch,
+                                grad_threshold=grad_threshold,
+                                max_clone_fraction=max_clone_fraction,
+                                clone_offset_scale=clone_offset_scale,
+                                tangent_project_position_grad=True,
+                            )
+
+                            if densification_result is not None:
+                                new_block = densification_result.get("new", None)
+                                if new_block is not None:
+                                    n_new_from_densification = int(new_block["position"].shape[0])
+                                    densify_reason = "added"
+                                else:
+                                    densify_reason = "clone_result_without_new_block"
                             else:
-                                scales_np = scales.detach().cpu().numpy()
-                                max_scale_np = np.max(scales_np, axis=1)
+                                densify_reason = "selected_candidates_but_clone_filter_rejected_all"
 
-                                small_candidate_scale = max_scale_np[candidate_mask_np]
-
-                                small_scale_threshold = float(
-                                    np.quantile(
-                                        small_candidate_scale,
-                                        small_scale_quantile,
-                                    )
-                                )
-
-                                # Important: pass a combined mask that excludes young clones.
-                                densify_mask_torch = torch.as_tensor(
-                                    candidate_mask_np,
-                                    device=positions.device,
-                                    dtype=torch.bool,
-                                )
-
-                                densification_result = make_under_reconstruction_clones(
-                                    positions=positions,
-                                    tangent_u=tangent_u,
-                                    tangent_v=tangent_v,
-                                    scales=scales,
-                                    albedos=albedos,
-                                    opacities=opacities,
-                                    betas=betas,
-                                    powers=powers,
-                                    grad_position_np=avg_density_grad_vector_np,
-                                    selection_score_np=grad_pos_norm_np,
-                                    trainable_surfel_mask=densify_mask_torch,
-                                    grad_threshold=grad_threshold,
-                                    small_scale_threshold=small_scale_threshold,
-                                    max_clone_fraction=max_clone_fraction,
-                                    clone_offset_scale=clone_offset_scale,
-                                    tangent_project_position_grad=True,
-                                )
-                                if densification_result is not None:
-                                    new_block = densification_result.get("new", None)
-                                    if new_block is not None:
-                                        n_new = new_block["position"].shape[0]
-                                        print(
-                                            f"[Iter {iteration:04d}] Clone densification: "
-                                            f"adding {n_new} surfels | "
-                                            f"grad_thr={grad_threshold:.3e}, "
-                                            f"abs_thr={densification_grad_abs_min:.3e}, "
-                                            f"small_scale_thr={small_scale_threshold:.3e}, "
-                                            f"pts={positions.shape[0]}"
-                                        )
+                        if densification_verbose:
+                            print(
+                                f"[Iter {iteration:04d}] Densification check | "
+                                f"reason={densify_reason}, "
+                                f"added={n_new_from_densification}, "
+                                f"pts={positions.shape[0]}, "
+                                f"valid_denom={valid_denom_count}, "
+                                f"finite={finite_count}, "
+                                f"trainable={trainable_count}, "
+                                f"above_abs={above_abs_count}, "
+                                f"candidates={candidate_count}, "
+                                f"signal_min={signal_min:.3e}, "
+                                f"signal_p50={signal_p50:.3e}, "
+                                f"signal_p90={signal_p90:.3e}, "
+                                f"signal_p95={signal_p95:.3e}, "
+                                f"signal_p98={signal_p98:.3e}, "
+                                f"signal_max={signal_max:.3e}, "
+                                f"grad_q_thr={grad_quantile_threshold:.3e}, "
+                                f"grad_thr={grad_threshold:.3e}, "
+                                f"abs_thr={densification_grad_abs_min:.3e}, "
+                                f"rgb={total_rgb_loss_value:.3e}"
+                            )
+                        elif n_new_from_densification > 0:
+                            print(
+                                f"[Iter {iteration:04d}] Clone densification: "
+                                f"adding {n_new_from_densification} surfels | "
+                                f"grad_thr={grad_threshold:.3e}, "
+                                f"abs_thr={densification_grad_abs_min:.3e}, "
+                                f"pts={positions.shape[0]}"
+                            )
 
                 scale_prune_indices = np.zeros((0,), dtype=np.int64)
                 opacity_prune_indices = np.zeros((0,), dtype=np.int64)

@@ -125,17 +125,113 @@ def build_normals_from_tangents(tangentU: np.ndarray, tangentV: np.ndarray) -> n
     normals = normalize_rows(normals)
     return normals
 
+def split_point_cloud_into_components(
+    point_cloud: o3d.geometry.PointCloud,
+    cluster_eps: float,
+    cluster_eps_mult: float,
+    min_component_points: int,
+) -> list[o3d.geometry.PointCloud]:
+    if cluster_eps <= 0.0:
+        median_spacing = estimate_knn_spacing(point_cloud, knn=1)
+        if median_spacing <= 0.0:
+            raise RuntimeError("Could not estimate point spacing for clustering.")
+
+        cluster_eps = cluster_eps_mult * median_spacing
+
+    labels = np.asarray(
+        point_cloud.cluster_dbscan(
+            eps=float(cluster_eps),
+            min_points=10,
+            print_progress=True,
+        )
+    )
+
+    valid_labels = sorted(label for label in set(labels.tolist()) if label >= 0)
+
+    components: list[o3d.geometry.PointCloud] = []
+
+    for label in valid_labels:
+        component_indices = np.where(labels == label)[0]
+
+        if component_indices.size < min_component_points:
+            continue
+
+        component = point_cloud.select_by_index(component_indices.tolist())
+        components.append(component)
+
+    components.sort(
+        key=lambda component: np.asarray(component.points).shape[0],
+        reverse=True,
+    )
+
+    print(f"DBSCAN: eps={cluster_eps:.6g}, components={len(components)}")
+
+    for component_index, component in enumerate(components):
+        print(
+            f"  component {component_index}: "
+            f"{np.asarray(component.points).shape[0]} points"
+        )
+
+    return components
 
 def estimate_knn_spacing(pointCloud: o3d.geometry.PointCloud, knn: int) -> float:
     distances = pointCloud.compute_nearest_neighbor_distance()
     if len(distances) == 0:
         return 0.0
     return float(np.median(np.asarray(distances, dtype=np.float64)))
+def reconstruct_mesh_from_point_cloud(
+    point_cloud: o3d.geometry.PointCloud,
+    method: str,
+    poisson_depth: int,
+    poisson_scale: float,
+    poisson_linear_fit: bool,
+    poisson_density_quantile: float,
+    bpa_radius_mult: float,
+    bpa_radii_count: int,
+) -> o3d.geometry.TriangleMesh:
+    if method == "poisson":
+        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+            point_cloud,
+            depth=int(poisson_depth),
+            scale=float(poisson_scale),
+            linear_fit=bool(poisson_linear_fit),
+        )
+
+        densities_np = np.asarray(densities, dtype=np.float64)
+
+        if densities_np.size > 0 and 0.0 < poisson_density_quantile < 1.0:
+            threshold = float(np.quantile(densities_np, poisson_density_quantile))
+            vertices_to_keep = densities_np >= threshold
+            mesh = mesh.select_by_index(np.where(vertices_to_keep)[0])
+            print(
+                f"Poisson: removed bottom {poisson_density_quantile:.3f} density "
+                f"(threshold={threshold:.6g})"
+            )
+
+        return mesh
+
+    median_spacing = estimate_knn_spacing(point_cloud, knn=1)
+    if median_spacing <= 0.0:
+        raise RuntimeError("Could not estimate spacing for BPA.")
+
+    base_radius = float(bpa_radius_mult) * median_spacing
+    radii_count = max(1, int(bpa_radii_count))
+    radii = base_radius * np.linspace(1.0, float(radii_count), radii_count).astype(np.float64)
+
+    print(
+        f"BPA: median NN spacing={median_spacing:.6g}, "
+        f"base_radius={base_radius:.6g}, radii={radii.tolist()}"
+    )
+
+    return o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
+        point_cloud,
+        o3d.utility.DoubleVector(radii.tolist()),
+    )
 
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reconstruct a mesh from surfel point cloud using Open3D.")
-    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, default="../Assets/OptimizationOutput")
     parser.add_argument("--opacity-threshold", type=float, default=0.0)
     parser.add_argument("--area-threshold", type=float, default=0.0)
     parser.add_argument("--max-points", type=int, default=0)
@@ -143,7 +239,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--method", choices=["poisson", "bpa"], default="poisson")
 
     # Poisson
-    parser.add_argument("--poisson-depth", type=int, default=15)
+    parser.add_argument("--poisson-depth", type=int, default=13)
     parser.add_argument("--poisson-scale", type=float, default=1.00)
     parser.add_argument("--poisson-linear-fit", action="store_true", default=True)
     parser.add_argument("--poisson-density-quantile", type=float, default=0.00,
@@ -154,6 +250,11 @@ def parse_arguments() -> argparse.Namespace:
                         help="Ball pivot radius multiplier relative to median NN spacing.")
     parser.add_argument("--bpa-radii-count", type=int, default=3,
                         help="Number of radii levels: radii = base * linspace(1, count).")
+
+    parser.add_argument("--split-components", action="store_true", default=False)
+    parser.add_argument("--cluster-eps", type=float, default=0.0)
+    parser.add_argument("--cluster-eps-mult", type=float, default=6.0)
+    parser.add_argument("--min-component-points", type=int, default=100)
 
     # Cleanup
     parser.add_argument("--remove-degenerate-triangles", action="store_true")
@@ -216,57 +317,52 @@ def main() -> None:
     # 3) Make normals locally consistent (important for Poisson)
     pointCloud.orient_normals_consistent_tangent_plane(k=30)
 
-
-    if args.save_pointcloud is not None:
-        args.save_pointcloud.parent.mkdir(parents=True, exist_ok=True)
-        o3d.io.write_point_cloud(str(args.save_pointcloud), pointCloud)
-        print(f"Saved point cloud: {args.save_pointcloud}")
-
-    print(f"Point count: {np.asarray(pointCloud.points).shape[0]}")
-
-    if args.method == "poisson":
-        print(f"Poisson: depth={args.poisson_depth}, scale={args.poisson_scale}, linear_fit={args.poisson_linear_fit}")
-        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-            pointCloud,
-            depth=int(args.poisson_depth),
-            scale=float(args.poisson_scale),
-            linear_fit=bool(args.poisson_linear_fit),
+    if args.split_components:
+        point_clouds = split_point_cloud_into_components(
+            point_cloud=pointCloud,
+            cluster_eps=args.cluster_eps,
+            cluster_eps_mult=args.cluster_eps_mult,
+            min_component_points=args.min_component_points,
         )
 
-        densitiesNp = np.asarray(densities, dtype=np.float64)
-        if densitiesNp.size > 0 and 0.0 < args.poisson_density_quantile < 1.0:
-            threshold = float(np.quantile(densitiesNp, args.poisson_density_quantile))
-            verticesToKeep = densitiesNp >= threshold
-            mesh = mesh.select_by_index(np.where(verticesToKeep)[0])
-            print(f"Poisson: removed bottom {args.poisson_density_quantile:.3f} density (threshold={threshold:.6g})")
+        if not point_clouds:
+            raise RuntimeError("No connected components survived clustering.")
 
     else:
-        medianSpacing = estimate_knn_spacing(pointCloud, knn=1)
-        if medianSpacing <= 0.0:
-            raise RuntimeError("Could not estimate spacing for BPA (no NN distances).")
+        point_clouds = [pointCloud]
 
-        baseRadius = float(args.bpa_radius_mult) * medianSpacing
-        radiiCount = max(1, int(args.bpa_radii_count))
-        radii = baseRadius * np.linspace(1.0, float(radiiCount), radiiCount).astype(np.float64)
+    meshes = []
 
-        print(f"BPA: median NN spacing={medianSpacing:.6g}, baseRadius={baseRadius:.6g}, radii={radii.tolist()}")
-        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
-            pointCloud,
-            o3d.utility.DoubleVector(radii.tolist()),
+    for component_index, component_point_cloud in enumerate(point_clouds):
+        print()
+        print(f"Reconstructing component {component_index}")
+
+        component_point_cloud.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                radius=0.02,
+                max_nn=30,
+            )
+        )
+        component_point_cloud.orient_normals_consistent_tangent_plane(k=30)
+
+        component_mesh = reconstruct_mesh_from_point_cloud(
+            point_cloud=component_point_cloud,
+            method=args.method,
+            poisson_depth=args.poisson_depth,
+            poisson_scale=args.poisson_scale,
+            poisson_linear_fit=args.poisson_linear_fit,
+            poisson_density_quantile=args.poisson_density_quantile,
+            bpa_radius_mult=args.bpa_radius_mult,
+            bpa_radii_count=args.bpa_radii_count,
         )
 
-    mesh.compute_vertex_normals()
+        component_mesh.compute_vertex_normals()
+        meshes.append(component_mesh)
 
-    if args.remove_degenerate_triangles:
-        mesh.remove_degenerate_triangles()
-    if args.remove_duplicated_triangles:
-        mesh.remove_duplicated_triangles()
-    if args.remove_duplicated_vertices:
-        mesh.remove_duplicated_vertices()
-    if args.remove_non_manifold_edges:
-        mesh.remove_non_manifold_edges()
+    mesh = o3d.geometry.TriangleMesh()
 
-    print(mesh)
+    for component_mesh in meshes:
+        mesh += component_mesh
 
     if args.save_mesh is not None:
         args.save_mesh.parent.mkdir(parents=True, exist_ok=True)

@@ -104,6 +104,12 @@ def parse_args() -> argparse.Namespace:
             "0 = latest, 1 = second latest, 2 = third latest, ..."
         ),
     )
+    parser.add_argument(
+        "--last-frame-hold-seconds",
+        type=float,
+        default=5.0,
+        help="Hold the final GIF frame for this many seconds before looping.",
+    )
 
     return parser.parse_args()
 
@@ -507,6 +513,7 @@ def build_gif(
     loop: int,
     frame_stride: int,
     max_gif_frames: int | None,
+    last_frame_hold_seconds: float,
 ) -> Path:
     target_path = run_dir / f"render_target_{camera_name}.png"
     initial_path = run_dir / f"render_initial_{camera_name}.png"
@@ -603,6 +610,7 @@ def build_gif(
 
     output_path = run_dir / output_name
     duration_sec = 1.0 / max(fps, 1.0e-6)
+    last_grid_array: np.ndarray | None = None
 
     with imageio.get_writer(output_path, mode="I", duration=duration_sec, loop=loop) as writer:
         for frame_index, render_frame_path in enumerate(render_frame_paths):
@@ -653,7 +661,17 @@ def build_gif(
                 ]
             )
 
-            writer.append_data(np.asarray(grid, dtype=np.uint8))
+            last_grid_array = np.asarray(grid, dtype=np.uint8)
+            writer.append_data(last_grid_array)
+
+        if last_grid_array is not None and last_frame_hold_seconds > 0.0:
+            extra_hold_frame_count = max(
+                0,
+                int(round(fps * last_frame_hold_seconds)) - 1,
+            )
+
+            for _ in range(extra_hold_frame_count):
+                writer.append_data(last_grid_array)
 
     return output_path
 
@@ -693,6 +711,7 @@ def main() -> None:
         loop=args.loop,
         frame_stride=args.frame_stride,
         max_gif_frames=args.max_gif_frames,
+        last_frame_hold_seconds=args.last_frame_hold_seconds,
     )
 
     print()
