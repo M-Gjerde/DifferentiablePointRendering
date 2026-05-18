@@ -29,7 +29,7 @@ from optimizers import (
     create_masked_optimizer,
 )
 from density_control import (
-    make_under_reconstruction_clones,
+    make_under_reconstruction_evsplits,
     compute_prune_indices_by_degenerate_scale,
     project_gradient_to_surfel_tangent_plane_np,
     compute_prune_indices_by_opacity,
@@ -1217,8 +1217,8 @@ def run_optimization(
 
     densification_interval = 50
     prune_interval = 10
-    densify_after = 100
-    prune_after = 50
+    densify_after = 20
+    prune_after = 20
     opacity_prune_threshold = 0.05
     max_prune_fraction = 0.5
 
@@ -1228,8 +1228,8 @@ def run_optimization(
     # are renderer- and loss-scale dependent.
     densification_verbose = True
     densify_until_iteration = int(0.7 * config.iterations)
-    densification_grad_quantile = 0.6
-    densification_grad_abs_min = 2.0e-3
+    densification_grad_quantile = 0.5
+    densification_grad_abs_min = 1.0e-4
     densify_bsdf_floor = 5.0e-2
     densify_bsdf_gamma = 1 / 3.2
 
@@ -1250,8 +1250,8 @@ def run_optimization(
         dtype=np.float32,
     )
 
-    max_clone_fraction = 0.5
-    clone_offset_scale = 0.5
+    max_split_fraction = 0.5
+    evsplit_preserve_integrated_opacity = True
 
     rebuild_bvh_interval = 5
 
@@ -1667,7 +1667,7 @@ def run_optimization(
                                 dtype=torch.bool,
                             )
 
-                            densification_result = make_under_reconstruction_clones(
+                            densification_result = make_under_reconstruction_evsplits(
                                 positions=positions,
                                 tangent_u=tangent_u,
                                 tangent_v=tangent_v,
@@ -1680,20 +1680,25 @@ def run_optimization(
                                 selection_score_np=grad_pos_norm_np,
                                 trainable_surfel_mask=densify_mask_torch,
                                 grad_threshold=grad_threshold,
-                                max_clone_fraction=max_clone_fraction,
-                                clone_offset_scale=clone_offset_scale,
-                                tangent_project_position_grad=True,
+                                max_split_fraction=max_split_fraction,  # rename later
+                                min_scale=1.0e-6,
+                                preserve_integrated_opacity=True,
                             )
 
                             if densification_result is not None:
+                                if densification_result.get("replace_source", False):
+                                    src = densification_result.get("source_index", None)
+                                    if src is not None:
+                                        indices_to_remove_list.extend(int(i) for i in np.asarray(src, dtype=np.int64))
+
                                 new_block = densification_result.get("new", None)
                                 if new_block is not None:
                                     n_new_from_densification = int(new_block["position"].shape[0])
-                                    densify_reason = "added"
+                                    densify_reason = "evsplit_added"
                                 else:
-                                    densify_reason = "clone_result_without_new_block"
+                                    densify_reason = "evsplit_result_without_new_block"
                             else:
-                                densify_reason = "selected_candidates_but_clone_filter_rejected_all"
+                                densify_reason = "selected_candidates_but_evsplit_filter_rejected_all"
 
                         if densification_verbose:
                             print(
