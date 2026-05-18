@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
         help="GIF loop count. 0 = infinite.",
     )
     parser.add_argument(
-        "--frame-stride",
+        "--frame-stride", "--stride",
         type=int,
         default=1,
         help="Use every N-th render frame. Example: 10 means use frames 0, 10, 20, ...",

@@ -9,8 +9,8 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 3
-    adjoint_bounces: int = 3
+    bounces: int = 2
+    adjoint_bounces: int = 2
     forward_passes: int = 4
     primal_shadow_rays: int =  4 # Li
     adjoint_shadow_rays: int = 4 # Li
@@ -217,14 +217,14 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=10.0,
+        default=10000.0,
         help="Weight for the depth distortion regularizer.",
     )
     parser.add_argument(
         "--opacity-weight",
         dest="opacity_loss_weight",
         type=float,
-        default=0.1,
+        default=0.0,
         help="Weight for the favoring opacity = 1.",
     )
 
@@ -241,7 +241,7 @@ def parse_args() -> OptimizationConfig:
         factor_opacity = 200.0
         factor_beta = 0.25
     else:
-        factor_position = 0.008
+        factor_position = 0.001
         factor_tangent = 0.002
         factor_scale = 0.0005
         factor_albedo = 0.01

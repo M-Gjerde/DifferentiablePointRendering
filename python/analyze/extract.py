@@ -829,7 +829,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--voxel-size",
         type=float,
-        default=0.004,
+        default=0.002,
         help="TSDF voxel size. 2DGS uses 0.004.",
     )
     parser.add_argument(

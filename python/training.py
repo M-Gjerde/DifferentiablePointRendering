@@ -1215,10 +1215,10 @@ def run_optimization(
     # ------------------------------------------------------------------
     iteration = 0
 
-    densification_interval = 50
+    densification_interval = 50000
     prune_interval = 10
     densify_after = 20
-    prune_after = 20
+    prune_after = prune_interval
     opacity_prune_threshold = 0.05
     max_prune_fraction = 0.5
 
