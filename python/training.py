@@ -1215,9 +1215,9 @@ def run_optimization(
     # ------------------------------------------------------------------
     iteration = 0
 
-    densification_interval = 50000
+    densification_interval = 10
     prune_interval = 10
-    densify_after = 20
+    densify_after = densification_interval
     prune_after = prune_interval
     opacity_prune_threshold = 0.05
     max_prune_fraction = 0.5
@@ -1228,8 +1228,8 @@ def run_optimization(
     # are renderer- and loss-scale dependent.
     densification_verbose = True
     densify_until_iteration = int(0.7 * config.iterations)
-    densification_grad_quantile = 0.5
-    densification_grad_abs_min = 1.0e-4
+    densification_grad_quantile = 0.9
+    densification_grad_abs_min = 1.5e-3
     densify_bsdf_floor = 5.0e-2
     densify_bsdf_gamma = 1 / 3.2
 

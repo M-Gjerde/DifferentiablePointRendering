@@ -209,7 +209,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.01,
+        default=0.1,
         help="Weight for the normal consistency regularizer.",
     )
 
