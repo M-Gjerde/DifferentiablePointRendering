@@ -9,13 +9,13 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 4
-    adjoint_bounces: int = 4
-    forward_passes: int = 8
+    bounces: int = 3
+    adjoint_bounces: int = 3
+    forward_passes: int = 5
     primal_shadow_rays: int =  4 # Li
     adjoint_shadow_rays: int = 4 # Li
     gather_passes: int = 1
-    adjoint_passes: int = 8
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 6 #Pi
     useDepthDistortion: bool = True
