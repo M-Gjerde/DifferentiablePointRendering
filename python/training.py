@@ -32,6 +32,7 @@ from density_control import (
     make_under_reconstruction_clones,
     compute_prune_indices_by_degenerate_scale,
     project_gradient_to_surfel_tangent_plane_np,
+    compute_prune_indices_by_opacity,
     add_densification_stats_np
 )
 from render_hooks import (
@@ -1216,14 +1217,17 @@ def run_optimization(
 
     densification_interval = 50
     prune_interval = 10
-    burnin_iterations = 10
-    densify_until_iteration = int(0.7 * config.iterations)
+    densify_after = 100
+    prune_after = 50
+    opacity_prune_threshold = 0.05
+    max_prune_fraction = 0.5
 
     reset_opacity_interval = int(1e10)
 
     # Start adaptive. Absolute thresholds are hard because your gradients
     # are renderer- and loss-scale dependent.
     densification_verbose = True
+    densify_until_iteration = int(0.7 * config.iterations)
     densification_grad_quantile = 0.6
     densification_grad_abs_min = 2.0e-3
     densify_bsdf_floor = 5.0e-2
@@ -1249,7 +1253,6 @@ def run_optimization(
     max_clone_fraction = 0.5
     clone_offset_scale = 0.5
 
-    opacity_prune_threshold = 100.0
     rebuild_bvh_interval = 5
 
     metrics_csv_path = config.output_dir / "metrics.csv"
@@ -1571,7 +1574,7 @@ def run_optimization(
                 indices_to_remove_list: List[int] = []
 
                 if (
-                        burnin_iterations <= iteration <= densify_until_iteration
+                        densify_after <= iteration <= densify_until_iteration
                         and iteration % densification_interval == 0
                 ):
                     with torch.no_grad():
@@ -1726,7 +1729,7 @@ def run_optimization(
                 scale_prune_indices = np.zeros((0,), dtype=np.int64)
                 opacity_prune_indices = np.zeros((0,), dtype=np.int64)
 
-                if iteration >= burnin_iterations and iteration % prune_interval == 0:
+                if iteration >= prune_after and iteration % prune_interval == 0:
                     # ----------------------------------------------------------
                     # Prune geometrically degenerate surfels.
                     #
@@ -1749,12 +1752,12 @@ def run_optimization(
                     # ----------------------------------------------------------
                     # Prune low-opacity surfels.
                     # ----------------------------------------------------------
-                    # opacity_prune_indices = compute_prune_indices_by_opacity(
-                    #    opacities,
-                    #    min_opacity=opacity_prune_threshold,
-                    #    use_quantile=False,
-                    #    max_fraction_to_prune=max_prune_fraction,
-                    # )
+                    opacity_prune_indices = compute_prune_indices_by_opacity(
+                       opacities,
+                       min_opacity=opacity_prune_threshold,
+                       use_quantile=False,
+                       max_fraction_to_prune=max_prune_fraction,
+                    )
 
                     if opacity_prune_indices.size > 0:
                         indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
@@ -1878,7 +1881,7 @@ def run_optimization(
 
                     # Reset density-control statistics after every densification attempt,
                     # even if no clone/prune happened.
-                if (burnin_iterations <= iteration <= densify_until_iteration
+                if (densify_after <= iteration <= densify_until_iteration
                      and iteration % densification_interval == 0):
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
