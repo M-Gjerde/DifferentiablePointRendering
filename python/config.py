@@ -9,13 +9,13 @@ from typing import Dict
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 4
-    adjoint_bounces: int = 4
-    forward_passes: int = 5
-    primal_shadow_rays: int =  4 # Li
-    adjoint_shadow_rays: int = 4 # Li
+    bounces: int = 1
+    adjoint_bounces: int = 1
+    forward_passes: int = 1
+    primal_shadow_rays: int =  6 # Li
+    adjoint_shadow_rays: int = 6 # Li
     gather_passes: int = 1
-    adjoint_passes: int = 8
+    adjoint_passes: int = 6
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 4 #Pi
     useDepthDistortion: bool = True
@@ -209,7 +209,7 @@ def parse_args() -> OptimizationConfig:
         "--normal-consistency-weight",
         dest="normal_consistency_weight",
         type=float,
-        default=0.01,
+        default=0.05,
         help="Weight for the normal consistency regularizer.",
     )
 
@@ -217,14 +217,14 @@ def parse_args() -> OptimizationConfig:
         "--depth-distort-weight",
         dest="depth_distort_weight",
         type=float,
-        default=0.5,
+        default=1000.0,
         help="Weight for the depth distortion regularizer.",
     )
     parser.add_argument(
         "--opacity-weight",
         dest="opacity_loss_weight",
         type=float,
-        default=10.0,
+        default=1.0,
         help="Weight for the favoring opacity = 1.",
     )
 
@@ -250,7 +250,7 @@ def parse_args() -> OptimizationConfig:
         factor_scale = 0.002
         factor_albedo = 0.005
         factor_opacity = 0.001
-        factor_beta = 0.000
+        factor_beta = 0.0001
 
     lr_pos = args.learning_rate_position or (factor_position * base_lr)
     lr_tan = args.learning_rate_tangent or (factor_tangent * base_lr)

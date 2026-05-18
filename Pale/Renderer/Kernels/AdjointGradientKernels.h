@@ -1719,7 +1719,7 @@ SYCL_EXTERNAL inline MaterialEdgeVisibilityDerivativeResult traceMaterialEdgeVis
     bool applyNullSamplingWeight,
     float qNullInv) {
     MaterialEdgeVisibilityDerivativeResult result{};
-    constexpr float distanceEpsilon = 1.0e-4f;
+    constexpr float distanceEpsilon = 1.0e-5f;
     const float3 startToEnd = endPositionWorld - startPositionWorld;
     const float targetDistance = length(startToEnd);
     if (targetDistance <= 1.0e-12f) {

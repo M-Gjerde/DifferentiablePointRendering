@@ -632,54 +632,39 @@ namespace Pale {
                                                     // Null event. Do not multiply the event PDF here if the
                                                     // gradient kernel later applies nullSamplingWeight.
                                                     auxiliaryRay.origin =
-                                                            auxiliaryHit.hitPositionW +
-                                                            auxiliaryDirectionWorld * 1.0e-4f;
+                                                            auxiliaryHit.hitPositionW + auxiliaryDirectionWorld *
+                                                            1.0e-4f;
                                                     continue;
                                                 }
-
                                                 // Real endpoint x2.
                                                 RayState auxiliaryRayState{};
                                                 auxiliaryRayState.ray = auxiliaryRay;
                                                 auxiliaryRayState.pathId = currentRayState.pathId;
                                                 auxiliaryRayState.pixelIndex = currentRayState.pixelIndex;
-
                                                 auxiliarySurface =
                                                         makePointCloudSurfaceRecord(
                                                             auxiliaryHit,
                                                             auxiliaryRayState,
                                                             scene);
-
                                                 foundAuxiliarySurface = true;
                                                 break;
                                             }
 
                                             if (foundAuxiliarySurface) {
-                                                const Point &ySurfel =
-                                                        scene.points[auxiliarySurface.primitiveIndex];
-
-                                                const ReconstructedSurfelState yState =
-                                                        reconstructSurfelState(ySurfel, auxiliarySurface);
-
-                                                const float3 xyVector =
-                                                        yState.position - xState.position;
-
-                                                const float xyDistanceSquared =
-                                                        dot(xyVector, xyVector);
-
+                                                const Point &ySurfel = scene.points[auxiliarySurface.primitiveIndex];
+                                                const ReconstructedSurfelState yState = reconstructSurfelState(
+                                                    ySurfel, auxiliarySurface);
+                                                const float3 xyVector = yState.position - xState.position;
+                                                const float xyDistanceSquared = dot(xyVector, xyVector);
                                                 if (xyDistanceSquared > 1.0e-12f) {
                                                     const float xyDistance = sycl::sqrt(xyDistanceSquared);
                                                     const float3 xyDirection = xyVector / xyDistance;
-
-                                                    const float cosineAtEnd =
-                                                            sycl::fmax(
-                                                                0.0f,
-                                                                dot(yState.orientedNormal, -xyDirection));
+                                                    const float cosineAtEnd = sycl::fmax(
+                                                        0.0f, dot(yState.orientedNormal, -xyDirection));
 
                                                     if (cosineAtEnd > 1.0e-8f) {
                                                         const float auxiliaryAreaPdf =
-                                                                auxiliaryDirectionPdf *
-                                                                cosineAtEnd /
-                                                                xyDistanceSquared;
+                                                                auxiliaryDirectionPdf * cosineAtEnd / xyDistanceSquared;
 
                                                         if (auxiliaryAreaPdf > 1.0e-12f) {
                                                             MeasurementGradientEventXY measurementTwoPointEvent{};
@@ -687,22 +672,17 @@ namespace Pale {
                                                             measurementTwoPointEvent.ySurface = auxiliarySurface;
                                                             measurementTwoPointEvent.ySurface.pathId =
                                                                     currentRayState.pathId;
-
                                                             measurementTwoPointEvent.xPathThroughput =
                                                                     currentRayState.transmission *
                                                                     currentRayState.pathThroughput /
                                                                     (qReflect * auxiliaryAreaPdf);
-
                                                             measurementTwoPointEvent.transmissionPreviousSegment =
                                                                     currentRayState.transmission;
-
                                                             measurementTwoPointEvent.transmission = 1.0f;
-
-                                                            measurementTwoPointEvent.directLightRadiance =
-                                                                    float3{0.0f, 0.0f, 0.0f};
-
+                                                            measurementTwoPointEvent.directLightRadiance = float3{
+                                                                0.0f, 0.0f, 0.0f
+                                                            };
                                                             measurementTwoPointEvent.isDirectLightSample = false;
-
                                                             appendEventAtomic(
                                                                 intermediates.countMeasurementTwoPointEvents,
                                                                 intermediates.measurementTwoPointEvents,
@@ -813,7 +793,7 @@ namespace Pale {
                                         if (cosineAtStart <= 1.0e-8f) {
                                             continue;
                                         }
-                                        constexpr float distanceEpsilon = 1.0e-4f;
+                                        constexpr float distanceEpsilon = 1.0e-5f;
                                         constexpr uint32_t maxShadowTraversals = 16u;
                                         Ray shadowRay{};
                                         shadowRay.origin = startState.position + lightDirection * distanceEpsilon;
@@ -1014,46 +994,43 @@ namespace Pale {
                                                         // Full auxiliary area PDF:
                                                         // q_A(z | y) = q_omega(omega | y) * P_sel(z | omega, y) * |n_z . (-omega)| / ||z-y||^2
                                                         const float auxiliaryAreaPdf =
-                                                                auxiliaryDirectionPdf *
-                                                                qReflect *
+                                                                auxiliaryDirectionPdf * qReflect *
                                                                 cosineAtEnd / yzDistanceSquared;
                                                         // one invQReflect for the real event at current Y,
                                                         // one qReflect already included in auxiliaryAreaPdf for accepting Z
                                                         const float inverseAuxiliarySamplePdf = (
                                                             1.0f / auxiliaryAreaPdf);
 
-                                                        if (auxiliaryAreaPdf > 1.0e-12f) {
-                                                            MaterialEdgeGradientEvent innerIntegralStartEdge{};
-                                                            innerIntegralStartEdge.startSurface = currentSurface; // Y
-                                                            innerIntegralStartEdge.endSurface = auxiliarySurface;
-                                                            // Z_aux
-                                                            const float3 betaIncrementAtStart =
-                                                                    currentRayState.pathThroughput *
-                                                                    currentRayState.transmission;
-                                                            const float alphaAtStart =
-                                                                    worldHit.alphaGeom * surfel.opacity;
+                                                        MaterialEdgeGradientEvent innerIntegralStartEdge{};
+                                                        innerIntegralStartEdge.startSurface = currentSurface; // Y
+                                                        innerIntegralStartEdge.endSurface = auxiliarySurface;
+                                                        // Z_aux
+                                                        const float3 betaIncrementAtStart =
+                                                                currentRayState.pathThroughput *
+                                                                currentRayState.transmission;
+                                                        const float alphaAtStart =
+                                                                worldHit.alphaGeom * surfel.opacity;
 
-                                                            innerIntegralStartEdge.betaIncrement = betaIncrementAtStart;
-                                                            innerIntegralStartEdge.alpha = alphaAtStart;
-                                                            innerIntegralStartEdge.bsdf = surfelBsdf;
-                                                            innerIntegralStartEdge.invSamplePDF =
-                                                                    inverseAuxiliarySamplePdf;;
-                                                            innerIntegralStartEdge.segmentTransmittance = 1.0f;
-                                                            innerIntegralStartEdge.directLightRadiance = float3{
-                                                                0.0f, 0.0f, 0.0f
-                                                            };
-                                                            innerIntegralStartEdge.isDirectLightSample = false;
-                                                            // This auxiliary Y -> Z edge owns its own tau / occlusion derivative.
-                                                            innerIntegralStartEdge.writeOcclusionGradients = true;
-                                                            innerIntegralStartEdge.pathId = currentRayState.pathId;
-                                                            innerIntegralStartEdge.startBounceIndex = currentRayState.
-                                                                    bounceIndex;
-                                                            appendEventAtomic(
-                                                                intermediates.countMaterialStartEdgeEvents,
-                                                                intermediates.materialStartEdgeEvents,
-                                                                intermediates.maxMaterialStartEdgeEventCount,
-                                                                innerIntegralStartEdge);
-                                                        }
+                                                        innerIntegralStartEdge.betaIncrement = betaIncrementAtStart;
+                                                        innerIntegralStartEdge.alpha = alphaAtStart;
+                                                        innerIntegralStartEdge.bsdf = surfelBsdf;
+                                                        innerIntegralStartEdge.invSamplePDF =
+                                                                inverseAuxiliarySamplePdf;;
+                                                        innerIntegralStartEdge.segmentTransmittance = 1.0f;
+                                                        innerIntegralStartEdge.directLightRadiance = float3{
+                                                            0.0f, 0.0f, 0.0f
+                                                        };
+                                                        innerIntegralStartEdge.isDirectLightSample = false;
+                                                        // This auxiliary Y -> Z edge owns its own tau / occlusion derivative.
+                                                        innerIntegralStartEdge.writeOcclusionGradients = true;
+                                                        innerIntegralStartEdge.pathId = currentRayState.pathId;
+                                                        innerIntegralStartEdge.startBounceIndex = currentRayState.
+                                                                bounceIndex;
+                                                        appendEventAtomic(
+                                                            intermediates.countMaterialStartEdgeEvents,
+                                                            intermediates.materialStartEdgeEvents,
+                                                            intermediates.maxMaterialStartEdgeEventCount,
+                                                            innerIntegralStartEdge);
                                                     }
                                                 }
                                             }

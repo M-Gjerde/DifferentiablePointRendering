@@ -406,12 +406,19 @@ def save_loss_curve(
                 "grad_opacity_regularizer_max",
             ],
         )
+        point_count_columns = get_available_columns(
+            dataframe,
+            [
+                "num_points",
+            ],
+        )
 
         if (
-            not top_columns
-            and not weighted_regularizer_columns
-            and not raw_diagnostic_columns
-            and not opacity_gradient_columns
+                not top_columns
+                and not weighted_regularizer_columns
+                and not raw_diagnostic_columns
+                and not opacity_gradient_columns
+                and not point_count_columns
         ):
             fallback_column = select_loss_column(dataframe, explicit_loss_column)
             top_columns = [fallback_column]
@@ -431,20 +438,32 @@ def save_loss_curve(
             "grad_opacity_regularizer_rms": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
             "grad_opacity_total_max": dict(color="tab:blue", linewidth=1.2, alpha=0.75, linestyle="--"),
             "grad_opacity_regularizer_max": dict(color="tab:purple", linewidth=1.2, alpha=0.75, linestyle="--"),
+
+            "num_points": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
         }
 
         include_opacity_gradient_panel = len(opacity_gradient_columns) > 0
-        num_panels = 4 if include_opacity_gradient_panel else 3
+        include_point_count_panel = len(point_count_columns) > 0
+
+        num_panels = (
+                3
+                + int(include_opacity_gradient_panel)
+                + int(include_point_count_panel)
+        )
+
+        height_ratios = [1.2, 1.0, 1.0]
+        if include_opacity_gradient_panel:
+            height_ratios.append(1.0)
+        if include_point_count_panel:
+            height_ratios.append(0.8)
 
         fig, axes = plt.subplots(
             num_panels,
             1,
-            figsize=(12, 12 if include_opacity_gradient_panel else 10),
+            figsize=(12, 2.8 * num_panels),
             sharex=True,
             gridspec_kw={
-                "height_ratios": [1.2, 1.0, 1.0, 1.0]
-                if include_opacity_gradient_panel
-                else [1.2, 1.0, 1.0]
+                "height_ratios": height_ratios,
             },
         )
 
@@ -454,7 +473,20 @@ def save_loss_curve(
         ax_top = axes[0]
         ax_weighted = axes[1]
         ax_raw = axes[2]
-        ax_opacity_gradient = axes[3] if include_opacity_gradient_panel else None
+
+        next_axis_index = 3
+
+        if include_opacity_gradient_panel:
+            ax_opacity_gradient = axes[next_axis_index]
+            next_axis_index += 1
+        else:
+            ax_opacity_gradient = None
+
+        if include_point_count_panel:
+            ax_point_count = axes[next_axis_index]
+            next_axis_index += 1
+        else:
+            ax_point_count = None
 
         ax_top_right = plot_top_loss_columns_with_dual_axis(
             ax_top,
@@ -509,14 +541,34 @@ def save_loss_curve(
                 style_map,
             )
 
-            ax_opacity_gradient.set_xlabel("Iteration")
             ax_opacity_gradient.set_ylabel("Opacity gradients")
             if opacity_grad_has_positive_values:
                 ax_opacity_gradient.set_yscale("log")
             ax_opacity_gradient.grid(True)
             ax_opacity_gradient.legend()
-        else:
-            ax_raw.set_xlabel("Iteration")
+
+        if ax_point_count is not None:
+            point_values = dataframe_column_as_float_array(dataframe, "num_points")
+
+            ax_point_count.step(
+                dataframe["iteration"],
+                point_values,
+                where="post",
+                label="num_points",
+                **style_map.get("num_points", {}),
+            )
+
+            ax_point_count.set_ylabel("Point count")
+            ax_point_count.grid(True)
+            ax_point_count.legend()
+
+        last_axis = ax_raw
+        if ax_opacity_gradient is not None:
+            last_axis = ax_opacity_gradient
+        if ax_point_count is not None:
+            last_axis = ax_point_count
+
+        last_axis.set_xlabel("Iteration")
 
         plt.tight_layout()
         plt.savefig(output_png_path, dpi=200)
@@ -527,10 +579,11 @@ def save_loss_curve(
         plt.close(fig)
 
         plotted_columns = (
-            top_columns
-            + weighted_regularizer_columns
-            + raw_diagnostic_columns
-            + opacity_gradient_columns
+                top_columns
+                + weighted_regularizer_columns
+                + raw_diagnostic_columns
+                + opacity_gradient_columns
+                + point_count_columns
         )
 
         return ", ".join(plotted_columns)

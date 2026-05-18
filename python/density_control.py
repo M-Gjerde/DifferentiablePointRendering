@@ -1,200 +1,207 @@
 import numpy as np
 import torch
-from typing import Optional, Dict, Any
+from typing import Optional, Any
 
 
-def densify_points_long_axis_split(
-        positions: torch.nn.Parameter,
-        tangent_u: torch.nn.Parameter,
-        tangent_v: torch.nn.Parameter,
-        scales: torch.nn.Parameter,
-        albedos: torch.nn.Parameter,
-        opacities: torch.nn.Parameter,
-        betas: torch.nn.Parameter,
-        *,
-        importance: Optional[torch.Tensor] = None,  # (N,) scores, EDC-style
-        max_new_points: Optional[int] = None,
-        split_distance: float = 0.6,
-        minor_axis_shrink: float = 0.85,
-        opacity_reduction: float = 0.6,
-        min_long_axis_scale: float = 0.0,  # ignore “dust” surfels if desired
-        grad_threshold: float = 0.0,  # minimal importance to be considered
-) -> Optional[Dict[str, Any]]:
+def project_gradient_to_surfel_tangent_plane_np(
+        grad_position_np: np.ndarray,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+) -> np.ndarray:
     """
-    Long-Axis Split style densification for your 2D surfels.
-
-    - No area_threshold prefilter.
-    - Uses `importance` (EDC-like) if given.
-    - Uses `max_new_points` as a budget: each parent -> 2 children.
-    - Optionally skips tiny surfels via `min_long_axis_scale`.
+    Project world-space position gradients onto each surfel's tangent plane.
 
     Returns:
-        None if no densification.
+        projected_grad_np with shape (N, 3).
+    """
+    grad_np = np.asarray(grad_position_np, dtype=np.float32, order="C")
 
-        Otherwise:
-        {
-            "prune_indices": np.ndarray [K],       # parent indices to remove
-            "new": {
-                "position":  np.ndarray [2K, 3],
-                "tangent_u": np.ndarray [2K, 3],
-                "tangent_v": np.ndarray [2K, 3],
-                "scale":     np.ndarray [2K, 2],
-                "albedo":     np.ndarray [2K, 3],
-                "opacity":   np.ndarray [2K],
-            }
-        }
+    with torch.no_grad():
+        device = tangent_u.device
+
+        g = torch.as_tensor(grad_np, device=device, dtype=torch.float32)
+
+        tu = torch.nn.functional.normalize(tangent_u.detach(), dim=1)
+        tv = torch.nn.functional.normalize(tangent_v.detach(), dim=1)
+
+        projected = (
+            torch.sum(g * tu, dim=1, keepdim=True) * tu
+            +
+            torch.sum(g * tv, dim=1, keepdim=True) * tv
+        )
+
+        return projected.detach().cpu().numpy().astype(np.float32)
+
+def make_under_reconstruction_clones(
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        albedos,
+        opacities,
+        betas,
+        powers,
+        grad_position_np,
+        trainable_surfel_mask,
+        grad_threshold,
+        small_scale_threshold,
+        max_clone_fraction=0.05,
+        clone_offset_scale=0.25,
+        clone_scale_factor=1.6,
+        normal_perturbation=2.0e-5,
+        tangent_project_position_grad=True,
+        selection_score_np=None
+) -> dict[str, dict[str, Any] | Any] | None:
+    """
+    Clone-only densification for under-reconstruction.
+
+    Selection:
+        large position-gradient magnitude
+        small surfel scale
+        trainable surfel
+
+    The clone copies all local parameters and is optionally displaced
+    a small distance along the local tangent-projected descent direction.
     """
 
     with torch.no_grad():
-        positions_np = positions.detach().cpu().numpy()
-        tangent_u_np = tangent_u.detach().cpu().numpy()
-        tangent_v_np = tangent_v.detach().cpu().numpy()
-        scales_np = scales.detach().cpu().numpy()
-        albedos_np = albedos.detach().cpu().numpy()
-        opacities_np = opacities.detach().cpu().numpy()
-        betas_np = betas.detach().cpu().numpy()
-        if importance is not None:
-            importance_np = importance.detach().cpu().numpy().reshape(-1)
+        device = positions.device
+
+
+        grad_pos = torch.as_tensor(
+            grad_position_np,
+            device=device,
+            dtype=torch.float32,
+        )
+
+        if selection_score_np is None:
+            selection_score = torch.linalg.norm(grad_pos, dim=1)
         else:
-            importance_np = None
+            selection_score = torch.as_tensor(
+                selection_score_np,
+                device=device,
+                dtype=torch.float32,
+            ).reshape(-1)
+        max_scale = torch.max(scales, dim=1).values
 
-    number_of_points = positions_np.shape[0]
-    if number_of_points == 0:
-        return None
+        selected = (
+                torch.isfinite(selection_score)
+                & (selection_score >= grad_threshold)
+                & (max_scale <= small_scale_threshold)
+                & trainable_surfel_mask
+        )
 
-    # --- 1) Basic geometry-derived info: long-axis scale per point ---
-    long_axis_scales = np.maximum(scales_np[:, 0], scales_np[:, 1])  # (N,)
-
-    # Start from all indices
-    candidate_mask = long_axis_scales >= min_long_axis_scale
-    candidate_indices = np.nonzero(candidate_mask)[0].astype(np.int64)
-
-    if candidate_indices.size == 0:
-        return None
-
-    # --- 2) If we have importance (EDC-style), restrict by grad_threshold ---
-    if importance_np is not None:
-        candidate_scores = importance_np[candidate_indices]
-        # Filter by gradient threshold
-        print("Candidate Scores: ", candidate_scores)
-        if grad_threshold > 0.0:
-            grad_mask = candidate_scores >= grad_threshold
-            candidate_indices = candidate_indices[grad_mask]
-            candidate_scores = candidate_scores[grad_mask]
-            if candidate_indices.size == 0:
-                return None
-    else:
-        candidate_scores = None  # fallback: use geometry only later
-
-    # --- 3) Apply budget on parents: each parent → 2 children ---
-    if max_new_points is not None:
-        max_parents = max_new_points // 2
-        if max_parents <= 0:
+        selected_idx = torch.nonzero(selected, as_tuple=False).flatten()
+        if selected_idx.numel() == 0:
             return None
 
-        if candidate_indices.size > max_parents:
-            if candidate_scores is not None:
-                # Select top-k by importance score (descending)
-                order = np.argsort(-candidate_scores)  # descending
-                selected = order[:max_parents]
-                candidate_indices = candidate_indices[selected]
-            else:
-                # Fallback: largest long-axis scales first
-                ca_long = long_axis_scales[candidate_indices]
-                order = np.argsort(-ca_long)  # descending
-                selected = order[:max_parents]
-                candidate_indices = candidate_indices[selected]
+        # Cap clone count to avoid explosive growth.
+        n_points = positions.shape[0]
+        max_new = max(1, int(max_clone_fraction * float(n_points)))
 
-    # Canonical, sorted parent indices (nice for remove_points)
-    parent_indices = np.unique(candidate_indices.astype(np.int64))
-    if parent_indices.size == 0:
-        return None
+        if selected_idx.numel() > max_new:
+            # Keep strongest-gradient candidates.
+            selected_grad = selection_score[selected_idx]
+            keep = torch.topk(selected_grad, k=max_new, largest=True).indices
+            selected_idx = selected_idx[keep]
 
-    # --- 4) Perform long-axis split ---
-    new_positions_list = []
-    new_tangent_u_list = []
-    new_tangent_v_list = []
-    new_scales_list = []
-    new_albedos_list = []
-    new_opacities_list = []
-    new_betas_list = []
+        p = positions[selected_idx].detach().clone()
+        tu = tangent_u[selected_idx].detach().clone()
+        tv = tangent_v[selected_idx].detach().clone()
+        sc = scales[selected_idx].detach().clone()
+        alb = albedos[selected_idx].detach().clone()
+        opa = opacities[selected_idx].detach().clone()
+        be = betas[selected_idx].detach().clone()
+        pow_ = powers[selected_idx].detach().clone()
 
-    for parent_index in parent_indices:
-        parent_position = positions_np[parent_index]
-        parent_tangent_u = tangent_u_np[parent_index]
-        parent_tangent_v = tangent_v_np[parent_index]
-        parent_scale = scales_np[parent_index]  # [s_u, s_v]
-        parent_albedo = albedos_np[parent_index]
-        parent_opacity = float(opacities_np[parent_index])
-        parent_beta = float(betas_np[parent_index])
+        g = grad_pos[selected_idx]
 
-        scale_u = float(parent_scale[0])
-        scale_v = float(parent_scale[1])
+        # For a minimization objective, grad_position_np = dL/dp.
+        # The optimizer moves in -grad direction.
+        descent = -g
 
-        # Determine long axis in tangent plane
-        if scale_u >= scale_v:
-            long_axis_vector = parent_tangent_u
-            long_scale = scale_u
-            short_scale = scale_v
-            long_is_u = True
-        else:
-            long_axis_vector = parent_tangent_v
-            long_scale = scale_v
-            short_scale = scale_u
-            long_is_u = False
+        if tangent_project_position_grad:
+            tu_n = torch.nn.functional.normalize(tu, dim=1)
+            tv_n = torch.nn.functional.normalize(tv, dim=1)
 
-        # Offset distance along long axis (≈3σ * split_distance)
-        effective_radius = 3.0 * long_scale
-        offset_magnitude = split_distance * effective_radius
-        offset_vector = offset_magnitude * long_axis_vector
+            descent = (
+                torch.sum(descent * tu_n, dim=1, keepdim=True) * tu_n
+                +
+                torch.sum(descent * tv_n, dim=1, keepdim=True) * tv_n
+            )
 
-        child_position_pos = parent_position + offset_vector
-        child_position_neg = parent_position - offset_vector
+        descent_norm = torch.linalg.norm(descent, dim=1, keepdim=True)
+        valid_dir = descent_norm > 1.0e-12
 
-        # Child scales
-        new_long_scale = long_scale * (1.0 - split_distance)
-        new_short_scale = short_scale * minor_axis_shrink
+        direction = torch.zeros_like(descent)
+        direction[valid_dir[:, 0]] = descent[valid_dir[:, 0]] / descent_norm[valid_dir[:, 0]]
 
-        if long_is_u:
-            child_scale = np.array([new_long_scale, new_short_scale], dtype=np.float32)
-        else:
-            child_scale = np.array([new_short_scale, new_long_scale], dtype=np.float32)
+        # Move by a fraction of local surfel size in the tangent plane.
+        local_radius = torch.min(sc, dim=1).values[:, None]
+        tangent_offset = clone_offset_scale * local_radius * direction
 
-        # Child opacity
-        child_opacity = np.clip(parent_opacity * opacity_reduction, 0.0, 1.0)
-        child_beta = parent_beta
-        # Record two children
-        for child_position in (child_position_pos, child_position_neg):
-            new_positions_list.append(child_position)
-            new_tangent_u_list.append(parent_tangent_u)
-            new_tangent_v_list.append(parent_tangent_v)
-            new_scales_list.append(child_scale)
-            new_albedos_list.append(parent_albedo)
-            new_opacities_list.append(child_opacity)
-            new_betas_list.append(child_beta)
-    if not new_positions_list:
-        return None
+        # Small normal perturbation to avoid BVH self-intersection / coincident primitive issues.
+        normal = torch.cross(tu, tv, dim=1)
+        normal_norm = torch.linalg.norm(normal, dim=1, keepdim=True)
+        valid_normal = normal_norm > 1.0e-12
 
-    new_positions_np = np.asarray(new_positions_list, dtype=np.float32)
-    new_tangent_u_np = np.asarray(new_tangent_u_list, dtype=np.float32)
-    new_tangent_v_np = np.asarray(new_tangent_v_list, dtype=np.float32)
-    new_scales_np = np.asarray(new_scales_list, dtype=np.float32)
-    new_albedos_np = np.asarray(new_albedos_list, dtype=np.float32)
-    new_opacities_np = np.asarray(new_opacities_list, dtype=np.float32)
-    new_betas_np = np.asarray(new_betas_list, dtype=np.float32)
-    return {
-        "prune_indices": parent_indices,
-        "new": {
-            "position": new_positions_np,
-            "tangent_u": new_tangent_u_np,
-            "tangent_v": new_tangent_v_np,
-            "scale": new_scales_np,
-            "albedo": new_albedos_np,
-            "opacity": new_opacities_np,
-            "beta": new_betas_np,
-        },
-    }
+        normal_dir = torch.zeros_like(normal)
+        normal_dir[valid_normal[:, 0]] = normal[valid_normal[:, 0]] / normal_norm[valid_normal[:, 0]]
 
+        normal_offset = float(normal_perturbation) * normal_dir
+
+        new_positions = p + tangent_offset + normal_offset
+
+        # Optional 3DGS split-like shrinkage for the clone.
+        new_sc = sc / float(clone_scale_factor)
+
+        return {
+            "new": {
+                "position": new_positions.detach().cpu().numpy().astype(np.float32),
+                "tangent_u": tu.detach().cpu().numpy().astype(np.float32),
+                "tangent_v": tv.detach().cpu().numpy().astype(np.float32),
+                "scale": new_sc.detach().cpu().numpy().astype(np.float32),
+                "albedo": alb.detach().cpu().numpy().astype(np.float32),
+                "opacity": opa.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "beta": be.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "power": pow_.detach().cpu().numpy().reshape(-1).astype(np.float32),
+            },
+            "source_index": selected_idx.detach().cpu().numpy().astype(np.int64),
+            "grad_norm": selection_score[selected_idx].detach().cpu().numpy().astype(np.float32),
+        }
+
+def add_densification_stats_np(
+        grad_position_np: np.ndarray,
+        trainable_surfel_mask: torch.Tensor,
+        accum_np: np.ndarray,
+        denom_np: np.ndarray,
+        update_only_nonzero: bool = True,
+) -> None:
+    """
+    Accumulate per-primitive position-gradient magnitudes for densification.
+
+    This is a density-control statistic, not the optimizer gradient.
+    Recommended input: photo_gradients["position"], not total_gradients["position"].
+    """
+    grad_position_np = np.asarray(grad_position_np, dtype=np.float32, order="C")
+
+    grad_norm_np = np.linalg.norm(grad_position_np, axis=1, keepdims=True)
+    grad_norm_np = np.nan_to_num(
+        grad_norm_np,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
+    trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1, 1)
+
+    update_mask_np = trainable_np & np.isfinite(grad_norm_np)
+
+    if update_only_nonzero:
+        update_mask_np = update_mask_np & (grad_norm_np > 0.0)
+
+    accum_np[update_mask_np] += grad_norm_np[update_mask_np]
+    denom_np[update_mask_np] += 1.0
 
 def compute_prune_indices_by_opacity(
         opacities: torch.Tensor,

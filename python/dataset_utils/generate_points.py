@@ -286,7 +286,7 @@ def generate_volume_ply(
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = -100.0
+    light_beta = -1000.0
     light_shape = 0.0
 
     light_line = (
@@ -406,10 +406,10 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "tangent_noise_std": 5.0,
     },
     "plane": {
-        "min_x": -0.5,
-        "max_x": 0.5,
-        "min_y": -0.5,
-        "max_y": 0.5,
+        "min_x": -0.25,
+        "max_x": 0.25,
+        "min_y": -0.25,
+        "max_y": 0.25,
         "min_z": -0.01,
         "max_z": 0.01,
         "scale": 0.05,
@@ -443,7 +443,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-z", type=float)
 
     parser.add_argument("--scale", type=float)
-    parser.add_argument("--opacity", type=float, default=0.1)
+    parser.add_argument("--opacity", type=float, default=1.0)
     parser.add_argument("--position-noise-std", type=float)
     parser.add_argument("--tangent-noise-std", type=float)
     parser.add_argument("--seed", type=int, default=None)

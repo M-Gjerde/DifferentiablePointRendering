@@ -5,7 +5,7 @@
     "--ply",
     "pointcloud",
     "--seed",
-    "666"
+    "66"
   ],
   "cases": [
     {
@@ -76,7 +76,7 @@
       "min": 0.1,
       "max": 1.0,
       "fd_epsilon": 1e-1,
-      "forward_passes": 25,
+      "forward_passes": 100,
       "bounces": 2,
       "adjoint_passes": 16,
       "adjoint_bounces": 2,

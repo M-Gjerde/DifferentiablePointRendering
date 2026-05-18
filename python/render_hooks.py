@@ -436,30 +436,128 @@ def apply_point_parameters(
     )
 
 
+def _as_float32_contiguous(x: np.ndarray, name: str) -> np.ndarray:
+    arr = np.asarray(x, dtype=np.float32, order="C")
+    if not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr, dtype=np.float32)
+    return arr
+
+
+def _as_flat_float32(x: np.ndarray, name: str) -> np.ndarray:
+    arr = _as_float32_contiguous(x, name)
+    if arr.ndim == 2 and arr.shape[1] == 1:
+        arr = arr[:, 0]
+    if arr.ndim != 1:
+        raise RuntimeError(f"{name} must have shape (N,) or (N,1), got {arr.shape}")
+    return arr
+
+
 def add_new_points(renderer, densification_result: dict | None) -> None:
+    """
+    Append newly created surfels/Gaussians to the C++ renderer.
+
+    Expected preferred format:
+
+        densification_result = {
+            "new": {
+                "position":  (N,3) float32,
+                "tangent_u": (N,3) float32,
+                "tangent_v": (N,3) float32,
+                "scale":     (N,2) float32,
+                "albedo":    (N,3) float32,
+                "opacity":   (N,) or (N,1) float32,
+                "beta":      (N,) or (N,1) float32,
+                "power":     (N,) or (N,1) float32, optional,
+            }
+        }
+
+    For compatibility, this also accepts a flat densification_result
+    containing the same keys directly.
+    """
     if densification_result is None:
         return
 
-    # densification_result is assumed to have already been applied to the
-    # PyTorch tensors (positions, scales, etc.) via your Python logic.
-    # Here we only care about actually appending new Gaussians.
-
+    # Preferred format: {"new": {...}}
     new_block = densification_result.get("new")
+
+    # Backward-compatible format: {"position": ..., "scale": ..., ...}
+    if new_block is None and "position" in densification_result:
+        new_block = densification_result
+
     if new_block is None:
-        # No new points to append
         return
 
-    # new_block should already be numpy arrays with shapes
-    # (N,3) for position/tangent_u/tangent_v/albedo, (N,2) for scale
+    required_keys = [
+        "position",
+        "tangent_u",
+        "tangent_v",
+        "scale",
+        "albedo",
+        "opacity",
+        "beta",
+    ]
+
+    for key in required_keys:
+        if key not in new_block:
+            raise RuntimeError(f"add_new_points: missing densification_result['new']['{key}']")
+
+    position = _as_float32_contiguous(new_block["position"], "new.position")
+    tangent_u = _as_float32_contiguous(new_block["tangent_u"], "new.tangent_u")
+    tangent_v = _as_float32_contiguous(new_block["tangent_v"], "new.tangent_v")
+    scale = _as_float32_contiguous(new_block["scale"], "new.scale")
+    albedo = _as_float32_contiguous(new_block["albedo"], "new.albedo")
+    opacity = _as_flat_float32(new_block["opacity"], "new.opacity")
+    beta = _as_flat_float32(new_block["beta"], "new.beta")
+
+    if position.ndim != 2 or position.shape[1] != 3:
+        raise RuntimeError(f"new.position must have shape (N,3), got {position.shape}")
+
+    n_new = position.shape[0]
+    if n_new == 0:
+        return
+
+    expected_shapes = {
+        "new.tangent_u": (n_new, 3),
+        "new.tangent_v": (n_new, 3),
+        "new.scale": (n_new, 2),
+        "new.albedo": (n_new, 3),
+    }
+
+    arrays_to_check = {
+        "new.tangent_u": tangent_u,
+        "new.tangent_v": tangent_v,
+        "new.scale": scale,
+        "new.albedo": albedo,
+    }
+
+    for name, expected_shape in expected_shapes.items():
+        if arrays_to_check[name].shape != expected_shape:
+            raise RuntimeError(
+                f"{name} must have shape {expected_shape}, got {arrays_to_check[name].shape}"
+            )
+
+    if opacity.shape[0] != n_new:
+        raise RuntimeError(f"new.opacity must have length {n_new}, got {opacity.shape[0]}")
+    if beta.shape[0] != n_new:
+        raise RuntimeError(f"new.beta must have length {n_new}, got {beta.shape[0]}")
+
+    if "power" in new_block:
+        power = _as_flat_float32(new_block["power"], "new.power")
+        if power.shape[0] != n_new:
+            raise RuntimeError(f"new.power must have length {n_new}, got {power.shape[0]}")
+    else:
+        power = np.zeros((n_new,), dtype=np.float32)
+
     parameters_for_cpp = {
         "new": {
-            "position": new_block["position"],
-            "tangent_u": new_block["tangent_u"],
-            "tangent_v": new_block["tangent_v"],
-            "scale": new_block["scale"],
-            "albedo": new_block["albedo"],
-            "opacity": new_block["opacity"],
-            "beta": new_block["beta"],
+            "position": position,
+            "tangent_u": tangent_u,
+            "tangent_v": tangent_v,
+            "scale": scale,
+            "albedo": albedo,
+            "opacity": opacity,
+            "beta": beta,
+            "power": power,
         }
     }
 
