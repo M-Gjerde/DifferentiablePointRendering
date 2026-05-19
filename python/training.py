@@ -1228,10 +1228,10 @@ def run_optimization(
     # are renderer- and loss-scale dependent.
     densification_verbose = True
     densify_until_iteration = int(0.7 * config.iterations)
-    densification_grad_quantile = 0.9
-    densification_grad_abs_min = 1.5e-3
-    densify_bsdf_floor = 5.0e-2
-    densify_bsdf_gamma = 1 / 3.2
+    densification_grad_quantile = 0.85
+    densification_grad_abs_min = 1.2e-3
+    densify_bsdf_floor = 0.1
+    densify_bsdf_gamma = 1.3
 
     point_birth_iteration_np = np.zeros(
         (positions.shape[0],),
