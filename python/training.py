@@ -33,6 +33,7 @@ from density_control import (
     compute_prune_indices_by_degenerate_scale,
     project_gradient_to_surfel_tangent_plane_np,
     compute_prune_indices_by_opacity,
+    compute_scale_grow_shrink_pressure_np,
     add_densification_stats_np
 )
 from render_hooks import (
@@ -1229,6 +1230,23 @@ def run_optimization(
         (positions.shape[0],),
         dtype=np.int64,
     )
+    densify_scale_grow_accum_np = np.zeros(
+        (positions.shape[0], 1),
+        dtype=np.float32,
+    )
+    densify_scale_shrink_accum_np = np.zeros(
+        (positions.shape[0], 1),
+        dtype=np.float32,
+    )
+    densify_scale_pressure_denom_np = np.zeros(
+        (positions.shape[0], 1),
+        dtype=np.float32,
+    )
+    densify_split_min_shrink_fraction = 0.25
+    densify_split_max_grow_to_shrink = 3.0
+    densify_split_min_shrink_abs = 0.0
+    densify_split_min_radius = 0.031 # Dont split with radius less than 0.001
+
     iteration = 0
 
     densification_interval = config.densification_interval
@@ -1478,8 +1496,45 @@ def run_optimization(
                     densify_bsdf_floor,
                 ) ** densify_bsdf_gamma
 
+                with torch.no_grad():
+                    scales_np = scales.detach().cpu().numpy().astype(np.float32)
+                area_np = (
+                        np.maximum(scales_np[:, 0], 1.0e-12)
+                        * np.maximum(scales_np[:, 1], 1.0e-12)
+                )
+
+                radius_np = np.sqrt(area_np)
+
+                # Use the same scale at which surfels become eligible for splitting.
+                # This prevents tiny surfels from getting artificially huge scores.
+                score_min_radius = float(densify_split_min_radius)
+                score_min_area = score_min_radius * score_min_radius
+
+                densify_score_area_power = float(
+                    getattr(config, "densify_score_area_power", 1.0)
+                )
+
+                area_normalizer_np = np.maximum(area_np, score_min_area) ** densify_score_area_power
+
                 density_grad_position_np_for_score = (
-                        density_grad_position_np / bsdf_normalizer_np[:, None]
+                        density_grad_position_np
+                        / bsdf_normalizer_np[:, None]
+                        / area_normalizer_np[:, None]
+                )
+
+                density_grad_scale_np_raw = np.asarray(
+                    photo_gradients["scale"],
+                    dtype=np.float32,
+                    order="C",
+                )
+                with torch.no_grad():
+                    scales_np_for_density = scales.detach().cpu().numpy().astype(np.float32)
+                scale_grow_pressure_np, scale_shrink_pressure_np, _ = (
+                    compute_scale_grow_shrink_pressure_np(
+                        scales_np=scales_np_for_density,
+                        grad_scales_np=density_grad_scale_np_raw,
+                        normalizer_np=bsdf_normalizer_np,
+                    )
                 )
 
                 add_densification_stats_np(
@@ -1515,6 +1570,23 @@ def run_optimization(
                     densify_position_grad_vector_accum_np[update_density_vector_mask_np] += (
                         density_grad_position_np_for_score[update_density_vector_mask_np]
                     )
+                    scale_pressure_np = scale_grow_pressure_np + scale_shrink_pressure_np
+
+                    update_scale_pressure_mask_np = (
+                            trainable_np_for_density
+                            & np.isfinite(scale_pressure_np)
+                            & (scale_pressure_np > 0.0)
+                    )
+
+                    densify_scale_grow_accum_np[update_scale_pressure_mask_np, 0] += (
+                        scale_grow_pressure_np[update_scale_pressure_mask_np]
+                    )
+
+                    densify_scale_shrink_accum_np[update_scale_pressure_mask_np, 0] += (
+                        scale_shrink_pressure_np[update_scale_pressure_mask_np]
+                    )
+
+                    densify_scale_pressure_denom_np[update_scale_pressure_mask_np, 0] += 1.0
 
                 # --------------------------------------------------------------
                 # 7. Optimizer step
@@ -1592,6 +1664,56 @@ def run_optimization(
                 ):
                     with torch.no_grad():
                         valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
+                        valid_scale_pressure_np = densify_scale_pressure_denom_np.reshape(-1) > 0.0
+
+                        avg_grow_pressure_np = np.zeros(
+                            (positions.shape[0],),
+                            dtype=np.float32,
+                        )
+                        avg_shrink_pressure_np = np.zeros(
+                            (positions.shape[0],),
+                            dtype=np.float32,
+                        )
+
+                        avg_grow_pressure_np[valid_scale_pressure_np] = (
+                                densify_scale_grow_accum_np.reshape(-1)[valid_scale_pressure_np]
+                                /
+                                densify_scale_pressure_denom_np.reshape(-1)[valid_scale_pressure_np]
+                        )
+
+                        avg_shrink_pressure_np[valid_scale_pressure_np] = (
+                                densify_scale_shrink_accum_np.reshape(-1)[valid_scale_pressure_np]
+                                /
+                                densify_scale_pressure_denom_np.reshape(-1)[valid_scale_pressure_np]
+                        )
+
+                        scale_total_pressure_np = avg_grow_pressure_np + avg_shrink_pressure_np
+
+                        scale_shrink_fraction_np = np.zeros_like(avg_shrink_pressure_np)
+                        nonzero_scale_pressure_np = scale_total_pressure_np > 1.0e-20
+                        scale_shrink_fraction_np[nonzero_scale_pressure_np] = (
+                                avg_shrink_pressure_np[nonzero_scale_pressure_np]
+                                /
+                                scale_total_pressure_np[nonzero_scale_pressure_np]
+                        )
+
+                        # Plane suppression / curvature allowance:
+                        #
+                        # - Flat undercovered plane:
+                        #       grow_pressure large, shrink_pressure small -> no split.
+                        #
+                        # - Curved or spherical patch represented by too large a tangent surfel:
+                        #       shrink_pressure nontrivial -> split allowed.
+                        split_scale_gate_np = (
+                                valid_scale_pressure_np
+                                & (avg_shrink_pressure_np >= densify_split_min_shrink_abs)
+                                & (scale_shrink_fraction_np >= densify_split_min_shrink_fraction)
+                                & (
+                                        avg_grow_pressure_np
+                                        <= densify_split_max_grow_to_shrink
+                                        * np.maximum(avg_shrink_pressure_np, 1.0e-20)
+                                )
+                        )
 
                         avg_density_grad_norm_np = np.zeros(
                             (positions.shape[0],),
@@ -1624,13 +1746,16 @@ def run_optimization(
 
                         point_age_np = iteration - point_birth_iteration_np
                         finite_grad = np.isfinite(grad_pos_norm_np)
+                        large_enough_to_split_np = radius_np >= densify_split_min_radius
 
                         candidate_mask_np = (
-                                finite_grad
+                                valid_denom_np
+                                & finite_grad
                                 & trainable_np
+                                & split_scale_gate_np
+                                & large_enough_to_split_np
                                 & (grad_pos_norm_np >= densification_grad_abs_min)
                         )
-
                         n_new_from_densification = 0
                         densify_reason = "not_attempted"
 
@@ -1639,6 +1764,18 @@ def run_optimization(
                         above_abs_count = int(np.count_nonzero(grad_pos_norm_np >= densification_grad_abs_min))
                         candidate_count = int(np.count_nonzero(candidate_mask_np))
                         valid_denom_count = int(np.count_nonzero(valid_denom_np))
+
+                        valid_scale_pressure_count = int(np.count_nonzero(valid_scale_pressure_np))
+                        split_scale_gate_count = int(np.count_nonzero(split_scale_gate_np))
+
+                        if valid_scale_pressure_count > 0:
+                            grow_mean = float(np.mean(avg_grow_pressure_np[valid_scale_pressure_np]))
+                            shrink_mean = float(np.mean(avg_shrink_pressure_np[valid_scale_pressure_np]))
+                            shrink_frac_mean = float(np.mean(scale_shrink_fraction_np[valid_scale_pressure_np]))
+                        else:
+                            grow_mean = 0.0
+                            shrink_mean = 0.0
+                            shrink_frac_mean = 0.0
 
                         grad_threshold = float("nan")
                         grad_quantile_threshold = float("nan")
@@ -1733,7 +1870,12 @@ def run_optimization(
                                 f"grad_q_thr={grad_quantile_threshold:.3e}, "
                                 f"grad_thr={grad_threshold:.3e}, "
                                 f"abs_thr={densification_grad_abs_min:.3e}, "
-                                f"rgb={total_rgb_loss_value:.3e}"
+                                f"rgb={total_rgb_loss_value:.3e}, "
+                                f"valid_scale={valid_scale_pressure_count}, "
+                                f"split_scale_gate={split_scale_gate_count}, "
+                                f"grow_mean={grow_mean:.3e}, "
+                                f"shrink_mean={shrink_mean:.3e}, "
+                                f"shrink_frac_mean={shrink_frac_mean:.3f}, "
                             )
                         elif n_new_from_densification > 0:
                             print(
@@ -1811,6 +1953,10 @@ def run_optimization(
                         densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
                         densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                         densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
+                        densify_scale_grow_accum_np = densify_scale_grow_accum_np[keep_mask_np]
+                        densify_scale_shrink_accum_np = densify_scale_shrink_accum_np[keep_mask_np]
+                        densify_scale_pressure_denom_np = densify_scale_pressure_denom_np[keep_mask_np]
+
 
                     if densification_result is not None:
                         new_block = densification_result.get("new", None)
@@ -1828,6 +1974,29 @@ def run_optimization(
                             )
                             densify_position_grad_vector_accum_np = np.concatenate(
                                 [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32), ],
+                                axis=0,
+                            )
+                            densify_scale_grow_accum_np = np.concatenate(
+                                [
+                                    densify_scale_grow_accum_np,
+                                    np.zeros((n_new, 1), dtype=np.float32),
+                                ],
+                                axis=0,
+                            )
+
+                            densify_scale_shrink_accum_np = np.concatenate(
+                                [
+                                    densify_scale_shrink_accum_np,
+                                    np.zeros((n_new, 1), dtype=np.float32),
+                                ],
+                                axis=0,
+                            )
+
+                            densify_scale_pressure_denom_np = np.concatenate(
+                                [
+                                    densify_scale_pressure_denom_np,
+                                    np.zeros((n_new, 1), dtype=np.float32),
+                                ],
                                 axis=0,
                             )
 
@@ -1904,6 +2073,9 @@ def run_optimization(
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
                     densify_position_grad_vector_accum_np[:] = 0.0
+                    densify_scale_grow_accum_np[:] = 0.0
+                    densify_scale_shrink_accum_np[:] = 0.0
+                    densify_scale_pressure_denom_np[:] = 0.0
                 # --------------------------------------------------------------
                 # 10. Snapshots
                 # --------------------------------------------------------------
@@ -2076,13 +2248,13 @@ def run_optimization(
                         f"it/s={1.0 / iteration_time:.2f}"
                     )
 
-                    print(format_gradient_stats("photo_grads", photo_gradient_stats))
+                    print(format_gradient_stats("render_grads", photo_gradient_stats))
 
                     if distortion_gradients:
-                        print(format_gradient_stats("dist_grads ", distortion_gradient_stats))
+                        print(format_gradient_stats("depth_distort_reg ", distortion_gradient_stats))
 
                     if normal_gradients:
-                        print(format_gradient_stats("norm_grads ", normal_gradient_stats))
+                        print(format_gradient_stats("normal_reg ", normal_gradient_stats))
 
                     if use_depth_distortion and depth_distortion_maps_for_logging:
                         print(

@@ -527,6 +527,68 @@ def compute_prune_indices_by_opacity(
     return selected.astype(np.int64)
 
 
+def compute_scale_grow_shrink_pressure_np(
+        scales_np: np.ndarray,
+        grad_scales_np: np.ndarray,
+        normalizer_np: np.ndarray | None = None,
+        eps: float = 1.0e-12,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute grow/shrink pressure from scale gradients.
+
+    We use log-scale gradients:
+
+        dL / d log(s_i) = s_i * dL / d s_i
+
+    For gradient descent:
+        g_log_s < 0  -> increasing scale decreases loss  -> grow pressure
+        g_log_s > 0  -> decreasing scale decreases loss  -> shrink pressure
+
+    Returns:
+        grow_pressure      shape (N,)
+        shrink_pressure    shape (N,)
+        shrink_fraction    shape (N,), shrink / (grow + shrink)
+    """
+    scales_np = np.asarray(scales_np, dtype=np.float32, order="C")
+    grad_scales_np = np.asarray(grad_scales_np, dtype=np.float32, order="C")
+
+    if scales_np.shape != grad_scales_np.shape:
+        raise RuntimeError(
+            f"Scale pressure shape mismatch: scales {scales_np.shape}, "
+            f"grad_scales {grad_scales_np.shape}"
+        )
+
+    safe_scales = np.maximum(scales_np, eps)
+
+    # Log-scale gradient. Same sign as grad_scales, but scale-normalized in magnitude.
+    g_log_scale = safe_scales * grad_scales_np
+
+    if normalizer_np is not None:
+        normalizer_np = np.asarray(normalizer_np, dtype=np.float32).reshape(-1, 1)
+        g_log_scale = g_log_scale / np.maximum(normalizer_np, eps)
+
+    g_log_scale = np.nan_to_num(
+        g_log_scale,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
+    grow_axis = np.maximum(-g_log_scale, 0.0)
+    shrink_axis = np.maximum(g_log_scale, 0.0)
+
+    grow_pressure = np.sum(grow_axis, axis=1)
+    shrink_pressure = np.sum(shrink_axis, axis=1)
+
+    total_pressure = grow_pressure + shrink_pressure
+    shrink_fraction = shrink_pressure / np.maximum(total_pressure, eps)
+
+    return (
+        grow_pressure.astype(np.float32, copy=False),
+        shrink_pressure.astype(np.float32, copy=False),
+        shrink_fraction.astype(np.float32, copy=False),
+    )
+
 def compute_prune_indices_by_degenerate_scale(
         scales: torch.Tensor,
         *,

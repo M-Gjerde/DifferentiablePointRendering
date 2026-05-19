@@ -66,8 +66,8 @@ class OptimizationConfig:
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
 
-    depth_distort_weight: float = 5e3
-    normal_consistency_weight: float = 0.005
+    depth_distort_weight: float = 1e3
+    normal_consistency_weight: float = 0.01
     opacity_loss_weight: float = 0.00
     opacity_target: float = 1.0
 
@@ -76,8 +76,8 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 50
-    prune_interval: int = 50
+    densification_interval: int = 25
+    prune_interval: int = 25
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
@@ -85,7 +85,7 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.5
-    densification_grad_abs_min: float = 1.1e-3
+    densification_grad_abs_min: float = 1
 
     densify_bsdf_floor: float = 0.15
     densify_bsdf_gamma: float = 1.5

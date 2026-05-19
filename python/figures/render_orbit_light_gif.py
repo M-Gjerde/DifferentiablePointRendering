@@ -455,7 +455,7 @@ def main() -> None:
     run_config = load_run_config(run_dir / "run_config.json")
 
     renderer_settings = dict(run_config["renderer_settings"])
-    renderer_settings["forward_passes"] = int(args.renderer_forward_passes)
+    #renderer_settings["forward_passes"] = int(args.renderer_forward_passes)
     renderer_settings["primal_shadow_rays"] = int(args.renderer_primal_shadow_rays)
 
     assets_root = Path(run_config["assets_root"])
