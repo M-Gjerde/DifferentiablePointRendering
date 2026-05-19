@@ -296,7 +296,7 @@ def write_gaussian_ply(
         compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
     )
 
-    light_x = 0.5
+    light_x = 3.0
     light_y = -0.8
     light_z = 2.2
     light_su = 0.001
@@ -307,7 +307,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
-    light_power = 150.0
+    light_power = 1200.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -319,7 +319,7 @@ def write_gaussian_ply(
     )
     lines.append(light_line)
 
-    light_x = -0.5
+    light_x = -3.0
     light_y = 0.8
     light_z = 2.2
     light_albedo_r = 1.0
@@ -328,7 +328,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
-    light_power = 75.0
+    light_power = 800.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "

@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
+import math
 
 
 @dataclass
@@ -12,12 +13,12 @@ class RendererSettingsConfig:
     bounces: int = 3
     adjoint_bounces: int = 3
     forward_passes: int = 4
-    primal_shadow_rays: int =  12 # Li
-    adjoint_shadow_rays: int = 12 # Li
+    primal_shadow_rays: int = 8  # Li
+    adjoint_shadow_rays: int = 8  # Li
     gather_passes: int = 1
     adjoint_passes: int = 6
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_path_rays: int = 6 #p_i
+    adjoint_shadow_path_rays: int = 6  # p_i
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 4
@@ -65,8 +66,8 @@ class OptimizationConfig:
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
 
-    depth_distort_weight: float = 1e3
-    normal_consistency_weight: float = 0.001
+    depth_distort_weight: float = 5e3
+    normal_consistency_weight: float = 0.005
     opacity_loss_weight: float = 0.00
     opacity_target: float = 1.0
 
@@ -75,19 +76,19 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 25
-    prune_interval: int = 10
+    densification_interval: int = 50
+    prune_interval: int = 50
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.7
 
     densification_verbose: bool = True
-    densification_grad_quantile: float = 0.8
-    densification_grad_abs_min: float = 5.0e-3
+    densification_grad_quantile: float = 0.7
+    densification_grad_abs_min: float = 1.2e-3
 
-    densify_bsdf_floor: float = 0.2
-    densify_bsdf_gamma: float = 1.2
+    densify_bsdf_floor: float = 0.15
+    densify_bsdf_gamma: float = 1.5
 
     max_split_fraction: float = 0.5
     evsplit_preserve_integrated_opacity: bool = True
@@ -104,6 +105,7 @@ class OptimizationConfig:
     reset_opacity_value: float = 0.1
     rebuild_bvh_interval: int = 5
 
+
 def resolve_learning_rates(config: OptimizationConfig) -> None:
     base_learning_rate = config.learning_rate
 
@@ -116,11 +118,11 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_beta = 0.25
     elif config.optimizer_type == "adam":
         factor_position = 0.005
-        factor_tangent = 0.002
-        factor_scale = 0.0003
+        factor_tangent = 0.008
+        factor_scale = 0.001
         factor_albedo = 0.01
         factor_opacity = 0.01
-        factor_beta = 0.0
+        factor_beta = 0.001
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -136,6 +138,23 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         config.learning_rate_opacity = factor_opacity * base_learning_rate
     if config.learning_rate_beta is None:
         config.learning_rate_beta = factor_beta * base_learning_rate
+
+
+def scale_iteration_interval_by_learning_rate(base_interval: int, learning_rate: float, ) -> int:
+    if base_interval <= 0:
+        return base_interval
+    if learning_rate <= 0.0:
+        raise ValueError(f"learning_rate must be positive, got {learning_rate}")
+    return max(1, math.ceil(float(base_interval) / learning_rate))
+
+
+def resolve_iteration_schedules(config: OptimizationConfig, cli_overrides: set[str], ) -> None:
+    if "densification_interval" not in cli_overrides:
+        config.densification_interval = scale_iteration_interval_by_learning_rate(config.densification_interval,
+                                                                                  config.learning_rate,
+                                                                                  )
+
+
 def parse_args() -> OptimizationConfig:
     parser = argparse.ArgumentParser(
         description="Optimize point positions using a custom differentiable renderer.",
@@ -223,5 +242,15 @@ def parse_args() -> OptimizationConfig:
         setattr(config, parameter_name, parameter_value)
 
     resolve_learning_rates(config)
+
+    #for parameter_name, parameter_value in vars(args).items():
+    #    if not hasattr(config, parameter_name):
+    #        raise RuntimeError(
+    #            f"CLI argument produced unknown config field: {parameter_name}"
+    #        )
+    #    setattr(config, parameter_name, parameter_value)
+#
+    ##resolve_iteration_schedules(config, cli_overrides)
+    #resolve_learning_rates(config)
 
     return config
