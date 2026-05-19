@@ -121,7 +121,7 @@ def get_forward_normal_from_depth(forward_out: Dict[str, dict], camera_name: str
 def save_normal_map_snapshot(
         output_path_png: Path,
         normal_rgba: np.ndarray,
-        save_npy: bool = True,
+        save_npy: bool = False,
 ) -> None:
     normal_rgba = np.asarray(normal_rgba, dtype=np.float32, order="C")
     normal_rgb = np.clip(normal_rgba[..., :3], -1.0, 1.0)
@@ -366,7 +366,7 @@ def save_depth_distortion_snapshot(
         output_path_png: Path,
         depth_distortion: np.ndarray,
         quantile: float = 0.99,
-        save_npy: bool = True,
+        save_npy: bool = False,
         cmap: str = "inferno",  # or "seismic"
 ) -> None:
     """
@@ -451,14 +451,14 @@ def save_checkpoint_snapshot(
             checkpoint_dir / f"depth_distortion_{cam_name}.png",
             depth_numpy,
             quantile=0.99,
-            save_npy=True,
+            save_npy=False,
         )
         median_depth_numpy = get_forward_median_depth(current_images, cam_name)
         save_median_depth_snapshot(
             checkpoint_dir / f"median_depth_{cam_name}.png",
             median_depth_numpy,
             quantile=0.99,
-            save_npy=True,
+            save_npy=False,
         )
 
     # Convenience: chosen/main camera
@@ -470,7 +470,7 @@ def save_checkpoint_snapshot(
         checkpoint_dir / "depth_distortion_final.png",
         main_depth,
         quantile=0.99,
-        save_npy=True,
+        save_npy=False,
     )
 
     main_median_depth = get_forward_median_depth(current_images, camera_name)
@@ -478,7 +478,7 @@ def save_checkpoint_snapshot(
         checkpoint_dir / "median_depth_final.png",
         main_median_depth,
         quantile=0.99,
-        save_npy=True,
+        save_npy=False,
     )
 
     print(f"[Iter {iteration:04d}] Saved checkpoint: {checkpoint_dir}")
@@ -511,7 +511,7 @@ def save_median_depth_snapshot(
         output_path_png: Path,
         median_depth: np.ndarray,
         quantile: float = 0.99,
-        save_npy: bool = True,
+        save_npy: bool = False,
         cmap: str = "viridis",
 ) -> None:
     depth = np.asarray(median_depth, dtype=np.float32, order="C")
@@ -575,7 +575,7 @@ def save_manual_snapshot(
             Path(output_dir / f"depth_distortion_final_{camera_name}.png"),
             depth_np,
             quantile=0.99,
-            save_npy=True,
+            save_npy=False,
         )
 
         median_depth_np = get_forward_median_depth(final_images, camera_name)
@@ -583,7 +583,7 @@ def save_manual_snapshot(
             Path(output_dir / f"median_depth_final_{camera_name}.png"),
             median_depth_np,
             quantile=0.99,
-            save_npy=True,
+            save_npy=False,
         )
 
     # Save full parameter set as PLY
@@ -1931,7 +1931,7 @@ def run_optimization(
                                 depth_distortion_path,
                                 depth_distortion_numpy,
                                 quantile=0.99,
-                                save_npy=True,
+                                save_npy=False,
                             )
 
                         if use_normal_consistency:
@@ -1947,19 +1947,19 @@ def run_optimization(
                                 camera_median_depth_dir / f"{iteration:04d}_median_depth.png",
                                 median_depth_numpy,
                                 quantile=0.99,
-                                save_npy=True,
+                                save_npy=False,
                             )
 
                             save_normal_map_snapshot(
                                 camera_visible_normal_dir / f"{iteration:04d}_visible_normal.png",
                                 visible_normal_numpy,
-                                save_npy=True,
+                                save_npy=False,
                             )
 
                             save_normal_map_snapshot(
                                 camera_depth_normal_dir / f"{iteration:04d}_normal_from_depth.png",
                                 normal_from_depth_numpy,
-                                save_npy=True,
+                                save_npy=False,
                             )
                         adjoint_source_images = adjoint_images.get("adjoint_source")
                         if adjoint_source_images is not None and camera_name in adjoint_source_images:
@@ -2179,7 +2179,7 @@ def run_optimization(
                 Path(config.output_dir / f"depth_distortion_final_{camera_name}.png"),
                 dist_np,
                 quantile=0.99,
-                save_npy=True,
+                save_npy=False,
             )
 
         if use_normal_consistency:
@@ -2201,17 +2201,17 @@ def run_optimization(
             save_median_depth_snapshot(
                 Path(config.output_dir / f"median_depth_final_{camera_name}.png"),
                 median_depth,
-                save_npy=True,
+                save_npy=False,
             )
             save_normal_map_snapshot(
                 Path(config.output_dir / f"visible_normal_final_{camera_name}.png"),
                 visible_normal,
-                save_npy=True,
+                save_npy=False,
             )
             save_normal_map_snapshot(
                 Path(config.output_dir / f"normal_from_depth_final_{camera_name}.png"),
                 normal_from_depth,
-                save_npy=True,
+                save_npy=False,
             )
 
     final_opacity_regularizer_loss, _ = (

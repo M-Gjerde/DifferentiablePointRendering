@@ -349,8 +349,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beta", type=float, default=-100.0)
     parser.add_argument("--output-subdir", type=str, default="orbit_light_animation")
     parser.add_argument("--gif-name", type=str, default="orbit_light.gif")
-    parser.add_argument("--renderer-forward-passes", type=int, default=None)
-    parser.add_argument("--renderer-primal-shadow-rays", type=int, default=None)
+    parser.add_argument("--renderer-forward-passes", type=int, default=10)
+    parser.add_argument("--renderer-primal-shadow-rays", type=int, default=32)
     parser.add_argument(
         "--color-variation",
         type=float,
@@ -455,10 +455,8 @@ def main() -> None:
     run_config = load_run_config(run_dir / "run_config.json")
 
     renderer_settings = dict(run_config["renderer_settings"])
-    if args.renderer_forward_passes is not None:
-        renderer_settings["forward_passes"] = int(args.renderer_forward_passes)
-    if args.renderer_primal_shadow_rays is not None:
-        renderer_settings["primal_shadow_rays"] = int(args.renderer_primal_shadow_rays)
+    renderer_settings["forward_passes"] = int(args.renderer_forward_passes)
+    renderer_settings["primal_shadow_rays"] = int(args.renderer_primal_shadow_rays)
 
     assets_root = Path(run_config["assets_root"])
     scene_xml = args.scene_xml if args.scene_xml is not None else run_config["scene_xml"]

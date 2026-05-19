@@ -829,7 +829,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--voxel-size",
         type=float,
-        default=0.002,
+        default=0.006,
         help="TSDF voxel size. 2DGS uses 0.004.",
     )
     parser.add_argument(
@@ -841,7 +841,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--sdf-trunc",
         type=float,
-        default=0.02,
+        default=0.04,
         help="TSDF truncation threshold. 2DGS uses 0.02.",
     )
     parser.add_argument("--num-cluster", type=int, default=50)
