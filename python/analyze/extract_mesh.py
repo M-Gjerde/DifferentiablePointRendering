@@ -16,12 +16,12 @@ It does NOT reuse saved depth PNGs/NPYs. Instead it:
 
 Typical usage:
 
-    python extract.py --output-root ../Assets/OptimizationOutput
+    python extract_mesh.py --output-root ../Assets/OptimizationOutput
 
 If camera introspection from the renderer is not available, provide camera
 metadata explicitly:
 
-    python extract.py \
+    python extract_mesh.py \
         --output-root ../Assets/OptimizationOutput \
         --cameras-json /path/to/transforms_train.json
 

@@ -981,7 +981,7 @@ def run_optimization(
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
 
     opacity_loss_weight = float(getattr(config, "opacity_loss_weight", 0.0))
-    opacity_target = 1.0
+    opacity_target = config.opacity_target
 
     use_depth_distortion = depth_distortion_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
@@ -1213,30 +1213,6 @@ def run_optimization(
     # ------------------------------------------------------------------
     # 4. Density control / scheduling hyperparameters
     # ------------------------------------------------------------------
-    iteration = 0
-
-    densification_interval = 10
-    prune_interval = 10
-    densify_after = densification_interval
-    prune_after = prune_interval
-    opacity_prune_threshold = 0.05
-    max_prune_fraction = 0.5
-
-    reset_opacity_interval = int(1e10)
-
-    # Start adaptive. Absolute thresholds are hard because your gradients
-    # are renderer- and loss-scale dependent.
-    densification_verbose = True
-    densify_until_iteration = int(0.7 * config.iterations)
-    densification_grad_quantile = 0.85
-    densification_grad_abs_min = 1.2e-3
-    densify_bsdf_floor = 0.1
-    densify_bsdf_gamma = 1.3
-
-    point_birth_iteration_np = np.zeros(
-        (positions.shape[0],),
-        dtype=np.int64,
-    )
     densify_position_grad_accum_np = np.zeros(
         (positions.shape[0], 1),
         dtype=np.float32,
@@ -1249,11 +1225,48 @@ def run_optimization(
         tuple(positions.shape),
         dtype=np.float32,
     )
+    point_birth_iteration_np = np.zeros(
+        (positions.shape[0],),
+        dtype=np.int64,
+    )
+    iteration = 0
 
-    max_split_fraction = 0.5
-    evsplit_preserve_integrated_opacity = True
+    densification_interval = config.densification_interval
+    prune_interval = config.prune_interval
 
-    rebuild_bvh_interval = 5
+    densify_after = (
+        config.densify_after
+        if config.densify_after >= 0
+        else densification_interval
+    )
+    prune_after = (
+        config.prune_after
+        if config.prune_after >= 0
+        else prune_interval
+    )
+
+    if config.densify_until_iteration >= 0:
+        densify_until_iteration = config.densify_until_iteration
+    else:
+        densify_until_iteration = int(config.densify_until_fraction * config.iterations)
+
+    opacity_prune_threshold = config.opacity_prune_threshold
+    max_prune_fraction = config.max_prune_fraction
+
+    reset_opacity_interval = config.reset_opacity_interval
+    reset_opacity_value = config.reset_opacity_value
+
+    densification_verbose = config.densification_verbose
+    densification_grad_quantile = config.densification_grad_quantile
+    densification_grad_abs_min = config.densification_grad_abs_min
+
+    densify_bsdf_floor = config.densify_bsdf_floor
+    densify_bsdf_gamma = config.densify_bsdf_gamma
+
+    max_split_fraction = config.max_split_fraction
+    evsplit_preserve_integrated_opacity = config.evsplit_preserve_integrated_opacity
+
+    rebuild_bvh_interval = config.rebuild_bvh_interval
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1539,11 +1552,11 @@ def run_optimization(
 
                 optimizer.step()
 
-                if iteration % reset_opacity_interval == 0:
+                if reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0:
                     with torch.no_grad():
-                        opacities[:] = 0.1
-                    print(f"[Iter {iteration:04d}] Resetting all opacities to 0.1")
-
+                        opacities[:] = reset_opacity_value
+                    print(f"[Iter {iteration:04d}] "
+                          f"Resetting all opacities to {reset_opacity_value}")
                 # --------------------------------------------------------------
                 # 8. Reparameterization, sync, BVH
                 # --------------------------------------------------------------
@@ -1680,9 +1693,9 @@ def run_optimization(
                                 selection_score_np=grad_pos_norm_np,
                                 trainable_surfel_mask=densify_mask_torch,
                                 grad_threshold=grad_threshold,
-                                max_split_fraction=max_split_fraction,  # rename later
-                                min_scale=1.0e-6,
-                                preserve_integrated_opacity=True,
+                                max_split_fraction=max_split_fraction,
+                                min_scale=config.evsplit_min_scale,
+                                preserve_integrated_opacity=evsplit_preserve_integrated_opacity,
                             )
 
                             if densification_result is not None:
@@ -1746,9 +1759,9 @@ def run_optimization(
                     # ----------------------------------------------------------
                     scale_prune_indices = compute_prune_indices_by_degenerate_scale(
                         scales,
-                        min_scale=1.0e-6,
+                        min_scale=config.scale_prune_min_scale,
                         trainable_mask=trainable_surfel_mask,
-                        min_points_to_keep=1,
+                        min_points_to_keep=config.min_points_to_keep_after_scale_prune,
                     )
 
                     if scale_prune_indices.size > 0:
@@ -1758,10 +1771,10 @@ def run_optimization(
                     # Prune low-opacity surfels.
                     # ----------------------------------------------------------
                     opacity_prune_indices = compute_prune_indices_by_opacity(
-                       opacities,
-                       min_opacity=opacity_prune_threshold,
-                       use_quantile=False,
-                       max_fraction_to_prune=max_prune_fraction,
+                        opacities,
+                        min_opacity=opacity_prune_threshold,
+                        use_quantile=False,
+                        max_fraction_to_prune=max_prune_fraction,
                     )
 
                     if opacity_prune_indices.size > 0:
@@ -1812,7 +1825,7 @@ def run_optimization(
                                 [densify_position_grad_accum_np, np.zeros((n_new, 1), dtype=np.float32), ], axis=0, )
                             densify_position_grad_denom_np = np.concatenate(
                                 [densify_position_grad_denom_np, np.zeros((n_new, 1), dtype=np.float32), ], axis=0,
-                                )
+                            )
                             densify_position_grad_vector_accum_np = np.concatenate(
                                 [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32), ],
                                 axis=0,
@@ -1887,7 +1900,7 @@ def run_optimization(
                     # Reset density-control statistics after every densification attempt,
                     # even if no clone/prune happened.
                 if (densify_after <= iteration <= densify_until_iteration
-                     and iteration % densification_interval == 0):
+                        and iteration % densification_interval == 0):
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
                     densify_position_grad_vector_accum_np[:] = 0.0
