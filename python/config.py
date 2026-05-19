@@ -13,10 +13,10 @@ class RendererSettingsConfig:
     bounces: int = 3
     adjoint_bounces: int = 3
     forward_passes: int = 4
-    primal_shadow_rays: int = 8  # Li
+    primal_shadow_rays: int = 16  # Li
     adjoint_shadow_rays: int = 8  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 6
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 6  # p_i
     useDepthDistortion: bool = True
@@ -68,7 +68,7 @@ class OptimizationConfig:
 
     depth_distort_weight: float = 1e3
     normal_consistency_weight: float = 0.01
-    opacity_loss_weight: float = 0.00
+    opacity_loss_weight: float = 0.1
     opacity_target: float = 1.0
 
     log_interval: int = 1
@@ -76,8 +76,8 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 25
-    prune_interval: int = 25
+    densification_interval: int = 10
+    prune_interval: int = 10
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
