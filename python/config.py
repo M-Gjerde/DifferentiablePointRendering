@@ -84,8 +84,8 @@ class OptimizationConfig:
     densify_until_fraction: float = 0.7
 
     densification_verbose: bool = True
-    densification_grad_quantile: float = 0.7
-    densification_grad_abs_min: float = 1.2e-3
+    densification_grad_quantile: float = 0.5
+    densification_grad_abs_min: float = 1.1e-3
 
     densify_bsdf_floor: float = 0.15
     densify_bsdf_gamma: float = 1.5
