@@ -10,15 +10,15 @@ import math
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 3
-    adjoint_bounces: int = 3
-    forward_passes: int = 4
-    primal_shadow_rays: int = 32  # Li
-    adjoint_shadow_rays: int = 32  # Li
+    bounces: int = 1
+    adjoint_bounces: int = 1
+    forward_passes: int = 1
+    primal_shadow_rays: int = 16  # Li
+    adjoint_shadow_rays: int = 16  # Li
     gather_passes: int = 1
     adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_path_rays: int = 6  # p_i
+    adjoint_shadow_path_rays: int = 4  # p_i
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 3
@@ -68,7 +68,7 @@ class OptimizationConfig:
 
     depth_distort_weight: float = 1e3
     normal_consistency_weight: float = 0.01
-    opacity_loss_weight: float = 1.0
+    opacity_loss_weight: float = 10.0
     opacity_target: float = 1.0
 
     log_interval: int = 1
@@ -76,19 +76,19 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 100
-    prune_interval: int = 100
-    densify_after: int = -1
+    densification_interval: int = 25
+    prune_interval: int = 25
+    densify_after: int = 10
     prune_after: int = -1
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.8
 
     densification_verbose: bool = True
-    densification_grad_quantile: float = 0.8
-    densification_grad_abs_min: float = 1.0e-1
+    densification_grad_quantile: float = 0.5
+    densification_grad_abs_min: float = 1.0e-3
 
     densify_bsdf_floor: float = 0.15
-    densify_bsdf_gamma: float = 1.0
+    densify_bsdf_gamma: float = 1.2
 
     evsplit_preserve_integrated_opacity: bool = True
     evsplit_min_scale: float = 1.0e-3
@@ -101,8 +101,8 @@ class OptimizationConfig:
 
     # Misc scheduling
     reset_opacity_interval: int = 0
-    reset_opacity_value: float = 0.1
-    rebuild_bvh_interval: int = 5
+    reset_opacity_value: float = 0.0
+    rebuild_bvh_interval: int = 10
 
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:

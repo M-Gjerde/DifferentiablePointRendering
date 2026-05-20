@@ -339,8 +339,8 @@ def make_under_reconstruction_evsplits(
         sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
 
         # Centered EV split displacement in local tangent coordinates.
-        chill_factor = 0.5
-        delta_local = sqrt_2_over_pi * sigma_a / tau[:, None] * chill_factor
+        chill_factor = 0.3
+        delta_local = (sqrt_2_over_pi * sigma_a / tau[:, None]) * chill_factor
 
         # Centered EV child covariance.
         outer = sigma_a[:, :, None] * sigma_a[:, None, :]
@@ -378,6 +378,41 @@ def make_under_reconstruction_evsplits(
         pos_l = p - offset_world
         pos_r = p + offset_world
 
+        # Small random signed normal offset to avoid exact coplanar ray-intersection ties.
+        # This is not part of the EV split itself; it is only a numerical robustness offset.
+        normal_perturbation_min = 1.0e-4
+        normal_perturbation_max = 5.0e-4
+
+        child_normal = torch.cross(e0, e1, dim=1)
+        child_normal = torch.nn.functional.normalize(child_normal, dim=1, eps=eps)
+
+        left_random_magnitude = (
+                normal_perturbation_min
+                + (normal_perturbation_max - normal_perturbation_min)
+                * torch.rand((selected_idx.numel(), 1), device=device, dtype=torch.float32)
+        )
+
+        right_random_magnitude = (
+                normal_perturbation_min
+                + (normal_perturbation_max - normal_perturbation_min)
+                * torch.rand((selected_idx.numel(), 1), device=device, dtype=torch.float32)
+        )
+
+        left_random_sign = torch.where(
+            torch.rand((selected_idx.numel(), 1), device=device, dtype=torch.float32) < 0.5,
+            -torch.ones((selected_idx.numel(), 1), device=device, dtype=torch.float32),
+            torch.ones((selected_idx.numel(), 1), device=device, dtype=torch.float32),
+        )
+
+        right_random_sign = torch.where(
+            torch.rand((selected_idx.numel(), 1), device=device, dtype=torch.float32) < 0.5,
+            -torch.ones((selected_idx.numel(), 1), device=device, dtype=torch.float32),
+            torch.ones((selected_idx.numel(), 1), device=device, dtype=torch.float32),
+        )
+
+        pos_l = pos_l + left_random_sign * left_random_magnitude * child_normal
+        pos_r = pos_r + right_random_sign * right_random_magnitude * child_normal
+
         if preserve_integrated_opacity:
             det_parent = torch.clamp(su2 * sv2, min=min_scale ** 4)
             det_child = torch.clamp(eigval[:, 0] * eigval[:, 1], min=min_scale ** 4)
@@ -389,7 +424,7 @@ def make_under_reconstruction_evsplits(
             opacity_factor = torch.full_like(opa, 0.5)
 
         child_opa = torch.clamp(
-            opa * opacity_factor,
+            opa,
             min=float(min_opacity),
             max=float(max_opacity),
         )

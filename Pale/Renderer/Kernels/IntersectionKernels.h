@@ -49,7 +49,7 @@ namespace Pale {
         bool hitAnyTriangle = false;
         const float3 inverseDirection = safeInvDir(rayObject.direction);
 
-        SmallStack<512> traversalStack;
+        SmallStack<256> traversalStack;
         traversalStack.push(0); // root
 
         while (!traversalStack.empty()) {
@@ -117,7 +117,6 @@ namespace Pale {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
-        constexpr float rayEpsilon = 1e-6f;
 
         bool hitAny = false;
         float bestTHit = std::numeric_limits<float>::infinity();
@@ -172,7 +171,7 @@ namespace Pale {
                 float alphaGeom = 0.0f;
                 float3 hitLocal{0.0f};
 
-                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
+                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom, RayEpsilon))
                     continue;
 
                 // Keep closest
@@ -212,8 +211,7 @@ namespace Pale {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
 
-        constexpr float rayEpsilon = 1e-5f;
-        constexpr float tAdvanceEpsilon = 1e-4f; // advance after a rejected hit to avoid re-hitting same surfel
+        constexpr float tAdvanceEpsilon = 1e-8f; // advance after a rejected hit to avoid re-hitting same surfel
 
         float cumulativeTransmittance = 1.0f;
 
@@ -268,7 +266,7 @@ namespace Pale {
                     float tHitLocal = 0.0f;
                     float alphaGeom = 0.0f;
                     float3 hitLocal{};
-                    if (!intersectSurfel(rayObject, surfel, rayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom))
+                    if (!intersectSurfel(rayObject, surfel, RayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom, RayEpsilon))
                         continue;
 
                     if (tHitLocal <= tMin)
@@ -291,7 +289,7 @@ namespace Pale {
 
 
         // Stochastic accept/reject loop over successive closest hits
-        float tMin = rayEpsilon;
+        float tMin = RayEpsilon;
         while (true) {
             float tHit = 0.0f;
             uint32_t surfelIndex = UINT32_MAX;
@@ -336,7 +334,7 @@ namespace Pale {
 
         worldHitOut->t = FLT_MAX;
 
-        SmallStack<256> traversalStack;
+        SmallStack<64> traversalStack;
         traversalStack.push(0); // root
 
         float bestWorldTHit = std::numeric_limits<float>::infinity();
@@ -446,26 +444,11 @@ namespace Pale {
         return foundAnySurfaceHit;
     }
 
-    // -----------------------------------------------------------------------------
-    // Visibility wrapper
-    // -----------------------------------------------------------------------------
-    SYCL_EXTERNAL static WorldHit traceVisibility(const Ray &rayIn,
-                                                  float /*tMax*/,
-                                                  // not used here; early-exit is driven by BVH and bestTHit
-                                                  const GPUSceneBuffers &scene,
-                                                  rng::Xorshift128 &rng128) {
-        WorldHit worldHit{};
-        intersectScene(rayIn, &worldHit, scene);
-        return worldHit;
-    }
-
-
     SYCL_EXTERNAL inline float traceShadowTransmissionToLight(
         const GPUSceneBuffers &scene,
         const float3 &shadingPositionW,
         const float3 &shadingNormalW,
-        const float3 &lightPositionW,
-        rng::Xorshift128 &rng128) {
+        const float3 &lightPositionW) {
         const float3 lightVector = lightPositionW - shadingPositionW;
         const float lightDistanceSquared = dot(lightVector, lightVector);
         if (lightDistanceSquared <= 1e-12f) {
@@ -475,11 +458,10 @@ namespace Pale {
         const float lightDistance = sycl::sqrt(lightDistanceSquared);
         const float3 lightDirection = lightVector / lightDistance;
 
-        constexpr float distanceEpsilon = 1e-5f;
         constexpr uint32_t maxShadowTraversals = 32u;
 
         Ray shadowRay{};
-        shadowRay.origin = shadingPositionW + lightDirection * distanceEpsilon;
+        shadowRay.origin = shadingPositionW + lightDirection * RayEpsilon;
         shadowRay.direction = lightDirection;
         shadowRay.normal = shadingNormalW;
 
@@ -502,7 +484,7 @@ namespace Pale {
             const float3 hitVector = shadowHit.hitPositionW - shadingPositionW;
             const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
 
-            if (hitDistance >= lightDistance - distanceEpsilon) {
+            if (hitDistance >= lightDistance - RayEpsilon) {
                 break;
             }
 
@@ -521,7 +503,7 @@ namespace Pale {
                     return shadowTransmission;
                 }
 
-                shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * distanceEpsilon;
+                shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * RayEpsilon;
                 continue;
             }
 
@@ -583,8 +565,7 @@ namespace Pale {
                 scene,
                 shadingPositionW,
                 shadingNormalW,
-                lightSample.positionW,
-                rng128);
+                lightSample.positionW);
 
             if (shadowTransmission <= 0.0f) {
                 continue;

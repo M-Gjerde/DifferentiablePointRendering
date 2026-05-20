@@ -145,7 +145,7 @@ def write_gaussian_ply(
     vertices,
     output_path,
     args,
-    opacity_default=0.5,
+    opacity_default=0.0,
     beta_default=-0.0,
     shape_default=0.0,
 
@@ -389,7 +389,7 @@ def main():
         "--scale",
         type=float,
         required=False,
-        default=0.1,
+        default=0.05,
         help="Default scale for su and sv parameters",
     )
     args = parser.parse_args()

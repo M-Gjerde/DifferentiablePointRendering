@@ -230,6 +230,9 @@ namespace Pale {
 
     enum class EventType : uint32_t { Null = 0, Reflect = 1, Transmit = 2, Absorb = 3, TransmittanceGradient = 4 };
 
+    constexpr float RayEpsilon = 1e-5f;
+
+
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
         float3 origin{0.0f}; // 16

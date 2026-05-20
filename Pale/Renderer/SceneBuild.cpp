@@ -430,8 +430,8 @@ namespace Pale {
 
 
     inline AABB surfelObjectAabbBeta(const Point &surfel,
-                                     float supportRadiusScale = 1.0001f,
-                                     float normalThickness = 0.001f) {
+                                     float supportRadiusScale = 1.10f,
+                                     float normalThickness = 0.100f) {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
         const float3 normalDirection = normalize(cross(tangentU, tangentV));

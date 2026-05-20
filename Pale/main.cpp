@@ -325,6 +325,7 @@ int main(int argc, char** argv) {
     Pale::AssetAccessFromManager assetAccessor(assetManager);
 
     auto options = Pale::SceneBuild::BuildOptions();
+    options.bvhMaxLeafPoints = 4;
     auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, options);
     // Upload Scene to GPU
     auto gpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue()); // scene only

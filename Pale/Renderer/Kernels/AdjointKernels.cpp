@@ -471,13 +471,12 @@ namespace Pale {
                                                 }
                                                 const float lightDistance = sycl::sqrt(lightDistanceSquared);
                                                 const float3 lightDirection = lightVector / lightDistance;
-                                                constexpr float distanceEpsilon = 1e-4f;
                                                 constexpr uint32_t maxShadowTraversals = 16u;
                                                 const float targetDistance = lightDistance;
                                                 Ray shadowRay{};
                                                 shadowRay.origin =
                                                         worldHit.hitPositionW + orientedNormal *
-                                                        distanceEpsilon;
+                                                        RayEpsilon;
                                                 shadowRay.direction = lightDirection;
                                                 shadowRay.normal = orientedNormal;
                                                 bool blockedByOpaqueGeometry = false;
@@ -499,7 +498,7 @@ namespace Pale {
                                                             shadowHit.hitPositionW - worldHit.hitPositionW;
                                                     const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
                                                     // Nothing before the sampled light point anymore.
-                                                    if (hitDistance >= targetDistance - distanceEpsilon) {
+                                                    if (hitDistance >= targetDistance - RayEpsilon) {
                                                         break;
                                                     }
                                                     const InstanceRecord &hitInstance =
@@ -513,7 +512,7 @@ namespace Pale {
                                                     if (shadowHit.primitiveIndex == worldHit.primitiveIndex) {
                                                         shadowRay.origin =
                                                                 shadowHit.hitPositionW + shadowRay.direction *
-                                                                distanceEpsilon;
+                                                                RayEpsilon;
                                                         continue;
                                                     }
                                                     // Point-cloud surfels are semi-transparent attenuators.
@@ -521,7 +520,7 @@ namespace Pale {
                                                     if (hitInstance.geometryType == GeometryType::PointCloud) {
                                                         shadowRay.origin =
                                                                 shadowHit.hitPositionW + shadowRay.direction *
-                                                                distanceEpsilon;
+                                                                RayEpsilon;
                                                         transmission *= (
                                                             (1.0f - shadowHit.alphaGeom * scene.points[shadowHit.
                                                                  primitiveIndex].opacity));
@@ -793,10 +792,9 @@ namespace Pale {
                                         if (cosineAtStart <= 1.0e-8f) {
                                             continue;
                                         }
-                                        constexpr float distanceEpsilon = 1.0e-5f;
                                         constexpr uint32_t maxShadowTraversals = 16u;
                                         Ray shadowRay{};
-                                        shadowRay.origin = startState.position + lightDirection * distanceEpsilon;
+                                        shadowRay.origin = startState.position + lightDirection * RayEpsilon;
                                         shadowRay.direction = lightDirection;
                                         shadowRay.normal = startState.orientedNormal;
                                         bool blockedByOpaqueGeometry = false;
@@ -815,7 +813,7 @@ namespace Pale {
                                             }
                                             const float3 hitVector = shadowHit.hitPositionW - startState.position;
                                             const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
-                                            if (hitDistance >= lightDistance - distanceEpsilon) {
+                                            if (hitDistance >= lightDistance - RayEpsilon) {
                                                 break;
                                             }
 
@@ -829,19 +827,19 @@ namespace Pale {
                                             // Self intersection
                                             if (shadowHit.primitiveIndex == currentSurface.primitiveIndex) {
                                                 shadowRay.origin =
-                                                        shadowHit.hitPositionW + shadowRay.direction * distanceEpsilon;
+                                                        shadowHit.hitPositionW + shadowRay.direction * RayEpsilon;
                                                 continue;
                                             }
                                             if (shadowHit.primitiveIndex == lightPrimitiveIndex) {
                                                 shadowRay.origin =
-                                                        shadowHit.hitPositionW + shadowRay.direction * distanceEpsilon;
+                                                        shadowHit.hitPositionW + shadowRay.direction * RayEpsilon;
                                                 continue;
                                             }
                                             if (hitInstance.geometryType == GeometryType::PointCloud) {
                                                 const Point &shadowSurfel = scene.points[shadowHit.primitiveIndex];
                                                 shadowTransmission *= 1.0f - shadowHit.alphaGeom * shadowSurfel.opacity;
                                                 shadowRay.origin =
-                                                        shadowHit.hitPositionW + shadowRay.direction * distanceEpsilon;
+                                                        shadowHit.hitPositionW + shadowRay.direction * RayEpsilon;
                                                 continue;
                                             }
                                             blockedByOpaqueGeometry = true;
@@ -910,11 +908,10 @@ namespace Pale {
                                             auxiliaryDirectionPdf);
 
                                         if (auxiliaryDirectionPdf > 1.0e-12f) {
-                                            constexpr float distanceEpsilon = 1.0e-4f;
                                             constexpr uint32_t maxAuxiliaryTraversals = 32u;
                                             Ray auxiliaryRay{};
                                             auxiliaryRay.origin =
-                                                    startState.position + startState.orientedNormal * distanceEpsilon;
+                                                    startState.position + startState.orientedNormal * RayEpsilon;
                                             auxiliaryRay.direction = auxiliaryDirectionWorld;
                                             auxiliaryRay.normal = startState.orientedNormal;
                                             float auxiliaryDiscreteSelectionPdf = 1.0f;
@@ -944,7 +941,7 @@ namespace Pale {
                                                 if (auxiliaryHit.primitiveIndex == currentSurface.primitiveIndex) {
                                                     auxiliaryRay.origin =
                                                             auxiliaryHit.hitPositionW + auxiliaryDirectionWorld *
-                                                            distanceEpsilon;
+                                                            RayEpsilon;
                                                     continue;
                                                 }
                                                 const Point &auxiliarySurfel = scene.points[auxiliaryHit.
@@ -956,7 +953,7 @@ namespace Pale {
                                                     auxiliaryDiscreteSelectionPdf *= qNull;
                                                     auxiliaryRay.origin =
                                                             auxiliaryHit.hitPositionW + auxiliaryDirectionWorld *
-                                                            distanceEpsilon;
+                                                            RayEpsilon;
                                                     auxiliaryRay.normal = computePointCloudOrientedNormal(
                                                         auxiliarySurfel, auxiliaryDirectionWorld);
                                                     continue;
@@ -1227,8 +1224,6 @@ namespace Pale {
 
                     const float targetDistance = distance;
 
-                    constexpr float distanceEpsilon = 1e-4f;
-
                     struct OccluderDerivative {
                         float3 gradPosition{0.0f, 0.0f, 0.0f};
                         float gradScaleU = 0.0f;
@@ -1256,7 +1251,7 @@ namespace Pale {
                                 normalize(vectorCameraToX);
 
                         Ray ray{};
-                        ray.origin = sensor.camera.pos + rayDirection * distanceEpsilon;
+                        ray.origin = sensor.camera.pos + rayDirection * RayEpsilon;
                         ray.direction = rayDirection;
 
                         const float3 segmentOrigin = sensor.camera.pos;
@@ -1275,7 +1270,7 @@ namespace Pale {
 
                             const float hitDistance = length(worldHit.hitPositionW - sensor.camera.pos);
 
-                            if (hitDistance >= targetDistance - distanceEpsilon) {
+                            if (hitDistance >= targetDistance - RayEpsilon) {
                                 break;
                             }
 
@@ -1305,7 +1300,7 @@ namespace Pale {
                             const float oneMinusAlpha = sycl::fmax(0.0f, 1.0f - alphaEffective);
                             const float prefixTransmittance = segmentTransmittance;
                             segmentTransmittance *= oneMinusAlpha;
-                            ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
+                            ray.origin = worldHit.hitPositionW + ray.direction * RayEpsilon;
                             const float2 uv = phiInverse(worldHit.hitPositionW, occluderSurfel);
                             const float uOcc = uv.x();
                             const float vOcc = uv.y();
@@ -1823,7 +1818,6 @@ namespace Pale {
                     uint32_t storedOccluderCount = 0u;
                     float segmentTransmittance = 1.0f;
                     float nullSamplingWeight = 1.0f; {
-                        constexpr float distanceEpsilon = 1e-4f;
                         const float3 segmentDirection = yState.position - xState.position;
                         const float targetDistance = length(segmentDirection);
                         if (targetDistance <= 1e-12f) {
@@ -1832,7 +1826,7 @@ namespace Pale {
 
                         const float3 rayDirection = segmentDirection / targetDistance;
                         Ray ray{};
-                        ray.origin = xState.position + rayDirection * distanceEpsilon;
+                        ray.origin = xState.position + rayDirection * RayEpsilon;
                         ray.direction = rayDirection;
 
                         const float3 xPosition = xState.position;
@@ -1848,7 +1842,7 @@ namespace Pale {
                             }
 
                             const float hitDistance = length(worldHit.hitPositionW - xState.position);
-                            if (hitDistance >= targetDistance - distanceEpsilon) {
+                            if (hitDistance >= targetDistance - RayEpsilon) {
                                 break;
                             }
 
@@ -1876,7 +1870,7 @@ namespace Pale {
                                 nullSamplingWeight *= qNullInv;
                             }
 
-                            ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
+                            ray.origin = worldHit.hitPositionW + ray.direction * RayEpsilon;
 
                             const float2 uv = phiInverse(worldHit.hitPositionW, occluderSurfel);
                             const float uOcc = uv.x();

@@ -196,7 +196,6 @@ namespace Pale {
                             // Point cloud: alpha controls whether the ray transmits or scatters.
                             // ---------------------------------------------------------------------
                             if (instance.geometryType == GeometryType::PointCloud) {
-                                constexpr float rayAdvanceEpsilon = 1e-5f;
 
                                 const Point &surfel = scene.points[worldHit.primitiveIndex];
 
@@ -218,7 +217,7 @@ namespace Pale {
                                 // -----------------------------------------------------------------
                                 if (randomNumber < transmitProbability) {
                                     currentRayState.ray.origin =
-                                            worldHit.hitPositionW + currentRayState.ray.direction * rayAdvanceEpsilon;
+                                            worldHit.hitPositionW + currentRayState.ray.direction * RayEpsilon;
 
                                     currentRayState.traversalIndex += 1;
 
@@ -292,7 +291,7 @@ namespace Pale {
                                 }
 
                                 RayState nextRayState{};
-                                nextRayState.ray.origin = worldHit.hitPositionW + orientedNormal * rayAdvanceEpsilon;
+                                nextRayState.ray.origin = worldHit.hitPositionW + orientedNormal * RayEpsilon;
                                 nextRayState.ray.direction = sampledOutgoingDirectionW;
                                 nextRayState.ray.normal = orientedNormal;
                                 nextRayState.bounceIndex = currentRayState.bounceIndex + 1;
@@ -515,7 +514,7 @@ namespace Pale {
 
                             transmittance *= (1.0f - alphaEff);
                             primaryRay.origin =
-                                    worldHit.hitPositionW + primaryRay.direction * 1e-8f;
+                                    worldHit.hitPositionW + primaryRay.direction * RayEpsilon;
                             continue;
                         }
 

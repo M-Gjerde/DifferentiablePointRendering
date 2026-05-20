@@ -1476,7 +1476,7 @@ def run_optimization(
                     )
 
                 density_grad_position_np_raw = np.asarray(
-                    photo_gradients["position"],
+                    total_gradients["position"],
                     dtype=np.float32,
                     order="C",
                 )
@@ -1518,11 +1518,11 @@ def run_optimization(
                 density_grad_position_np_for_score = (
                         density_grad_position_np
                         / bsdf_normalizer_np[:, None]
-                        / area_normalizer_np[:, None]
+                       # / area_normalizer_np[:, None]
                 )
 
                 density_grad_scale_np_raw = np.asarray(
-                    photo_gradients["scale"],
+                    total_gradients["scale"],
                     dtype=np.float32,
                     order="C",
                 )
@@ -1535,6 +1535,36 @@ def run_optimization(
                         normalizer_np=bsdf_normalizer_np,
                     )
                 )
+
+
+                if distortion_gradients:
+                    distortion_grad_position_np = np.asarray(
+                        distortion_gradients["position"],
+                        dtype=np.float32,
+                        order="C",
+                    )
+
+                    distortion_grad_position_np = project_gradient_to_surfel_tangent_plane_np(
+                        grad_position_np=distortion_grad_position_np,
+                        tangent_u=tangent_u,
+                        tangent_v=tangent_v,
+                    )
+
+                    distortion_grad_position_np = (
+                            distortion_grad_position_np
+                            / bsdf_normalizer_np[:, None]
+                    )
+
+                    distortion_score_np = np.linalg.norm(distortion_grad_position_np, axis=1)
+                    distortion_score_np = np.nan_to_num(
+                        distortion_score_np,
+                        nan=0.0,
+                        posinf=0.0,
+                        neginf=0.0,
+                    )
+                else:
+                    distortion_score_np = np.zeros((positions.shape[0],), dtype=np.float32)
+
 
                 add_densification_stats_np(
                     grad_position_np=density_grad_position_np_for_score,
@@ -1625,8 +1655,8 @@ def run_optimization(
 
                 if reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0:
                     with torch.no_grad():
-                        opacities[:] = reset_opacity_value
-                    print(f"[Iter {iteration:04d}] "
+                        opacities[trainable_surfel_mask] = float(reset_opacity_value)
+                        print(f"[Iter {iteration:04d}] "
                           f"Resetting all opacities to {reset_opacity_value}")
                 # --------------------------------------------------------------
                 # 8. Reparameterization, sync, BVH
@@ -1741,6 +1771,24 @@ def run_optimization(
                             posinf=0.0,
                             neginf=0.0,
                         )
+
+                        depth_distortion_split_suppression = 1e3
+
+                        distortion_scale = np.quantile(
+                            distortion_score_np[np.isfinite(distortion_score_np)],
+                            0.90,
+                        ) if np.any(np.isfinite(distortion_score_np)) else 1.0
+
+                        if not np.isfinite(distortion_scale) or distortion_scale <= 1.0e-12:
+                            distortion_scale = 1.0
+
+                        distortion_score_normalized_np = distortion_score_np / distortion_scale
+
+                        #grad_pos_norm_np = (
+                        #        grad_pos_norm_np
+                        #        / (1.0 + depth_distortion_split_suppression * distortion_score_normalized_np)
+                        #)
+
                         trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool)
 
                         point_age_np = iteration - point_birth_iteration_np
@@ -1765,7 +1813,7 @@ def run_optimization(
                         valid_denom_count = int(np.count_nonzero(valid_denom_np))
 
                         valid_scale_pressure_count = int(np.count_nonzero(valid_scale_pressure_np))
-                        split_scale_gate_count = int(np.count_nonzero(split_scale_gate_np))
+                        #split_scale_gate_count = int(np.count_nonzero(split_scale_gate_np))
 
                         if valid_scale_pressure_count > 0:
                             grow_mean = float(np.mean(avg_grow_pressure_np[valid_scale_pressure_np]))
@@ -1870,7 +1918,7 @@ def run_optimization(
                                 f"abs_thr={densification_grad_abs_min:.3e}, "
                                 f"rgb={total_rgb_loss_value:.3e}, "
                                 f"valid_scale={valid_scale_pressure_count}, "
-                                f"split_scale_gate={split_scale_gate_count}, "
+                                #f"split_scale_gate={split_scale_gate_count}, "
                                 f"grow_mean={grow_mean:.3e}, "
                                 f"shrink_mean={shrink_mean:.3e}, "
                                 f"shrink_frac_mean={shrink_frac_mean:.3f}, "
