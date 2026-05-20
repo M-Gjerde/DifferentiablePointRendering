@@ -675,7 +675,7 @@ def main() -> None:
         raise ValueError(f"--refresh-seconds must be positive, got: {args.refresh_seconds}")
 
     plt.ion()
-
+    plt.rcParams["figure.raise_window"] = False
     # Keep the default window compact enough for laptop screens. Avoid resizing it
     # inside draw_metrics_figure(), otherwise manual GUI resizing is overwritten on
     # every metrics.csv update.

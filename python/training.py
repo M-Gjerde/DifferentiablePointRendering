@@ -1281,7 +1281,6 @@ def run_optimization(
     densify_bsdf_floor = config.densify_bsdf_floor
     densify_bsdf_gamma = config.densify_bsdf_gamma
 
-    max_split_fraction = config.max_split_fraction
     evsplit_preserve_integrated_opacity = config.evsplit_preserve_integrated_opacity
 
     rebuild_bvh_interval = config.rebuild_bvh_interval
@@ -1752,8 +1751,8 @@ def run_optimization(
                                 valid_denom_np
                                 & finite_grad
                                 & trainable_np
-                                & split_scale_gate_np
-                                & large_enough_to_split_np
+                                #& split_scale_gate_np
+                                #& large_enough_to_split_np
                                 & (grad_pos_norm_np >= densification_grad_abs_min)
                         )
                         n_new_from_densification = 0
@@ -1830,7 +1829,6 @@ def run_optimization(
                                 selection_score_np=grad_pos_norm_np,
                                 trainable_surfel_mask=densify_mask_torch,
                                 grad_threshold=grad_threshold,
-                                max_split_fraction=max_split_fraction,
                                 min_scale=config.evsplit_min_scale,
                                 preserve_integrated_opacity=evsplit_preserve_integrated_opacity,
                             )

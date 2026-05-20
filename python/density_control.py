@@ -217,11 +217,10 @@ def make_under_reconstruction_evsplits(
         grad_position_np: np.ndarray,
         trainable_surfel_mask: torch.Tensor,
         grad_threshold: float,
-        max_split_fraction: float = 0.05,
         selection_score_np: np.ndarray | None = None,
         min_scale: float = 1.0e-6,
         min_opacity: float = 1.0e-5,
-        max_opacity: float = 0.99,
+        max_opacity: float = 1.0,
         preserve_integrated_opacity: bool = True,
 ) -> dict[str, dict[str, Any] | Any] | None:
     """
@@ -279,13 +278,6 @@ def make_under_reconstruction_evsplits(
 
         # EV split creates two children and removes one parent.
         # Net growth is +1 per selected surfel.
-        max_splits = max(1, int(float(max_split_fraction) * float(n_points)))
-
-        if selected_idx.numel() > max_splits:
-            selected_score = selection_score[selected_idx]
-            keep = torch.topk(selected_score, k=max_splits, largest=True).indices
-            selected_idx = selected_idx[keep]
-
         p = positions[selected_idx].detach().clone()
         tu = tangent_u[selected_idx].detach().clone()
         tv = tangent_v[selected_idx].detach().clone()
@@ -347,7 +339,8 @@ def make_under_reconstruction_evsplits(
         sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
 
         # Centered EV split displacement in local tangent coordinates.
-        delta_local = sqrt_2_over_pi * sigma_a / tau[:, None]
+        chill_factor = 0.5
+        delta_local = sqrt_2_over_pi * sigma_a / tau[:, None] * chill_factor
 
         # Centered EV child covariance.
         outer = sigma_a[:, :, None] * sigma_a[:, None, :]

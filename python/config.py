@@ -13,15 +13,15 @@ class RendererSettingsConfig:
     bounces: int = 3
     adjoint_bounces: int = 3
     forward_passes: int = 4
-    primal_shadow_rays: int = 16  # Li
-    adjoint_shadow_rays: int = 8  # Li
+    primal_shadow_rays: int = 32  # Li
+    adjoint_shadow_rays: int = 32  # Li
     gather_passes: int = 1
     adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 6  # p_i
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
-    logging: int = 4
+    logging: int = 3
 
     def as_dict(self, config: "OptimizationConfig") -> Dict[str, float | int]:
         return {
@@ -68,7 +68,7 @@ class OptimizationConfig:
 
     depth_distort_weight: float = 1e3
     normal_consistency_weight: float = 0.01
-    opacity_loss_weight: float = 0.1
+    opacity_loss_weight: float = 1.0
     opacity_target: float = 1.0
 
     log_interval: int = 1
@@ -76,21 +76,20 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 10
-    prune_interval: int = 10
+    densification_interval: int = 100
+    prune_interval: int = 100
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
-    densify_until_fraction: float = 0.7
+    densify_until_fraction: float = 0.8
 
     densification_verbose: bool = True
-    densification_grad_quantile: float = 0.5
-    densification_grad_abs_min: float = 1
+    densification_grad_quantile: float = 0.8
+    densification_grad_abs_min: float = 1.0e-1
 
     densify_bsdf_floor: float = 0.15
-    densify_bsdf_gamma: float = 1.5
+    densify_bsdf_gamma: float = 1.0
 
-    max_split_fraction: float = 0.5
     evsplit_preserve_integrated_opacity: bool = True
     evsplit_min_scale: float = 1.0e-3
 
@@ -122,7 +121,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_scale = 0.001
         factor_albedo = 0.01
         factor_opacity = 0.01
-        factor_beta = 0.001
+        factor_beta = 0.000
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 

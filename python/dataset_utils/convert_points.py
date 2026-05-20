@@ -145,8 +145,8 @@ def write_gaussian_ply(
     vertices,
     output_path,
     args,
-    opacity_default=1.0,
-    beta_default=-1.0,
+    opacity_default=0.5,
+    beta_default=-0.0,
     shape_default=0.0,
 
     # -----------------------------------------------------------
@@ -194,7 +194,8 @@ def write_gaussian_ply(
             tv = -tv
         return tu, tv
 
-    total_vertex_count = len(vertices) + 2
+    lightPointCount = 3
+    total_vertex_count = len(vertices) + lightPointCount
 
     lines = [
         "ply",
@@ -307,7 +308,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
-    light_power = 1200.0
+    light_power = 600.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -328,7 +329,7 @@ def write_gaussian_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
-    light_power = 800.0
+    light_power = 400.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -340,18 +341,16 @@ def write_gaussian_ply(
     )
     lines.append(light_line)
     light_x = 0.0
-    light_y = 0.0
-    light_z = -2.0
+    light_y = 0.8
+    light_z = 3.0
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
+    light_power = 400.0
 
-    light_nx = 0.0
-    light_ny = 0.0
-    light_nz = 1.0
 
     light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
         compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
