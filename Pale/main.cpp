@@ -337,7 +337,7 @@ int main(int argc, char** argv) {
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
         settings.maxBounces = 4;
-        settings.numForwardPasses = 5;
+        settings.numForwardPasses = 10;
 
         settings.numShadowRays = 16;
         settings.numAdjointShadowRays = 16;

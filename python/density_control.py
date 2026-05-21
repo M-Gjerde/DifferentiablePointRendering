@@ -339,7 +339,7 @@ def make_under_reconstruction_evsplits(
         sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
 
         # Centered EV split displacement in local tangent coordinates.
-        chill_factor = 0.3
+        chill_factor = 0.5
         delta_local = (sqrt_2_over_pi * sigma_a / tau[:, None]) * chill_factor
 
         # Centered EV child covariance.

@@ -30,6 +30,7 @@ from optimizers import (
 )
 from density_control import (
     make_under_reconstruction_evsplits,
+    make_under_reconstruction_clones,
     compute_prune_indices_by_degenerate_scale,
     project_gradient_to_surfel_tangent_plane_np,
     compute_prune_indices_by_opacity,
@@ -259,6 +260,19 @@ def poll_hotkey() -> Optional[str]:
         return line
     return None
 
+def position_gradient_stats_or_zero(
+        gradient_dict: Dict[str, np.ndarray],
+) -> tuple[float, float]:
+    if not gradient_dict or "position" not in gradient_dict:
+        return 0.0, 0.0
+
+    grad_position = np.asarray(
+        gradient_dict["position"],
+        dtype=np.float32,
+        order="C",
+    )
+
+    return rms_point(grad_position), max_point_norm(grad_position)
 
 def save_gradients_snapshot(
         output_dir: Path,
@@ -1305,6 +1319,14 @@ def run_optimization(
                 "num_points",
                 "iteration_time_sec",
                 "total_time",
+                "grad_position_renderer_rms",
+                "grad_position_renderer_max",
+                "grad_position_depth_distortion_rms",
+                "grad_position_depth_distortion_max",
+                "grad_position_normal_consistency_rms",
+                "grad_position_normal_consistency_max",
+                "grad_position_total_rms",
+                "grad_position_total_max",
                 "grad_opacity_total_rms",
                 "grad_opacity_total_max",
                 "grad_opacity_regularizer_rms",
@@ -1467,6 +1489,21 @@ def run_optimization(
 
                 grad_opacity_total_rms = rms_any(grad_opacities_np)
                 grad_opacity_total_max = max_point_norm(grad_opacities_np)
+                grad_position_renderer_rms, grad_position_renderer_max = (
+                    position_gradient_stats_or_zero(photo_gradients)
+                )
+
+                grad_position_depth_distortion_rms, grad_position_depth_distortion_max = (
+                    position_gradient_stats_or_zero(distortion_gradients)
+                )
+
+                grad_position_normal_consistency_rms, grad_position_normal_consistency_max = (
+                    position_gradient_stats_or_zero(normal_gradients)
+                )
+
+                grad_position_total_rms = rms_point(grad_position_np)
+                grad_position_total_max = max_point_norm(grad_position_np)
+
 
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
@@ -1880,6 +1917,20 @@ def run_optimization(
                                 min_scale=config.evsplit_min_scale,
                                 preserve_integrated_opacity=evsplit_preserve_integrated_opacity,
                             )
+                            #densification_result = make_under_reconstruction_clones(
+                            #    positions=positions,
+                            #    tangent_u=tangent_u,
+                            #    tangent_v=tangent_v,
+                            #    scales=scales,
+                            #    albedos=albedos,
+                            #    opacities=opacities,
+                            #    betas=betas,
+                            #    powers=powers,
+                            #    grad_position_np=avg_density_grad_vector_np,
+                            #    selection_score_np=grad_pos_norm_np,
+                            #    trainable_surfel_mask=densify_mask_torch,
+                            #    grad_threshold=grad_threshold
+                            #)
 
                             if densification_result is not None:
                                 if densification_result.get("replace_source", False):
@@ -2240,6 +2291,14 @@ def run_optimization(
                         num_points,
                         iteration_time,
                         total_time,
+                        grad_position_renderer_rms,
+                        grad_position_renderer_max,
+                        grad_position_depth_distortion_rms,
+                        grad_position_depth_distortion_max,
+                        grad_position_normal_consistency_rms,
+                        grad_position_normal_consistency_max,
+                        grad_position_total_rms,
+                        grad_position_total_max,
                         grad_opacity_total_rms,
                         grad_opacity_total_max,
                         grad_opacity_regularizer_rms,

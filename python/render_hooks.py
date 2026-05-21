@@ -227,7 +227,7 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
         before_min = float(s.min().item())
         before_max = float(s.max().item())
 
-        s_clamped = torch.clamp(s, min=0.00, max=0.05) ## TODO Enforcing min size matching photon map min resolution
+        s_clamped = torch.clamp(s, min=0.00, max=1.0) ## TODO Enforcing min size matching photon map min resolution
         s.copy_(s_clamped)
 
         after_min = float(s.min().item())
@@ -330,7 +330,7 @@ def verify_beta_inplace(
     If trainable_surfel_mask is provided, only trainable surfels are verified.
     Frozen surfels are left untouched.
     """
-    min_beta_value = -2.0
+    min_beta_value = 0.0
     with torch.no_grad():
         beta_values = betas.data
 
