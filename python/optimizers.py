@@ -60,7 +60,7 @@ def create_optimizer(
     ]
 
     if opt_type == "sgd":
-        return torch.optim.SGD(param_groups, momentum=0.8)
+        return torch.optim.SGD(param_groups, momentum=0.5)
     if opt_type == "adam":
         return torch.optim.Adam(param_groups)
 

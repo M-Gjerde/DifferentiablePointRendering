@@ -27,48 +27,32 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline void accumulateDebugGradientIfSelected(
-        DebugImages* debugImages,
+        DebugImages debugImage,
         bool renderDebugGradientImages,
         uint32_t selectedPrimitiveIndex,
         uint32_t pathId,
-        const SurfelGradientRecord& gradientRecord) {
+        const SurfelGradientRecord &gradientRecord) {
         if (!renderDebugGradientImages) {
             return;
         }
-
-        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex && selectedPrimitiveIndex != UINT32_MAX) {
+        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex || selectedPrimitiveIndex == UINT32_MAX) {
             return;
         }
-
-        atomicAddFloat(debugImages->framebufferPosX[pathId], gradientRecord.gradPositionX);
-        atomicAddFloat(debugImages->framebufferPosY[pathId], gradientRecord.gradPositionY);
-        atomicAddFloat(debugImages->framebufferPosZ[pathId], gradientRecord.gradPositionZ);
-
+        atomicAddFloat(debugImage.framebufferPosX[pathId], gradientRecord.gradPositionX);
+        atomicAddFloat(debugImage.framebufferPosY[pathId], gradientRecord.gradPositionY);
+        atomicAddFloat(debugImage.framebufferPosZ[pathId], gradientRecord.gradPositionZ);
         const float3 tangentUGradient{
-            gradientRecord.gradTangentUX,
-            gradientRecord.gradTangentUY,
-            gradientRecord.gradTangentUZ
+            gradientRecord.gradTangentUX, gradientRecord.gradTangentUY, gradientRecord.gradTangentUZ
         };
-
         const float3 tangentVGradient{
-            gradientRecord.gradTangentVX,
-            gradientRecord.gradTangentVY,
-            gradientRecord.gradTangentVZ
+            gradientRecord.gradTangentVX, gradientRecord.gradTangentVY, gradientRecord.gradTangentVZ
         };
-
-        const float scaleGradientMagnitude =
-            sycl::sqrt(
-                gradientRecord.gradScaleU * gradientRecord.gradScaleU +
-                gradientRecord.gradScaleV * gradientRecord.gradScaleV);
-
         const float albedoGradientMagnitude = gradientRecord.gradAlbedoR;
-
-
-        //atomicAddFloat(debugImages->framebufferRot[pathId], rotationGradientMagnitude);
-        atomicAddFloat(debugImages->framebufferScale[pathId], gradientRecord.gradScaleU);
-        atomicAddFloat(debugImages->framebufferOpacity[pathId], gradientRecord.gradEta);
-        atomicAddFloat(debugImages->framebufferAlbedo[pathId], albedoGradientMagnitude);
-        atomicAddFloat(debugImages->framebufferBeta[pathId], gradientRecord.gradBeta);
+        //atomicAddFloat(debugImage.framebufferRot[pathId], rotationGradientMagnitude);
+        atomicAddFloat(debugImage.framebufferScale[pathId], gradientRecord.gradScaleU);
+        atomicAddFloat(debugImage.framebufferOpacity[pathId], gradientRecord.gradEta);
+        atomicAddFloat(debugImage.framebufferAlbedo[pathId], albedoGradientMagnitude);
+        atomicAddFloat(debugImage.framebufferBeta[pathId], gradientRecord.gradBeta);
     }
 
     SYCL_EXTERNAL inline void accumulateSurfelGradientAtomic(
@@ -80,8 +64,7 @@ namespace Pale {
         const float3 &gradTanV,
         float gradEta,
         float gradBeta,
-        const float3 &gradAlbedo = float3{0.0f, 0.0f, 0.0f})
-    {
+        const float3 &gradAlbedo = float3{0.0f, 0.0f, 0.0f}) {
         atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradPosition.x());
         atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradPosition.y());
         atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradPosition.z());
@@ -105,161 +88,6 @@ namespace Pale {
         atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradAlbedo.z());
     }
 
-    /*
-    inline float3 gradTransmissionPosition(const Ray &ray, const SplatEvent &splatEvent, const Point &surfel,
-                                           const float3 &segmentVector) {
-        constexpr float epsilon = 1e-6f;
-
-        const float3 tangentU = surfel.tanU;
-        const float3 tangentV = surfel.tanV;
-        const float3 normalW = normalize(cross(tangentU, tangentV)); // no flipping
-
-        const float denom = dot(normalW, segmentVector);
-        if (fabs(denom) <= epsilon) return float3(0.0f);
-
-        const float2 uv = phiInverse(splatEvent.hitWorld, surfel); // your mapping to local coords
-
-        const float alpha = splatEvent.alpha;
-
-        const float tuDotD = dot(surfel.tanU, segmentVector);
-        const float tvDotD = dot(surfel.tanV, segmentVector);
-
-        const float su = surfel.scale.x();
-        const float sv = surfel.scale.y();
-
-        // d u / d c and d v / d c
-        const float3 duDc = ((tuDotD / denom) * normalW - surfel.tanU) / su;
-        const float3 dvDc = ((tvDotD / denom) * normalW - surfel.tanV) / sv;
-        // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
-        const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
-
-        return dAlphaDc;
-    }
-
-    inline float3 gradTransmissionProduct(const Ray &ray, const SplatEvent &splatEvent, const Point &surfel,
-                                          const float3 &segmentVector) {
-        constexpr float epsilon = 1e-6f;
-
-        const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-        const int travelSideSign = (dot(canonicalNormalW, -ray.direction) >= 0.0f) ? 1 : -1;
-        const float3 surfelNormal = (travelSideSign >= 0)
-                                        ? canonicalNormalW
-                                        : (-canonicalNormalW);
-
-        const float denom = dot(surfelNormal, segmentVector);
-        if (fabs(denom) <= epsilon) return float3(0.0f);
-
-        const float2 uv = phiInverse(splatEvent.hitWorld, surfel); // your mapping to local coords
-
-        const float alpha = splatEvent.alpha;
-
-        const float tuDotD = dot(surfel.tanU, segmentVector);
-        const float tvDotD = dot(surfel.tanV, segmentVector);
-
-        const float su = surfel.scale.x();
-        const float sv = surfel.scale.y();
-
-        // d u / d c and d v / d c
-        const float3 duDc = ((tuDotD / denom) * surfelNormal - surfel.tanU) / sycl::fmax(
-                                su, epsilon);
-        const float3 dvDc = ((tvDotD / denom) * surfelNormal - surfel.tanV) / sycl::fmax(
-                                sv, epsilon);
-        // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
-        const float3 dAlphaDc = -alpha * (uv.x() * duDc + uv.y() * dvDc);
-
-        return dAlphaDc;
-    }
-
-
-    inline float3 transmissionBackgroundGradient(const GPUSceneBuffers &scene, const WorldHit &worldHit,
-                                                 const RayState &rayState, const InstanceRecord &instance,
-                                                 const DeviceSurfacePhotonMapGrid &photonMap) {
-        float3 d_cost_d_pos(0.0f);
-
-        // Transmission
-        /*
-        if (worldHit.splatEventCount > 0) {
-            const float3 x = rayState.ray.origin;
-            const float3 y = worldHit.hitPositionW;
-            const float3 segmentVector = y - x;
-
-            // Cost weighting: keep RGB if your loss is RGB; else reduce at end
-            const float3 rho = scene.materials[scene.instances[worldHit.instanceIndex].materialIndex].
-                    baseColor;
-            const float3 E = gatherDiffuseIrradianceAtPointNormalFiltered(worldHit.hitPositionW,  worldHit.geometricNormalW, photonMap);
-            float3 backgroundRadianceRGB = (rho * M_1_PIf) * E;
-            const float L = luminance(backgroundRadianceRGB);
-
-            // Collect alpha_i and d(alpha_i)/dc for all valid splat intersections on the segment
-            struct LocalTerm {
-                float alpha;
-                float3 dAlphaDc;
-            };
-            constexpr float epsilon = 1e-6f;
-            LocalTerm localTerms[kMaxSplatEventsPerRay];
-            int validCount = 0;
-
-            for (int ei = 0; ei < worldHit.splatEventCount && validCount < kMaxSplatEventsPerRay; ++ei) {
-                const auto splatEvent = worldHit.splatEvents[ei];
-                const auto surfel = scene.points[splatEvent.primitiveIndex];
-                // d alpha / d c  for alpha = exp(-0.5*(u^2+v^2))  ==>  dα = -α*(u du + v dv)
-                const float3 dAlphaDc =
-                        gradTransmissionPosition(rayState.ray, splatEvent, surfel, segmentVector);
-                localTerms[validCount++] = LocalTerm{splatEvent.alpha, dAlphaDc};
-            }
-            if (validCount != 0) {
-                // τ = Π (1-α_i) with stable log-space accumulation
-                float logTau = 0.f;
-                for (int i = 0; i < validCount; ++i) {
-                    const float oneMinusAlpha = sycl::fmax(1.f - localTerms[i].alpha, 1e-6f);
-                    logTau += sycl::log(oneMinusAlpha);
-                }
-                const float tau = sycl::exp(logTau);
-
-                // Σ_i [ - dα_i/dc / (1-α_i) ]
-                float3 sumTerm(0.f);
-                for (int i = 0; i < validCount; ++i) {
-                    const float oneMinusAlpha = sycl::fmax(1.f - localTerms[i].alpha, 1e-6f);
-                    sumTerm += localTerms[i].dAlphaDc / oneMinusAlpha;
-                }
-                float cosine = dot(worldHit.geometricNormalW, -rayState.ray.direction);
-
-                const float pAdjoint = luminanceGrayscale(rayState.pathThroughput) * tau;
-                // already includes fs, V, G, etc., for this segment
-                // Accumulate to your running gradient
-                const float3 tauGrad = -tau * sumTerm;
-                d_cost_d_pos = pAdjoint * tauGrad * L;
-            }
-        }
-        return d_cost_d_pos;
-    }
-
-    inline void cosineAndGradientWrtPosition(const float3 &rayOrigin,
-                                             const float3 &hitPositionWorld,
-                                             const float3 &surfelNormal,
-                                             float &cosineSigned,
-                                             float3 &gradCosineWrtPosition) {
-        const float3 displacementVector = hitPositionWorld - rayOrigin; // d
-        const float distanceMagnitude = length(displacementVector); // p
-        if (distanceMagnitude <= 1e-6f) {
-            cosineSigned = 0.0f;
-            gradCosineWrtPosition = float3{0.0f};
-            return;
-        }
-
-        const float3 unitPsi = displacementVector / distanceMagnitude; // ψ
-        const float3 incidentDirection = -unitPsi; // ω_i
-
-        cosineSigned = dot(surfelNormal, incidentDirection);
-
-        const float3x3 projector = identity3x3() - outerProduct(unitPsi, unitPsi);
-        gradCosineWrtPosition = -(projector * surfelNormal) / distanceMagnitude;
-    }
-
-    // Assuming float3, float2, dot(), cross(), etc. are defined as in your codebase.
-    */
-    // ----------------- Position gradient (translation of surfel center) -----------------
-
     SYCL_EXTERNAL inline float3 mapHitPointGradientToSurfelTranslation(
         const float3 &gradientWrtHitPosition,
         const float3 &cameraRayDirection,
@@ -277,8 +105,8 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline float3x3 planeHitPointJacobianWrtOrigin(
-    const float3& rayDirection,
-    const float3& planeNormal) {
+        const float3 &rayDirection,
+        const float3 &planeNormal) {
         float3x3 identity = identity3x3();
 
         float3x3 numerator = outerProduct(rayDirection, planeNormal);
@@ -295,11 +123,10 @@ namespace Pale {
     }
 
     inline float3 computeGeometricTermGradientWrtEndpointFixedDirection(
-        const float3& xPosition,
-        const float3& yPosition,
-        const float3& xNormal,
-        const float3& yNormal) {
-
+        const float3 &xPosition,
+        const float3 &yPosition,
+        const float3 &xNormal,
+        const float3 &yNormal) {
         const float3 vectorFromXToY = yPosition - xPosition;
         const float squaredDistance = dot(vectorFromXToY, vectorFromXToY);
 
@@ -310,23 +137,23 @@ namespace Pale {
         const float distance = sycl::sqrt(squaredDistance);
         const float inverseDistance = 1.0f / distance;
         const float inverseDistanceCubed =
-            inverseDistance * inverseDistance * inverseDistance;
+                inverseDistance * inverseDistance * inverseDistance;
 
         const float3 directionFromXToY =
-            vectorFromXToY * inverseDistance;
+                vectorFromXToY * inverseDistance;
 
         const float cosineAtX =
-            dot(xNormal, directionFromXToY);
+                dot(xNormal, directionFromXToY);
 
         const float cosineAtY =
-            dot(yNormal, -directionFromXToY);
+                dot(yNormal, -directionFromXToY);
 
         return
-            -2.0f *
-            cosineAtX *
-            cosineAtY *
-            inverseDistanceCubed *
-            directionFromXToY;
+                -2.0f *
+                cosineAtX *
+                cosineAtY *
+                inverseDistanceCubed *
+                directionFromXToY;
     }
 
     inline float3 computeGeometricTermGradientWrtStartpoint(
@@ -359,11 +186,11 @@ namespace Pale {
     }
 
     struct CachedSegmentEndpointDerivativeResult {
-    bool valid = true;
-    bool overflowed = false;
-    float weightedTransmittance = 1.0f;
-    float3 gradWeightedTransmittanceWrtEndPosition{0.0f, 0.0f, 0.0f};
-};
+        bool valid = true;
+        bool overflowed = false;
+        float weightedTransmittance = 1.0f;
+        float3 gradWeightedTransmittanceWrtEndPosition{0.0f, 0.0f, 0.0f};
+    };
 
     inline float3 computeGeometricTermGradientWrtEndpoint(
         const float3 &xPosition,
@@ -375,10 +202,9 @@ namespace Pale {
     }
 
     float3 computeLogDGradientWrtX(
-    const float3& x,
-    const float3& y,
-    const float3& ny)
-    {
+        const float3 &x,
+        const float3 &y,
+        const float3 &ny) {
         float3 d = y - x;
         float dist2 = dot(d, d);
         float dist = sycl::sqrt(dist2);
@@ -390,7 +216,7 @@ namespace Pale {
         float3 projectedNy = ny - phi * dot(ny, phi);
 
         return projectedNy / (cosY * dist)
-             + (2.0f / dist) * phi;
+               + (2.0f / dist) * phi;
     }
 
     inline float computeGeometryOverAreaPdfFromUniformHemisphereSample(
@@ -550,12 +376,12 @@ namespace Pale {
     };
 
     inline UVPositionJacobian computeDuvDSurfelTranslationJacobianForImplicitRayHit(
-      const float3& tangentUWorld,
-      const float3& tangentVWorld,
-      const float3& canonicalNormalWorld,
-      const float3& rayDirection,
-      float scaleU,
-      float scaleV) {
+        const float3 &tangentUWorld,
+        const float3 &tangentVWorld,
+        const float3 &canonicalNormalWorld,
+        const float3 &rayDirection,
+        float scaleU,
+        float scaleV) {
         const float denominator = dot(canonicalNormalWorld, rayDirection);
         if (sycl::fabs(denominator) <= 1e-4f) {
             return {};
@@ -565,17 +391,17 @@ namespace Pale {
         const float tangentVDotRayDirection = dot(tangentVWorld, rayDirection);
 
         const float3 duDTranslation =
-            ((tangentUDotRayDirection / denominator) * canonicalNormalWorld - tangentUWorld) / scaleU;
+                ((tangentUDotRayDirection / denominator) * canonicalNormalWorld - tangentUWorld) / scaleU;
 
         const float3 dvDTranslation =
-            ((tangentVDotRayDirection / denominator) * canonicalNormalWorld - tangentVWorld) / scaleV;
+                ((tangentVDotRayDirection / denominator) * canonicalNormalWorld - tangentVWorld) / scaleV;
 
         return {duDTranslation, dvDTranslation};
     }
 
     inline UVPositionJacobian computeDuvDSurfelTranslationJacobianForExplicitSurfacePoint(
-        const float3& tangentUWorld,
-        const float3& tangentVWorld,
+        const float3 &tangentUWorld,
+        const float3 &tangentVWorld,
         float scaleU,
         float scaleV) {
         if (scaleU <= 1e-12f || scaleV <= 1e-12f) {
@@ -895,7 +721,6 @@ namespace Pale {
     }
 
 
-
     SYCL_EXTERNAL inline bool computeRayPlaneIntersectionRtDerivatives(
         const float3 &rayOrigin,
         const float3 &rayDirection,
@@ -1006,676 +831,6 @@ namespace Pale {
         }
     }
 
-    /*
-        SYCL_EXTERNAL inline void accumulateBsdfGradientsAtScatterSurfel(
-            const RayState &rayState,
-            const WorldHit &scatterHit,
-            const GPUSceneBuffers &scene,
-            const DeviceSurfacePhotonMapGrid &photonMap,
-            const PointGradients &gradients,
-            const DebugImages &debugImage,
-            bool renderDebugGradientImage,
-            uint32_t debugIndex = UINT32_MAX,
-            bool isWatched = false
-        ) {
-            if (!scatterHit.hit || scatterHit.splatEventCount == 0) {
-                return;
-            }
-
-            const InstanceRecord &scatterInstance = scene.instances[scatterHit.instanceIndex];
-            if (scatterInstance.geometryType != GeometryType::PointCloud) {
-                return;
-            }
-
-            // Terminal surfel of this scatter event
-            const uint32_t terminalPrimitiveIndex = scatterHit.primitiveIndex;
-            if (terminalPrimitiveIndex != debugIndex && debugIndex != UINT32_MAX)
-                return;
-
-            const SplatEvent &terminalSplatEvent =
-                    scatterHit.splatEvents[scatterHit.splatEventCount - 1];
-
-
-            const Point &surfel = scene.points[terminalPrimitiveIndex];
-
-            const float3 canonicalNormalWorld =
-                    normalize(cross(surfel.tanU, surfel.tanV));
-
-            const Ray &ray = rayState.ray;
-            const float3 rayDirection = ray.direction;
-            const float3 hitWorld = terminalSplatEvent.hitWorld;
-
-            const float2 uv = phiInverse(hitWorld, surfel);
-            const float u = uv.x();
-            const float v = uv.y();
-            const float r2 = u * u + v * v;
-            const float alpha = terminalSplatEvent.alpha;
-            const float su = surfel.scale.x();
-            const float sv = surfel.scale.y();
-
-            // dα/d(position) via d(u,v)/d(position)
-            const float3 dUvDPosition =
-                    computeDuvDPosition(
-                        surfel.tanU,
-                        surfel.tanV,
-                        canonicalNormalWorld,
-                        rayState.ray.direction,
-                        u, v,
-                        su, sv);
-
-            float3 dUdTu, dVdTu, dUdTv, dVdTv;
-            computeFullDuDvWrtTangents(
-                ray.origin,
-                ray.direction,
-                surfel.position,
-                hitWorld,
-                surfel.tanU,
-                surfel.tanV,
-                su, sv,
-                dUdTu, dVdTu, dUdTv, dVdTv
-            );
-
-            // dudv derivatives wrt tangents
-            float3 dFsDtU = (u * dUdTu + v * dVdTu);
-            float3 dFsDtV = (u * dUdTv + v * dVdTv);
-
-            const float betaKernelFactor =
-                    -surfel.opacity * computeSmoothedBetaFactor(surfel.beta, r2, alpha);
-            float3 bsdfGradTanU = betaKernelFactor * dFsDtU;
-            float3 bsdfGradTanV = betaKernelFactor * dFsDtV;
-
-            const float3 dUdVdScale =
-                    computeDuvDScale(u, v, su, sv);
-
-            float beta = 4.0f * sycl::exp(surfel.beta);
-
-            const float3 bsdfGradPosition = betaKernelFactor * dUvDPosition * 0.000000022;
-            const float3 dFsDsusv = betaKernelFactor * dUdVdScale;
-
-            const float bsdfGradScaleU = dFsDsusv.x();
-            const float bsdfGradScaleV = dFsDsusv.y();
-
-            if (isWatched)
-                int debug = 1;
-            const float bsdfGradAlbedo = alpha * surfel.opacity;
-            const float3 bsdfGradOpacity = alpha * surfel.albedo;
-            const float bsdfGradBeta =
-                    alpha * betaKernel(surfel.beta) *
-                    sycl::log(1.0f - r2) *
-                    surfel.opacity;
-
-            // Surfel-side radiance
-            const float3 surfelRadianceRGB =
-                    estimateSurfelRadianceFromPhotonMap(
-                        terminalSplatEvent,
-                        ray.direction,
-                        scene,
-                        photonMap,
-                        false,
-                        true,
-                        true
-                    );
-
-            const float3 pathAdjoint = rayState.pathThroughput;
-
-            // Per-channel adjoint * τ * radiance
-            const float R = pathAdjoint[0] * surfelRadianceRGB[0];
-            const float G = pathAdjoint[1] * surfelRadianceRGB[1];
-            const float B = pathAdjoint[2] * surfelRadianceRGB[2];
-
-            // Position gradients
-            const float3 gradCPosR = R * bsdfGradPosition;
-            const float3 gradCPosG = G * bsdfGradPosition;
-            const float3 gradCPosB = B * bsdfGradPosition;
-
-            // Tangent gradients
-            const float3 gradCTanUR = R * bsdfGradTanU;
-            const float3 gradCTanUG = G * bsdfGradTanU;
-            const float3 gradCTanUB = B * bsdfGradTanU;
-
-            const float3 gradCTanVR = R * bsdfGradTanV;
-            const float3 gradCTanVG = G * bsdfGradTanV;
-            const float3 gradCTanVB = B * bsdfGradTanV;
-
-            // Scale gradients
-            const float gradCScaleUR = R * bsdfGradScaleU;
-            const float gradCScaleUG = G * bsdfGradScaleU;
-            const float gradCScaleUB = B * bsdfGradScaleU;
-
-            const float gradCScaleVR = R * bsdfGradScaleV;
-            const float gradCScaleVG = G * bsdfGradScaleV;
-            const float gradCScaleVB = B * bsdfGradScaleV;
-
-            // Albedo gradients
-            const float gradCAlbedoR = R * bsdfGradAlbedo;
-            const float gradCAlbedoG = G * bsdfGradAlbedo;
-            const float gradCAlbedoB = B * bsdfGradAlbedo;
-
-            // Opacity gradients (RGB)
-            const float gradCOpacityR = R * bsdfGradOpacity[0];
-            const float gradCOpacityG = G * bsdfGradOpacity[1];
-            const float gradCOpacityB = B * bsdfGradOpacity[2];
-
-            // Beta gradients
-            const float gradCBetaR = R * bsdfGradBeta;
-            const float gradCBetaG = G * bsdfGradBeta;
-            const float gradCBetaB = B * bsdfGradBeta;
-
-            // Accumulate into parameter gradients
-            const uint32_t primitiveIndex = terminalPrimitiveIndex;
-
-            atomicAddFloat3(
-                gradients.gradPosition[primitiveIndex],
-                gradCPosR + gradCPosG + gradCPosB
-            );
-            atomicAddFloat3(
-                gradients.gradTanU[primitiveIndex],
-                gradCTanUR + gradCTanUG + gradCTanUB
-            );
-            atomicAddFloat3(
-                gradients.gradTanV[primitiveIndex],
-                gradCTanVR + gradCTanVG + gradCTanVB
-            );
-            atomicAddFloat(
-                gradients.gradScale[primitiveIndex].x(),
-                gradCScaleUR + gradCScaleUG + gradCScaleUB
-            );
-            atomicAddFloat(
-                gradients.gradScale[primitiveIndex].y(),
-                gradCScaleVR + gradCScaleVG + gradCScaleVB
-            );
-            atomicAddFloat(
-                gradients.gradOpacity[primitiveIndex],
-                gradCOpacityR + gradCOpacityG + gradCOpacityB
-            );
-            atomicAddFloat(
-                gradients.gradBeta[primitiveIndex],
-                gradCBetaR + gradCBetaG + gradCBetaB
-            );
-
-            float3 gradColorValue{gradCAlbedoR, gradCAlbedoG, gradCAlbedoB};
-            atomicAddFloat3(gradients.gradAlbedo[primitiveIndex], gradColorValue);
-
-            // Debug images
-            if (renderDebugGradientImage) {
-                float3 rotationAxis = float3{0.0f, 1.0f, 0.0f};
-                const float3 dBsdfWorld = float3{
-                    dot(gradCTanUR, cross(rotationAxis, surfel.tanU)) +
-                    dot(gradCTanVR, cross(rotationAxis, surfel.tanV)),
-
-                    dot(gradCTanUG, cross(rotationAxis, surfel.tanU)) +
-                    dot(gradCTanVG, cross(rotationAxis, surfel.tanV)),
-
-                    dot(gradCTanUB, cross(rotationAxis, surfel.tanU)) +
-                    dot(gradCTanVB, cross(rotationAxis, surfel.tanV))
-                };
-                float3 parameterAxis = float3{0.0f, 1.0f, 0.0f};
-
-                const float dCdpR = dot(gradCPosR, parameterAxis);
-                const float dCdpG = dot(gradCPosG, parameterAxis);
-                const float dCdpB = dot(gradCPosB, parameterAxis);
-                const float4 posScalarRGB{dCdpR, dCdpG, dCdpB, 0.0f};
-
-                const float4 rotScalarRGB{
-                    dBsdfWorld.x(), dBsdfWorld.y(), dBsdfWorld.z(), 0.0f
-                };
-
-                const float4 scaleScalarRGB{
-                    gradCScaleUR, gradCScaleUG, gradCScaleUB, 0.0f
-                };
-
-                const float4 opacityScalarRGB{
-                    gradCOpacityR, gradCOpacityG, gradCOpacityB, 0.0f
-                };
-
-                const float4 albedoScalarRGB{
-                    gradCAlbedoR, gradCAlbedoG, gradCAlbedoB, 0.0f
-                };
-
-                const float4 betaScalarRGB{
-                    gradCBetaR, gradCBetaG, gradCBetaB, 0.0f
-                };
-
-                const uint32_t pixelIndex = rayState.pixelIndex;
-
-                atomicAddFloat4ToImage(
-                    &debugImage.framebufferPosX[pixelIndex],
-                    posScalarRGB
-                );
-                atomicAddFloat4ToImage(
-                    &debugImage.framebufferRot[pixelIndex],
-                    rotScalarRGB
-                );
-                atomicAddFloat4ToImage(
-                    &debugImage.framebufferScale[pixelIndex],
-                    scaleScalarRGB
-                );
-                atomicAddFloat4ToImage(
-                    &debugImage.framebufferOpacity[pixelIndex],
-                    opacityScalarRGB
-                );
-                atomicAddFloat4ToImage(
-                    &debugImage.framebufferAlbedo[pixelIndex],
-                    albedoScalarRGB
-                );
-                atomicAddFloat4ToImage(
-                    &debugImage.framebufferBeta[pixelIndex],
-                    betaScalarRGB
-                );
-            }
-        }
-
-
-
-        SYCL_EXTERNAL inline void accumulateTransmittanceGradientsAlongRayAttachedOriginSelf(
-            const RayState &rayState,
-            const WorldHit &worldHit,
-            const GPUSceneBuffers &scene,
-            const DeviceSurfacePhotonMapGrid &photonMap,
-            bool writeDebugImages,
-            const PointGradients &gradients,
-            uint32_t originPrimitiveIndex, // surfel controlling ray origin (attached origin)
-            const DebugImages &debugImage,
-            uint32_t debugIndex = UINT32_MAX,
-            bool isWatched = false
-        ) {
-            if (!worldHit.hit || worldHit.splatEventCount == 0) {
-                return;
-            }
-
-            const float3 backgroundRadianceRGB =
-                    estimateRadianceFromPhotonMap(worldHit, scene, photonMap);
-
-            struct LocalTerm {
-                float alpha{};
-                float betaKernel{};
-                float eta{};
-                float r2{};
-
-                // Existing blocker-parameter derivatives (unused here but kept for completeness)
-                float3 dAlphaDPos;
-                float3 dAlphaDtU;
-                float3 dAlphaDtV;
-                float dAlphaDsu{};
-                float dAlphaDsv{};
-                float dAlphaDbeta{};
-
-                // NEW: derivative wrt origin position (attached origin)
-                float3 dAlphaDOrigin;
-
-                uint32_t primitiveIndex{};
-            };
-
-            LocalTerm localTerms[kMaxSplatEventsPerRay];
-            int validCount = 0;
-            float tau = 1.0f;
-
-            // -------------------------------------------------------------------------
-            // Build local terms and τ (blockers along the ray)
-            // -------------------------------------------------------------------------
-            for (size_t eventIndex = 0; eventIndex < worldHit.splatEventCount; ++eventIndex) {
-                if (validCount >= kMaxSplatEventsPerRay) {
-                    break;
-                }
-
-                const SplatEvent &splatEvent = worldHit.splatEvents[eventIndex];
-
-                if (originPrimitiveIndex != debugIndex && debugIndex != UINT32_MAX) {
-                    continue;
-                }
-
-                // Blocker surfel (intersection surfel; no π-dependence)
-                const Point &surfel = scene.points[splatEvent.primitiveIndex];
-                const float2 uvInt = phiInverse(splatEvent.hitWorld, surfel);
-                const float uInt = uvInt.x();
-                const float vInt = uvInt.y();
-
-                const float3 tuInt = surfel.tanU;
-                const float3 tvInt = surfel.tanV;
-                const float3 pkInt = surfel.position;
-                const float suInt = surfel.scale.x();
-                const float svInt = surfel.scale.y();
-
-                const float3 intersectionNormal =
-                        normalize(cross(surfel.tanU, surfel.tanV));
-
-                // Origin surfel (the one carrying π)
-                const Point &originSurfel = scene.points[originPrimitiveIndex];
-                const float3 pkOrigin = originSurfel.position;
-                const float3 tuOrigin = originSurfel.tanU;
-                const float3 tvOrigin = originSurfel.tanV;
-                const float suOrigin = originSurfel.scale.x();
-                const float svOrigin = originSurfel.scale.y();
-
-                const float3 x = rayState.ray.origin;
-
-                // Direction from origin to fixed light point y
-                float3 d = worldHit.hitPositionW - x;
-                const float rayLen = length(d);
-                if (rayLen <= 1e-6f) {
-                    continue;
-                }
-                d = d / rayLen;
-
-                // Intersection parameter rt to blocker plane
-                const float rt =
-                        dot(intersectionNormal, (pkInt - x)) /
-                        dot(intersectionNormal, d);
-
-                const float3x3 I = identity3x3();
-
-                // d(x) derivative wrt origin position
-                const float3x3 grad_d_pk =
-                        -1.0f / rayLen * (I - outerProduct(d, d));
-
-                // rt(x) quotient-rule derivative
-                const float num = dot(intersectionNormal, (pkInt - x));
-                const float denom = dot(intersectionNormal, d);
-
-                const float3 grad_num =
-                        -intersectionNormal * I;
-                const float3 grad_denom =
-                        -1.0f / rayLen * intersectionNormal * (I - outerProduct(d, d));
-
-                const float3 grad_rt =
-                        (grad_num * denom - num * grad_denom) / (denom * denom);
-
-                // z(x) = x + rt(x) d(x)
-                const float3x3 term2 = outerProduct(d, grad_rt);
-                const float3x3 term3 = rt * grad_d_pk;
-                const float3x3 grad_z = I + term2 + term3;
-
-                const float r2 = uInt * uInt + vInt * vInt;
-                const float alpha = splatEvent.alpha;
-
-                // ∂u/∂x and ∂v/∂x for blocker local coords
-                const float3 gradU_pk = (1.0f / suInt) * (tuInt * grad_z);
-                const float3 gradV_pk = (1.0f / svInt) * (tvInt * grad_z);
-
-                // u ∂u/∂x + v ∂v/∂x
-                const float3 dUVDPosition = uInt * gradU_pk + vInt * gradV_pk;
-
-                // Smoothed β-kernel scaling (includes dα/du,dv structure)
-                const float betaKernelFactor =
-                        computeSmoothedBetaFactor(surfel.beta, r2, alpha);
-
-                // d(η α)/d(origin position)
-                const float3 dAlphaDPosition =
-                        -surfel.opacity * betaKernelFactor * dUVDPosition;
-
-                const float dAlphaDbeta =
-                        alpha * betaKernel(surfel.beta) *
-                        sycl::log(1.0f - r2) *
-                        surfel.opacity;
-
-                const float oneMinusAlpha = 1.0f - alpha * surfel.opacity;
-                if (oneMinusAlpha <= 1e-6f) {
-                    continue;
-                }
-
-                auto &localTerm = localTerms[validCount++];
-                localTerm.alpha = alpha;
-                localTerm.eta = surfel.opacity;
-                localTerm.r2 = r2;
-                localTerm.dAlphaDbeta = dAlphaDbeta;
-                localTerm.dAlphaDOrigin = dAlphaDPosition;
-                localTerm.primitiveIndex = splatEvent.primitiveIndex;
-
-                tau *= oneMinusAlpha;
-            }
-
-            if (validCount == 0) {
-                return;
-            }
-
-            const float3 adjointWeight = rayState.pathThroughput;
-
-            // -------------------------------------------------------------------------
-            // Accumulate gradients to origin surfel parameters (position, rotation, scale)
-            // -------------------------------------------------------------------------
-            for (int localIndex = 0; localIndex < validCount; ++localIndex) {
-                const LocalTerm &localTerm = localTerms[localIndex];
-                const uint32_t primitiveIndex = localTerm.primitiveIndex;
-
-                const float alpha = localTerm.alpha;
-                const float eta = localTerm.eta;
-
-                const float tauLocal = 1.0f - eta * alpha;
-                if (tauLocal <= 1e-6f) {
-                    continue;
-                }
-                const float inverseTauLocal = 1.0f / tauLocal;
-
-                // d(η α)/d(origin position) for this blocker
-                const float3 dEtaAlphaDOrigin = localTerm.dAlphaDOrigin;
-
-                const float R = adjointWeight[0] * backgroundRadianceRGB[0];
-                const float G = adjointWeight[1] * backgroundRadianceRGB[1];
-                const float B = adjointWeight[2] * backgroundRadianceRGB[2];
-
-                if (originPrimitiveIndex == UINT32_MAX) {
-                    continue;
-                }
-
-                // dτ/d(origin) for this blocker contribution:
-                // τ = ∏ (1 - η_i α_i),  ∂τ_i = -∂(η_i α_i)
-                // ∂τ ≈ -τ * (1/τ_i) ∂(η_i α_i)  for this i
-                const float3 dTauDOrigin =
-                        -tau * inverseTauLocal * dEtaAlphaDOrigin;
-
-                // Per-channel contribution to ∂C/∂x (origin position)
-                const float3 gradCOriginR = R * dTauDOrigin;
-                const float3 gradCOriginG = G * dTauDOrigin;
-                const float3 gradCOriginB = B * dTauDOrigin;
-
-                const float3 gradCOrigin =
-                        gradCOriginR + gradCOriginG + gradCOriginB; // ∂C/∂x
-
-                // ---------------------------------------------------------------------
-                // 1) Position gradient
-                // ---------------------------------------------------------------------
-                atomicAddFloat3(
-                    gradients.gradPosition[originPrimitiveIndex],
-                    gradCOrigin
-                );
-
-                // ---------------------------------------------------------------------
-                // 2) Rotation/scale gradients for the origin surfel
-                // ---------------------------------------------------------------------
-                const Point &originSurfel = scene.points[originPrimitiveIndex];
-                const float3 tuOrigin = originSurfel.tanU;
-                const float3 tvOrigin = originSurfel.tanV;
-                const float suOrigin = originSurfel.scale.x();
-                const float svOrigin = originSurfel.scale.y();
-
-                const float2 uvOrigin = phiInverse(rayState.ray.origin, originSurfel);
-                const float uOrigin = uvOrigin.x();
-                const float vOrigin = uvOrigin.y();
-
-                // ∂x/∂tu = su * u * I,   ∂x/∂tv = sv * v * I
-                const float suUOrigin = suOrigin * uOrigin;
-                const float svVOrigin = svOrigin * vOrigin;
-
-                // Per-channel rotation gradients
-                const float3 gradTanUOriginR = gradCOriginR * suUOrigin;
-                const float3 gradTanUOriginG = gradCOriginG * suUOrigin;
-                const float3 gradTanUOriginB = gradCOriginB * suUOrigin;
-
-                const float3 gradTanVOriginR = gradCOriginR * svVOrigin;
-                const float3 gradTanVOriginG = gradCOriginG * svVOrigin;
-                const float3 gradTanVOriginB = gradCOriginB * svVOrigin;
-
-                const float3 gradTanUOrigin =
-                        gradTanUOriginR + gradTanUOriginG + gradTanUOriginB;
-                const float3 gradTanVOrigin =
-                        gradTanVOriginR + gradTanVOriginG + gradTanVOriginB;
-
-                atomicAddFloat3(
-                    gradients.gradTanU[originPrimitiveIndex],
-                    gradTanUOrigin
-                );
-                atomicAddFloat3(
-                    gradients.gradTanV[originPrimitiveIndex],
-                    gradTanVOrigin
-                );
-
-                // ∂x/∂su = u * tu,   ∂x/∂sv = v * tv
-                const float dCdsuR = dot(gradCOriginR, tuOrigin) * uOrigin;
-                const float dCdsuG = dot(gradCOriginG, tuOrigin) * uOrigin;
-                const float dCdsuB = dot(gradCOriginB, tuOrigin) * uOrigin;
-
-                const float dCdsvR = dot(gradCOriginR, tvOrigin) * vOrigin;
-                const float dCdsvG = dot(gradCOriginG, tvOrigin) * vOrigin;
-                const float dCdsvB = dot(gradCOriginB, tvOrigin) * vOrigin;
-
-                const float dCdsu = dCdsuR + dCdsuG + dCdsuB;
-                const float dCdsv = dCdsvR + dCdsvG + dCdsvB;
-
-                atomicAddFloat2(
-                    gradients.gradScale[originPrimitiveIndex],
-                    float2{dCdsu, dCdsv}
-                );
-
-                if (isWatched) {
-                    int debug = 1;
-                }
-
-                // ---------------------------------------------------------------------
-                // Debug images (per-channel scalars)
-                // ---------------------------------------------------------------------
-                if (writeDebugImages) {
-                    // Position debug (project ∂C/∂x onto some axis, e.g. z-axis)
-                    const float3 parameterAxis = float3{0.0f, 0.0f, 1.0f};
-                    const float dCdpR = dot(gradCOriginR, parameterAxis);
-                    const float dCdpG = dot(gradCOriginG, parameterAxis);
-                    const float dCdpB = dot(gradCOriginB, parameterAxis);
-                    const float4 posScalarRGB{dCdpR, dCdpG, dCdpB, 0.0f};
-
-                    // Rotation debug:
-                    // dC/dθ_c = gradC_tu_c · (a × tu) + gradC_tv_c · (a × tv)
-                    const float3 rotationAxis = float3{0.0f, 1.0f, 0.0f};
-
-                    const float3 tuAxisCross = cross(rotationAxis, tuOrigin);
-                    const float3 tvAxisCross = cross(rotationAxis, tvOrigin);
-
-                    const float dRotR =
-                            dot(gradTanUOriginR, tuAxisCross) +
-                            dot(gradTanVOriginR, tvAxisCross);
-                    const float dRotG =
-                            dot(gradTanUOriginG, tuAxisCross) +
-                            dot(gradTanVOriginG, tvAxisCross);
-                    const float dRotB =
-                            dot(gradTanUOriginB, tuAxisCross) +
-                            dot(gradTanVOriginB, tvAxisCross);
-
-                    const float4 rotScalarRGB{dRotR, dRotG, dRotB, 0.0f};
-
-                    // Scale debug: pack su, sv for visualization
-                    const float4 scaleScalarRGB{dCdsu, dCdsv, 0.0f, 0.0f};
-
-                    // Opacity/beta: no attached-origin contribution here; zeros
-                    const float4 opacityScalarRGB{0.0f, 0.0f, 0.0f, 0.0f};
-                    const float4 betaScalarRGB{0.0f, 0.0f, 0.0f, 0.0f};
-
-                    atomicAddFloat4ToImage(
-                        &debugImage.framebufferPosX[rayState.pixelIndex],
-                        posScalarRGB
-                    );
-                    atomicAddFloat4ToImage(
-                        &debugImage.framebufferRot[rayState.pixelIndex],
-                        rotScalarRGB
-                    );
-                    atomicAddFloat4ToImage(
-                        &debugImage.framebufferScale[rayState.pixelIndex],
-                        scaleScalarRGB
-                    );
-                    atomicAddFloat4ToImage(
-                        &debugImage.framebufferOpacity[rayState.pixelIndex],
-                        opacityScalarRGB
-                    );
-                    atomicAddFloat4ToImage(
-                        &debugImage.framebufferBeta[rayState.pixelIndex],
-                        betaScalarRGB
-                    );
-                }
-            }
-        }
-
-
-        inline void shadowRayAttachedOriginSelf(const GPUSceneBuffers &scene, const RayState &rayState,
-                                                const WorldHit &worldHit, SplatEvent &splatEvent,
-                                                const PointGradients &gradients, const DebugImages &debugImage,
-                                                const DeviceSurfacePhotonMapGrid &photonMap, rng::Xorshift128 &rng,
-                                                bool renderDebugGradientImages,
-                                                uint32_t numShadowRays = 1,
-                                                uint32_t debugIndex = UINT32_MAX,
-                                                bool isWatched = false) {
-            const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
-
-            GPUMaterial material;
-            switch (instance.geometryType) {
-                case GeometryType::Mesh:
-                    material = scene.materials[instance.materialIndex];
-                    break;
-                case GeometryType::PointCloud:
-                    material.baseColor = scene.points[worldHit.primitiveIndex].albedo;
-                    break;
-                case GeometryType::InvalidType:
-                    break;
-            }
-
-            for (int i = 0; i < numShadowRays; ++i) {
-                AreaLightSample ls = sampleMeshAreaLightReuse(scene, rng);
-                // Direction to the sampled emitter point
-                const float3 toLightVector = ls.positionW - worldHit.hitPositionW;
-                const float distanceToLight = length(toLightVector);
-                if (distanceToLight > 1e-6f) {
-                    const float3 lightDirection = toLightVector / distanceToLight;
-                    // Cosines
-                    const float3 shadingNormalW = worldHit.geometricNormalW;
-                    const float cosThetaSurface = sycl::max(0.0f, dot(shadingNormalW, lightDirection));
-                    const float cosThetaLight = sycl::max(0.0f, dot(ls.normalW, -lightDirection));
-
-
-                    if (cosThetaSurface != 0.0f && cosThetaLight != 0.0f) {
-                        const float r2 = distanceToLight * distanceToLight;
-                        const float geometryTerm = (cosThetaSurface * cosThetaLight) / r2;
-                        // PDFs from the sampler
-                        const float pdfArea = ls.pdfArea; // area-domain, world area
-                        const float pdfLight = ls.pdfSelectLight; // 1 / lightCount
-                        // Unbiased NEE estimator (area sampling):
-                        const float invPdf = 1.0f / (pdfLight * pdfArea);
-                        float oneOverNumRays = 1.0f / static_cast<float>(numShadowRays);
-
-                        Ray shadowRay{
-                            worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-6f), lightDirection
-                        };
-                        RayState shadowRayState = rayState;
-                        shadowRayState.ray = shadowRay;
-
-                        // apply bsdf, tau and cosine:
-                        float cosine = fabs(dot(rayState.ray.direction, worldHit.geometricNormalW));
-
-                        shadowRayState.pathThroughput =
-                                rayState.pathThroughput * geometryTerm * invPdf * cosine * material.baseColor * M_1_PIf *
-                                oneOverNumRays;
-
-                        // BRDF
-                        WorldHit shadowWorldHit{};
-                        intersectScene(shadowRayState.ray, &shadowWorldHit, scene, rng,
-                                       RayIntersectMode::Transmit);
-
-                        accumulateTransmittanceGradientsAlongRayAttachedOriginSelf(
-                            shadowRayState, shadowWorldHit, scene, photonMap,
-                            renderDebugGradientImages, gradients, splatEvent.primitiveIndex,
-                            debugImage, debugIndex, isWatched);
-                    }
-                }
-            }
-        }
-        */
-
-
     struct MaterialEdgeOccluderDerivative {
         float3 gradPosition{0.0f, 0.0f, 0.0f};
 
@@ -1709,210 +864,223 @@ namespace Pale {
     };
 
 
-SYCL_EXTERNAL inline MaterialEdgeVisibilityDerivativeResult traceMaterialEdgeVisibilityDerivatives(
-    const GPUSceneBuffers& scene,
-    const float3& startPositionWorld,
-    const float3& endPositionWorld,
-    const float3& startNormalWorld,
-    uint32_t startPrimitiveIndex,
-    uint32_t endPrimitiveIndex,
-    bool applyNullSamplingWeight,
-    float qNullInv) {
-    MaterialEdgeVisibilityDerivativeResult result{};
-    constexpr float distanceEpsilon = 1.0e-5f;
-    const float3 startToEnd = endPositionWorld - startPositionWorld;
-    const float targetDistance = length(startToEnd);
-    if (targetDistance <= 1.0e-12f) {
+    SYCL_EXTERNAL inline MaterialEdgeVisibilityDerivativeResult traceMaterialEdgeVisibilityDerivatives(
+        const GPUSceneBuffers &scene,
+        const float3 &startPositionWorld,
+        const float3 &endPositionWorld,
+        const float3 &startNormalWorld,
+        uint32_t startPrimitiveIndex,
+        uint32_t endPrimitiveIndex,
+        bool applyNullSamplingWeight,
+        float qNullInv) {
+        MaterialEdgeVisibilityDerivativeResult result{};
+        constexpr float distanceEpsilon = 1.0e-5f;
+        const float3 startToEnd = endPositionWorld - startPositionWorld;
+        const float targetDistance = length(startToEnd);
+        if (targetDistance <= 1.0e-12f) {
+            return result;
+        }
+        const float3 rayDirection = startToEnd / targetDistance;
+        Ray ray{};
+        ray.origin = startPositionWorld + rayDirection * distanceEpsilon;
+        ray.direction = rayDirection;
+        ray.normal = startNormalWorld;
+        const float3 dxy = startPositionWorld - endPositionWorld;
+        float tracedTransmittance = 1.0f;
+        for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
+            WorldHit worldHit{};
+            intersectScene(ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
+            if (!worldHit.hit) {
+                break;
+            }
+            const float hitDistance = length(worldHit.hitPositionW - startPositionWorld);
+            if (hitDistance >= targetDistance - distanceEpsilon) {
+                break;
+            }
+            buildIntersectionNormal(scene, worldHit);
+            const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+            if (instance.geometryType != GeometryType::PointCloud) {
+                tracedTransmittance = 0.0f;
+                break;
+            }
+            if (worldHit.primitiveIndex == startPrimitiveIndex || worldHit.primitiveIndex == endPrimitiveIndex) {
+                ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
+                continue;
+            }
+            const Point &occluderSurfel = scene.points[worldHit.primitiveIndex];
+            float3 occluderNormal = normalize(cross(occluderSurfel.tanU, occluderSurfel.tanV));
+            if (dot(occluderNormal, -ray.direction) < 0.0f) {
+                occluderNormal = -occluderNormal;
+            }
+            const float alphaGeomOccluder = worldHit.alphaGeom;
+            const float alphaEffective = occluderSurfel.opacity * alphaGeomOccluder;
+            const float oneMinusAlpha = sycl::fmax(0.0f, 1.0f - alphaEffective);
+            const float prefixTransmittance = tracedTransmittance;
+            tracedTransmittance *= oneMinusAlpha;
+            ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
+            if (applyNullSamplingWeight) {
+                result.nullSamplingWeight *= qNullInv;
+            }
+            const float2 uv = phiInverse(worldHit.hitPositionW, occluderSurfel);
+            const float uOcc = uv.x();
+            const float vOcc = uv.y();
+            const float occluderScaleU = occluderSurfel.scale.x();
+            const float occluderScaleV = occluderSurfel.scale.y();
+            if (occluderScaleU <= 1.0e-12f || occluderScaleV <= 1.0e-12f) {
+                continue;
+            }
+            const float3 tangentU = occluderSurfel.tanU;
+            const float3 tangentV = occluderSurfel.tanV;
+            const float3 localBasisU = tangentU / occluderScaleU;
+            const float3 localBasisV = tangentV / occluderScaleV;
+
+            const float denominator = dot(occluderNormal, dxy);
+            if (sycl::fabs(denominator) <= 1.0e-8f) {
+                continue;
+            }
+            const float inverseDenominator = 1.0f / denominator;
+            const float lambdaOccluder = dot(occluderNormal, occluderSurfel.position - endPositionWorld) *
+                                         inverseDenominator;
+            const float3 commonU = localBasisU - occluderNormal * (dot(dxy, localBasisU) * inverseDenominator);
+            const float3 commonV = localBasisV - occluderNormal * (dot(dxy, localBasisV) * inverseDenominator);
+            const float3 dUiDx = lambdaOccluder * commonU;
+            const float3 dViDx = lambdaOccluder * commonV;
+            const float3 dUiDy = (1.0f - lambdaOccluder) * commonU;
+            const float3 dViDy = (1.0f - lambdaOccluder) * commonV;
+            const float3 dUiDspi = occluderNormal * (dot(dxy, tangentU) / occluderScaleU) * inverseDenominator -
+                                   localBasisU;
+            const float3 dViDspi = occluderNormal * (dot(dxy, tangentV) / occluderScaleV) * inverseDenominator -
+                                   localBasisV;
+            const float radiusSquared = uOcc * uOcc + vOcc * vOcc;
+            const float oneMinusRadiusSquared = 1.0f - radiusSquared;
+            if (oneMinusRadiusSquared <= 1.0e-8f) {
+                continue;
+            }
+            const float betaScale = 4.0f * sycl::exp(occluderSurfel.beta);
+            const float dAlphaGeomDu = -2.0f * betaScale * uOcc * alphaGeomOccluder / oneMinusRadiusSquared;
+            const float dAlphaGeomDv = -2.0f * betaScale * vOcc * alphaGeomOccluder / oneMinusRadiusSquared;
+            const float3 dAlphaEffectiveDx = occluderSurfel.opacity * (dAlphaGeomDu * dUiDx + dAlphaGeomDv * dViDx);
+            const float3 dAlphaEffectiveDy = occluderSurfel.opacity * (dAlphaGeomDu * dUiDy + dAlphaGeomDv * dViDy);
+            const float3 dAlphaEffectiveDspi = occluderSurfel.opacity * (
+                                                   dAlphaGeomDu * dUiDspi + dAlphaGeomDv * dViDspi);
+            const float dAlphaEffectiveDScaleU =
+                    2.0f * betaScale * uOcc * uOcc * alphaEffective / (occluderScaleU * oneMinusRadiusSquared);
+            const float dAlphaEffectiveDScaleV =
+                    2.0f * betaScale * vOcc * vOcc * alphaEffective / (occluderScaleV * oneMinusRadiusSquared);
+            const float dAlphaEffectiveDEta = alphaGeomOccluder;
+            const float dAlphaEffectiveDBeta = betaScale * sycl::log(oneMinusRadiusSquared) * alphaEffective;
+            float3 gradTangentUOcc{0.0f, 0.0f, 0.0f};
+            float3 gradTangentVOcc{0.0f, 0.0f, 0.0f};
+            const float nDotD = dot(occluderNormal, rayDirection);
+            if (sycl::fabs(nDotD) > 1.0e-8f) {
+                const float3 hitMinusSp = worldHit.hitPositionW - occluderSurfel.position;
+                const float3 aOcc = occluderSurfel.position - endPositionWorld;
+                const float nDotA = dot(occluderNormal, aOcc);
+                const float invNDotD = 1.0f / nDotD;
+                const float invNDotDSquared = invNDotD * invNDotD;
+                const float3 qOcc = (cross(occluderNormal, aOcc) * nDotD - nDotA * cross(occluderNormal, rayDirection))
+                                    * invNDotDSquared;
+                const float3 duDRotation = qOcc * (dot(rayDirection, tangentU) / occluderScaleU) + cross(
+                                               tangentU, hitMinusSp) / occluderScaleU;
+                const float3 dvDRotation = qOcc * (dot(rayDirection, tangentV) / occluderScaleV) + cross(
+                                               tangentV, hitMinusSp) / occluderScaleV;
+                const float3 dAlphaEffectiveDRotation =
+                        occluderSurfel.opacity * (dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
+                gradTangentUOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanU);
+                gradTangentVOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanV);
+            }
+
+            if (result.storedOccluderCount < kMaxSplatEventsPerRay) {
+                MaterialEdgeOccluderDerivative &occluderDerivative = result.occluderDerivatives[result.
+                    storedOccluderCount];
+                occluderDerivative.gradPosition = dAlphaEffectiveDspi;
+                occluderDerivative.gradScaleU = dAlphaEffectiveDScaleU;
+                occluderDerivative.gradScaleV = dAlphaEffectiveDScaleV;
+                occluderDerivative.gradEta = dAlphaEffectiveDEta;
+                occluderDerivative.gradBeta = dAlphaEffectiveDBeta;
+                occluderDerivative.gradTangentU = gradTangentUOcc;
+                occluderDerivative.gradTangentV = gradTangentVOcc;
+                occluderDerivative.gradAlphaWrtStartPoint = dAlphaEffectiveDx;
+                occluderDerivative.gradAlphaWrtEndPoint = dAlphaEffectiveDy;
+                occluderDerivative.prefixTransmittance = prefixTransmittance;
+                occluderDerivative.oneMinusAlpha = oneMinusAlpha;
+                occluderDerivative.primitiveIndex = worldHit.primitiveIndex;
+
+                result.storedOccluderCount++;
+            }
+        }
+
+        result.segmentTransmittance = tracedTransmittance;
+
+        float suffixTransmittanceForTauGradient = 1.0f;
+        for (uint32_t reverseIndex = result.storedOccluderCount; reverseIndex > 0u; --reverseIndex) {
+            const uint32_t occluderIndex = reverseIndex - 1u;
+            const MaterialEdgeOccluderDerivative &occluderDerivative = result.occluderDerivatives[occluderIndex];
+            const float tauDerivativeScale = -occluderDerivative.prefixTransmittance *
+                                             suffixTransmittanceForTauGradient;
+
+            result.gradTauWrtStartPoint += tauDerivativeScale * occluderDerivative.gradAlphaWrtStartPoint;
+            result.gradTauWrtEndPoint += tauDerivativeScale * occluderDerivative.gradAlphaWrtEndPoint;
+
+            suffixTransmittanceForTauGradient *= occluderDerivative.oneMinusAlpha;
+        }
+
         return result;
     }
-    const float3 rayDirection = startToEnd / targetDistance;
-    Ray ray{};
-    ray.origin = startPositionWorld + rayDirection * distanceEpsilon;
-    ray.direction = rayDirection;
-    ray.normal = startNormalWorld;
-    const float3 dxy = startPositionWorld - endPositionWorld;
-    float tracedTransmittance = 1.0f;
-    for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
-        WorldHit worldHit{};
-        intersectScene(ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
-        if (!worldHit.hit) {
-            break;
-        }
-        const float hitDistance = length(worldHit.hitPositionW - startPositionWorld);
-        if (hitDistance >= targetDistance - distanceEpsilon) {
-            break;
-        }
-        buildIntersectionNormal(scene, worldHit);
-        const InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
-        if (instance.geometryType != GeometryType::PointCloud) {
-            tracedTransmittance = 0.0f;
-            break;
-        }
-        if (worldHit.primitiveIndex == startPrimitiveIndex || worldHit.primitiveIndex == endPrimitiveIndex) {
-            ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
-            continue;
-        }
-        const Point& occluderSurfel = scene.points[worldHit.primitiveIndex];
-        float3 occluderNormal = normalize(cross(occluderSurfel.tanU, occluderSurfel.tanV));
-        if (dot(occluderNormal, -ray.direction) < 0.0f) {
-            occluderNormal = -occluderNormal;
-        }
-        const float alphaGeomOccluder = worldHit.alphaGeom;
-        const float alphaEffective = occluderSurfel.opacity * alphaGeomOccluder;
-        const float oneMinusAlpha = sycl::fmax(0.0f, 1.0f - alphaEffective);
-        const float prefixTransmittance = tracedTransmittance;
-        tracedTransmittance *= oneMinusAlpha;
-        ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
-        if (applyNullSamplingWeight) {
-            result.nullSamplingWeight *= qNullInv;
-        }
-        const float2 uv = phiInverse(worldHit.hitPositionW, occluderSurfel);
-        const float uOcc = uv.x();
-        const float vOcc = uv.y();
-        const float occluderScaleU = occluderSurfel.scale.x();
-        const float occluderScaleV = occluderSurfel.scale.y();
-        if (occluderScaleU <= 1.0e-12f || occluderScaleV <= 1.0e-12f) {
-            continue;
-        }
-        const float3 tangentU = occluderSurfel.tanU;
-        const float3 tangentV = occluderSurfel.tanV;
-        const float3 localBasisU = tangentU / occluderScaleU;
-        const float3 localBasisV = tangentV / occluderScaleV;
-
-        const float denominator = dot(occluderNormal, dxy);
-        if (sycl::fabs(denominator) <= 1.0e-8f) {
-            continue;
-        }
-        const float inverseDenominator = 1.0f / denominator;
-        const float lambdaOccluder = dot(occluderNormal, occluderSurfel.position - endPositionWorld) * inverseDenominator;
-        const float3 commonU = localBasisU - occluderNormal * (dot(dxy, localBasisU) * inverseDenominator);
-        const float3 commonV = localBasisV - occluderNormal * (dot(dxy, localBasisV) * inverseDenominator);
-        const float3 dUiDx = lambdaOccluder * commonU;
-        const float3 dViDx = lambdaOccluder * commonV;
-        const float3 dUiDy = (1.0f - lambdaOccluder) * commonU;
-        const float3 dViDy = (1.0f - lambdaOccluder) * commonV;
-        const float3 dUiDspi = occluderNormal * (dot(dxy, tangentU) / occluderScaleU) * inverseDenominator - localBasisU;
-        const float3 dViDspi = occluderNormal * (dot(dxy, tangentV) / occluderScaleV) * inverseDenominator - localBasisV;
-        const float radiusSquared = uOcc * uOcc + vOcc * vOcc;
-        const float oneMinusRadiusSquared = 1.0f - radiusSquared;
-        if (oneMinusRadiusSquared <= 1.0e-8f) {
-            continue;
-        }
-        const float betaScale = 4.0f * sycl::exp(occluderSurfel.beta);
-        const float dAlphaGeomDu = -2.0f * betaScale * uOcc * alphaGeomOccluder / oneMinusRadiusSquared;
-        const float dAlphaGeomDv = -2.0f * betaScale * vOcc * alphaGeomOccluder / oneMinusRadiusSquared;
-        const float3 dAlphaEffectiveDx = occluderSurfel.opacity * (dAlphaGeomDu * dUiDx + dAlphaGeomDv * dViDx);
-        const float3 dAlphaEffectiveDy = occluderSurfel.opacity * (dAlphaGeomDu * dUiDy + dAlphaGeomDv * dViDy);
-        const float3 dAlphaEffectiveDspi = occluderSurfel.opacity * (dAlphaGeomDu * dUiDspi + dAlphaGeomDv * dViDspi);
-        const float dAlphaEffectiveDScaleU = 2.0f * betaScale * uOcc * uOcc * alphaEffective / (occluderScaleU * oneMinusRadiusSquared);
-        const float dAlphaEffectiveDScaleV = 2.0f * betaScale * vOcc * vOcc * alphaEffective / (occluderScaleV * oneMinusRadiusSquared);
-        const float dAlphaEffectiveDEta = alphaGeomOccluder;
-        const float dAlphaEffectiveDBeta = betaScale * sycl::log(oneMinusRadiusSquared) * alphaEffective;
-        float3 gradTangentUOcc{0.0f, 0.0f, 0.0f};
-        float3 gradTangentVOcc{0.0f, 0.0f, 0.0f};
-        const float nDotD = dot(occluderNormal, rayDirection);
-        if (sycl::fabs(nDotD) > 1.0e-8f) {
-            const float3 hitMinusSp = worldHit.hitPositionW - occluderSurfel.position;
-            const float3 aOcc = occluderSurfel.position - endPositionWorld;
-            const float nDotA = dot(occluderNormal, aOcc);
-            const float invNDotD = 1.0f / nDotD;
-            const float invNDotDSquared = invNDotD * invNDotD;
-            const float3 qOcc = (cross(occluderNormal, aOcc) * nDotD - nDotA * cross(occluderNormal, rayDirection)) * invNDotDSquared;
-            const float3 duDRotation = qOcc * (dot(rayDirection, tangentU) / occluderScaleU) + cross(tangentU, hitMinusSp) / occluderScaleU;
-            const float3 dvDRotation = qOcc * (dot(rayDirection, tangentV) / occluderScaleV) + cross(tangentV, hitMinusSp) / occluderScaleV;
-            const float3 dAlphaEffectiveDRotation = occluderSurfel.opacity * (dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
-            gradTangentUOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanU);
-            gradTangentVOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanV);
-        }
-
-        if (result.storedOccluderCount < kMaxSplatEventsPerRay) {
-            MaterialEdgeOccluderDerivative& occluderDerivative = result.occluderDerivatives[result.storedOccluderCount];
-            occluderDerivative.gradPosition = dAlphaEffectiveDspi;
-            occluderDerivative.gradScaleU = dAlphaEffectiveDScaleU;
-            occluderDerivative.gradScaleV = dAlphaEffectiveDScaleV;
-            occluderDerivative.gradEta = dAlphaEffectiveDEta;
-            occluderDerivative.gradBeta = dAlphaEffectiveDBeta;
-            occluderDerivative.gradTangentU = gradTangentUOcc;
-            occluderDerivative.gradTangentV = gradTangentVOcc;
-            occluderDerivative.gradAlphaWrtStartPoint = dAlphaEffectiveDx;
-            occluderDerivative.gradAlphaWrtEndPoint = dAlphaEffectiveDy;
-            occluderDerivative.prefixTransmittance = prefixTransmittance;
-            occluderDerivative.oneMinusAlpha = oneMinusAlpha;
-            occluderDerivative.primitiveIndex = worldHit.primitiveIndex;
-
-            result.storedOccluderCount++;
-        }
-    }
-
-    result.segmentTransmittance = tracedTransmittance;
-
-    float suffixTransmittanceForTauGradient = 1.0f;
-    for (uint32_t reverseIndex = result.storedOccluderCount; reverseIndex > 0u; --reverseIndex) {
-        const uint32_t occluderIndex = reverseIndex - 1u;
-        const MaterialEdgeOccluderDerivative& occluderDerivative = result.occluderDerivatives[occluderIndex];
-        const float tauDerivativeScale = -occluderDerivative.prefixTransmittance * suffixTransmittanceForTauGradient;
-
-        result.gradTauWrtStartPoint += tauDerivativeScale * occluderDerivative.gradAlphaWrtStartPoint;
-        result.gradTauWrtEndPoint += tauDerivativeScale * occluderDerivative.gradAlphaWrtEndPoint;
-
-        suffixTransmittanceForTauGradient *= occluderDerivative.oneMinusAlpha;
-    }
-
-    return result;
-}
 
     SYCL_EXTERNAL inline void writeMaterialEdgeOccluderGradientRecords(
-        SurfelGradientRecord* gradientRecords,
+        SurfelGradientRecord *gradientRecords,
         uint32_t firstOccluderRecordIndex,
-        const MaterialEdgeVisibilityDerivativeResult& visibilityResult,
+        const MaterialEdgeVisibilityDerivativeResult &visibilityResult,
         float geometricTerm,
         float scalarMaterialEdgeWeight,
         float invSpp,
-        DebugImages* debugImages,
+        const DebugImages& debugImage,
         bool renderDebugGradientImages,
         uint32_t selectedPrimitiveIndex,
         uint32_t pathId) {
-        float suffixTransmittance =1.0f;
+        float suffixTransmittance = 1.0f;
         for (uint32_t reverseIndex = visibilityResult.storedOccluderCount;
              reverseIndex > 0u;
              --reverseIndex) {
-            const uint32_t occluderIndex =reverseIndex - 1u;
-            const uint32_t occluderRecordIndex =firstOccluderRecordIndex + occluderIndex;
-            const MaterialEdgeOccluderDerivative& occluderDerivative =visibilityResult.occluderDerivatives[occluderIndex];
+            const uint32_t occluderIndex = reverseIndex - 1u;
+            const uint32_t occluderRecordIndex = firstOccluderRecordIndex + occluderIndex;
+            const MaterialEdgeOccluderDerivative &occluderDerivative = visibilityResult.occluderDerivatives[
+                occluderIndex];
             const float visibilityDerivativeScale =
-                -occluderDerivative.prefixTransmittance *suffixTransmittance *geometricTerm *scalarMaterialEdgeWeight *invSpp;
+                    -occluderDerivative.prefixTransmittance * suffixTransmittance * geometricTerm *
+                    scalarMaterialEdgeWeight * invSpp;
 
             SurfelGradientRecord occluderRecord{};
-            occluderRecord.primitiveIndex =occluderDerivative.primitiveIndex;
-            const float3 positionContribution =visibilityDerivativeScale *occluderDerivative.gradPosition;
-            const float3 tangentUContribution =visibilityDerivativeScale *occluderDerivative.gradTangentU;
-            const float3 tangentVContribution =visibilityDerivativeScale *occluderDerivative.gradTangentV;
+            occluderRecord.primitiveIndex = occluderDerivative.primitiveIndex;
+            const float3 positionContribution = visibilityDerivativeScale * occluderDerivative.gradPosition;
+            const float3 tangentUContribution = visibilityDerivativeScale * occluderDerivative.gradTangentU;
+            const float3 tangentVContribution = visibilityDerivativeScale * occluderDerivative.gradTangentV;
 
             occluderRecord.gradPositionX = positionContribution.x();
             occluderRecord.gradPositionY = positionContribution.y();
             occluderRecord.gradPositionZ = positionContribution.z();
-            occluderRecord.gradScaleU =visibilityDerivativeScale *occluderDerivative.gradScaleU;
-            occluderRecord.gradScaleV =visibilityDerivativeScale *occluderDerivative.gradScaleV;
+            occluderRecord.gradScaleU = visibilityDerivativeScale * occluderDerivative.gradScaleU;
+            occluderRecord.gradScaleV = visibilityDerivativeScale * occluderDerivative.gradScaleV;
             occluderRecord.gradTangentUX = tangentUContribution.x();
             occluderRecord.gradTangentUY = tangentUContribution.y();
             occluderRecord.gradTangentUZ = tangentUContribution.z();
             occluderRecord.gradTangentVX = tangentVContribution.x();
             occluderRecord.gradTangentVY = tangentVContribution.y();
             occluderRecord.gradTangentVZ = tangentVContribution.z();
-            occluderRecord.gradEta =visibilityDerivativeScale *occluderDerivative.gradEta;
-            occluderRecord.gradBeta =visibilityDerivativeScale *occluderDerivative.gradBeta;
+            occluderRecord.gradEta = visibilityDerivativeScale * occluderDerivative.gradEta;
+            occluderRecord.gradBeta = visibilityDerivativeScale * occluderDerivative.gradBeta;
             occluderRecord.gradAlbedoR = 0.0f;
             occluderRecord.gradAlbedoG = 0.0f;
             occluderRecord.gradAlbedoB = 0.0f;
-            gradientRecords[occluderRecordIndex] =occluderRecord;
-            suffixTransmittance *=occluderDerivative.oneMinusAlpha;
+            gradientRecords[occluderRecordIndex] = occluderRecord;
+            suffixTransmittance *= occluderDerivative.oneMinusAlpha;
             accumulateDebugGradientIfSelected(
-                debugImages,
+                debugImage,
                 renderDebugGradientImages,
                 selectedPrimitiveIndex,
                 pathId,
                 occluderRecord);
         }
     }
-
 }

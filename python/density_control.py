@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from typing import Optional, Any
+import math
 
 
 def project_gradient_to_surfel_tangent_plane_np(
@@ -25,12 +26,13 @@ def project_gradient_to_surfel_tangent_plane_np(
         tv = torch.nn.functional.normalize(tangent_v.detach(), dim=1)
 
         projected = (
-            torch.sum(g * tu, dim=1, keepdim=True) * tu
-            +
-            torch.sum(g * tv, dim=1, keepdim=True) * tv
+                torch.sum(g * tu, dim=1, keepdim=True) * tu
+                +
+                torch.sum(g * tv, dim=1, keepdim=True) * tv
         )
 
         return projected.detach().cpu().numpy().astype(np.float32)
+
 
 def make_under_reconstruction_clones(
         positions,
@@ -44,19 +46,19 @@ def make_under_reconstruction_clones(
         grad_position_np,
         trainable_surfel_mask,
         grad_threshold,
-        max_clone_fraction=0.05,
+        max_clone_fraction=1.0,
         clone_offset_scale=0.25,
         clone_scale_factor=1.6,
+        min_clone_scale=5.0e-2,
         normal_perturbation_min=1.0e-5,
         normal_perturbation_max=3.0e-5,
         tangent_project_position_grad=True,
         selection_score_np=None,
-        opacity_eps=1.0e-6,
 ) -> dict[str, dict[str, Any] | Any] | None:
     """
     Conservative clone/split densification for under-reconstruction.
 
-    This is no longer a pure clone. It turns one surfel into two children:
+    This turns one surfel into two children:
 
         source child: existing surfel updated in-place
         clone child : newly appended surfel
@@ -64,16 +66,10 @@ def make_under_reconstruction_clones(
     Both children:
         - inherit material parameters
         - receive the same tangent frame
-        - receive the same opacity a_c
-        - receive the same shrunken scale r * scale
+        - keep the same opacity as the parent
+        - receive scale / clone_scale_factor
 
-    The pair approximately preserves:
-        1. ray-wise composited opacity at coincident overlap:
-              1 - (1 - a_c)^2 = a
-        2. integrated opacity mass:
-              2 * a_c * (r s_u) * (r s_v) = a * s_u * s_v
-
-    This assumes local mass proportional to opacity * s_u * s_v.
+    A surfel is only cloned if its minimum scale is at least min_clone_scale.
     """
 
     with torch.no_grad():
@@ -94,10 +90,13 @@ def make_under_reconstruction_clones(
                 dtype=torch.float32,
             ).reshape(-1)
 
+        min_source_scale = torch.min(scales, dim=1).values
+
         selected = (
-            torch.isfinite(selection_score)
-            & (selection_score >= grad_threshold)
-            & trainable_surfel_mask
+                torch.isfinite(selection_score)
+                & (selection_score >= grad_threshold)
+                & trainable_surfel_mask
+                & (min_source_scale >= float(min_clone_scale))
         )
 
         selected_idx = torch.nonzero(selected, as_tuple=False).flatten()
@@ -129,38 +128,31 @@ def make_under_reconstruction_clones(
         if tangent_project_position_grad:
             tu_n = torch.nn.functional.normalize(tu, dim=1)
             tv_n = torch.nn.functional.normalize(tv, dim=1)
-
-            descent = (
-                torch.sum(descent * tu_n, dim=1, keepdim=True) * tu_n
-                +
-                torch.sum(descent * tv_n, dim=1, keepdim=True) * tv_n
-            )
-
+            descent = (torch.sum(descent * tu_n, dim=1, keepdim=True) * tu_n + torch.sum(descent * tv_n, dim=1,
+                                                                                         keepdim=True) * tv_n)
         descent_norm = torch.linalg.norm(descent, dim=1, keepdim=True)
         valid_dir = descent_norm > 1.0e-12
 
         direction = torch.zeros_like(descent)
         direction[valid_dir[:, 0]] = (
-            descent[valid_dir[:, 0]] / descent_norm[valid_dir[:, 0]]
+                descent[valid_dir[:, 0]] / descent_norm[valid_dir[:, 0]]
         )
 
         local_radius = torch.min(sc, dim=1).values[:, None]
         tangent_offset = clone_offset_scale * local_radius * direction
 
         # Symmetric split in the local tangent plane.
-        # This preserves the parent center better than moving only the clone.
         source_positions = p - tangent_offset
         clone_positions = p + tangent_offset
 
         # Small normal perturbation only for the appended clone.
-        # It is for coincident primitive robustness, not density placement.
         normal = torch.cross(tu, tv, dim=1)
         normal_norm = torch.linalg.norm(normal, dim=1, keepdim=True)
         valid_normal = normal_norm > 1.0e-12
 
         normal_dir = torch.zeros_like(normal)
         normal_dir[valid_normal[:, 0]] = (
-            normal[valid_normal[:, 0]] / normal_norm[valid_normal[:, 0]]
+                normal[valid_normal[:, 0]] / normal_norm[valid_normal[:, 0]]
         )
 
         eps_min = float(normal_perturbation_min)
@@ -194,80 +186,39 @@ def make_under_reconstruction_clones(
 
         clone_positions = clone_positions + random_sign * random_magnitude * normal_dir
 
-        # ------------------------------------------------------------------
-        # Opacity + integrated mass preserving child parameters
-        # ------------------------------------------------------------------
-        opa_col = opa.reshape(-1, 1)
+        # Simple clone/split scale rule.
+        # No opacity compositing or opacity-mass preservation.
+        safe_clone_scale_factor = max(float(clone_scale_factor), 1.0)
+        child_sc = sc / safe_clone_scale_factor
 
-        # Parent opacity amplitude a.
-        a = torch.clamp(opa_col, 0.0, 1.0 - opacity_eps)
-
-        # Child opacity a_c such that two coincident alpha layers preserve
-        # composited opacity:
-        #
-        #     1 - (1 - a_c)^2 = a
-        #
-        child_a = 1.0 - torch.sqrt(torch.clamp(1.0 - a, min=opacity_eps))
-
-        # Scale multiplier r such that:
-        #
-        #     2 * child_a * (r s_u) * (r s_v) = a * s_u * s_v
-        #
-        # Therefore:
-        #
-        #     r = sqrt(a / (2 child_a)).
-        #
-        # For a -> 0, child_a -> a/2 and r -> 1.
-        scale_multiplier = torch.ones_like(child_a)
-        nonzero = a > opacity_eps
-
-        scale_multiplier[nonzero] = torch.sqrt(
-            a[nonzero] / torch.clamp(2.0 * child_a[nonzero], min=opacity_eps)
-        )
-
-        # Optional lower bound on shrink amount. With the exact formula above,
-        # r lies in [sqrt(1/2), 1] for a in [1, 0], so clone_scale_factor=1.6
-        # normally does not clamp it.
-        min_scale_multiplier = 1.0 / max(float(clone_scale_factor), 1.0)
-        scale_multiplier = torch.clamp(
-            scale_multiplier,
-            min=min_scale_multiplier,
-            max=1.0,
-        )
-
-        child_sc = sc * scale_multiplier
-        child_opa = child_a.reshape_as(opa)
+        # Avoid producing surfels below the clone minimum.
+        child_sc = torch.clamp(child_sc, min=float(min_clone_scale))
 
         selected_idx_np = selected_idx.detach().cpu().numpy().astype(np.int64)
 
         return {
-            # Existing source surfels are modified in-place by the training loop.
             "update_source": {
                 "index": selected_idx_np,
                 "position": source_positions.detach().cpu().numpy().astype(np.float32),
                 "scale": child_sc.detach().cpu().numpy().astype(np.float32),
-                "opacity": child_opa.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "opacity": opa.detach().cpu().numpy().reshape(-1).astype(np.float32),
             },
 
-            # Newly appended child surfels.
             "new": {
                 "position": clone_positions.detach().cpu().numpy().astype(np.float32),
                 "tangent_u": tu.detach().cpu().numpy().astype(np.float32),
                 "tangent_v": tv.detach().cpu().numpy().astype(np.float32),
                 "scale": child_sc.detach().cpu().numpy().astype(np.float32),
                 "albedo": alb.detach().cpu().numpy().astype(np.float32),
-                "opacity": child_opa.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "opacity": opa.detach().cpu().numpy().reshape(-1).astype(np.float32),
                 "beta": be.detach().cpu().numpy().reshape(-1).astype(np.float32),
                 "power": pow_.detach().cpu().numpy().reshape(-1).astype(np.float32),
             },
 
-            # Used for optimizer-state transfer to new children.
             "source_index": selected_idx_np,
 
             "grad_norm": selection_score[selected_idx].detach().cpu().numpy().astype(np.float32),
 
-            # Important: this is not replace-source splitting.
-            # The source stays alive and is updated in-place.
             "replace_source": False,
         }
 
@@ -332,9 +283,9 @@ def make_under_reconstruction_evsplits(
             ).reshape(-1)
 
         selected = (
-            torch.isfinite(selection_score)
-            & (selection_score >= float(grad_threshold))
-            & trainable_surfel_mask
+                torch.isfinite(selection_score)
+                & (selection_score >= float(grad_threshold))
+                & trainable_surfel_mask
         )
 
         selected_idx = torch.nonzero(selected, as_tuple=False).flatten()
@@ -522,6 +473,7 @@ def make_under_reconstruction_evsplits(
             "grad_norm": selection_score[selected_idx].detach().cpu().numpy().astype(np.float32),
         }
 
+
 def add_densification_stats_np(
         grad_position_np: np.ndarray,
         trainable_surfel_mask: torch.Tensor,
@@ -554,6 +506,7 @@ def add_densification_stats_np(
 
     accum_np[update_mask_np] += grad_norm_np[update_mask_np]
     denom_np[update_mask_np] += 1.0
+
 
 def compute_prune_indices_by_opacity(
         opacities: torch.Tensor,
@@ -684,6 +637,7 @@ def compute_scale_grow_shrink_pressure_np(
         shrink_fraction.astype(np.float32, copy=False),
     )
 
+
 def compute_prune_indices_by_degenerate_scale(
         scales: torch.Tensor,
         *,
@@ -736,9 +690,9 @@ def compute_prune_indices_by_degenerate_scale(
 
     finite_mask = np.isfinite(scales_np).all(axis=1)
     degenerate_mask = (
-        (~finite_mask)
-        | (scales_np[:, 0] <= min_scale)
-        | (scales_np[:, 1] <= min_scale)
+            (~finite_mask)
+            | (scales_np[:, 0] <= min_scale)
+            | (scales_np[:, 1] <= min_scale)
     )
 
     candidate_mask = degenerate_mask & trainable_mask_np

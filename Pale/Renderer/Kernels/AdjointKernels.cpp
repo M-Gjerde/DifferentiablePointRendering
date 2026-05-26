@@ -2299,43 +2299,78 @@ namespace Pale {
                 });
         }).wait();
     }
+static void reduceSurfelGradientRecords(
+    RenderPackage &pkg,
+    uint32_t gradientRecordCount) {
+    auto &queue = pkg.queue;
+    auto gradients = pkg.gradients;
+    SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
-    static void reduceSurfelGradientRecords(
-        RenderPackage &pkg,
-        uint32_t gradientRecordCount) {
-        auto &queue = pkg.queue;
-        auto gradients = pkg.gradients;
-        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
+    constexpr float maxAbsGradientComponent = 1.0e6f;
 
-        queue.submit([&](sycl::handler &commandGroupHandler) {
-            commandGroupHandler.parallel_for<struct reduceSurfelGradientRecords>(
-                sycl::range<1>(gradientRecordCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t recordIndex = globalId[0];
-                    const SurfelGradientRecord gradientRecord = gradientRecords[recordIndex];
-                    if (gradientRecord.primitiveIndex == kInvalidIndex) {
-                        return;
-                    }
-                    const uint32_t primitiveIndex = gradientRecord.primitiveIndex;
-                    atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradientRecord.gradPositionX);
-                    atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradientRecord.gradPositionY);
-                    atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradientRecord.gradPositionZ);
-                    atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
-                    atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradientRecord.gradScaleV);
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradientRecord.gradTangentUX);
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradientRecord.gradTangentUY);
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradientRecord.gradTangentUZ);
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradientRecord.gradTangentVX);
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradientRecord.gradTangentVY);
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradientRecord.gradTangentVZ);
-                    atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradientRecord.gradEta);
-                    atomicAddFloat(gradients.gradBeta[primitiveIndex], gradientRecord.gradBeta);
-                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradientRecord.gradAlbedoR);
-                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradientRecord.gradAlbedoG);
-                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradientRecord.gradAlbedoB);
-                });
-        }).wait();
-    }
+    queue.submit([&](sycl::handler &commandGroupHandler) {
+        commandGroupHandler.parallel_for<struct reduceSurfelGradientRecords>(
+            sycl::range<1>(gradientRecordCount),
+            [=](sycl::id<1> globalId) {
+                const uint32_t recordIndex = globalId[0];
+                const SurfelGradientRecord gradientRecord = gradientRecords[recordIndex];
+
+                if (gradientRecord.primitiveIndex == kInvalidIndex) {
+                    return;
+                }
+
+                const auto isValidGradientComponent = [](float value) -> bool {
+                    return sycl::isfinite(value) && !sycl::isnan(value) && sycl::fabs(value) <= maxAbsGradientComponent;
+                };
+
+                const bool validGradientRecord =
+                    isValidGradientComponent(gradientRecord.gradPositionX) &&
+                    isValidGradientComponent(gradientRecord.gradPositionY) &&
+                    isValidGradientComponent(gradientRecord.gradPositionZ) &&
+                    isValidGradientComponent(gradientRecord.gradScaleU) &&
+                    isValidGradientComponent(gradientRecord.gradScaleV) &&
+                    isValidGradientComponent(gradientRecord.gradTangentUX) &&
+                    isValidGradientComponent(gradientRecord.gradTangentUY) &&
+                    isValidGradientComponent(gradientRecord.gradTangentUZ) &&
+                    isValidGradientComponent(gradientRecord.gradTangentVX) &&
+                    isValidGradientComponent(gradientRecord.gradTangentVY) &&
+                    isValidGradientComponent(gradientRecord.gradTangentVZ) &&
+                    isValidGradientComponent(gradientRecord.gradEta) &&
+                    isValidGradientComponent(gradientRecord.gradBeta) &&
+                    isValidGradientComponent(gradientRecord.gradAlbedoR) &&
+                    isValidGradientComponent(gradientRecord.gradAlbedoG) &&
+                    isValidGradientComponent(gradientRecord.gradAlbedoB);
+
+                if (!validGradientRecord) {
+                    return;
+                }
+
+                const uint32_t primitiveIndex = gradientRecord.primitiveIndex;
+
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradientRecord.gradPositionX);
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradientRecord.gradPositionY);
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradientRecord.gradPositionZ);
+
+                atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
+                atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradientRecord.gradScaleV);
+
+                atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradientRecord.gradTangentUX);
+                atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradientRecord.gradTangentUY);
+                atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradientRecord.gradTangentUZ);
+
+                atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradientRecord.gradTangentVX);
+                atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradientRecord.gradTangentVY);
+                atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradientRecord.gradTangentVZ);
+
+                atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradientRecord.gradEta);
+                atomicAddFloat(gradients.gradBeta[primitiveIndex], gradientRecord.gradBeta);
+
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradientRecord.gradAlbedoR);
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradientRecord.gradAlbedoG);
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradientRecord.gradAlbedoB);
+            });
+    }).wait();
+}
 
     struct DistortionHit {
         uint32_t primitiveIndex = 0u;
@@ -2796,10 +2831,9 @@ namespace Pale {
 
                     float transmittance = 1.0f;
                     float accumulatedCompositeWeight = 0.0f;
-                    static constexpr uint32_t maxTraversalRays = 32u;
 
                     for (uint32_t traversalIndex = 0u;
-                         traversalIndex < maxTraversalRays;
+                         traversalIndex < kMaxSplatEventsPerRay;
                          ++traversalIndex) {
                         WorldHit worldHit{};
                         intersectScene(

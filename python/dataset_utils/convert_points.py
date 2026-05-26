@@ -145,15 +145,15 @@ def write_gaussian_ply(
     vertices,
     output_path,
     args,
-    opacity_default=0.5,
+    opacity_default=1.0,
     beta_default=-0.0,
     shape_default=0.0,
 
     # -----------------------------------------------------------
     # Noise parameters
     # -----------------------------------------------------------
-    noise_sigma_translation=0.00,
-    noise_sigma_rotation=0.00,
+    noise_sigma_translation=0.03,
+    noise_sigma_rotation=0.3,
     noise_sigma_albedo=0.0,
     noise_sigma_opacity=0.0,
     noise_sigma_beta=0.0,
@@ -242,9 +242,9 @@ def write_gaussian_ply(
         sv = float(args.scale)
 
         albedo = np.array([
-            vertex["r"] * 0 + 0.15,
-            vertex["g"] * 0 + 0.15,
-            vertex["b"] * 0 + 0.15
+            vertex["r"] * 0 + 0.50,
+            vertex["g"] * 0 + 0.50,
+            vertex["b"] * 0 + 0.50
         ], dtype=float)
 
         rng = np.random.default_rng(42)

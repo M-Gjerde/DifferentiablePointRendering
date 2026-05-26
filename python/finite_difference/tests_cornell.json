@@ -16,9 +16,9 @@
       "min": -0.25,
       "max": 0.35,
       "fd_epsilon": 2e-2,
-      "forward_passes": 4,
+      "forward_passes": 15,
       "bounces": 4,
-      "adjoint_passes": 4,
+      "adjoint_passes": 8,
       "adjoint_bounces": 4,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"

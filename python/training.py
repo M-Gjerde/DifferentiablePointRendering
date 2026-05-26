@@ -2126,7 +2126,7 @@ def run_optimization(
                     grad_betas_np,
                 )
                 optimizer.step()
-                if reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0:
+                if (reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0) or iteration == 1:
                     with torch.no_grad():
                         opacities[trainable_surfel_mask] = float(reset_opacity_value)
                         print(f"[Iter {iteration:04d}] "
@@ -2307,22 +2307,22 @@ def run_optimization(
                                 dtype=torch.bool,
                             )
 
-                            #densification_result = make_under_reconstruction_evsplits(
-                            #    positions=positions,
-                            #    tangent_u=tangent_u,
-                            #    tangent_v=tangent_v,
-                            #    scales=scales,
-                            #    albedos=albedos,
-                            #    opacities=opacities,
-                            #    betas=betas,
-                            #    powers=powers,
-                            #    grad_position_np=avg_density_grad_vector_np,
-                            #    selection_score_np=grad_pos_norm_np,
-                            #    trainable_surfel_mask=densify_mask_torch,
-                            #    grad_threshold=grad_threshold,
-                            #    min_scale=config.evsplit_min_scale,
-                            #    preserve_integrated_opacity=evsplit_preserve_integrated_opacity,
-                            #)
+                           #densification_result = make_under_reconstruction_evsplits(
+                           #    positions=positions,
+                           #    tangent_u=tangent_u,
+                           #    tangent_v=tangent_v,
+                           #    scales=scales,
+                           #    albedos=albedos,
+                           #    opacities=opacities,
+                           #    betas=betas,
+                           #    powers=powers,
+                           #    grad_position_np=avg_density_grad_vector_np,
+                           #    selection_score_np=grad_pos_norm_np,
+                           #    trainable_surfel_mask=densify_mask_torch,
+                           #    grad_threshold=grad_threshold,
+                           #    min_scale=config.scale_prune_min_scale,
+                           #    preserve_integrated_opacity=True,
+                           #)
                             densification_result = make_under_reconstruction_clones(
                                 positions=positions,
                                 tangent_u=tangent_u,

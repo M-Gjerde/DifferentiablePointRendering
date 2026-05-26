@@ -252,7 +252,7 @@ def verify_positions_inplace(positions: torch.Tensor) -> dict[str, float]:
         before_min = float(p.min().item())
         before_max = float(p.max().item())
 
-        p_clamped = torch.clamp(p, min=-10.0, max=10.0)
+        p_clamped = torch.clamp(p, min=-1.0, max=1.0)
         p.copy_(p_clamped)
 
         after_min = float(p.min().item())
@@ -330,7 +330,7 @@ def verify_beta_inplace(
     If trainable_surfel_mask is provided, only trainable surfels are verified.
     Frozen surfels are left untouched.
     """
-    min_beta_value = -1.5
+    min_beta_value = -0
     with torch.no_grad():
         beta_values = betas.data
 
