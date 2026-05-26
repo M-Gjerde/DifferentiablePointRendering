@@ -330,7 +330,7 @@ def verify_beta_inplace(
     If trainable_surfel_mask is provided, only trainable surfels are verified.
     Frozen surfels are left untouched.
     """
-    min_beta_value = 0.0
+    min_beta_value = -1.5
     with torch.no_grad():
         beta_values = betas.data
 

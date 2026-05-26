@@ -414,7 +414,7 @@ def main(args) -> None:
 
             loss_grad_image = compute_l2_grad(rendered_image, target_image)
             #if args.target_mode == "filled":
-            #    loss_grad_image = np.ones_like(loss_grad_image, dtype=np.float32)
+            #    loss_grad_image = np.ones_like(loss_grad_image, dtype=np.float32) * 0.0001
 
             save_seismic_signed(
                 loss_grad_image,

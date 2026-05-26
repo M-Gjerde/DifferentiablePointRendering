@@ -800,7 +800,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--cameras-json",
         type=Path,
-        default=None,
+        default="/home/magnus/phd/models/teapot_pbdr/transforms.json",
         help="Optional camera metadata JSON for Open3D intrinsics/extrinsics if renderer introspection fails.",
     )
     parser.add_argument(

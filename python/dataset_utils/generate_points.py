@@ -267,7 +267,7 @@ def generate_volume_ply(
                 )
 
 
-    light_1_power = 300.0
+    light_1_power = 400.0
 
     light_nx = 0.0
     light_ny = 0.0
@@ -308,7 +308,7 @@ def generate_volume_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
-    light_2_power = 200.0
+    light_2_power = 300.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -328,7 +328,7 @@ def generate_volume_ply(
     light_opacity = 1.0
     light_beta = -1000.0
     light_shape = 0.0
-    light_3_power = 100
+    light_3_power = 200
 
     light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
         compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
@@ -404,10 +404,10 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "tangent_noise_std": 5.0,
     },
     "plane": {
-        "min_x": -0.5,
-        "max_x": 0.5,
-        "min_y": -0.5,
-        "max_y": 0.5,
+        "min_x": -0.1,
+        "max_x": 0.1,
+        "min_y": -0.1,
+        "max_y": 0.1,
         "min_z": -0.01,
         "max_z": 0.01,
         "scale": 0.05,

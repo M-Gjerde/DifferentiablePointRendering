@@ -66,9 +66,9 @@ class OptimizationConfig:
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
 
-    depth_distort_weight: float = 1e3
-    normal_consistency_weight: float = 0.0001
-    opacity_loss_weight: float = 100
+    depth_distort_weight: float = 0.0
+    normal_consistency_weight: float = 0.0
+    opacity_loss_weight: float = 0
     opacity_target: float = 1.0
 
     log_interval: int = 1
@@ -76,22 +76,20 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 1e10
-    prune_interval: int = 1e10
+    densification_interval: int = 25
+    prune_interval: int = 25
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.8
 
     densification_verbose: bool = True
-    densification_grad_quantile: float = 0.9
-    densification_grad_abs_min: float = 1.0e-2
+    densification_grad_quantile: float = 0.5
+    densification_grad_abs_min: float = 2.0e-3
 
+    # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.15
     densify_bsdf_gamma: float = 1.0
-
-    evsplit_preserve_integrated_opacity: bool = True
-    evsplit_min_scale: float = 1.0e-3
 
     # Pruning
     opacity_prune_threshold: float = 0.1
@@ -102,7 +100,7 @@ class OptimizationConfig:
     # Misc scheduling
     reset_opacity_interval: int = 0
     reset_opacity_value: float = 0.0
-    rebuild_bvh_interval: int = 10
+    rebuild_bvh_interval: int = 1
 
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
@@ -121,7 +119,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_scale = 0.001
         factor_albedo = 0.005
         factor_opacity = 0.005
-        factor_beta = 0.005
+        factor_beta = 0.001
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 

@@ -4,11 +4,12 @@ import csv
 import os
 import time
 from pathlib import Path
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Any
 from collections import deque
 
 import numpy as np
 import torch
+import copy
 
 import pale
 from config import OptimizationConfig, RendererSettingsConfig
@@ -55,6 +56,244 @@ from debug_init_utils import add_debug_noise_to_initial_parameters
 
 import sys
 import select
+
+PARAMETER_NAMES = (
+    "position",
+    "tangent_u",
+    "tangent_v",
+    "scale",
+    "albedo",
+    "opacity",
+    "beta",
+    "power",
+)
+
+
+def make_named_parameter_dict(
+        positions: torch.nn.Parameter,
+        tangent_u: torch.nn.Parameter,
+        tangent_v: torch.nn.Parameter,
+        scales: torch.nn.Parameter,
+        albedos: torch.nn.Parameter,
+        opacities: torch.nn.Parameter,
+        betas: torch.nn.Parameter,
+        powers: torch.nn.Parameter,
+) -> Dict[str, torch.nn.Parameter]:
+    return {
+        "position": positions,
+        "tangent_u": tangent_u,
+        "tangent_v": tangent_v,
+        "scale": scales,
+        "albedo": albedos,
+        "opacity": opacities,
+        "beta": betas,
+        "power": powers,
+    }
+
+
+def assert_all_finite_np(name: str, array: np.ndarray, iteration: int) -> None:
+    array = np.asarray(array)
+    if np.all(np.isfinite(array)):
+        return
+
+    bad_mask = ~np.isfinite(array)
+    bad_count = int(np.count_nonzero(bad_mask))
+    first_bad_flat_index = int(np.flatnonzero(bad_mask)[0])
+    first_bad_index = np.unravel_index(first_bad_flat_index, array.shape)
+
+    raise RuntimeError(
+        f"[Iter {iteration:04d}] Non-finite values in {name}: "
+        f"bad_count={bad_count}, first_bad_index={first_bad_index}, "
+        f"value={array[first_bad_index]}"
+    )
+
+
+def assert_all_finite_torch(name: str, tensor: torch.Tensor, iteration: int) -> None:
+    with torch.no_grad():
+        finite_mask = torch.isfinite(tensor)
+        if bool(finite_mask.all().item()):
+            return
+
+        bad_count = int((~finite_mask).sum().item())
+        first_bad_flat_index = int((~finite_mask).flatten().nonzero()[0].item())
+
+        raise RuntimeError(
+            f"[Iter {iteration:04d}] Non-finite values in {name}: "
+            f"bad_count={bad_count}, first_bad_flat_index={first_bad_flat_index}"
+        )
+
+def apply_densification_source_updates_inplace(
+        densification_result: Optional[Dict[str, Any]],
+        positions: torch.nn.Parameter,
+        tangent_u: torch.nn.Parameter,
+        tangent_v: torch.nn.Parameter,
+        scales: torch.nn.Parameter,
+        albedos: torch.nn.Parameter,
+        opacities: torch.nn.Parameter,
+        betas: torch.nn.Parameter,
+        powers: torch.nn.Parameter,
+) -> None:
+    """
+    Applies in-place updates to existing source surfels produced by
+    mass/opacity-preserving clone splitting.
+    """
+    if densification_result is None:
+        return
+
+    update = densification_result.get("update_source", None)
+    if update is None:
+        return
+
+    device = positions.device
+
+    idx = torch.as_tensor(
+        update["index"],
+        device=device,
+        dtype=torch.long,
+    ).reshape(-1)
+
+    if idx.numel() == 0:
+        return
+
+    with torch.no_grad():
+        if "position" in update:
+            v = torch.as_tensor(update["position"], device=device, dtype=positions.dtype)
+            positions.data[idx] = v.view_as(positions.data[idx])
+
+        if "tangent_u" in update:
+            v = torch.as_tensor(update["tangent_u"], device=device, dtype=tangent_u.dtype)
+            tangent_u.data[idx] = v.view_as(tangent_u.data[idx])
+
+        if "tangent_v" in update:
+            v = torch.as_tensor(update["tangent_v"], device=device, dtype=tangent_v.dtype)
+            tangent_v.data[idx] = v.view_as(tangent_v.data[idx])
+
+        if "scale" in update:
+            v = torch.as_tensor(update["scale"], device=device, dtype=scales.dtype)
+            scales.data[idx] = v.view_as(scales.data[idx])
+
+        if "albedo" in update:
+            v = torch.as_tensor(update["albedo"], device=device, dtype=albedos.dtype)
+            albedos.data[idx] = v.view_as(albedos.data[idx])
+
+        if "opacity" in update:
+            v = torch.as_tensor(update["opacity"], device=device, dtype=opacities.dtype)
+            opacities.data[idx] = v.view_as(opacities.data[idx])
+
+        if "beta" in update:
+            v = torch.as_tensor(update["beta"], device=device, dtype=betas.dtype)
+            betas.data[idx] = v.view_as(betas.data[idx])
+
+        if "power" in update:
+            v = torch.as_tensor(update["power"], device=device, dtype=powers.dtype)
+            powers.data[idx] = v.view_as(powers.data[idx])
+
+
+def rebuild_optimizer_preserving_state(
+        config: OptimizationConfig,
+        old_optimizer: torch.optim.Optimizer,
+        old_params: Dict[str, torch.nn.Parameter],
+        new_params: Dict[str, torch.nn.Parameter],
+        keep_mask_np: np.ndarray,
+        source_index_for_new_np: Optional[np.ndarray] = None,
+        copy_source_state_to_new: bool = True,
+) -> torch.optim.Optimizer:
+    """
+    Rebuild optimizer after topology change while preserving per-surfel Adam state.
+
+    Existing kept surfels:
+        old state is filtered by keep_mask_np.
+
+    Newly appended surfels:
+        if source_index_for_new_np is provided and has length n_new,
+        their state is copied from the source surfel. Otherwise, it is zero.
+
+    This assumes all surfel parameters are first-dimension indexed by surfel.
+    """
+
+    new_optimizer = create_masked_optimizer(
+        config,
+        new_params["position"],
+        new_params["tangent_u"],
+        new_params["tangent_v"],
+        new_params["scale"],
+        new_params["albedo"],
+        new_params["opacity"],
+        new_params["beta"],
+        new_params["power"],
+    )
+
+    keep_mask_np = np.asarray(keep_mask_np, dtype=bool).reshape(-1)
+    old_n = int(keep_mask_np.shape[0])
+    keep_idx_np = np.nonzero(keep_mask_np)[0].astype(np.int64)
+    kept_n = int(keep_idx_np.shape[0])
+
+    new_n = int(new_params["position"].shape[0])
+    n_new = new_n - kept_n
+
+    if n_new < 0:
+        raise RuntimeError(
+            f"Invalid optimizer migration sizes: new_n={new_n}, kept_n={kept_n}"
+        )
+
+    if source_index_for_new_np is not None:
+        source_index_for_new_np = np.asarray(source_index_for_new_np, dtype=np.int64).reshape(-1)
+        if source_index_for_new_np.shape[0] != n_new:
+            # Do not guess if the mapping does not match the appended block.
+            source_index_for_new_np = None
+
+    for name in PARAMETER_NAMES:
+        old_p = old_params[name]
+        new_p = new_params[name]
+
+        old_state = old_optimizer.state.get(old_p, None)
+        if not old_state:
+            continue
+
+        new_state = new_optimizer.state[new_p]
+
+        for key, value in old_state.items():
+            if torch.is_tensor(value):
+                # Per-surfel state, e.g. Adam exp_avg / exp_avg_sq.
+                if value.ndim >= 1 and value.shape[0] == old_n:
+                    out = torch.zeros_like(new_p.data)
+
+                    keep_idx_t = torch.as_tensor(
+                        keep_idx_np,
+                        device=value.device,
+                        dtype=torch.long,
+                    )
+
+                    kept_value = value.index_select(0, keep_idx_t)
+                    out[:kept_n] = kept_value.to(device=out.device, dtype=out.dtype)
+
+                    if (
+                            copy_source_state_to_new
+                            and source_index_for_new_np is not None
+                            and n_new > 0
+                    ):
+                        src_idx_t = torch.as_tensor(
+                            source_index_for_new_np,
+                            device=value.device,
+                            dtype=torch.long,
+                        )
+
+                        new_value = value.index_select(0, src_idx_t)
+                        out[kept_n:kept_n + n_new] = new_value.to(
+                            device=out.device,
+                            dtype=out.dtype,
+                        )
+
+                    new_state[key] = out
+
+                else:
+                    # Scalar state, e.g. Adam step.
+                    new_state[key] = value.detach().clone().to(new_p.device)
+
+            else:
+                new_state[key] = copy.deepcopy(value)
+
+    return new_optimizer
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +499,14 @@ def poll_hotkey() -> Optional[str]:
         return line
     return None
 
-def position_gradient_stats_or_zero(
+def gradient_l2_norm(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float32)
+    if x.size == 0:
+        return 0.0
+    return float(np.linalg.norm(x.ravel()))
+
+
+def position_gradient_norm_stats_or_zero(
         gradient_dict: Dict[str, np.ndarray],
 ) -> tuple[float, float]:
     if not gradient_dict or "position" not in gradient_dict:
@@ -272,7 +518,7 @@ def position_gradient_stats_or_zero(
         order="C",
     )
 
-    return rms_point(grad_position), max_point_norm(grad_position)
+    return gradient_l2_norm(grad_position), max_point_norm(grad_position)
 
 def save_gradients_snapshot(
         output_dir: Path,
@@ -559,6 +805,138 @@ def save_median_depth_snapshot(
 
     save_render(output_path_png, vis)
 
+
+def position_gradient_array_or_zero(
+        gradient_dict: Dict[str, np.ndarray],
+        num_points: int,
+) -> np.ndarray:
+    if not gradient_dict or "position" not in gradient_dict:
+        return np.zeros((num_points, 3), dtype=np.float32)
+
+    grad_position = np.asarray(
+        gradient_dict["position"],
+        dtype=np.float32,
+        order="C",
+    )
+
+    if grad_position.shape != (num_points, 3):
+        raise RuntimeError(
+            "Position gradient shape mismatch: "
+            f"expected {(num_points, 3)}, got {grad_position.shape}"
+        )
+
+    return grad_position
+
+
+def write_per_point_position_gradient_metrics(
+        csv_writer: csv.writer,
+        iteration: int,
+        positions: torch.Tensor,
+        albedos: torch.Tensor,
+        trainable_surfel_mask: torch.Tensor,
+        point_id_np: np.ndarray,
+        point_birth_iteration_np: np.ndarray,
+        photo_gradients: Dict[str, np.ndarray],
+        distortion_gradients: Dict[str, np.ndarray],
+        normal_gradients: Dict[str, np.ndarray],
+        total_gradients: Dict[str, np.ndarray],
+) -> None:
+    with torch.no_grad():
+        position_np = positions.detach().cpu().numpy().astype(np.float32, copy=False)
+        albedo_np = albedos.detach().cpu().numpy().astype(np.float32, copy=False)
+
+        trainable_np = (
+            trainable_surfel_mask
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(bool)
+            .reshape(-1)
+        )
+
+    num_points = int(position_np.shape[0])
+
+    if point_birth_iteration_np.shape[0] != num_points:
+        raise RuntimeError(
+            "point_birth_iteration_np length mismatch while writing per-point metrics: "
+            f"{point_birth_iteration_np.shape[0]} vs {num_points}"
+        )
+
+    if point_id_np.shape[0] != num_points:
+        raise RuntimeError(
+            "point_id_np length mismatch while writing per-point metrics: "
+            f"{point_id_np.shape[0]} vs {num_points}"
+        )
+    if albedo_np.shape[0] != num_points or albedo_np.shape[1] < 3:
+        raise RuntimeError(
+            "albedo length/shape mismatch while writing per-point metrics: "
+            f"albedo shape {albedo_np.shape}, expected ({num_points}, >=3)"
+        )
+    grad_position_renderer_np = position_gradient_array_or_zero(
+        photo_gradients,
+        num_points,
+    )
+    grad_position_depth_distortion_np = position_gradient_array_or_zero(
+        distortion_gradients,
+        num_points,
+    )
+    grad_position_normal_consistency_np = position_gradient_array_or_zero(
+        normal_gradients,
+        num_points,
+    )
+    grad_position_total_np = position_gradient_array_or_zero(
+        total_gradients,
+        num_points,
+    )
+
+    renderer_norm_np = np.linalg.norm(grad_position_renderer_np, axis=1)
+    depth_distortion_norm_np = np.linalg.norm(grad_position_depth_distortion_np, axis=1)
+    normal_consistency_norm_np = np.linalg.norm(grad_position_normal_consistency_np, axis=1)
+    total_norm_np = np.linalg.norm(grad_position_total_np, axis=1)
+
+    for point_index in range(num_points):
+        px, py, pz = position_np[point_index]
+        ar, ag, ab = albedo_np[point_index, :3]
+        renderer_x, renderer_y, renderer_z = grad_position_renderer_np[point_index]
+        depth_x, depth_y, depth_z = grad_position_depth_distortion_np[point_index]
+        normal_x, normal_y, normal_z = grad_position_normal_consistency_np[point_index]
+        total_x, total_y, total_z = grad_position_total_np[point_index]
+
+        csv_writer.writerow(
+            [
+                iteration,
+                point_index,
+                int(point_id_np[point_index]),
+                int(point_birth_iteration_np[point_index]),
+                int(trainable_np[point_index]),
+
+                px,
+                py,
+                pz,
+                ar,
+                ag,
+                ab,
+                renderer_x,
+                renderer_y,
+                renderer_z,
+                renderer_norm_np[point_index],
+
+                depth_x,
+                depth_y,
+                depth_z,
+                depth_distortion_norm_np[point_index],
+
+                normal_x,
+                normal_y,
+                normal_z,
+                normal_consistency_norm_np[point_index],
+
+                total_x,
+                total_y,
+                total_z,
+                total_norm_np[point_index],
+            ]
+        )
 
 def save_manual_snapshot(
         renderer: Pale.Renderer,
@@ -1244,6 +1622,9 @@ def run_optimization(
         (positions.shape[0],),
         dtype=np.int64,
     )
+    point_id_np = np.arange(positions.shape[0], dtype=np.int64)
+    next_point_id = int(point_id_np.max()) + 1 if point_id_np.size > 0 else 0
+
     densify_scale_grow_accum_np = np.zeros(
         (positions.shape[0], 1),
         dtype=np.float32,
@@ -1294,15 +1675,19 @@ def run_optimization(
 
     densify_bsdf_floor = config.densify_bsdf_floor
     densify_bsdf_gamma = config.densify_bsdf_gamma
-
-    evsplit_preserve_integrated_opacity = config.evsplit_preserve_integrated_opacity
-
     rebuild_bvh_interval = config.rebuild_bvh_interval
 
     metrics_csv_path = config.output_dir / "metrics.csv"
+    per_point_position_gradient_metrics_csv_path = (
+            config.output_dir / "per_point_position_gradient_metrics.csv"
+    )
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(metrics_csv_path, "w", newline="") as csv_file:
+    with (
+        open(metrics_csv_path, "w", newline="") as csv_file,
+        open(per_point_position_gradient_metrics_csv_path, "w", newline="") as per_point_gradient_csv_file,
+    ):
+        per_point_gradient_csv_writer = csv.writer(per_point_gradient_csv_file)
         csv_writer = csv.writer(csv_file)
         csv_writer.writerow(
             [
@@ -1319,18 +1704,56 @@ def run_optimization(
                 "num_points",
                 "iteration_time_sec",
                 "total_time",
-                "grad_position_renderer_rms",
+                "grad_position_renderer_norm",
                 "grad_position_renderer_max",
-                "grad_position_depth_distortion_rms",
+                "grad_position_depth_distortion_norm",
                 "grad_position_depth_distortion_max",
-                "grad_position_normal_consistency_rms",
+                "grad_position_normal_consistency_norm",
                 "grad_position_normal_consistency_max",
-                "grad_position_total_rms",
+                "grad_position_total_norm",
                 "grad_position_total_max",
-                "grad_opacity_total_rms",
+                "grad_opacity_total_norm",
                 "grad_opacity_total_max",
-                "grad_opacity_regularizer_rms",
+                "grad_opacity_regularizer_norm",
                 "grad_opacity_regularizer_max",
+            ]
+        )
+
+        per_point_gradient_csv_writer.writerow(
+            [
+                "iteration",
+                "point_index",
+                "point_id",
+                "point_birth_iteration",
+                "is_trainable",
+
+                "position_x",
+                "position_y",
+                "position_z",
+
+                "albedo_r",
+                "albedo_g",
+                "albedo_b",
+
+                "grad_position_renderer_x",
+                "grad_position_renderer_y",
+                "grad_position_renderer_z",
+                "grad_position_renderer_norm",
+
+                "grad_position_depth_distortion_x",
+                "grad_position_depth_distortion_y",
+                "grad_position_depth_distortion_z",
+                "grad_position_depth_distortion_norm",
+
+                "grad_position_normal_consistency_x",
+                "grad_position_normal_consistency_y",
+                "grad_position_normal_consistency_z",
+                "grad_position_normal_consistency_norm",
+
+                "grad_position_total_x",
+                "grad_position_total_y",
+                "grad_position_total_z",
+                "grad_position_total_norm",
             ]
         )
 
@@ -1452,6 +1875,12 @@ def run_optimization(
                     if normal_gradients else {}
                 )
 
+                for gradient_name, gradient_array in photo_gradients.items():
+                    assert_all_finite_np(f"total_gradients[{gradient_name}]", gradient_array, iteration)
+                for gradient_name, gradient_array in distortion_gradients.items():
+                    assert_all_finite_np(f"total_gradients[{gradient_name}]", gradient_array, iteration)
+                for gradient_name, gradient_array in normal_gradients.items():
+                    assert_all_finite_np(f"total_gradients[{gradient_name}]", gradient_array, iteration)
                 # ------------------------------------------------------------------
                 # Blend the final update vector in Python
                 # ------------------------------------------------------------------
@@ -1467,7 +1896,9 @@ def run_optimization(
                 grad_scales_np = np.asarray(total_gradients["scale"], dtype=np.float32, order="C")
                 grad_albedos_np = np.asarray(total_gradients["albedo"], dtype=np.float32, order="C")
                 grad_opacities_np = np.asarray(total_gradients["opacity"], dtype=np.float32, order="C")
+
                 grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
+
 
                 opacity_regularizer_loss, grad_opacity_regularizer_np = (
                     compute_opacity_target_regularizer_and_gradients(
@@ -1484,26 +1915,40 @@ def run_optimization(
                 grad_opacities_np += grad_opacity_regularizer_np
                 total_loss_value += opacity_regularizer_loss
 
-                grad_opacity_regularizer_rms = rms_any(grad_opacity_regularizer_np)
+                grad_opacity_regularizer_norm = gradient_l2_norm(grad_opacity_regularizer_np)
                 grad_opacity_regularizer_max = max_point_norm(grad_opacity_regularizer_np)
 
-                grad_opacity_total_rms = rms_any(grad_opacities_np)
+                grad_opacity_total_norm = gradient_l2_norm(grad_opacities_np)
                 grad_opacity_total_max = max_point_norm(grad_opacities_np)
-                grad_position_renderer_rms, grad_position_renderer_max = (
-                    position_gradient_stats_or_zero(photo_gradients)
+
+                grad_position_renderer_norm, grad_position_renderer_max = (
+                    position_gradient_norm_stats_or_zero(photo_gradients)
                 )
 
-                grad_position_depth_distortion_rms, grad_position_depth_distortion_max = (
-                    position_gradient_stats_or_zero(distortion_gradients)
+                grad_position_depth_distortion_norm, grad_position_depth_distortion_max = (
+                    position_gradient_norm_stats_or_zero(distortion_gradients)
                 )
 
-                grad_position_normal_consistency_rms, grad_position_normal_consistency_max = (
-                    position_gradient_stats_or_zero(normal_gradients)
+                grad_position_normal_consistency_norm, grad_position_normal_consistency_max = (
+                    position_gradient_norm_stats_or_zero(normal_gradients)
                 )
 
-                grad_position_total_rms = rms_point(grad_position_np)
+                grad_position_total_norm = gradient_l2_norm(grad_position_np)
                 grad_position_total_max = max_point_norm(grad_position_np)
 
+                write_per_point_position_gradient_metrics(
+                    csv_writer=per_point_gradient_csv_writer,
+                    iteration=iteration,
+                    positions=positions,
+                    albedos=albedos,
+                    trainable_surfel_mask=trainable_surfel_mask,
+                    point_id_np=point_id_np,
+                    point_birth_iteration_np=point_birth_iteration_np,
+                    photo_gradients=photo_gradients,
+                    distortion_gradients=distortion_gradients,
+                    normal_gradients=normal_gradients,
+                    total_gradients=total_gradients,
+                )
 
                 current_positions_shape = tuple(positions.shape)
                 if grad_position_np.shape != current_positions_shape:
@@ -1637,28 +2082,22 @@ def run_optimization(
                         density_grad_position_np_for_score[update_density_vector_mask_np]
                     )
                     scale_pressure_np = scale_grow_pressure_np + scale_shrink_pressure_np
-
                     update_scale_pressure_mask_np = (
                             trainable_np_for_density
                             & np.isfinite(scale_pressure_np)
                             & (scale_pressure_np > 0.0)
                     )
-
                     densify_scale_grow_accum_np[update_scale_pressure_mask_np, 0] += (
                         scale_grow_pressure_np[update_scale_pressure_mask_np]
                     )
-
                     densify_scale_shrink_accum_np[update_scale_pressure_mask_np, 0] += (
                         scale_shrink_pressure_np[update_scale_pressure_mask_np]
                     )
-
                     densify_scale_pressure_denom_np[update_scale_pressure_mask_np, 0] += 1.0
-
                 # --------------------------------------------------------------
                 # 7. Optimizer step
                 # --------------------------------------------------------------
                 optimizer.zero_grad(set_to_none=True)
-
                 zero_frozen_surfel_gradients_np(
                     trainable_surfel_mask,
                     grad_position_np,
@@ -1669,7 +2108,6 @@ def run_optimization(
                     grad_opacities_np,
                     grad_betas_np,
                 )
-
                 assign_numpy_gradients_to_tensors(
                     device,
                     positions,
@@ -1687,9 +2125,7 @@ def run_optimization(
                     grad_opacities_np,
                     grad_betas_np,
                 )
-
                 optimizer.step()
-
                 if reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0:
                     with torch.no_grad():
                         opacities[trainable_surfel_mask] = float(reset_opacity_value)
@@ -1763,23 +2199,6 @@ def run_optimization(
                                 scale_total_pressure_np[nonzero_scale_pressure_np]
                         )
 
-                        # Plane suppression / curvature allowance:
-                        #
-                        # - Flat undercovered plane:
-                        #       grow_pressure large, shrink_pressure small -> no split.
-                        #
-                        # - Curved or spherical patch represented by too large a tangent surfel:
-                        #       shrink_pressure nontrivial -> split allowed.
-                        split_scale_gate_np = (
-                                valid_scale_pressure_np
-                                & (avg_shrink_pressure_np >= densify_split_min_shrink_abs)
-                                & (scale_shrink_fraction_np >= densify_split_min_shrink_fraction)
-                                & (
-                                        avg_grow_pressure_np
-                                        <= densify_split_max_grow_to_shrink
-                                        * np.maximum(avg_shrink_pressure_np, 1.0e-20)
-                                )
-                        )
 
                         avg_density_grad_norm_np = np.zeros(
                             (positions.shape[0],),
@@ -1809,8 +2228,6 @@ def run_optimization(
                             neginf=0.0,
                         )
 
-                        depth_distortion_split_suppression = 1e3
-
                         distortion_scale = np.quantile(
                             distortion_score_np[np.isfinite(distortion_score_np)],
                             0.90,
@@ -1818,20 +2235,9 @@ def run_optimization(
 
                         if not np.isfinite(distortion_scale) or distortion_scale <= 1.0e-12:
                             distortion_scale = 1.0
-
-                        distortion_score_normalized_np = distortion_score_np / distortion_scale
-
-                        #grad_pos_norm_np = (
-                        #        grad_pos_norm_np
-                        #        / (1.0 + depth_distortion_split_suppression * distortion_score_normalized_np)
-                        #)
-
                         trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool)
-
                         point_age_np = iteration - point_birth_iteration_np
                         finite_grad = np.isfinite(grad_pos_norm_np)
-                        large_enough_to_split_np = radius_np >= densify_split_min_radius
-
                         candidate_mask_np = (
                                 valid_denom_np
                                 & finite_grad
@@ -1901,23 +2307,7 @@ def run_optimization(
                                 dtype=torch.bool,
                             )
 
-                            densification_result = make_under_reconstruction_evsplits(
-                                positions=positions,
-                                tangent_u=tangent_u,
-                                tangent_v=tangent_v,
-                                scales=scales,
-                                albedos=albedos,
-                                opacities=opacities,
-                                betas=betas,
-                                powers=powers,
-                                grad_position_np=avg_density_grad_vector_np,
-                                selection_score_np=grad_pos_norm_np,
-                                trainable_surfel_mask=densify_mask_torch,
-                                grad_threshold=grad_threshold,
-                                min_scale=config.evsplit_min_scale,
-                                preserve_integrated_opacity=evsplit_preserve_integrated_opacity,
-                            )
-                            #densification_result = make_under_reconstruction_clones(
+                            #densification_result = make_under_reconstruction_evsplits(
                             #    positions=positions,
                             #    tangent_u=tangent_u,
                             #    tangent_v=tangent_v,
@@ -1929,8 +2319,24 @@ def run_optimization(
                             #    grad_position_np=avg_density_grad_vector_np,
                             #    selection_score_np=grad_pos_norm_np,
                             #    trainable_surfel_mask=densify_mask_torch,
-                            #    grad_threshold=grad_threshold
+                            #    grad_threshold=grad_threshold,
+                            #    min_scale=config.evsplit_min_scale,
+                            #    preserve_integrated_opacity=evsplit_preserve_integrated_opacity,
                             #)
+                            densification_result = make_under_reconstruction_clones(
+                                positions=positions,
+                                tangent_u=tangent_u,
+                                tangent_v=tangent_v,
+                                scales=scales,
+                                albedos=albedos,
+                                opacities=opacities,
+                                betas=betas,
+                                powers=powers,
+                                grad_position_np=avg_density_grad_vector_np,
+                                selection_score_np=grad_pos_norm_np,
+                                trainable_surfel_mask=densify_mask_torch,
+                                grad_threshold=grad_threshold
+                            )
 
                             if densification_result is not None:
                                 if densification_result.get("replace_source", False):
@@ -2020,6 +2426,73 @@ def run_optimization(
                         indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
 
                 if indices_to_remove_list or densification_result is not None:
+                    old_params_for_optimizer = make_named_parameter_dict(
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        albedos,
+                        opacities,
+                        betas,
+                        powers,
+                    )
+                    old_optimizer_for_migration = optimizer
+                    old_point_count_for_migration = int(positions.shape[0])
+
+                    keep_mask_np = np.ones(old_point_count_for_migration, dtype=bool)
+
+                    # If clone-splitting updates a source surfel in-place, do not prune
+                    # that same source in the same topology event.
+                    if densification_result is not None and "update_source" in densification_result:
+                        protected_src = np.asarray(
+                            densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
+                            dtype=np.int64,
+                        ).reshape(-1)
+
+                        if protected_src.size > 0 and indices_to_remove_list:
+                            protected_set = set(int(i) for i in protected_src)
+                            indices_to_remove_list = [
+                                int(i) for i in indices_to_remove_list
+                                if int(i) not in protected_set
+                            ]
+
+                    # Apply in-place source updates before syncing/removing/appending.
+                    if densification_result is not None:
+                        apply_densification_source_updates_inplace(
+                            densification_result,
+                            positions,
+                            tangent_u,
+                            tangent_v,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            powers,
+                        )
+
+                        verify_parameters_inplane(
+                            positions,
+                            tangent_u,
+                            tangent_v,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            trainable_surfel_mask=trainable_surfel_mask,
+                        )
+
+                        apply_point_parameters(
+                            renderer,
+                            positions,
+                            tangent_u,
+                            tangent_v,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            powers,
+                        )
+
                     if indices_to_remove_list:
                         scale_prune_set = set(int(i) for i in scale_prune_indices)
                         opacity_prune_set = set(int(i) for i in opacity_prune_indices)
@@ -2041,11 +2514,11 @@ def run_optimization(
                             f"opacity_only={len(opacity_only_set)}"
                         )
 
+                        keep_mask_np[indices_to_remove] = False
+
                         remove_points(renderer, indices_to_remove)
 
-                        # Keep age array consistent with pruning.
-                        keep_mask_np = np.ones(point_birth_iteration_np.shape[0], dtype=bool)
-                        keep_mask_np[indices_to_remove] = False
+                        # Keep all metadata/state arrays consistent with pruning.
                         point_birth_iteration_np = point_birth_iteration_np[keep_mask_np]
                         densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
                         densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
@@ -2053,7 +2526,9 @@ def run_optimization(
                         densify_scale_grow_accum_np = densify_scale_grow_accum_np[keep_mask_np]
                         densify_scale_shrink_accum_np = densify_scale_shrink_accum_np[keep_mask_np]
                         densify_scale_pressure_denom_np = densify_scale_pressure_denom_np[keep_mask_np]
+                        point_id_np = point_id_np[keep_mask_np]
 
+                    source_index_for_new_np = None
 
                     if densification_result is not None:
                         new_block = densification_result.get("new", None)
@@ -2061,18 +2536,63 @@ def run_optimization(
                             n_new = int(new_block["position"].shape[0])
 
                             add_new_points(renderer, densification_result)
-                            # New points are born now; do not allow immediate re-cloning.
-                            point_birth_iteration_np = np.concatenate(
-                                [point_birth_iteration_np, np.full((n_new,), iteration, dtype=np.int64), ], axis=0, )
-                            densify_position_grad_accum_np = np.concatenate(
-                                [densify_position_grad_accum_np, np.zeros((n_new, 1), dtype=np.float32), ], axis=0, )
-                            densify_position_grad_denom_np = np.concatenate(
-                                [densify_position_grad_denom_np, np.zeros((n_new, 1), dtype=np.float32), ], axis=0,
+
+                            # For optimizer-state migration, newly appended points are in the
+                            # same order as densification_result["source_index"].
+                            source_index_for_new_np = np.asarray(
+                                densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
+                                dtype=np.int64,
+                            ).reshape(-1)
+
+                            if source_index_for_new_np.shape[0] != n_new:
+                                source_index_for_new_np = None
+
+                            new_point_ids_np = np.arange(
+                                next_point_id,
+                                next_point_id + n_new,
+                                dtype=np.int64,
                             )
-                            densify_position_grad_vector_accum_np = np.concatenate(
-                                [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32), ],
+
+                            next_point_id += n_new
+
+                            point_id_np = np.concatenate(
+                                [point_id_np, new_point_ids_np],
                                 axis=0,
                             )
+
+                            # New points are born now; do not allow immediate re-cloning.
+                            point_birth_iteration_np = np.concatenate(
+                                [
+                                    point_birth_iteration_np,
+                                    np.full((n_new,), iteration, dtype=np.int64),
+                                ],
+                                axis=0,
+                            )
+
+                            densify_position_grad_accum_np = np.concatenate(
+                                [
+                                    densify_position_grad_accum_np,
+                                    np.zeros((n_new, 1), dtype=np.float32),
+                                ],
+                                axis=0,
+                            )
+
+                            densify_position_grad_denom_np = np.concatenate(
+                                [
+                                    densify_position_grad_denom_np,
+                                    np.zeros((n_new, 1), dtype=np.float32),
+                                ],
+                                axis=0,
+                            )
+
+                            densify_position_grad_vector_accum_np = np.concatenate(
+                                [
+                                    densify_position_grad_vector_accum_np,
+                                    np.zeros((n_new, 3), dtype=np.float32),
+                                ],
+                                axis=0,
+                            )
+
                             densify_scale_grow_accum_np = np.concatenate(
                                 [
                                     densify_scale_grow_accum_np,
@@ -2116,6 +2636,12 @@ def run_optimization(
                             f"{point_birth_iteration_np.shape[0]} vs {positions.shape[0]}"
                         )
 
+                    if point_id_np.shape[0] != positions.shape[0]:
+                        raise RuntimeError(
+                            "point_id_np length mismatch after topology change: "
+                            f"{point_id_np.shape[0]} vs {positions.shape[0]}"
+                        )
+
                     trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
 
                     verify_parameters_inplane(
@@ -2143,8 +2669,7 @@ def run_optimization(
 
                     rebuild_bvh(renderer)
 
-                    optimizer = create_masked_optimizer(
-                        config,
+                    new_params_for_optimizer = make_named_parameter_dict(
                         positions,
                         tangent_u,
                         tangent_v,
@@ -2155,6 +2680,16 @@ def run_optimization(
                         powers,
                     )
 
+                    optimizer = rebuild_optimizer_preserving_state(
+                        config=config,
+                        old_optimizer=old_optimizer_for_migration,
+                        old_params=old_params_for_optimizer,
+                        new_params=new_params_for_optimizer,
+                        keep_mask_np=keep_mask_np,
+                        source_index_for_new_np=source_index_for_new_np,
+                        copy_source_state_to_new=True,
+                    )
+
                     trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
 
                     frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
@@ -2162,6 +2697,7 @@ def run_optimization(
                         f"Frozen emissive surfels: {frozen_surfel_count} / "
                         f"{int(trainable_surfel_mask.numel())}"
                     )
+
 
                     # Reset density-control statistics after every densification attempt,
                     # even if no clone/prune happened.
@@ -2192,44 +2728,43 @@ def run_optimization(
                         render_path = camera_render_dir / f"{iteration:04d}_render.png"
                         save_render(render_path, image_numpy)
 
-                        if use_depth_distortion:
-                            camera_depth_dir.mkdir(parents=True, exist_ok=True)
-                            depth_distortion_numpy = get_forward_depth_distortion(forward_out, camera_name)
-                            depth_distortion_path = camera_depth_dir / f"{iteration:04d}_depth_distortion.png"
-                            save_depth_distortion_snapshot(
-                                depth_distortion_path,
-                                depth_distortion_numpy,
-                                quantile=0.99,
-                                save_npy=False,
-                            )
+                        camera_depth_dir.mkdir(parents=True, exist_ok=True)
+                        depth_distortion_numpy = get_forward_depth_distortion(forward_out, camera_name)
+                        depth_distortion_path = camera_depth_dir / f"{iteration:04d}_depth_distortion.png"
+                        save_depth_distortion_snapshot(
+                            depth_distortion_path,
+                            depth_distortion_numpy,
+                            quantile=0.99,
+                            save_npy=False,
+                        )
 
-                        if use_normal_consistency:
-                            camera_median_depth_dir.mkdir(parents=True, exist_ok=True)
-                            camera_visible_normal_dir.mkdir(parents=True, exist_ok=True)
-                            camera_depth_normal_dir.mkdir(parents=True, exist_ok=True)
+                        camera_median_depth_dir.mkdir(parents=True, exist_ok=True)
+                        camera_visible_normal_dir.mkdir(parents=True, exist_ok=True)
+                        camera_depth_normal_dir.mkdir(parents=True, exist_ok=True)
 
-                            median_depth_numpy = get_forward_median_depth(forward_out, camera_name)
-                            visible_normal_numpy = get_forward_visible_normal(forward_out, camera_name)
-                            normal_from_depth_numpy = get_forward_normal_from_depth(forward_out, camera_name)
+                        median_depth_numpy = get_forward_median_depth(forward_out, camera_name)
+                        visible_normal_numpy = get_forward_visible_normal(forward_out, camera_name)
+                        normal_from_depth_numpy = get_forward_normal_from_depth(forward_out, camera_name)
 
-                            save_median_depth_snapshot(
-                                camera_median_depth_dir / f"{iteration:04d}_median_depth.png",
-                                median_depth_numpy,
-                                quantile=0.99,
-                                save_npy=False,
-                            )
+                        save_median_depth_snapshot(
+                            camera_median_depth_dir / f"{iteration:04d}_median_depth.png",
+                            median_depth_numpy,
+                            quantile=0.99,
+                            save_npy=False,
+                        )
 
-                            save_normal_map_snapshot(
-                                camera_visible_normal_dir / f"{iteration:04d}_visible_normal.png",
-                                visible_normal_numpy,
-                                save_npy=False,
-                            )
+                        save_normal_map_snapshot(
+                            camera_visible_normal_dir / f"{iteration:04d}_visible_normal.png",
+                            visible_normal_numpy,
+                            save_npy=False,
+                        )
 
-                            save_normal_map_snapshot(
-                                camera_depth_normal_dir / f"{iteration:04d}_normal_from_depth.png",
-                                normal_from_depth_numpy,
-                                save_npy=False,
-                            )
+                        save_normal_map_snapshot(
+                            camera_depth_normal_dir / f"{iteration:04d}_normal_from_depth.png",
+                            normal_from_depth_numpy,
+                            save_npy=False,
+                        )
+
                         adjoint_source_images = adjoint_images.get("adjoint_source")
                         if adjoint_source_images is not None and camera_name in adjoint_source_images:
                             grad_img_np = np.asarray(
@@ -2291,21 +2826,22 @@ def run_optimization(
                         num_points,
                         iteration_time,
                         total_time,
-                        grad_position_renderer_rms,
+                        grad_position_renderer_norm,
                         grad_position_renderer_max,
-                        grad_position_depth_distortion_rms,
+                        grad_position_depth_distortion_norm,
                         grad_position_depth_distortion_max,
-                        grad_position_normal_consistency_rms,
+                        grad_position_normal_consistency_norm,
                         grad_position_normal_consistency_max,
-                        grad_position_total_rms,
+                        grad_position_total_norm,
                         grad_position_total_max,
-                        grad_opacity_total_rms,
+                        grad_opacity_total_norm,
                         grad_opacity_total_max,
-                        grad_opacity_regularizer_rms,
+                        grad_opacity_regularizer_norm,
                         grad_opacity_regularizer_max,
                     ]
                 )
                 csv_file.flush()
+                per_point_gradient_csv_file.flush()
 
                 if iteration % config.log_interval == 0 or iteration == 1:
                     grad_pos_rms = rms_point(grad_position_np)

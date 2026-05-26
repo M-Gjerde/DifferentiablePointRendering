@@ -171,8 +171,7 @@ namespace Pale {
                 float alphaGeom = 0.0f;
                 float3 hitLocal{0.0f};
 
-                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon, bestTHit, tHitLocal,
-                                                            hitLocal, alphaGeom, RayEpsilon))
+                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal, hitLocal, alphaGeom, RayEpsilon2))
                     continue;
 
                 // Keep closest
@@ -203,354 +202,6 @@ namespace Pale {
         return true;
     }
 
-    SYCL_EXTERNAL inline void insertSortedSurfelStackEvent16(
-        SurfelStackHit *stackHit,
-        const SurfelStackEvent &event) {
-        stackHit->totalEventCount++;
-
-        uint32_t &count = stackHit->eventCount;
-        SurfelStackEvent *events = stackHit->events;
-
-        uint32_t insertPos = 0u;
-        while (insertPos < count && events[insertPos].tWorld <= event.tWorld) {
-            insertPos++;
-        }
-
-        if (insertPos >= kMaxLoggedSurfelEvents) {
-            stackHit->eventOverflow = true;
-            return;
-        }
-
-        if (count < kMaxLoggedSurfelEvents) {
-            count++;
-        } else {
-            stackHit->eventOverflow = true;
-        }
-
-        for (uint32_t j = count - 1u; j > insertPos; --j) {
-            events[j] = events[j - 1u];
-        }
-
-        events[insertPos] = event;
-    }
-
-    SYCL_EXTERNAL static void collectBLASPointCloudTransmitStack(
-        const Ray &rayObject,
-        const Ray &rayWorld,
-        uint32_t blasRangeIndex,
-        uint32_t instanceIndex,
-        const GPUSceneBuffers &scene,
-        const Transform &transform,
-        float tMaxWorld,
-        SurfelStackHit *stackHit) {
-        const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
-        const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
-
-        const float3 inverseDirectionObject = safeInvDir(rayObject.direction);
-
-        SmallStack<256> traversalStack;
-        traversalStack.push(0);
-
-        const float rayDirLen2 =
-                sycl::fmax(dot(rayWorld.direction, rayWorld.direction), 1.0e-20f);
-
-        while (!traversalStack.empty()) {
-            const int nodeIndex = traversalStack.pop();
-            const BVHNode &node = bvhNodes[nodeIndex];
-
-            float nodeTEntry = 0.0f;
-
-            // No nearest-hit pruning here: this is a full transmit-through query
-            // over the segment [RayEpsilon, tMaxWorld].
-            if (!slabIntersectAABB(
-                rayObject,
-                node,
-                inverseDirectionObject,
-                std::numeric_limits<float>::infinity(),
-                nodeTEntry)) {
-                continue;
-            }
-
-            if (node.triCount == 0) {
-                const int leftIndex = node.leftFirst;
-                const int rightIndex = node.leftFirst + 1;
-
-                float leftTEntry = std::numeric_limits<float>::infinity();
-                float rightTEntry = std::numeric_limits<float>::infinity();
-
-                const bool hitLeft =
-                        slabIntersectAABB(
-                            rayObject,
-                            bvhNodes[leftIndex],
-                            inverseDirectionObject,
-                            std::numeric_limits<float>::infinity(),
-                            leftTEntry);
-
-                const bool hitRight =
-                        slabIntersectAABB(
-                            rayObject,
-                            bvhNodes[rightIndex],
-                            inverseDirectionObject,
-                            std::numeric_limits<float>::infinity(),
-                            rightTEntry);
-
-                if (hitLeft && hitRight) {
-                    pushNearFar(
-                        traversalStack,
-                        leftIndex,
-                        leftTEntry,
-                        rightIndex,
-                        rightTEntry);
-                } else if (hitLeft) {
-                    traversalStack.push(leftIndex);
-                } else if (hitRight) {
-                    traversalStack.push(rightIndex);
-                }
-
-                continue;
-            }
-
-            for (uint32_t primitiveOffset = 0u;
-                 primitiveOffset < node.triCount;
-                 ++primitiveOffset) {
-                const uint32_t primitiveIndex =
-                        scene.pointPermutation[node.leftFirst + primitiveOffset];
-
-                const Point &surfel = scene.points[primitiveIndex];
-
-                float tHitObject = 0.0f;
-                float alphaGeom = 0.0f;
-                float3 hitObject{0.0f, 0.0f, 0.0f};
-
-                if (!intersectSurfel(
-                    rayObject,
-                    surfel,
-                    RayEpsilon,
-                    std::numeric_limits<float>::infinity(),
-                    tHitObject,
-                    hitObject,
-                    alphaGeom,
-                    RayEpsilon)) {
-                    continue;
-                }
-
-                const float3 hitWorld = toWorldPoint(hitObject, transform);
-
-                const float tWorld =
-                        dot(hitWorld - rayWorld.origin, rayWorld.direction) / rayDirLen2;
-
-                if (tWorld <= RayEpsilon || tWorld >= tMaxWorld - RayEpsilon) {
-                    continue;
-                }
-
-                const float alphaEff =
-                        sycl::clamp(surfel.opacity * alphaGeom, 0.0f, 0.9999f);
-
-                // Always transmit through all surfels, even if the 16-event log
-                // overflows.
-                stackHit->transmissivity *= (1.0f - alphaEff);
-
-                SurfelStackEvent event{};
-                event.tWorld = tWorld;
-                event.tObject = tHitObject;
-                event.alphaGeom = alphaGeom;
-                event.alphaEff = alphaEff;
-                event.primitiveIndex = primitiveIndex;
-                event.instanceIndex = instanceIndex;
-                event.hitPositionW = hitWorld;
-
-                insertSortedSurfelStackEvent16(stackHit, event);
-            }
-        }
-    }
-
-    SYCL_EXTERNAL static bool intersectSceneTransmitStack(
-        const Ray &rayWorld,
-        SurfelStackHit *stackHit,
-        const GPUSceneBuffers &scene,
-        float tMaxWorld = std::numeric_limits<float>::infinity()) {
-        *stackHit = SurfelStackHit{};
-        stackHit->meshT = tMaxWorld;
-        stackHit->transmissivity = 1.0f;
-
-        const TLASNode *tlasNodes = scene.tlasNodes;
-        const InstanceRecord *instanceRecords = scene.instances;
-        const Transform *transforms = scene.transforms;
-
-        const float3 inverseDirectionWorld = safeInvDir(rayWorld.direction);
-        const float rayDirLen2 =
-                sycl::fmax(dot(rayWorld.direction, rayWorld.direction), 1.0e-20f);
-
-        // ---------------------------------------------------------------------
-        // Pass 1: nearest opaque mesh hit.
-        // ---------------------------------------------------------------------
-        {
-            SmallStack<64> stack;
-            stack.push(0);
-
-            while (!stack.empty()) {
-                const int nodeIndex = stack.pop();
-                const TLASNode &node = tlasNodes[nodeIndex];
-
-                float nodeTEntry = 0.0f;
-                if (!slabIntersectAABB(
-                    rayWorld,
-                    node,
-                    inverseDirectionWorld,
-                    stackHit->meshT,
-                    nodeTEntry)) {
-                    continue;
-                }
-
-                if (node.count == 0) {
-                    const int leftIndex = node.leftChild;
-                    const int rightIndex = node.rightChild;
-
-                    float leftTEntry = std::numeric_limits<float>::infinity();
-                    float rightTEntry = std::numeric_limits<float>::infinity();
-
-                    const bool hitLeft =
-                            slabIntersectAABB(
-                                rayWorld,
-                                tlasNodes[leftIndex],
-                                inverseDirectionWorld,
-                                stackHit->meshT,
-                                leftTEntry);
-
-                    const bool hitRight =
-                            slabIntersectAABB(
-                                rayWorld,
-                                tlasNodes[rightIndex],
-                                inverseDirectionWorld,
-                                stackHit->meshT,
-                                rightTEntry);
-
-                    if (hitLeft && hitRight) {
-                        pushNearFar(stack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                    } else if (hitLeft) {
-                        stack.push(leftIndex);
-                    } else if (hitRight) {
-                        stack.push(rightIndex);
-                    }
-
-                    continue;
-                }
-
-                const uint32_t instanceIndex = node.leftChild;
-                const InstanceRecord &instance = instanceRecords[instanceIndex];
-
-                if (instance.geometryType != GeometryType::Mesh) {
-                    continue;
-                }
-
-                const Transform &transform = transforms[instance.transformIndex];
-                const Ray rayObject = toObjectSpace(rayWorld, transform);
-
-                LocalHit localHit{};
-                if (!intersectBLASMesh(
-                    rayObject,
-                    instance.blasRangeIndex,
-                    localHit,
-                    scene,
-                    transform)) {
-                    continue;
-                }
-
-                const float3 hitWorld = localHit.worldHit;
-
-                const float tWorld =
-                        dot(hitWorld - rayWorld.origin, rayWorld.direction) / rayDirLen2;
-
-                if (tWorld > RayEpsilon && tWorld < stackHit->meshT) {
-                    stackHit->hitMesh = true;
-                    stackHit->meshT = tWorld;
-                    stackHit->meshHitPositionW = hitWorld;
-                    stackHit->meshInstanceIndex = instanceIndex;
-                    stackHit->meshPrimitiveIndex = localHit.primitiveIndex;
-                }
-            }
-        }
-
-        // ---------------------------------------------------------------------
-        // Pass 2: transmit/log point-cloud surfels before meshT.
-        // ---------------------------------------------------------------------
-        {
-            SmallStack<64> stack;
-            stack.push(0);
-
-            while (!stack.empty()) {
-                const int nodeIndex = stack.pop();
-                const TLASNode &node = tlasNodes[nodeIndex];
-
-                float nodeTEntry = 0.0f;
-                if (!slabIntersectAABB(
-                    rayWorld,
-                    node,
-                    inverseDirectionWorld,
-                    stackHit->meshT,
-                    nodeTEntry)) {
-                    continue;
-                }
-
-                if (node.count == 0) {
-                    const int leftIndex = node.leftChild;
-                    const int rightIndex = node.rightChild;
-
-                    float leftTEntry = std::numeric_limits<float>::infinity();
-                    float rightTEntry = std::numeric_limits<float>::infinity();
-
-                    const bool hitLeft =
-                            slabIntersectAABB(
-                                rayWorld,
-                                tlasNodes[leftIndex],
-                                inverseDirectionWorld,
-                                stackHit->meshT,
-                                leftTEntry);
-
-                    const bool hitRight =
-                            slabIntersectAABB(
-                                rayWorld,
-                                tlasNodes[rightIndex],
-                                inverseDirectionWorld,
-                                stackHit->meshT,
-                                rightTEntry);
-
-                    if (hitLeft && hitRight) {
-                        pushNearFar(stack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                    } else if (hitLeft) {
-                        stack.push(leftIndex);
-                    } else if (hitRight) {
-                        stack.push(rightIndex);
-                    }
-
-                    continue;
-                }
-
-                const uint32_t instanceIndex = node.leftChild;
-                const InstanceRecord &instance = instanceRecords[instanceIndex];
-
-                if (instance.geometryType != GeometryType::PointCloud) {
-                    continue;
-                }
-
-                const Transform &transform = transforms[instance.transformIndex];
-                const Ray rayObject = toObjectSpace(rayWorld, transform);
-
-                collectBLASPointCloudTransmitStack(
-                    rayObject,
-                    rayWorld,
-                    instance.blasRangeIndex,
-                    instanceIndex,
-                    scene,
-                    transform,
-                    stackHit->meshT,
-                    stackHit);
-            }
-        }
-
-        return stackHit->hitMesh;
-    }
-
     // Transmit and only attenuate the ray.
     SYCL_EXTERNAL static bool intersectBLASPointCloudTransmit(
         const Ray &rayObject,
@@ -559,8 +210,6 @@ namespace Pale {
         const GPUSceneBuffers &scene) {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
-
-        constexpr float tAdvanceEpsilon = 1e-8f; // advance after a rejected hit to avoid re-hitting same surfel
 
         float cumulativeTransmittance = 1.0f;
 
@@ -615,8 +264,7 @@ namespace Pale {
                     float tHitLocal = 0.0f;
                     float alphaGeom = 0.0f;
                     float3 hitLocal{};
-                    if (!intersectSurfel(rayObject, surfel, RayEpsilon, bestTHit, tHitLocal, hitLocal, alphaGeom,
-                                         RayEpsilon))
+                    if (!intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal, hitLocal, alphaGeom, RayEpsilon2))
                         continue;
 
                     if (tHitLocal <= tMin)
@@ -639,7 +287,7 @@ namespace Pale {
 
 
         // Stochastic accept/reject loop over successive closest hits
-        float tMin = RayEpsilon;
+        float tMin = RayEpsilon2;
         while (true) {
             float tHit = 0.0f;
             uint32_t surfelIndex = UINT32_MAX;
@@ -655,7 +303,7 @@ namespace Pale {
             float alphaEff = scene.points[surfelIndex].opacity * alphaGeomAtHit;
             float tau = 1.0f - alphaEff;
             cumulativeTransmittance *= tau;
-            tMin = tHit + tAdvanceEpsilon;
+            tMin = tHit + RayEpsilon2;
 
             // stop early if we reach 0 transmittance
             if ((cumulativeTransmittance) <= 0.001f) {
@@ -684,33 +332,28 @@ namespace Pale {
 
         worldHitOut->t = FLT_MAX;
 
-        SmallStack<64> traversalStack;
+        SmallStack<256> traversalStack;
         traversalStack.push(0); // root
 
         float bestWorldTHit = std::numeric_limits<float>::infinity();
         float transmittanceProduct = 1.0f; // accumulate product over visited splat instances in front of the first hit
 
         while (!traversalStack.empty()) {
-            const int nodeIndex = traversalStack.pop();
+            const uint32_t nodeIndex = traversalStack.pop();
             const TLASNode &node = tlasNodes[nodeIndex];
-
             float nodeTEntry = 0.0f;
             if (!slabIntersectAABB(rayWorld, node, inverseDirectionWorld, bestWorldTHit, nodeTEntry))
                 continue;
-
             if (node.count == 0) {
                 // Internal TLAS node: near-to-far push
-                const int leftIndex = node.leftChild;
-                const int rightIndex = node.rightChild;
-
+                const uint32_t leftIndex = node.leftChild;
+                const uint32_t rightIndex = node.rightChild;
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
-
                 const bool hitLeft = slabIntersectAABB(rayWorld, tlasNodes[leftIndex], inverseDirectionWorld,
                                                        bestWorldTHit, leftTEntry);
                 const bool hitRight = slabIntersectAABB(rayWorld, tlasNodes[rightIndex], inverseDirectionWorld,
                                                         bestWorldTHit, rightTEntry);
-
                 if (hitLeft && hitRight) {
                     pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
                 } else if (hitLeft) {
@@ -726,10 +369,8 @@ namespace Pale {
             const InstanceRecord &instance = instanceRecords[instanceIndex];
             const Transform &transform = transforms[instance.transformIndex];
             Ray rayObject = toObjectSpace(rayWorld, transform);
-
             LocalHit localHit{};
             bool acceptedHitInInstance = false;
-
             if (instance.geometryType == GeometryType::Mesh) {
                 acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene,
                                                           transform);
@@ -752,27 +393,18 @@ namespace Pale {
 
             if (acceptedHitInInstance) {
                 // Convert to world, test depth
-
-
                 const float3 hitWorld = localHit.worldHit; // you already compute this in BLAS
                 const float3 toHitWorld = hitWorld - rayWorld.origin;
-
-                // If rayWorld.direction normalized:
                 const float tWorld = dot(toHitWorld, rayWorld.direction);
-
-                // If NOT normalized:
-
                 if (tWorld > 0.0f && tWorld < bestWorldTHit) {
                     bestWorldTHit = tWorld;
                     foundAnySurfaceHit = true;
-
                     worldHitOut->hit = true;
                     worldHitOut->t = tWorld;
                     worldHitOut->hitPositionW = hitWorld;
                     worldHitOut->instanceIndex = instanceIndex;
                     worldHitOut->primitiveIndex = localHit.primitiveIndex;
                     worldHitOut->alphaGeom = localHit.alpha;
-
                     if (instance.geometryType == GeometryType::PointCloud) {
                         transmittanceProduct *= localHit.transmissivity;
                     }
@@ -783,18 +415,13 @@ namespace Pale {
                 transmittanceProduct *= localHit.transmissivity;
             }
         }
-
         // If no surface hit at all, expose total transmission accumulated
         if (!foundAnySurfaceHit) {
             worldHitOut->hit = false;
         }
-
         worldHitOut->transmissivity = transmittanceProduct;
-
         return foundAnySurfaceHit;
     }
-
-    /*
 
     SYCL_EXTERNAL inline float traceShadowTransmissionToLight(
         const GPUSceneBuffers &scene,
@@ -810,17 +437,16 @@ namespace Pale {
         const float lightDistance = sycl::sqrt(lightDistanceSquared);
         const float3 lightDirection = lightVector / lightDistance;
 
-        constexpr uint32_t maxShadowTraversals = 32u;
 
         Ray shadowRay{};
-        shadowRay.origin = shadingPositionW + lightDirection * RayEpsilon;
+        shadowRay.origin = shadingPositionW + lightDirection * RayEpsilon2;
         shadowRay.direction = lightDirection;
         shadowRay.normal = shadingNormalW;
 
         float shadowTransmission = 1.0f;
 
         for (uint32_t shadowTraversalIndex = 0u;
-             shadowTraversalIndex < maxShadowTraversals;
+             shadowTraversalIndex < kMaxSplatEventsPerRay;
              ++shadowTraversalIndex) {
             WorldHit shadowHit{};
             intersectScene(
@@ -836,7 +462,7 @@ namespace Pale {
             const float3 hitVector = shadowHit.hitPositionW - shadingPositionW;
             const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
 
-            if (hitDistance >= lightDistance - RayEpsilon) {
+            if (hitDistance >= lightDistance - RayEpsilon2) {
                 break;
             }
 
@@ -855,7 +481,7 @@ namespace Pale {
                     return shadowTransmission;
                 }
 
-                shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * RayEpsilon;
+                shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * RayEpsilon2;
                 continue;
             }
 
@@ -863,37 +489,6 @@ namespace Pale {
         }
 
         return shadowTransmission;
-    }
-    */
-
-    SYCL_EXTERNAL inline float traceShadowTransmissionToLight(
-    const GPUSceneBuffers &scene,
-    const float3 &shadingPositionW,
-    const float3 &shadingNormalW,
-    const float3 &lightPositionW)
-    {
-        const float3 lightVector = lightPositionW - shadingPositionW;
-        const float lightDistanceSquared = dot(lightVector, lightVector);
-        if (lightDistanceSquared <= 1.0e-12f) return 0.0f;
-
-        const float lightDistance = sycl::sqrt(lightDistanceSquared);
-        const float3 lightDirection = lightVector / lightDistance;
-
-        Ray shadowRay{};
-        shadowRay.origin = shadingPositionW + lightDirection * RayEpsilon;
-        shadowRay.direction = lightDirection;
-        shadowRay.normal = shadingNormalW;
-
-        SurfelStackHit stackHit{};
-        intersectSceneTransmitStack(
-            shadowRay,
-            &stackHit,
-            scene,
-            lightDistance - RayEpsilon);
-
-        if (stackHit.hitMesh && stackHit.meshT < lightDistance - RayEpsilon) return 0.0f;
-
-        return sycl::clamp(stackHit.transmissivity, 0.0f, 1.0f);
     }
 
 

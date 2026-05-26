@@ -5,7 +5,7 @@
     "--ply",
     "pointcloud",
     "--seed",
-    "42"
+    "666"
   ],
   "cases": [
     {
@@ -16,9 +16,9 @@
       "min": -0.25,
       "max": 0.35,
       "fd_epsilon": 2e-2,
-      "forward_passes": 8,
+      "forward_passes": 4,
       "bounces": 4,
-      "adjoint_passes": 16,
+      "adjoint_passes": 4,
       "adjoint_bounces": 4,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"

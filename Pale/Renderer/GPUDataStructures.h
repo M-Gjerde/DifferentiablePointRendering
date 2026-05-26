@@ -108,8 +108,7 @@ namespace Pale {
     CHECK_16(Transform);
 
     /*************************  Scene graph **************************/
-    constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
-    static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
+
 
     enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1, InvalidType = UINT32_MAX };
 
@@ -230,8 +229,13 @@ namespace Pale {
 
     enum class EventType : uint32_t { Null = 0, Reflect = 1, Transmit = 2, Absorb = 3, TransmittanceGradient = 4 };
 
-    constexpr float RayEpsilon = 1e-6f;
-
+    // Maximum expected per-ray surfel intersections.
+    // Must be compile-time constant for stack arrays in SYCL device code.
+    constexpr uint32_t kMaxSplatEventsPerRay = 16;
+    constexpr float RayEpsilon = 1e-5f;
+    constexpr float RayEpsilon2 = 1e-6f;
+    constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
+    static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -256,46 +260,6 @@ namespace Pale {
     };
 
     static_assert(std::is_trivially_copyable_v<RayState>);
-
-
-    // Maximum expected per-ray surfel intersections.
-    // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 8u;
-
-    constexpr uint32_t kMaxLoggedSurfelEvents = 16u;
-
-    struct SurfelStackEvent {
-        float tWorld;
-        float tObject;
-
-        float alphaGeom;
-        float alphaEff;
-
-        uint32_t primitiveIndex;
-        uint32_t instanceIndex;
-
-        float3 hitPositionW;
-    };
-
-    struct SurfelStackHit {
-        // Opaque mesh behind the transparent stack, if any.
-        bool hitMesh = false;
-        float meshT = FLT_MAX;
-        float3 meshHitPositionW{0.0f, 0.0f, 0.0f};
-
-        uint32_t meshInstanceIndex = UINT32_MAX;
-        uint32_t meshPrimitiveIndex = UINT32_MAX;
-
-        // Total attenuation through all surfels before meshT / tMax.
-        float transmissivity = 1.0f;
-
-        // Only nearest logged surfels are stored.
-        uint32_t eventCount = 0u;
-        uint32_t totalEventCount = 0u;
-        bool eventOverflow = false;
-
-        SurfelStackEvent events[kMaxLoggedSurfelEvents];
-    };
 
     struct SurfelEvent {
         float t = FLT_MAX; // local space t
@@ -362,9 +326,6 @@ namespace Pale {
         Reflect = 2u,
         Transmit = 3u
     };
-
-    static constexpr uint32_t kMaxSegmentOccluders = 5;
-
 
     struct PendingCameraSegment {
         bool valid = false;

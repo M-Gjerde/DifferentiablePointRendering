@@ -72,7 +72,7 @@ export namespace Pale {
 
         struct BuildOptions {
             uint32_t bvhMaxLeafTriangles = 4;
-            uint32_t bvhMaxLeafPoints = 2;
+            uint32_t bvhMaxLeafPoints = 4;
         };
 
 
