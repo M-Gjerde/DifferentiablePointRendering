@@ -492,11 +492,11 @@ namespace Pale {
 
         // -------------------------------------------------------------------------
         // Pass 2:
-        //   Normal from median depth map
+        //   Normal from 2DGS-style pseudo surface depth map
         // -------------------------------------------------------------------------
         if (settings.useNormalConsistency) {
             queue.submit([&](sycl::handler &cgh) {
-                cgh.parallel_for<class MedianDepthNormalKernel>(
+                cgh.parallel_for<class SurfaceDepthNormalKernel>(
                     sycl::range<1>(pixelCount),
                     [=](sycl::id<1> tid) {
                         const std::uint32_t pixelIndex = tid[0];
@@ -508,70 +508,70 @@ namespace Pale {
                                     float4{0.0f, 0.0f, 0.0f, 0.0f};
                             return;
                         }
-
                         const uint32_t idxL = y * imageWidth + (x - 1u);
                         const uint32_t idxR = y * imageWidth + (x + 1u);
                         const uint32_t idxU = (y - 1u) * imageWidth + x;
                         const uint32_t idxD = (y + 1u) * imageWidth + x;
+                        // Same meaning as 2DGS pipe.depth_ratio:
+                        //
+                        //   depthRatio = 1 -> use median depth for bounded scenes
+                        //   depthRatio = 0 -> use expected / mean depth for unbounded scenes
+                        //
+                        // Add this setting if you do not already have it.
+                        const float depthRatio = 1;
+                        const float zMedianC = sensor.medianDepthBuffer[pixelIndex];
+                        const float zMedianL = sensor.medianDepthBuffer[idxL];
+                        const float zMedianR = sensor.medianDepthBuffer[idxR];
+                        const float zMedianU = sensor.medianDepthBuffer[idxU];
+                        const float zMedianD = sensor.medianDepthBuffer[idxD];
 
-                        const float zC = sensor.medianDepthBuffer[pixelIndex];
-                        const float zL = sensor.medianDepthBuffer[idxL];
-                        const float zR = sensor.medianDepthBuffer[idxR];
-                        const float zU = sensor.medianDepthBuffer[idxU];
-                        const float zD = sensor.medianDepthBuffer[idxD];
+                        const float zMeanC = sensor.meanDepthBuffer[pixelIndex];
+                        const float zMeanL = sensor.meanDepthBuffer[idxL];
+                        const float zMeanR = sensor.meanDepthBuffer[idxR];
+                        const float zMeanU = sensor.meanDepthBuffer[idxU];
+                        const float zMeanD = sensor.meanDepthBuffer[idxD];
+
+                        const float zC = zMeanC * (1.0f - depthRatio) + zMedianC * depthRatio;
+                        const float zL = zMeanL * (1.0f - depthRatio) + zMedianL * depthRatio;
+                        const float zR = zMeanR * (1.0f - depthRatio) + zMedianR * depthRatio;
+                        const float zU = zMeanU * (1.0f - depthRatio) + zMedianU * depthRatio;
+                        const float zD = zMeanD * (1.0f - depthRatio) + zMedianD * depthRatio;
 
                         if (zC <= 0.0f || zL <= 0.0f || zR <= 0.0f || zU <= 0.0f || zD <= 0.0f) {
+                            sensor.normalFromDepthBuffer[pixelIndex] = float4{0.0f, 0.0f, 0.0f, 0.0f};
+                            return;
+                        }
+                        const float3 pL = reconstructWorldPositionFromDepthCenter(sensor.camera, x - 1u, y, zL);
+                        const float3 pR = reconstructWorldPositionFromDepthCenter(sensor.camera, x + 1u, y, zR);
+                        const float3 pU = reconstructWorldPositionFromDepthCenter(sensor.camera, x, y - 1u, zU);
+                        const float3 pD = reconstructWorldPositionFromDepthCenter(sensor.camera, x, y + 1u, zD);
+                        // 2DGS depth_to_normal:
+                        //
+                        //   dx = points[2:, 1:-1] - points[:-2, 1:-1]
+                        //   dy = points[1:-1, 2:] - points[1:-1, :-2]
+                        //   normal = normalize(cross(dx, dy))
+                        //
+                        // With image coordinates:
+                        //
+                        //   tangentY = P(y + 1, x) - P(y - 1, x)
+                        //   tangentX = P(y, x + 1) - P(y, x - 1)
+                        //
+                        const float3 tangentY = pD - pU;
+                        const float3 tangentX = pR - pL;
+
+                        const float tangentYLengthSquared = dot(tangentY, tangentY);
+                        const float tangentXLengthSquared = dot(tangentX, tangentX);
+                        if (tangentYLengthSquared <= 1.0e-16f || tangentXLengthSquared <= 1.0e-16f) {
                             sensor.normalFromDepthBuffer[pixelIndex] =
                                     float4{0.0f, 0.0f, 0.0f, 0.0f};
                             return;
                         }
-
-                        const float3 pC =
-                                reconstructWorldPositionFromDepthCenter(sensor.camera, x, y, zC);
-                        const float3 pL =
-                                reconstructWorldPositionFromDepthCenter(sensor.camera, x - 1u, y, zL);
-                        const float3 pR =
-                                reconstructWorldPositionFromDepthCenter(sensor.camera, x + 1u, y, zR);
-                        const float3 pU =
-                                reconstructWorldPositionFromDepthCenter(sensor.camera, x, y - 1u, zU);
-                        const float3 pD =
-                                reconstructWorldPositionFromDepthCenter(sensor.camera, x, y + 1u, zD);
-
-                        const float leftDepthDifference = sycl::fabs(zL - zC);
-                        const float rightDepthDifference = sycl::fabs(zR - zC);
-                        const float upDepthDifference = sycl::fabs(zU - zC);
-                        const float downDepthDifference = sycl::fabs(zD - zC);
-
-                        float3 dx;
-                        if (rightDepthDifference < leftDepthDifference) {
-                            dx = pR - pC;
-                        } else {
-                            dx = pC - pL;
-                        }
-
-                        float3 dy;
-                        if (downDepthDifference < upDepthDifference) {
-                            dy = pD - pC;
-                        } else {
-                            dy = pC - pU;
-                        }
-
-                        const float dxLen2 = dot(dx, dx);
-                        const float dyLen2 = dot(dy, dy);
-
-                        if (dxLen2 <= 1e-16f || dyLen2 <= 1e-16f) {
-                            sensor.normalFromDepthBuffer[pixelIndex] =
-                                    float4{0.0f, 0.0f, 0.0f, 0.0f};
-                            return;
-                        }
-
-                        float3 normalW = normalize(cross(dx, dy));
-
-                        const float3 viewDirectionToCamera = normalize(sensor.camera.pos - pC);
-                        if (dot(normalW, viewDirectionToCamera) < 0.0f) {
-                            normalW = -normalW;
-                        }
-
+                        // Match 2DGS cross-product order exactly:
+                        //
+                        //   normal = normalize(cross(tangentY, tangentX))
+                        //
+                        // Do not flip toward the camera if you want exact 2DGS behavior.
+                        const float3 normalW = normalize(cross(tangentY, tangentX));
                         sensor.normalFromDepthBuffer[pixelIndex] =
                                 float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
                     });

@@ -378,9 +378,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth_trunc", default=-1.0, type=float)
     parser.add_argument("--sdf_trunc", default=-1.0, type=float)
     parser.add_argument("--num_cluster", default=50, type=int)
-    parser.add_argument("--mesh_res", default=2048, type=int)
+    parser.add_argument("--mesh_res", default=512, type=int)
 
-    parser.add_argument("--depth_key", type=str, default="mean_depth", choices=["median_depth", "mean_depth"])
+    parser.add_argument("--depth_key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
 
     return parser.parse_args()
 

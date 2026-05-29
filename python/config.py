@@ -68,7 +68,7 @@ class OptimizationConfig:
 
     depth_distort_weight: float = 1000.0
     normal_consistency_weight: float = 0.01
-    opacity_loss_weight: float = 0.0
+    opacity_loss_weight: float = 0.01
     opacity_target: float = 1.0
 
     log_interval: int = 1
@@ -77,7 +77,7 @@ class OptimizationConfig:
 
     # Density control / EV-splitting
     densification_interval: int = 100
-    prune_interval: int = 25
+    prune_interval: int = 50
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
@@ -85,8 +85,8 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 8.0e-3
-    densification_scale_min: float = 2.5e-2
+    densification_grad_abs_min: float = 5.0e-3
+    densification_scale_min: float = 2.0e-2
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.15
