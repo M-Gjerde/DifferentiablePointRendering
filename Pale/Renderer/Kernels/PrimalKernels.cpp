@@ -301,16 +301,14 @@ namespace Pale {
         const std::uint32_t imageHeight = sensor.camera.height;
         const std::uint32_t pixelCount = imageWidth * imageHeight;
         queue.fill(sensor.framebuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
-        if (settings.useNormalConsistency) {
-            queue.fill(sensor.medianDepthBuffer, 0.0f, pixelCount).wait();
-            queue.fill(sensor.medianWorldPositionBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
-            queue.fill(sensor.visibleNormalBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
-            queue.fill(sensor.normalFromDepthBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
-        }
-        if (settings.useDepthDistortion) {
-            queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount).wait();
-            queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount).wait();
-        }
+        queue.fill(sensor.medianDepthBuffer, 0.0f, pixelCount).wait();
+        queue.fill(sensor.meanDepthBuffer, 0.0f, pixelCount).wait();
+        queue.fill(sensor.medianWorldPositionBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
+        queue.fill(sensor.visibleNormalBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
+        queue.fill(sensor.normalFromDepthBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
+        queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount).wait();
+        queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount).wait();
+
 
         // -------------------------------------------------------------------------
         // Pass 1:
@@ -352,6 +350,9 @@ namespace Pale {
                     float medianDepth = 0.0f;
                     float3 medianWorldPosition(0.0f, 0.0f, 0.0f);
                     float3 medianNormalW(0.0f, 0.0f, 0.0f);
+                    float accumulatedMeanDepthWeight = 0.0f;
+                    float accumulatedMeanDepth = 0.0f;
+
                     for (uint32_t traversalIndex = 0u;
                          traversalIndex < kMaxSplatEventsPerRay;
                          ++traversalIndex) {
@@ -383,20 +384,25 @@ namespace Pale {
                                 //emittedRadiance = float3(0.0f, 0.0f, 0.0f);
                             }
                             const float3 directRadiance =
-                                    estimateDirectLightAtDiffuseSurface(scene, worldHit.hitPositionW, normalW,
-                                                                        surfel.alpha_r * surfel.albedo,
-                                                                        settings.numShadowRays, rng) * alphaEff;
+                                    estimateDirectAreaLightAtDiffuseSurface(scene, worldHit.hitPositionW, normalW,
+                                                                            surfel.alpha_r * surfel.albedo, settings,
+                                                                            rng) * alphaEff;
                             const float3 outgoingRadiance = emittedRadiance + indirectRadiance + directRadiance;
                             accumulatedRadianceRGB += transmittance * outgoingRadiance;
                             // Median depth using compositing weights w_i = T_i * alpha_i
                             const float wi = transmittance * alphaEff;
                             const float zi = dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+
+                            accumulatedMeanDepthWeight += wi;
+                            accumulatedMeanDepth += wi * zi;
+
                             if (!medianFound && (accumulatedCompositeWeight + wi) >= 0.5f) {
                                 medianFound = true;
                                 medianDepth = zi;
                                 medianWorldPosition = worldHit.hitPositionW;
                                 medianNormalW = normalW;
                             }
+
                             accumulatedCompositeWeight += wi;
                             // Depth distortion
                             const float mi = depthDistortionNdc01(zi);
@@ -422,15 +428,19 @@ namespace Pale {
                             {
                                 const float wi = transmittance;
                                 const float zi = dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+
+                                accumulatedMeanDepthWeight += wi;
+                                accumulatedMeanDepth += wi * zi;
+
                                 if (!medianFound && (accumulatedCompositeWeight + wi) >= 0.5f) {
                                     medianFound = true;
                                     medianDepth = zi;
                                     medianWorldPosition = worldHit.hitPositionW;
                                     medianNormalW = normalW;
                                 }
+
                                 accumulatedCompositeWeight += wi;
                             }
-
                             if (material.isEmissive()) {
                                 const float3 emittedRadiance = material.power * material.baseColor;
                                 accumulatedRadianceRGB +=
@@ -440,9 +450,8 @@ namespace Pale {
                                     worldHit.hitPositionW, normalW, photonMap);
                                 const float3 indirectRadiance = (material.baseColor * M_1_PIf) * indirectIrradiance;
                                 const float3 directRadiance =
-                                        estimateDirectLightAtDiffuseSurface(
-                                            scene, worldHit.hitPositionW, normalW, material.baseColor,
-                                            settings.numShadowRays, rng);
+                                        estimateDirectAreaLightAtDiffuseSurface(
+                                            scene, worldHit.hitPositionW, normalW, material.baseColor, settings, rng);
                                 const float3 outgoingRadiance = indirectRadiance + directRadiance;
                                 accumulatedRadianceRGB += transmittance * outgoingRadiance;
                             }
@@ -456,6 +465,13 @@ namespace Pale {
                                               accumulatedRadianceRGB.z(), 1.0f);
                     sensor.framebuffer[framebufferIndex] += currentValue;
                     sensor.depthDistortionBuffer[pixelIndex] = distortion;
+                    if (accumulatedMeanDepthWeight > 1.0e-6f) {
+                        sensor.meanDepthBuffer[pixelIndex] =
+                                accumulatedMeanDepth / accumulatedMeanDepthWeight;
+                    } else {
+                        sensor.meanDepthBuffer[pixelIndex] = 0.0f;
+                    }
+
                     if (medianFound) {
                         sensor.medianDepthBuffer[pixelIndex] = medianDepth;
                         sensor.medianWorldPositionBuffer[pixelIndex] = float4{

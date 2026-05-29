@@ -57,6 +57,11 @@ export namespace Pale {
                     reinterpret_cast<float *>(
                         sycl::malloc_device(pixelCount * sizeof(float), queue));
 
+
+            float *meanDepthBuffer =
+                    reinterpret_cast<float *>(
+                        sycl::malloc_device(pixelCount * sizeof(float), queue));
+
             float *medianDepthAdjointBuffer =
                     reinterpret_cast<float *>(
                         sycl::malloc_device(pixelCount * sizeof(float), queue));
@@ -126,6 +131,10 @@ export namespace Pale {
                              0,
                              pixelCount * sizeof(float));
 
+                queue.memset(meanDepthBuffer,
+                             0,
+                             pixelCount * sizeof(float));
+
                 queue.memset(medianDepthAdjointBuffer,
                              0,
                              pixelCount * sizeof(float));
@@ -158,6 +167,7 @@ export namespace Pale {
             sensorGpu.depthDistortionBuffer = depthDistortionBuffer;
             sensorGpu.depthDistortionAdjointBuffer = depthDistortionAdjointBuffer;
             sensorGpu.medianDepthBuffer = medianDepthBuffer;
+            sensorGpu.meanDepthBuffer = meanDepthBuffer;
             sensorGpu.medianWorldPositionBuffer = medianWorldPositionBuffer;
             sensorGpu.visibleNormalBuffer = visibleNormalBuffer;
             sensorGpu.normalFromDepthBuffer = normalFromDepthBuffer;

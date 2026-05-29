@@ -1391,6 +1391,132 @@ namespace Pale {
         return sample;
     }
 
+    SYCL_EXTERNAL inline AreaLightSample sampleMeshAreaLightByIndex(
+        const GPUSceneBuffers &scene,
+        uint32_t lightIndex,
+        rng::Xorshift128 &rng128) {
+        AreaLightSample sample{};
+        sample.valid = false;
+
+        if (lightIndex >= scene.lightCount) {
+            return sample;
+        }
+
+        const GPULightRecord light = scene.lights[lightIndex];
+
+        if (light.lightType != LightType::Surfel) {
+            return sample;
+        }
+
+        if (light.primitiveIndex == kInvalidIndex) {
+            return sample;
+        }
+
+        const Point &surfel = scene.points[light.primitiveIndex];
+
+        const float xi1 = rng128.nextFloat();
+        const float xi2 = rng128.nextFloat();
+
+        const float radius = sycl::sqrt(xi1);
+        const float angle = 2.0f * M_PIf * xi2;
+
+        const float localU = radius * sycl::cos(angle);
+        const float localV = radius * sycl::sin(angle);
+
+        const float3 tangentUWorld = surfel.scale.x() * surfel.tanU;
+        const float3 tangentVWorld = surfel.scale.y() * surfel.tanV;
+
+        const float3 positionWorld =
+                surfel.position +
+                localU * tangentUWorld +
+                localV * tangentVWorld;
+
+        const float areaWorld =
+                M_PIf * surfel.scale.x() * surfel.scale.y();
+
+        if (areaWorld <= 1.0e-12f) {
+            return sample;
+        }
+
+        const float3 normalWorld =
+                normalize(cross(surfel.tanU, surfel.tanV));
+
+        float alphaGeom = 1.0f;
+        opacityBeta(localU, localV, surfel, &alphaGeom);
+
+        sample.valid = true;
+        sample.lightIndex = lightIndex;
+
+        sample.positionW = positionWorld;
+        sample.normalW = normalWorld;
+
+        // Deterministic light loop: no discrete light-selection PDF.
+        sample.pdfSelectLight = 1.0f;
+
+        // Uniform over this emitter's surface area.
+        sample.pdfArea = 1.0f / areaWorld;
+        sample.totalAreaWorld = areaWorld;
+
+        // Total radiant flux of this light, not per-sample photon power.
+        sample.flux =
+                light.flux * light.color * alphaGeom * surfel.opacity;
+
+        sample.surface.primitiveIndex = light.primitiveIndex;
+        sample.surface.alphaGeom = alphaGeom;
+        sample.surface.uv = {localU, localV};
+
+        return sample;
+    }
+
+    /*
+    struct PointLightPhotonSample {
+        bool valid;
+        uint32_t lightIndex;
+        float3 positionW;
+        float3 direction;
+        float3 flux;     // photon power, W
+    };
+
+    SYCL_EXTERNAL inline PointLightPhotonSample samplePointLightPhotonDeterministic(
+        const GPUSceneBuffers &scene,
+        uint32_t lightIndex,
+        uint32_t photonIndexForThisLight,
+        uint32_t photonCountForThisLight)
+    {
+        PointLightPhotonSample sample{};
+        sample.valid = false;
+
+        if (lightIndex >= scene.lightCount ||
+            photonCountForThisLight == 0u)
+        {
+            return sample;
+        }
+
+        const GPULightRecord light = scene.lights[lightIndex];
+
+        if (light.lightType != LightType::Point) {
+            return sample;
+        }
+
+        sample.valid = true;
+        sample.lightIndex = lightIndex;
+        sample.positionW = light.positionW; // adapt field name
+
+        sample.direction =
+            fibonacciSphereDirection(
+                photonIndexForThisLight,
+                photonCountForThisLight);
+
+        // light.flux is total radiant flux Phi_k [W].
+        sample.flux =
+            light.flux *
+            light.color *
+            (1.0f / static_cast<float>(photonCountForThisLight));
+
+        return sample;
+    }
+    */
+
     SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
         uint32_t measurementEventCount,
         uint32_t measurementTwoPointEventCount,

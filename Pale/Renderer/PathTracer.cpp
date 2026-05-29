@@ -150,7 +150,7 @@ namespace Pale {
         Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingCameraSegmentBytes));
         m_intermediates.maxMeasurementEventCount = m_rayQueueCapacity;;
 
-        const uint32_t gradientRecordCapacity = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 8; // TODO depends on number of sensors
+        const uint32_t gradientRecordCapacity = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 20; // TODO depends on number of sensors
         const std::size_t sizeGradientRecordsBytes =
             sizeof(SurfelGradientRecord) * gradientRecordCapacity;
         m_intermediates.gradientRecords =

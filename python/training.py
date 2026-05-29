@@ -121,6 +121,89 @@ def assert_all_finite_torch(name: str, tensor: torch.Tensor, iteration: int) -> 
             f"[Iter {iteration:04d}] Non-finite values in {name}: "
             f"bad_count={bad_count}, first_bad_flat_index={first_bad_flat_index}"
         )
+def repair_nonfinite_gradient_array_inplace(
+        name: str,
+        array: np.ndarray,
+        iteration: int,
+        zero_entire_row: bool = True,
+) -> int:
+    """
+    Replace NaN/Inf gradient values with zero so optimization can continue.
+
+    For per-surfel arrays, if one component of a surfel gradient is bad, zero the
+    whole surfel row. This avoids applying a partially corrupted vector update.
+    """
+    if array is None:
+        return 0
+
+    gradient_array = np.asarray(array)
+    finite_mask = np.isfinite(gradient_array)
+
+    if bool(np.all(finite_mask)):
+        return 0
+
+    bad_mask = ~finite_mask
+    bad_count = int(np.count_nonzero(bad_mask))
+    first_bad_flat_index = int(np.flatnonzero(bad_mask)[0])
+    first_bad_index = np.unravel_index(first_bad_flat_index, gradient_array.shape)
+    first_bad_value = gradient_array[first_bad_index]
+
+    if zero_entire_row and gradient_array.ndim >= 2:
+        bad_rows = np.any(bad_mask.reshape(gradient_array.shape[0], -1), axis=1)
+        repaired_count = int(np.count_nonzero(bad_rows))
+        gradient_array[bad_rows] = 0.0
+        repair_text = f"zeroed_rows={repaired_count}"
+    else:
+        gradient_array[bad_mask] = 0.0
+        repair_text = f"zeroed_values={bad_count}"
+
+    print(
+        f"[Iter {iteration:04d}] Repaired non-finite gradient in {name}: "
+        f"bad_count={bad_count}, first_bad_index={first_bad_index}, "
+        f"first_bad_value={first_bad_value}, {repair_text}"
+    )
+
+    return bad_count
+
+
+def repair_nonfinite_gradient_dict_inplace(
+        tag: str,
+        gradient_dict: Dict[str, np.ndarray],
+        iteration: int,
+) -> int:
+    """
+    Repair all arrays in a renderer-produced gradient dictionary.
+    """
+    total_bad_count = 0
+
+    for gradient_name, gradient_array in gradient_dict.items():
+        total_bad_count += repair_nonfinite_gradient_array_inplace(
+            name=f"{tag}[{gradient_name}]",
+            array=gradient_array,
+            iteration=iteration,
+            zero_entire_row=True,
+        )
+
+    return total_bad_count
+
+
+def repair_final_optimizer_gradients_inplace(
+        iteration: int,
+        grad_position_np: np.ndarray,
+        grad_tangent_u_np: np.ndarray,
+        grad_tangent_v_np: np.ndarray,
+        grad_scales_np: np.ndarray,
+        grad_albedos_np: np.ndarray,
+        grad_opacities_np: np.ndarray,
+        grad_betas_np: np.ndarray,
+) -> None:
+    repair_nonfinite_gradient_array_inplace("final_grad_position", grad_position_np, iteration)
+    repair_nonfinite_gradient_array_inplace("final_grad_tangent_u", grad_tangent_u_np, iteration)
+    repair_nonfinite_gradient_array_inplace("final_grad_tangent_v", grad_tangent_v_np, iteration)
+    repair_nonfinite_gradient_array_inplace("final_grad_scale", grad_scales_np, iteration)
+    repair_nonfinite_gradient_array_inplace("final_grad_albedo", grad_albedos_np, iteration)
+    repair_nonfinite_gradient_array_inplace("final_grad_opacity", grad_opacities_np, iteration, zero_entire_row=False)
+    repair_nonfinite_gradient_array_inplace("final_grad_beta", grad_betas_np, iteration, zero_entire_row=False)
 
 def apply_densification_source_updates_inplace(
         densification_result: Optional[Dict[str, Any]],
@@ -1875,12 +1958,23 @@ def run_optimization(
                     if normal_gradients else {}
                 )
 
-                for gradient_name, gradient_array in photo_gradients.items():
-                    assert_all_finite_np(f"total_gradients[{gradient_name}]", gradient_array, iteration)
-                for gradient_name, gradient_array in distortion_gradients.items():
-                    assert_all_finite_np(f"total_gradients[{gradient_name}]", gradient_array, iteration)
-                for gradient_name, gradient_array in normal_gradients.items():
-                    assert_all_finite_np(f"total_gradients[{gradient_name}]", gradient_array, iteration)
+                repair_nonfinite_gradient_dict_inplace(
+                    "photo_gradients",
+                    photo_gradients,
+                    iteration,
+                )
+
+                repair_nonfinite_gradient_dict_inplace(
+                    "distortion_gradients",
+                    distortion_gradients,
+                    iteration,
+                )
+
+                repair_nonfinite_gradient_dict_inplace(
+                    "normal_gradients",
+                    normal_gradients,
+                    iteration,
+                )
                 # ------------------------------------------------------------------
                 # Blend the final update vector in Python
                 # ------------------------------------------------------------------
@@ -2126,7 +2220,7 @@ def run_optimization(
                     grad_betas_np,
                 )
                 optimizer.step()
-                if (reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0) or iteration == 1:
+                if reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0:
                     with torch.no_grad():
                         opacities[trainable_surfel_mask] = float(reset_opacity_value)
                         print(f"[Iter {iteration:04d}] "
@@ -2335,7 +2429,8 @@ def run_optimization(
                                 grad_position_np=avg_density_grad_vector_np,
                                 selection_score_np=grad_pos_norm_np,
                                 trainable_surfel_mask=densify_mask_torch,
-                                grad_threshold=grad_threshold
+                                grad_threshold=grad_threshold,
+                                min_clone_scale=config.densification_scale_min
                             )
 
                             if densification_result is not None:
@@ -2392,7 +2487,7 @@ def run_optimization(
                 scale_prune_indices = np.zeros((0,), dtype=np.int64)
                 opacity_prune_indices = np.zeros((0,), dtype=np.int64)
 
-                if iteration >= prune_after and iteration % prune_interval == 0:
+                if iteration >= prune_after and iteration % prune_interval == 0 and iteration % reset_opacity_interval != 0:
                     # ----------------------------------------------------------
                     # Prune geometrically degenerate surfels.
                     #

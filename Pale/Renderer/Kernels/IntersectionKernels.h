@@ -171,7 +171,8 @@ namespace Pale {
                 float alphaGeom = 0.0f;
                 float3 hitLocal{0.0f};
 
-                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal, hitLocal, alphaGeom, RayEpsilon2))
+                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
+                                                            hitLocal, alphaGeom, RayEpsilon2))
                     continue;
 
                 // Keep closest
@@ -264,7 +265,8 @@ namespace Pale {
                     float tHitLocal = 0.0f;
                     float alphaGeom = 0.0f;
                     float3 hitLocal{};
-                    if (!intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal, hitLocal, alphaGeom, RayEpsilon2))
+                    if (!intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal, hitLocal, alphaGeom,
+                                         RayEpsilon2))
                         continue;
 
                     if (tHitLocal <= tMin)
@@ -423,7 +425,7 @@ namespace Pale {
         return foundAnySurfaceHit;
     }
 
-    SYCL_EXTERNAL inline float traceShadowTransmissionToLight(
+    SYCL_EXTERNAL inline float traceShadowTransmissionToPoint(
         const GPUSceneBuffers &scene,
         const float3 &shadingPositionW,
         const float3 &shadingNormalW,
@@ -491,82 +493,181 @@ namespace Pale {
         return shadowTransmission;
     }
 
-
-    SYCL_EXTERNAL inline float3 estimateDirectLightAtDiffuseSurface(
+    SYCL_EXTERNAL inline float3 estimateDirectPointLightsAtDiffuseSurface(
         const GPUSceneBuffers &scene,
         const float3 &shadingPositionW,
         const float3 &shadingNormalW,
-        const float3 &diffuseAlbedo,
-        uint32_t numShadowRays,
-        rng::Xorshift128 &rng128) {
-        if (numShadowRays == 0u) {
-            return float3(0.0f);
-        }
-
+        const float3 &diffuseAlbedo) {
         float3 accumulatedDirectRadiance(0.0f);
 
-        for (uint32_t shadowSampleIndex = 0u;
-             shadowSampleIndex < numShadowRays;
-             ++shadowSampleIndex) {
-            const AreaLightSample lightSample = sampleMeshAreaLight(scene, rng128);
-            if (!lightSample.valid) {
+        for (uint32_t lightIndex = 0u;
+             lightIndex < scene.lightCount;
+             ++lightIndex) {
+            const GPULightRecord light = scene.lights[lightIndex];
+
+            if (light.lightType != LightType::Surfel) {
+                continue;
+            }
+            const float3 lightPositionW = scene.points[light.primitiveIndex].position;
+            const float3 toLight = lightPositionW - shadingPositionW;
+            const float distanceSquared = dot(toLight, toLight);
+
+            if (distanceSquared <= 1e-12f) {
                 continue;
             }
 
-            const float fullPdfArea = lightSample.pdfSelectLight * lightSample.pdfArea;
-            if (fullPdfArea <= 0.0f) {
+            const float distance = sycl::sqrt(distanceSquared);
+            const float3 wi = toLight / distance; // direction from surface to light
+
+            const float cosThetaX =
+                    sycl::fmax(0.0f, dot(shadingNormalW, wi));
+
+            if (cosThetaX <= 0.0f) {
                 continue;
             }
 
-            const float3 lightVector = lightSample.positionW - shadingPositionW;
-            const float lightDistanceSquared = dot(lightVector, lightVector);
-            if (lightDistanceSquared <= 1e-12f) {
-                continue;
-            }
-
-            const float lightDistance = sycl::sqrt(lightDistanceSquared);
-            const float3 lightDirection = lightVector / lightDistance;
-
-            const float shadingCosine =
-                    sycl::fmax(0.0f, dot(shadingNormalW, lightDirection));
-            if (shadingCosine <= 0.0f) {
-                continue;
-            }
-
-            const float lightCosine =
-                    sycl::fmax(0.0f, dot(lightSample.normalW, -lightDirection));
-            if (lightCosine <= 0.0f) {
-                continue;
-            }
-
-            const float shadowTransmission = traceShadowTransmissionToLight(
-                scene,
-                shadingPositionW,
-                shadingNormalW,
-                lightSample.positionW);
+            // This should return either:
+            // - binary visibility: 0 or 1, for opaque scenes, or
+            // - accumulated transmittance in [0,1], for alpha/transparent blockers.
+            const float shadowTransmission =
+                    traceShadowTransmissionToPoint(
+                        scene,
+                        shadingPositionW,
+                        shadingNormalW,
+                        lightPositionW);
 
             if (shadowTransmission <= 0.0f) {
                 continue;
             }
 
-            const float geometricTerm =
-                    (shadingCosine * lightCosine) / (lightDistanceSquared + 1e-8f);
-
             const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
 
-            float3 radiance = lightSample.flux / (M_PIf * lightSample.totalAreaWorld);
-            // Here lightSample.power is treated as emitted radiance, to stay
-            // consistent with your existing mesh emissive branch:
-            // material.power * material.baseColor
-            const float3 sampleContribution =
-                diffuseBrdf *
-                radiance *
-                shadowTransmission *
-                (geometricTerm / fullPdfArea);
+            // If light.flux is total emitted radiant flux Phi [W],
+            // isotropic radiant intensity is I = Phi / (4*pi) [W/sr].
+            const float3 radiantIntensity =
+                    light.flux * light.color * (1.0f / (4.0f * M_PIf));
 
-            accumulatedDirectRadiance += sampleContribution;
+            const float3 contribution =
+                    diffuseBrdf *
+                    radiantIntensity *
+                    shadowTransmission *
+                    (cosThetaX / distanceSquared);
+
+            accumulatedDirectRadiance += contribution;
         }
 
-        return accumulatedDirectRadiance * (1.0f / static_cast<float>(numShadowRays));
+        return accumulatedDirectRadiance;
+    }
+
+    SYCL_EXTERNAL inline float3 estimateDirectAreaLightAtDiffuseSurface(
+        const GPUSceneBuffers &scene,
+        const float3 &shadingPositionW,
+        const float3 &shadingNormalW,
+        const float3 &diffuseAlbedo,
+        const PathTracerSettings &settings,
+        rng::Xorshift128 &rng128) {
+        const uint32_t samplesPerLight = settings.numShadowRays;
+        if (samplesPerLight == 0u) {
+            return float3(0.0f);
+        }
+        float3 accumulatedDirectRadiance(0.0f);
+        const float invSamplesPerLight = 1.0f / static_cast<float>(samplesPerLight);
+
+        for (uint32_t lightIndex = 0u;
+             lightIndex < scene.lightCount;
+             ++lightIndex) {
+            const GPULightRecord light = scene.lights[lightIndex];
+            // Keep only finite area/surfel emitters.
+            if (light.lightType != LightType::Surfel) {
+                continue;
+            }
+            for (uint32_t shadowSampleIndex = 0u;
+                 shadowSampleIndex < samplesPerLight;
+                 ++shadowSampleIndex) {
+                // Important:
+                // This function should sample a point on the already-selected light.
+                // It must NOT randomly choose another light internally.
+                const AreaLightSample lightSample =
+                        sampleMeshAreaLightByIndex(scene, lightIndex, rng128);
+                if (!lightSample.valid) {
+                    continue;
+                }
+                // Deterministic loop over lights:
+                // no p_L(k), only area pdf p_A(y | k).
+                const float pdfArea = lightSample.pdfArea;
+                if (pdfArea <= 0.0f) {
+                    continue;
+                }
+
+                const float3 lightVector =
+                        lightSample.positionW - shadingPositionW;
+
+                const float lightDistanceSquared =
+                        dot(lightVector, lightVector);
+
+                if (lightDistanceSquared <= 1.0e-12f) {
+                    continue;
+                }
+
+                const float lightDistance =
+                        sycl::sqrt(lightDistanceSquared);
+
+                const float3 lightDirection =
+                        lightVector / lightDistance;
+
+                // Incoming direction at the shading point: x -> y.
+                const float shadingCosine =
+                        sycl::fmax(0.0f, dot(shadingNormalW, lightDirection));
+
+                if (shadingCosine <= 0.0f) {
+                    continue;
+                }
+
+                // One-sided emitter cosine at y.
+                const float lightCosine =
+                        sycl::fmax(0.0f, dot(lightSample.normalW, -lightDirection));
+
+                if (lightCosine <= 0.0f) {
+                    continue;
+                }
+
+                // Accumulated transmittance to sampled emitter point.
+                const float shadowTransmission =
+                        traceShadowTransmissionToPoint(
+                            scene,
+                            shadingPositionW,
+                            shadingNormalW,
+                            lightSample.positionW);
+
+                if (shadowTransmission <= 0.0f) {
+                    continue;
+                }
+
+                const float geometricTerm =
+                        (shadingCosine * lightCosine) /
+                        (lightDistanceSquared + 1.0e-8f);
+
+                const float3 diffuseBrdf =
+                        diffuseAlbedo * M_1_PIf;
+
+                // For one-sided Lambertian area emitter:
+                // L_e = Phi / (pi A).
+                const float3 emittedRadiance =
+                        lightSample.flux /
+                        (M_PIf * lightSample.totalAreaWorld);
+
+                const float3 sampleContribution =
+                        diffuseBrdf *
+                        emittedRadiance *
+                        shadowTransmission *
+                        geometricTerm *
+                        (1.0f / pdfArea) *
+                        invSamplesPerLight;
+
+                accumulatedDirectRadiance += sampleContribution;
+            }
+        }
+
+        return accumulatedDirectRadiance;
     }
 } // namespace Pale

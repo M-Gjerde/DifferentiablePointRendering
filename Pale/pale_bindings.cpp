@@ -195,12 +195,8 @@ public:
         if (cameraName.empty()) {
             selectedSensors = sensorsForward;
         }
-
         pathTracer->renderForward(selectedSensors);
-
         auto queue = deviceSelector->getQueue();
-        const bool exposeNormalConsistency = pathTracer->getSettings().useNormalConsistency;
-        const bool exposeDepthDistortion = pathTracer->getSettings().useDepthDistortion;
 
         struct HostImage {
             std::string cameraName;
@@ -212,6 +208,7 @@ public:
             std::vector<float> depthDistortionData; // H * W
 
             std::vector<float> medianDepthData; // H * W
+            std::vector<float> meanDepthData; // H * W
             std::vector<float> medianWorldPositionData; // H * W * 4
             std::vector<float> visibleNormalData; // H * W * 4
             std::vector<float> normalFromDepthData; // H * W * 4
@@ -236,24 +233,25 @@ public:
             hostImage.imageData = Pale::downloadSensorLDR(queue, sensor);
             hostImage.imageDataRAW = Pale::downloadSensorRGBARAW(queue, sensor);
 
-            if (exposeDepthDistortion) {
-                hostImage.depthDistortionData =
-                        Pale::downloadFloatBuffer(queue, sensor.depthDistortionBuffer, pixelCount);
-            }
+            hostImage.depthDistortionData =
+                    Pale::downloadFloatBuffer(queue, sensor.depthDistortionBuffer, pixelCount);
 
-            if (exposeNormalConsistency) {
-                hostImage.medianDepthData =
-                        Pale::downloadFloatBuffer(queue, sensor.medianDepthBuffer, pixelCount);
 
-                hostImage.medianWorldPositionData =
-                        Pale::downloadFloat4Buffer(queue, sensor.medianWorldPositionBuffer, pixelCount);
+            hostImage.medianDepthData =
+                    Pale::downloadFloatBuffer(queue, sensor.medianDepthBuffer, pixelCount);
 
-                hostImage.visibleNormalData =
-                        Pale::downloadFloat4Buffer(queue, sensor.visibleNormalBuffer, pixelCount);
+            hostImage.meanDepthData =
+                    Pale::downloadFloatBuffer(queue, sensor.meanDepthBuffer, pixelCount);
 
-                hostImage.normalFromDepthData =
-                        Pale::downloadFloat4Buffer(queue, sensor.normalFromDepthBuffer, pixelCount);
-            }
+            hostImage.medianWorldPositionData =
+                    Pale::downloadFloat4Buffer(queue, sensor.medianWorldPositionBuffer, pixelCount);
+
+            hostImage.visibleNormalData =
+                    Pale::downloadFloat4Buffer(queue, sensor.visibleNormalBuffer, pixelCount);
+
+            hostImage.normalFromDepthData =
+                    Pale::downloadFloat4Buffer(queue, sensor.normalFromDepthBuffer, pixelCount);
+
 
             hostImages.push_back(std::move(hostImage));
         }
@@ -316,24 +314,22 @@ public:
             cameraResult[py::str("image")] = makeRGBAArray(hostImage.imageData);
             cameraResult[py::str("raw")] = makeRGBAArray(hostImage.imageDataRAW);
 
-            if (exposeDepthDistortion) {
-                cameraResult[py::str("depth_distortion")] =
-                        makeScalarArray(hostImage.depthDistortionData);
-            }
+            cameraResult[py::str("depth_distortion")] =
+                    makeScalarArray(hostImage.depthDistortionData);
 
-            if (exposeNormalConsistency) {
-                cameraResult[py::str("median_depth")] =
-                        makeScalarArray(hostImage.medianDepthData);
 
-                cameraResult[py::str("median_world_position")] =
-                        makeRGBAArray(hostImage.medianWorldPositionData);
+            cameraResult[py::str("median_depth")] =
+                    makeScalarArray(hostImage.medianDepthData);
+            cameraResult[py::str("mean_depth")] =
+                    makeScalarArray(hostImage.meanDepthData);
+            cameraResult[py::str("median_world_position")] =
+                    makeRGBAArray(hostImage.medianWorldPositionData);
 
-                cameraResult[py::str("visible_normal")] =
-                        makeRGBAArray(hostImage.visibleNormalData);
+            cameraResult[py::str("visible_normal")] =
+                    makeRGBAArray(hostImage.visibleNormalData);
 
-                cameraResult[py::str("normal_from_depth")] =
-                        makeRGBAArray(hostImage.normalFromDepthData);
-            }
+            cameraResult[py::str("normal_from_depth")] =
+                    makeRGBAArray(hostImage.normalFromDepthData);
 
             result[py::str(hostImage.cameraName)] = std::move(cameraResult);
         }

@@ -205,7 +205,7 @@ def main():
     parser.add_argument("--rgb", type=Path, default=None,
                         help="Optional rendered RGB/RGBA image for point colors.")
 
-    parser.add_argument("--fov-y-deg", type=float, default=60.0,
+    parser.add_argument("--fov-y-deg", type=float, default=30.0,
                         help="Vertical field of view used to synthesize pinhole intrinsics.")
 
     parser.add_argument("--fx", type=float, default=None)

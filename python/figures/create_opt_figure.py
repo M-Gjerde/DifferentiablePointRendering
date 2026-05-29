@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
-import imageio.v2 as imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -107,7 +106,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--last-frame-hold-seconds",
         type=float,
-        default=5.0,
+        default=10.0,
         help="Hold the final GIF frame for this many seconds before looping.",
     )
 
@@ -609,69 +608,77 @@ def build_gif(
     )
 
     output_path = run_dir / output_name
-    duration_sec = 1.0 / max(fps, 1.0e-6)
-    last_grid_array: np.ndarray | None = None
 
-    with imageio.get_writer(output_path, mode="I", duration=duration_sec, loop=loop) as writer:
-        for frame_index, render_frame_path in enumerate(render_frame_paths):
-            render_img = load_image_rgb(render_frame_path)
+    base_duration_ms = max(1, int(round(1000.0 / max(fps, 1.0e-6))))
 
-            optimization_panel = make_panel(
-                render_img,
-                f"Optimization ({render_frame_path.stem})",
-                panel_width,
-                panel_height,
-                title_height,
-                font,
-            )
+    if last_frame_hold_seconds > 0.0:
+        final_duration_ms = max(
+            base_duration_ms,
+            int(round(last_frame_hold_seconds * 1000.0)),
+        )
+    else:
+        final_duration_ms = base_duration_ms
 
-            median_depth_path = get_matching_median_depth_path(
-                render_frame_path=render_frame_path,
-                median_depth_frame_paths=median_depth_frame_paths,
-            )
+    gif_frames: list[Image.Image] = []
+    gif_durations_ms: list[int] = []
 
-            if median_depth_path is not None:
-                median_depth_img = load_image_rgb(median_depth_path)
-                median_depth_title = f"Median depth ({median_depth_path.stem})"
-            else:
-                median_depth_img = no_median_depth_img
-                median_depth_title = "Median depth"
+    for frame_index, render_frame_path in enumerate(render_frame_paths):
+        render_img = load_image_rgb(render_frame_path)
 
-            median_depth_panel = make_panel(
-                median_depth_img,
-                median_depth_title,
-                panel_width,
-                panel_height,
-                title_height,
-                font,
-            )
+        optimization_panel = make_panel(
+            render_img,
+            f"Optimization ({render_frame_path.stem})",
+            panel_width,
+            panel_height,
+            title_height,
+            font,
+        )
 
-            grid = compose_grid_panels(
-                [
-                    [
-                        target_panel,
-                        initial_panel,
-                        final_panel,
-                    ],
-                    [
-                        optimization_panel,
-                        median_depth_panel,
-                        loss_panel,
-                    ],
-                ]
-            )
+        median_depth_path = get_matching_median_depth_path(
+            render_frame_path=render_frame_path,
+            median_depth_frame_paths=median_depth_frame_paths,
+        )
 
-            last_grid_array = np.asarray(grid, dtype=np.uint8)
-            writer.append_data(last_grid_array)
+        if median_depth_path is not None:
+            median_depth_img = load_image_rgb(median_depth_path)
+            median_depth_title = f"Median depth ({median_depth_path.stem})"
+        else:
+            median_depth_img = no_median_depth_img
+            median_depth_title = "Median depth"
 
-        if last_grid_array is not None and last_frame_hold_seconds > 0.0:
-            extra_hold_frame_count = max(
-                0,
-                int(round(fps * last_frame_hold_seconds)) - 1,
-            )
+        median_depth_panel = make_panel(
+            median_depth_img,
+            median_depth_title,
+            panel_width,
+            panel_height,
+            title_height,
+            font,
+        )
 
-            for _ in range(extra_hold_frame_count):
-                writer.append_data(last_grid_array)
+        grid = compose_grid_panels(
+            [
+                [target_panel, initial_panel, final_panel],
+                [optimization_panel, median_depth_panel, loss_panel],
+            ]
+        )
+
+        gif_frames.append(grid)
+
+        is_last_frame = frame_index == len(render_frame_paths) - 1
+        gif_durations_ms.append(final_duration_ms if is_last_frame else base_duration_ms)
+
+    if not gif_frames:
+        raise RuntimeError("No GIF frames were generated")
+
+    gif_frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=gif_frames[1:],
+        duration=gif_durations_ms,
+        loop=loop,
+        optimize=False,
+        disposal=2,
+    )
 
     return output_path
 

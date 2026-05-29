@@ -47,7 +47,7 @@ def make_under_reconstruction_clones(
         trainable_surfel_mask,
         grad_threshold,
         max_clone_fraction=1.0,
-        clone_offset_scale=0.25,
+        clone_offset_scale=0.30,
         clone_scale_factor=1.6,
         min_clone_scale=5.0e-2,
         normal_perturbation_min=1.0e-5,
@@ -63,11 +63,13 @@ def make_under_reconstruction_clones(
         source child: existing surfel updated in-place
         clone child : newly appended surfel
 
-    Both children:
-        - inherit material parameters
-        - receive the same tangent frame
-        - keep the same opacity as the parent
-        - receive scale / clone_scale_factor
+Both children:
+    - inherit material parameters
+    - receive the same tangent frame
+    - receive reduced opacity:
+        source child gets 0.75 * parent opacity
+        clone child gets min(0.25 * parent opacity, 0.25)
+    - receive scale / clone_scale_factor
 
     A surfel is only cloned if its minimum scale is at least min_clone_scale.
     """
@@ -141,9 +143,10 @@ def make_under_reconstruction_clones(
         local_radius = torch.min(sc, dim=1).values[:, None]
         tangent_offset = clone_offset_scale * local_radius * direction
 
-        # Symmetric split in the local tangent plane.
-        source_positions = p - tangent_offset
-        clone_positions = p + tangent_offset
+        # Asymmetric split in the local tangent plane.
+        # Parent keeps most opacity, so it moves less.
+        source_positions = p - 0.25 * tangent_offset
+        clone_positions = p + 0.75 * tangent_offset
 
         # Small normal perturbation only for the appended clone.
         normal = torch.cross(tu, tv, dim=1)
@@ -194,6 +197,9 @@ def make_under_reconstruction_clones(
         # Avoid producing surfels below the clone minimum.
         child_sc = torch.clamp(child_sc, min=float(min_clone_scale))
 
+        parent_opacity = 0.75 * opa
+        child_opacity = torch.clamp(0.25 * opa, max=0.25)
+
         selected_idx_np = selected_idx.detach().cpu().numpy().astype(np.int64)
 
         return {
@@ -201,7 +207,7 @@ def make_under_reconstruction_clones(
                 "index": selected_idx_np,
                 "position": source_positions.detach().cpu().numpy().astype(np.float32),
                 "scale": child_sc.detach().cpu().numpy().astype(np.float32),
-                "opacity": opa.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "opacity": parent_opacity.detach().cpu().numpy().reshape(-1).astype(np.float32),
             },
 
             "new": {
@@ -210,7 +216,7 @@ def make_under_reconstruction_clones(
                 "tangent_v": tv.detach().cpu().numpy().astype(np.float32),
                 "scale": child_sc.detach().cpu().numpy().astype(np.float32),
                 "albedo": alb.detach().cpu().numpy().astype(np.float32),
-                "opacity": opa.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "opacity": child_opacity.detach().cpu().numpy().reshape(-1).astype(np.float32),
                 "beta": be.detach().cpu().numpy().reshape(-1).astype(np.float32),
                 "power": pow_.detach().cpu().numpy().reshape(-1).astype(np.float32),
             },

@@ -13,12 +13,12 @@ class RendererSettingsConfig:
     bounces: int = 1
     adjoint_bounces: int = 1
     forward_passes: int = 1
-    primal_shadow_rays: int = 6  # Li
-    adjoint_shadow_rays: int = 6  # Li
+    primal_shadow_rays: int = 1  # Li
+    adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 1
     enable_adjoint_shadow_rays: bool = True
-    adjoint_shadow_path_rays: int = 4  # p_i
+    adjoint_shadow_path_rays: int = 1  # p_i
     useDepthDistortion: bool = True
     useNormalConsistency: bool = True
     logging: int = 3
@@ -66,9 +66,9 @@ class OptimizationConfig:
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
 
-    depth_distort_weight: float = 1000
-    normal_consistency_weight: float = 0.005
-    opacity_loss_weight: float = 0.1
+    depth_distort_weight: float = 1000.0
+    normal_consistency_weight: float = 0.01
+    opacity_loss_weight: float = 0.0
     opacity_target: float = 1.0
 
     log_interval: int = 1
@@ -76,20 +76,21 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 50
+    densification_interval: int = 100
     prune_interval: int = 25
-    densify_after: int = 25
+    densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.8
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 5.0e-3
+    densification_grad_abs_min: float = 8.0e-3
+    densification_scale_min: float = 2.5e-2
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.15
-    densify_bsdf_gamma: float = 1.5
+    densify_bsdf_gamma: float = 1.2
 
     # Pruning
     opacity_prune_threshold: float = 0.1
@@ -116,9 +117,9 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
     elif config.optimizer_type == "adam":
         factor_position = 0.001
         factor_tangent = 0.01
-        factor_scale = 0.0005
+        factor_scale = 0.001
         factor_albedo = 0.01
-        factor_opacity = 0.005
+        factor_opacity = 0.05
         factor_beta = 0.000
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")

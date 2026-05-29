@@ -363,6 +363,20 @@ namespace Pale {
         float lightJacobian;
     };
 
+    struct PointLightSample {
+        float3 positionW;
+        float3 normalW; // unit
+        float3 direction;
+        float3 flux;
+        uint32_t lightIndex;
+        float pdfSelectLight; // 1 / lightCount
+        float pdfDir;
+        bool valid;
+
+        PointCloudSurfaceRecord surface;
+        float lightJacobian;
+    };
+
     CHECK_16(AreaLightSample);
 
     struct DirectLightQuery {

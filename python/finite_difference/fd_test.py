@@ -300,15 +300,15 @@ def main(args) -> None:
         "photons": 1e6,
         "bounces": args.bounces,
         "forward_passes": args.forward_passes,
-        "primal_shadow_rays":  8,
-        "adjoint_shadow_rays": 8,
+        "primal_shadow_rays":  1,
+        "adjoint_shadow_rays": 1,
         "gather_passes": 1,
         "adjoint_bounces": args.adjoint_bounces,
         "adjoint_passes": args.adjoint_passes,
         "logging": 4,
         "seed": args.seed,
         "enable_adjoint_shadow_rays": args.enable_adjoint_shadow_rays,
-        "adjoint_shadow_path_rays": 4,
+        "adjoint_shadow_path_rays": 1,
     }
     assets_root = Path(__file__).resolve().parents[2] / "Assets"
 

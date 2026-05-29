@@ -21,6 +21,7 @@ namespace Pale {
         float* depthDistortionAdjointBuffer = nullptr;
 
         float*  medianDepthBuffer;        // scalar visualization depth
+        float*  meanDepthBuffer;        // scalar visualization depth
         float4* medianWorldPositionBuffer;        // xyz = world-space median point, w = valid
         float4* visibleNormalBuffer;        // xyz = world-space median point, w = valid
         float4* normalFromDepthBuffer;       // xyz = normal, w = valid

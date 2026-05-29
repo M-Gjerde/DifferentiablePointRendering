@@ -167,6 +167,24 @@ void saveCameraAuxiliaryBuffers(
             medianDepthRGBA,
             imageWidth,
             imageHeight);
+
+        std::vector<float> meanDepthRaw =
+                Pale::downloadFloatBuffer(
+                    deviceSelector.getQueue(),
+                    sensor.meanDepthBuffer,
+                    pixelCount);
+
+        std::vector<float> meanDepthRGBA =
+                packScalarToRGBA(meanDepthRaw, pixelCount);
+
+        const std::filesystem::path path_mean =
+                imageDir / (fileName + "_mean_depth.exr");
+
+        Pale::Utils::saveRGBAFloatAsEXR(
+            path_mean,
+            meanDepthRGBA,
+            imageWidth,
+            imageHeight);
     }
 
     // -------------------------------------------------------------------------
@@ -334,19 +352,19 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 4;
-        settings.maxAdjointBounces = 4; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
+        settings.maxBounces = 1;
+        settings.maxAdjointBounces = 1; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
 
-        settings.numForwardPasses = 5;
-        settings.numShadowRays = 8;
-        settings.numAdjointShadowRays = 8;
+        settings.numForwardPasses = 1;
+        settings.numShadowRays = 1;
+        settings.numAdjointShadowRays = 1;
         settings.adjointSamplesPerPixel = 4;
 
         settings.renderDebugGradientImages = !true;
         settings.enableAdjointDirectLight = true;
         settings.useDepthDistortion = true;
         settings.useNormalConsistency = true;
-        settings.surfelIndexForDebugImages = 2;
+        settings.surfelIndexForDebugImages = UINT32_MAX;
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(gpu, buildProducts);

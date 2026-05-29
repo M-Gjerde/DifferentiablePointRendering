@@ -138,6 +138,17 @@ def orbit_position_on_yz_arc(
     z = radius * math.sin(theta)
     return np.array([0.0, y, z], dtype=np.float32)
 
+def orbit_position_on_xz_arc(
+    t: float,
+    radius: float,
+    orbit_degrees: float = 180.0,
+) -> np.ndarray:
+    theta = math.radians(orbit_degrees) * t
+    x = radius * math.cos(theta)
+    y = radius * math.cos(theta)
+    z = radius * math.sin(theta)
+    return np.array([-x, 0, z], dtype=np.float32)
+
 
 def color_ramp_rgb(
     t: float,
@@ -266,6 +277,7 @@ def add_light_point(renderer: pale.Renderer, *, scale_u: float, scale_v: float, 
     normal = normalize(-position[0])
     tu, tv = orthonormal_frame_from_normal(normal)
 
+
     renderer.add_points(
         {
             "new": {
@@ -279,10 +291,27 @@ def add_light_point(renderer: pale.Renderer, *, scale_u: float, scale_v: float, 
             }
         }
     )
+    renderer.add_points(
+        {
+            "new": {
+                "position":np.array([[0, 0, 3]], dtype=np.float32),
+                "tangent_u": np.array([[1, 0, 0]], dtype=np.float32),
+                "tangent_v": np.array([[0, -1, 0]], dtype=np.float32),
+                "scale": np.array([[scale_u, scale_v]], dtype=np.float32),
+                "albedo": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+                "opacity": np.array([opacity], dtype=np.float32),
+                "beta": np.array([beta], dtype=np.float32),
+                "power": np.array([150], dtype=np.float32),
+            }
+        }
+    )
+
+
     renderer.rebuild_bvh()
 
+
     params = fetch_parameters(renderer)
-    return int(params["position"].shape[0] - 1)
+    return int(params["position"].shape[0] - 2)
 
 
 def zero_existing_lights(renderer: pale.Renderer) -> None:
@@ -327,7 +356,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--frames",
         type=int,
-        default=None,
+        default=30,
         help=(
             "Number of frames to render. If omitted, render mode uses 30 frames. "
             "With --skip-render, omitted means use all existing frame_*.png files."
@@ -340,17 +369,18 @@ def parse_args() -> argparse.Namespace:
         help="Skip renderer setup and frame rendering. Rebuild the GIF from existing PNG frames only.",
     )
 
-    parser.add_argument("--fps", type=float, default=4.0)
+    parser.add_argument("--fps", type=float, default=5.0)
     parser.add_argument("--radius", type=float, default=2.0)
-    parser.add_argument("--power", type=float, default=75.0)
+    parser.add_argument("--power", type=float, default=200.0)
+    parser.add_argument("--orbit_axis", type=str, default="y")
     parser.add_argument("--scale-u", type=float, default=0.05)
     parser.add_argument("--scale-v", type=float, default=0.05)
     parser.add_argument("--opacity", type=float, default=1.0)
     parser.add_argument("--beta", type=float, default=-100.0)
     parser.add_argument("--output-subdir", type=str, default="orbit_light_animation")
     parser.add_argument("--gif-name", type=str, default="orbit_light.gif")
-    parser.add_argument("--renderer-forward-passes", type=int, default=10)
-    parser.add_argument("--renderer-primal-shadow-rays", type=int, default=32)
+    parser.add_argument("--renderer-forward-passes", type=int, default=1)
+    parser.add_argument("--renderer-primal-shadow-rays", type=int, default=1)
     parser.add_argument(
         "--color-variation",
         type=float,
@@ -504,11 +534,18 @@ def main() -> None:
     for frame_index in range(frame_count):
         t = 0.0 if frame_count <= 1 else frame_index / float(frame_count - 1)
 
-        light_position = orbit_position_on_yz_arc(
-            t=t,
-            radius=args.radius,
-            orbit_degrees=args.orbit_degrees,
-        )
+        if args.orbit_axis == "y":
+            light_position = orbit_position_on_yz_arc(
+                t=t,
+                radius=args.radius,
+                orbit_degrees=args.orbit_degrees,
+            )
+        elif args.orbit_axis == "x":
+            light_position = orbit_position_on_xz_arc(
+                t=t,
+                radius=args.radius,
+                orbit_degrees=args.orbit_degrees,
+            )
         light_color = color_ramp_rgb(
             t,
             variation=args.color_variation,
