@@ -67,8 +67,8 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
 
     depth_distort_weight: float = 1000.0
-    normal_consistency_weight: float = 0.01
-    opacity_loss_weight: float = 0.01
+    normal_consistency_weight: float = 0.05
+    opacity_loss_weight: float = 0.0
     opacity_target: float = 1.0
 
     log_interval: int = 1
@@ -77,7 +77,7 @@ class OptimizationConfig:
 
     # Density control / EV-splitting
     densification_interval: int = 100
-    prune_interval: int = 50
+    prune_interval: int = 25
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
@@ -85,21 +85,21 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 5.0e-3
-    densification_scale_min: float = 2.0e-2
+    densification_grad_abs_min: float = 8e-3
+    densification_scale_min: float = 1.5e-2
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.15
     densify_bsdf_gamma: float = 1.2
 
     # Pruning
-    opacity_prune_threshold: float = 0.1
-    max_prune_fraction: float = 0.5
+    opacity_prune_threshold: float = 0.05
+    max_prune_fraction: float = 0.9
     scale_prune_min_scale: float = 1.0e-3
     min_points_to_keep_after_scale_prune: int = 1
 
     # Misc scheduling
-    reset_opacity_interval: int = 1000
+    reset_opacity_interval: int = 1500
     reset_opacity_value: float = 0.0
     rebuild_bvh_interval: int = 1
 

@@ -73,6 +73,15 @@ def parse_args() -> argparse.Namespace:
         help="Only plot the last N iterations. Example: --iterations 1000",
     )
     parser.add_argument(
+        "--skip",
+        action="store_true",
+        help=(
+            "Skip the first 100 iterations after each opacity reset at every "
+            "1000 iterations. This removes 1000-1099, 2000-2099, etc. "
+            "from the plotted dataframe."
+        ),
+    )
+    parser.add_argument(
         "--refresh-seconds",
         type=float,
         default=1.0,
@@ -96,6 +105,16 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Keep following the newest run folder. Useful if you start this script "
             "before launching a new optimization run."
+        ),
+    )
+    parser.add_argument(
+        "--from",
+        dest="from_iteration",
+        type=int,
+        default=None,
+        help=(
+            "Only plot iterations >= N. "
+            "Example: --from 5000 plots from iteration 5000 onward."
         ),
     )
 
@@ -189,7 +208,9 @@ def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_metrics_dataframe(
     dataframe: pd.DataFrame,
+    from_iteration: int | None,
     last_iterations: int | None,
+    skip_opacity_reset_noise: bool,
 ) -> pd.DataFrame:
     dataframe = filter_metrics_rows(dataframe)
 
@@ -203,6 +224,21 @@ def prepare_metrics_dataframe(
 
     dataframe = dataframe.drop_duplicates(subset=["iteration"], keep="last")
     dataframe = dataframe.sort_values("iteration").reset_index(drop=True)
+
+    if from_iteration is not None:
+        if from_iteration < 0:
+            raise ValueError(f"--from must be non-negative, got: {from_iteration}")
+
+        dataframe = dataframe.loc[
+            dataframe["iteration"] >= from_iteration
+        ].reset_index(drop=True)
+
+    if skip_opacity_reset_noise:
+        opacity_reset_noise_mask = (
+            (dataframe["iteration"] >= 1000)
+            & ((dataframe["iteration"] % 1000) < 100)
+        )
+        dataframe = dataframe.loc[~opacity_reset_noise_mask].reset_index(drop=True)
 
     if last_iterations is not None:
         if last_iterations <= 0:
@@ -397,9 +433,16 @@ def draw_metrics_figure(
     metrics_csv_path: Path,
     explicit_loss_column: str | None,
     plot_all_losses: bool,
+    from_iteration: int | None,
     last_iterations: int | None,
+    skip_opacity_reset_noise: bool,
 ) -> str:
-    dataframe = prepare_metrics_dataframe(dataframe, last_iterations)
+    dataframe = prepare_metrics_dataframe(
+        dataframe,
+        from_iteration,
+        last_iterations,
+        skip_opacity_reset_noise,
+    )
 
     if dataframe.empty:
         raise ValueError("No valid rows to plot yet.")
@@ -688,6 +731,7 @@ def main() -> None:
     print(f"Refresh interval : {args.refresh_seconds:.3f}s")
     print(f"Watch latest     : {args.watch_latest}")
     print(f"Save plot        : {args.save_plot}")
+    print(f"Skip reset noise : {args.skip}")
 
     try:
         while plt.fignum_exists(figure.number):
@@ -726,7 +770,9 @@ def main() -> None:
                         metrics_csv_path=metrics_csv_path,
                         explicit_loss_column=args.loss_column,
                         plot_all_losses=args.plot_all_losses,
+                        from_iteration=args.from_iteration,
                         last_iterations=args.iterations,
+                        skip_opacity_reset_noise=args.skip,
                     )
 
                     figure.canvas.draw_idle()
@@ -740,7 +786,9 @@ def main() -> None:
                     try:
                         prepared_dataframe = prepare_metrics_dataframe(
                             dataframe,
+                            args.from_iteration,
                             args.iterations,
+                            args.skip,
                         )
                         if not prepared_dataframe.empty:
                             latest_iteration = str(int(prepared_dataframe["iteration"].iloc[-1]))

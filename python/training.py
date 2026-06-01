@@ -28,6 +28,7 @@ from losses import (
 )
 from optimizers import (
     create_masked_optimizer,
+update_optimizer_learning_rates
 )
 from density_control import (
     make_under_reconstruction_evsplits,
@@ -1081,6 +1082,44 @@ def save_manual_snapshot(
         f"saved render_final_<camera>.png, depth_distortion_final_<camera>.png, and points_final.ply"
     )
 
+def save_iteration_point_cloud_snapshot(
+        output_dir: Path,
+        iteration: int,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        betas: torch.Tensor,
+        powers: torch.Tensor,
+) -> None:
+    """
+    Save only the current point cloud state.
+
+    Output:
+        output_dir/points/iter_XXXXX_points.ply
+    """
+    points_dir = output_dir / "points"
+    points_dir.mkdir(parents=True, exist_ok=True)
+
+    ply_path = points_dir / f"iter_{iteration:05d}_points.ply"
+
+    save_gaussians_to_ply(
+        ply_path,
+        positions,
+        tangent_u,
+        tangent_v,
+        scales,
+        albedos,
+        opacities,
+        betas,
+        powers,
+        shape_default=0.0,
+    )
+
+    print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
+
 
 def clear_output_dir(output_dir: Path) -> None:
     """
@@ -1590,7 +1629,6 @@ def run_optimization(
         betas,
         powers,
     )
-
     # ------------------------------------------------------------------
     # 3. Initial loss and output dir setup (multi-camera)
     # ------------------------------------------------------------------
@@ -2882,6 +2920,23 @@ def run_optimization(
                                 abs_quantile=0.999,
                                 flip_y=False,
                             )
+
+                # --------------------------------------------------------------
+                # 10. Point cloud snapshots
+                # --------------------------------------------------------------
+                if iteration == 0 or (prune_interval > 0 and iteration % prune_interval == 0):
+                    save_iteration_point_cloud_snapshot(
+                        config.output_dir,
+                        iteration,
+                        positions,
+                        tangent_u,
+                        tangent_v,
+                        scales,
+                        albedos,
+                        opacities,
+                        betas,
+                        powers,
+                    )
 
                 # --------------------------------------------------------------
                 # 11. Metrics and logging

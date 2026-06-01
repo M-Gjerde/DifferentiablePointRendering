@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fps",
         type=float,
-        default=8.0,
+        default=5.0,
         help="GIF framerate.",
     )
     parser.add_argument(

@@ -145,6 +145,8 @@ Both children:
 
         # Asymmetric split in the local tangent plane.
         # Parent keeps most opacity, so it moves less.
+        child_weight = 0.75
+        parent_pertubation = 1 - child_weight
         source_positions = p - 0.25 * tangent_offset
         clone_positions = p + 0.75 * tangent_offset
 

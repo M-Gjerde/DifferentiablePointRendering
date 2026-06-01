@@ -301,7 +301,7 @@ def add_light_point(renderer: pale.Renderer, *, scale_u: float, scale_v: float, 
                 "albedo": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
                 "opacity": np.array([opacity], dtype=np.float32),
                 "beta": np.array([beta], dtype=np.float32),
-                "power": np.array([150], dtype=np.float32),
+                "power": np.array([75], dtype=np.float32),
             }
         }
     )
@@ -371,8 +371,8 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fps", type=float, default=5.0)
     parser.add_argument("--radius", type=float, default=2.0)
-    parser.add_argument("--power", type=float, default=200.0)
-    parser.add_argument("--orbit_axis", type=str, default="y")
+    parser.add_argument("--power", type=float, default=100.0)
+    parser.add_argument("--orbit-axis", type=str, default="y")
     parser.add_argument("--scale-u", type=float, default=0.05)
     parser.add_argument("--scale-v", type=float, default=0.05)
     parser.add_argument("--opacity", type=float, default=1.0)
@@ -486,7 +486,7 @@ def main() -> None:
 
     renderer_settings = dict(run_config["renderer_settings"])
     #renderer_settings["forward_passes"] = int(args.renderer_forward_passes)
-    renderer_settings["primal_shadow_rays"] = int(args.renderer_primal_shadow_rays)
+    #renderer_settings["primal_shadow_rays"] = int(args.renderer_primal_shadow_rays)
 
     assets_root = Path(run_config["assets_root"])
     scene_xml = args.scene_xml if args.scene_xml is not None else run_config["scene_xml"]

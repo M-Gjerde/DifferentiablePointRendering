@@ -340,3 +340,23 @@ def create_masked_optimizer(
         return MaskedAdam(param_groups)
 
     raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
+
+def update_optimizer_learning_rates(
+        optimizer: torch.optim.Optimizer,
+        learning_rate_schedules: dict[str, object],
+        iteration: int,
+) -> dict[str, float]:
+    active_learning_rates: dict[str, float] = {}
+
+    for parameter_group in optimizer.param_groups:
+        group_name = parameter_group.get("name", None)
+
+        if group_name in learning_rate_schedules:
+            learning_rate = float(learning_rate_schedules[group_name](iteration))
+            parameter_group["lr"] = learning_rate
+            active_learning_rates[group_name] = learning_rate
+        else:
+            active_learning_rates[str(group_name)] = float(parameter_group["lr"])
+
+    return active_learning_rates
+
