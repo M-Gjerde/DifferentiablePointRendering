@@ -51,9 +51,6 @@ class OptimizationConfig:
     dataset_path: Path = Path("./Output/target")
     output_dir: Path = Path("OptimizationOutput")
 
-    personal_suffix: str = ""
-    personal_prefix: str = ""
-
     iterations: int = int(1e5)
 
     optimizer_type: str = "sgd"
@@ -65,6 +62,11 @@ class OptimizationConfig:
     learning_rate_albedo: float | None = None
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
+    # Position-only exponential LR schedule.
+    use_position_lr_schedule: bool = False
+    position_lr_scale_init: float = 2.0
+    position_lr_scale_final: float = 0.1
+    position_lr_max_steps: int = 15_000
 
     depth_distort_weight: float = 1000.0
     normal_consistency_weight: float = 0.05
@@ -109,11 +111,11 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
 
     if config.optimizer_type == "sgd":
         factor_position = 0.2
-        factor_tangent =  0.1
-        factor_scale =    0.005
-        factor_albedo =   2.0
-        factor_opacity =  1.0
-        factor_beta =     0.00
+        factor_tangent = 0.1
+        factor_scale = 0.005
+        factor_albedo = 2.0
+        factor_opacity = 1.0
+        factor_beta = 0.00
     elif config.optimizer_type == "adam":
         factor_position = 0.001
         factor_tangent = 0.01
@@ -165,9 +167,6 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--dataset-path", type=Path)
     parser.add_argument("--output-dir", type=Path)
 
-    parser.add_argument("--suffix", dest="personal_suffix", type=str)
-    parser.add_argument("--prefix", dest="personal_prefix", type=str)
-
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--optimizer", dest="optimizer_type", type=str, choices=["adam", "sgd"])
     parser.add_argument("--log-interval", type=int)
@@ -181,6 +180,10 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--lr-albedo", dest="learning_rate_albedo", type=float)
     parser.add_argument("--lr-opacity", dest="learning_rate_opacity", type=float)
     parser.add_argument("--lr-beta", dest="learning_rate_beta", type=float)
+    parser.add_argument("--position-lr-schedule", dest="use_position_lr_schedule", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
+    parser.add_argument("--position-lr-scale-init", type=float)
+    parser.add_argument("--position-lr-scale-final", type=float)
+    parser.add_argument("--position-lr-max-steps", type=int)
 
     parser.add_argument("--normal-consistency-weight", dest="normal_consistency_weight", type=float)
     parser.add_argument("--depth-distort-weight", dest="depth_distort_weight", type=float)
@@ -241,14 +244,14 @@ def parse_args() -> OptimizationConfig:
 
     resolve_learning_rates(config)
 
-    #for parameter_name, parameter_value in vars(args).items():
+    # for parameter_name, parameter_value in vars(args).items():
     #    if not hasattr(config, parameter_name):
     #        raise RuntimeError(
     #            f"CLI argument produced unknown config field: {parameter_name}"
     #        )
     #    setattr(config, parameter_name, parameter_value)
-#
+    #
     ##resolve_iteration_schedules(config, cli_overrides)
-    #resolve_learning_rates(config)
+    # resolve_learning_rates(config)
 
     return config

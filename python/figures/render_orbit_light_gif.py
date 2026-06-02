@@ -356,9 +356,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--frames",
         type=int,
-        default=30,
+        default=60,
         help=(
-            "Number of frames to render. If omitted, render mode uses 30 frames. "
+            "Number of frames to render. If omitted, render mode uses 60 frames. "
             "With --skip-render, omitted means use all existing frame_*.png files."
         ),
     )
@@ -371,8 +371,8 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fps", type=float, default=5.0)
     parser.add_argument("--radius", type=float, default=2.0)
-    parser.add_argument("--power", type=float, default=100.0)
-    parser.add_argument("--orbit-axis", type=str, default="y")
+    parser.add_argument("--power", type=float, default=200.0)
+    parser.add_argument("--orbit", type=str, default="y")
     parser.add_argument("--scale-u", type=float, default=0.05)
     parser.add_argument("--scale-v", type=float, default=0.05)
     parser.add_argument("--opacity", type=float, default=1.0)
@@ -534,13 +534,13 @@ def main() -> None:
     for frame_index in range(frame_count):
         t = 0.0 if frame_count <= 1 else frame_index / float(frame_count - 1)
 
-        if args.orbit_axis == "y":
+        if args.orbit == "y":
             light_position = orbit_position_on_yz_arc(
                 t=t,
                 radius=args.radius,
                 orbit_degrees=args.orbit_degrees,
             )
-        elif args.orbit_axis == "x":
+        elif args.orbit == "x":
             light_position = orbit_position_on_xz_arc(
                 t=t,
                 radius=args.radius,

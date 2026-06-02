@@ -235,8 +235,8 @@ def prepare_metrics_dataframe(
 
     if skip_opacity_reset_noise:
         opacity_reset_noise_mask = (
-            (dataframe["iteration"] >= 1000)
-            & ((dataframe["iteration"] % 1000) < 100)
+            (dataframe["iteration"] >= 1500)
+            & ((dataframe["iteration"] % 1500) < 100)
         )
         dataframe = dataframe.loc[~opacity_reset_noise_mask].reset_index(drop=True)
 

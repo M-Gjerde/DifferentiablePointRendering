@@ -320,13 +320,13 @@ def create_masked_optimizer(
     lr_power = 0
 
     param_groups = [
-        {"params": [positions], "lr": lr_pos},
-        {"params": [tangent_u, tangent_v], "lr": lr_tan},
-        {"params": [scales], "lr": lr_scale},
-        {"params": [albedos], "lr": lr_albedo},
-        {"params": [opacities], "lr": lr_opacity},
-        {"params": [betas], "lr": lr_beta},
-        {"params": [powers], "lr": lr_power},
+        {"params": [positions], "lr": lr_pos, "name": "position"},
+        {"params": [tangent_u, tangent_v], "lr": lr_tan, "name": "tangent"},
+        {"params": [scales], "lr": lr_scale, "name": "scale"},
+        {"params": [albedos], "lr": lr_albedo, "name": "albedo"},
+        {"params": [opacities], "lr": lr_opacity, "name": "opacity"},
+        {"params": [betas], "lr": lr_beta, "name": "beta"},
+        {"params": [powers], "lr": lr_power, "name": "power"},
     ]
 
     if opt_type == "sgd":
@@ -360,3 +360,57 @@ def update_optimizer_learning_rates(
 
     return active_learning_rates
 
+
+def make_exponential_lr_func(
+    lr_init: float,
+    lr_final: float,
+    max_steps: int,
+):
+    if lr_init <= 0.0:
+        raise ValueError(f"lr_init must be positive, got {lr_init}")
+    if lr_final <= 0.0:
+        raise ValueError(f"lr_final must be positive, got {lr_final}")
+    if max_steps <= 0:
+        raise ValueError(f"max_steps must be positive, got {max_steps}")
+
+    def schedule(iteration: int) -> float:
+        t = np.clip(float(iteration) / float(max_steps), 0.0, 1.0)
+        return float(
+            np.exp(
+                np.log(lr_init) * (1.0 - t)
+                + np.log(lr_final) * t
+            )
+        )
+
+    return schedule
+
+
+def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, object]:
+    if not config.use_position_lr_schedule:
+        return {}
+
+    if config.learning_rate <= 0.0:
+        raise ValueError(f"learning_rate must be positive, got {config.learning_rate}")
+
+    if config.learning_rate_position is None:
+        raise ValueError("config.learning_rate_position must be resolved first.")
+
+    # Recover the optimizer-specific position factor.
+    # Example for SGD with --lr 0.5:
+    #   config.learning_rate_position = 0.2 * 0.5 = 0.1
+    #   position_lr_per_scale = 0.1 / 0.5 = 0.2
+    position_lr_per_scale = (
+        float(config.learning_rate_position)
+        / float(config.learning_rate)
+    )
+
+    position_lr_init = position_lr_per_scale * float(config.position_lr_scale_init)
+    position_lr_final = position_lr_per_scale * float(config.position_lr_scale_final)
+
+    return {
+        "position": make_exponential_lr_func(
+            lr_init=position_lr_init,
+            lr_final=position_lr_final,
+            max_steps=int(config.position_lr_max_steps),
+        )
+    }
