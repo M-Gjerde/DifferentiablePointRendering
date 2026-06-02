@@ -264,12 +264,17 @@ namespace Pale {
                     }
                     pkg.queue.memset(pkg.intermediates.gradientRecords, 0x00,
                                      pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
-                    uint32_t nextRayCount = 0;
-                    pkg.queue.memcpy(&nextRayCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
-                    if (nextRayCount > 0) {
-                        pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
+                    uint32_t nextRayCountRaw = 0u;
+                    pkg.queue.memcpy(&nextRayCountRaw, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();const uint32_t nextRayCount =                            std::min(nextRayCountRaw, pkg.intermediates.maxRayQueueCapacity);
+                    if (nextRayCountRaw > pkg.intermediates.maxRayQueueCapacity) {
+                        Log::PA_ERROR("Overflow: nextRayCount={} max={}",                                      nextRayCountRaw,                                      pkg.intermediates.maxRayQueueCapacity);
+                    }
+                    if (nextRayCount > 0u) {
+                        pkg.queue.memcpy(pkg.intermediates.primaryRays,
+                                         pkg.intermediates.extensionRaysA,
                                          nextRayCount * sizeof(RayState)).wait();
                     }
+
                     activeRayCount = nextRayCount;
                 }
             }

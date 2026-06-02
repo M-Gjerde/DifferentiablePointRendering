@@ -135,7 +135,7 @@ def parse_args() -> argparse.Namespace:
         help="Disable ANSI color output.",
     )
     argument_parser.add_argument(
-        "--case_index",
+        "--case-index",
         type=int,
         default=None,
         help="Run only one case by zero-based index from test_Y_empty.json.",
@@ -530,7 +530,7 @@ def main() -> None:
     if args.case_index is not None:
         if args.case_index < 0 or args.case_index >= len(cases):
             raise RuntimeError(
-                f"--case_index out of range: got {args.case_index}, "
+                f"--case-index out of range: got {args.case_index}, "
                 f"but test_Y_empty.json has {len(cases)} cases."
             )
         cases = [cases[args.case_index]]

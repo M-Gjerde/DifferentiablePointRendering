@@ -354,19 +354,19 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings;
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 1;
-        settings.maxAdjointBounces = 1; // 2 == First surfel intersection gradients, 3 = Second surfel gradients
+        settings.maxBounces = 2;
+        settings.maxAdjointBounces = 2; // 1 == First surfel intersection gradients, 2 = Second surfel gradients
 
-        settings.numForwardPasses = 1;
+        settings.numForwardPasses = 10;
         settings.numShadowRays = 1;
         settings.numAdjointShadowRays = 1;
-        settings.adjointSamplesPerPixel = 4;
+        settings.adjointSamplesPerPixel = 16;
 
-        settings.renderDebugGradientImages = !true;
+        settings.renderDebugGradientImages = true;
         settings.enableAdjointDirectLight = true;
         settings.useDepthDistortion = true;
         settings.useNormalConsistency = true;
-        settings.surfelIndexForDebugImages = UINT32_MAX;
+        settings.surfelIndexForDebugImages = 2;
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
 
@@ -427,286 +427,172 @@ int main(int argc, char **argv) {
         }
 
 
-        for (int i = 0; i < 1; ++i) {
-            if (settings.renderDebugGradientImages) {
-                {
-                    auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
-                    Pale::Entity entity(entities.front(), (scene.get()));
-                    auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(
-                        entity.getComponent<Pale::PointCloudComponent>().pointCloudID);
-                    if (!pointAssetSharedPtr) {
-                        throw std::runtime_error(
-                            "set_gaussian_opacity: failed to get PointAsset for dynamic point cloud");
-                    }
-                    Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-                    Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-                    //pointGeometry.positions[5].z = 0.3f;
-                    rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
-                }
-                Pale::Log::PA_INFO("Forward Render Pass...");
-                tracer.renderForward(sensors); // films is span/array
-
-                // Render with pertubation
-                // Save target image
-                for (const auto &sensor: sensors) {
-                    std::vector<uint8_t> rgba = Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
-                    const uint32_t imageWidth = sensor.width;
-                    const uint32_t imageHeight = sensor.height;
-                    std::vector<float> rgbaRaw = Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
-                    std::filesystem::path baseDir = std::filesystem::path("Output") / sceneName.parent_path();
-                    // assumes sensor.name is std::string
-                    std::filesystem::create_directories(baseDir);
-                    std::string fileName = sensor.name;
-                    //fileName += "_photonmap";
-                    std::filesystem::path filePath = baseDir / "images" / (fileName + ".png");
-                    Pale::Utils::savePNG(filePath, rgba, imageWidth, imageHeight);
-                    std::filesystem::path rawFilePath = baseDir / "images" / (fileName + "_raw.exr");
-                    Pale::Utils::saveRGBAFloatAsEXR(
-                        rawFilePath,
-                        rgbaRaw,
-                        imageWidth,
-                        imageHeight
-                    );
-                }
-                Pale::Log::PA_INFO("Adjoint Render Pass...");
-                std::vector<Pale::SensorGPU> availableSensors = Pale::makeSensorsForScene(
-                    deviceSelector.getQueue(), buildProducts, true, true);
-                std::vector<Pale::SensorGPU> selectedAdjointSensors;
-                Pale::SensorGPU selectedSensor;
-                for (int i = 0; const auto &sensor: availableSensors) {
-                    if (sensor.camera.useForAdjointPass) {
-                        selectedAdjointSensors.push_back(sensor);
-                        for (const auto &forwardSensor: sensors) {
-                            if (std::string(sensor.camera.name) == std::string(forwardSensor.camera.name))
-                                selectedSensor = forwardSensor;
-                        }
-                        break;
-                    }
-                    i++;
-                }
-                std::vector<Pale::DebugImages> debugImages(selectedAdjointSensors.size());
-                Pale::PointGradients gradients = Pale::makeGradientsForScene(
-                    deviceSelector.getQueue(), buildProducts, debugImages.data());
-                std::vector<float> rgbaHostAdjointTarget;
-                std::filesystem::path baseDir =
-                        std::filesystem::path("Output") / sceneName.parent_path(); // assumes sensor.name is std::string
-
-
-                std::string fileName = selectedSensor.name;
-                std::filesystem::path targetImagePath = baseDir / "images" / (fileName + "_raw.exr");
-
-                uint32_t width, height;
-                Pale::Utils::loadEXRAsRGBAFloat(targetImagePath, rgbaHostAdjointTarget, width, height);
-
-                bool filledTarget = true;
-                if (filledTarget)
-                    for (std::uint32_t y = 0; y < height; ++y) {
-                        for (std::uint32_t x = 0; x < width; ++x) {
-                            const std::size_t pixelIndex = static_cast<std::size_t>(y) * width + x;
-                            const std::size_t dstIndex = pixelIndex * 4ull;
-                            // Imf::Rgba stores half by default; implicit conversion to float is fine.
-                            float value = -100.0f;
-                            rgbaHostAdjointTarget[dstIndex + 0] = value;
-                            rgbaHostAdjointTarget[dstIndex + 1] = value;
-                            rgbaHostAdjointTarget[dstIndex + 2] = value;
-                            rgbaHostAdjointTarget[dstIndex + 3] = value;
-                        }
-                    }
-                std::vector<float> rgbaHostRendered =
-                        Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), selectedSensor);
-
-                std::vector<float> rgbaHostAdjointSource =
-                        Pale::Utils::computeL2ImageGradientRGBA(rgbaHostRendered, rgbaHostAdjointTarget, width, height);
-
-
-                std::vector<float> rgba =
-                        Pale::uploadSensorRGBA(deviceSelector.getQueue(), selectedAdjointSensors.front(),
-                                               rgbaHostAdjointSource);
-
-
-                tracer.renderBackward(selectedAdjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
-                tracer.renderDepthDistortionBackward(selectedAdjointSensors, gradients); // PRNG replay adjoint
-                tracer.renderNormalConsistencyBackward(selectedAdjointSensors, gradients); // PRNG replay adjoint
-                float hostGradientBeta{};
-                deviceSelector.getQueue().memcpy(&hostGradientBeta, gradients.gradBeta, sizeof(float)).wait();
-                Pale::Log::PA_INFO(
-                    "grad Beta = ({})",
-                    hostGradientBeta
-                );
-                float hostGradientOpacity{};
-                deviceSelector.getQueue().memcpy(&hostGradientOpacity, gradients.gradOpacity, sizeof(float)).wait();
-                Pale::Log::PA_INFO("grad Opacity = ({})", hostGradientOpacity);
-                Pale::float3 hostPosition{};
-                deviceSelector.getQueue().memcpy(&hostPosition, &gradients.gradPosition[1], 3 * sizeof(float)).wait();
-
-                Pale::Log::PA_INFO("grad Position = ({}, {}, {})", hostPosition.x(), hostPosition.y(), hostPosition.z()
-                );
-
-                for (size_t i = 0; const auto &adjointSensor: selectedAdjointSensors) {
-                    auto debugImagesHost = Pale::downloadDebugGradientImages(
-                        deviceSelector.getQueue(), adjointSensor, debugImages[i]);
-                    i++;
-                    const uint32_t imageWidth = adjointSensor.width;
-                    const uint32_t imageHeight = adjointSensor.height;
-                    const float adjointSamplesPerPixel = static_cast<float>(tracer.getSettings().
-                        adjointSamplesPerPixel);
-                    // Per-camera base directory: Output/<pointcloud>/<camera_name>/
-                    std::filesystem::path baseDir =
-                            std::filesystem::path("Output") / sceneName.parent_path() / adjointSensor.name; {
-                        std::filesystem::path pngPath = baseDir / "adjoint_source_l2_gradient_seismic.png";
-                        Pale::Utils::saveGradientSignPNG(pngPath, rgbaHostAdjointSource, width, height,
-                                                         adjointSamplesPerPixel, 1.0f, false, true);
-                        std::filesystem::path pngQ99Path = baseDir / "adjoint_source_l2_gradient_seismic_q099.png";
-                        Pale::Utils::saveGradientSignPNG(pngQ99Path, rgbaHostAdjointSource, width, height,
-                                                         adjointSamplesPerPixel, 0.95f, false, true);
-                            }
-
-
-                    std::filesystem::create_directories(baseDir);
-
-                    auto saveGradientSet = [&](const std::vector<float> &rgbaBuffer,
-                                               const std::string &prefixBaseName) {
-                        // Full-range (absQuantile = 1.0)
-                        {
-                            std::string fileName = prefixBaseName + "_seismic.png";
-                            std::filesystem::path filePath = baseDir / fileName;
-                            if (Pale::Utils::saveGradientSignPNG(filePath, rgbaBuffer, imageWidth, imageHeight,
-                                                                 adjointSamplesPerPixel, 1.0f, false, true)) {
-                                Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-                                                                 }
-                            // q=0.99
-                            std::string fileNameQuantile = prefixBaseName + "_seismic_q099.png";
-                            std::filesystem::path filePathQuantile = baseDir / fileNameQuantile;
-                            Pale::Utils::saveGradientSignPNG(filePathQuantile, rgbaBuffer, imageWidth, imageHeight,
-                                                             adjointSamplesPerPixel, 0.99f, false, true);
-                        }
-                    };
-
-                    saveGradientSet(debugImagesHost.positionX, "posX");
-                    saveGradientSet(debugImagesHost.positionY, "posY");
-                    saveGradientSet(debugImagesHost.positionZ, "posZ");
-                    saveGradientSet(debugImagesHost.rotation, "rot");
-                    saveGradientSet(debugImagesHost.scale, "scale");
-                    saveGradientSet(debugImagesHost.opacity, "opacity");
-                    saveGradientSet(debugImagesHost.albedo, "albedo");
-                    saveGradientSet(debugImagesHost.beta, "beta");
-                }
-            }
-        }
-
         if (settings.renderDebugGradientImages) {
-            std::vector<Pale::DebugImages> debugImages(sensors.size());
-            Pale::PointGradients gradients = Pale::makeGradientsForScene(deviceSelector.getQueue(), buildProducts,
-                                                                         debugImages.data());
+            {
+                auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
+                if (entities.empty()) {
+                    throw std::runtime_error("debug gradients: scene has no PointCloudComponent");
+                }
+                Pale::Entity entity(entities.front(), scene.get());
+                auto pointAssetSharedPtr = assetManager.get<Pale::PointAsset>(
+                    entity.getComponent<Pale::PointCloudComponent>().pointCloudID);
+                if (!pointAssetSharedPtr) {
+                    throw std::runtime_error("debug gradients: failed to get PointAsset for dynamic point cloud");
+                }
+                Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+                if (pointAsset.points.empty()) {
+                    throw std::runtime_error("debug gradients: PointAsset has no PointGeometry blocks");
+                }
+                Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+                const uint32_t debugSurfelIndex = settings.surfelIndexForDebugImages;
+                if (debugSurfelIndex >= pointGeometry.positions.size()) {
+                    throw std::runtime_error("debug gradients: surfelIndexForDebugImages is out of range");
+                }
+                pointGeometry.positions[debugSurfelIndex].x = -0.2f;
+                rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, gpu);
+            }
 
-            std::vector<Pale::SensorGPU> adjointSensors =
-                    Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts, true, true);
+            Pale::Log::PA_INFO("Forward Render Pass after debug perturbation...");
+            sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+            tracer.renderForward(sensors);
 
             Pale::Log::PA_INFO("Adjoint Render Pass...");
-            tracer.renderBackward(adjointSensors, gradients, debugImages.data()); // PRNG replay adjoint
+            std::vector<Pale::SensorGPU> adjointSensors = Pale::makeSensorsForScene(
+                deviceSelector.getQueue(), buildProducts, true, true);
+            std::vector<Pale::DebugImages> debugImages(adjointSensors.size());
+            Pale::PointGradients gradients = Pale::makeGradientsForScene(
+                deviceSelector.getQueue(), buildProducts, debugImages.data());
 
-            for (size_t i = 0; const auto &adjointSensor: adjointSensors) {
-                auto debugImagesHost = Pale::downloadDebugGradientImages(
-                    deviceSelector.getQueue(), adjointSensor, debugImages[i]);
+            const bool useConstantDebugTarget = true;
+            const float constantDebugTargetValue = -100.0f;
+            const float adjointSamplesPerPixel = static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
+            const std::filesystem::path outputRoot = std::filesystem::path("Output") / sceneName.parent_path();
+            std::vector<std::vector<float>> adjointSourceImages(adjointSensors.size());
 
-                i++;
+            auto sensorNameString = [](const Pale::SensorGPU &sensor) {
+                return std::string(sensor.name);
+            };
+            auto findForwardSensorByName = [&](const std::string &sensorName) -> const Pale::SensorGPU * {
+                for (const auto &forwardSensor: sensors) {
+                    if (sensorNameString(forwardSensor) == sensorName) {
+                        return &forwardSensor;
+                    }
+                }
+                return nullptr;
+            };
+
+            for (std::size_t sensorIndex = 0; sensorIndex < adjointSensors.size(); ++sensorIndex) {
+                Pale::SensorGPU &adjointSensor = adjointSensors[sensorIndex];
+                const std::string sensorName = sensorNameString(adjointSensor);
+                const Pale::SensorGPU *forwardSensor = findForwardSensorByName(sensorName);
+                if (!forwardSensor) {
+                    throw std::runtime_error("debug gradients: no matching forward sensor for adjoint sensor " + sensorName);
+                }
                 const uint32_t imageWidth = adjointSensor.width;
                 const uint32_t imageHeight = adjointSensor.height;
-                const float adjointSamplesPerPixel =
-                        static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
+                if (forwardSensor->width != imageWidth || forwardSensor->height != imageHeight) {
+                    throw std::runtime_error("debug gradients: forward/adjoint resolution mismatch for sensor " + sensorName);
+                }
 
-                // Per-camera base directory: Output/<pointcloud>/<camera_name>/
-                std::filesystem::path baseDir =
-                        std::filesystem::path("Output")
+                std::vector<float> rgbaHostRendered =
+                        Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), *forwardSensor);
+                std::vector<float> rgbaHostAdjointTarget;
+                uint32_t targetWidth = 0;
+                uint32_t targetHeight = 0;
 
-                        / adjointSensor.name;
+                const std::filesystem::path targetImagePath = outputRoot / "images" / (sensorName + "_raw.exr");
+                Pale::Utils::loadEXRAsRGBAFloat(targetImagePath, rgbaHostAdjointTarget, targetWidth, targetHeight);
 
-                std::filesystem::create_directories(baseDir);
+                if (targetWidth != imageWidth || targetHeight != imageHeight) {
+                    throw std::runtime_error("debug gradients: target resolution mismatch for sensor " + sensorName);
+                }
 
-                auto saveGradientSet = [&](const std::vector<float> &rgbaBuffer,
-                                           const std::string &prefixBaseName) {
-                    const char channelNames[3] = {'R', 'G', 'B'};
-
-                    for (int channelIndex = 0; channelIndex < 3; ++channelIndex) {
-                        const char channelChar = channelNames[channelIndex];
-
-                        // Full-range (absQuantile = 1.0)
-                        {
-                            std::string fileName =
-                                    prefixBaseName + "_" + channelChar + "_seismic.png";
-                            std::filesystem::path filePath = baseDir / fileName;
-
-                            if (Pale::Utils::saveGradientSingleChannelPNG(
-                                filePath,
-                                rgbaBuffer,
-                                imageWidth,
-                                imageHeight,
-                                channelIndex,
-                                adjointSamplesPerPixel,
-                                1.0f,
-                                false,
-                                true)) {
-                                Pale::Log::PA_INFO("Wrote PNG image to: {}", filePath.string());
-                                }
-
-                            // q=0.99
-                            std::string fileNameQuantile =
-                                    prefixBaseName + "_" + channelChar + "_seismic_q099.png";
-                            std::filesystem::path filePathQuantile = baseDir / fileNameQuantile;
-
-                            Pale::Utils::saveGradientSingleChannelPNG(
-                                filePathQuantile,
-                                rgbaBuffer,
-                                imageWidth,
-                                imageHeight,
-                                channelIndex,
-                                adjointSamplesPerPixel,
-                                0.99f,
-                                false,
-                                true);
-                        }
+                if (useConstantDebugTarget) {
+                    const std::size_t pixelCount = static_cast<std::size_t>(imageWidth) * imageHeight;
+                    for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+                        const std::size_t dstIndex = pixelIndex * 4ull;
+                        rgbaHostAdjointTarget[dstIndex + 0] = constantDebugTargetValue;
+                        rgbaHostAdjointTarget[dstIndex + 1] = constantDebugTargetValue;
+                        rgbaHostAdjointTarget[dstIndex + 2] = constantDebugTargetValue;
+                        rgbaHostAdjointTarget[dstIndex + 3] = constantDebugTargetValue;
                     }
+                }
+
+                std::vector<float> rgbaHostAdjointSource = Pale::Utils::computeL2ImageGradientRGBA(
+                    rgbaHostRendered, rgbaHostAdjointTarget, imageWidth, imageHeight);
+                Pale::uploadSensorRGBA(deviceSelector.getQueue(), adjointSensor, rgbaHostAdjointSource);
+                adjointSourceImages[sensorIndex] = std::move(rgbaHostAdjointSource);
+            }
+
+            tracer.renderBackward(adjointSensors, gradients, debugImages.data());
+            if (settings.useDepthDistortion) {
+                tracer.renderDepthDistortionBackward(adjointSensors, gradients);
+            }
+            if (settings.useNormalConsistency) {
+                tracer.renderNormalConsistencyBackward(adjointSensors, gradients);
+            }
+
+            const uint32_t debugSurfelIndex = settings.surfelIndexForDebugImages;
+            if (debugSurfelIndex < gradients.numPoints) {
+                float hostGradientBeta{};
+                float hostGradientOpacity{};
+                Pale::float3 hostGradientPosition{};
+                deviceSelector.getQueue().memcpy(&hostGradientBeta, &gradients.gradBeta[debugSurfelIndex], sizeof(float)).wait();
+                deviceSelector.getQueue().memcpy(&hostGradientOpacity, &gradients.gradOpacity[debugSurfelIndex], sizeof(float)).wait();
+                deviceSelector.getQueue().memcpy(&hostGradientPosition, &gradients.gradPosition[debugSurfelIndex], sizeof(Pale::float3)).wait();
+
+                Pale::Log::PA_INFO("debug surfel index = {}", debugSurfelIndex);
+                Pale::Log::PA_INFO("grad Beta = ({})", hostGradientBeta);
+                Pale::Log::PA_INFO("grad Opacity = ({})", hostGradientOpacity);
+                Pale::Log::PA_INFO(
+                    "grad Position = ({}, {}, {})",
+                    hostGradientPosition.x(),
+                    hostGradientPosition.y(),
+                    hostGradientPosition.z());
+            }
+
+            for (std::size_t sensorIndex = 0; sensorIndex < adjointSensors.size(); ++sensorIndex) {
+                const Pale::SensorGPU &adjointSensor = adjointSensors[sensorIndex];
+                const std::string sensorName = adjointSensor.name;
+                const uint32_t imageWidth = adjointSensor.width;
+                const uint32_t imageHeight = adjointSensor.height;
+                const std::filesystem::path cameraDebugDir = outputRoot / sensorName;
+                std::filesystem::create_directories(cameraDebugDir);
+
+                auto saveGradientSet = [&](const std::vector<float> &rgbaBuffer, const std::string &baseName) {
+                    if (rgbaBuffer.empty()) {
+                        return;
+                    }
+                    const std::filesystem::path exrPath = cameraDebugDir / (baseName + ".exr");
+                    const std::filesystem::path pngPath = cameraDebugDir / (baseName + "_seismic.png");
+                    const std::filesystem::path pngQ99Path = cameraDebugDir / (baseName + "_seismic_q099.png");
+
+                    Pale::Utils::saveRGBAFloatAsEXR(exrPath, rgbaBuffer, imageWidth, imageHeight);
+                    if (Pale::Utils::saveGradientSignPNG(
+                        pngPath, rgbaBuffer, imageWidth, imageHeight, adjointSamplesPerPixel, 1.0f, false, true)) {
+                        Pale::Log::PA_INFO("Wrote PNG image to: {}", pngPath.string());
+                    }
+                    Pale::Utils::saveGradientSignPNG(
+                        pngQ99Path, rgbaBuffer, imageWidth, imageHeight, adjointSamplesPerPixel, 0.99f, false, true);
                 };
 
-                saveGradientSet(debugImagesHost.positionX, "posX");
-                saveGradientSet(debugImagesHost.positionY, "posY");
-                saveGradientSet(debugImagesHost.positionZ, "posZ");
-                saveGradientSet(debugImagesHost.rotation, "rot");
+                saveGradientSet(adjointSourceImages[sensorIndex], "adjoint_source_l2_gradient");
+
+                Pale::DebugGradientImagesHost debugImagesHost = Pale::downloadDebugGradientImages(
+                    deviceSelector.getQueue(), adjointSensor, debugImages[sensorIndex]);
+
+                saveGradientSet(debugImagesHost.positionX, "position_x");
+                saveGradientSet(debugImagesHost.positionY, "position_y");
+                saveGradientSet(debugImagesHost.positionZ, "position_z");
+                saveGradientSet(debugImagesHost.rotation, "rotation");
                 saveGradientSet(debugImagesHost.scale, "scale");
-                saveGradientSet(debugImagesHost.opacity, "opacity");
                 saveGradientSet(debugImagesHost.albedo, "albedo");
+                saveGradientSet(debugImagesHost.opacity, "opacity");
                 saveGradientSet(debugImagesHost.beta, "beta");
-                //saveGradientSet(debugImagesHost.depthLoss, "DepthLoss");
-                //saveGradientSet(debugImagesHost.depthLossPos, "DepthLossPos");
-                //saveGradientSet(debugImagesHost.normalLoss, "NormalLoss");
-            }
-
-            // Download and log gradPosition[0]
-            if (gradients.numPoints > 0 && gradients.gradPosition != nullptr) {
-                Pale::float3 hostGradientPosition0{};
-                deviceSelector.getQueue()
-                        .memcpy(&hostGradientPosition0,
-                                gradients.gradPosition,
-                                sizeof(Pale::float3))
-                        .wait();
-
-                const float gradientMagnitude =
-                        std::sqrt(hostGradientPosition0.x() * hostGradientPosition0.x() +
-                                  hostGradientPosition0.y() * hostGradientPosition0.y() +
-                                  hostGradientPosition0.z() * hostGradientPosition0.z());
-
-                Pale::Log::PA_INFO(
-                    "gradPosition[0] = ({}, {}, {}), |g| = {}",
-                    hostGradientPosition0.x(),
-                    hostGradientPosition0.y(),
-                    hostGradientPosition0.z(),
-                    gradientMagnitude
-                );
             }
         }
+        // Write Registry:
     }
-
-    // Write Registry:
     assetManager.registry().save("asset_registry.yaml");
     deviceSelector.getQueue().wait();
     return 0;

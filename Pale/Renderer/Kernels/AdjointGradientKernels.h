@@ -35,9 +35,38 @@ namespace Pale {
         if (!renderDebugGradientImages) {
             return;
         }
-        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex || selectedPrimitiveIndex == UINT32_MAX) {
+        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex || selectedPrimitiveIndex == UINT32_MAX || gradientRecord.primitiveIndex == UINT32_MAX) {
             return;
         }
+        constexpr float maxAbsGradientComponent = 1.0e3f;
+
+        const auto isValidGradientComponent = [](float value) -> bool {
+            return sycl::isfinite(value) && !sycl::isnan(value) && sycl::fabs(value) <=
+                   maxAbsGradientComponent;
+        };
+
+        const bool validGradientRecord =
+                isValidGradientComponent(gradientRecord.gradPositionX) &&
+                isValidGradientComponent(gradientRecord.gradPositionY) &&
+                isValidGradientComponent(gradientRecord.gradPositionZ) &&
+                isValidGradientComponent(gradientRecord.gradScaleU) &&
+                isValidGradientComponent(gradientRecord.gradScaleV) &&
+                isValidGradientComponent(gradientRecord.gradTangentUX) &&
+                isValidGradientComponent(gradientRecord.gradTangentUY) &&
+                isValidGradientComponent(gradientRecord.gradTangentUZ) &&
+                isValidGradientComponent(gradientRecord.gradTangentVX) &&
+                isValidGradientComponent(gradientRecord.gradTangentVY) &&
+                isValidGradientComponent(gradientRecord.gradTangentVZ) &&
+                isValidGradientComponent(gradientRecord.gradEta) &&
+                isValidGradientComponent(gradientRecord.gradBeta) &&
+                isValidGradientComponent(gradientRecord.gradAlbedoR) &&
+                isValidGradientComponent(gradientRecord.gradAlbedoG) &&
+                isValidGradientComponent(gradientRecord.gradAlbedoB);
+        if (!validGradientRecord)
+            return;
+        //if (pathId >= debugImage.numPixels)
+        //    return;
+
         atomicAddFloat(debugImage.framebufferPosX[pathId], gradientRecord.gradPositionX);
         atomicAddFloat(debugImage.framebufferPosY[pathId], gradientRecord.gradPositionY);
         atomicAddFloat(debugImage.framebufferPosZ[pathId], gradientRecord.gradPositionZ);
@@ -47,11 +76,11 @@ namespace Pale {
         const float3 tangentVGradient{
             gradientRecord.gradTangentVX, gradientRecord.gradTangentVY, gradientRecord.gradTangentVZ
         };
-        const float albedoGradientMagnitude = gradientRecord.gradAlbedoR;
+
         //atomicAddFloat(debugImage.framebufferRot[pathId], rotationGradientMagnitude);
         atomicAddFloat(debugImage.framebufferScale[pathId], gradientRecord.gradScaleU);
         atomicAddFloat(debugImage.framebufferOpacity[pathId], gradientRecord.gradEta);
-        atomicAddFloat(debugImage.framebufferAlbedo[pathId], albedoGradientMagnitude);
+        atomicAddFloat(debugImage.framebufferAlbedo[pathId],  gradientRecord.gradAlbedoR);
         atomicAddFloat(debugImage.framebufferBeta[pathId], gradientRecord.gradBeta);
     }
 

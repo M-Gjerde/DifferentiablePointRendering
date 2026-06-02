@@ -441,7 +441,7 @@ namespace Pale {
 
 
         Ray shadowRay{};
-        shadowRay.origin = shadingPositionW + lightDirection * RayEpsilon2;
+        shadowRay.origin = shadingPositionW + shadingNormalW * RayEpsilon2;
         shadowRay.direction = lightDirection;
         shadowRay.normal = shadingNormalW;
 
