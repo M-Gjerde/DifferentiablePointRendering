@@ -142,12 +142,33 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         or use_visibility_weighted_opacity
                 )
 
+                depth_regularizer_gradients: Dict[str, np.ndarray] = {}
+                normal_regularizer_gradients: Dict[str, np.ndarray] = {}
+                visibility_opacity_gradients: Dict[str, np.ndarray] = {}
+                surface_regularizer_gradients: Dict[str, np.ndarray] = {}
+
                 if use_surface_regularizers:
-                    surface_regularizer_gradients = renderer.render_surface_regularizers_backward(
+                    surface_regularizer_components = renderer.render_surface_regularizers_backward(
                         training_camera_ids,
                         loss_state["depth_distortion_grad_images"],
                         loss_state["visible_normal_adjoints"],
                         loss_state["depth_normal_adjoints"],
+                    )
+
+                    depth_regularizer_gradients = surface_regularizer_components["depth_distortion"]
+                    normal_regularizer_gradients = surface_regularizer_components["normal_consistency"]
+                    visibility_opacity_gradients = surface_regularizer_components["visibility_weighted_opacity"]
+
+                    repair_nonfinite_gradient_dict_inplace("depth_regularizer_gradients", depth_regularizer_gradients,
+                                                           iteration)
+                    repair_nonfinite_gradient_dict_inplace("normal_regularizer_gradients", normal_regularizer_gradients,
+                                                           iteration)
+                    repair_nonfinite_gradient_dict_inplace("visibility_opacity_gradients", visibility_opacity_gradients,
+                                                           iteration)
+                    surface_regularizer_gradients = sum_gradient_dicts(
+                        depth_regularizer_gradients,
+                        normal_regularizer_gradients,
+                        visibility_opacity_gradients,
                     )
 
                 photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
@@ -422,32 +443,44 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     lr_position = active_learning_rates.get("position", float(config.learning_rate_position))
 
                     print(
-                        f"[Iter {iteration:04d}/{config.iterations}] "
-                        f"RGB={loss_state['total_rgb_loss_value']:.3e}, "
-                        f"DdistRaw={loss_state['total_depth_distortion_loss_raw']:.3e}, "
-                        f"DdistW={loss_state['total_depth_distortion_loss_weighted']:.3e}, "
-                        f"DdistActiveW={active_depth_distortion_weight:.3e}, "
-                        f"NconsRaw={loss_state['total_normal_loss_raw']:.3e}, "
-                        f"NconsW={loss_state['total_normal_loss_weighted']:.3e}, "
-                        f"VisOpacityRaw={loss_state['total_visibility_weighted_opacity_loss_raw']:.3e}, "
-                        f"VisOpacityW={loss_state['total_visibility_weighted_opacity_loss_weighted']:.3e}, "
-                        f"Total={loss_state['total_loss_value']:.3e}, "
-                        f"lr_pos={lr_position:.3e}, t={iteration_time:.3f} s, "
-                        f"pos_rms={grad_pos_rms:.2e}, tu_rms={grad_tanu_rms:.2e}, "
-                        f"tv_rms={grad_tanv_rms:.2e}, su,sv_rms={grad_scale_rms:.2e}, "
-                        f"rho_rms={grad_albedo_rms:.2e}, eta_rms={grad_opacity_rms:.2e}, "
-                        f"beta_rms={grad_beta_rms:.2e}, pos_max={grad_pos_max:.2e}, "
-                        f"tu_max={grad_tanu_max:.2e}, tv_max={grad_tanv_max:.2e}, "
-                        f"su,sv_max={grad_scale_max:.2e}, rho_max={grad_albedo_max:.2e}, "
-                        f"eta_max={grad_opacity_max:.2e}, beta_max={grad_beta_max:.2e}, "
-                        f"pts={num_points}, t_total={total_time:.1f} s, "
-                        f"it/s={1.0 / max(iteration_time, 1.0e-12):.2f}"
+                        format_training_iteration_log(
+                            iteration=iteration,
+                            total_iterations=config.iterations,
+                            iteration_time=iteration_time,
+                            total_time=total_time,
+                            num_points=num_points,
+                            loss_state=loss_state,
+                            lr_position=lr_position,
+                            active_depth_distortion_weight=active_depth_distortion_weight,
+                            grad_pos_rms=grad_pos_rms,
+                            grad_tanu_rms=grad_tanu_rms,
+                            grad_tanv_rms=grad_tanv_rms,
+                            grad_scale_rms=grad_scale_rms,
+                            grad_albedo_rms=grad_albedo_rms,
+                            grad_opacity_rms=grad_opacity_rms,
+                            grad_beta_rms=grad_beta_rms,
+                            grad_pos_max=grad_pos_max,
+                            grad_tanu_max=grad_tanu_max,
+                            grad_tanv_max=grad_tanv_max,
+                            grad_scale_max=grad_scale_max,
+                            grad_albedo_max=grad_albedo_max,
+                            grad_opacity_max=grad_opacity_max,
+                            grad_beta_max=grad_beta_max,
+                        )
                     )
 
                     print(format_loss_breakdown(loss_state))
-                    print(
-                        format_gradient_source_balance(photo_gradients, surface_regularizer_gradients, total_gradients))
 
+                    print(
+                        format_gradient_source_balance(
+                            loss_gradients=photo_gradients,
+                            depth_regularizer_gradients=depth_regularizer_gradients,
+                            normal_regularizer_gradients=normal_regularizer_gradients,
+                            visibility_opacity_gradients=visibility_opacity_gradients,
+                            regularizer_gradients=surface_regularizer_gradients,
+                            total_gradients=total_gradients,
+                        )
+                    )
                     print(format_gradient_stats("render_grads", photo_gradient_stats))
 
                     if surface_regularizer_gradients:

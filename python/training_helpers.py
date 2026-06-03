@@ -587,15 +587,28 @@ def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
 
 
 def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
-    breakdown = make_loss_breakdown(loss_state)
+    rgb_loss = float(loss_state["total_rgb_loss_value"])
+    depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
+    normal_weighted = float(loss_state["total_normal_loss_weighted"])
+    visibility_opacity_weighted = float(loss_state["total_visibility_weighted_opacity_loss_weighted"])
+    total_loss = float(loss_state["total_loss_value"])
+
+    after_depth = rgb_loss + depth_weighted
+    after_normal = after_depth + normal_weighted
+    after_visibility_opacity = after_normal + visibility_opacity_weighted
+    regularizer_total = depth_weighted + normal_weighted + visibility_opacity_weighted
+
     return (
-        "loss_stack: "
-        f"before_regs={breakdown['before_regularizers']:.3e}, "
-        f"+depth={breakdown['after_depth_distortion']:.3e}, "
-        f"+normal={breakdown['after_normal_consistency']:.3e}, "
-        f"+vis_opacity={breakdown['after_visibility_opacity']:.3e}, "
-        f"reg_total={breakdown['regularizer_total']:.3e}, "
-        f"total={breakdown['total']:.3e}"
+        "Loss stack:\n"
+        f"  {'RGB only':<28} {rgb_loss:>12.3e}\n"
+        f"  {'+ depth distortion':<28} {after_depth:>12.3e}  "
+        f"(+{depth_weighted:.3e})\n"
+        f"  {'+ normal consistency':<28} {after_normal:>12.3e}  "
+        f"(+{normal_weighted:.3e})\n"
+        f"  {'+ visibility opacity':<28} {after_visibility_opacity:>12.3e}  "
+        f"(+{visibility_opacity_weighted:.3e})\n"
+        f"  {'regularizer total':<28} {regularizer_total:>12.3e}\n"
+        f"  {'total':<28} {total_loss:>12.3e}"
     )
 
 
@@ -608,37 +621,139 @@ def gradient_norm_for_key(
     return gradient_l2_norm(np.asarray(gradient_dict[key], dtype=np.float32, order="C"))
 
 
+def format_training_iteration_log(
+        iteration: int,
+        total_iterations: int,
+        iteration_time: float,
+        total_time: float,
+        num_points: int,
+        loss_state: Dict[str, Any],
+        lr_position: float,
+        active_depth_distortion_weight: float,
+        grad_pos_rms: float,
+        grad_tanu_rms: float,
+        grad_tanv_rms: float,
+        grad_scale_rms: float,
+        grad_albedo_rms: float,
+        grad_opacity_rms: float,
+        grad_beta_rms: float,
+        grad_pos_max: float,
+        grad_tanu_max: float,
+        grad_tanv_max: float,
+        grad_scale_max: float,
+        grad_albedo_max: float,
+        grad_opacity_max: float,
+        grad_beta_max: float,
+) -> str:
+    iteration_rate = 1.0 / max(iteration_time, 1.0e-12)
+
+    return (
+        f"\n[Iter {iteration:04d}/{total_iterations}] "
+        f"time={iteration_time:.3f}s total={total_time:.1f}s "
+        f"it/s={iteration_rate:.2f} pts={num_points} adaptive_lr_pos={lr_position}\n"
+        f"  losses:"
+        f" rgb={loss_state['total_rgb_loss_value']:.3e}"
+        f" depth_raw={loss_state['total_depth_distortion_loss_raw']:.3e}"
+        f" depth_w={loss_state['total_depth_distortion_loss_weighted']:.3e}"
+        f" depth_active_w={active_depth_distortion_weight:.3e}"
+        f" normal_raw={loss_state['total_normal_loss_raw']:.3e}"
+        f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
+        f" vis_opacity_raw={loss_state['total_visibility_weighted_opacity_loss_raw']:.3e}"
+        f" vis_opacity_w={loss_state['total_visibility_weighted_opacity_loss_weighted']:.3e}"
+        f" total={loss_state['total_loss_value']:.3e}\n"
+        f"  grad_rms:"
+        f" pos={grad_pos_rms:.2e}"
+        f" tu={grad_tanu_rms:.2e}"
+        f" tv={grad_tanv_rms:.2e}"
+        f" scale={grad_scale_rms:.2e}"
+        f" albedo={grad_albedo_rms:.2e}"
+        f" opacity={grad_opacity_rms:.2e}"
+        f" beta={grad_beta_rms:.2e}\n"
+        f"  grad_max:"
+        f" pos={grad_pos_max:.2e}"
+        f" tu={grad_tanu_max:.2e}"
+        f" tv={grad_tanv_max:.2e}"
+        f" scale={grad_scale_max:.2e}"
+        f" albedo={grad_albedo_max:.2e}"
+        f" opacity={grad_opacity_max:.2e}"
+        f" beta={grad_beta_max:.2e}"
+    )
+
 def format_gradient_source_balance(
-        photo_gradients: Dict[str, np.ndarray],
-        surface_regularizer_gradients: Dict[str, np.ndarray],
+        loss_gradients: Dict[str, np.ndarray],
+        depth_regularizer_gradients: Dict[str, np.ndarray],
+        normal_regularizer_gradients: Dict[str, np.ndarray],
+        visibility_opacity_gradients: Dict[str, np.ndarray],
+        regularizer_gradients: Dict[str, np.ndarray],
         total_gradients: Dict[str, np.ndarray],
 ) -> str:
     keys = [
         ("position", "pos"),
-        ("tangent_u", "tu"),
-        ("tangent_v", "tv"),
+        ("tangent_u", "tan_u"),
+        ("tangent_v", "tan_v"),
         ("scale", "scale"),
-        ("albedo", "rho"),
-        ("opacity", "eta"),
+        ("albedo", "albedo"),
+        ("opacity", "opacity"),
         ("beta", "beta"),
     ]
 
-    parts: list[str] = []
+    lines = [
+        "Gradient source balance:",
+        "  "
+        f"{'param':<8}"
+        f"{'loss':>11}"
+        f"{'regularizers':>14}"
+        f"{'total':>11}"
+        f"{'regs%':>8}"
+        f"{'depth%':>8}"
+        f"{'normal%':>9}"
+        f"{'vis_eta%':>10}"
+        f"   {'regularizer components'}",
+    ]
 
     for key, label in keys:
-        photo_norm = gradient_norm_for_key(photo_gradients, key)
-        surface_norm = gradient_norm_for_key(surface_regularizer_gradients, key)
+        loss_norm = gradient_norm_for_key(loss_gradients, key)
+
+        depth_norm = gradient_norm_for_key(depth_regularizer_gradients, key)
+        normal_norm = gradient_norm_for_key(normal_regularizer_gradients, key)
+        visibility_opacity_norm = gradient_norm_for_key(visibility_opacity_gradients, key)
+
+        regularizer_norm = gradient_norm_for_key(regularizer_gradients, key)
         total_norm = gradient_norm_for_key(total_gradients, key)
 
-        denom = photo_norm + surface_norm
-        surface_fraction = surface_norm / denom if denom > 1.0e-20 else 0.0
-
-        parts.append(
-            f"{label}:photo={photo_norm:.2e},surf={surface_norm:.2e},"
-            f"total={total_norm:.2e},surf%={100.0 * surface_fraction:.1f}"
+        loss_regularizer_denom = loss_norm + regularizer_norm
+        regularizer_percent = (
+            100.0 * regularizer_norm / loss_regularizer_denom
+            if loss_regularizer_denom > 1.0e-20
+            else 0.0
         )
 
-    return "gradient_source_balance: " + " | ".join(parts)
+        component_denom = depth_norm + normal_norm + visibility_opacity_norm
+        depth_percent = 100.0 * depth_norm / component_denom if component_denom > 1.0e-20 else 0.0
+        normal_percent = 100.0 * normal_norm / component_denom if component_denom > 1.0e-20 else 0.0
+        visibility_opacity_percent = (
+            100.0 * visibility_opacity_norm / component_denom
+            if component_denom > 1.0e-20
+            else 0.0
+        )
+
+        lines.append(
+            "  "
+            f"{label:<8}"
+            f"{loss_norm:>11.2e}"
+            f"{regularizer_norm:>14.2e}"
+            f"{total_norm:>11.2e}"
+            f"{regularizer_percent:>7.1f}%"
+            f"{depth_percent:>7.1f}%"
+            f"{normal_percent:>8.1f}%"
+            f"{visibility_opacity_percent:>9.1f}%"
+            f"   "
+            f"depth={depth_norm:.2e}, "
+            f"normal={normal_norm:.2e}, "
+            f"vis_eta={visibility_opacity_norm:.2e}"
+        )
+
+    return "\n".join(lines)
 
 def compute_normal_consistency_loss_and_adjoints(
         visible_normal_rgba: np.ndarray,

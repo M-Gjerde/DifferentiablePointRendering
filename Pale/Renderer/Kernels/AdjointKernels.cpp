@@ -2863,14 +2863,23 @@ namespace Pale {
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
         SensorGPU sensor = pkg.sensors[cameraIndex];
-        auto &gradients = pkg.gradients;
-        auto debugImage = pkg.debugImages[cameraIndex];
+        DebugImages debugImage{};
+        const bool writeDebugImages =
+            settings.renderDebugGradientImages && pkg.debugImages != nullptr;
+
+        if (writeDebugImages) {
+            debugImage = pkg.debugImages[cameraIndex];
+        }
 
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
         const uint32_t pixelCount = imageWidth * imageHeight;
-        const uint32_t pointCount = gradients.numPoints;
 
+        PointGradients depthGradients = pkg.depthDistortionGradients;
+        PointGradients normalGradients = pkg.normalConsistencyGradients;
+        PointGradients visibilityGradients = pkg.visibilityOpacityGradients;
+
+        const uint32_t pointCount = static_cast<uint32_t>(depthGradients.numPoints);
         const float depthDistortionLossWeight = settings.depthDistortionWeight;
         const float normalConsistencyLossWeight = settings.normalConsistencyWeight;
         const float visibilityOpacityLossWeight = settings.visibilityWeightedOpacityRegularizerWeight;
@@ -3066,13 +3075,23 @@ namespace Pale {
                             continue;
                         }
 
-                        float3 totalGradPosition{0.0f, 0.0f, 0.0f};
-                        float3 totalGradTanU{0.0f, 0.0f, 0.0f};
-                        float3 totalGradTanV{0.0f, 0.0f, 0.0f};
-                        float totalGradScaleU = 0.0f;
-                        float totalGradScaleV = 0.0f;
-                        float totalGradOpacity = 0.0f;
-                        float totalGradBeta = 0.0f;
+                        float3 depthGradPosition{0.0f, 0.0f, 0.0f};
+                        float3 depthGradTanU{0.0f, 0.0f, 0.0f};
+                        float3 depthGradTanV{0.0f, 0.0f, 0.0f};
+                        float depthGradScaleU = 0.0f;
+                        float depthGradScaleV = 0.0f;
+                        float depthGradOpacity = 0.0f;
+                        float depthGradBeta = 0.0f;
+
+                        float3 normalGradPosition{0.0f, 0.0f, 0.0f};
+                        float3 normalGradTanU{0.0f, 0.0f, 0.0f};
+                        float3 normalGradTanV{0.0f, 0.0f, 0.0f};
+                        float normalGradScaleU = 0.0f;
+                        float normalGradScaleV = 0.0f;
+                        float normalGradOpacity = 0.0f;
+                        float normalGradBeta = 0.0f;
+
+                        float visibilityGradOpacity = 0.0f;
 
                         if (useDepthDistortion && hitCount > 1u) {
                             const float3 x = hit.hitPositionW;
@@ -3120,19 +3139,19 @@ namespace Pale {
                                 }
                             }
 
-                            totalGradPosition += barP;
-                            totalGradTanU += barTu;
-                            totalGradTanV += barTv;
-                            totalGradScaleU += barSu;
-                            totalGradScaleV += barSv;
-                            totalGradOpacity += barEta;
-                            totalGradBeta += barBeta;
+                            depthGradPosition += barP;
+                            depthGradTanU += barTu;
+                            depthGradTanV += barTv;
+                            depthGradScaleU += barSu;
+                            depthGradScaleV += barSv;
+                            depthGradOpacity += barEta;
+                            depthGradBeta += barBeta;
                         }
 
                         if (useVisibilityOpacity) {
                             const float visibilityOpacityAdjoint =
                                     visibilityOpacityLossWeight * visibilityOpacityLossNormalization;
-                            totalGradOpacity += visibilityOpacityAdjoint * 2.0f * hit.wi * (eta - 1.0f);
+                            visibilityGradOpacity += visibilityOpacityAdjoint * 2.0f * hit.wi * (eta - 1.0f);
                         }
 
                         if (useNormalConsistency && i == medianHitIndex) {
@@ -3153,8 +3172,8 @@ namespace Pale {
                                                                      rawNormal, gradRawNormal);
                                     const float3 gradCross = gradProjected / rawCrossLen;
 
-                                    totalGradTanU += cross(tv, gradCross);
-                                    totalGradTanV += cross(gradCross, tu);
+                                    normalGradTanU += cross(tv, gradCross);
+                                    normalGradTanV += cross(gradCross, tu);
                                 }
                             }
 
@@ -3163,7 +3182,7 @@ namespace Pale {
                                 const float3x3 hitPointJacobian =
                                         planeHitPointIntersectionJacobian(rayDir0, orientedNormal);
 
-                                totalGradPosition += transpose(hitPointJacobian) * gradWrtHitPoint;
+                                normalGradPosition += transpose(hitPointJacobian) * gradWrtHitPoint;
 
                                 const float3 rawCross = cross(tu, tv);
                                 const float rawCrossLen = length(rawCross);
@@ -3180,21 +3199,45 @@ namespace Pale {
                                                                      rawNormal, gradRawNormal);
                                     const float3 gradCross = gradProjected / rawCrossLen;
 
-                                    totalGradTanU += cross(tv, gradCross);
-                                    totalGradTanV += cross(gradCross, tu);
+                                    normalGradTanU += cross(tv, gradCross);
+                                    normalGradTanV += cross(gradCross, tu);
                                 }
                             }
                         }
 
-                        atomicAddFloat3(gradients.gradPosition[hit.primitiveIndex], totalGradPosition);
-                        atomicAddFloat3(gradients.gradTanU[hit.primitiveIndex], totalGradTanU);
-                        atomicAddFloat3(gradients.gradTanV[hit.primitiveIndex], totalGradTanV);
-                        atomicAddFloat2(gradients.gradScale[hit.primitiveIndex],
-                                        float2(totalGradScaleU, totalGradScaleV));
-                        atomicAddFloat(gradients.gradOpacity[hit.primitiveIndex], totalGradOpacity);
-                        atomicAddFloat(gradients.gradBeta[hit.primitiveIndex], totalGradBeta);
+                        if (useDepthDistortion) {
+                            atomicAddFloat3(depthGradients.gradPosition[hit.primitiveIndex], depthGradPosition);
+                            atomicAddFloat3(depthGradients.gradTanU[hit.primitiveIndex], depthGradTanU);
+                            atomicAddFloat3(depthGradients.gradTanV[hit.primitiveIndex], depthGradTanV);
+                            atomicAddFloat2(depthGradients.gradScale[hit.primitiveIndex],
+                                            float2{depthGradScaleU, depthGradScaleV});
+                            atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradOpacity);
+                            atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradBeta);
+                        }
 
-                        if (settings.renderDebugGradientImages) {
+                        if (useNormalConsistency) {
+                            atomicAddFloat3(normalGradients.gradPosition[hit.primitiveIndex], normalGradPosition);
+                            atomicAddFloat3(normalGradients.gradTanU[hit.primitiveIndex], normalGradTanU);
+                            atomicAddFloat3(normalGradients.gradTanV[hit.primitiveIndex], normalGradTanV);
+                            atomicAddFloat2(normalGradients.gradScale[hit.primitiveIndex],
+                                            float2{normalGradScaleU, normalGradScaleV});
+                            atomicAddFloat(normalGradients.gradOpacity[hit.primitiveIndex], normalGradOpacity);
+                            atomicAddFloat(normalGradients.gradBeta[hit.primitiveIndex], normalGradBeta);
+                        }
+
+                        if (useVisibilityOpacity) {
+                            atomicAddFloat(visibilityGradients.gradOpacity[hit.primitiveIndex], visibilityGradOpacity);
+                        }
+
+                        if (writeDebugImages) {
+                            const float3 totalGradPosition = depthGradPosition + normalGradPosition;
+                            const float3 totalGradTanU = depthGradTanU + normalGradTanU;
+                            const float3 totalGradTanV = depthGradTanV + normalGradTanV;
+                            const float totalGradScaleU = depthGradScaleU + normalGradScaleU;
+                            const float totalGradScaleV = depthGradScaleV + normalGradScaleV;
+                            const float totalGradOpacity = depthGradOpacity + normalGradOpacity + visibilityGradOpacity;
+                            const float totalGradBeta = depthGradBeta + normalGradBeta;
+
                             SurfelGradientRecord debugRecord{};
                             debugRecord.primitiveIndex = hit.primitiveIndex;
                             debugRecord.gradPositionX = totalGradPosition.x();

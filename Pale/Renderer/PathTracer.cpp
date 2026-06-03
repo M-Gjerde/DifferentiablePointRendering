@@ -570,9 +570,11 @@ namespace Pale {
     }
 
     void PathTracer::renderSurfaceRegularizersBackward(
-    std::vector<SensorGPU> &sensors,
-    PointGradients &gradients,
-    DebugImages *debugImages) {
+        std::vector<SensorGPU> &sensors,
+        PointGradients &depthDistortionGradients,
+        PointGradients &normalConsistencyGradients,
+        PointGradients &visibilityOpacityGradients,
+        DebugImages *debugImages) {
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting surface regularizer backward pass");
 
@@ -583,14 +585,16 @@ namespace Pale {
             .settings = m_settings,
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
-            .gradients = gradients,
+            .gradients = depthDistortionGradients,
+            .depthDistortionGradients = depthDistortionGradients,
+            .normalConsistencyGradients = normalConsistencyGradients,
+            .visibilityOpacityGradients = visibilityOpacityGradients,
             .sensors = sensors,
             .debugImages = debugImages,
             .numSensors = static_cast<uint32_t>(sensors.size()),
         };
 
         submitSurfaceRegularizersKernel(renderPackage);
-
         m_queue.wait();
     }
 

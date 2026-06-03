@@ -82,7 +82,10 @@ namespace Pale {
         Random random;
         GPUSceneBuffers scene{};
         RenderIntermediatesGPU intermediates{};
-        PointGradients gradients{};
+        PointGradients gradients{}; // photometric
+        PointGradients depthDistortionGradients{};
+        PointGradients normalConsistencyGradients{};
+        PointGradients visibilityOpacityGradients{};
         std::vector<SensorGPU> sensors{};
         DebugImages* debugImages{};
         uint32_t numSensors{};

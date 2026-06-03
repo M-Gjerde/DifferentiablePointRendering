@@ -111,6 +111,9 @@ public:
 
         debugImages.resize(sensorsForward.size());
         gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
+        depthDistortionGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        normalConsistencyGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
 
         Pale::PathTracerSettings settings{}; // defaults from engine
 
@@ -182,12 +185,22 @@ public:
     }
 
     ~PythonRenderer() {
+        if (deviceSelector) {
+            auto queue = deviceSelector->getQueue();
+
+            Pale::freeGradientsForScene(queue, gradients);
+            Pale::freeGradientsForScene(queue, depthDistortionGradients);
+            Pale::freeGradientsForScene(queue, normalConsistencyGradients);
+            Pale::freeGradientsForScene(queue, visibilityOpacityGradients);
+
+            Pale::freeDebugImagesForScene(queue, debugImages.data(), debugImages.size());
+            queue.wait();
+        }
+
         if (assetManager) {
             assetManager->registry().save("asset_registry.yaml");
         }
-        if (deviceSelector) deviceSelector->getQueue().wait();
     }
-
 
     py::dict render_forward(std::string cameraName) {
         py::gil_scoped_release release;
@@ -1385,6 +1398,123 @@ public:
         return gradientDictionary;
     }
 
+    py::dict makeGradientDictionary(Pale::PointGradients &sourceGradients) {
+        auto syclQueue = deviceSelector->getQueue();
+        const std::size_t pointCount = sourceGradients.numPoints;
+
+        std::vector<Pale::float3> gradPositionHost(pointCount);
+        std::vector<Pale::float3> gradTangentUHost(pointCount);
+        std::vector<Pale::float3> gradTangentVHost(pointCount);
+        std::vector<Pale::float2> gradScaleHost(pointCount);
+        std::vector<Pale::float3> gradAlbedoHost(pointCount);
+        std::vector<float> gradOpacityHost(pointCount, 0.0f);
+        std::vector<float> gradBetaHost(pointCount, 0.0f);
+        std::vector<float> gradShapeHost(pointCount, 0.0f);
+        std::vector<float> gradPowerHost(pointCount, 0.0f);
+
+        if (pointCount > 0) {
+            if (sourceGradients.gradPosition) {
+                syclQueue.memcpy(gradPositionHost.data(), sourceGradients.gradPosition,
+                                 pointCount * sizeof(Pale::float3));
+            }
+            if (sourceGradients.gradTanU) {
+                syclQueue.memcpy(gradTangentUHost.data(), sourceGradients.gradTanU, pointCount * sizeof(Pale::float3));
+            }
+            if (sourceGradients.gradTanV) {
+                syclQueue.memcpy(gradTangentVHost.data(), sourceGradients.gradTanV, pointCount * sizeof(Pale::float3));
+            }
+            if (sourceGradients.gradScale) {
+                syclQueue.memcpy(gradScaleHost.data(), sourceGradients.gradScale, pointCount * sizeof(Pale::float2));
+            }
+            if (sourceGradients.gradAlbedo) {
+                syclQueue.memcpy(gradAlbedoHost.data(), sourceGradients.gradAlbedo, pointCount * sizeof(Pale::float3));
+            }
+            if (sourceGradients.gradOpacity) {
+                syclQueue.memcpy(gradOpacityHost.data(), sourceGradients.gradOpacity, pointCount * sizeof(float));
+            }
+            if (sourceGradients.gradBeta) {
+                syclQueue.memcpy(gradBetaHost.data(), sourceGradients.gradBeta, pointCount * sizeof(float));
+            }
+            if (sourceGradients.gradShape) {
+                syclQueue.memcpy(gradShapeHost.data(), sourceGradients.gradShape, pointCount * sizeof(float));
+            }
+
+            syclQueue.wait_and_throw();
+        }
+
+        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector, std::size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount), 3};
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    arrayShape,
+                    arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                }));
+        };
+
+        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector, std::size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount), 2};
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(sizeof(Pale::float2)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    arrayShape,
+                    arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float2> *>(pointer);
+                }));
+        };
+
+        auto makeFloat1Array = [](std::vector<float> &hostVector, std::size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount)};
+            std::vector<ssize_t> arrayStrides{static_cast<ssize_t>(sizeof(float))};
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    1,
+                    arrayShape,
+                    arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<float> *>(pointer);
+                }));
+        };
+
+        py::dict gradientDictionary;
+        gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
+        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
+        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+        gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
+        gradientDictionary["albedo"] = makeFloat3Array(gradAlbedoHost, pointCount);
+        gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
+        gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
+        gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+        gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
+        return gradientDictionary;
+    }
+
     py::dict render_surface_regularizers_backward(
         const py::list &cameraNamesList,
         const py::dict &depthDistortionGradImagesDictionary,
@@ -1589,143 +1719,18 @@ public:
 
         pathTracer->renderSurfaceRegularizersBackward(
             selectedCameras,
-            gradients,
+            depthDistortionGradients,
+            normalConsistencyGradients,
+            visibilityOpacityGradients,
             selectedDebugImages.data());
-
-        const size_t pointCount = gradients.numPoints;
-
-        std::vector<Pale::float3> gradPositionHost(pointCount);
-        std::vector<Pale::float3> gradTangentUHost(pointCount);
-        std::vector<Pale::float3> gradTangentVHost(pointCount);
-        std::vector<Pale::float2> gradScaleHost(pointCount);
-        std::vector<Pale::float3> gradColorHost(pointCount);
-        std::vector<float> gradOpacityHost(pointCount);
-        std::vector<float> gradBetaHost(pointCount);
-        std::vector<float> gradShapeHost(pointCount);
-        std::vector<float> gradPowerHost(pointCount);
-
-        if (pointCount > 0) {
-            if (gradients.gradPosition) {
-                syclQueue.memcpy(gradPositionHost.data(), gradients.gradPosition, pointCount * sizeof(Pale::float3));
-            }
-            if (gradients.gradTanU) {
-                syclQueue.memcpy(gradTangentUHost.data(), gradients.gradTanU, pointCount * sizeof(Pale::float3));
-            }
-            if (gradients.gradTanV) {
-                syclQueue.memcpy(gradTangentVHost.data(), gradients.gradTanV, pointCount * sizeof(Pale::float3));
-            }
-            if (gradients.gradScale) {
-                syclQueue.memcpy(gradScaleHost.data(), gradients.gradScale, pointCount * sizeof(Pale::float2));
-            }
-            if (gradients.gradAlbedo) {
-                syclQueue.memcpy(gradColorHost.data(), gradients.gradAlbedo, pointCount * sizeof(Pale::float3));
-            }
-            if (gradients.gradOpacity) {
-                syclQueue.memcpy(gradOpacityHost.data(), gradients.gradOpacity, pointCount * sizeof(float));
-            }
-            if (gradients.gradBeta) {
-                syclQueue.memcpy(gradBetaHost.data(), gradients.gradBeta, pointCount * sizeof(float));
-            }
-
-            syclQueue.wait_and_throw();
-        }
 
         py::gil_scoped_acquire gilAcquire;
 
-        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector, size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
-
-            std::vector<ssize_t> arrayShape{
-                static_cast<ssize_t>(elementCount),
-                3
-            };
-
-            std::vector<ssize_t> arrayStrides{
-                static_cast<ssize_t>(sizeof(Pale::float3)),
-                static_cast<ssize_t>(sizeof(float))
-            };
-
-            return py::array(
-                py::buffer_info(
-                    ownedVector->data(),
-                    sizeof(float),
-                    py::format_descriptor<float>::format(),
-                    2,
-                    arrayShape,
-                    arrayStrides
-                ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float3> *>(pointer);
-                })
-            );
-        };
-
-        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector, size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
-
-            std::vector<ssize_t> arrayShape{
-                static_cast<ssize_t>(elementCount),
-                2
-            };
-
-            std::vector<ssize_t> arrayStrides{
-                static_cast<ssize_t>(sizeof(Pale::float2)),
-                static_cast<ssize_t>(sizeof(float))
-            };
-
-            return py::array(
-                py::buffer_info(
-                    ownedVector->data(),
-                    sizeof(float),
-                    py::format_descriptor<float>::format(),
-                    2,
-                    arrayShape,
-                    arrayStrides
-                ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float2> *>(pointer);
-                })
-            );
-        };
-
-        auto makeFloat1Array = [](std::vector<float> &hostVector, size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<float>(std::move(hostVector));
-
-            std::vector<ssize_t> arrayShape{
-                static_cast<ssize_t>(elementCount)
-            };
-
-            std::vector<ssize_t> arrayStrides{
-                static_cast<ssize_t>(sizeof(float))
-            };
-
-            return py::array(
-                py::buffer_info(
-                    ownedVector->data(),
-                    sizeof(float),
-                    py::format_descriptor<float>::format(),
-                    1,
-                    arrayShape,
-                    arrayStrides
-                ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
-                })
-            );
-        };
-
-        py::dict gradientDictionary;
-        gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
-        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
-        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
-        gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
-        gradientDictionary["albedo"] = makeFloat3Array(gradColorHost, pointCount);
-        gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
-        gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
-        gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
-        gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
-
-        return gradientDictionary;
+        py::dict result;
+        result["depth_distortion"] = makeGradientDictionary(depthDistortionGradients);
+        result["normal_consistency"] = makeGradientDictionary(normalConsistencyGradients);
+        result["visibility_weighted_opacity"] = makeGradientDictionary(visibilityOpacityGradients);
+        return result;
     }
 
     py::dict get_point_parameters() {
@@ -2058,35 +2063,19 @@ public:
 
     void rebuild_bvh() {
         Pale::AssetAccessFromManager assetAccessor(*assetManager);
-
-        buildProducts = Pale::SceneBuild::build(
-            scene,
-            assetAccessor,
-            Pale::SceneBuild::BuildOptions()
-        );
-
-        Pale::SceneUpload::uploadOrReallocate(
-            buildProducts,
-            sceneGpu,
-            deviceSelector->getQueue()
-        );
-
+        buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
+        Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, deviceSelector->getQueue());
         Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
-        Pale::freeDebugImagesForScene(
-            deviceSelector->getQueue(),
-            debugImages.data(),
-            debugImages.size()
-        );
-
+        Pale::freeGradientsForScene(deviceSelector->getQueue(), depthDistortionGradients);
+        Pale::freeGradientsForScene(deviceSelector->getQueue(), normalConsistencyGradients);
+        Pale::freeGradientsForScene(deviceSelector->getQueue(), visibilityOpacityGradients);
+        Pale::freeDebugImagesForScene(deviceSelector->getQueue(), debugImages.data(), debugImages.size());
         debugImages.clear();
         debugImages.resize(sensorsForward.size());
-
-        gradients = Pale::makeGradientsForScene(
-            deviceSelector->getQueue(),
-            buildProducts,
-            debugImages.data()
-        );
-
+        gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
+        depthDistortionGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        normalConsistencyGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         pathTracer->setScene(sceneGpu, buildProducts);
     }
 
@@ -2812,6 +2801,10 @@ private:
     Pale::SceneBuild::BuildProducts buildProducts{};
     Pale::GPUSceneBuffers sceneGpu{};
     Pale::PointGradients gradients{};
+    Pale::PointGradients depthDistortionGradients{};
+    Pale::PointGradients normalConsistencyGradients{};
+    Pale::PointGradients visibilityOpacityGradients{};
+
     // Adjoint buffers
     bool adjointBuffersAllocated{false};
     float *adjointFramebuffer{nullptr};

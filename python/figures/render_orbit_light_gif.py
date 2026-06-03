@@ -301,7 +301,7 @@ def add_light_point(renderer: pale.Renderer, *, scale_u: float, scale_v: float, 
                 "albedo": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
                 "opacity": np.array([opacity], dtype=np.float32),
                 "beta": np.array([beta], dtype=np.float32),
-                "power": np.array([75], dtype=np.float32),
+                "power": np.array([250], dtype=np.float32),
             }
         }
     )

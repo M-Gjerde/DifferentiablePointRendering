@@ -61,22 +61,22 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Position-only exponential LR schedule.
     use_position_lr_schedule: bool = False
-    position_lr_scale_init: float = 2.5
+    position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.5
     position_lr_max_steps: int = 30_000
 
     depth_distort_weight: float = 1000.0
-    depth_distort_start_iteration: int = 1000
+    depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.05
-    visibility_weighted_opacity_weight: float = 0.01
+    visibility_weighted_opacity_weight: float = 0.05
 
     log_interval: int = 1
     save_interval: int = 5
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 100
-    prune_interval: int = 50
+    densification_interval: int = 50
+    prune_interval: int = 25
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
@@ -114,11 +114,11 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.001
-        factor_tangent = 0.01
-        factor_scale = 0.001
-        factor_albedo = 0.01
-        factor_opacity = 0.05
+        factor_position = 0.0005
+        factor_tangent = 0.005
+        factor_scale = 0.0005
+        factor_albedo = 0.004
+        factor_opacity = 0.015
         factor_beta = 0.000
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")

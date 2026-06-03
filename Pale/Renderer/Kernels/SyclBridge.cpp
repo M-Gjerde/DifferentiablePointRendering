@@ -281,21 +281,54 @@ namespace Pale {
         }
     }
 
+    static void clearPointGradients(sycl::queue &queue, PointGradients &gradients) {
+        const size_t pointCount = gradients.numPoints;
+        if (pointCount == 0) {
+            return;
+        }
+
+        if (gradients.gradPosition) {
+            queue.fill(gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        }
+        if (gradients.gradTanU) {
+            queue.fill(gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        }
+        if (gradients.gradTanV) {
+            queue.fill(gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        }
+        if (gradients.gradScale) {
+            queue.fill(gradients.gradScale, float2{0.0f, 0.0f}, pointCount);
+        }
+        if (gradients.gradAlbedo) {
+            queue.fill(gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        }
+        if (gradients.gradOpacity) {
+            queue.fill(gradients.gradOpacity, 0.0f, pointCount);
+        }
+        if (gradients.gradBeta) {
+            queue.fill(gradients.gradBeta, 0.0f, pointCount);
+        }
+        if (gradients.gradShape) {
+            queue.fill(gradients.gradShape, 0.0f, pointCount);
+        }
+    }
+
     void submitSurfaceRegularizersKernel(RenderPackage &pkg) {
-        pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradScale, float2{0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradBeta, 0.0f, pkg.gradients.numPoints);
+        clearPointGradients(pkg.queue, pkg.depthDistortionGradients);
+        clearPointGradients(pkg.queue, pkg.normalConsistencyGradients);
+        clearPointGradients(pkg.queue, pkg.visibilityOpacityGradients);
         pkg.queue.wait();
 
         for (uint32_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
             auto &sensor = pkg.sensors[cameraIndex];
             const uint32_t pixelCount = sensor.width * sensor.height;
+
             pkg.queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount).wait();
-            launchNormalFromDepthAdjointKernel(pkg, cameraIndex);
+
+            if (pkg.settings.normalConsistencyWeight != 0.0f) {
+                launchNormalFromDepthAdjointKernel(pkg, cameraIndex);
+            }
+
             launchSurfaceRegularizersBackwardKernel(pkg, cameraIndex);
         }
 
