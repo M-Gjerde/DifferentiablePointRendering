@@ -16,7 +16,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 1
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -65,10 +65,10 @@ class OptimizationConfig:
     position_lr_scale_final: float = 0.5
     position_lr_max_steps: int = 30_000
 
-    depth_distort_weight: float = 1000.0
+    depth_distort_weight: float = 2.0e3
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.05
-    visibility_weighted_opacity_weight: float = 0.05
+    normal_consistency_weight: float = 2.0e-3
+    visibility_weighted_opacity_weight: float = 1.0e-2
 
     log_interval: int = 1
     save_interval: int = 5

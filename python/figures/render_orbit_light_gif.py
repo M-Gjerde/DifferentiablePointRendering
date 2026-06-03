@@ -301,7 +301,7 @@ def add_light_point(renderer: pale.Renderer, *, scale_u: float, scale_v: float, 
                 "albedo": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
                 "opacity": np.array([opacity], dtype=np.float32),
                 "beta": np.array([beta], dtype=np.float32),
-                "power": np.array([250], dtype=np.float32),
+                "power": np.array([100], dtype=np.float32),
             }
         }
     )
@@ -371,7 +371,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fps", type=float, default=5.0)
     parser.add_argument("--radius", type=float, default=2.0)
-    parser.add_argument("--power", type=float, default=200.0)
+    parser.add_argument("--power", type=float, default=100.0)
     parser.add_argument("--orbit", type=str, default="y")
     parser.add_argument("--scale-u", type=float, default=0.05)
     parser.add_argument("--scale-v", type=float, default=0.05)

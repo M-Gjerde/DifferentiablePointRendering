@@ -303,12 +303,6 @@ def select_loss_column(
         "loss_depth_distortion_weighted_sum",
         "loss_normal_consistency_raw_sum",
         "loss_depth_distortion_raw_sum",
-
-        # Legacy fallback names
-        "loss_opacity_regularizer",
-        "loss_l2_window_mean",
-        "loss_l2_current_camera",
-        "loss_l2_window_sum_scaled",
     ]
 
     for column_name in preferred_columns:
@@ -363,7 +357,7 @@ def plot_top_loss_columns_with_dual_axis(
         for column_name in columns
         if column_name == "loss_total_sum"
     ]
-    fallback_columns = [
+    extra_columns = [
         column_name
         for column_name in columns
         if column_name not in {"loss_rgb_sum", "loss_total_sum"}
@@ -372,7 +366,7 @@ def plot_top_loss_columns_with_dual_axis(
     plot_linear_columns(
         left_axis,
         dataframe,
-        rgb_columns + fallback_columns,
+        rgb_columns + extra_columns,
         style_map,
     )
 
@@ -402,7 +396,7 @@ def set_combined_legend(left_axis, right_axis=None) -> None:
     labels = left_labels + right_labels
 
     if handles:
-        left_axis.legend(handles, labels)
+        left_axis.legend(handles, labels, loc='lower left')
 
 
 def plot_positive_log_columns(
@@ -488,9 +482,6 @@ def draw_metrics_figure(
             "loss_depth_distortion_weighted_sum",
             "loss_normal_consistency_weighted_sum",
             "loss_visibility_weighted_opacity_weighted_sum",
-
-            # Legacy fallback
-            "loss_opacity_regularizer",
         ],
     )
 
@@ -500,19 +491,6 @@ def draw_metrics_figure(
             "loss_depth_distortion_raw_sum",
             "loss_normal_consistency_raw_sum",
             "loss_visibility_weighted_opacity_raw_sum",
-        ],
-    )
-
-    opacity_gradient_columns = get_available_columns(
-        dataframe,
-        [
-            "grad_opacity_total_norm",
-            "grad_opacity_total_max",
-
-            # Legacy fallback names
-            "grad_opacity_total_rms",
-            "grad_opacity_regularizer_rms",
-            "grad_opacity_regularizer_max",
         ],
     )
 
@@ -528,11 +506,10 @@ def draw_metrics_figure(
         not top_columns
         and not weighted_regularizer_columns
         and not raw_diagnostic_columns
-        and not opacity_gradient_columns
         and not point_count_columns
     ):
-        fallback_column = select_loss_column(dataframe, explicit_loss_column)
-        top_columns = [fallback_column]
+        selected_loss_column = select_loss_column(dataframe, explicit_loss_column)
+        top_columns = [selected_loss_column]
 
     style_map = {
         "loss_rgb_sum": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
@@ -542,37 +519,18 @@ def draw_metrics_figure(
         "loss_normal_consistency_weighted_sum": dict(color="tab:green", linewidth=1.8, alpha=0.95),
         "loss_visibility_weighted_opacity_weighted_sum": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
 
-        # Legacy fallback
-        "loss_opacity_regularizer": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
-
         "loss_depth_distortion_raw_sum": dict(color="tab:red", linewidth=1.2, alpha=0.75, linestyle="--"),
         "loss_normal_consistency_raw_sum": dict(color="tab:green", linewidth=1.2, alpha=0.75, linestyle="--"),
         "loss_visibility_weighted_opacity_raw_sum": dict(color="tab:purple", linewidth=1.2, alpha=0.75, linestyle="--"),
-
-        "grad_opacity_total_norm": dict(color="tab:blue", linewidth=1.8, alpha=0.95),
-        "grad_opacity_total_max": dict(color="tab:blue", linewidth=1.2, alpha=0.75, linestyle="--"),
-
-        # Legacy fallback
-        "grad_opacity_total_rms": dict(color="tab:blue", linewidth=1.8, alpha=0.95),
-        "grad_opacity_regularizer_rms": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
-        "grad_opacity_regularizer_max": dict(color="tab:purple", linewidth=1.2, alpha=0.75, linestyle="--"),
 
         "num_points": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
         "point_count": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
     }
 
-    include_opacity_gradient_panel = len(opacity_gradient_columns) > 0
     include_point_count_panel = len(point_count_columns) > 0
-
-    num_panels = (
-        3
-        + int(include_opacity_gradient_panel)
-        + int(include_point_count_panel)
-    )
+    num_panels = 3 + int(include_point_count_panel)
 
     height_ratios = [1.2, 1.0, 1.0]
-    if include_opacity_gradient_panel:
-        height_ratios.append(1.0)
     if include_point_count_panel:
         height_ratios.append(0.8)
 
@@ -590,19 +548,7 @@ def draw_metrics_figure(
     ax_top = axes[0]
     ax_weighted = axes[1]
     ax_raw = axes[2]
-
-    next_axis_index = 3
-
-    if include_opacity_gradient_panel:
-        ax_opacity_gradient = axes[next_axis_index]
-        next_axis_index += 1
-    else:
-        ax_opacity_gradient = None
-
-    if include_point_count_panel:
-        ax_point_count = axes[next_axis_index]
-    else:
-        ax_point_count = None
+    ax_point_count = axes[3] if include_point_count_panel else None
 
     ax_top_right = plot_top_loss_columns_with_dual_axis(
         ax_top,
@@ -646,28 +592,14 @@ def draw_metrics_figure(
     ax_weighted.set_ylabel("Weighted regularizers")
     ax_weighted.grid(True)
     if weighted_regularizer_columns:
-        ax_weighted.legend()
+        ax_weighted.legend(loc='upper left')
 
     ax_raw.set_ylabel("Raw diagnostics")
     if raw_has_positive_values:
         ax_raw.set_yscale("log")
     ax_raw.grid(True)
     if raw_diagnostic_columns:
-        ax_raw.legend()
-
-    if ax_opacity_gradient is not None:
-        opacity_grad_has_positive_values = plot_positive_log_columns(
-            ax_opacity_gradient,
-            dataframe,
-            opacity_gradient_columns,
-            style_map,
-        )
-
-        ax_opacity_gradient.set_ylabel("Opacity gradients")
-        if opacity_grad_has_positive_values:
-            ax_opacity_gradient.set_yscale("log")
-        ax_opacity_gradient.grid(True)
-        ax_opacity_gradient.legend()
+        ax_raw.legend(loc='upper left')
 
     if ax_point_count is not None:
         point_count_column = point_count_columns[0]
@@ -685,12 +617,7 @@ def draw_metrics_figure(
         ax_point_count.grid(True)
         ax_point_count.legend()
 
-    last_axis = ax_raw
-    if ax_opacity_gradient is not None:
-        last_axis = ax_opacity_gradient
-    if ax_point_count is not None:
-        last_axis = ax_point_count
-
+    last_axis = ax_point_count if ax_point_count is not None else ax_raw
     last_axis.set_xlabel("Iteration")
 
     figure.tight_layout()
@@ -699,7 +626,6 @@ def draw_metrics_figure(
         top_columns
         + weighted_regularizer_columns
         + raw_diagnostic_columns
-        + opacity_gradient_columns
         + point_count_columns
     )
 
