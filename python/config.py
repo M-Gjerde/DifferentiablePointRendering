@@ -16,11 +16,9 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 1
+    adjoint_passes: int = 2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
-    useDepthDistortion: bool = True
-    useNormalConsistency: bool = True
     logging: int = 3
 
     def as_dict(self, config: "OptimizationConfig") -> Dict[str, float | int]:
@@ -36,10 +34,9 @@ class RendererSettingsConfig:
             "adjoint_bounces": self.adjoint_bounces,
             "adjoint_passes": self.adjoint_passes,
             "logging": self.logging,
-            "use_depth_distortion": self.useDepthDistortion,
-            "use_normal_consistency": self.useNormalConsistency,
             "depth_distort_weight": config.depth_distort_weight,
             "normal_consistency_weight": config.normal_consistency_weight,
+            "visibility_weighted_opacity_weight": config.visibility_weighted_opacity_weight,
         }
 
 
@@ -64,14 +61,14 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Position-only exponential LR schedule.
     use_position_lr_schedule: bool = False
-    position_lr_scale_init: float = 2.0
-    position_lr_scale_final: float = 0.1
-    position_lr_max_steps: int = 15_000
+    position_lr_scale_init: float = 2.5
+    position_lr_scale_final: float = 0.5
+    position_lr_max_steps: int = 30_000
 
     depth_distort_weight: float = 1000.0
+    depth_distort_start_iteration: int = 1000
     normal_consistency_weight: float = 0.05
-    opacity_loss_weight: float = 0.0
-    opacity_target: float = 1.0
+    visibility_weighted_opacity_weight: float = 0.01
 
     log_interval: int = 1
     save_interval: int = 5
@@ -79,7 +76,7 @@ class OptimizationConfig:
 
     # Density control / EV-splitting
     densification_interval: int = 100
-    prune_interval: int = 25
+    prune_interval: int = 50
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
@@ -180,16 +177,16 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--lr-albedo", dest="learning_rate_albedo", type=float)
     parser.add_argument("--lr-opacity", dest="learning_rate_opacity", type=float)
     parser.add_argument("--lr-beta", dest="learning_rate_beta", type=float)
-    parser.add_argument("--position-lr-schedule", dest="use_position_lr_schedule", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
+    parser.add_argument("--position-lr-schedule", dest="use_position_lr_schedule",
+                        action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
     parser.add_argument("--position-lr-scale-init", type=float)
     parser.add_argument("--position-lr-scale-final", type=float)
     parser.add_argument("--position-lr-max-steps", type=int)
 
     parser.add_argument("--normal-consistency-weight", dest="normal_consistency_weight", type=float)
     parser.add_argument("--depth-distort-weight", dest="depth_distort_weight", type=float)
-    parser.add_argument("--opacity-weight", dest="opacity_loss_weight", type=float)
-    parser.add_argument("--opacity-target", type=float)
-
+    parser.add_argument("--depth-distort-start-iteration", type=int)
+    parser.add_argument("--visibility-weighted-opacity-weight", dest="visibility_weighted_opacity_weight", type=float, )
     # Density control / EV-splitting
     parser.add_argument("--densification-interval", type=int)
     parser.add_argument("--prune-interval", type=int)

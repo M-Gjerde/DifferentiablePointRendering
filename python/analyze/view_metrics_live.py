@@ -297,11 +297,15 @@ def select_loss_column(
     preferred_columns = [
         "loss_total_sum",
         "loss_rgb_sum",
-        "loss_opacity_regularizer",
+        "loss_visibility_weighted_opacity_weighted_sum",
+        "loss_visibility_weighted_opacity_raw_sum",
         "loss_normal_consistency_weighted_sum",
         "loss_depth_distortion_weighted_sum",
         "loss_normal_consistency_raw_sum",
         "loss_depth_distortion_raw_sum",
+
+        # Legacy fallback names
+        "loss_opacity_regularizer",
         "loss_l2_window_mean",
         "loss_l2_current_camera",
         "loss_l2_window_sum_scaled",
@@ -315,7 +319,6 @@ def select_loss_column(
         "Could not find a supported loss column in metrics.csv. "
         f"Available columns: {list(dataframe.columns)}"
     )
-
 
 def dataframe_column_as_float_array(
     dataframe: pd.DataFrame,
@@ -484,6 +487,9 @@ def draw_metrics_figure(
         [
             "loss_depth_distortion_weighted_sum",
             "loss_normal_consistency_weighted_sum",
+            "loss_visibility_weighted_opacity_weighted_sum",
+
+            # Legacy fallback
             "loss_opacity_regularizer",
         ],
     )
@@ -493,15 +499,19 @@ def draw_metrics_figure(
         [
             "loss_depth_distortion_raw_sum",
             "loss_normal_consistency_raw_sum",
+            "loss_visibility_weighted_opacity_raw_sum",
         ],
     )
 
     opacity_gradient_columns = get_available_columns(
         dataframe,
         [
+            "grad_opacity_total_norm",
+            "grad_opacity_total_max",
+
+            # Legacy fallback names
             "grad_opacity_total_rms",
             "grad_opacity_regularizer_rms",
-            "grad_opacity_total_max",
             "grad_opacity_regularizer_max",
         ],
     )
@@ -530,14 +540,21 @@ def draw_metrics_figure(
 
         "loss_depth_distortion_weighted_sum": dict(color="tab:red", linewidth=1.8, alpha=0.95),
         "loss_normal_consistency_weighted_sum": dict(color="tab:green", linewidth=1.8, alpha=0.95),
+        "loss_visibility_weighted_opacity_weighted_sum": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
+
+        # Legacy fallback
         "loss_opacity_regularizer": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
 
         "loss_depth_distortion_raw_sum": dict(color="tab:red", linewidth=1.2, alpha=0.75, linestyle="--"),
         "loss_normal_consistency_raw_sum": dict(color="tab:green", linewidth=1.2, alpha=0.75, linestyle="--"),
+        "loss_visibility_weighted_opacity_raw_sum": dict(color="tab:purple", linewidth=1.2, alpha=0.75, linestyle="--"),
 
+        "grad_opacity_total_norm": dict(color="tab:blue", linewidth=1.8, alpha=0.95),
+        "grad_opacity_total_max": dict(color="tab:blue", linewidth=1.2, alpha=0.75, linestyle="--"),
+
+        # Legacy fallback
         "grad_opacity_total_rms": dict(color="tab:blue", linewidth=1.8, alpha=0.95),
         "grad_opacity_regularizer_rms": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
-        "grad_opacity_total_max": dict(color="tab:blue", linewidth=1.2, alpha=0.75, linestyle="--"),
         "grad_opacity_regularizer_max": dict(color="tab:purple", linewidth=1.2, alpha=0.75, linestyle="--"),
 
         "num_points": dict(color="tab:brown", linewidth=2.0, alpha=0.95),

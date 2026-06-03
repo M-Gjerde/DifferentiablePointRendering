@@ -1118,7 +1118,8 @@ namespace Pale {
                         const uint32_t occluderRecordIndex = eventRecordBase + 1u + occluderIndex;
                         const OccluderDerivative &occluderDerivative = occluderDerivatives[occluderIndex];
                         const float visibilityDerivativeScale =
-                            -occluderDerivative.prefixTransmittance * suffixTransmittance * scalarWeightOcclusion * invSpp;
+                                -occluderDerivative.prefixTransmittance * suffixTransmittance * scalarWeightOcclusion *
+                                invSpp;
                         SurfelGradientRecord occluderRecord{};
                         occluderRecord.primitiveIndex = occluderDerivative.primitiveIndex;
                         const float3 positionContribution = visibilityDerivativeScale * occluderDerivative.gradPosition;
@@ -1147,7 +1148,6 @@ namespace Pale {
                         accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                           settings.surfelIndexForDebugImages,
                                                           eventRecord.xSurface.pathId, SurfelGradientRecord());
-
                     }
 
 
@@ -1522,14 +1522,12 @@ namespace Pale {
                         accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                           settings.surfelIndexForDebugImages,
                                                           eventRecord.xSurface.pathId, occluderRecord);
-
                     }
 
 
                     accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                       settings.surfelIndexForDebugImages, eventRecord.xSurface.pathId,
                                                       xRecord);
-
                 });
         }).wait();
     }
@@ -2751,6 +2749,478 @@ namespace Pale {
                         }
 
                         return;
+                    }
+                });
+        }).wait();
+    }
+
+    static void visibilityWeightedOpacityGradientEvent(RenderPackage &pkg, uint32_t cameraIndex, uint32_t baseOffset) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        auto &sensor = pkg.sensors[cameraIndex];
+        auto debugImage = pkg.debugImages[cameraIndex];
+        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
+
+        const uint32_t imageWidth = sensor.camera.width;
+        const uint32_t imageHeight = sensor.camera.height;
+        const uint32_t pixelCount = imageWidth * imageHeight;
+        const uint32_t pointCount = pkg.gradients.numPoints;
+        static constexpr uint32_t recordsPerPixel = kMaxSplatEventsPerRay;
+
+        const float lossWeight = settings.visibilityWeightedOpacityRegularizerWeight;
+        const float lossNormalization = 1.0f / static_cast<float>(pixelCount);
+
+        queue.submit([&](sycl::handler &commandGroupHandler) {
+            commandGroupHandler.parallel_for<class visibilityWeightedOpacityGradientEventTag>(
+                sycl::range<1>(pixelCount),
+                [=](sycl::id<1> globalId) {
+                    const uint32_t pixelIndex = static_cast<uint32_t>(globalId[0]);
+                    const uint32_t pixelX = pixelIndex % imageWidth;
+                    const uint32_t pixelY = pixelIndex / imageWidth;
+                    const uint32_t pixelRecordBase = baseOffset + pixelIndex * recordsPerPixel;
+
+                    for (uint32_t recordOffset = 0u; recordOffset < recordsPerPixel; ++recordOffset) {
+                        SurfelGradientRecord invalidRecord{};
+                        invalidRecord.primitiveIndex = kInvalidIndex;
+                        gradientRecords[pixelRecordBase + recordOffset] = invalidRecord;
+                    }
+
+                    Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
+                        sensor.camera,
+                        static_cast<float>(pixelX),
+                        static_cast<float>(pixelY),
+                        0.0f,
+                        0.0f);
+
+                    float transmittance = 1.0f;
+
+                    for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
+                        WorldHit worldHit{};
+                        intersectScene(primaryRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                        if (!worldHit.hit) {
+                            break;
+                        }
+
+                        buildIntersectionNormal(scene, worldHit);
+                        const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+
+                        if (instance.geometryType == GeometryType::Mesh) {
+                            break;
+                        }
+
+                        if (instance.geometryType != GeometryType::PointCloud) {
+                            break;
+                        }
+
+                        const uint32_t primitiveIndex = worldHit.primitiveIndex;
+                        if (primitiveIndex == kInvalidIndex || primitiveIndex >= pointCount) {
+                            break;
+                        }
+
+                        const Point &surfel = scene.points[primitiveIndex];
+                        const float alphaEff = surfel.opacity * worldHit.alphaGeom;
+                        const float visibilityWeight = transmittance * alphaEff;
+
+                        SurfelGradientRecord gradientRecord{};
+                        gradientRecord.primitiveIndex = primitiveIndex;
+                        gradientRecord.gradPositionX = 0.0f;
+                        gradientRecord.gradPositionY = 0.0f;
+                        gradientRecord.gradPositionZ = 0.0f;
+                        gradientRecord.gradScaleU = 0.0f;
+                        gradientRecord.gradScaleV = 0.0f;
+                        gradientRecord.gradTangentUX = 0.0f;
+                        gradientRecord.gradTangentUY = 0.0f;
+                        gradientRecord.gradTangentUZ = 0.0f;
+                        gradientRecord.gradTangentVX = 0.0f;
+                        gradientRecord.gradTangentVY = 0.0f;
+                        gradientRecord.gradTangentVZ = 0.0f;
+                        gradientRecord.gradEta =
+                                lossWeight * lossNormalization * 2.0f * visibilityWeight * (surfel.opacity - 1.0f);
+                        gradientRecord.gradBeta = 0.0f;
+                        gradientRecord.gradAlbedoR = 0.0f;
+                        gradientRecord.gradAlbedoG = 0.0f;
+                        gradientRecord.gradAlbedoB = 0.0f;
+
+                        gradientRecords[pixelRecordBase + traversalIndex] = gradientRecord;
+
+                        accumulateDebugGradientIfSelected(
+                            debugImage,
+                            settings.renderDebugGradientImages,
+                            settings.surfelIndexForDebugImages,
+                            pixelIndex,
+                            gradientRecord);
+
+                        transmittance *= sycl::fmax(0.0f, 1.0f - alphaEff);
+                        primaryRay.origin = worldHit.hitPositionW + primaryRay.direction * RayEpsilon;
+                    }
+                });
+        }).wait();
+    }
+
+    void launchSurfaceRegularizersBackwardKernel(RenderPackage &pkg, uint32_t cameraIndex) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        SensorGPU sensor = pkg.sensors[cameraIndex];
+        auto &gradients = pkg.gradients;
+        auto debugImage = pkg.debugImages[cameraIndex];
+
+        const uint32_t imageWidth = sensor.camera.width;
+        const uint32_t imageHeight = sensor.camera.height;
+        const uint32_t pixelCount = imageWidth * imageHeight;
+        const uint32_t pointCount = gradients.numPoints;
+
+        const float depthDistortionLossWeight = settings.depthDistortionWeight;
+        const float normalConsistencyLossWeight = settings.normalConsistencyWeight;
+        const float visibilityOpacityLossWeight = settings.visibilityWeightedOpacityRegularizerWeight;
+
+        const bool enableDepthDistortionRegularizer = depthDistortionLossWeight != 0.0f;
+        const bool enableNormalConsistencyRegularizer = normalConsistencyLossWeight != 0.0f;
+        const bool enableVisibilityOpacityRegularizer = visibilityOpacityLossWeight != 0.0f;
+
+        const float visibilityOpacityLossNormalization = 1.0f / static_cast<float>(pixelCount);
+
+        queue.submit([&](sycl::handler &cgh) {
+            cgh.parallel_for<class SurfaceRegularizersBackwardKernel>(
+                sycl::range<1>(pixelCount),
+                [=](sycl::id<1> tid) {
+                    constexpr uint32_t kMaxHits = kMaxSplatEventsPerRay;
+                    constexpr float kDenomEps = 1.0e-8f;
+
+                    const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
+                    const uint32_t pixelX = pixelIndex % imageWidth;
+                    const uint32_t pixelY = pixelIndex / imageWidth;
+
+                    const float depthDistortionAdjoint = sensor.depthDistortionAdjointBuffer[pixelIndex];
+                    const float3 visibleNormalAdjoint{
+                        sensor.visibleNormalAdjointBuffer[pixelIndex].x(),
+                        sensor.visibleNormalAdjointBuffer[pixelIndex].y(),
+                        sensor.visibleNormalAdjointBuffer[pixelIndex].z()
+                    };
+                    const float medianDepthAdjoint = sensor.medianDepthAdjointBuffer[pixelIndex];
+
+                    const bool useDepthDistortion =
+                            enableDepthDistortionRegularizer &&
+                            sycl::fabs(depthDistortionAdjoint) > 1.0e-12f;
+
+                    const bool useVisibleNormal =
+                            sycl::fabs(visibleNormalAdjoint.x()) > 1.0e-12f ||
+                            sycl::fabs(visibleNormalAdjoint.y()) > 1.0e-12f ||
+                            sycl::fabs(visibleNormalAdjoint.z()) > 1.0e-12f;
+                    const bool useMedianDepth = sycl::fabs(medianDepthAdjoint) > 1.0e-12f;
+                    const bool useNormalConsistency =
+                            enableNormalConsistencyRegularizer &&
+                            (useVisibleNormal || useMedianDepth);
+
+                    const bool useVisibilityOpacity = enableVisibilityOpacityRegularizer;
+
+                    if (!useDepthDistortion && !useNormalConsistency && !useVisibilityOpacity) {
+                        return;
+                    }
+
+                    Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
+                        sensor.camera,
+                        static_cast<float>(pixelX),
+                        static_cast<float>(pixelY),
+                        0.0f,
+                        0.0f);
+
+                    const float3 rayOrigin0 = primaryRay.origin;
+                    const float3 rayDir0 = primaryRay.direction;
+
+                    DistortionHit hits[kMaxHits];
+                    uint32_t hitCount = 0u;
+                    float transmittance = 1.0f;
+
+                    for (uint32_t traversalIndex = 0u; traversalIndex < kMaxHits; ++traversalIndex) {
+                        WorldHit worldHit{};
+                        intersectScene(primaryRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                        if (!worldHit.hit) {
+                            break;
+                        }
+
+                        buildIntersectionNormal(scene, worldHit);
+                        const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+
+                        if (instance.geometryType == GeometryType::Mesh) {
+                            break;
+                        }
+
+                        if (instance.geometryType != GeometryType::PointCloud) {
+                            break;
+                        }
+
+                        const uint32_t primitiveIndex = worldHit.primitiveIndex;
+                        if (primitiveIndex == kInvalidIndex || primitiveIndex >= pointCount) {
+                            break;
+                        }
+
+                        const Point &surfel = scene.points[primitiveIndex];
+                        const float2 uv = phiInverse(worldHit.hitPositionW, surfel);
+                        const float alphaGeom = worldHit.alphaGeom;
+                        const float alphaEff = surfel.opacity * alphaGeom;
+                        const float wi = transmittance * alphaEff;
+                        const float zi = dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+
+                        DistortionHit hit{};
+                        hit.primitiveIndex = primitiveIndex;
+                        hit.hitPositionW = worldHit.hitPositionW;
+                        hit.rayOrigin0 = rayOrigin0;
+                        hit.rayDir0 = rayDir0;
+                        hit.ai = alphaEff;
+                        hit.wi = wi;
+                        hit.Tprev = transmittance;
+                        hit.zi = zi;
+                        hit.alphaGeom = alphaGeom;
+                        hit.u = uv.x();
+                        hit.v = uv.y();
+                        hits[hitCount++] = hit;
+
+                        transmittance *= sycl::fmax(0.0f, 1.0f - alphaEff);
+                        primaryRay.origin = worldHit.hitPositionW + primaryRay.direction * RayEpsilon;
+                    }
+
+                    if (hitCount == 0u) {
+                        return;
+                    }
+
+                    float barW[kMaxHits];
+                    float barM[kMaxHits];
+                    float barZ[kMaxHits];
+                    float barA[kMaxHits];
+
+                    for (uint32_t i = 0u; i < hitCount; ++i) {
+                        barW[i] = 0.0f;
+                        barM[i] = 0.0f;
+                        barZ[i] = 0.0f;
+                        barA[i] = 0.0f;
+                    }
+
+                    if (useDepthDistortion && hitCount > 1u) {
+                        for (uint32_t i = 0u; i < hitCount; ++i) {
+                            for (uint32_t j = i + 1u; j < hitCount; ++j) {
+                                const float mi = depthDistortionNdc01(hits[i].zi);
+                                const float mj = depthDistortionNdc01(hits[j].zi);
+                                const float wi = hits[i].wi;
+                                const float wj = hits[j].wi;
+                                const float depthDifference = mi - mj;
+                                const float depthDifferenceSquared = depthDifference * depthDifference;
+
+                                barW[i] += depthDistortionAdjoint * wj * depthDifferenceSquared;
+                                barW[j] += depthDistortionAdjoint * wi * depthDifferenceSquared;
+
+                                const float depthAdjointScale = 2.0f * depthDistortionAdjoint * wi * wj;
+                                barM[i] += depthAdjointScale * depthDifference;
+                                barM[j] -= depthAdjointScale * depthDifference;
+                            }
+                        }
+
+                        for (uint32_t i = 0u; i < hitCount; ++i) {
+                            barZ[i] += barM[i] * depthDistortionDndc01Ddepth(hits[i].zi);
+                        }
+
+                        float barTnext = 0.0f;
+                        for (int i = static_cast<int>(hitCount) - 1; i >= 0; --i) {
+                            const float ai = hits[i].ai;
+                            const float Tprev = hits[i].Tprev;
+
+                            float barAi = 0.0f;
+                            float barTprev = 0.0f;
+
+                            barAi += Tprev * barW[i];
+                            barTprev += ai * barW[i];
+
+                            barAi += -Tprev * barTnext;
+                            barTprev += (1.0f - ai) * barTnext;
+
+                            barA[i] = barAi;
+                            barTnext = barTprev;
+                        }
+                    }
+
+                    uint32_t medianHitIndex = kInvalidIndex;
+                    if (useNormalConsistency) {
+                        float accumulatedCompositeWeight = 0.0f;
+                        for (uint32_t i = 0u; i < hitCount; ++i) {
+                            if ((accumulatedCompositeWeight + hits[i].wi) >= 0.5f) {
+                                medianHitIndex = i;
+                                break;
+                            }
+                            accumulatedCompositeWeight += hits[i].wi;
+                        }
+                    }
+
+                    for (uint32_t i = 0u; i < hitCount; ++i) {
+                        const DistortionHit &hit = hits[i];
+                        const Point &surfel = scene.points[hit.primitiveIndex];
+
+                        const float3 p = surfel.position;
+                        const float3 tu = surfel.tanU;
+                        const float3 tv = surfel.tanV;
+                        const float su = surfel.scale.x();
+                        const float sv = surfel.scale.y();
+                        const float eta = surfel.opacity;
+
+                        if (sycl::fabs(su) <= kDenomEps || sycl::fabs(sv) <= kDenomEps) {
+                            continue;
+                        }
+
+                        float3 totalGradPosition{0.0f, 0.0f, 0.0f};
+                        float3 totalGradTanU{0.0f, 0.0f, 0.0f};
+                        float3 totalGradTanV{0.0f, 0.0f, 0.0f};
+                        float totalGradScaleU = 0.0f;
+                        float totalGradScaleV = 0.0f;
+                        float totalGradOpacity = 0.0f;
+                        float totalGradBeta = 0.0f;
+
+                        if (useDepthDistortion && hitCount > 1u) {
+                            const float3 x = hit.hitPositionW;
+                            const float3 q = x - p;
+
+                            const AlphaKernelEval kernelEval = evaluateAlphaKernelAndDerivatives(surfel, hit.u, hit.v);
+
+                            const float barAlphaGeom = barA[i] * eta;
+                            const float barEta = barA[i] * hit.alphaGeom;
+                            const float barU = barAlphaGeom * kernelEval.dValue_dU;
+                            const float barV = barAlphaGeom * kernelEval.dValue_dV;
+                            const float barBeta = barAlphaGeom * kernelEval.dValue_dBeta;
+
+                            float3 barX = barZ[i] * sensor.camera.forward;
+
+                            float3 barQ{0.0f, 0.0f, 0.0f};
+                            barQ += (barU / su) * tu;
+                            barQ += (barV / sv) * tv;
+
+                            float3 barTu = (barU / su) * q;
+                            float3 barTv = (barV / sv) * q;
+
+                            const float barSu = -barU * hit.u / su;
+                            const float barSv = -barV * hit.v / sv;
+
+                            barX += barQ;
+                            float3 barP = -barQ;
+
+                            const float3 nRaw = cross(tu, tv);
+                            const float nRawLen = sycl::sqrt(dot(nRaw, nRaw));
+
+                            if (nRawLen > kDenomEps) {
+                                const float3 n = nRaw / nRawLen;
+                                const float denom = dot(n, rayDir0);
+
+                                if (sycl::fabs(denom) > kDenomEps) {
+                                    const float barLambda = dot(barX, rayDir0);
+                                    barP += (barLambda / denom) * n;
+
+                                    const float3 barN = (barLambda / denom) * (p - x);
+                                    const float3 barNRaw = (barN - n * dot(n, barN)) / nRawLen;
+
+                                    barTu += cross(tv, barNRaw);
+                                    barTv += cross(barNRaw, tu);
+                                }
+                            }
+
+                            totalGradPosition += barP;
+                            totalGradTanU += barTu;
+                            totalGradTanV += barTv;
+                            totalGradScaleU += barSu;
+                            totalGradScaleV += barSv;
+                            totalGradOpacity += barEta;
+                            totalGradBeta += barBeta;
+                        }
+
+                        if (useVisibilityOpacity) {
+                            const float visibilityOpacityAdjoint =
+                                    visibilityOpacityLossWeight * visibilityOpacityLossNormalization;
+                            totalGradOpacity += visibilityOpacityAdjoint * 2.0f * hit.wi * (eta - 1.0f);
+                        }
+
+                        if (useNormalConsistency && i == medianHitIndex) {
+                            float3 orientedNormal = normalize(cross(tu, tv));
+                            const bool hitBackside = dot(orientedNormal, -rayDir0) < 0.0f;
+                            if (hitBackside) {
+                                orientedNormal = -orientedNormal;
+                            }
+
+                            if (useVisibleNormal) {
+                                const float3 rawCross = cross(tu, tv);
+                                const float rawCrossLen = length(rawCross);
+                                if (rawCrossLen > kDenomEps) {
+                                    const float3 rawNormal = rawCross / rawCrossLen;
+                                    const float orientationSign = dot(rawNormal, orientedNormal) >= 0.0f ? 1.0f : -1.0f;
+                                    const float3 gradRawNormal = orientationSign * visibleNormalAdjoint;
+                                    const float3 gradProjected = gradRawNormal - rawNormal * dot(
+                                                                     rawNormal, gradRawNormal);
+                                    const float3 gradCross = gradProjected / rawCrossLen;
+
+                                    totalGradTanU += cross(tv, gradCross);
+                                    totalGradTanV += cross(gradCross, tu);
+                                }
+                            }
+
+                            if (useMedianDepth) {
+                                const float3 gradWrtHitPoint = medianDepthAdjoint * sensor.camera.forward;
+                                const float3x3 hitPointJacobian =
+                                        planeHitPointIntersectionJacobian(rayDir0, orientedNormal);
+
+                                totalGradPosition += transpose(hitPointJacobian) * gradWrtHitPoint;
+
+                                const float3 rawCross = cross(tu, tv);
+                                const float rawCrossLen = length(rawCross);
+                                const float nDotD = dot(orientedNormal, rayDir0);
+
+                                if (rawCrossLen > kDenomEps && sycl::fabs(nDotD) > kDenomEps) {
+                                    const float3 rawNormal = rawCross / rawCrossLen;
+                                    const float orientationSign = dot(rawNormal, orientedNormal) >= 0.0f ? 1.0f : -1.0f;
+                                    const float3 pMinusX = p - hit.hitPositionW;
+                                    const float3 gradOrientedNormal =
+                                            pMinusX * (dot(rayDir0, gradWrtHitPoint) / nDotD);
+                                    const float3 gradRawNormal = orientationSign * gradOrientedNormal;
+                                    const float3 gradProjected = gradRawNormal - rawNormal * dot(
+                                                                     rawNormal, gradRawNormal);
+                                    const float3 gradCross = gradProjected / rawCrossLen;
+
+                                    totalGradTanU += cross(tv, gradCross);
+                                    totalGradTanV += cross(gradCross, tu);
+                                }
+                            }
+                        }
+
+                        atomicAddFloat3(gradients.gradPosition[hit.primitiveIndex], totalGradPosition);
+                        atomicAddFloat3(gradients.gradTanU[hit.primitiveIndex], totalGradTanU);
+                        atomicAddFloat3(gradients.gradTanV[hit.primitiveIndex], totalGradTanV);
+                        atomicAddFloat2(gradients.gradScale[hit.primitiveIndex],
+                                        float2(totalGradScaleU, totalGradScaleV));
+                        atomicAddFloat(gradients.gradOpacity[hit.primitiveIndex], totalGradOpacity);
+                        atomicAddFloat(gradients.gradBeta[hit.primitiveIndex], totalGradBeta);
+
+                        if (settings.renderDebugGradientImages) {
+                            SurfelGradientRecord debugRecord{};
+                            debugRecord.primitiveIndex = hit.primitiveIndex;
+                            debugRecord.gradPositionX = totalGradPosition.x();
+                            debugRecord.gradPositionY = totalGradPosition.y();
+                            debugRecord.gradPositionZ = totalGradPosition.z();
+                            debugRecord.gradScaleU = totalGradScaleU;
+                            debugRecord.gradScaleV = totalGradScaleV;
+                            debugRecord.gradTangentUX = totalGradTanU.x();
+                            debugRecord.gradTangentUY = totalGradTanU.y();
+                            debugRecord.gradTangentUZ = totalGradTanU.z();
+                            debugRecord.gradTangentVX = totalGradTanV.x();
+                            debugRecord.gradTangentVY = totalGradTanV.y();
+                            debugRecord.gradTangentVZ = totalGradTanV.z();
+                            debugRecord.gradEta = totalGradOpacity;
+                            debugRecord.gradBeta = totalGradBeta;
+                            debugRecord.gradAlbedoR = 0.0f;
+                            debugRecord.gradAlbedoG = 0.0f;
+                            debugRecord.gradAlbedoB = 0.0f;
+
+                            accumulateDebugGradientIfSelected(
+                                debugImage,
+                                settings.renderDebugGradientImages,
+                                settings.surfelIndexForDebugImages,
+                                pixelIndex,
+                                debugRecord);
+                        }
                     }
                 });
         }).wait();

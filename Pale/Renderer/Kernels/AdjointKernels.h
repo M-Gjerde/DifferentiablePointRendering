@@ -33,4 +33,5 @@ namespace Pale {
     void launchNormalConsistencyBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
     void launchNormalFromDepthAdjointKernel(RenderPackage& pkg, uint32_t cameraIndex);
     void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex);
+    void launchSurfaceRegularizersBackwardKernel(RenderPackage &pkg, uint32_t cameraIndex) ;
 }

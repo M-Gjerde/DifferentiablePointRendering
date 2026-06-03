@@ -47,8 +47,8 @@ def make_under_reconstruction_clones(
         trainable_surfel_mask,
         grad_threshold,
         max_clone_fraction=1.0,
-        clone_offset_scale=0.30,
-        clone_scale_factor=1.6,
+        clone_offset_scale=0.40,
+        clone_scale_factor=1.5,
         min_clone_scale=5.0e-2,
         normal_perturbation_min=1.0e-5,
         normal_perturbation_max=3.0e-5,
@@ -199,8 +199,8 @@ Both children:
         # Avoid producing surfels below the clone minimum.
         child_sc = torch.clamp(child_sc, min=float(min_clone_scale))
 
-        parent_opacity = 0.75 * opa
-        child_opacity = torch.clamp(0.25 * opa, max=0.25)
+        parent_opacity = 1.0 * opa
+        child_opacity = torch.clamp(0.6 * opa, max=0.25)
 
         selected_idx_np = selected_idx.detach().cpu().numpy().astype(np.int64)
 

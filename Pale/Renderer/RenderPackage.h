@@ -19,6 +19,7 @@ namespace Pale {
         // Depth distortion buffer
         float* depthDistortionBuffer = nullptr;
         float* depthDistortionAdjointBuffer = nullptr;
+        float* visibilityWeightedOpacityBuffer = nullptr;
 
         float*  medianDepthBuffer;        // scalar visualization depth
         float*  meanDepthBuffer;        // scalar visualization depth

@@ -656,8 +656,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.4f;
-        float qReflect = 0.6f;
+        float qNull = 0.3f;
+        float qReflect = 0.7f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
@@ -678,12 +678,10 @@ namespace Pale {
         uint32_t surfelIndexForDebugImages = 1;
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
+        float visibilityWeightedOpacityRegularizerWeight = 0.0f;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
         uint32_t numAdjointPathShadowRays = 4;
-
-        bool useDepthDistortion = false;
-        bool useNormalConsistency = false;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

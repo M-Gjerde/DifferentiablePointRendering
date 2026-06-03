@@ -413,6 +413,7 @@ def build_poly_data_from_ply(
     max_ellipses: int,
     scale_multiplier: float,
     alpha_multiplier: float,
+    color_multiplier: float,
     solid: bool,
 ) -> vtk.vtkPolyData:
     positions, tangent_u, tangent_v, scale_u, scale_v, colors, opacities = load_surfels_from_ply(
@@ -428,7 +429,7 @@ def build_poly_data_from_ply(
     tangent_v = tangent_v[ellipse_mask]
     scale_u = scale_u[ellipse_mask] * scale_multiplier
     scale_v = scale_v[ellipse_mask] * scale_multiplier
-    colors = colors[ellipse_mask]
+    colors = (colors[ellipse_mask] * float(color_multiplier)).clip(0.0, 1.0)
     opacities = opacities[ellipse_mask]
 
     if solid:
@@ -504,9 +505,12 @@ def update_status_text(
     current_index: int,
     ply_paths: List[Path],
     points_dir: Path,
+    color_multiplier: float,
+    solid_opacity_enabled: bool,
 ) -> None:
     current_ply_path = ply_paths[current_index]
     iteration = parse_iteration_from_ply_name(current_ply_path)
+    opacity_mode = "solid" if solid_opacity_enabled else "file"
 
     if iteration >= 0:
         iteration_text = f"iteration {iteration}"
@@ -514,7 +518,7 @@ def update_status_text(
         iteration_text = current_ply_path.stem
 
     text_actor.SetInput(
-        f"{current_index + 1}/{len(ply_paths)} | {iteration_text}\n"
+        f"{current_index + 1}/{len(ply_paths)} | {iteration_text} | color x{color_multiplier:.2f} | opacity {opacity_mode}\n"
         f"{current_ply_path.name}\n"
         f"{points_dir}"
     )
@@ -557,7 +561,7 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--opacity-threshold",
+        "--opacity-threshold", "--opacity",
         type=float,
         default=0.0,
     )
@@ -595,6 +599,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--solid",
         action="store_true",
+        help="Start with solid opacity enabled. Press S in the viewer to toggle.",
     )
 
     parser.add_argument(
@@ -613,6 +618,20 @@ def parse_arguments() -> argparse.Namespace:
         "--reset-camera-on-start",
         action="store_true",
         help="Frame the first point cloud once at startup. Camera is still preserved when cycling.",
+    )
+
+    parser.add_argument(
+        "--color-boost",
+        type=float,
+        default=1.0,
+        help="Initial multiplier applied to surfel RGB values.",
+    )
+
+    parser.add_argument(
+        "--color-boost-step",
+        type=float,
+        default=0.5,
+        help="Amount added/subtracted from color boost when pressing +/-.",
     )
 
     return parser.parse_args()
@@ -635,10 +654,14 @@ def main() -> None:
         )
 
     current_index = args.start_index
+    color_multiplier = float(args.color_boost)
+    solid_opacity_enabled = bool(args.solid)
+    pending_action: str | None = None
+    timer_is_active = False
 
     print(f"Using points folder: {points_dir}")
     print(f"Found {len(ply_paths)} PLY files.")
-    print("Controls: Right/Left arrow = next/previous PLY, Home/End = first/last, r = reload file list, q/Escape = quit")
+    print("Controls: Right/Left arrow = refresh + next/previous PLY, Home/End = refresh + first/last, +/- = color boost, S = toggle solid/file opacity, r = reload current, q/Escape = quit")
 
     poly_data = build_poly_data_from_ply(
         ply_path=ply_paths[current_index],
@@ -647,7 +670,8 @@ def main() -> None:
         max_ellipses=args.max_ellipses,
         scale_multiplier=args.scale,
         alpha_multiplier=args.alpha,
-        solid=args.solid,
+        color_multiplier=color_multiplier,
+        solid=solid_opacity_enabled,
     )
 
     disk = vtk.vtkDiskSource()
@@ -689,6 +713,8 @@ def main() -> None:
         current_index=current_index,
         ply_paths=ply_paths,
         points_dir=points_dir,
+        color_multiplier=color_multiplier,
+        solid_opacity_enabled=solid_opacity_enabled,
     )
     renderer.AddActor2D(status_text_actor)
 
@@ -716,6 +742,8 @@ def main() -> None:
 
     def load_current_index() -> None:
         nonlocal current_index
+        nonlocal color_multiplier
+        nonlocal solid_opacity_enabled
 
         current_ply_path = ply_paths[current_index]
 
@@ -726,7 +754,8 @@ def main() -> None:
             max_ellipses=args.max_ellipses,
             scale_multiplier=args.scale,
             alpha_multiplier=args.alpha,
-            solid=args.solid,
+            color_multiplier=color_multiplier,
+            solid=solid_opacity_enabled,
         )
 
         mapper.SetInputData(new_poly_data)
@@ -737,6 +766,8 @@ def main() -> None:
             current_index=current_index,
             ply_paths=ply_paths,
             points_dir=points_dir,
+            color_multiplier=color_multiplier,
+            solid_opacity_enabled=solid_opacity_enabled,
         )
 
         render_window.SetWindowName(
@@ -750,66 +781,168 @@ def main() -> None:
         # This preserves the current camera view while cycling.
         render_window.Render()
 
-        print(f"Showing {current_index + 1}/{len(ply_paths)}: {current_ply_path.name}")
+        print(
+            f"Showing {current_index + 1}/{len(ply_paths)}: {current_ply_path.name} "
+            f"| color x{color_multiplier:.2f} "
+            f"| opacity {'solid' if solid_opacity_enabled else 'file'}"
+        )
 
-    def reload_ply_file_list() -> None:
+    def refresh_ply_file_list_preserving_current() -> bool:
         nonlocal ply_paths
         nonlocal current_index
 
-        current_ply_name = ply_paths[current_index].name
-
+        current_ply_name = ply_paths[current_index].name if ply_paths else None
         updated_ply_paths = find_ply_sequence(points_dir)
+
+        old_ply_names = [ply_path.name for ply_path in ply_paths]
+        new_ply_names = [ply_path.name for ply_path in updated_ply_paths]
+        file_list_changed = old_ply_names != new_ply_names
+
         ply_paths = updated_ply_paths
 
-        matching_indices = [
-            index
-            for index, ply_path in enumerate(ply_paths)
-            if ply_path.name == current_ply_name
-        ]
+        if current_ply_name is not None:
+            matching_indices = [
+                index
+                for index, ply_path in enumerate(ply_paths)
+                if ply_path.name == current_ply_name
+            ]
 
-        if matching_indices:
-            current_index = matching_indices[0]
+            if matching_indices:
+                current_index = matching_indices[0]
+            else:
+                current_index = min(current_index, len(ply_paths) - 1)
         else:
             current_index = min(current_index, len(ply_paths) - 1)
 
-        print(f"Reloaded PLY file list. Found {len(ply_paths)} files.")
+        return file_list_changed
+
+    def reload_ply_file_list() -> None:
+        file_list_changed = refresh_ply_file_list_preserving_current()
+
+        if file_list_changed:
+            print(f"Reloaded PLY file list. Found {len(ply_paths)} files.")
+        else:
+            print(f"PLY file list unchanged. Found {len(ply_paths)} files.")
+
         load_current_index()
 
-    def on_key_press(caller, event_name) -> None:
-        nonlocal current_index
+    def request_action(action: str) -> None:
+        nonlocal pending_action
+        nonlocal timer_is_active
 
+        pending_action = action
+
+        if not timer_is_active:
+            timer_is_active = True
+            interactor.CreateOneShotTimer(1)
+
+    def on_key_press(caller, event_name) -> None:
         key_symbol = interactor.GetKeySym()
 
         if key_symbol in ("Right", "d", "D"):
+            request_action("next")
+            return
+
+        if key_symbol in ("Left", "a", "A"):
+            request_action("previous")
+            return
+
+        if key_symbol == "Home":
+            request_action("first")
+            return
+
+        if key_symbol == "End":
+            request_action("last")
+            return
+
+        if key_symbol in ("r", "R"):
+            request_action("reload")
+            return
+
+        if key_symbol in ("plus", "equal", "KP_Add"):
+            request_action("color_up")
+            return
+
+        if key_symbol in ("minus", "underscore", "KP_Subtract"):
+            request_action("color_down")
+            return
+
+        if key_symbol in ("s", "S"):
+            request_action("toggle_solid")
+            return
+
+        if key_symbol in ("q", "Q", "Escape"):
+            request_action("quit")
+            return
+
+    def on_timer_event(caller, event_name) -> None:
+        nonlocal current_index
+        nonlocal color_multiplier
+        nonlocal solid_opacity_enabled
+        nonlocal pending_action
+        nonlocal timer_is_active
+
+        action = pending_action
+        pending_action = None
+        timer_is_active = False
+
+        if action is None:
+            return
+
+        if action == "next":
+            refresh_ply_file_list_preserving_current()
             current_index = (current_index + 1) % len(ply_paths)
             load_current_index()
             return
 
-        if key_symbol in ("Left", "a", "A"):
+        if action == "previous":
+            refresh_ply_file_list_preserving_current()
             current_index = (current_index - 1) % len(ply_paths)
             load_current_index()
             return
 
-        if key_symbol == "Home":
+        if action == "first":
+            refresh_ply_file_list_preserving_current()
             current_index = 0
             load_current_index()
             return
 
-        if key_symbol == "End":
+        if action == "last":
+            refresh_ply_file_list_preserving_current()
             current_index = len(ply_paths) - 1
             load_current_index()
             return
 
-        if key_symbol in ("r", "R"):
+        if action == "reload":
             reload_ply_file_list()
             return
 
-        if key_symbol in ("q", "Q", "Escape"):
+        if action == "color_up":
+            color_multiplier = min(color_multiplier + float(args.color_boost_step), 10.0)
+            print(f"Color boost: x{color_multiplier:.2f}")
+            load_current_index()
+            return
+
+        if action == "color_down":
+            color_multiplier = max(color_multiplier - float(args.color_boost_step), 0.0)
+            print(f"Color boost: x{color_multiplier:.2f}")
+            load_current_index()
+            return
+
+        if action == "toggle_solid":
+            solid_opacity_enabled = not solid_opacity_enabled
+            print(f"Opacity mode: {'solid' if solid_opacity_enabled else 'file'}")
+            load_current_index()
+            return
+
+        if action == "quit":
             interactor.GetRenderWindow().Finalize()
             interactor.TerminateApp()
             return
 
+
     interactor.AddObserver("KeyPressEvent", on_key_press)
+    interactor.AddObserver("TimerEvent", on_timer_event)
 
     render_window.SetWindowName(
         f"{current_index + 1}/{len(ply_paths)} - {ply_paths[current_index].name}"

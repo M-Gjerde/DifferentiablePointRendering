@@ -25,6 +25,7 @@ export namespace Pale {
         void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages* debugImages);
         void renderDepthDistortionBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients);
         void renderNormalConsistencyBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients);
+        void renderSurfaceRegularizersBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients, DebugImages *debugImages = nullptr);
         void reset();
 
         PathTracerSettings& getSettings() { return m_settings; }

@@ -4,6 +4,7 @@ import time
 import sys
 import subprocess
 from pathlib import Path
+import os
 
 import pale
 from config import RendererSettingsConfig, parse_args
@@ -74,8 +75,10 @@ def main() -> None:
     # dataset_path is usually relative to assets_root (directory or file)
     dataset_path_full = (config.assets_root / config.dataset_path).resolve()
     if image_preview_script.exists():
-        preview_args = [sys.executable, str(image_preview_script), "--output-path", str(config.output_dir.resolve()),
-                        "--refresh-ms", "200", ]
+        preview_args = [
+            sys.executable, str(image_preview_script), "--output-path", str(config.output_dir.resolve()),
+            "--refresh-ms", "200", "--parent-pid", str(os.getpid()),
+        ]
         try:
             image_preview_process = subprocess.Popen(preview_args)
             print(f"Started image preview : {image_preview_script}")
@@ -94,10 +97,13 @@ def main() -> None:
         run_optimization(renderer, config, renderer_settings)
     finally:
         if image_preview_process is not None:
-            try:
-                image_preview_process.wait(timeout=5)
-            except Exception:
-                pass
+            if image_preview_process.poll() is None:
+                image_preview_process.terminate()
+                try:
+                    image_preview_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    image_preview_process.kill()
+                    image_preview_process.wait()
 
 
 if __name__ == "__main__":

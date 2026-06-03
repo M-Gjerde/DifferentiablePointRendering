@@ -11,23 +11,25 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                      renderer_settings: RendererSettingsConfig) -> None:
     target_images, training_camera_ids, all_camera_ids = load_target_images(renderer, Path(config.dataset_path))
 
-    depth_distortion_weight = float(getattr(config, "depth_distort_weight", 0.0))
-    normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
-    opacity_loss_weight = float(getattr(config, "opacity_loss_weight", 0.0))
-    opacity_target = float(config.opacity_target)
+    depth_distortion_base_weight = float(getattr(config, "depth_distort_weight", 0.0))
+    depth_distortion_start_iteration = int(getattr(config, "depth_distort_start_iteration", 0))
 
-    use_depth_distortion = depth_distortion_weight != 0.0
+    normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
+    visibility_weighted_opacity_weight = float(config.visibility_weighted_opacity_weight)
+
+    use_depth_distortion = depth_distortion_base_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
-    use_opacity_loss = opacity_loss_weight != 0.0
+    use_visibility_weighted_opacity = visibility_weighted_opacity_weight != 0.0
 
     print(
         "Loss terms: "
-        f"depth_distortion={use_depth_distortion} weight={depth_distortion_weight:.3e}, "
+        f"depth_distortion={use_depth_distortion} "
+        f"base_weight={depth_distortion_base_weight:.3e} "
+        f"start_iter={depth_distortion_start_iteration}, "
         f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
-        f"opacity_loss_weight={opacity_loss_weight:.3e}, "
-        f"opacity_target={opacity_target:.3f}"
+        f"visibility_weighted_opacity={use_visibility_weighted_opacity} "
+        f"weight={visibility_weighted_opacity_weight:.3e}"
     )
-
     initial_params = fetch_parameters(renderer)
     initial_params_reference = make_initial_params_reference(initial_params)
     print(f"Fetched {initial_params['position'].shape[0]} initial points from PLY.")
@@ -55,15 +57,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     active_learning_rates = update_optimizer_learning_rates(optimizer, learning_rate_schedules, 0)
 
     initial_images = renderer.render_forward()
+    initial_depth_distortion_weight = scheduled_regularizer_weight(
+        depth_distortion_base_weight,
+        iteration=0,
+        start_iteration=depth_distortion_start_iteration,
+    )
+
     initial_loss_tuple = compute_initial_losses_and_save_outputs(
         output_dir=config.output_dir, initial_images=initial_images, target_images=target_images,
-        all_camera_ids=all_camera_ids, positions=positions, tangent_u=tangent_u, tangent_v=tangent_v,
-        scales=scales, albedos=albedos, opacities=opacities, betas=betas, powers=powers,
-        trainable_surfel_mask=trainable_surfel_mask, depth_distortion_weight=depth_distortion_weight,
-        normal_consistency_weight=normal_consistency_weight, opacity_loss_weight=opacity_loss_weight,
-        opacity_target=opacity_target, use_depth_distortion=use_depth_distortion,
-        use_normal_consistency=use_normal_consistency, use_opacity_loss=use_opacity_loss,
+        all_camera_ids=all_camera_ids, positions=positions, tangent_u=tangent_u, tangent_v=tangent_v, scales=scales,
+        albedos=albedos, opacities=opacities, betas=betas, powers=powers,
+        depth_distortion_weight=initial_depth_distortion_weight,
+        normal_consistency_weight=normal_consistency_weight,
+        visibility_weighted_opacity_weight=visibility_weighted_opacity_weight,
+        use_depth_distortion=use_depth_distortion,
+        use_normal_consistency=use_normal_consistency,
+        use_visibility_weighted_opacity=use_visibility_weighted_opacity,
     )
+
     print_loss_summary("Initial", *initial_loss_tuple)
 
     densification_interval = int(config.densification_interval)
@@ -102,58 +113,72 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 iteration_start = time.perf_counter()
                 forward_out = renderer.render_forward()
 
+                active_depth_distortion_weight = scheduled_regularizer_weight(
+                    depth_distortion_base_weight,
+                    iteration=iteration,
+                    start_iteration=depth_distortion_start_iteration,
+                )
+
+                use_depth_distortion_gradients = active_depth_distortion_weight != 0.0
+
                 loss_state = compute_iteration_losses_and_adjoints(
-                    forward_out=forward_out, target_images=target_images, training_camera_ids=training_camera_ids,
-                    depth_distortion_weight=depth_distortion_weight,
+                    forward_out=forward_out,
+                    target_images=target_images,
+                    training_camera_ids=training_camera_ids,
+                    depth_distortion_weight=active_depth_distortion_weight,
                     normal_consistency_weight=normal_consistency_weight,
-                    use_depth_distortion=use_depth_distortion, use_normal_consistency=use_normal_consistency,
+                    visibility_weighted_opacity_weight=visibility_weighted_opacity_weight,
+                    use_depth_distortion=use_depth_distortion,
+                    use_normal_consistency=use_normal_consistency,
+                    use_visibility_weighted_opacity=use_visibility_weighted_opacity,
                 )
 
                 photo_gradients, adjoint_images = renderer.render_backward(loss_state["loss_grad_images"])
 
-                distortion_gradients: Dict[str, np.ndarray] = {}
-                if use_depth_distortion and len(loss_state["depth_distortion_grad_images"]) > 0:
-                    distortion_gradients = renderer.render_depth_distortion_backward(
-                        loss_state["depth_distortion_grad_images"])
-
-                normal_gradients: Dict[str, np.ndarray] = {}
-                if use_normal_consistency and len(loss_state["visible_normal_adjoints"]) > 0:
-                    normal_gradients = renderer.render_normal_consistency_backward(
-                        loss_state["visible_normal_adjoints"], loss_state["depth_normal_adjoints"])
-
-                photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
-                distortion_gradient_stats = gradient_stats_from_dict(
-                    distortion_gradients) if distortion_gradients else {}
-                normal_gradient_stats = gradient_stats_from_dict(normal_gradients) if normal_gradients else {}
-
-                repair_nonfinite_gradient_dict_inplace("photo_gradients", photo_gradients, iteration)
-                repair_nonfinite_gradient_dict_inplace("distortion_gradients", distortion_gradients, iteration)
-                repair_nonfinite_gradient_dict_inplace("normal_gradients", normal_gradients, iteration)
-
-                total_gradients = sum_gradient_dicts(photo_gradients, distortion_gradients, normal_gradients)
-                grad_position_np, grad_tangent_u_np, grad_tangent_v_np, grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np = extract_total_gradient_arrays(
-                    total_gradients)
-
-                opacity_regularizer_loss, grad_opacity_regularizer_np = compute_opacity_target_regularizer_and_gradients(
-                    use_opacity_loss=use_opacity_loss, opacities=opacities, trainable_surfel_mask=trainable_surfel_mask,
-                    opacity_target=opacity_target, opacity_weight=opacity_loss_weight,
+                surface_regularizer_gradients: Dict[str, np.ndarray] = {}
+                use_surface_regularizers = (
+                        use_depth_distortion_gradients
+                        or use_normal_consistency
+                        or use_visibility_weighted_opacity
                 )
 
-                opacity_regularizer_gradient_stats = gradient_stats_from_dict({"opacity": grad_opacity_regularizer_np})
-                grad_opacities_np += grad_opacity_regularizer_np
-                loss_state["total_loss_value"] += opacity_regularizer_loss
+                if use_surface_regularizers:
+                    surface_regularizer_gradients = renderer.render_surface_regularizers_backward(
+                        training_camera_ids,
+                        loss_state["depth_distortion_grad_images"],
+                        loss_state["visible_normal_adjoints"],
+                        loss_state["depth_normal_adjoints"],
+                    )
 
-                grad_opacity_regularizer_norm = gradient_l2_norm(grad_opacity_regularizer_np)
-                grad_opacity_regularizer_max = max_point_norm(grad_opacity_regularizer_np)
+                photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
+                surface_regularizer_gradient_stats = (
+                    gradient_stats_from_dict(surface_regularizer_gradients)
+                    if surface_regularizer_gradients
+                    else {}
+                )
+
+                repair_nonfinite_gradient_dict_inplace("photo_gradients", photo_gradients, iteration)
+                repair_nonfinite_gradient_dict_inplace(
+                    "surface_regularizer_gradients",
+                    surface_regularizer_gradients,
+                    iteration,
+                )
+
+                total_gradients = sum_gradient_dicts(photo_gradients, surface_regularizer_gradients)
+
+                grad_position_np, grad_tangent_u_np, grad_tangent_v_np, grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np = extract_total_gradient_arrays(
+                    total_gradients
+                )
+
                 grad_opacity_total_norm = gradient_l2_norm(grad_opacities_np)
                 grad_opacity_total_max = max_point_norm(grad_opacities_np)
 
                 grad_position_renderer_norm, grad_position_renderer_max = position_gradient_norm_stats_or_zero(
                     photo_gradients)
-                grad_position_depth_distortion_norm, grad_position_depth_distortion_max = position_gradient_norm_stats_or_zero(
-                    distortion_gradients)
-                grad_position_normal_consistency_norm, grad_position_normal_consistency_max = position_gradient_norm_stats_or_zero(
-                    normal_gradients)
+
+                grad_position_surface_regularizer_norm, grad_position_surface_regularizer_max = position_gradient_norm_stats_or_zero(
+                    surface_regularizer_gradients
+                )
                 grad_position_total_norm = gradient_l2_norm(grad_position_np)
                 grad_position_total_max = max_point_norm(grad_position_np)
 
@@ -351,18 +376,31 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 csv_writer.writerow(
                     [
-                        iteration, "ALL_CAMERAS", loss_state["total_rgb_loss_value"],
+                        iteration,
+                        "ALL_CAMERAS",
+                        loss_state["total_rgb_loss_value"],
                         loss_state["total_depth_distortion_loss_raw"],
                         loss_state["total_depth_distortion_loss_weighted"],
-                        loss_state["total_normal_loss_raw"], loss_state["total_normal_loss_weighted"],
-                        opacity_regularizer_loss, loss_state["total_loss_value"], parameter_mse, num_points,
-                        iteration_time, total_time, grad_position_renderer_norm, grad_position_renderer_max,
-                        grad_position_depth_distortion_norm, grad_position_depth_distortion_max,
-                        grad_position_normal_consistency_norm, grad_position_normal_consistency_max,
-                        grad_position_total_norm, grad_position_total_max, grad_opacity_total_norm,
-                        grad_opacity_total_max, grad_opacity_regularizer_norm, grad_opacity_regularizer_max,
+                        loss_state["total_normal_loss_raw"],
+                        loss_state["total_normal_loss_weighted"],
+                        loss_state["total_visibility_weighted_opacity_loss_raw"],
+                        loss_state["total_visibility_weighted_opacity_loss_weighted"],
+                        loss_state["total_loss_value"],
+                        parameter_mse,
+                        num_points,
+                        iteration_time,
+                        total_time,
+                        grad_position_renderer_norm,
+                        grad_position_renderer_max,
+                        grad_position_surface_regularizer_norm,
+                        grad_position_surface_regularizer_max,
+                        grad_position_total_norm,
+                        grad_position_total_max,
+                        grad_opacity_total_norm,
+                        grad_opacity_total_max,
                     ]
                 )
+
                 csv_file.flush()
 
                 if iteration % config.log_interval == 0 or iteration == 1:
@@ -388,9 +426,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         f"RGB={loss_state['total_rgb_loss_value']:.3e}, "
                         f"DdistRaw={loss_state['total_depth_distortion_loss_raw']:.3e}, "
                         f"DdistW={loss_state['total_depth_distortion_loss_weighted']:.3e}, "
+                        f"DdistActiveW={active_depth_distortion_weight:.3e}, "
                         f"NconsRaw={loss_state['total_normal_loss_raw']:.3e}, "
                         f"NconsW={loss_state['total_normal_loss_weighted']:.3e}, "
-                        f"OpacityReg={opacity_regularizer_loss:.3e}, "
+                        f"VisOpacityRaw={loss_state['total_visibility_weighted_opacity_loss_raw']:.3e}, "
+                        f"VisOpacityW={loss_state['total_visibility_weighted_opacity_loss_weighted']:.3e}, "
                         f"Total={loss_state['total_loss_value']:.3e}, "
                         f"lr_pos={lr_position:.3e}, t={iteration_time:.3f} s, "
                         f"pos_rms={grad_pos_rms:.2e}, tu_rms={grad_tanu_rms:.2e}, "
@@ -404,17 +444,22 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         f"it/s={1.0 / max(iteration_time, 1.0e-12):.2f}"
                     )
 
+                    print(format_loss_breakdown(loss_state))
+                    print(
+                        format_gradient_source_balance(photo_gradients, surface_regularizer_gradients, total_gradients))
+
                     print(format_gradient_stats("render_grads", photo_gradient_stats))
 
-                    if distortion_gradients:
-                        print(format_gradient_stats("depth_distort_reg ", distortion_gradient_stats))
-                    if normal_gradients:
-                        print(format_gradient_stats("normal_reg ", normal_gradient_stats))
+                    if surface_regularizer_gradients:
+                        print(format_gradient_stats("surface_regularizers", surface_regularizer_gradient_stats))
                     if use_depth_distortion and loss_state["depth_distortion_maps_for_logging"]:
                         print(summarize_depth_distortion_maps(loss_state["depth_distortion_maps_for_logging"],
                                                               loss_state["depth_distortion_grad_images"]))
-                    if use_opacity_loss:
-                        print(format_gradient_stats("opacity_reg", opacity_regularizer_gradient_stats))
+
+                    if use_visibility_weighted_opacity and loss_state["visibility_weighted_opacity_maps_for_logging"]:
+                        visibility_maps = loss_state["visibility_weighted_opacity_maps_for_logging"]
+                        visibility_loss_mean = np.mean([float(v.mean()) for v in visibility_maps.values()])
+                        print(f"visibility_weighted_opacity_raw_mean={visibility_loss_mean:.3e}")
 
                     hotkey = poll_hotkey()
                     if hotkey == "s":
@@ -443,6 +488,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     final_normal_loss_weighted = 0.0
     final_total_loss = 0.0
 
+    final_depth_distortion_weight = scheduled_regularizer_weight(
+        depth_distortion_base_weight,
+        iteration=iteration,
+        start_iteration=depth_distortion_start_iteration,
+    )
+
     for camera_name in training_camera_ids:
         img_np = get_forward_rgb(final_images, camera_name)
         tgt_np = target_images[camera_name]
@@ -451,10 +502,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_total_loss += rgb_loss_cam
         save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
 
+
         if use_depth_distortion:
             dist_np = get_forward_depth_distortion(final_images, camera_name)
             dist_loss_cam_raw = float(dist_np.mean())
-            dist_loss_cam_weighted = depth_distortion_weight * dist_loss_cam_raw
+            dist_loss_cam_weighted = final_depth_distortion_weight * dist_loss_cam_raw
             final_depth_distortion_loss_raw += dist_loss_cam_raw
             final_depth_distortion_loss_weighted += dist_loss_cam_weighted
             final_total_loss += dist_loss_cam_weighted
@@ -480,20 +532,29 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             save_normal_map_snapshot(config.output_dir / f"normal_from_depth_final_{camera_name}.png",
                                      normal_from_depth, save_npy=False)
 
-    final_opacity_regularizer_loss, _ = compute_opacity_target_regularizer_and_gradients(
-        opacities=opacities, trainable_surfel_mask=trainable_surfel_mask,
-        opacity_target=opacity_target, opacity_weight=opacity_loss_weight,
-        use_opacity_loss=use_opacity_loss,
-    )
-    final_total_loss += final_opacity_regularizer_loss
+    final_visibility_weighted_opacity_loss_raw = 0.0
+    final_visibility_weighted_opacity_loss_weighted = 0.0
+
+    if use_visibility_weighted_opacity:
+        for camera_name in training_camera_ids:
+            visibility_opacity_np = get_forward_visibility_weighted_opacity(final_images, camera_name)
+            visibility_loss_raw = float(visibility_opacity_np.mean())
+            visibility_loss_weighted = visibility_weighted_opacity_weight * visibility_loss_raw
+            final_visibility_weighted_opacity_loss_raw += visibility_loss_raw
+            final_visibility_weighted_opacity_loss_weighted += visibility_loss_weighted
+            final_total_loss += visibility_loss_weighted
 
     print_loss_summary("Initial", *initial_loss_tuple)
     print_loss_summary(
-        "Final", final_rgb_loss, final_depth_distortion_loss_raw,
-        final_depth_distortion_loss_weighted, final_normal_loss_raw,
-        final_normal_loss_weighted, final_opacity_regularizer_loss, final_total_loss,
+        "Final",
+        final_rgb_loss,
+        final_depth_distortion_loss_raw,
+        final_depth_distortion_loss_weighted,
+        final_normal_loss_raw,
+        final_normal_loss_weighted,
+        final_visibility_weighted_opacity_loss_weighted,
+        final_total_loss,
     )
-
     ply_path = config.output_dir / "points_final.ply"
     save_gaussians_to_ply(ply_path, positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers,
                           shape_default=0.0)

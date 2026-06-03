@@ -61,14 +61,14 @@ def as_config_float(value: Any) -> float:
 
 
 def make_named_parameter_dict(
-    positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
-    scales: torch.nn.Parameter,
-    albedos: torch.nn.Parameter,
-    opacities: torch.nn.Parameter,
-    betas: torch.nn.Parameter,
-    powers: torch.nn.Parameter,
+        positions: torch.nn.Parameter,
+        tangent_u: torch.nn.Parameter,
+        tangent_v: torch.nn.Parameter,
+        scales: torch.nn.Parameter,
+        albedos: torch.nn.Parameter,
+        opacities: torch.nn.Parameter,
+        betas: torch.nn.Parameter,
+        powers: torch.nn.Parameter,
 ) -> Dict[str, torch.nn.Parameter]:
     return {
         "position": positions,
@@ -83,10 +83,10 @@ def make_named_parameter_dict(
 
 
 def repair_nonfinite_gradient_array_inplace(
-    name: str,
-    array: np.ndarray,
-    iteration: int,
-    zero_entire_row: bool = True,
+        name: str,
+        array: np.ndarray,
+        iteration: int,
+        zero_entire_row: bool = True,
 ) -> int:
     if array is None:
         return 0
@@ -120,9 +120,9 @@ def repair_nonfinite_gradient_array_inplace(
 
 
 def repair_nonfinite_gradient_dict_inplace(
-    tag: str,
-    gradient_dict: Dict[str, np.ndarray],
-    iteration: int,
+        tag: str,
+        gradient_dict: Dict[str, np.ndarray],
+        iteration: int,
 ) -> int:
     total_bad_count = 0
     for gradient_name, gradient_array in gradient_dict.items():
@@ -136,15 +136,15 @@ def repair_nonfinite_gradient_dict_inplace(
 
 
 def apply_densification_source_updates_inplace(
-    densification_result: Optional[Dict[str, Any]],
-    positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
-    scales: torch.nn.Parameter,
-    albedos: torch.nn.Parameter,
-    opacities: torch.nn.Parameter,
-    betas: torch.nn.Parameter,
-    powers: torch.nn.Parameter,
+        densification_result: Optional[Dict[str, Any]],
+        positions: torch.nn.Parameter,
+        tangent_u: torch.nn.Parameter,
+        tangent_v: torch.nn.Parameter,
+        scales: torch.nn.Parameter,
+        albedos: torch.nn.Parameter,
+        opacities: torch.nn.Parameter,
+        betas: torch.nn.Parameter,
+        powers: torch.nn.Parameter,
 ) -> None:
     if densification_result is None:
         return
@@ -186,13 +186,13 @@ def apply_densification_source_updates_inplace(
 
 
 def rebuild_optimizer_preserving_state(
-    config: OptimizationConfig,
-    old_optimizer: torch.optim.Optimizer,
-    old_params: Dict[str, torch.nn.Parameter],
-    new_params: Dict[str, torch.nn.Parameter],
-    keep_mask_np: np.ndarray,
-    source_index_for_new_np: Optional[np.ndarray] = None,
-    copy_source_state_to_new: bool = True,
+        config: OptimizationConfig,
+        old_optimizer: torch.optim.Optimizer,
+        old_params: Dict[str, torch.nn.Parameter],
+        new_params: Dict[str, torch.nn.Parameter],
+        keep_mask_np: np.ndarray,
+        source_index_for_new_np: Optional[np.ndarray] = None,
+        copy_source_state_to_new: bool = True,
 ) -> torch.optim.Optimizer:
     new_optimizer = create_masked_optimizer(
         config,
@@ -306,10 +306,20 @@ def get_forward_median_depth(forward_out: Dict[str, dict], camera_name: str) -> 
     return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def get_forward_visibility_weighted_opacity(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "visibility_weighted_opacity" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+
+    visibility_opacity = np.asarray(camera_out["visibility_weighted_opacity"], dtype=np.float32, order="C")
+    return np.nan_to_num(visibility_opacity, nan=0.0, posinf=0.0, neginf=0.0)
+
+
 def save_normal_map_snapshot(
-    output_path_png: Path,
-    normal_rgba: np.ndarray,
-    save_npy: bool = False,
+        output_path_png: Path,
+        normal_rgba: np.ndarray,
+        save_npy: bool = False,
 ) -> None:
     normal_rgba = np.asarray(normal_rgba, dtype=np.float32, order="C")
     normal_rgb = np.clip(normal_rgba[..., :3], -1.0, 1.0)
@@ -328,11 +338,11 @@ def save_normal_map_snapshot(
 
 
 def save_depth_distortion_snapshot(
-    output_path_png: Path,
-    depth_distortion: np.ndarray,
-    quantile: float = 0.99,
-    save_npy: bool = False,
-    cmap: str = "inferno",
+        output_path_png: Path,
+        depth_distortion: np.ndarray,
+        quantile: float = 0.99,
+        save_npy: bool = False,
+        cmap: str = "inferno",
 ) -> None:
     depth = np.asarray(depth_distortion, dtype=np.float32, order="C")
     depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
@@ -355,11 +365,11 @@ def save_depth_distortion_snapshot(
 
 
 def save_median_depth_snapshot(
-    output_path_png: Path,
-    median_depth: np.ndarray,
-    quantile: float = 0.99,
-    save_npy: bool = False,
-    cmap: str = "viridis",
+        output_path_png: Path,
+        median_depth: np.ndarray,
+        quantile: float = 0.99,
+        save_npy: bool = False,
+        cmap: str = "viridis",
 ) -> None:
     depth = np.asarray(median_depth, dtype=np.float32, order="C")
     depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
@@ -390,8 +400,8 @@ def save_median_depth_snapshot(
 
 
 def make_trainable_surfel_mask_from_powers(
-    powers: torch.Tensor,
-    eps: float = 0.0,
+        powers: torch.Tensor,
+        eps: float = 0.0,
 ) -> torch.Tensor:
     with torch.no_grad():
         power_values = powers.detach()
@@ -403,14 +413,14 @@ def make_trainable_surfel_mask_from_powers(
 
 
 def zero_frozen_surfel_gradients_np(
-    trainable_mask: torch.Tensor,
-    grad_position_np: np.ndarray,
-    grad_tangent_u_np: np.ndarray,
-    grad_tangent_v_np: np.ndarray,
-    grad_scales_np: np.ndarray,
-    grad_albedos_np: np.ndarray,
-    grad_opacities_np: np.ndarray,
-    grad_betas_np: np.ndarray,
+        trainable_mask: torch.Tensor,
+        grad_position_np: np.ndarray,
+        grad_tangent_u_np: np.ndarray,
+        grad_tangent_v_np: np.ndarray,
+        grad_scales_np: np.ndarray,
+        grad_albedos_np: np.ndarray,
+        grad_opacities_np: np.ndarray,
+        grad_betas_np: np.ndarray,
 ) -> None:
     trainable_mask_np = trainable_mask.detach().cpu().numpy().astype(bool)
     frozen_mask_np = ~trainable_mask_np
@@ -425,8 +435,8 @@ def zero_frozen_surfel_gradients_np(
 
 
 def make_mean_reduction_adjoint_image(
-    image_2d: np.ndarray,
-    loss_weight: float,
+        image_2d: np.ndarray,
+        loss_weight: float,
 ) -> np.ndarray:
     pixel_count = max(image_2d.size, 1)
     return np.full(image_2d.shape, loss_weight / float(pixel_count), dtype=np.float32)
@@ -503,7 +513,7 @@ def rms_point(x: np.ndarray) -> float:
 
 
 def position_gradient_norm_stats_or_zero(
-    gradient_dict: Dict[str, np.ndarray],
+        gradient_dict: Dict[str, np.ndarray],
 ) -> tuple[float, float]:
     if not gradient_dict or "position" not in gradient_dict:
         return 0.0, 0.0
@@ -542,49 +552,98 @@ def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
         f"{format_stat('beta')}"
     )
 
+def scheduled_regularizer_weight(
+        base_weight: float,
+        iteration: int,
+        start_iteration: int,
+) -> float:
+    if base_weight == 0.0:
+        return 0.0
 
-def compute_opacity_target_regularizer_and_gradients(
-    opacities: torch.Tensor,
-    trainable_surfel_mask: torch.Tensor,
-    opacity_target: float,
-    opacity_weight: float,
-    use_opacity_loss: bool,
-) -> tuple[float, np.ndarray]:
-    opacity_np = opacities.detach().cpu().numpy().astype(np.float32, copy=False)
-    grad_opacity_np = np.zeros_like(opacity_np, dtype=np.float32)
+    if start_iteration <= 0:
+        return float(base_weight)
 
-    if not use_opacity_loss or opacity_weight == 0.0:
-        return 0.0, grad_opacity_np
+    return float(base_weight) if int(iteration) >= int(start_iteration) else 0.0
 
-    trainable_mask_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
-    opacity_flat = opacity_np.reshape(-1)
-    grad_opacity_flat = grad_opacity_np.reshape(-1)
+def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
+    rgb_loss = float(loss_state["total_rgb_loss_value"])
+    depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
+    normal_weighted = float(loss_state["total_normal_loss_weighted"])
+    visibility_opacity_weighted = float(loss_state["total_visibility_weighted_opacity_loss_weighted"])
 
-    if opacity_flat.shape[0] != trainable_mask_np.shape[0]:
-        raise RuntimeError(
-            "Opacity regularizer shape mismatch: "
-            f"opacities has {opacity_flat.shape[0]} scalar values, "
-            f"but trainable_surfel_mask has {trainable_mask_np.shape[0]} entries."
+    after_depth = rgb_loss + depth_weighted
+    after_normal = after_depth + normal_weighted
+    after_visibility_opacity = after_normal + visibility_opacity_weighted
+    regularizer_total = depth_weighted + normal_weighted + visibility_opacity_weighted
+
+    return {
+        "before_regularizers": rgb_loss,
+        "after_depth_distortion": after_depth,
+        "after_normal_consistency": after_normal,
+        "after_visibility_opacity": after_visibility_opacity,
+        "regularizer_total": regularizer_total,
+        "total": float(loss_state["total_loss_value"]),
+    }
+
+
+def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
+    breakdown = make_loss_breakdown(loss_state)
+    return (
+        "loss_stack: "
+        f"before_regs={breakdown['before_regularizers']:.3e}, "
+        f"+depth={breakdown['after_depth_distortion']:.3e}, "
+        f"+normal={breakdown['after_normal_consistency']:.3e}, "
+        f"+vis_opacity={breakdown['after_visibility_opacity']:.3e}, "
+        f"reg_total={breakdown['regularizer_total']:.3e}, "
+        f"total={breakdown['total']:.3e}"
+    )
+
+
+def gradient_norm_for_key(
+        gradient_dict: Dict[str, np.ndarray],
+        key: str,
+) -> float:
+    if not gradient_dict or key not in gradient_dict:
+        return 0.0
+    return gradient_l2_norm(np.asarray(gradient_dict[key], dtype=np.float32, order="C"))
+
+
+def format_gradient_source_balance(
+        photo_gradients: Dict[str, np.ndarray],
+        surface_regularizer_gradients: Dict[str, np.ndarray],
+        total_gradients: Dict[str, np.ndarray],
+) -> str:
+    keys = [
+        ("position", "pos"),
+        ("tangent_u", "tu"),
+        ("tangent_v", "tv"),
+        ("scale", "scale"),
+        ("albedo", "rho"),
+        ("opacity", "eta"),
+        ("beta", "beta"),
+    ]
+
+    parts: list[str] = []
+
+    for key, label in keys:
+        photo_norm = gradient_norm_for_key(photo_gradients, key)
+        surface_norm = gradient_norm_for_key(surface_regularizer_gradients, key)
+        total_norm = gradient_norm_for_key(total_gradients, key)
+
+        denom = photo_norm + surface_norm
+        surface_fraction = surface_norm / denom if denom > 1.0e-20 else 0.0
+
+        parts.append(
+            f"{label}:photo={photo_norm:.2e},surf={surface_norm:.2e},"
+            f"total={total_norm:.2e},surf%={100.0 * surface_fraction:.1f}"
         )
 
-    if not np.any(trainable_mask_np):
-        return 0.0, grad_opacity_np
-
-    active_opacities = opacity_flat[trainable_mask_np]
-    opacity_error = active_opacities - float(opacity_target)
-    active_count = max(int(opacity_error.size), 1)
-
-    loss_value = float(float(opacity_weight) * np.mean(opacity_error * opacity_error))
-    grad_active = (2.0 * float(opacity_weight) / float(active_count)) * opacity_error
-    grad_opacity_flat[trainable_mask_np] = grad_active.astype(np.float32, copy=False)
-
-    return loss_value, grad_opacity_np
-
+    return "gradient_source_balance: " + " | ".join(parts)
 
 def compute_normal_consistency_loss_and_adjoints(
-    visible_normal_rgba: np.ndarray,
-    depth_normal_rgba: np.ndarray,
-    weight: float,
+        visible_normal_rgba: np.ndarray,
+        depth_normal_rgba: np.ndarray,
+        weight: float,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     vis_rgba = np.asarray(visible_normal_rgba, dtype=np.float32, order="C")
     dep_rgba = np.asarray(depth_normal_rgba, dtype=np.float32, order="C")
@@ -615,8 +674,8 @@ def compute_normal_consistency_loss_and_adjoints(
 
 
 def summarize_depth_distortion_maps(
-    depth_maps: Dict[str, np.ndarray],
-    adjoint_maps: Dict[str, np.ndarray],
+        depth_maps: Dict[str, np.ndarray],
+        adjoint_maps: Dict[str, np.ndarray],
 ) -> str:
     if not depth_maps:
         return "depth_distortion: no cameras"
@@ -648,8 +707,8 @@ def summarize_depth_distortion_maps(
 
 
 def refetch_parameters_as_torch(
-    renderer: pale.Renderer,
-    device: torch.device,
+        renderer: pale.Renderer,
+        device: torch.device,
 ) -> Tuple[torch.nn.Parameter, ...]:
     updated = fetch_parameters(renderer)
 
@@ -666,14 +725,14 @@ def refetch_parameters_as_torch(
 
 
 def verify_parameters_inplane(
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    albedos: torch.Tensor,
-    opacities: torch.Tensor,
-    betas: torch.Tensor,
-    trainable_surfel_mask: Optional[torch.Tensor] = None,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        betas: torch.Tensor,
+        trainable_surfel_mask: Optional[torch.Tensor] = None,
 ) -> None:
     verify_tangents_inplace(tangent_u, tangent_v)
     verify_scales_inplace(scales)
@@ -684,21 +743,21 @@ def verify_parameters_inplane(
 
 
 def assign_numpy_gradients_to_tensors(
-    device: torch.device,
-    positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
-    scales: torch.nn.Parameter,
-    albedos: torch.nn.Parameter,
-    opacities: torch.nn.Parameter,
-    betas: torch.nn.Parameter,
-    grad_position_np: np.ndarray,
-    grad_tangent_u_np: np.ndarray,
-    grad_tangent_v_np: np.ndarray,
-    grad_scales_np: np.ndarray,
-    grad_albedos_np: np.ndarray,
-    grad_opacities_np: np.ndarray,
-    grad_betas_np: np.ndarray,
+        device: torch.device,
+        positions: torch.nn.Parameter,
+        tangent_u: torch.nn.Parameter,
+        tangent_v: torch.nn.Parameter,
+        scales: torch.nn.Parameter,
+        albedos: torch.nn.Parameter,
+        opacities: torch.nn.Parameter,
+        betas: torch.nn.Parameter,
+        grad_position_np: np.ndarray,
+        grad_tangent_u_np: np.ndarray,
+        grad_tangent_v_np: np.ndarray,
+        grad_scales_np: np.ndarray,
+        grad_albedos_np: np.ndarray,
+        grad_opacities_np: np.ndarray,
+        grad_betas_np: np.ndarray,
 ) -> None:
     positions.grad = torch.tensor(grad_position_np, device=device, dtype=torch.float32)
     tangent_u.grad = torch.tensor(grad_tangent_u_np, device=device, dtype=torch.float32)
@@ -710,15 +769,15 @@ def assign_numpy_gradients_to_tensors(
 
 
 def save_gradients_snapshot(
-    output_dir: Path,
-    iteration: int,
-    grad_position_np: np.ndarray,
-    grad_tangent_u_np: np.ndarray,
-    grad_tangent_v_np: np.ndarray,
-    grad_scales_np: np.ndarray,
-    grad_albedos_np: np.ndarray,
-    grad_opacities_np: np.ndarray,
-    grad_betas_np: np.ndarray,
+        output_dir: Path,
+        iteration: int,
+        grad_position_np: np.ndarray,
+        grad_tangent_u_np: np.ndarray,
+        grad_tangent_v_np: np.ndarray,
+        grad_scales_np: np.ndarray,
+        grad_albedos_np: np.ndarray,
+        grad_opacities_np: np.ndarray,
+        grad_betas_np: np.ndarray,
 ) -> None:
     gradients_dir = output_dir / "gradients"
     gradients_dir.mkdir(parents=True, exist_ok=True)
@@ -781,18 +840,18 @@ def save_gradients_snapshot(
 
 
 def save_manual_snapshot(
-    renderer: pale.Renderer,
-    output_dir: Path,
-    iteration: int,
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    albedos: torch.Tensor,
-    opacities: torch.Tensor,
-    betas: torch.Tensor,
-    powers: torch.Tensor,
-    camera_ids: List[str],
+        renderer: pale.Renderer,
+        output_dir: Path,
+        iteration: int,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        betas: torch.Tensor,
+        powers: torch.Tensor,
+        camera_ids: List[str],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     final_images = renderer.render_forward()
@@ -838,16 +897,16 @@ def save_manual_snapshot(
 
 
 def save_iteration_point_cloud_snapshot(
-    output_dir: Path,
-    iteration: int,
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    albedos: torch.Tensor,
-    opacities: torch.Tensor,
-    betas: torch.Tensor,
-    powers: torch.Tensor,
+        output_dir: Path,
+        iteration: int,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        betas: torch.Tensor,
+        powers: torch.Tensor,
 ) -> None:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
@@ -870,8 +929,8 @@ def save_iteration_point_cloud_snapshot(
 
 
 def load_target_images(
-    renderer: pale.Renderer,
-    dataset_path: Path,
+        renderer: pale.Renderer,
+        dataset_path: Path,
 ) -> tuple[Dict[str, np.ndarray], List[str], List[str]]:
     target_path = Path(dataset_path)
     if not target_path.is_dir():
@@ -897,8 +956,8 @@ def load_target_images(
 
 
 def create_torch_parameters_from_initial(
-    initial_params: Dict[str, np.ndarray],
-    device: torch.device,
+        initial_params: Dict[str, np.ndarray],
+        device: torch.device,
 ) -> Tuple[torch.nn.Parameter, ...]:
     positions = torch.nn.Parameter(torch.tensor(initial_params["position"], device=device, dtype=torch.float32))
     tangent_u = torch.nn.Parameter(torch.tensor(initial_params["tangent_u"], device=device, dtype=torch.float32))
@@ -925,14 +984,14 @@ def make_initial_params_reference(initial_params: Dict[str, np.ndarray]) -> Dict
 
 
 def current_params_as_numpy(
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    albedos: torch.Tensor,
-    opacities: torch.Tensor,
-    betas: torch.Tensor,
-    powers: torch.Tensor,
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        betas: torch.Tensor,
+        powers: torch.Tensor,
 ) -> Dict[str, np.ndarray]:
     return {
         "position": positions.detach().cpu().numpy(),
@@ -945,28 +1004,25 @@ def current_params_as_numpy(
         "power": powers.detach().cpu().numpy(),
     }
 
-
 def compute_initial_losses_and_save_outputs(
-    output_dir: Path,
-    initial_images: Dict[str, dict],
-    target_images: Dict[str, np.ndarray],
-    all_camera_ids: List[str],
-    positions: torch.Tensor,
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    scales: torch.Tensor,
-    albedos: torch.Tensor,
-    opacities: torch.Tensor,
-    betas: torch.Tensor,
-    powers: torch.Tensor,
-    trainable_surfel_mask: torch.Tensor,
-    depth_distortion_weight: float,
-    normal_consistency_weight: float,
-    opacity_loss_weight: float,
-    opacity_target: float,
-    use_depth_distortion: bool,
-    use_normal_consistency: bool,
-    use_opacity_loss: bool,
+        output_dir: Path,
+        initial_images: Dict[str, dict],
+        target_images: Dict[str, np.ndarray],
+        all_camera_ids: List[str],
+        positions: torch.Tensor,
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        scales: torch.Tensor,
+        albedos: torch.Tensor,
+        opacities: torch.Tensor,
+        betas: torch.Tensor,
+        powers: torch.Tensor,
+        depth_distortion_weight: float,
+        normal_consistency_weight: float,
+        visibility_weighted_opacity_weight: float,
+        use_depth_distortion: bool,
+        use_normal_consistency: bool,
+        use_visibility_weighted_opacity: bool,
 ) -> tuple[float, float, float, float, float, float, float]:
     initial_points_path = output_dir / "initial_points.ply"
     save_gaussians_to_ply(
@@ -986,6 +1042,7 @@ def compute_initial_losses_and_save_outputs(
     initial_rgb_loss = 0.0
     initial_depth_distortion_loss_raw = 0.0
     initial_normal_loss_raw = 0.0
+    initial_visibility_weighted_opacity_loss_raw = 0.0
 
     for camera_name in all_camera_ids:
         img_np = get_forward_rgb(initial_images, camera_name)
@@ -1013,21 +1070,21 @@ def compute_initial_losses_and_save_outputs(
             )
             initial_normal_loss_raw += raw_normal_loss_value
 
+        if use_visibility_weighted_opacity:
+            visibility_opacity = get_forward_visibility_weighted_opacity(initial_images, camera_name)
+            initial_visibility_weighted_opacity_loss_raw += float(visibility_opacity.mean())
+
     initial_depth_distortion_loss_weighted = depth_distortion_weight * initial_depth_distortion_loss_raw
     initial_normal_loss_weighted = normal_consistency_weight * initial_normal_loss_raw
-    initial_opacity_regularizer_loss, _ = compute_opacity_target_regularizer_and_gradients(
-        opacities=opacities,
-        trainable_surfel_mask=trainable_surfel_mask,
-        opacity_target=opacity_target,
-        opacity_weight=opacity_loss_weight,
-        use_opacity_loss=use_opacity_loss,
+    initial_visibility_weighted_opacity_loss_weighted = (
+            visibility_weighted_opacity_weight * initial_visibility_weighted_opacity_loss_raw
     )
 
     initial_total_loss = (
-        initial_rgb_loss
-        + initial_depth_distortion_loss_weighted
-        + initial_normal_loss_weighted
-        + initial_opacity_regularizer_loss
+            initial_rgb_loss
+            + initial_depth_distortion_loss_weighted
+            + initial_normal_loss_weighted
+            + initial_visibility_weighted_opacity_loss_weighted
     )
 
     return (
@@ -1036,38 +1093,39 @@ def compute_initial_losses_and_save_outputs(
         initial_depth_distortion_loss_weighted,
         initial_normal_loss_raw,
         initial_normal_loss_weighted,
-        initial_opacity_regularizer_loss,
+        initial_visibility_weighted_opacity_loss_weighted,
         initial_total_loss,
     )
 
 
 def print_loss_summary(
-    prefix: str,
-    rgb_loss: float,
-    depth_distortion_loss_raw: float,
-    depth_distortion_loss_weighted: float,
-    normal_loss_raw: float,
-    normal_loss_weighted: float,
-    opacity_regularizer_loss: float,
-    total_loss: float,
+        prefix: str,
+        rgb_loss: float,
+        depth_distortion_loss_raw: float,
+        depth_distortion_loss_weighted: float,
+        normal_loss_raw: float,
+        normal_loss_weighted: float,
+        visibility_weighted_opacity_loss_weighted: float,
+        total_loss: float,
 ) -> None:
-    print(f"{prefix} RGB loss                          : {rgb_loss:.6e}")
-    print(f"{prefix} depth distortion loss (raw)       : {depth_distortion_loss_raw:.6e}")
-    print(f"{prefix} depth distortion loss (weighted)  : {depth_distortion_loss_weighted:.6e}")
-    print(f"{prefix} normal consistency loss (raw)     : {normal_loss_raw:.6e}")
-    print(f"{prefix} normal consistency loss (weighted): {normal_loss_weighted:.6e}")
-    print(f"{prefix} opacity regularizer loss          : {opacity_regularizer_loss:.6e}")
-    print(f"{prefix} total loss                        : {total_loss:.6e}")
-
+    print(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
+    print(f"{prefix} depth distortion loss (raw)            : {depth_distortion_loss_raw:.6e}")
+    print(f"{prefix} depth distortion loss (weighted)       : {depth_distortion_loss_weighted:.6e}")
+    print(f"{prefix} normal consistency loss (raw)          : {normal_loss_raw:.6e}")
+    print(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
+    print(f"{prefix} visibility opacity loss (weighted)    : {visibility_weighted_opacity_loss_weighted:.6e}")
+    print(f"{prefix} total loss                             : {total_loss:.6e}")
 
 def compute_iteration_losses_and_adjoints(
-    forward_out: Dict[str, dict],
-    target_images: Dict[str, np.ndarray],
-    training_camera_ids: List[str],
-    depth_distortion_weight: float,
-    normal_consistency_weight: float,
-    use_depth_distortion: bool,
-    use_normal_consistency: bool,
+        forward_out: Dict[str, dict],
+        target_images: Dict[str, np.ndarray],
+        training_camera_ids: List[str],
+        depth_distortion_weight: float,
+        normal_consistency_weight: float,
+        visibility_weighted_opacity_weight: float,
+        use_depth_distortion: bool,
+        use_normal_consistency: bool,
+        use_visibility_weighted_opacity: bool,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "total_rgb_loss_value": 0.0,
@@ -1075,12 +1133,15 @@ def compute_iteration_losses_and_adjoints(
         "total_depth_distortion_loss_weighted": 0.0,
         "total_normal_loss_raw": 0.0,
         "total_normal_loss_weighted": 0.0,
+        "total_visibility_weighted_opacity_loss_raw": 0.0,
+        "total_visibility_weighted_opacity_loss_weighted": 0.0,
         "total_loss_value": 0.0,
         "loss_grad_images": {},
         "depth_distortion_grad_images": {},
         "visible_normal_adjoints": {},
         "depth_normal_adjoints": {},
         "depth_distortion_maps_for_logging": {},
+        "visibility_weighted_opacity_maps_for_logging": {},
     }
 
     for camera_name in training_camera_ids:
@@ -1123,17 +1184,27 @@ def compute_iteration_losses_and_adjoints(
             result["total_normal_loss_weighted"] += weighted_normal_loss_value
             result["total_loss_value"] += weighted_normal_loss_value
             result["visible_normal_adjoints"][camera_name] = (
-                normal_consistency_weight * dvis_raw
+                    normal_consistency_weight * dvis_raw
             ).astype(np.float32, copy=False)
             result["depth_normal_adjoints"][camera_name] = (
-                normal_consistency_weight * ddepth_raw
+                    normal_consistency_weight * ddepth_raw
             ).astype(np.float32, copy=False)
+
+        if use_visibility_weighted_opacity:
+            visibility_opacity_np = get_forward_visibility_weighted_opacity(forward_out, camera_name)
+            visibility_opacity_loss_raw = float(visibility_opacity_np.mean())
+            visibility_opacity_loss_weighted = visibility_weighted_opacity_weight * visibility_opacity_loss_raw
+
+            result["visibility_weighted_opacity_maps_for_logging"][camera_name] = visibility_opacity_np
+            result["total_visibility_weighted_opacity_loss_raw"] += visibility_opacity_loss_raw
+            result["total_visibility_weighted_opacity_loss_weighted"] += visibility_opacity_loss_weighted
+            result["total_loss_value"] += visibility_opacity_loss_weighted
 
     return result
 
 
 def extract_total_gradient_arrays(
-    total_gradients: Dict[str, np.ndarray],
+        total_gradients: Dict[str, np.ndarray],
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
     grad_tangent_u_np = np.asarray(total_gradients["tangent_u"], dtype=np.float32, order="C")
@@ -1154,30 +1225,30 @@ def extract_total_gradient_arrays(
 
 
 def update_densification_statistics(
-    iteration: int,
-    densification_interval: int,
-    densification_stats_warmup_iterations: int,
-    densify_position_grad_accum_np: np.ndarray,
-    densify_position_grad_denom_np: np.ndarray,
-    densify_position_grad_vector_accum_np: np.ndarray,
-    total_gradients: Dict[str, np.ndarray],
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    albedos: torch.Tensor,
-    trainable_surfel_mask: torch.Tensor,
-    densify_bsdf_floor: float,
-    densify_bsdf_gamma: float,
+        iteration: int,
+        densification_interval: int,
+        densification_stats_warmup_iterations: int,
+        densify_position_grad_accum_np: np.ndarray,
+        densify_position_grad_denom_np: np.ndarray,
+        densify_position_grad_vector_accum_np: np.ndarray,
+        total_gradients: Dict[str, np.ndarray],
+        tangent_u: torch.Tensor,
+        tangent_v: torch.Tensor,
+        albedos: torch.Tensor,
+        trainable_surfel_mask: torch.Tensor,
+        densify_bsdf_floor: float,
+        densify_bsdf_gamma: float,
 ) -> None:
     if densification_interval <= 0:
         return
 
     densification_phase = iteration % densification_interval
     should_accumulate = (
-        densification_interval <= 1
-        or (
-            densification_phase >= densification_stats_warmup_iterations
-            and densification_phase != 0
-        )
+            densification_interval <= 1
+            or (
+                    densification_phase >= densification_stats_warmup_iterations
+                    and densification_phase != 0
+            )
     )
     if not should_accumulate:
         return
@@ -1208,9 +1279,9 @@ def update_densification_statistics(
 
     grad_norm_for_density_np = np.linalg.norm(density_grad_position_np_for_score, axis=1)
     update_density_vector_mask_np = (
-        trainable_np_for_density
-        & np.isfinite(grad_norm_for_density_np)
-        & (grad_norm_for_density_np > 0.0)
+            trainable_np_for_density
+            & np.isfinite(grad_norm_for_density_np)
+            & (grad_norm_for_density_np > 0.0)
     )
 
     densify_position_grad_vector_accum_np[update_density_vector_mask_np] += (
@@ -1219,33 +1290,33 @@ def update_densification_statistics(
 
 
 def maybe_make_densification_result(
-    iteration: int,
-    config: OptimizationConfig,
-    positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
-    scales: torch.nn.Parameter,
-    albedos: torch.nn.Parameter,
-    opacities: torch.nn.Parameter,
-    betas: torch.nn.Parameter,
-    powers: torch.nn.Parameter,
-    trainable_surfel_mask: torch.Tensor,
-    densify_position_grad_accum_np: np.ndarray,
-    densify_position_grad_denom_np: np.ndarray,
-    densify_position_grad_vector_accum_np: np.ndarray,
-    densify_after: int,
-    densify_until_iteration: int,
-    densification_interval: int,
-    densification_verbose: bool,
-    densification_grad_quantile: float,
-    densification_grad_abs_min: float,
+        iteration: int,
+        config: OptimizationConfig,
+        positions: torch.nn.Parameter,
+        tangent_u: torch.nn.Parameter,
+        tangent_v: torch.nn.Parameter,
+        scales: torch.nn.Parameter,
+        albedos: torch.nn.Parameter,
+        opacities: torch.nn.Parameter,
+        betas: torch.nn.Parameter,
+        powers: torch.nn.Parameter,
+        trainable_surfel_mask: torch.Tensor,
+        densify_position_grad_accum_np: np.ndarray,
+        densify_position_grad_denom_np: np.ndarray,
+        densify_position_grad_vector_accum_np: np.ndarray,
+        densify_after: int,
+        densify_until_iteration: int,
+        densification_interval: int,
+        densification_verbose: bool,
+        densification_grad_quantile: float,
+        densification_grad_abs_min: float,
 ) -> Optional[Dict[str, np.ndarray]]:
     if densification_interval <= 0:
         return None
 
     if not (
-        densify_after <= iteration <= densify_until_iteration
-        and iteration % densification_interval == 0
+            densify_after <= iteration <= densify_until_iteration
+            and iteration % densification_interval == 0
     ):
         return None
 
@@ -1255,13 +1326,13 @@ def maybe_make_densification_result(
         avg_density_grad_vector_np = np.zeros(tuple(positions.shape), dtype=np.float32)
 
         avg_density_grad_norm_np[valid_denom_np] = (
-            densify_position_grad_accum_np.reshape(-1)[valid_denom_np]
-            / densify_position_grad_denom_np.reshape(-1)[valid_denom_np]
+                densify_position_grad_accum_np.reshape(-1)[valid_denom_np]
+                / densify_position_grad_denom_np.reshape(-1)[valid_denom_np]
         )
 
         avg_density_grad_vector_np[valid_denom_np] = (
-            densify_position_grad_vector_accum_np[valid_denom_np]
-            / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
+                densify_position_grad_vector_accum_np[valid_denom_np]
+                / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
         )
 
         grad_pos_norm_np = np.nan_to_num(
@@ -1274,10 +1345,10 @@ def maybe_make_densification_result(
         trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool)
         finite_grad = np.isfinite(grad_pos_norm_np)
         candidate_mask_np = (
-            valid_denom_np
-            & finite_grad
-            & trainable_np
-            & (grad_pos_norm_np >= densification_grad_abs_min)
+                valid_denom_np
+                & finite_grad
+                & trainable_np
+                & (grad_pos_norm_np >= densification_grad_abs_min)
         )
 
         densification_result = None
@@ -1379,24 +1450,24 @@ def maybe_make_densification_result(
 
 
 def maybe_make_prune_indices(
-    iteration: int,
-    config: OptimizationConfig,
-    scales: torch.Tensor,
-    opacities: torch.Tensor,
-    trainable_surfel_mask: torch.Tensor,
-    prune_after: int,
-    prune_interval: int,
-    reset_opacity_interval: int,
-    opacity_prune_threshold: float,
-    max_prune_fraction: float,
+        iteration: int,
+        config: OptimizationConfig,
+        scales: torch.Tensor,
+        opacities: torch.Tensor,
+        trainable_surfel_mask: torch.Tensor,
+        prune_after: int,
+        prune_interval: int,
+        reset_opacity_interval: int,
+        opacity_prune_threshold: float,
+        max_prune_fraction: float,
 ) -> tuple[np.ndarray, np.ndarray, List[int]]:
     scale_prune_indices = np.zeros((0,), dtype=np.int64)
     opacity_prune_indices = np.zeros((0,), dtype=np.int64)
     indices_to_remove_list: List[int] = []
 
     is_reset_iteration = (
-        reset_opacity_interval > 0
-        and iteration % reset_opacity_interval == 0
+            reset_opacity_interval > 0
+            and iteration % reset_opacity_interval == 0
     )
 
     if prune_interval <= 0:
@@ -1427,14 +1498,14 @@ def maybe_make_prune_indices(
 
 
 def save_iteration_outputs(
-    output_dir: Path,
-    iteration: int,
-    save_interval: int,
-    final_iteration: int,
-    all_camera_ids: List[str],
-    forward_out: Dict[str, dict],
-    adjoint_images: Dict[str, Any],
-    renderer_settings: RendererSettingsConfig,
+        output_dir: Path,
+        iteration: int,
+        save_interval: int,
+        final_iteration: int,
+        all_camera_ids: List[str],
+        forward_out: Dict[str, dict],
+        adjoint_images: Dict[str, Any],
+        renderer_settings: RendererSettingsConfig,
 ) -> None:
     if iteration % save_interval != 0 and iteration != final_iteration:
         return
@@ -1499,7 +1570,6 @@ def save_iteration_outputs(
                 flip_y=False,
             )
 
-
 def write_metrics_header(csv_writer: csv.writer) -> None:
     csv_writer.writerow(
         [
@@ -1510,7 +1580,8 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "loss_depth_distortion_weighted_sum",
             "loss_normal_consistency_raw_sum",
             "loss_normal_consistency_weighted_sum",
-            "loss_opacity_regularizer",
+            "loss_visibility_weighted_opacity_raw_sum",
+            "loss_visibility_weighted_opacity_weighted_sum",
             "loss_total_sum",
             "parameter_mse",
             "num_points",
@@ -1518,15 +1589,11 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "total_time",
             "grad_position_renderer_norm",
             "grad_position_renderer_max",
-            "grad_position_depth_distortion_norm",
-            "grad_position_depth_distortion_max",
-            "grad_position_normal_consistency_norm",
-            "grad_position_normal_consistency_max",
+            "grad_position_surface_regularizer_norm",
+            "grad_position_surface_regularizer_max",
             "grad_position_total_norm",
             "grad_position_total_max",
             "grad_opacity_total_norm",
             "grad_opacity_total_max",
-            "grad_opacity_regularizer_norm",
-            "grad_opacity_regularizer_max",
         ]
     )

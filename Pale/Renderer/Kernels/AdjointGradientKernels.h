@@ -64,8 +64,8 @@ namespace Pale {
                 isValidGradientComponent(gradientRecord.gradAlbedoB);
         if (!validGradientRecord)
             return;
-        //if (pathId >= debugImage.numPixels)
-        //    return;
+        if (pathId >= debugImage.numPixels)
+            return;
 
         atomicAddFloat(debugImage.framebufferPosX[pathId], gradientRecord.gradPositionX);
         atomicAddFloat(debugImage.framebufferPosY[pathId], gradientRecord.gradPositionY);

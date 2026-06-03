@@ -109,7 +109,6 @@ public:
         //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
         //Pale::setBackgroundColor(deviceSelector->getQueue(), sensorsForward, color);
 
-        sensorsAdjoint = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts, true, true);
         debugImages.resize(sensorsForward.size());
         gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
 
@@ -135,11 +134,16 @@ public:
                     get_b(settingsDict, "enable_adjoint_shadow_rays", settings.enableAdjointDirectLight);
             settings.numAdjointPathShadowRays =
                     get_i(settingsDict, "adjoint_shadow_path_rays", settings.numAdjointPathShadowRays);
-            settings.useDepthDistortion =
-                    get_b(settingsDict, "use_depth_distortion", settings.useDepthDistortion);
-            settings.useNormalConsistency =
-                    get_b(settingsDict, "use_normal_consistency",
-                          get_b(settingsDict, "useConsistencyLoss", settings.useNormalConsistency));
+            settings.depthDistortionWeight =
+                    get_f(settingsDict, "depth_distort_weight", settings.depthDistortionWeight);
+
+            settings.normalConsistencyWeight =
+                    get_f(settingsDict, "normal_consistency_weight", settings.normalConsistencyWeight);
+
+            settings.visibilityWeightedOpacityRegularizerWeight =
+                    get_f(settingsDict,
+                          "visibility_weighted_opacity_weight",
+                          settings.visibilityWeightedOpacityRegularizerWeight);
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
 
@@ -154,7 +158,9 @@ public:
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
         Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", settings.enableAdjointDirectLight);
         Pale::Log::PA_WARN("  Adjoint Shadow ray count  : {}", settings.numAdjointPathShadowRays);
-        Pale::Log::PA_WARN("  Use normal consistency    : {}", settings.useNormalConsistency);
+        Pale::Log::PA_WARN("  Visibility opacity weight : {}", settings.visibilityWeightedOpacityRegularizerWeight);
+        Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", settings.depthDistortionWeight);
+        Pale::Log::PA_WARN("  Normal Consistency Weight : {}", settings.normalConsistencyWeight);
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorsForward.size(); ++i) {
             const auto &s = sensorsForward[i];
@@ -203,15 +209,16 @@ public:
             std::uint32_t imageWidth;
             std::uint32_t imageHeight;
 
-            std::vector<float> imageData; // H * W * 4
-            std::vector<float> imageDataRAW; // H * W * 4
-            std::vector<float> depthDistortionData; // H * W
+            std::vector<float> imageData;
+            std::vector<float> imageDataRAW;
+            std::vector<float> depthDistortionData;
+            std::vector<float> visibilityWeightedOpacityData;
 
-            std::vector<float> medianDepthData; // H * W
-            std::vector<float> meanDepthData; // H * W
-            std::vector<float> medianWorldPositionData; // H * W * 4
-            std::vector<float> visibleNormalData; // H * W * 4
-            std::vector<float> normalFromDepthData; // H * W * 4
+            std::vector<float> medianDepthData;
+            std::vector<float> meanDepthData;
+            std::vector<float> medianWorldPositionData;
+            std::vector<float> visibleNormalData;
+            std::vector<float> normalFromDepthData;
         };
 
         std::vector<HostImage> hostImages;
@@ -236,6 +243,8 @@ public:
             hostImage.depthDistortionData =
                     Pale::downloadFloatBuffer(queue, sensor.depthDistortionBuffer, pixelCount);
 
+            hostImage.visibilityWeightedOpacityData =
+                    Pale::downloadFloatBuffer(queue, sensor.visibilityWeightedOpacityBuffer, pixelCount);
 
             hostImage.medianDepthData =
                     Pale::downloadFloatBuffer(queue, sensor.medianDepthBuffer, pixelCount);
@@ -317,6 +326,8 @@ public:
             cameraResult[py::str("depth_distortion")] =
                     makeScalarArray(hostImage.depthDistortionData);
 
+            cameraResult[py::str("visibility_weighted_opacity")] =
+                    makeScalarArray(hostImage.visibilityWeightedOpacityData);
 
             cameraResult[py::str("median_depth")] =
                     makeScalarArray(hostImage.medianDepthData);
@@ -350,29 +361,25 @@ public:
             std::vector<float> imageRgbaData; // H * W * 4
         };
 
+        std::vector<Pale::SensorGPU> availableAdjointSensors;
+        std::vector<Pale::DebugImages> availableDebugImages;
         std::vector<HostAdjointImage> hostAdjointImages;
-        hostAdjointImages.reserve(sensorsAdjoint.size());
 
         // Map cameraName -> RGBA target buffer (HxWx4 float)
         std::unordered_map<std::string, std::vector<float> > targetRgbaPerCamera;
-        targetRgbaPerCamera.reserve(sensorsAdjoint.size());
 
-        std::vector<Pale::SensorGPU> availableAdjointSensors;
-        // ------------------------------------------------------------
         // 1. WITH GIL: read Python dict, convert to RGBA buffers
         // ------------------------------------------------------------
-        for (auto &sensor: sensorsAdjoint) {
-            // Safe string construction
-            std::string cameraName(
-                sensor.name,
-                strnlen(sensor.name, sizeof(sensor.name))
-            );
+        for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex) {
+            const auto &sensor = sensorsForward[sensorIndex];
+
+            if (!sensor.camera.useForAdjointPass) {
+                continue;
+            }
+
+            std::string cameraName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
 
             if (!targetImagesDictionary.contains(py::str(cameraName))) {
-                //Pale::Log::PA_WARN(
-                //    "render_backward: missing target image for camera '" +
-                //    cameraName + "'"
-                //);
                 continue;
             }
 
@@ -430,7 +437,8 @@ public:
             }
 
             targetRgbaPerCamera.emplace(std::move(cameraName), std::move(rgbaTarget));
-            availableAdjointSensors.emplace_back(sensor);
+            availableAdjointSensors.push_back(sensor);
+            availableDebugImages.push_back(debugImages[sensorIndex]);
         }
 
         // ------------------------------------------------------------
@@ -452,7 +460,10 @@ public:
         }
 
         // 2b. Run backward pass (re-enable when ready)
-        pathTracer->renderBackward(availableAdjointSensors, gradients, debugImages.data());
+        pathTracer->renderBackward(
+            availableAdjointSensors,
+            gradients,
+            availableDebugImages.data());
 
         const std::size_t pointCount = gradients.numPoints;
 
@@ -691,14 +702,14 @@ public:
         if (pathTracer->getSettings().renderDebugGradientImages) {
             py::dict debugPerCameraDict;
 
-            for (std::size_t i = 0; i < sensorsAdjoint.size(); ++i) {
-                const auto &sensor = sensorsAdjoint[i];
+            for (std::size_t i = 0; i < availableAdjointSensors.size(); ++i) {
+                const auto &sensor = availableAdjointSensors[i];
 
                 Pale::DebugGradientImagesHost debugImagesHost =
                         Pale::downloadDebugGradientImages(
                             deviceSelector->getQueue(),
                             sensor,
-                            debugImages[i]
+                            availableDebugImages[i]
                         );
 
                 const std::uint32_t imageWidth = sensor.width;
@@ -1068,10 +1079,6 @@ public:
 
         auto syclQueue = deviceSelector->getQueue();
 
-        if (!pathTracer->getSettings().useNormalConsistency) {
-            throw std::runtime_error(
-                "render_normal_consistency_backward called, but useNormalConsistency is disabled.");
-        }
 
         std::vector<Pale::SensorGPU> selectedCameras;
         selectedCameras.reserve(sensorsForward.size());
@@ -1357,6 +1364,349 @@ public:
                     1,
                     shape,
                     strides
+                ),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<float> *>(pointer);
+                })
+            );
+        };
+
+        py::dict gradientDictionary;
+        gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
+        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
+        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+        gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
+        gradientDictionary["albedo"] = makeFloat3Array(gradColorHost, pointCount);
+        gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
+        gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
+        gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+        gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
+
+        return gradientDictionary;
+    }
+
+    py::dict render_surface_regularizers_backward(
+        const py::list &cameraNamesList,
+        const py::dict &depthDistortionGradImagesDictionary,
+        const py::dict &visibleNormalGradImagesDictionary,
+        const py::dict &normalFromDepthGradImagesDictionary) {
+        using std::int64_t;
+        using std::size_t;
+
+        auto syclQueue = deviceSelector->getQueue();
+
+        std::unordered_set<std::string> selectedCameraNames;
+        for (const py::handle item: cameraNamesList) {
+            selectedCameraNames.insert(py::cast<std::string>(item));
+        }
+
+        std::vector<Pale::SensorGPU> selectedCameras;
+        std::vector<Pale::DebugImages> selectedDebugImages;
+
+        selectedCameras.reserve(sensorsForward.size());
+        selectedDebugImages.reserve(sensorsForward.size());
+
+        std::unordered_map<std::string, std::vector<float> > depthAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float> > visibleNormalAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float> > normalFromDepthAdjointPerCamera;
+
+        auto packFloatImage = [](const py::array &array,
+                                 std::uint32_t expectedWidth,
+                                 std::uint32_t expectedHeight,
+                                 const std::string &cameraName,
+                                 const char *fieldName) -> std::vector<float> {
+            py::buffer_info info = array.request();
+
+            if (info.ndim != 2 || info.itemsize != sizeof(float)) {
+                throw std::runtime_error(
+                    std::string("render_surface_regularizers_backward: '") +
+                    fieldName + "' for camera '" + cameraName + "' must be HxW float32");
+            }
+
+            const int64_t height = static_cast<int64_t>(info.shape[0]);
+            const int64_t width = static_cast<int64_t>(info.shape[1]);
+
+            if (static_cast<std::uint32_t>(width) != expectedWidth ||
+                static_cast<std::uint32_t>(height) != expectedHeight) {
+                throw std::runtime_error(
+                    std::string("render_surface_regularizers_backward: resolution mismatch for '") +
+                    fieldName + "' camera '" + cameraName + "'");
+            }
+
+            const auto *src = static_cast<const float *>(info.ptr);
+            const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+
+            std::vector<float> hostImage(pixelCount);
+            std::memcpy(hostImage.data(), src, pixelCount * sizeof(float));
+            return hostImage;
+        };
+
+        auto packNormalAdjointToRGBA = [](const py::array &array,
+                                          std::uint32_t expectedWidth,
+                                          std::uint32_t expectedHeight,
+                                          const std::string &cameraName,
+                                          const char *fieldName) -> std::vector<float> {
+            py::buffer_info info = array.request();
+
+            if (info.ndim != 3 || info.itemsize != sizeof(float)) {
+                throw std::runtime_error(
+                    std::string("render_surface_regularizers_backward: '") +
+                    fieldName + "' for camera '" + cameraName + "' must be HxWx3 or HxWx4 float32");
+            }
+
+            const int64_t height = static_cast<int64_t>(info.shape[0]);
+            const int64_t width = static_cast<int64_t>(info.shape[1]);
+            const int64_t channels = static_cast<int64_t>(info.shape[2]);
+
+            if (channels != 3 && channels != 4) {
+                throw std::runtime_error(
+                    std::string("render_surface_regularizers_backward: '") +
+                    fieldName + "' for camera '" + cameraName + "' must be HxWx3 or HxWx4");
+            }
+
+            if (static_cast<std::uint32_t>(width) != expectedWidth ||
+                static_cast<std::uint32_t>(height) != expectedHeight) {
+                throw std::runtime_error(
+                    std::string("render_surface_regularizers_backward: resolution mismatch for '") +
+                    fieldName + "' camera '" + cameraName + "'");
+            }
+
+            const float *src = static_cast<const float *>(info.ptr);
+            std::vector<float> rgba(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0.0f);
+
+            for (int64_t y = 0; y < height; ++y) {
+                for (int64_t x = 0; x < width; ++x) {
+                    const size_t srcBase = static_cast<size_t>((y * width + x) * channels);
+                    const size_t dstBase = static_cast<size_t>((y * width + x) * 4);
+
+                    rgba[dstBase + 0] = src[srcBase + 0];
+                    rgba[dstBase + 1] = src[srcBase + 1];
+                    rgba[dstBase + 2] = src[srcBase + 2];
+                    rgba[dstBase + 3] = 0.0f;
+                }
+            }
+
+            return rgba;
+        };
+
+        for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex) {
+            const auto &sensor = sensorsForward[sensorIndex];
+            const std::string cameraName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
+
+            if (!sensor.camera.useForAdjointPass) {
+                continue;
+            }
+
+            if (!selectedCameraNames.contains(cameraName)) {
+                continue;
+            }
+
+            selectedCameras.push_back(sensor);
+            selectedDebugImages.push_back(debugImages[sensorIndex]);
+
+            if (depthDistortionGradImagesDictionary.contains(py::str(cameraName))) {
+                depthAdjointPerCamera.emplace(
+                    cameraName,
+                    packFloatImage(
+                        depthDistortionGradImagesDictionary[py::str(cameraName)].cast<py::array>(),
+                        sensor.width,
+                        sensor.height,
+                        cameraName,
+                        "depth_distortion"));
+            }
+
+            const bool hasVisibleNormal = visibleNormalGradImagesDictionary.contains(py::str(cameraName));
+            const bool hasDepthNormal = normalFromDepthGradImagesDictionary.contains(py::str(cameraName));
+
+            if (hasVisibleNormal != hasDepthNormal) {
+                throw std::runtime_error(
+                    "render_surface_regularizers_backward: visible_normal and normal_from_depth adjoints must either both "
+                    "be present or both be absent for camera '" + cameraName + "'");
+            }
+
+            if (hasVisibleNormal) {
+                visibleNormalAdjointPerCamera.emplace(
+                    cameraName,
+                    packNormalAdjointToRGBA(
+                        visibleNormalGradImagesDictionary[py::str(cameraName)].cast<py::array>(),
+                        sensor.width,
+                        sensor.height,
+                        cameraName,
+                        "visible_normal"));
+
+                normalFromDepthAdjointPerCamera.emplace(
+                    cameraName,
+                    packNormalAdjointToRGBA(
+                        normalFromDepthGradImagesDictionary[py::str(cameraName)].cast<py::array>(),
+                        sensor.width,
+                        sensor.height,
+                        cameraName,
+                        "normal_from_depth"));
+            }
+        }
+
+        if (selectedCameras.empty()) {
+            return py::dict{};
+        }
+
+        py::gil_scoped_release release;
+
+        for (auto &sensor: selectedCameras) {
+            const std::string cameraName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
+            const size_t pixelCount = static_cast<size_t>(sensor.width) * static_cast<size_t>(sensor.height);
+
+            syclQueue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount);
+            syclQueue.fill(sensor.visibleNormalAdjointBuffer, Pale::float4{0.0f}, pixelCount);
+            syclQueue.fill(sensor.normalFromDepthAdjointBuffer, Pale::float4{0.0f}, pixelCount);
+            syclQueue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount);
+
+            auto depthIt = depthAdjointPerCamera.find(cameraName);
+            if (depthIt != depthAdjointPerCamera.end()) {
+                Pale::uploadFloatImage(
+                    syclQueue,
+                    sensor.depthDistortionAdjointBuffer,
+                    depthIt->second);
+            }
+
+            auto visibleIt = visibleNormalAdjointPerCamera.find(cameraName);
+            auto depthNormalIt = normalFromDepthAdjointPerCamera.find(cameraName);
+
+            if (visibleIt != visibleNormalAdjointPerCamera.end() &&
+                depthNormalIt != normalFromDepthAdjointPerCamera.end()) {
+                syclQueue.memcpy(
+                    sensor.visibleNormalAdjointBuffer,
+                    visibleIt->second.data(),
+                    pixelCount * 4u * sizeof(float));
+
+                syclQueue.memcpy(
+                    sensor.normalFromDepthAdjointBuffer,
+                    depthNormalIt->second.data(),
+                    pixelCount * 4u * sizeof(float));
+            }
+        }
+
+        syclQueue.wait_and_throw();
+
+        pathTracer->renderSurfaceRegularizersBackward(
+            selectedCameras,
+            gradients,
+            selectedDebugImages.data());
+
+        const size_t pointCount = gradients.numPoints;
+
+        std::vector<Pale::float3> gradPositionHost(pointCount);
+        std::vector<Pale::float3> gradTangentUHost(pointCount);
+        std::vector<Pale::float3> gradTangentVHost(pointCount);
+        std::vector<Pale::float2> gradScaleHost(pointCount);
+        std::vector<Pale::float3> gradColorHost(pointCount);
+        std::vector<float> gradOpacityHost(pointCount);
+        std::vector<float> gradBetaHost(pointCount);
+        std::vector<float> gradShapeHost(pointCount);
+        std::vector<float> gradPowerHost(pointCount);
+
+        if (pointCount > 0) {
+            if (gradients.gradPosition) {
+                syclQueue.memcpy(gradPositionHost.data(), gradients.gradPosition, pointCount * sizeof(Pale::float3));
+            }
+            if (gradients.gradTanU) {
+                syclQueue.memcpy(gradTangentUHost.data(), gradients.gradTanU, pointCount * sizeof(Pale::float3));
+            }
+            if (gradients.gradTanV) {
+                syclQueue.memcpy(gradTangentVHost.data(), gradients.gradTanV, pointCount * sizeof(Pale::float3));
+            }
+            if (gradients.gradScale) {
+                syclQueue.memcpy(gradScaleHost.data(), gradients.gradScale, pointCount * sizeof(Pale::float2));
+            }
+            if (gradients.gradAlbedo) {
+                syclQueue.memcpy(gradColorHost.data(), gradients.gradAlbedo, pointCount * sizeof(Pale::float3));
+            }
+            if (gradients.gradOpacity) {
+                syclQueue.memcpy(gradOpacityHost.data(), gradients.gradOpacity, pointCount * sizeof(float));
+            }
+            if (gradients.gradBeta) {
+                syclQueue.memcpy(gradBetaHost.data(), gradients.gradBeta, pointCount * sizeof(float));
+            }
+
+            syclQueue.wait_and_throw();
+        }
+
+        py::gil_scoped_acquire gilAcquire;
+
+        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector, size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(elementCount),
+                3
+            };
+
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    arrayShape,
+                    arrayStrides
+                ),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                })
+            );
+        };
+
+        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector, size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(elementCount),
+                2
+            };
+
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(sizeof(Pale::float2)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    2,
+                    arrayShape,
+                    arrayStrides
+                ),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float2> *>(pointer);
+                })
+            );
+        };
+
+        auto makeFloat1Array = [](std::vector<float> &hostVector, size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(elementCount)
+            };
+
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(sizeof(float))
+            };
+
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    1,
+                    arrayShape,
+                    arrayStrides
                 ),
                 py::capsule(ownedVector, [](void *pointer) {
                     delete static_cast<std::vector<float> *>(pointer);
@@ -1715,7 +2065,6 @@ public:
             Pale::SceneBuild::BuildOptions()
         );
 
-
         Pale::SceneUpload::uploadOrReallocate(
             buildProducts,
             sceneGpu,
@@ -1723,8 +2072,20 @@ public:
         );
 
         Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
-        Pale::freeDebugImagesForScene(deviceSelector->getQueue(), debugImages.data(), debugImages.size());
-        gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
+        Pale::freeDebugImagesForScene(
+            deviceSelector->getQueue(),
+            debugImages.data(),
+            debugImages.size()
+        );
+
+        debugImages.clear();
+        debugImages.resize(sensorsForward.size());
+
+        gradients = Pale::makeGradientsForScene(
+            deviceSelector->getQueue(),
+            buildProducts,
+            debugImages.data()
+        );
 
         pathTracer->setScene(sceneGpu, buildProducts);
     }
@@ -2443,7 +2804,6 @@ private:
     std::unique_ptr<Pale::DeviceSelector> deviceSelector{};
 
     std::vector<Pale::SensorGPU> sensorsForward{};
-    std::vector<Pale::SensorGPU> sensorsAdjoint{};
     std::unique_ptr<Pale::PathTracer> pathTracer{};
     std::vector<Pale::DebugImages> debugImages;
 
@@ -2504,5 +2864,11 @@ PYBIND11_MODULE(pale, m) {
                  py::arg("axis"), py::arg("index"))
             .def("set_point_scale", &PythonRenderer::set_point_scale, py::arg("scale"), py::arg("axis"),
                  py::arg("index"))
-            .def("set_point_beta", &PythonRenderer::set_point_beta, py::arg("beta"), py::arg("index"));
+            .def("set_point_beta", &PythonRenderer::set_point_beta, py::arg("beta"), py::arg("index")).def(
+                "render_surface_regularizers_backward",
+                &PythonRenderer::render_surface_regularizers_backward,
+                py::arg("camera_names"),
+                py::arg("depth_distortion_grad_images"),
+                py::arg("visible_normal_grad_images"),
+                py::arg("normal_from_depth_grad_images"));
 }
