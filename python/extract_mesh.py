@@ -489,7 +489,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-trunc", default=-1.0, type=float)
     parser.add_argument("--sdf-trunc", default=-1.0, type=float)
     parser.add_argument("--num-cluster", default=50, type=int)
-    parser.add_argument("--mesh-res", default=2048, type=int)
+    parser.add_argument("--mesh-res", default=1024, type=int)
 
     parser.add_argument("--depth_key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
     parser.add_argument(
@@ -565,7 +565,7 @@ if __name__ == "__main__":
 
         depth_trunc = pale_extractor.radius * 2.0 if args.depth_trunc < 0 else args.depth_trunc
         voxel_size = depth_trunc / args.mesh_res if args.voxel_size < 0 else args.voxel_size
-        sdf_trunc = 5.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
+        sdf_trunc = 20.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
 
         mesh = pale_extractor.extract_mesh_bounded(
             voxel_size=voxel_size,
