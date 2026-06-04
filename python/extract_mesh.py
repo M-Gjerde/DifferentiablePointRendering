@@ -97,6 +97,117 @@ def path_relative_to_assets(path: Path, assets_root: Path) -> str:
         return str(path)
 
 
+def format_ply_override_value(value: float) -> str:
+    return f"{value:.9g}"
+
+
+def format_suffix_value(value: float) -> str:
+    return f"{value:.9g}".replace("-", "m").replace(".", "p")
+
+
+def write_points_with_property_overrides(points_path: Path, output_path: Path, property_values: dict[str, float]) -> Path:
+    points_path = points_path.resolve()
+    output_path = output_path.resolve()
+
+    if points_path == output_path:
+        raise ValueError("Refusing to overwrite the input point cloud while applying property overrides.")
+
+    lines = points_path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    header_end_index = None
+    for line_index, line in enumerate(lines):
+        if line.strip() == "end_header":
+            header_end_index = line_index
+            break
+
+    if header_end_index is None:
+        raise ValueError(f"{points_path} does not contain a valid PLY end_header line.")
+
+    header_lines = lines[:header_end_index + 1]
+    body_lines = lines[header_end_index + 1:]
+
+    vertex_count = None
+    vertex_property_names: list[str] = []
+    current_element = None
+
+    for header_line in header_lines:
+        parts = header_line.strip().split()
+        if not parts:
+            continue
+
+        if parts[0] == "format" and (len(parts) < 2 or parts[1] != "ascii"):
+            raise ValueError("Applying property overrides currently supports ASCII PLY files only.")
+
+        if parts[0] == "element":
+            if len(parts) < 3:
+                raise ValueError(f"Malformed PLY element line: {header_line.strip()}")
+            current_element = parts[1]
+            if current_element == "vertex":
+                vertex_count = int(parts[2])
+            continue
+
+        if parts[0] == "property" and current_element == "vertex":
+            if len(parts) < 3:
+                raise ValueError(f"Malformed PLY property line: {header_line.strip()}")
+            vertex_property_names.append(parts[-1])
+
+    if vertex_count is None:
+        raise ValueError(f"{points_path} does not contain a vertex element.")
+
+    if len(body_lines) < vertex_count:
+        raise ValueError(f"{points_path} has fewer vertex rows than declared in the header.")
+
+    missing_property_names = [property_name for property_name in property_values if property_name not in vertex_property_names]
+    if missing_property_names:
+        raise ValueError(f"{points_path} does not contain vertex properties: {', '.join(missing_property_names)}")
+
+    property_column_indices = {
+        property_name: vertex_property_names.index(property_name)
+        for property_name in property_values
+    }
+    formatted_property_values = {
+        property_name: format_ply_override_value(property_value)
+        for property_name, property_value in property_values.items()
+    }
+
+    modified_vertex_lines: list[str] = []
+
+    for vertex_line_index, vertex_line in enumerate(body_lines[:vertex_count]):
+        values = vertex_line.strip().split()
+        if len(values) < len(vertex_property_names):
+            raise ValueError(
+                f"Vertex row {vertex_line_index} has {len(values)} values, "
+                f"but the header declares {len(vertex_property_names)} vertex properties."
+            )
+
+        for property_name, column_index in property_column_indices.items():
+            values[column_index] = formatted_property_values[property_name]
+
+        if vertex_line.endswith("\r\n"):
+            newline = "\r\n"
+        elif vertex_line.endswith("\n"):
+            newline = "\n"
+        else:
+            newline = ""
+
+        modified_vertex_lines.append(" ".join(values) + newline)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        "".join(header_lines + modified_vertex_lines + body_lines[vertex_count:]),
+        encoding="utf-8",
+    )
+
+    return output_path
+
+
+def write_points_with_forced_opacity(points_path: Path, output_path: Path) -> Path:
+    return write_points_with_property_overrides(
+        points_path=points_path,
+        output_path=output_path,
+        property_values={"opacity": 1.0},
+    )
+
 def load_renderer(run_dir: Path, points_path: Path):
     config_path = run_dir / "run_config.json"
     if not config_path.is_file():
@@ -368,19 +479,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_root", type=Path, default=Path("../Assets/OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
 
-    parser.add_argument("--cameras_json", type=Path, default="/home/magnus/phd/models/teapot_pbdr/transforms.json")
-    parser.add_argument("--camera_names", type=str, default=None)
+    parser.add_argument("--cameras-json", type=Path, default="/home/magnus/phd/models/teapot_pbdr/transforms.json")
+    parser.add_argument("--camera-names", type=str, default=None)
 
     parser.add_argument("--skip_mesh", action="store_true")
     parser.add_argument("--quiet", action="store_true")
 
-    parser.add_argument("--voxel_size", default=-1.0, type=float)
-    parser.add_argument("--depth_trunc", default=-1.0, type=float)
-    parser.add_argument("--sdf_trunc", default=-1.0, type=float)
-    parser.add_argument("--num_cluster", default=50, type=int)
-    parser.add_argument("--mesh_res", default=256, type=int)
+    parser.add_argument("--voxel-size", default=-1.0, type=float)
+    parser.add_argument("--depth-trunc", default=-1.0, type=float)
+    parser.add_argument("--sdf-trunc", default=-1.0, type=float)
+    parser.add_argument("--num-cluster", default=50, type=int)
+    parser.add_argument("--mesh-res", default=2048, type=int)
 
     parser.add_argument("--depth_key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
+    parser.add_argument(
+        "--force-opacity-one",
+        "--force_opacity_1",
+        action="store_true",
+        help="Write a derived point cloud with opacity=1.0 for all surfels before rendering/extracting the mesh.",
+    )
+    parser.add_argument(
+        "--beta",
+        type=float,
+        default=None,
+        help="Write a derived point cloud with this beta value for all surfels before rendering/extracting the mesh.",
+    )
 
     return parser.parse_args()
 
@@ -389,6 +512,31 @@ if __name__ == "__main__":
     args = parse_args()
 
     run_dir, points_path = find_run(args.output_root, args.index)
+
+    mesh_dir = run_dir / "mesh"
+    os.makedirs(mesh_dir, exist_ok=True)
+
+    point_property_overrides: dict[str, float] = {}
+    mesh_name_suffix_parts: list[str] = []
+
+    if args.force_opacity_one:
+        point_property_overrides["opacity"] = 1.0
+        mesh_name_suffix_parts.append("opacity_1")
+
+    if args.beta is not None:
+        point_property_overrides["beta"] = args.beta
+        mesh_name_suffix_parts.append(f"beta_{format_suffix_value(args.beta)}")
+
+    mesh_name_suffix = f"_{'_'.join(mesh_name_suffix_parts)}" if mesh_name_suffix_parts else ""
+
+    if point_property_overrides:
+        points_path = write_points_with_property_overrides(
+            points_path=points_path,
+            output_path=mesh_dir / f"points{mesh_name_suffix}.ply",
+            property_values=point_property_overrides,
+        )
+        print(f"Using property-overridden point cloud {points_path}")
+
     renderer, run_config = load_renderer(run_dir, points_path)
 
     cameras_json = infer_cameras_json(args, run_config)
@@ -410,9 +558,6 @@ if __name__ == "__main__":
         depth_key=args.depth_key,
     )
 
-    mesh_dir = run_dir / "mesh"
-    os.makedirs(mesh_dir, exist_ok=True)
-
     if not args.skip_mesh:
         print("export mesh ...")
 
@@ -428,12 +573,12 @@ if __name__ == "__main__":
             depth_trunc=depth_trunc,
         )
 
-        mesh_path = mesh_dir / "fuse.ply"
+        mesh_path = mesh_dir / f"fuse{mesh_name_suffix}.ply"
         o3d.io.write_triangle_mesh(str(mesh_path), mesh)
         print(f"mesh saved at {mesh_path}")
 
         mesh_post = post_process_mesh(mesh, cluster_to_keep=args.num_cluster)
 
-        mesh_post_path = mesh_dir / "fuse_post.ply"
+        mesh_post_path = mesh_dir / f"fuse_post{mesh_name_suffix}.ply"
         o3d.io.write_triangle_mesh(str(mesh_post_path), mesh_post)
         print(f"mesh post processed saved at {mesh_post_path}")

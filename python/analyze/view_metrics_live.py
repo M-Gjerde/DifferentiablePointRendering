@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from matplotlib.ticker import StrMethodFormatter
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -614,6 +615,7 @@ def draw_metrics_figure(
         )
 
         ax_point_count.set_ylabel("Point count")
+        ax_point_count.yaxis.set_major_formatter(StrMethodFormatter("{x:.0f}"))
         ax_point_count.grid(True)
         ax_point_count.legend()
 
