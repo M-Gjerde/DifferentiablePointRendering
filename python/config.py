@@ -67,16 +67,16 @@ class OptimizationConfig:
 
     depth_distort_weight: float = 1000
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
-    visibility_weighted_opacity_weight: float = 0.1
+    normal_consistency_weight: float = 0.025
+    visibility_weighted_opacity_weight: float = 0.01
 
     log_interval: int = 1
     save_interval: int = 5
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 100
-    prune_interval: int = 25
+    densification_interval: int = 20
+    prune_interval: int = 10
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
@@ -84,15 +84,15 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 1e-2
-    densification_scale_min: float = 1.5e-2
+    densification_grad_abs_min: float = 5e-3
+    densification_scale_min: float = 1.0e-2
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.15
     densify_bsdf_gamma: float = 1.2
 
     # Pruning
-    opacity_prune_threshold: float = 0.05
+    opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
     scale_prune_min_scale: float = 1.0e-3
     min_points_to_keep_after_scale_prune: int = 1
@@ -116,7 +116,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
     elif config.optimizer_type == "adam":
         factor_position = 0.0005
         factor_tangent = 0.005
-        factor_scale = 0.002
+        factor_scale = 0.0008
         factor_albedo = 0.002
         factor_opacity = 0.01
         factor_beta = 0.000
