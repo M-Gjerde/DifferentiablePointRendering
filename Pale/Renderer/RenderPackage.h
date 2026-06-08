@@ -33,16 +33,30 @@ namespace Pale {
     };
 
     // GPU Struct
+    // WE use SoA for actual optimizer gradients since  pytorch likely consumes each parameter gradient as a contiguous array
     struct PointGradients {
         float3 *gradPosition = nullptr;
         float3 *gradTanU = nullptr;
         float3 *gradTanV = nullptr;
         float2 *gradScale = nullptr;
         float3 *gradAlbedo = nullptr;
-        float  *gradOpacity = nullptr;
-        float  *gradBeta = nullptr;
-        float  *gradShape = nullptr;
+        float *gradOpacity = nullptr;
+        float *gradBeta = nullptr;
+        float *gradShape = nullptr;
+
+        // Per-primitive/per-camera translation accumulation.
+        float3 *gradPositionPerPrimitivePerCamera = nullptr;
+        uint32_t *gradPositionRecordCountPerPrimitivePerCamera = nullptr;
+
+        // Final per-primitive translation-gradient stats.
+        float *gradPositionMeanNorm = nullptr;
+        float *gradPositionStd = nullptr;
+        float *gradPositionCoherence = nullptr;
+        float *gradPositionDisagreement = nullptr;
+        uint32_t *gradPositionActiveCameraCount = nullptr;
+
         size_t numPoints{0};
+        size_t cameraSlotCount{0};
     };
 
     struct Storage {

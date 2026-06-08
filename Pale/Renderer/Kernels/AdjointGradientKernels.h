@@ -11,6 +11,15 @@ namespace Pale {
         sycl::memory_scope::device,
         sycl::access::address_space::global_space>;
 
+    SYCL_EXTERNAL inline void atomicAddUint32(uint32_t &destination, uint32_t value) {
+        auto atomicDestination = sycl::atomic_ref<
+            uint32_t,
+            sycl::memory_order::relaxed,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space>(destination);
+        atomicDestination.fetch_add(value);
+    }
+
     inline void atomicAddFloat(float &destination, float valueToAdd) {
         AtomicFloat(destination).fetch_add(valueToAdd);
     }

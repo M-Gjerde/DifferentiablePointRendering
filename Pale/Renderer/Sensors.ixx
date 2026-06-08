@@ -10,6 +10,7 @@ export module Pale.Render.Sensors;
 
 import Pale.Render.SceneBuild;
 import Pale.Log;
+import Pale.Utils.StringFormatting;
 
 export namespace Pale {
     std::vector<SensorGPU>
@@ -130,123 +131,160 @@ export namespace Pale {
         }
     }
 
-    PointGradients makeGradientsForScene(
-        sycl::queue queue,
-        const SceneBuild::BuildProducts &buildProducts,
-        DebugImages *debugImages) {
-        PointGradients out{};
+PointGradients makeGradientsForScene(
+    sycl::queue queue,
+    const SceneBuild::BuildProducts &buildProducts,
+    DebugImages *debugImages) {
+    PointGradients out{};
 
-        const uint32_t numPoints = static_cast<uint32_t>(buildProducts.points.size());
-        out.numPoints = numPoints;
+    const uint32_t numPoints = static_cast<uint32_t>(buildProducts.points.size());
+    const auto &cameraList = buildProducts.cameras();
+    const uint32_t cameraSlotCount = static_cast<uint32_t>(cameraList.size());
 
-        Pale::Log::PA_INFO("makeGradientsForScene: allocating gradients for {} points", numPoints);
+    out.numPoints = numPoints;
+    out.cameraSlotCount = cameraSlotCount;
 
-        if (numPoints > 0) {
-            out.gradPosition = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
-            out.gradTanU = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
-            out.gradTanV = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
-            out.gradScale = static_cast<float2 *>(sycl::malloc_device(numPoints * sizeof(float2), queue));
-            out.gradAlbedo = static_cast<float3 *>(sycl::malloc_device(numPoints * sizeof(float3), queue));
-            out.gradOpacity = static_cast<float *>(sycl::malloc_device(numPoints * sizeof(float), queue));
-            out.gradBeta = static_cast<float *>(sycl::malloc_device(numPoints * sizeof(float), queue));
-            out.gradShape = static_cast<float *>(sycl::malloc_device(numPoints * sizeof(float), queue));
+    Pale::Log::PA_INFO(
+        "makeGradientsForScene: allocating gradients for {} points and {} camera slots",
+        numPoints,
+        cameraSlotCount);
 
-            if (!out.gradPosition || !out.gradTanU || !out.gradTanV || !out.gradScale ||
-                !out.gradAlbedo || !out.gradOpacity || !out.gradBeta || !out.gradShape) {
-                throw std::runtime_error("makeGradientsForScene: failed to allocate one or more gradient buffers");
-            }
+    if (numPoints > 0u) {
+        out.gradPosition = sycl::malloc_device<float3>(numPoints, queue);
+        out.gradTanU = sycl::malloc_device<float3>(numPoints, queue);
+        out.gradTanV = sycl::malloc_device<float3>(numPoints, queue);
+        out.gradScale = sycl::malloc_device<float2>(numPoints, queue);
+        out.gradAlbedo = sycl::malloc_device<float3>(numPoints, queue);
+        out.gradOpacity = sycl::malloc_device<float>(numPoints, queue);
+        out.gradBeta = sycl::malloc_device<float>(numPoints, queue);
+        out.gradShape = sycl::malloc_device<float>(numPoints, queue);
 
-            queue.fill(out.gradPosition, float3{0.0f, 0.0f, 0.0f}, numPoints);
-            queue.fill(out.gradTanU, float3{0.0f, 0.0f, 0.0f}, numPoints);
-            queue.fill(out.gradTanV, float3{0.0f, 0.0f, 0.0f}, numPoints);
-            queue.fill(out.gradScale, float2{0.0f, 0.0f}, numPoints);
-            queue.fill(out.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, numPoints);
-            queue.fill(out.gradOpacity, 0.0f, numPoints);
-            queue.fill(out.gradBeta, 0.0f, numPoints);
-            queue.fill(out.gradShape, 0.0f, numPoints);
+        out.gradPositionMeanNorm = sycl::malloc_device<float>(numPoints, queue);
+        out.gradPositionStd = sycl::malloc_device<float>(numPoints, queue);
+        out.gradPositionCoherence = sycl::malloc_device<float>(numPoints, queue);
+        out.gradPositionDisagreement = sycl::malloc_device<float>(numPoints, queue);
+        out.gradPositionActiveCameraCount = sycl::malloc_device<uint32_t>(numPoints, queue);
+
+        const size_t primitiveCameraCount =
+            static_cast<size_t>(numPoints) * static_cast<size_t>(cameraSlotCount);
+
+        if (cameraSlotCount > 0u) {
+            out.gradPositionPerPrimitivePerCamera =
+                sycl::malloc_device<float3>(primitiveCameraCount, queue);
+
+            out.gradPositionRecordCountPerPrimitivePerCamera =
+                sycl::malloc_device<uint32_t>(primitiveCameraCount, queue);
         }
 
-        const auto &cameraList = buildProducts.cameras();
-        if (cameraList.empty()) {
-            Pale::Log::PA_WARN(
-                "makeGradientsForScene: no cameras in buildProducts; debug images will not be allocated");
-            queue.wait();
-            return out;
-        }
-        if (!debugImages) {
-            queue.wait();
-            return out;
+        if (!out.gradPosition || !out.gradTanU || !out.gradTanV || !out.gradScale ||
+            !out.gradAlbedo || !out.gradOpacity || !out.gradBeta || !out.gradShape ||
+            !out.gradPositionMeanNorm || !out.gradPositionStd ||
+            !out.gradPositionCoherence || !out.gradPositionDisagreement ||
+            !out.gradPositionActiveCameraCount ||
+            (cameraSlotCount > 0u && (!out.gradPositionPerPrimitivePerCamera ||
+                                      !out.gradPositionRecordCountPerPrimitivePerCamera))) {
+            throw std::runtime_error("makeGradientsForScene: failed to allocate one or more gradient buffers");
         }
 
-        for (size_t cameraIndex = 0; cameraIndex < cameraList.size(); ++cameraIndex) {
-            const auto &camera = cameraList[cameraIndex];
+        queue.fill(out.gradPosition, float3{0.0f, 0.0f, 0.0f}, numPoints);
+        queue.fill(out.gradTanU, float3{0.0f, 0.0f, 0.0f}, numPoints);
+        queue.fill(out.gradTanV, float3{0.0f, 0.0f, 0.0f}, numPoints);
+        queue.fill(out.gradScale, float2{0.0f, 0.0f}, numPoints);
+        queue.fill(out.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, numPoints);
+        queue.fill(out.gradOpacity, 0.0f, numPoints);
+        queue.fill(out.gradBeta, 0.0f, numPoints);
+        queue.fill(out.gradShape, 0.0f, numPoints);
 
-            DebugImages &debugImage = debugImages[cameraIndex];
-            debugImage = DebugImages{};
+        queue.fill(out.gradPositionMeanNorm, 0.0f, numPoints);
+        queue.fill(out.gradPositionStd, 0.0f, numPoints);
+        queue.fill(out.gradPositionCoherence, 0.0f, numPoints);
+        queue.fill(out.gradPositionDisagreement, 0.0f, numPoints);
+        queue.fill(out.gradPositionActiveCameraCount, 0u, numPoints);
 
-            if (!camera.useForAdjointPass) {
-                continue;
-            }
-
-            const size_t pixelCount =
-                    static_cast<size_t>(camera.width) *
-                    static_cast<size_t>(camera.height);
-
-            Pale::Log::PA_INFO(
-                "makeGradientsForScene: allocating debug gradient images for camera '{}' {}x{} ({} pixels)",
-                camera.name,
-                camera.width,
-                camera.height,
-                pixelCount);
-
-            debugImage.framebufferPosX = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
-            debugImage.framebufferPosY = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
-            debugImage.framebufferPosZ = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
-            debugImage.framebufferRot = reinterpret_cast<float *>(
-                sycl::malloc_device(pixelCount * sizeof(float), queue));
-            debugImage.framebufferScale = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
-            debugImage.framebufferOpacity = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
-            debugImage.framebufferAlbedo = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
-            debugImage.framebufferBeta = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
-            debugImage.framebufferDepthLoss = reinterpret_cast<float4 *>(sycl::malloc_device(
-                pixelCount * sizeof(float4), queue));
-            debugImage.framebufferDepthLossPos = reinterpret_cast<float4 *>(sycl::malloc_device(
-                pixelCount * sizeof(float4), queue));
-            debugImage.framebufferNormalLoss = reinterpret_cast<float4 *>(sycl::malloc_device(
-                pixelCount * sizeof(float4), queue));
-            debugImage.numPixels = pixelCount;
-
-            if (!debugImage.framebufferPosX || !debugImage.framebufferPosY || !debugImage.framebufferPosZ ||
-                !debugImage.framebufferRot || !debugImage.framebufferScale || !debugImage.framebufferOpacity ||
-                !debugImage.framebufferAlbedo || !debugImage.framebufferBeta ||
-                !debugImage.framebufferDepthLoss || !debugImage.framebufferDepthLossPos ||
-                !debugImage.framebufferNormalLoss) {
-                throw std::runtime_error("makeGradientsForScene: failed to allocate one or more debug image buffers");
-            }
-
-            queue.fill(debugImage.framebufferPosX, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferPosY, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferPosZ, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferRot, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferScale, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferOpacity, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferAlbedo, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferBeta, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferDepthLoss, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
-            queue.fill(debugImage.framebufferDepthLossPos, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
-            queue.fill(debugImage.framebufferNormalLoss, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+        if (cameraSlotCount > 0u) {
+            queue.fill(out.gradPositionPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
+            queue.fill(out.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
         }
 
+        Pale::Log::PA_INFO(
+            "makeGradientsForScene: gradient memory: paramPosition={}, perCameraPosition={}, stats={}",
+            Pale::Utils::formatBytes(sizeof(float3) * static_cast<size_t>(numPoints)),
+            Pale::Utils::formatBytes(sizeof(float3) * primitiveCameraCount),
+            Pale::Utils::formatBytes(
+                sizeof(float) * static_cast<size_t>(numPoints) * 4u +
+                sizeof(uint32_t) * static_cast<size_t>(numPoints)));
+    }
+
+    if (cameraList.empty()) {
+        Pale::Log::PA_WARN(
+            "makeGradientsForScene: no cameras in buildProducts; debug images will not be allocated");
         queue.wait();
         return out;
     }
+
+    if (!debugImages) {
+        queue.wait();
+        return out;
+    }
+
+    for (size_t cameraIndex = 0; cameraIndex < cameraList.size(); ++cameraIndex) {
+        const auto &camera = cameraList[cameraIndex];
+
+        DebugImages &debugImage = debugImages[cameraIndex];
+        debugImage = DebugImages{};
+
+        if (!camera.useForAdjointPass) {
+            continue;
+        }
+
+        const size_t pixelCount =
+            static_cast<size_t>(camera.width) *
+            static_cast<size_t>(camera.height);
+
+        Pale::Log::PA_INFO(
+            "makeGradientsForScene: allocating debug gradient images for camera '{}' {}x{} ({} pixels)",
+            camera.name,
+            camera.width,
+            camera.height,
+            pixelCount);
+
+        debugImage.framebufferPosX = sycl::malloc_device<float>(pixelCount, queue);
+        debugImage.framebufferPosY = sycl::malloc_device<float>(pixelCount, queue);
+        debugImage.framebufferPosZ = sycl::malloc_device<float>(pixelCount, queue);
+        debugImage.framebufferRot = sycl::malloc_device<float>(pixelCount, queue);
+        debugImage.framebufferScale = sycl::malloc_device<float>(pixelCount, queue);
+        debugImage.framebufferOpacity = sycl::malloc_device<float>(pixelCount, queue);
+        debugImage.framebufferAlbedo = sycl::malloc_device<float>(pixelCount, queue);
+        debugImage.framebufferBeta = sycl::malloc_device<float>(pixelCount, queue);
+        debugImage.framebufferDepthLoss = sycl::malloc_device<float4>(pixelCount, queue);
+        debugImage.framebufferDepthLossPos = sycl::malloc_device<float4>(pixelCount, queue);
+        debugImage.framebufferNormalLoss = sycl::malloc_device<float4>(pixelCount, queue);
+        debugImage.numPixels = pixelCount;
+
+        if (!debugImage.framebufferPosX || !debugImage.framebufferPosY || !debugImage.framebufferPosZ ||
+            !debugImage.framebufferRot || !debugImage.framebufferScale || !debugImage.framebufferOpacity ||
+            !debugImage.framebufferAlbedo || !debugImage.framebufferBeta ||
+            !debugImage.framebufferDepthLoss || !debugImage.framebufferDepthLossPos ||
+            !debugImage.framebufferNormalLoss) {
+            throw std::runtime_error("makeGradientsForScene: failed to allocate one or more debug image buffers");
+        }
+
+        queue.fill(debugImage.framebufferPosX, 0.0f, pixelCount);
+        queue.fill(debugImage.framebufferPosY, 0.0f, pixelCount);
+        queue.fill(debugImage.framebufferPosZ, 0.0f, pixelCount);
+        queue.fill(debugImage.framebufferRot, 0.0f, pixelCount);
+        queue.fill(debugImage.framebufferScale, 0.0f, pixelCount);
+        queue.fill(debugImage.framebufferOpacity, 0.0f, pixelCount);
+        queue.fill(debugImage.framebufferAlbedo, 0.0f, pixelCount);
+        queue.fill(debugImage.framebufferBeta, 0.0f, pixelCount);
+        queue.fill(debugImage.framebufferDepthLoss, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+        queue.fill(debugImage.framebufferDepthLossPos, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+        queue.fill(debugImage.framebufferNormalLoss, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+    }
+
+    queue.wait();
+    return out;
+}
 
     inline std::vector<float>
     downloadSensorLDR(sycl::queue queue, const SensorGPU &sensorGpu) {

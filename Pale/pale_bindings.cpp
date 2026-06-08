@@ -479,6 +479,8 @@ public:
             availableDebugImages.data());
 
         const std::size_t pointCount = gradients.numPoints;
+        const std::size_t cameraSlotCount = gradients.cameraSlotCount;
+        const std::size_t primitiveCameraCount = pointCount * cameraSlotCount;
 
         std::vector<Pale::float3> gradPositionHost(pointCount);
         std::vector<Pale::float3> gradTangentUHost(pointCount);
@@ -489,6 +491,15 @@ public:
         std::vector<float> gradBetaHost(pointCount);
         std::vector<float> gradShapeHost(pointCount);
         std::vector<float> gradPowerHost(pointCount);
+
+        std::vector<float> gradPositionMeanNormHost(pointCount);
+        std::vector<float> gradPositionStdHost(pointCount);
+        std::vector<float> gradPositionCoherenceHost(pointCount);
+        std::vector<float> gradPositionDisagreementHost(pointCount);
+        std::vector<uint32_t> gradPositionActiveCameraCountHost(pointCount);
+
+        std::vector<Pale::float3> gradPositionPerPrimitivePerCameraHost(primitiveCameraCount);
+        std::vector<uint32_t> gradPositionRecordCountPerPrimitivePerCameraHost(primitiveCameraCount);
 
         if (pointCount > 0) {
             if (gradients.gradPosition) {
@@ -547,6 +558,57 @@ public:
                     pointCount * sizeof(float)
                 );
             }
+
+            if (gradients.gradPositionMeanNorm) {
+                syclQueue.memcpy(
+                    gradPositionMeanNormHost.data(),
+                    gradients.gradPositionMeanNorm,
+                    pointCount * sizeof(float));
+            }
+
+            if (gradients.gradPositionStd) {
+                syclQueue.memcpy(
+                    gradPositionStdHost.data(),
+                    gradients.gradPositionStd,
+                    pointCount * sizeof(float));
+            }
+
+            if (gradients.gradPositionCoherence) {
+                syclQueue.memcpy(
+                    gradPositionCoherenceHost.data(),
+                    gradients.gradPositionCoherence,
+                    pointCount * sizeof(float));
+            }
+
+            if (gradients.gradPositionDisagreement) {
+                syclQueue.memcpy(
+                    gradPositionDisagreementHost.data(),
+                    gradients.gradPositionDisagreement,
+                    pointCount * sizeof(float));
+            }
+
+            if (gradients.gradPositionActiveCameraCount) {
+                syclQueue.memcpy(
+                    gradPositionActiveCameraCountHost.data(),
+                    gradients.gradPositionActiveCameraCount,
+                    pointCount * sizeof(uint32_t));
+            }
+
+            if (primitiveCameraCount > 0 &&
+                gradients.gradPositionPerPrimitivePerCamera) {
+                syclQueue.memcpy(
+                    gradPositionPerPrimitivePerCameraHost.data(),
+                    gradients.gradPositionPerPrimitivePerCamera,
+                    primitiveCameraCount * sizeof(Pale::float3));
+                }
+
+            if (primitiveCameraCount > 0 &&
+                gradients.gradPositionRecordCountPerPrimitivePerCamera) {
+                syclQueue.memcpy(
+                    gradPositionRecordCountPerPrimitivePerCameraHost.data(),
+                    gradients.gradPositionRecordCountPerPrimitivePerCamera,
+                    primitiveCameraCount * sizeof(uint32_t));
+                }
 
             syclQueue.wait_and_throw();
         }
@@ -649,6 +711,97 @@ public:
                 })
             );
         };
+
+        auto makeUint1Array =
+        [](std::vector<uint32_t> &hostVector, std::size_t elementCount) -> py::array {
+    auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+
+    std::vector<ssize_t> arrayShape{
+        static_cast<ssize_t>(elementCount)
+    };
+
+    std::vector<ssize_t> arrayStrides{
+        static_cast<ssize_t>(sizeof(uint32_t))
+    };
+
+    return py::array(
+        py::buffer_info(
+            ownedVector->data(),
+            sizeof(uint32_t),
+            py::format_descriptor<uint32_t>::format(),
+            1,
+            arrayShape,
+            arrayStrides
+        ),
+        py::capsule(ownedVector, [](void *pointer) {
+            delete static_cast<std::vector<uint32_t> *>(pointer);
+        })
+    );
+};
+
+auto makeFloat3CameraArray =
+        [](std::vector<Pale::float3> &hostVector,
+           std::size_t pointCount,
+           std::size_t cameraSlotCount) -> py::array {
+    auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+
+    std::vector<ssize_t> arrayShape{
+        static_cast<ssize_t>(pointCount),
+        static_cast<ssize_t>(cameraSlotCount),
+        3
+    };
+
+    std::vector<ssize_t> arrayStrides{
+        static_cast<ssize_t>(cameraSlotCount * sizeof(Pale::float3)),
+        static_cast<ssize_t>(sizeof(Pale::float3)),
+        static_cast<ssize_t>(sizeof(float))
+    };
+
+    return py::array(
+        py::buffer_info(
+            ownedVector->data(),
+            sizeof(float),
+            py::format_descriptor<float>::format(),
+            3,
+            arrayShape,
+            arrayStrides
+        ),
+        py::capsule(ownedVector, [](void *pointer) {
+            delete static_cast<std::vector<Pale::float3> *>(pointer);
+        })
+    );
+};
+
+auto makeUintCameraArray =
+        [](std::vector<uint32_t> &hostVector,
+           std::size_t pointCount,
+           std::size_t cameraSlotCount) -> py::array {
+    auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+
+    std::vector<ssize_t> arrayShape{
+        static_cast<ssize_t>(pointCount),
+        static_cast<ssize_t>(cameraSlotCount)
+    };
+
+    std::vector<ssize_t> arrayStrides{
+        static_cast<ssize_t>(cameraSlotCount * sizeof(uint32_t)),
+        static_cast<ssize_t>(sizeof(uint32_t))
+    };
+
+    return py::array(
+        py::buffer_info(
+            ownedVector->data(),
+            sizeof(uint32_t),
+            py::format_descriptor<uint32_t>::format(),
+            2,
+            arrayShape,
+            arrayStrides
+        ),
+        py::capsule(ownedVector, [](void *pointer) {
+            delete static_cast<std::vector<uint32_t> *>(pointer);
+        })
+    );
+};
 
         py::dict gradientDictionary;
         gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
@@ -812,6 +965,20 @@ public:
             adjointImagesDictionary["debug"] = std::move(debugPerCameraDict);
         }
 
+        py::dict gradientStatsDictionary;
+        gradientStatsDictionary["position_mean_norm"] =
+            makeFloat1Array(gradPositionMeanNormHost, pointCount);
+        gradientStatsDictionary["position_std"] =
+            makeFloat1Array(gradPositionStdHost, pointCount);
+        gradientStatsDictionary["position_coherence"] =
+            makeFloat1Array(gradPositionCoherenceHost, pointCount);
+        gradientStatsDictionary["position_disagreement"] =
+            makeFloat1Array(gradPositionDisagreementHost, pointCount);
+        gradientStatsDictionary["position_active_camera_count"] =
+            makeUint1Array(gradPositionActiveCameraCountHost, pointCount);
+        gradientStatsDictionary["position_per_camera"] =            makeFloat3CameraArray(                gradPositionPerPrimitivePerCameraHost,                pointCount,                cameraSlotCount);
+        gradientStatsDictionary["position_record_count_per_camera"] =            makeUintCameraArray(                gradPositionRecordCountPerPrimitivePerCameraHost,                pointCount,                cameraSlotCount);
+        adjointImagesDictionary["gradient_stats"] = std::move(gradientStatsDictionary);
 
         return py::make_tuple(gradientDictionary, adjointImagesDictionary);
     }

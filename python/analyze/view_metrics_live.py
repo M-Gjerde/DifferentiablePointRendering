@@ -75,12 +75,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--skip",
-        action="store_true",
         help=(
             "Skip the first 100 iterations after each opacity reset at every "
             "1000 iterations. This removes 1000-1099, 2000-2099, etc. "
             "from the plotted dataframe."
         ),
+        type=int,
+        default=0
     )
     parser.add_argument(
         "--refresh-seconds",
@@ -211,7 +212,7 @@ def prepare_metrics_dataframe(
     dataframe: pd.DataFrame,
     from_iteration: int | None,
     last_iterations: int | None,
-    skip_opacity_reset_noise: bool,
+    skip_opacity_reset_noise: int,
 ) -> pd.DataFrame:
     dataframe = filter_metrics_rows(dataframe)
 
@@ -236,8 +237,8 @@ def prepare_metrics_dataframe(
 
     if skip_opacity_reset_noise:
         opacity_reset_noise_mask = (
-            (dataframe["iteration"] >= 1500)
-            & ((dataframe["iteration"] % 1500) < 100)
+            (dataframe["iteration"] >= skip_opacity_reset_noise)
+            & ((dataframe["iteration"] % skip_opacity_reset_noise) < 100)
         )
         dataframe = dataframe.loc[~opacity_reset_noise_mask].reset_index(drop=True)
 
@@ -433,7 +434,7 @@ def draw_metrics_figure(
     plot_all_losses: bool,
     from_iteration: int | None,
     last_iterations: int | None,
-    skip_opacity_reset_noise: bool,
+    skip_opacity_reset_noise: int,
 ) -> str:
     dataframe = prepare_metrics_dataframe(
         dataframe,

@@ -163,16 +163,41 @@ namespace Pale {
         }
     }
 
+    static void clearAdjointPointGradients(RenderPackage &pkg) {
+        auto &queue = pkg.queue;
+        auto &gradients = pkg.gradients;
+        const size_t pointCount = gradients.numPoints;
+        const size_t cameraSlotCount = gradients.cameraSlotCount;
+        const size_t primitiveCameraCount = pointCount * cameraSlotCount;
+        if (pointCount == 0u) {
+            return;
+        }
+        queue.fill(gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        queue.fill(gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        queue.fill(gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        queue.fill(gradients.gradScale, float2{0.0f, 0.0f}, pointCount);
+        queue.fill(gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        queue.fill(gradients.gradOpacity, 0.0f, pointCount);
+        queue.fill(gradients.gradBeta, 0.0f, pointCount);
+        queue.fill(gradients.gradShape, 0.0f, pointCount);
+        queue.fill(gradients.gradPositionMeanNorm, 0.0f, pointCount);
+        queue.fill(gradients.gradPositionStd, 0.0f, pointCount);
+        queue.fill(gradients.gradPositionCoherence, 0.0f, pointCount);
+        queue.fill(gradients.gradPositionDisagreement, 0.0f, pointCount);
+        queue.fill(gradients.gradPositionActiveCameraCount, 0u, pointCount);
+        if (cameraSlotCount > 0u) {
+            queue.fill(                gradients.gradPositionPerPrimitivePerCamera,                float3{0.0f, 0.0f, 0.0f},                primitiveCameraCount);
+            queue.fill(                gradients.gradPositionRecordCountPerPrimitivePerCamera,                0u,                primitiveCameraCount);
+        }
+        queue.wait();
+    }
+
     // ---- Orchestrator -------------------------------------------------------
     void submitAdjointKernel(RenderPackage &pkg) {
+        uint32_t pointCount = pkg.gradients.numPoints;
         pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
-        pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradScale, float2{0.0f, 0.0f}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints).wait();
-        pkg.queue.fill(pkg.gradients.gradBeta, 0.0f, pkg.gradients.numPoints).wait();
+        clearAdjointPointGradients(pkg);
+
         const bool enableAdjointDirectLight = pkg.settings.enableAdjointDirectLight;
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
             if (pkg.settings.renderDebugGradientImages) {
@@ -279,7 +304,10 @@ namespace Pale {
                 }
             }
         }
+
+        computePerPrimitiveTranslationGradientStats(pkg);
     }
+
 
     static void clearPointGradients(sycl::queue &queue, PointGradients &gradients) {
         const size_t pointCount = gradients.numPoints;

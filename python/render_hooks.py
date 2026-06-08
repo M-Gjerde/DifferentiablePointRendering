@@ -8,6 +8,72 @@ import torch
 import pale  # custom renderer bindings
 
 
+
+
+def get_forward_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    return np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
+
+
+def get_forward_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    return get_forward_rgba(forward_out, camera_name)[..., :3]
+
+
+def _infer_hw_from_forward(forward_out: Dict[str, dict], camera_name: str) -> tuple[int, int]:
+    image = np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
+    return int(image.shape[0]), int(image.shape[1])
+
+
+def get_forward_depth_distortion(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "depth_distortion" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+
+    depth = np.asarray(camera_out["depth_distortion"], dtype=np.float32, order="C")
+    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def get_forward_visible_normal(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "visible_normal" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w, 4), dtype=np.float32)
+
+    normal = np.asarray(camera_out["visible_normal"], dtype=np.float32, order="C")
+    return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def get_forward_normal_from_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "normal_from_depth" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w, 4), dtype=np.float32)
+
+    normal = np.asarray(camera_out["normal_from_depth"], dtype=np.float32, order="C")
+    return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def get_forward_median_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "median_depth" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+
+    depth = np.asarray(camera_out["median_depth"], dtype=np.float32, order="C")
+    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def get_forward_visibility_weighted_opacity(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "visibility_weighted_opacity" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+
+    visibility_opacity = np.asarray(camera_out["visibility_weighted_opacity"], dtype=np.float32, order="C")
+    return np.nan_to_num(visibility_opacity, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+
 def fetch_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
     """
     Fetch all point parameters from the renderer as a dict of NumPy arrays.
@@ -330,7 +396,7 @@ def verify_beta_inplace(
     If trainable_surfel_mask is provided, only trainable surfels are verified.
     Frozen surfels are left untouched.
     """
-    min_beta_value = -2
+    min_beta_value = -1.0
     with torch.no_grad():
         beta_values = betas.data
 

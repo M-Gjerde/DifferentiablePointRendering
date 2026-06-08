@@ -14,7 +14,6 @@ import torch
 
 from config import OptimizationConfig, RendererSettingsConfig
 from density_control import (
-    add_densification_stats_np,
     compute_prune_indices_by_degenerate_scale,
     compute_prune_indices_by_opacity,
     make_under_reconstruction_clones,
@@ -28,17 +27,7 @@ from io_utils import (
 )
 from losses import compute_l2_grad, compute_l2_loss
 from optimizers import create_masked_optimizer
-from render_hooks import (
-    fetch_parameters,
-    get_all_camera_names,
-    get_training_camera_names,
-    verify_albedos_inplace,
-    verify_beta_inplace,
-    verify_opacities_inplace,
-    verify_positions_inplace,
-    verify_scales_inplace,
-    verify_tangents_inplace,
-)
+from render_hooks import *
 
 PARAMETER_NAMES = (
     "position",
@@ -251,70 +240,6 @@ def rebuild_optimizer_preserving_state(
                 new_state[key] = value.detach().clone().to(new_p.device)
 
     return new_optimizer
-
-
-def get_forward_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    return np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
-
-
-def get_forward_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    return get_forward_rgba(forward_out, camera_name)[..., :3]
-
-
-def _infer_hw_from_forward(forward_out: Dict[str, dict], camera_name: str) -> tuple[int, int]:
-    image = np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
-    return int(image.shape[0]), int(image.shape[1])
-
-
-def get_forward_depth_distortion(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "depth_distortion" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w), dtype=np.float32)
-
-    depth = np.asarray(camera_out["depth_distortion"], dtype=np.float32, order="C")
-    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def get_forward_visible_normal(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "visible_normal" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w, 4), dtype=np.float32)
-
-    normal = np.asarray(camera_out["visible_normal"], dtype=np.float32, order="C")
-    return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def get_forward_normal_from_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "normal_from_depth" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w, 4), dtype=np.float32)
-
-    normal = np.asarray(camera_out["normal_from_depth"], dtype=np.float32, order="C")
-    return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def get_forward_median_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "median_depth" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w), dtype=np.float32)
-
-    depth = np.asarray(camera_out["median_depth"], dtype=np.float32, order="C")
-    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def get_forward_visibility_weighted_opacity(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "visibility_weighted_opacity" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w), dtype=np.float32)
-
-    visibility_opacity = np.asarray(camera_out["visibility_weighted_opacity"], dtype=np.float32, order="C")
-    return np.nan_to_num(visibility_opacity, nan=0.0, posinf=0.0, neginf=0.0)
-
 
 def save_normal_map_snapshot(
         output_path_png: Path,
@@ -551,6 +476,18 @@ def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
         f"{format_stat('opacity')}, "
         f"{format_stat('beta')}"
     )
+
+def zero_optimizer_state_for_parameter(optimizer, parameter: torch.Tensor) -> None:
+    optimizer_state = optimizer.state.get(parameter, None)
+    if not optimizer_state:
+        return
+
+    for state_value in optimizer_state.values():
+        if torch.is_tensor(state_value):
+            state_value.zero_()
+
+def scale_gradient_dict(gradient_dict: Dict[str, np.ndarray], scale: float) -> Dict[str, np.ndarray]:
+    return {name: gradient * scale for name, gradient in gradient_dict.items()}
 
 def scheduled_regularizer_weight(
         base_weight: float,
@@ -1353,6 +1290,9 @@ def update_densification_statistics(
         trainable_surfel_mask: torch.Tensor,
         densify_bsdf_floor: float,
         densify_bsdf_gamma: float,
+        densify_position_grad_signal_np: np.ndarray | None = None,
+        densify_position_grad_per_camera_np: np.ndarray | None = None,
+        densify_position_grad_per_camera_count_np: np.ndarray | None = None,
 ) -> None:
     if densification_interval <= 0:
         return
@@ -1368,31 +1308,127 @@ def update_densification_statistics(
     if not should_accumulate:
         return
 
+    grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
+    point_count = grad_position_np.shape[0]
+
     density_grad_position_np = project_gradient_to_surfel_tangent_plane_np(
-        grad_position_np=np.asarray(total_gradients["position"], dtype=np.float32, order="C"),
+        grad_position_np=grad_position_np,
         tangent_u=tangent_u,
         tangent_v=tangent_v,
     )
 
     with torch.no_grad():
         albedo_np = albedos.detach().cpu().numpy().astype(np.float32)
+        tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
+        tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
+        trainable_np_for_density = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
 
     linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
     bsdf_normalizer_np = np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma
-    density_grad_position_np_for_score = density_grad_position_np / bsdf_normalizer_np[:, None]
+    bsdf_normalizer_np = bsdf_normalizer_np.astype(np.float32)
 
-    add_densification_stats_np(
-        grad_position_np=density_grad_position_np_for_score,
-        trainable_surfel_mask=trainable_surfel_mask,
-        accum_np=densify_position_grad_accum_np,
-        denom_np=densify_position_grad_denom_np,
-        update_only_nonzero=True,
+    density_grad_position_np_for_vector = density_grad_position_np / bsdf_normalizer_np[:, None]
+
+    if densify_position_grad_per_camera_np is not None:
+        per_camera_grad_np = np.asarray(
+            densify_position_grad_per_camera_np,
+            dtype=np.float32,
+            order="C",
+        )
+
+        if per_camera_grad_np.ndim != 3 or per_camera_grad_np.shape[0] != point_count or per_camera_grad_np.shape[2] != 3:
+            raise RuntimeError(
+                "densify_position_grad_per_camera_np must have shape "
+                f"(N, C, 3), got {per_camera_grad_np.shape}, expected N={point_count}"
+            )
+
+        camera_count = per_camera_grad_np.shape[1]
+
+        tangent_u_norm_np = np.linalg.norm(tangent_u_np, axis=1, keepdims=True)
+        tangent_v_norm_np = np.linalg.norm(tangent_v_np, axis=1, keepdims=True)
+
+        tangent_u_unit_np = tangent_u_np / np.maximum(tangent_u_norm_np, 1.0e-8)
+        tangent_v_unit_np = tangent_v_np / np.maximum(tangent_v_norm_np, 1.0e-8)
+
+        dot_u_np = np.sum(per_camera_grad_np * tangent_u_unit_np[:, None, :], axis=2, keepdims=True)
+        dot_v_np = np.sum(per_camera_grad_np * tangent_v_unit_np[:, None, :], axis=2, keepdims=True)
+
+        per_camera_tangent_grad_np = (
+                dot_u_np * tangent_u_unit_np[:, None, :]
+                + dot_v_np * tangent_v_unit_np[:, None, :]
+        )
+
+        per_camera_grad_norm_np = np.linalg.norm(per_camera_tangent_grad_np, axis=2)
+
+        if densify_position_grad_per_camera_count_np is not None:
+            per_camera_count_np = np.asarray(
+                densify_position_grad_per_camera_count_np,
+                dtype=np.uint32,
+                order="C",
+            )
+
+            if per_camera_count_np.shape != (point_count, camera_count):
+                raise RuntimeError(
+                    "densify_position_grad_per_camera_count_np must have shape "
+                    f"{(point_count, camera_count)}, got {per_camera_count_np.shape}"
+                )
+
+            visible_camera_mask_np = per_camera_count_np > 0
+        else:
+            visible_camera_mask_np = (
+                    np.isfinite(per_camera_grad_norm_np)
+                    & (per_camera_grad_norm_np > 0.0)
+            )
+
+        active_camera_count_np = visible_camera_mask_np.sum(axis=1, keepdims=True).astype(np.float32)
+        safe_active_camera_count_np = np.maximum(active_camera_count_np, 1.0)
+
+        densify_position_signal_np = (
+                per_camera_grad_norm_np * visible_camera_mask_np.astype(np.float32)
+        ).sum(axis=1, keepdims=True) / safe_active_camera_count_np
+
+        densify_position_signal_np[active_camera_count_np[:, 0] == 0.0] = 0.0
+
+    elif densify_position_grad_signal_np is not None:
+        densify_position_signal_np = np.asarray(
+            densify_position_grad_signal_np,
+            dtype=np.float32,
+            order="C",
+        ).reshape(-1, 1)
+
+        if densify_position_signal_np.shape[0] != point_count:
+            raise RuntimeError(
+                "densify_position_grad_signal_np must have shape (N,) or (N,1), "
+                f"got {densify_position_signal_np.shape}, expected N={point_count}"
+            )
+
+    else:
+        densify_position_signal_np = np.linalg.norm(
+            density_grad_position_np,
+            axis=1,
+            keepdims=True,
+        ).astype(np.float32)
+
+    densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
+    densify_position_signal_np = np.nan_to_num(
+        densify_position_signal_np,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
     )
 
-    with torch.no_grad():
-        trainable_np_for_density = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
+    update_density_scalar_mask_np = (
+            trainable_np_for_density
+            & np.isfinite(densify_position_signal_np[:, 0])
+            & (densify_position_signal_np[:, 0] > 0.0)
+    )
 
-    grad_norm_for_density_np = np.linalg.norm(density_grad_position_np_for_score, axis=1)
+    densify_position_grad_accum_np[update_density_scalar_mask_np, 0] += (
+        densify_position_signal_np[update_density_scalar_mask_np, 0]
+    )
+    densify_position_grad_denom_np[update_density_scalar_mask_np, 0] += 1.0
+
+    grad_norm_for_density_np = np.linalg.norm(density_grad_position_np_for_vector, axis=1)
     update_density_vector_mask_np = (
             trainable_np_for_density
             & np.isfinite(grad_norm_for_density_np)
@@ -1400,7 +1436,7 @@ def update_densification_statistics(
     )
 
     densify_position_grad_vector_accum_np[update_density_vector_mask_np] += (
-        density_grad_position_np_for_score[update_density_vector_mask_np]
+        density_grad_position_np_for_vector[update_density_vector_mask_np]
     )
 
 

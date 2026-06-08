@@ -89,6 +89,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     max_prune_fraction = float(config.max_prune_fraction)
     reset_opacity_interval = int(config.reset_opacity_interval)
     reset_opacity_value = float(config.reset_opacity_value)
+    reset_scale_interval = int(config.reset_scale_interval)
+    reset_scale_shrink_factor = float(config.reset_scale_shrink_factor)
     densification_verbose = bool(config.densification_verbose)
     densification_grad_quantile = as_config_float(config.densification_grad_quantile)
     densification_grad_abs_min = float(config.densification_grad_abs_min)
@@ -134,6 +136,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 )
 
                 photo_gradients, adjoint_images = renderer.render_backward(loss_state["loss_grad_images"])
+                photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
 
                 surface_regularizer_gradients: Dict[str, np.ndarray] = {}
                 use_surface_regularizers = (
@@ -207,15 +210,27 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     raise RuntimeError(
                         f"Gradient shape mismatch for position: expected {tuple(positions.shape)}, got {grad_position_np.shape}")
 
+                photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
+                position_per_camera_np = photo_gradient_surfel_stats.get("position_per_camera", None)
+                position_record_count_per_camera_np = photo_gradient_surfel_stats.get(
+                    "position_record_count_per_camera", None, )
+
                 update_densification_statistics(
-                    iteration=iteration, densification_interval=densification_interval,
+                    iteration=iteration,
+                    densification_interval=densification_interval,
                     densification_stats_warmup_iterations=densification_stats_warmup_iterations,
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
                     densify_position_grad_denom_np=densify_position_grad_denom_np,
                     densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-                    total_gradients=total_gradients, tangent_u=tangent_u, tangent_v=tangent_v,
-                    albedos=albedos, trainable_surfel_mask=trainable_surfel_mask,
-                    densify_bsdf_floor=densify_bsdf_floor, densify_bsdf_gamma=densify_bsdf_gamma,
+                    total_gradients=total_gradients,
+                    tangent_u=tangent_u,
+                    tangent_v=tangent_v,
+                    albedos=albedos,
+                    trainable_surfel_mask=trainable_surfel_mask,
+                    densify_bsdf_floor=densify_bsdf_floor,
+                    densify_bsdf_gamma=densify_bsdf_gamma,
+                    densify_position_grad_per_camera_np=position_per_camera_np,
+                    densify_position_grad_per_camera_count_np=position_record_count_per_camera_np,
                 )
 
                 optimizer.zero_grad(set_to_none=True)
@@ -234,10 +249,22 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 active_learning_rates = update_optimizer_learning_rates(optimizer, learning_rate_schedules, iteration)
                 optimizer.step()
 
-                if reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0:
+                if (
+                        reset_scale_interval > 0 and iteration % reset_scale_interval == 0) or config.reset_scale_iterations:
+                    with torch.no_grad():
+                        scales[trainable_surfel_mask] *= reset_scale_shrink_factor
+                    print(
+                        f"[Iter {iteration:04d}] Shrinking trainable surfel scales by factor "
+                        f"{reset_scale_shrink_factor:.3g}"
+                    )
+                    config.reset_scale_iterations = False
+
+                if (
+                        reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0) or config.reset_opacity_iterations:
                     with torch.no_grad():
                         opacities[trainable_surfel_mask] = float(reset_opacity_value)
                     print(f"[Iter {iteration:04d}] Resetting all opacities to {reset_opacity_value}")
+                    config.reset_opacity_iterations = False
 
                 verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
                                           trainable_surfel_mask=trainable_surfel_mask)
@@ -534,7 +561,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_rgb_loss += rgb_loss_cam
         final_total_loss += rgb_loss_cam
         save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
-
 
         if use_depth_distortion:
             dist_np = get_forward_depth_distortion(final_images, camera_name)

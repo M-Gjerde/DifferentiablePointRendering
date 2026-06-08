@@ -2068,79 +2068,167 @@ namespace Pale {
         }).wait();
     }
 
-    static void reduceSurfelGradientRecords(
-        RenderPackage &pkg,
-        uint32_t gradientRecordCount) {
-        auto &queue = pkg.queue;
-        auto gradients = pkg.gradients;
-        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
+static void reduceSurfelGradientRecords(
+    RenderPackage &pkg,
+    uint32_t gradientRecordCount,
+    uint32_t cameraSlot,
+    uint32_t cameraSlotCount) {
+    auto &queue = pkg.queue;
+    auto gradients = pkg.gradients;
+    SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
 
-        constexpr float maxAbsGradientComponent = 1.0e6f;
+    constexpr float maxAbsGradientComponent = 1.0e6f;
 
-        queue.submit([&](sycl::handler &commandGroupHandler) {
-            commandGroupHandler.parallel_for<struct reduceSurfelGradientRecords>(
-                sycl::range<1>(gradientRecordCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t recordIndex = globalId[0];
-                    const SurfelGradientRecord gradientRecord = gradientRecords[recordIndex];
+    queue.submit([&](sycl::handler &commandGroupHandler) {
+        commandGroupHandler.parallel_for<struct reduceSurfelGradientRecords>(
+            sycl::range<1>(gradientRecordCount),
+            [=](sycl::id<1> globalId) {
+                const uint32_t recordIndex = static_cast<uint32_t>(globalId[0]);
+                const SurfelGradientRecord gradientRecord = gradientRecords[recordIndex];
 
-                    if (gradientRecord.primitiveIndex == kInvalidIndex) {
-                        return;
+                if (gradientRecord.primitiveIndex == kInvalidIndex) {
+                    return;
+                }
+
+                const auto isValidGradientComponent = [](float value) -> bool {
+                    return sycl::isfinite(value) && !sycl::isnan(value) && sycl::fabs(value) <= maxAbsGradientComponent;
+                };
+
+                const bool validGradientRecord =
+                    isValidGradientComponent(gradientRecord.gradPositionX) &&
+                    isValidGradientComponent(gradientRecord.gradPositionY) &&
+                    isValidGradientComponent(gradientRecord.gradPositionZ) &&
+                    isValidGradientComponent(gradientRecord.gradScaleU) &&
+                    isValidGradientComponent(gradientRecord.gradScaleV) &&
+                    isValidGradientComponent(gradientRecord.gradTangentUX) &&
+                    isValidGradientComponent(gradientRecord.gradTangentUY) &&
+                    isValidGradientComponent(gradientRecord.gradTangentUZ) &&
+                    isValidGradientComponent(gradientRecord.gradTangentVX) &&
+                    isValidGradientComponent(gradientRecord.gradTangentVY) &&
+                    isValidGradientComponent(gradientRecord.gradTangentVZ) &&
+                    isValidGradientComponent(gradientRecord.gradEta) &&
+                    isValidGradientComponent(gradientRecord.gradBeta) &&
+                    isValidGradientComponent(gradientRecord.gradAlbedoR) &&
+                    isValidGradientComponent(gradientRecord.gradAlbedoG) &&
+                    isValidGradientComponent(gradientRecord.gradAlbedoB);
+
+                if (!validGradientRecord) {
+                    return;
+                }
+
+                const uint32_t primitiveIndex = gradientRecord.primitiveIndex;
+                if (primitiveIndex >= gradients.numPoints || cameraSlot >= cameraSlotCount) {
+                    return;
+                }
+
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradientRecord.gradPositionX);
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradientRecord.gradPositionY);
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradientRecord.gradPositionZ);
+
+                const uint32_t primitiveCameraIndex = primitiveIndex * cameraSlotCount + cameraSlot;
+                atomicAddFloat(gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].x(), gradientRecord.gradPositionX);
+                atomicAddFloat(gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].y(), gradientRecord.gradPositionY);
+                atomicAddFloat(gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].z(), gradientRecord.gradPositionZ);
+                atomicAddUint32(gradients.gradPositionRecordCountPerPrimitivePerCamera[primitiveCameraIndex], 1u);
+
+                atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
+                atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradientRecord.gradScaleV);
+
+                atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradientRecord.gradTangentUX);
+                atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradientRecord.gradTangentUY);
+                atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradientRecord.gradTangentUZ);
+
+                atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradientRecord.gradTangentVX);
+                atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradientRecord.gradTangentVY);
+                atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradientRecord.gradTangentVZ);
+
+                atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradientRecord.gradEta);
+                atomicAddFloat(gradients.gradBeta[primitiveIndex], gradientRecord.gradBeta);
+
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradientRecord.gradAlbedoR);
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradientRecord.gradAlbedoG);
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradientRecord.gradAlbedoB);
+            });
+    }).wait();
+}
+
+    void computePerPrimitiveTranslationGradientStats(RenderPackage &pkg) {
+    auto &queue = pkg.queue;
+    auto gradients = pkg.gradients;
+
+    const uint32_t pointCount = static_cast<uint32_t>(gradients.numPoints);
+    const uint32_t cameraSlotCount = static_cast<uint32_t>(gradients.cameraSlotCount);
+
+    queue.submit([&](sycl::handler &commandGroupHandler) {
+        commandGroupHandler.parallel_for<class ComputePerPrimitiveTranslationGradientStatsKernel>(
+            sycl::range<1>(pointCount),
+            [=](sycl::id<1> globalId) {
+                const uint32_t primitiveIndex = static_cast<uint32_t>(globalId[0]);
+
+                float3 gradientSum{0.0f, 0.0f, 0.0f};
+                float gradientNormSum = 0.0f;
+                float gradientSquaredNormSum = 0.0f;
+                uint32_t activeCameraCount = 0u;
+
+                for (uint32_t cameraIndex = 0u; cameraIndex < cameraSlotCount; ++cameraIndex) {
+                    const uint32_t primitiveCameraIndex = primitiveIndex * cameraSlotCount + cameraIndex;
+
+                    if (gradients.gradPositionRecordCountPerPrimitivePerCamera[primitiveCameraIndex] == 0u) {
+                        continue;
                     }
 
-                    const auto isValidGradientComponent = [](float value) -> bool {
-                        return sycl::isfinite(value) && !sycl::isnan(value) && sycl::fabs(value) <=
-                               maxAbsGradientComponent;
-                    };
+                    const float3 cameraGradient =
+                        gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex];
 
-                    const bool validGradientRecord =
-                            isValidGradientComponent(gradientRecord.gradPositionX) &&
-                            isValidGradientComponent(gradientRecord.gradPositionY) &&
-                            isValidGradientComponent(gradientRecord.gradPositionZ) &&
-                            isValidGradientComponent(gradientRecord.gradScaleU) &&
-                            isValidGradientComponent(gradientRecord.gradScaleV) &&
-                            isValidGradientComponent(gradientRecord.gradTangentUX) &&
-                            isValidGradientComponent(gradientRecord.gradTangentUY) &&
-                            isValidGradientComponent(gradientRecord.gradTangentUZ) &&
-                            isValidGradientComponent(gradientRecord.gradTangentVX) &&
-                            isValidGradientComponent(gradientRecord.gradTangentVY) &&
-                            isValidGradientComponent(gradientRecord.gradTangentVZ) &&
-                            isValidGradientComponent(gradientRecord.gradEta) &&
-                            isValidGradientComponent(gradientRecord.gradBeta) &&
-                            isValidGradientComponent(gradientRecord.gradAlbedoR) &&
-                            isValidGradientComponent(gradientRecord.gradAlbedoG) &&
-                            isValidGradientComponent(gradientRecord.gradAlbedoB);
+                    const float cameraGradientSquaredNorm =
+                        cameraGradient.x() * cameraGradient.x() +
+                        cameraGradient.y() * cameraGradient.y() +
+                        cameraGradient.z() * cameraGradient.z();
 
-                    if (!validGradientRecord) {
-                        return;
-                    }
+                    const float cameraGradientNorm = sycl::sqrt(cameraGradientSquaredNorm);
 
-                    const uint32_t primitiveIndex = gradientRecord.primitiveIndex;
+                    gradientSum += cameraGradient;
+                    gradientNormSum += cameraGradientNorm;
+                    gradientSquaredNormSum += cameraGradientSquaredNorm;
+                    activeCameraCount += 1u;
+                }
 
-                    atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradientRecord.gradPositionX);
-                    atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradientRecord.gradPositionY);
-                    atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradientRecord.gradPositionZ);
+                if (activeCameraCount == 0u) {
+                    gradients.gradPositionMeanNorm[primitiveIndex] = 0.0f;
+                    gradients.gradPositionStd[primitiveIndex] = 0.0f;
+                    gradients.gradPositionCoherence[primitiveIndex] = 0.0f;
+                    gradients.gradPositionDisagreement[primitiveIndex] = 0.0f;
+                    gradients.gradPositionActiveCameraCount[primitiveIndex] = 0u;
+                    return;
+                }
 
-                    atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
-                    atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradientRecord.gradScaleV);
+                const float inverseActiveCameraCount = 1.0f / static_cast<float>(activeCameraCount);
+                const float3 meanGradient = gradientSum * inverseActiveCameraCount;
 
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradientRecord.gradTangentUX);
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradientRecord.gradTangentUY);
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradientRecord.gradTangentUZ);
+                const float meanGradientSquaredNorm =
+                    meanGradient.x() * meanGradient.x() +
+                    meanGradient.y() * meanGradient.y() +
+                    meanGradient.z() * meanGradient.z();
 
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradientRecord.gradTangentVX);
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradientRecord.gradTangentVY);
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradientRecord.gradTangentVZ);
+                const float meanGradientNorm = sycl::sqrt(meanGradientSquaredNorm);
+                const float meanPerCameraGradientNorm = gradientNormSum * inverseActiveCameraCount;
+                const float expectedSquaredNorm = gradientSquaredNormSum * inverseActiveCameraCount;
+                const float variance = sycl::fmax(0.0f, expectedSquaredNorm - meanGradientSquaredNorm);
+                const float translationStd = sycl::sqrt(variance);
 
-                    atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradientRecord.gradEta);
-                    atomicAddFloat(gradients.gradBeta[primitiveIndex], gradientRecord.gradBeta);
+                constexpr float epsilon = 1.0e-12f;
+                const float coherence = meanGradientNorm / (meanPerCameraGradientNorm + epsilon);
+                const float clampedCoherence = sycl::fmin(1.0f, sycl::fmax(0.0f, coherence));
+                const float disagreement = meanPerCameraGradientNorm * (1.0f - clampedCoherence);
 
-                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradientRecord.gradAlbedoR);
-                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradientRecord.gradAlbedoG);
-                    atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradientRecord.gradAlbedoB);
-                });
-        }).wait();
-    }
+                gradients.gradPositionMeanNorm[primitiveIndex] = meanPerCameraGradientNorm;
+                gradients.gradPositionStd[primitiveIndex] = translationStd;
+                gradients.gradPositionCoherence[primitiveIndex] = clampedCoherence;
+                gradients.gradPositionDisagreement[primitiveIndex] = disagreement;
+                gradients.gradPositionActiveCameraCount[primitiveIndex] = activeCameraCount;
+            });
+    }).wait();
+}
 
     struct DistortionHit {
         uint32_t primitiveIndex = 0u;
@@ -3341,7 +3429,6 @@ namespace Pale {
         }
         if (ranges.totalCount > 0u) {
             ScopedTimer timer("reduceSurfelGradientRecords", spdlog::level::debug);
-            reduceSurfelGradientRecords(pkg, ranges.totalCount);
-        }
+            reduceSurfelGradientRecords(                pkg,                ranges.totalCount,               cameraIndex,                static_cast<uint32_t>(pkg.numSensors));        }
     }
 }

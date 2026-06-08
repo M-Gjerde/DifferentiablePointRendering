@@ -5,37 +5,23 @@ from pathlib import Path
 
 import numpy as np
 import open3d as o3d
-from scipy.spatial import cKDTree
+import torch
 
+try:
+    import trimesh
+except ModuleNotFoundError:
+    trimesh = None
 
-def load_points_from_ply(
-    ply_path: Path,
-    sample_count: int,
-    use_vertices: bool,
-) -> np.ndarray:
-    if not ply_path.exists():
-        raise FileNotFoundError(f"File does not exist: {ply_path}")
-
-    mesh = o3d.io.read_triangle_mesh(str(ply_path))
-
-    if not mesh.is_empty() and len(mesh.vertices) > 0:
-        vertex_points = np.asarray(mesh.vertices, dtype=np.float64)
-        triangle_count = len(mesh.triangles)
-
-        if use_vertices or triangle_count == 0:
-            return validate_points(vertex_points, ply_path)
-
-        sampled_point_cloud = mesh.sample_points_uniformly(number_of_points=sample_count)
-        sampled_points = np.asarray(sampled_point_cloud.points, dtype=np.float64)
-        return validate_points(sampled_points, ply_path)
-
-    point_cloud = o3d.io.read_point_cloud(str(ply_path))
-
-    if point_cloud.is_empty() or len(point_cloud.points) == 0:
-        raise ValueError(f"Could not load vertices or point cloud from: {ply_path}")
-
-    points = np.asarray(point_cloud.points, dtype=np.float64)
-    return validate_points(points, ply_path)
+try:
+    from pytorch3d.loss import chamfer_distance
+except ModuleNotFoundError as exception:
+    raise ModuleNotFoundError(
+        "PyTorch3D is required for this script because it uses "
+        "pytorch3d.loss.chamfer_distance.\n\n"
+        "Install with one of:\n"
+        "  conda install pytorch3d -c pytorch3d\n"
+        "  pip install \"git+https://github.com/facebookresearch/pytorch3d.git@stable\"\n"
+    ) from exception
 
 
 def validate_points(points: np.ndarray, ply_path: Path) -> np.ndarray:
@@ -48,42 +34,193 @@ def validate_points(points: np.ndarray, ply_path: Path) -> np.ndarray:
     if len(points) == 0:
         raise ValueError(f"No valid finite points found in: {ply_path}")
 
-    return points
+    return np.ascontiguousarray(points, dtype=np.float32)
 
 
-def nearest_neighbor_distances(
-    source_points: np.ndarray,
-    target_points: np.ndarray,
-) -> np.ndarray:
-    target_tree = cKDTree(target_points)
-    distances, _ = target_tree.query(source_points, k=1, workers=-1)
-    return distances
+def triangulate_polygon_face(face: np.ndarray) -> list[list[int]]:
+    if len(face) < 3:
+        return []
+
+    if len(face) == 3:
+        return [[int(face[0]), int(face[1]), int(face[2])]]
+
+    triangles: list[list[int]] = []
+
+    for vertex_index in range(1, len(face) - 1):
+        triangles.append([int(face[0]), int(face[vertex_index]), int(face[vertex_index + 1])])
+
+    return triangles
 
 
-def compute_chamfer_distance(
-    points_a: np.ndarray,
-    points_b: np.ndarray,
-    squared: bool,
+def load_points_with_trimesh(ply_path: Path, sample_count: int, use_vertices: bool) -> tuple[np.ndarray, str]:
+    if trimesh is None:
+        raise ModuleNotFoundError(
+            "Open3D could not load this mesh as a triangle mesh, and trimesh is not installed.\n"
+            "Install it with:\n"
+            "  pip install trimesh"
+        )
+
+    loaded_object = trimesh.load(str(ply_path), force="mesh", process=False)
+
+    if isinstance(loaded_object, trimesh.Scene):
+        geometry_list = [geometry for geometry in loaded_object.geometry.values()]
+
+        if len(geometry_list) == 0:
+            raise ValueError(f"Trimesh loaded an empty scene from: {ply_path}")
+
+        loaded_object = trimesh.util.concatenate(geometry_list)
+
+    if not isinstance(loaded_object, trimesh.Trimesh):
+        raise ValueError(f"Trimesh could not load a mesh from: {ply_path}")
+
+    vertices = np.asarray(loaded_object.vertices, dtype=np.float32)
+
+    if len(vertices) == 0:
+        raise ValueError(f"Trimesh loaded no vertices from: {ply_path}")
+
+    if use_vertices:
+        return validate_points(vertices, ply_path), "trimesh_vertices"
+
+    faces_raw = loaded_object.faces
+
+    if faces_raw is None or len(faces_raw) == 0:
+        return validate_points(vertices, ply_path), "trimesh_vertices_no_faces"
+
+    triangle_faces: list[list[int]] = []
+
+    for face in faces_raw:
+        triangle_faces.extend(triangulate_polygon_face(np.asarray(face)))
+
+    if len(triangle_faces) == 0:
+        return validate_points(vertices, ply_path), "trimesh_vertices_no_valid_faces"
+
+    triangle_mesh = trimesh.Trimesh(
+        vertices=vertices,
+        faces=np.asarray(triangle_faces, dtype=np.int64),
+        process=False,
+    )
+
+    sampled_points, _ = trimesh.sample.sample_surface(triangle_mesh, sample_count)
+    return validate_points(np.asarray(sampled_points, dtype=np.float32), ply_path), "trimesh_uniform_surface_sampling"
+
+
+def load_points_from_ply(ply_path: Path, sample_count: int, use_vertices: bool) -> tuple[np.ndarray, str]:
+    if not ply_path.exists():
+        raise FileNotFoundError(f"File does not exist: {ply_path}")
+
+    mesh = o3d.io.read_triangle_mesh(str(ply_path))
+
+    if not mesh.is_empty() and len(mesh.vertices) > 0:
+        vertex_points = np.asarray(mesh.vertices, dtype=np.float32)
+        triangle_count = len(mesh.triangles)
+
+        if use_vertices:
+            return validate_points(vertex_points, ply_path), "open3d_vertices"
+
+        if triangle_count > 0:
+            sampled_point_cloud = mesh.sample_points_uniformly(number_of_points=sample_count)
+            sampled_points = np.asarray(sampled_point_cloud.points, dtype=np.float32)
+            return validate_points(sampled_points, ply_path), "open3d_uniform_surface_sampling"
+
+    try:
+        return load_points_with_trimesh(
+            ply_path=ply_path,
+            sample_count=sample_count,
+            use_vertices=use_vertices,
+        )
+    except Exception as trimesh_exception:
+        point_cloud = o3d.io.read_point_cloud(str(ply_path))
+
+        if not point_cloud.is_empty() and len(point_cloud.points) > 0:
+            points = np.asarray(point_cloud.points, dtype=np.float32)
+            return validate_points(points, ply_path), "open3d_point_cloud_fallback"
+
+        raise RuntimeError(
+            f"Could not load {ply_path} as triangle mesh, polygon mesh, or point cloud.\n"
+            f"Trimesh error was:\n{trimesh_exception}"
+        ) from trimesh_exception
+
+
+def set_random_seed(seed: int) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    try:
+        o3d.utility.random.seed(seed)
+    except AttributeError:
+        pass
+
+
+def resolve_device(device_name: str) -> torch.device:
+    if device_name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device(device_name)
+
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is false.")
+
+    return device
+
+
+def tensor_from_points(points: np.ndarray, device: torch.device) -> torch.Tensor:
+    return torch.from_numpy(points).to(device=device, dtype=torch.float32).unsqueeze(0).contiguous()
+
+
+@torch.no_grad()
+def compute_paper_ready_chamfer(
+    reconstruction_points: np.ndarray,
+    ground_truth_points: np.ndarray,
+    device: torch.device,
+    scale: float,
 ) -> dict[str, float]:
-    distances_a_to_b = nearest_neighbor_distances(points_a, points_b)
-    distances_b_to_a = nearest_neighbor_distances(points_b, points_a)
+    reconstruction_tensor = tensor_from_points(reconstruction_points, device)
+    ground_truth_tensor = tensor_from_points(ground_truth_points, device)
 
-    if squared:
-        distances_a_to_b = distances_a_to_b * distances_a_to_b
-        distances_b_to_a = distances_b_to_a * distances_b_to_a
+    directional_distances, _ = chamfer_distance(
+        x=reconstruction_tensor,
+        y=ground_truth_tensor,
+        batch_reduction=None,
+        point_reduction=None,
+        norm=2,
+        single_directional=False,
+    )
 
-    chamfer_a_to_b = float(np.mean(distances_a_to_b))
-    chamfer_b_to_a = float(np.mean(distances_b_to_a))
+    reconstruction_to_gt_squared, gt_to_reconstruction_squared = directional_distances
+
+    reconstruction_to_gt = torch.sqrt(torch.clamp(reconstruction_to_gt_squared, min=0.0))
+    gt_to_reconstruction = torch.sqrt(torch.clamp(gt_to_reconstruction_squared, min=0.0))
+
+    accuracy = torch.mean(reconstruction_to_gt)
+    completion = torch.mean(gt_to_reconstruction)
+    cd = 0.5 * (accuracy + completion)
+
+    squared_loss, _ = chamfer_distance(
+        x=reconstruction_tensor,
+        y=ground_truth_tensor,
+        batch_reduction="mean",
+        point_reduction="mean",
+        norm=2,
+        single_directional=False,
+    )
 
     return {
-        "chamfer_a_to_b": chamfer_a_to_b,
-        "chamfer_b_to_a": chamfer_b_to_a,
-        "chamfer_symmetric_sum": chamfer_a_to_b + chamfer_b_to_a,
-        "chamfer_symmetric_mean": 0.5 * (chamfer_a_to_b + chamfer_b_to_a),
-        "median_a_to_b": float(np.median(distances_a_to_b)),
-        "median_b_to_a": float(np.median(distances_b_to_a)),
-        "max_a_to_b": float(np.max(distances_a_to_b)),
-        "max_b_to_a": float(np.max(distances_b_to_a)),
+        "accuracy": float((accuracy * scale).item()),
+        "completion": float((completion * scale).item()),
+        "cd": float((cd * scale).item()),
+        "accuracy_raw": float(accuracy.item()),
+        "completion_raw": float(completion.item()),
+        "cd_raw": float(cd.item()),
+        "median_reconstruction_to_gt": float((torch.median(reconstruction_to_gt) * scale).item()),
+        "median_gt_to_reconstruction": float((torch.median(gt_to_reconstruction) * scale).item()),
+        "p95_reconstruction_to_gt": float((torch.quantile(reconstruction_to_gt, 0.95) * scale).item()),
+        "p95_gt_to_reconstruction": float((torch.quantile(gt_to_reconstruction, 0.95) * scale).item()),
+        "max_reconstruction_to_gt": float((torch.max(reconstruction_to_gt) * scale).item()),
+        "max_gt_to_reconstruction": float((torch.max(gt_to_reconstruction) * scale).item()),
+        "pytorch3d_squared_loss_raw": float(squared_loss.item()),
     }
 
 
@@ -92,56 +229,80 @@ def format_float(value: float) -> str:
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Compute Chamfer distance between two PLY models.")
+    parser = argparse.ArgumentParser(
+        description="Compute paper-ready symmetric Chamfer distance between two PLY models using PyTorch3D."
+    )
     parser.add_argument("ground_truth", type=Path, help="Path to ground-truth .ply mesh or point cloud.")
     parser.add_argument("reconstruction", type=Path, help="Path to reconstructed .ply mesh or point cloud.")
-    parser.add_argument("--samples", type=int, default=500_000, help="Number of sampled surface points per mesh.")
-    parser.add_argument("--use_vertices", action="store_true", help="Use raw vertices instead of surface sampling.")
-    parser.add_argument("--squared", action="store_true", help="Use squared distances.")
+    parser.add_argument("--samples", type=int, default=50_000, help="Number of sampled surface points per mesh.")
+    parser.add_argument("--use_vertices", action="store_true", help="Use raw vertices instead of uniform mesh surface sampling.")
+    parser.add_argument("--device", type=str, default="auto", help="Device: auto, cpu, cuda, cuda:0, etc.")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducible surface sampling.")
+    parser.add_argument("--scale", type=float, default=1.0, help="Scale applied to reported metrics. Use 1000 for CD x 10^3.")
+    parser.add_argument("--label", type=str, default="scene units", help="Label printed next to the reported metric scale.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_arguments()
+    set_random_seed(args.seed)
+    device = resolve_device(args.device)
 
-    reconstruction_points = load_points_from_ply(
+    reconstruction_points, reconstruction_sampling_mode = load_points_from_ply(
         ply_path=args.reconstruction.expanduser(),
         sample_count=args.samples,
         use_vertices=args.use_vertices,
     )
 
-    ground_truth_points = load_points_from_ply(
+    ground_truth_points, ground_truth_sampling_mode = load_points_from_ply(
         ply_path=args.ground_truth.expanduser(),
         sample_count=args.samples,
         use_vertices=args.use_vertices,
     )
 
-    results = compute_chamfer_distance(
-        points_a=reconstruction_points,
-        points_b=ground_truth_points,
-        squared=args.squared,
+    results = compute_paper_ready_chamfer(
+        reconstruction_points=reconstruction_points,
+        ground_truth_points=ground_truth_points,
+        device=device,
+        scale=args.scale,
     )
 
-    distance_type = "squared" if args.squared else "linear"
-
-    print("Chamfer distance")
+    print("Paper-ready Chamfer distance")
     print(f"  Reconstruction: {args.reconstruction}")
     print(f"  Ground truth:   {args.ground_truth}")
     print(f"  Reconstruction points: {len(reconstruction_points)}")
     print(f"  Ground-truth points:   {len(ground_truth_points)}")
-    print(f"  Distance type: {distance_type}")
+    print(f"  Reconstruction sampling: {reconstruction_sampling_mode}")
+    print(f"  Ground-truth sampling:   {ground_truth_sampling_mode}")
+    print(f"  Device: {device}")
+    print(f"  Backend: pytorch3d.loss.chamfer_distance")
+    print(f"  Alignment: none, assumes same reference frame")
+    print(f"  Seed: {args.seed}")
+    print(f"  Report scale: {args.scale:g} ({args.label})")
     print()
-    print("Main results")
-    print(f"  Reconstruction -> GT: {format_float(results['chamfer_a_to_b'])}")
-    print(f"  GT -> Reconstruction: {format_float(results['chamfer_b_to_a'])}")
-    print(f"  Symmetric sum:        {format_float(results['chamfer_symmetric_sum'])}")
-    print(f"  Symmetric mean:       {format_float(results['chamfer_symmetric_mean'])}")
+    print("Paper metric")
+    print(f"  Accuracy   Reconstruction -> GT: {format_float(results['accuracy'])}")
+    print(f"  Completion GT -> Reconstruction: {format_float(results['completion'])}")
+    print(f"  CD         0.5 * (Accuracy + Completion): {format_float(results['cd'])}")
+    print()
+    print("Raw unscaled metric")
+    print(f"  Accuracy raw:   {format_float(results['accuracy_raw'])}")
+    print(f"  Completion raw: {format_float(results['completion_raw'])}")
+    print(f"  CD raw:         {format_float(results['cd_raw'])}")
     print()
     print("Diagnostics")
-    print(f"  Median Reconstruction -> GT: {format_float(results['median_a_to_b'])}")
-    print(f"  Median GT -> Reconstruction: {format_float(results['median_b_to_a'])}")
-    print(f"  Max Reconstruction -> GT:    {format_float(results['max_a_to_b'])}")
-    print(f"  Max GT -> Reconstruction:    {format_float(results['max_b_to_a'])}")
+    print(f"  Median Reconstruction -> GT: {format_float(results['median_reconstruction_to_gt'])}")
+    print(f"  Median GT -> Reconstruction: {format_float(results['median_gt_to_reconstruction'])}")
+    print(f"  P95 Reconstruction -> GT:    {format_float(results['p95_reconstruction_to_gt'])}")
+    print(f"  P95 GT -> Reconstruction:    {format_float(results['p95_gt_to_reconstruction'])}")
+    print(f"  Max Reconstruction -> GT:    {format_float(results['max_reconstruction_to_gt'])}")
+    print(f"  Max GT -> Reconstruction:    {format_float(results['max_gt_to_reconstruction'])}")
+    print()
+    print("Copy-paste table value")
+    print(f"  CD ↓ = {format_float(results['cd'])}")
+    print()
+    print("PyTorch3D diagnostic")
+    print(f"  Reduced squared-L2 chamfer_distance raw: {format_float(results['pytorch3d_squared_loss_raw'])}")
 
 
 if __name__ == "__main__":

@@ -231,7 +231,7 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 12;
+    constexpr uint32_t kMaxSplatEventsPerRay = 18;
     constexpr float RayEpsilon = 1e-5f;
     constexpr float RayEpsilon2 = 1e-5f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
@@ -520,17 +520,6 @@ namespace Pale {
         float areaWorld = FLT_MAX;
     };
 
-    struct SurfelGradientPayload {
-        float gradBeta = FLT_MAX;
-        float gradEta = FLT_MAX;
-        float3 gradRho = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        float3 gradPosition = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        float gradScaleU = FLT_MAX;
-        float gradScaleV = FLT_MAX;
-        float3 gradTangentU = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        float3 gradTangentV = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-    };
-
     struct SurfelGradientRecord {
         uint32_t primitiveIndex = UINT32_MAX;
 
@@ -547,9 +536,11 @@ namespace Pale {
 
         float gradScaleU = FLT_MAX;
         float gradScaleV = FLT_MAX;
+
         float gradTangentUX = FLT_MAX;
         float gradTangentUY = FLT_MAX;
         float gradTangentUZ = FLT_MAX;
+
         float gradTangentVX = FLT_MAX;
         float gradTangentVY = FLT_MAX;
         float gradTangentVZ = FLT_MAX;

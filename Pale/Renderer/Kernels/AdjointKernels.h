@@ -27,6 +27,8 @@ namespace Pale {
         uint32_t materialStartEdgeEventCount,
         uint32_t cameraIndex);
 
+    void computePerPrimitiveTranslationGradientStats(RenderPackage &pkg);
+
     void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
 
     void launchDepthDistortionBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Dict
 import math
 
+from sympy import false
+
 
 @dataclass
 class RendererSettingsConfig:
@@ -16,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 1
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -60,22 +62,22 @@ class OptimizationConfig:
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
     # Position-only exponential LR schedule.
-    use_position_lr_schedule: bool = False
+    use_position_lr_schedule: bool = True
     position_lr_scale_init: float = 2.0
-    position_lr_scale_final: float = 0.5
-    position_lr_max_steps: int = 10_000
+    position_lr_scale_final: float = 0.25
+    position_lr_max_steps: int = 15_000
 
-    depth_distort_weight: float = 10000
-    depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.025
-    visibility_weighted_opacity_weight: float = 0.1
+    depth_distort_weight: float = 1000
+    depth_distort_start_iteration: int = 2000
+    normal_consistency_weight: float = 0.01
+    visibility_weighted_opacity_weight: float = 0.01
 
     log_interval: int = 1
     save_interval: int = 5
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 50
+    densification_interval: int = 75
     prune_interval: int = 50
     densify_after: int = -1
     prune_after: int = -1
@@ -84,22 +86,26 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 2e-2
-    densification_scale_min: float = 1.2e-2
+    densification_grad_abs_min: float = 3.0e-2
+    densification_scale_min: float = 2.0e-2
 
     # More densification on radiometrically darker primitives
-    densify_bsdf_floor: float = 0.15
+    densify_bsdf_floor: float = 0.05
     densify_bsdf_gamma: float = 1.2
 
     # Pruning
-    opacity_prune_threshold: float = 0.05
+    opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
     scale_prune_min_scale: float = 1.0e-3
     min_points_to_keep_after_scale_prune: int = 1
 
     # Misc scheduling
-    reset_opacity_interval: int = 2000
-    reset_opacity_value: float = 0.0
+    reset_opacity_interval: int = 1000
+    reset_opacity_value: float = 0
+    reset_scale_interval: int = 0
+    reset_scale_shrink_factor: float = 1.0
+    reset_opacity_iterations: bool = False
+    reset_scale_iterations: bool = False
     rebuild_bvh_interval: int = 1
 
 
@@ -116,10 +122,10 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
     elif config.optimizer_type == "adam":
         factor_position = 0.001
         factor_tangent = 0.005
-        factor_scale = 0.0008
-        factor_albedo = 0.002
+        factor_scale = 0.0005
+        factor_albedo = 0.001
         factor_opacity = 0.02
-        factor_beta = 0.000
+        factor_beta = 0.001
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -227,6 +233,8 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--reset-opacity-interval", type=int)
     parser.add_argument("--reset-opacity-value", type=float)
     parser.add_argument("--rebuild-bvh-interval", type=int)
+    parser.add_argument("--reset-scale-interval", type=int)
+    parser.add_argument("--reset-scale-factor", type=float)
 
     args = parser.parse_args()
 
