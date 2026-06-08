@@ -1275,7 +1275,6 @@ def extract_total_gradient_arrays(
         grad_betas_np,
     )
 
-
 def update_densification_statistics(
         iteration: int,
         densification_interval: int,
@@ -1283,133 +1282,141 @@ def update_densification_statistics(
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
         densify_position_grad_vector_accum_np: np.ndarray,
-        total_gradients: Dict[str, np.ndarray],
         tangent_u: torch.Tensor,
         tangent_v: torch.Tensor,
         albedos: torch.Tensor,
         trainable_surfel_mask: torch.Tensor,
         densify_bsdf_floor: float,
         densify_bsdf_gamma: float,
-        densify_position_grad_signal_np: np.ndarray | None = None,
-        densify_position_grad_per_camera_np: np.ndarray | None = None,
-        densify_position_grad_per_camera_count_np: np.ndarray | None = None,
+        densify_position_grad_per_camera_np: np.ndarray,
+        densify_position_grad_per_camera_count_np: np.ndarray,
 ) -> None:
     if densification_interval <= 0:
         return
 
     densification_phase = iteration % densification_interval
     should_accumulate = (
-            densification_interval <= 1
-            or (
-                    densification_phase >= densification_stats_warmup_iterations
-                    and densification_phase != 0
-            )
+        densification_interval <= 1
+        or (
+            densification_phase >= densification_stats_warmup_iterations
+            and densification_phase != 0
+        )
     )
     if not should_accumulate:
         return
 
-    grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
-    point_count = grad_position_np.shape[0]
+    if densify_position_grad_per_camera_np is None:
+        raise RuntimeError(
+            "update_densification_statistics requires renderer gradient stats: "
+            "densify_position_grad_per_camera_np is None. "
+            "Expected adjoint_images['gradient_stats']['position_per_camera']."
+        )
 
-    density_grad_position_np = project_gradient_to_surfel_tangent_plane_np(
-        grad_position_np=grad_position_np,
-        tangent_u=tangent_u,
-        tangent_v=tangent_v,
+    if densify_position_grad_per_camera_count_np is None:
+        raise RuntimeError(
+            "update_densification_statistics requires renderer gradient stats: "
+            "densify_position_grad_per_camera_count_np is None. "
+            "Expected adjoint_images['gradient_stats']['position_record_count_per_camera']."
+        )
+
+    per_camera_grad_np = np.asarray(
+        densify_position_grad_per_camera_np,
+        dtype=np.float32,
+        order="C",
     )
 
+    per_camera_count_np = np.asarray(
+        densify_position_grad_per_camera_count_np,
+        dtype=np.uint32,
+        order="C",
+    )
+
+    if per_camera_grad_np.ndim != 3 or per_camera_grad_np.shape[2] != 3:
+        raise RuntimeError(
+            "densify_position_grad_per_camera_np must have shape (N, C, 3), "
+            f"got {per_camera_grad_np.shape}"
+        )
+
+    point_count = per_camera_grad_np.shape[0]
+    camera_count = per_camera_grad_np.shape[1]
+
+    if per_camera_count_np.shape != (point_count, camera_count):
+        raise RuntimeError(
+            "densify_position_grad_per_camera_count_np must have shape "
+            f"{(point_count, camera_count)}, got {per_camera_count_np.shape}"
+        )
+
+    if densify_position_grad_accum_np.shape[0] != point_count:
+        raise RuntimeError(
+            "Densification accumulator point-count mismatch: "
+            f"accum={densify_position_grad_accum_np.shape[0]}, renderer_stats={point_count}"
+        )
+
     with torch.no_grad():
-        albedo_np = albedos.detach().cpu().numpy().astype(np.float32)
         tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
         tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
-        trainable_np_for_density = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
+        albedo_np = albedos.detach().cpu().numpy().astype(np.float32)
+        trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
+
+    if tangent_u_np.shape != (point_count, 3):
+        raise RuntimeError(f"tangent_u shape mismatch: expected {(point_count, 3)}, got {tangent_u_np.shape}")
+    if tangent_v_np.shape != (point_count, 3):
+        raise RuntimeError(f"tangent_v shape mismatch: expected {(point_count, 3)}, got {tangent_v_np.shape}")
+    if trainable_np.shape[0] != point_count:
+        raise RuntimeError(f"trainable mask length mismatch: expected {point_count}, got {trainable_np.shape[0]}")
+
+    tangent_u_norm_np = np.linalg.norm(tangent_u_np, axis=1, keepdims=True)
+    tangent_v_norm_np = np.linalg.norm(tangent_v_np, axis=1, keepdims=True)
+
+    tangent_u_unit_np = tangent_u_np / np.maximum(tangent_u_norm_np, 1.0e-8)
+    tangent_v_unit_np = tangent_v_np / np.maximum(tangent_v_norm_np, 1.0e-8)
+
+    dot_u_np = np.sum(per_camera_grad_np * tangent_u_unit_np[:, None, :], axis=2, keepdims=True)
+    dot_v_np = np.sum(per_camera_grad_np * tangent_v_unit_np[:, None, :], axis=2, keepdims=True)
+
+    per_camera_tangent_grad_np = (
+        dot_u_np * tangent_u_unit_np[:, None, :]
+        + dot_v_np * tangent_v_unit_np[:, None, :]
+    )
+
+    visible_camera_mask_np = per_camera_count_np > 0
+    active_camera_count_np = visible_camera_mask_np.sum(axis=1, keepdims=True).astype(np.float32)
+
+    per_camera_tangent_grad_norm_np = np.linalg.norm(per_camera_tangent_grad_np, axis=2)
+    per_camera_tangent_grad_norm_np = np.nan_to_num(
+        per_camera_tangent_grad_norm_np,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
+    visible_mask_float_np = visible_camera_mask_np.astype(np.float32)
+
+    safe_active_camera_count_np = np.maximum(active_camera_count_np, 1.0)
+
+    # Scalar score:
+    #     mean_visible(||project_tangent(g_camera)||)
+    densify_position_signal_np = (
+                                         per_camera_tangent_grad_norm_np * visible_mask_float_np
+                                 ).sum(axis=1, keepdims=True) / safe_active_camera_count_np
+
+    # Signed vector direction:
+    #     mean_visible(project_tangent(g_camera))
+    density_grad_position_vector_np = (
+                                              per_camera_tangent_grad_np * visible_mask_float_np[:, :, None]
+                                      ).sum(axis=1) / safe_active_camera_count_np
+
+    density_grad_position_vector_np[active_camera_count_np[:, 0] == 0.0] = 0.0
+    densify_position_signal_np[active_camera_count_np[:, 0] == 0.0] = 0.0
 
     linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
-    bsdf_normalizer_np = np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma
-    bsdf_normalizer_np = bsdf_normalizer_np.astype(np.float32)
-
-    density_grad_position_np_for_vector = density_grad_position_np / bsdf_normalizer_np[:, None]
-
-    if densify_position_grad_per_camera_np is not None:
-        per_camera_grad_np = np.asarray(
-            densify_position_grad_per_camera_np,
-            dtype=np.float32,
-            order="C",
-        )
-
-        if per_camera_grad_np.ndim != 3 or per_camera_grad_np.shape[0] != point_count or per_camera_grad_np.shape[2] != 3:
-            raise RuntimeError(
-                "densify_position_grad_per_camera_np must have shape "
-                f"(N, C, 3), got {per_camera_grad_np.shape}, expected N={point_count}"
-            )
-
-        camera_count = per_camera_grad_np.shape[1]
-
-        tangent_u_norm_np = np.linalg.norm(tangent_u_np, axis=1, keepdims=True)
-        tangent_v_norm_np = np.linalg.norm(tangent_v_np, axis=1, keepdims=True)
-
-        tangent_u_unit_np = tangent_u_np / np.maximum(tangent_u_norm_np, 1.0e-8)
-        tangent_v_unit_np = tangent_v_np / np.maximum(tangent_v_norm_np, 1.0e-8)
-
-        dot_u_np = np.sum(per_camera_grad_np * tangent_u_unit_np[:, None, :], axis=2, keepdims=True)
-        dot_v_np = np.sum(per_camera_grad_np * tangent_v_unit_np[:, None, :], axis=2, keepdims=True)
-
-        per_camera_tangent_grad_np = (
-                dot_u_np * tangent_u_unit_np[:, None, :]
-                + dot_v_np * tangent_v_unit_np[:, None, :]
-        )
-
-        per_camera_grad_norm_np = np.linalg.norm(per_camera_tangent_grad_np, axis=2)
-
-        if densify_position_grad_per_camera_count_np is not None:
-            per_camera_count_np = np.asarray(
-                densify_position_grad_per_camera_count_np,
-                dtype=np.uint32,
-                order="C",
-            )
-
-            if per_camera_count_np.shape != (point_count, camera_count):
-                raise RuntimeError(
-                    "densify_position_grad_per_camera_count_np must have shape "
-                    f"{(point_count, camera_count)}, got {per_camera_count_np.shape}"
-                )
-
-            visible_camera_mask_np = per_camera_count_np > 0
-        else:
-            visible_camera_mask_np = (
-                    np.isfinite(per_camera_grad_norm_np)
-                    & (per_camera_grad_norm_np > 0.0)
-            )
-
-        active_camera_count_np = visible_camera_mask_np.sum(axis=1, keepdims=True).astype(np.float32)
-        safe_active_camera_count_np = np.maximum(active_camera_count_np, 1.0)
-
-        densify_position_signal_np = (
-                per_camera_grad_norm_np * visible_camera_mask_np.astype(np.float32)
-        ).sum(axis=1, keepdims=True) / safe_active_camera_count_np
-
-        densify_position_signal_np[active_camera_count_np[:, 0] == 0.0] = 0.0
-
-    elif densify_position_grad_signal_np is not None:
-        densify_position_signal_np = np.asarray(
-            densify_position_grad_signal_np,
-            dtype=np.float32,
-            order="C",
-        ).reshape(-1, 1)
-
-        if densify_position_signal_np.shape[0] != point_count:
-            raise RuntimeError(
-                "densify_position_grad_signal_np must have shape (N,) or (N,1), "
-                f"got {densify_position_signal_np.shape}, expected N={point_count}"
-            )
-
-    else:
-        densify_position_signal_np = np.linalg.norm(
-            density_grad_position_np,
-            axis=1,
-            keepdims=True,
-        ).astype(np.float32)
+    bsdf_normalizer_np = (
+        np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma
+    ).astype(np.float32)
 
     densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
+    density_grad_position_vector_np = density_grad_position_vector_np / bsdf_normalizer_np[:, None]
+
     densify_position_signal_np = np.nan_to_num(
         densify_position_signal_np,
         nan=0.0,
@@ -1417,10 +1424,17 @@ def update_densification_statistics(
         neginf=0.0,
     )
 
+    density_grad_position_vector_np = np.nan_to_num(
+        density_grad_position_vector_np,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
     update_density_scalar_mask_np = (
-            trainable_np_for_density
-            & np.isfinite(densify_position_signal_np[:, 0])
-            & (densify_position_signal_np[:, 0] > 0.0)
+        trainable_np
+        & np.isfinite(densify_position_signal_np[:, 0])
+        & (densify_position_signal_np[:, 0] > 0.0)
     )
 
     densify_position_grad_accum_np[update_density_scalar_mask_np, 0] += (
@@ -1428,15 +1442,16 @@ def update_densification_statistics(
     )
     densify_position_grad_denom_np[update_density_scalar_mask_np, 0] += 1.0
 
-    grad_norm_for_density_np = np.linalg.norm(density_grad_position_np_for_vector, axis=1)
+    vector_norm_np = np.linalg.norm(density_grad_position_vector_np, axis=1)
+
     update_density_vector_mask_np = (
-            trainable_np_for_density
-            & np.isfinite(grad_norm_for_density_np)
-            & (grad_norm_for_density_np > 0.0)
+        trainable_np
+        & np.isfinite(vector_norm_np)
+        & (vector_norm_np > 0.0)
     )
 
     densify_position_grad_vector_accum_np[update_density_vector_mask_np] += (
-        density_grad_position_np_for_vector[update_density_vector_mask_np]
+        density_grad_position_vector_np[update_density_vector_mask_np]
     )
 
 
@@ -1646,6 +1661,210 @@ def maybe_make_prune_indices(
         indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
 
     return scale_prune_indices, opacity_prune_indices, indices_to_remove_list
+
+
+def robust_normalize_scalar(values_np: np.ndarray, lower_percentile: float = 1.0, upper_percentile: float = 99.0) -> np.ndarray:
+    values_np = np.nan_to_num(
+        np.asarray(values_np, dtype=np.float32).reshape(-1),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
+    finite_values_np = values_np[np.isfinite(values_np)]
+    if finite_values_np.size == 0:
+        return np.zeros_like(values_np, dtype=np.float32)
+
+    value_min = float(np.percentile(finite_values_np, lower_percentile))
+    value_max = float(np.percentile(finite_values_np, upper_percentile))
+
+    if value_max <= value_min + 1.0e-12:
+        return np.zeros_like(values_np, dtype=np.float32)
+
+    return np.clip((values_np - value_min) / (value_max - value_min), 0.0, 1.0).astype(np.float32)
+
+
+def black_red_yellow_white_colormap(normalized_values_np: np.ndarray) -> np.ndarray:
+    t = np.clip(np.asarray(normalized_values_np, dtype=np.float32).reshape(-1, 1), 0.0, 1.0)
+
+    red = np.clip(3.0 * t, 0.0, 1.0)
+    green = np.clip(3.0 * t - 1.0, 0.0, 1.0)
+    blue = np.clip(3.0 * t - 2.0, 0.0, 1.0)
+
+    return np.clip(np.concatenate([red, green, blue], axis=1) * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+def tensor_to_numpy_float32(tensor: torch.Tensor) -> np.ndarray:
+    return tensor.detach().cpu().numpy().astype(np.float32)
+
+
+def save_scalar_colored_point_ply(
+        output_path: Path,
+        positions_np: np.ndarray,
+        scalar_values_np: np.ndarray,
+        scalar_name: str,
+        normalize_by_max_value: float | None = None,
+) -> None:
+    positions_np = np.asarray(positions_np, dtype=np.float32)
+    scalar_values_np = np.nan_to_num(
+        np.asarray(scalar_values_np, dtype=np.float32).reshape(-1),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
+    if positions_np.ndim != 2 or positions_np.shape[1] != 3:
+        raise RuntimeError(f"positions_np must have shape (N, 3), got {positions_np.shape}")
+
+    if scalar_values_np.shape[0] != positions_np.shape[0]:
+        raise RuntimeError(
+            f"Scalar length mismatch for {scalar_name}: "
+            f"{scalar_values_np.shape[0]} vs positions {positions_np.shape[0]}"
+        )
+
+    if normalize_by_max_value is not None:
+        normalized_np = np.clip(scalar_values_np / max(float(normalize_by_max_value), 1.0e-12), 0.0, 1.0)
+    else:
+        normalized_np = robust_normalize_scalar(scalar_values_np)
+
+    colors_np = black_red_yellow_white_colormap(normalized_np)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", encoding="utf-8") as file:
+        file.write("ply\n")
+        file.write("format ascii 1.0\n")
+        file.write(f"element vertex {positions_np.shape[0]}\n")
+        file.write("property float x\n")
+        file.write("property float y\n")
+        file.write("property float z\n")
+        file.write("property uchar red\n")
+        file.write("property uchar green\n")
+        file.write("property uchar blue\n")
+        file.write(f"property float {scalar_name}\n")
+        file.write("end_header\n")
+
+        for position, color, scalar_value in zip(positions_np, colors_np, scalar_values_np):
+            file.write(
+                f"{position[0]:.9g} {position[1]:.9g} {position[2]:.9g} "
+                f"{int(color[0])} {int(color[1])} {int(color[2])} "
+                f"{float(scalar_value):.9g}\n"
+            )
+
+
+def average_densification_accumulators(
+        densify_position_grad_accum_np: np.ndarray,
+        densify_position_grad_denom_np: np.ndarray,
+        densify_position_grad_vector_accum_np: np.ndarray,
+        point_count: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
+
+    avg_density_grad_norm_np = np.zeros((point_count,), dtype=np.float32)
+    avg_density_grad_vector_np = np.zeros((point_count, 3), dtype=np.float32)
+
+    avg_density_grad_norm_np[valid_denom_np] = (
+        densify_position_grad_accum_np.reshape(-1)[valid_denom_np]
+        / densify_position_grad_denom_np.reshape(-1)[valid_denom_np]
+    )
+
+    avg_density_grad_vector_np[valid_denom_np] = (
+        densify_position_grad_vector_accum_np[valid_denom_np]
+        / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
+    )
+
+    avg_density_grad_vector_norm_np = np.linalg.norm(avg_density_grad_vector_np, axis=1).astype(np.float32)
+
+    avg_density_grad_norm_np = np.nan_to_num(avg_density_grad_norm_np, nan=0.0, posinf=0.0, neginf=0.0)
+    avg_density_grad_vector_norm_np = np.nan_to_num(avg_density_grad_vector_norm_np, nan=0.0, posinf=0.0, neginf=0.0)
+
+    return avg_density_grad_norm_np, avg_density_grad_vector_np, avg_density_grad_vector_norm_np
+
+
+def save_densification_gradient_diagnostics(
+        output_dir: Path,
+        iteration: int,
+        positions: torch.Tensor,
+        densify_position_grad_accum_np: np.ndarray,
+        densify_position_grad_denom_np: np.ndarray,
+        densify_position_grad_vector_accum_np: np.ndarray,
+        photo_gradient_surfel_stats: dict,
+        active_camera_count_max: int,
+) -> None:
+    positions_np = tensor_to_numpy_float32(positions)
+    point_count = positions_np.shape[0]
+
+    avg_density_grad_norm_np, _, avg_density_grad_vector_norm_np = average_densification_accumulators(
+        densify_position_grad_accum_np=densify_position_grad_accum_np,
+        densify_position_grad_denom_np=densify_position_grad_denom_np,
+        densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+        point_count=point_count,
+    )
+
+    diagnostic_dir = output_dir / "gradient_stats" / f"iter_{iteration:06d}"
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+
+    save_scalar_colored_point_ply(
+        output_path=diagnostic_dir / "gradient_geometric_pressure.ply",
+        positions_np=positions_np,
+        scalar_values_np=avg_density_grad_norm_np,
+        scalar_name="gradient_geometric_pressure",
+    )
+
+    save_scalar_colored_point_ply(
+        output_path=diagnostic_dir / "gradient_position_norm.ply",
+        positions_np=positions_np,
+        scalar_values_np=avg_density_grad_vector_norm_np,
+        scalar_name="gradient_position_norm",
+    )
+
+    if "position_std" in photo_gradient_surfel_stats:
+        position_std_np = np.asarray(photo_gradient_surfel_stats["position_std"], dtype=np.float32).reshape(-1)
+        if position_std_np.shape[0] == point_count:
+            save_scalar_colored_point_ply(
+                output_path=diagnostic_dir / "gradient_position_std.ply",
+                positions_np=positions_np,
+                scalar_values_np=position_std_np,
+                scalar_name="gradient_position_std",
+            )
+
+    if "position_active_camera_count" in photo_gradient_surfel_stats:
+        active_camera_count_np = np.asarray(
+            photo_gradient_surfel_stats["position_active_camera_count"],
+            dtype=np.float32,
+        ).reshape(-1)
+
+        if active_camera_count_np.shape[0] == point_count:
+            save_scalar_colored_point_ply(
+                output_path=diagnostic_dir / "gradient_active_camera_count.ply",
+                positions_np=positions_np,
+                scalar_values_np=active_camera_count_np,
+                scalar_name="gradient_active_camera_count",
+                normalize_by_max_value=float(max(active_camera_count_max, 1)),
+            )
+
+    if "position_coherence" in photo_gradient_surfel_stats:
+        position_coherence_np = np.asarray(photo_gradient_surfel_stats["position_coherence"], dtype=np.float32).reshape(-1)
+        if position_coherence_np.shape[0] == point_count:
+            save_scalar_colored_point_ply(
+                output_path=diagnostic_dir / "gradient_position_coherence.ply",
+                positions_np=positions_np,
+                scalar_values_np=position_coherence_np,
+                scalar_name="gradient_position_coherence",
+                normalize_by_max_value=1.0,
+            )
+
+    if "position_disagreement" in photo_gradient_surfel_stats:
+        position_disagreement_np = np.asarray(photo_gradient_surfel_stats["position_disagreement"], dtype=np.float32).reshape(-1)
+        if position_disagreement_np.shape[0] == point_count:
+            save_scalar_colored_point_ply(
+                output_path=diagnostic_dir / "gradient_position_disagreement.ply",
+                positions_np=positions_np,
+                scalar_values_np=position_disagreement_np,
+                scalar_name="gradient_position_disagreement",
+            )
+
+    print(f"[Iter {iteration:04d}] Saved gradient diagnostics: {diagnostic_dir}")
 
 
 def save_iteration_outputs(

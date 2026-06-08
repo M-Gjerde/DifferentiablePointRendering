@@ -97,6 +97,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     densify_bsdf_floor = float(config.densify_bsdf_floor)
     densify_bsdf_gamma = float(config.densify_bsdf_gamma)
     rebuild_bvh_interval = max(int(config.rebuild_bvh_interval), 1)
+    save_gradient_diagnostics = bool(getattr(config, "save_gradient_diagnostics", False))
 
     densify_position_grad_accum_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
@@ -213,7 +214,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
                 position_per_camera_np = photo_gradient_surfel_stats.get("position_per_camera", None)
                 position_record_count_per_camera_np = photo_gradient_surfel_stats.get(
-                    "position_record_count_per_camera", None, )
+                    "position_record_count_per_camera",
+                    None,
+                )
+                if iteration == 1 or iteration % densification_interval == 0:
+                    print(
+                        "[densify-debug] "
+                        f"gradient_stats_keys={list(photo_gradient_surfel_stats.keys())} "
+                        f"position_per_camera_shape={None if position_per_camera_np is None else np.asarray(position_per_camera_np).shape} "
+                        f"count_shape={None if position_record_count_per_camera_np is None else np.asarray(position_record_count_per_camera_np).shape}"
+                    )
 
                 update_densification_statistics(
                     iteration=iteration,
@@ -222,7 +232,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
                     densify_position_grad_denom_np=densify_position_grad_denom_np,
                     densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-                    total_gradients=total_gradients,
                     tangent_u=tangent_u,
                     tangent_v=tangent_v,
                     albedos=albedos,
@@ -286,6 +295,23 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densification_grad_quantile=densification_grad_quantile,
                     densification_grad_abs_min=densification_grad_abs_min,
                 )
+
+                if (
+                        save_gradient_diagnostics
+                        and densification_interval > 0
+                        and densify_after <= iteration <= densify_until_iteration
+                        and iteration % densification_interval == 0
+                ):
+                    save_densification_gradient_diagnostics(
+                        output_dir=config.output_dir,
+                        iteration=iteration,
+                        positions=positions,
+                        densify_position_grad_accum_np=densify_position_grad_accum_np,
+                        densify_position_grad_denom_np=densify_position_grad_denom_np,
+                        densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                        photo_gradient_surfel_stats=photo_gradient_surfel_stats,
+                        active_camera_count_max=len(training_camera_ids),
+                    )
 
                 scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
                     iteration=iteration, config=config, scales=scales, opacities=opacities,

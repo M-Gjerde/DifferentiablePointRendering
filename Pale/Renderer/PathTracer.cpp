@@ -16,11 +16,11 @@ import Pale.Log;
 import Pale.Render.BVH;
 
 namespace Pale {
-    PathTracer::PathTracer(sycl::queue q, const PathTracerSettings& settings) : m_queue(q), m_settings(settings),
+    PathTracer::PathTracer(sycl::queue q, const PathTracerSettings &settings) : m_queue(q), m_settings(settings),
         m_sessionSeed(settings.random.seed) {
     }
 
-    void PathTracer::setScene(const GPUSceneBuffers& scene, SceneBuild::BuildProducts bp) {
+    void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
         m_sceneGPU = scene;
 
         const uint32_t requiredCapacity = m_settings.photonsPerLaunch;
@@ -32,7 +32,7 @@ namespace Pale {
 
             allocatePhotonMap();
 
-            const auto& topTLAS = bp.topLevelNodes.front();
+            const auto &topTLAS = bp.topLevelNodes.front();
             const AABB sceneAabb{topTLAS.aabbMin, topTLAS.aabbMax};
 
             const float3 sceneMin = sceneAabb.minP;
@@ -74,93 +74,95 @@ namespace Pale {
         m_intermediates.maxRayQueueCapacity = m_rayQueueCapacity;
         // --- primary buffers ---
         const std::size_t sizePrimaryRaysBytes =
-            sizeof(RayState) * m_rayQueueCapacity;
+                sizeof(RayState) * m_rayQueueCapacity;
         m_intermediates.primaryRays =
-            sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated primaryRays: {}", Utils::formatBytes(sizePrimaryRaysBytes));
 
         const std::size_t sizeExtensionRaysBytes =
-            sizeof(RayState) * m_rayQueueCapacity;
+                sizeof(RayState) * m_rayQueueCapacity;
         m_intermediates.extensionRaysA =
-            sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<RayState>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated extensionRaysA: {}", Utils::formatBytes(sizeExtensionRaysBytes));
 
         const std::size_t sizeHitRecordsBytes =
-            sizeof(WorldHit) * m_rayQueueCapacity;
+                sizeof(WorldHit) * m_rayQueueCapacity;
         m_intermediates.hitRecords =
-            sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<WorldHit>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated hitRecords: {}", Utils::formatBytes(sizeHitRecordsBytes));
 
         const std::size_t sizeContributionRecordsBytes =
-            sizeof(HitInfoContribution) * m_rayQueueCapacity;
+                sizeof(HitInfoContribution) * m_rayQueueCapacity;
         m_intermediates.hitContribution =
-            sycl::malloc_device<HitInfoContribution>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<HitInfoContribution>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated hitContribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
         m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
 
         // --- compact adjoint event buffers ---
         const std::size_t sizeMeasurementEventsBytes =
-            sizeof(MeasurementGradientEvent) * m_rayQueueCapacity;
+                sizeof(MeasurementGradientEvent) * m_rayQueueCapacity;
         m_intermediates.measurementEvents =
-            sycl::malloc_device<MeasurementGradientEvent>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<MeasurementGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated sizeMeasurementEventsBytes: {}", Utils::formatBytes(sizeMeasurementEventsBytes));
 
         const std::size_t sizeMeasurementEventsTwoPointBytes =
-            sizeof(MeasurementGradientEventXY) * m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 2;
+                sizeof(MeasurementGradientEventXY) * m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 2;
         m_intermediates.measurementTwoPointEvents =
-            sycl::malloc_device<MeasurementGradientEventXY>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<MeasurementGradientEventXY>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated sizeMeasurementEventsTwoPointBytes: {}",
                       Utils::formatBytes(sizeMeasurementEventsTwoPointBytes));
         m_intermediates.maxMeasurementTwoPointEventCount = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 2;
 
         const std::size_t cameraAttachedBridgeEventSize =
-            sizeof(MaterialVertexGradientEvent) * m_rayQueueCapacity;
+                sizeof(MaterialVertexGradientEvent) * m_rayQueueCapacity;
         m_intermediates.materialVertexEvents =
-            sycl::malloc_device<MaterialVertexGradientEvent>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<MaterialVertexGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated projectionScatterEvents: {}", Utils::formatBytes(cameraAttachedBridgeEventSize));
         m_intermediates.maxMaterialVertexEventCount = m_rayQueueCapacity;
 
         const std::size_t materialEndEdgeEventsSize =
-            sizeof(MaterialEdgeGradientEvent) * m_rayQueueCapacity;
+                sizeof(MaterialEdgeGradientEvent) * m_rayQueueCapacity;
         m_intermediates.materialEndEdgeEvents =
-            sycl::malloc_device<MaterialEdgeGradientEvent>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<MaterialEdgeGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(materialEndEdgeEventsSize));
         m_intermediates.maxMaterialEndEdgeEventCount = m_rayQueueCapacity;
 
         const std::size_t materialStartEdgeEventsSize =
-            sizeof(MaterialEdgeGradientEvent) * m_rayQueueCapacity;
+                sizeof(MaterialEdgeGradientEvent) * m_rayQueueCapacity;
         m_intermediates.materialStartEdgeEvents =
-            sycl::malloc_device<MaterialEdgeGradientEvent>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<MaterialEdgeGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated reflectScatterEvents: {}", Utils::formatBytes(materialStartEdgeEventsSize));
         m_intermediates.maxMaterialStartEdgeEventCount = m_rayQueueCapacity;
 
         // --- pending adjoint states ---
         const std::size_t sizePendingAdjointStatesXBytes =
-            sizeof(PendingAdjointStageX) * m_rayQueueCapacity;
+                sizeof(PendingAdjointStageX) * m_rayQueueCapacity;
         m_intermediates.pendingStageX =
-            sycl::malloc_device<PendingAdjointStageX>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<PendingAdjointStageX>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated pendingStageX: {}", Utils::formatBytes(sizePendingAdjointStatesXBytes));
 
         m_intermediates.maxPendingAdjointStateCount = m_rayQueueCapacity;
 
         const std::size_t sizePendingCameraSegmentBytes =
-            sizeof(PendingCameraSegment) * m_rayQueueCapacity;
+                sizeof(PendingCameraSegment) * m_rayQueueCapacity;
         m_intermediates.pendingCameraSegments =
-            sycl::malloc_device<PendingCameraSegment>(m_rayQueueCapacity, m_queue);
+                sycl::malloc_device<PendingCameraSegment>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingCameraSegmentBytes));
         m_intermediates.maxMeasurementEventCount = m_rayQueueCapacity;;
 
-        const uint32_t gradientRecordCapacity = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 30; // TODO depends on number of sensors
+        const uint32_t gradientRecordCapacity = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 30;
+        // TODO depends on number of sensors
         const std::size_t sizeGradientRecordsBytes =
-            sizeof(SurfelGradientRecord) * gradientRecordCapacity;
+                sizeof(SurfelGradientRecord) * gradientRecordCapacity;
         m_intermediates.gradientRecords =
-            sycl::malloc_device<SurfelGradientRecord>(gradientRecordCapacity, m_queue);
+                sycl::malloc_device<SurfelGradientRecord>(gradientRecordCapacity, m_queue);
         m_intermediates.maxGradientRecordCount = gradientRecordCapacity;
         Log::PA_INFO("Allocated gradientRecords: QueueCapacity: {}, adjointSPP {}, adjointShadowSPP {}, {}",
                      m_rayQueueCapacity, m_settings.adjointSamplesPerPixel, m_settings.numAdjointPathShadowRays,
                      Utils::formatBytes(sizeGradientRecordsBytes));
 
-        Log::PA_INFO("sizeof(SurfelGradientRecord) = {}, Count: {}", sizeof(SurfelGradientRecord), gradientRecordCapacity);
+        Log::PA_INFO("sizeof(SurfelGradientRecord) = {}, Count: {}", sizeof(SurfelGradientRecord),
+                     gradientRecordCapacity);
 
         // --- counters ---
         m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
@@ -183,21 +185,21 @@ namespace Pale {
         m_queue.wait();
 
         const std::size_t counterBytes =
-            sizeof(uint32_t) * 6;
+                sizeof(uint32_t) * 6;
 
         const std::size_t intermediatesTotalBytes =
-            sizePrimaryRaysBytes +
-            sizeExtensionRaysBytes +
-            sizeHitRecordsBytes +
-            sizeContributionRecordsBytes +
-            sizeMeasurementEventsBytes +
-            sizeMeasurementEventsTwoPointBytes +
-            cameraAttachedBridgeEventSize +
-            materialStartEdgeEventsSize +
-            materialEndEdgeEventsSize +
-            sizePendingAdjointStatesXBytes +
-            sizeGradientRecordsBytes +
-            counterBytes;
+                sizePrimaryRaysBytes +
+                sizeExtensionRaysBytes +
+                sizeHitRecordsBytes +
+                sizeContributionRecordsBytes +
+                sizeMeasurementEventsBytes +
+                sizeMeasurementEventsTwoPointBytes +
+                cameraAttachedBridgeEventSize +
+                materialStartEdgeEventsSize +
+                materialEndEdgeEventsSize +
+                sizePendingAdjointStatesXBytes +
+                sizeGradientRecordsBytes +
+                counterBytes;
 
         Log::PA_INFO("Total intermediates memory: {}", Utils::formatBytes(intermediatesTotalBytes));
     }
@@ -208,7 +210,7 @@ namespace Pale {
         std::size_t photonSize = sizeof(DevicePhotonSurface);
         // desired photon count
         std::size_t requestedPhotons = m_settings.photonsPerLaunch * static_cast<uint64_t>(
-            m_settings.numForwardPasses * m_settings.maxBounces);
+                                           m_settings.numForwardPasses * m_settings.maxBounces);
         // clamp to what fits
         std::size_t maxPhotons = maxPhotonBytes / photonSize;
         std::size_t finalPhotonCount = std::min(requestedPhotons, maxPhotons);
@@ -226,7 +228,7 @@ namespace Pale {
 
         Log::PA_INFO("Used Storage Capacity: {}%",
                      (m_settings.numForwardPasses * m_settings.photonsPerLaunch * m_settings.maxBounces / static_cast<
-                         float>(maxPhotons)) * 100.0f);
+                          float>(maxPhotons)) * 100.0f);
 
         m_queue.memset(m_intermediates.map.photonCountDevicePtr, 0, sizeof(uint32_t));
         m_queue.memset(m_intermediates.map.photons, 0,
@@ -237,8 +239,8 @@ namespace Pale {
         Log::PA_INFO("Total photon map memory: {}", Utils::formatBytes(photonMapTotalBytes));
     }
 
-    template <typename T>
-    static void freeDevicePtr(T*& devicePointer, sycl::queue& queue) {
+    template<typename T>
+    static void freeDevicePtr(T *&devicePointer, sycl::queue &queue) {
         if (devicePointer) {
             sycl::free(devicePointer, queue);
             devicePointer = nullptr;
@@ -321,7 +323,7 @@ namespace Pale {
     }
 
     void PathTracer::freePhotonGridBuffers() {
-        auto& grid = m_intermediates.map;
+        auto &grid = m_intermediates.map;
 
         freeDevicePtr(grid.cellStart, m_queue);
         freeDevicePtr(grid.cellEnd, m_queue);
@@ -341,8 +343,8 @@ namespace Pale {
         grid.totalCellCount = 0;
     }
 
-    void PathTracer::configurePhotonGrid(const AABB& sceneAabb) {
-        auto& grid = m_intermediates.map;
+    void PathTracer::configurePhotonGrid(const AABB &sceneAabb) {
+        auto &grid = m_intermediates.map;
 
         grid.minimumGatherRadiusWorld = 0.01f;
         grid.maximumGatherRadiusWorld = 0.04f;
@@ -377,19 +379,23 @@ namespace Pale {
         if (totalCells64 == 0 || totalCells64 > std::numeric_limits<std::uint32_t>::max()) {
             std::ostringstream errorStream;
             errorStream
-                << "Photon grid resolution too high; increase cell size or tighten AABB.\n"
-                << "sceneAabb.minP = (" << sceneAabb.minP.x() << ", " << sceneAabb.minP.y() << ", " << sceneAabb.minP.
-                z() << ")\n"
-                << "sceneAabb.maxP = (" << sceneAabb.maxP.x() << ", " << sceneAabb.maxP.y() << ", " << sceneAabb.maxP.
-                z() << ")\n"
-                << "gridOriginWorld = (" << grid.gridOriginWorld.x() << ", " << grid.gridOriginWorld.y() << ", " << grid
-                .gridOriginWorld.z() << ")\n"
-                << "gridMax = (" << gridMax.x() << ", " << gridMax.y() << ", " << gridMax.z() << ")\n"
-                << "extent = (" << extent.x() << ", " << extent.y() << ", " << extent.z() << ")\n"
-                << "cellSizeWorld = " << cellSizeWorld << "\n"
-                << "gridResolution = (" << grid.gridResolution.x() << ", " << grid.gridResolution.y() << ", " << grid.
-                gridResolution.z() << ")\n"
-                << "totalCells64 = " << totalCells64;
+                    << "Photon grid resolution too high; increase cell size or tighten AABB.\n"
+                    << "sceneAabb.minP = (" << sceneAabb.minP.x() << ", " << sceneAabb.minP.y() << ", " << sceneAabb.
+                    minP.
+                    z() << ")\n"
+                    << "sceneAabb.maxP = (" << sceneAabb.maxP.x() << ", " << sceneAabb.maxP.y() << ", " << sceneAabb.
+                    maxP.
+                    z() << ")\n"
+                    << "gridOriginWorld = (" << grid.gridOriginWorld.x() << ", " << grid.gridOriginWorld.y() << ", " <<
+                    grid
+                    .gridOriginWorld.z() << ")\n"
+                    << "gridMax = (" << gridMax.x() << ", " << gridMax.y() << ", " << gridMax.z() << ")\n"
+                    << "extent = (" << extent.x() << ", " << extent.y() << ", " << extent.z() << ")\n"
+                    << "cellSizeWorld = " << cellSizeWorld << "\n"
+                    << "gridResolution = (" << grid.gridResolution.x() << ", " << grid.gridResolution.y() << ", " <<
+                    grid.
+                    gridResolution.z() << ")\n"
+                    << "totalCells64 = " << totalCells64;
 
             throw std::runtime_error(errorStream.str());
         }
@@ -398,13 +404,13 @@ namespace Pale {
         ensurePhotonGridBuffersAllocatedAndInitialized(grid);
     }
 
-    void PathTracer::ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid& grid) {
-        auto allocateU32 = [&](std::uint32_t*& devicePtr, std::size_t elementCount, const char* name) {
+    void PathTracer::ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid &grid) {
+        auto allocateU32 = [&](std::uint32_t *&devicePtr, std::size_t elementCount, const char *name) {
             devicePtr = sycl::malloc_device<std::uint32_t>(elementCount, m_queue);
             if (!devicePtr) throw std::runtime_error(std::string("Failed to allocate ") + name);
         };
 
-        auto freeU32 = [&](std::uint32_t*& devicePtr) {
+        auto freeU32 = [&](std::uint32_t *&devicePtr) {
             if (devicePtr) {
                 sycl::free(devicePtr, m_queue);
                 devicePtr = nullptr;
@@ -417,7 +423,7 @@ namespace Pale {
         // Choose a scan block size (power of two)
         static constexpr std::uint32_t kScanBlockSize = 1024;
         const std::uint32_t requiredBlockCount =
-            (requiredCellCount + kScanBlockSize - 1u) / kScanBlockSize;
+                (requiredCellCount + kScanBlockSize - 1u) / kScanBlockSize;
 
         const bool needReallocCells = (grid.allocatedCellCount != requiredCellCount);
         const bool needReallocPhotons = (grid.allocatedPhotonCapacity != requiredPhotonCapacity);
@@ -464,7 +470,7 @@ namespace Pale {
     }
 
 
-    void PathTracer::renderForward(std::vector<SensorGPU>& sensor) {
+    void PathTracer::renderForward(std::vector<SensorGPU> &sensor) {
         ScopedTimer forwardTimer("Rendering time", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
@@ -484,23 +490,23 @@ namespace Pale {
         Log::PA_INFO("Rendering {} point(s)", renderPackage.scene.pointCount);
 
         switch (m_settings.integratorKind) {
-        case IntegratorKind::lightTracing:
-            submitLightTracingKernel(renderPackage);
-            break;
-        case IntegratorKind::lightTracingCylinderRay:
-            //submitLightTracingKernelCylinderRay(renderPackage);
-            break;
-        case IntegratorKind::photonMapping:
-            submitPhotonMappingKernel(renderPackage);
-            break;
+            case IntegratorKind::lightTracing:
+                submitLightTracingKernel(renderPackage);
+                break;
+            case IntegratorKind::lightTracingCylinderRay:
+                //submitLightTracingKernelCylinderRay(renderPackage);
+                break;
+            case IntegratorKind::photonMapping:
+                submitPhotonMappingKernel(renderPackage);
+                break;
         }
 
         m_queue.wait();
     }
 
-    void PathTracer::renderBackward(std::vector<SensorGPU>& sensors, PointGradients& gradients,
-                                    DebugImages* debugImages) {
-        for (const auto& sensor : sensors) {
+    void PathTracer::renderBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients,
+                                    DebugImages *debugImages) {
+        for (const auto &sensor: sensors) {
             const uint32_t requiredRayCapacity = sensor.width * sensor.height;
             if (requiredRayCapacity > m_rayQueueCapacity) {
                 Log::PA_INFO("RayQueue Capacity too small for per pixel adjoint pass. Resizing queue capacity..");
@@ -527,7 +533,7 @@ namespace Pale {
         m_queue.wait();
     }
 
-    void PathTracer::renderDepthDistortionBackward(std::vector<SensorGPU>& sensors, PointGradients& gradients) {
+    void PathTracer::renderDepthDistortionBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients) {
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting Distortion loss kernel");
 
@@ -548,7 +554,7 @@ namespace Pale {
         m_queue.wait();
     }
 
-    void PathTracer::renderNormalConsistencyBackward(std::vector<SensorGPU>& sensors, PointGradients& gradients) {
+    void PathTracer::renderNormalConsistencyBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients) {
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting Distortion loss kernel");
 

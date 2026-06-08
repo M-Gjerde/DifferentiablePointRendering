@@ -63,8 +63,8 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Position-only exponential LR schedule.
     use_position_lr_schedule: bool = True
-    position_lr_scale_init: float = 2.0
-    position_lr_scale_final: float = 0.25
+    position_lr_scale_init: float = 3.0
+    position_lr_scale_final: float = 0.3
     position_lr_max_steps: int = 15_000
 
     depth_distort_weight: float = 1000
@@ -77,7 +77,7 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 75
+    densification_interval: int = 100
     prune_interval: int = 50
     densify_after: int = -1
     prune_after: int = -1
@@ -86,8 +86,9 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 3.0e-2
+    densification_grad_abs_min: float = 2.0e-2
     densification_scale_min: float = 2.0e-2
+    save_gradient_diagnostics: bool = True
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.05
@@ -209,6 +210,8 @@ def parse_args() -> OptimizationConfig:
 
     parser.add_argument("--densification-grad-quantile", type=float)
     parser.add_argument("--densification-grad-abs-min", type=float)
+    parser.add_argument("--save-gradient-diagnostics", action=argparse.BooleanOptionalAction,
+                        default=argparse.SUPPRESS, )
 
     parser.add_argument("--densify-bsdf-floor", type=float)
     parser.add_argument("--densify-bsdf-gamma", type=float)

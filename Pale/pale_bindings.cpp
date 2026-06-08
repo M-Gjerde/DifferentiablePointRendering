@@ -600,7 +600,7 @@ public:
                     gradPositionPerPrimitivePerCameraHost.data(),
                     gradients.gradPositionPerPrimitivePerCamera,
                     primitiveCameraCount * sizeof(Pale::float3));
-                }
+            }
 
             if (primitiveCameraCount > 0 &&
                 gradients.gradPositionRecordCountPerPrimitivePerCamera) {
@@ -608,7 +608,7 @@ public:
                     gradPositionRecordCountPerPrimitivePerCameraHost.data(),
                     gradients.gradPositionRecordCountPerPrimitivePerCamera,
                     primitiveCameraCount * sizeof(uint32_t));
-                }
+            }
 
             syclQueue.wait_and_throw();
         }
@@ -713,95 +713,95 @@ public:
         };
 
         auto makeUint1Array =
-        [](std::vector<uint32_t> &hostVector, std::size_t elementCount) -> py::array {
-    auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+                [](std::vector<uint32_t> &hostVector, std::size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
 
-    std::vector<ssize_t> arrayShape{
-        static_cast<ssize_t>(elementCount)
-    };
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(elementCount)
+            };
 
-    std::vector<ssize_t> arrayStrides{
-        static_cast<ssize_t>(sizeof(uint32_t))
-    };
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(sizeof(uint32_t))
+            };
 
-    return py::array(
-        py::buffer_info(
-            ownedVector->data(),
-            sizeof(uint32_t),
-            py::format_descriptor<uint32_t>::format(),
-            1,
-            arrayShape,
-            arrayStrides
-        ),
-        py::capsule(ownedVector, [](void *pointer) {
-            delete static_cast<std::vector<uint32_t> *>(pointer);
-        })
-    );
-};
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(uint32_t),
+                    py::format_descriptor<uint32_t>::format(),
+                    1,
+                    arrayShape,
+                    arrayStrides
+                ),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<uint32_t> *>(pointer);
+                })
+            );
+        };
 
-auto makeFloat3CameraArray =
-        [](std::vector<Pale::float3> &hostVector,
-           std::size_t pointCount,
-           std::size_t cameraSlotCount) -> py::array {
-    auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+        auto makeFloat3CameraArray =
+                [](std::vector<Pale::float3> &hostVector,
+                   std::size_t pointCount,
+                   std::size_t cameraSlotCount) -> py::array {
+            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
 
-    std::vector<ssize_t> arrayShape{
-        static_cast<ssize_t>(pointCount),
-        static_cast<ssize_t>(cameraSlotCount),
-        3
-    };
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(pointCount),
+                static_cast<ssize_t>(cameraSlotCount),
+                3
+            };
 
-    std::vector<ssize_t> arrayStrides{
-        static_cast<ssize_t>(cameraSlotCount * sizeof(Pale::float3)),
-        static_cast<ssize_t>(sizeof(Pale::float3)),
-        static_cast<ssize_t>(sizeof(float))
-    };
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(cameraSlotCount * sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(float))
+            };
 
-    return py::array(
-        py::buffer_info(
-            ownedVector->data(),
-            sizeof(float),
-            py::format_descriptor<float>::format(),
-            3,
-            arrayShape,
-            arrayStrides
-        ),
-        py::capsule(ownedVector, [](void *pointer) {
-            delete static_cast<std::vector<Pale::float3> *>(pointer);
-        })
-    );
-};
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(float),
+                    py::format_descriptor<float>::format(),
+                    3,
+                    arrayShape,
+                    arrayStrides
+                ),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                })
+            );
+        };
 
-auto makeUintCameraArray =
-        [](std::vector<uint32_t> &hostVector,
-           std::size_t pointCount,
-           std::size_t cameraSlotCount) -> py::array {
-    auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+        auto makeUintCameraArray =
+                [](std::vector<uint32_t> &hostVector,
+                   std::size_t pointCount,
+                   std::size_t cameraSlotCount) -> py::array {
+            auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
 
-    std::vector<ssize_t> arrayShape{
-        static_cast<ssize_t>(pointCount),
-        static_cast<ssize_t>(cameraSlotCount)
-    };
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(pointCount),
+                static_cast<ssize_t>(cameraSlotCount)
+            };
 
-    std::vector<ssize_t> arrayStrides{
-        static_cast<ssize_t>(cameraSlotCount * sizeof(uint32_t)),
-        static_cast<ssize_t>(sizeof(uint32_t))
-    };
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(cameraSlotCount * sizeof(uint32_t)),
+                static_cast<ssize_t>(sizeof(uint32_t))
+            };
 
-    return py::array(
-        py::buffer_info(
-            ownedVector->data(),
-            sizeof(uint32_t),
-            py::format_descriptor<uint32_t>::format(),
-            2,
-            arrayShape,
-            arrayStrides
-        ),
-        py::capsule(ownedVector, [](void *pointer) {
-            delete static_cast<std::vector<uint32_t> *>(pointer);
-        })
-    );
-};
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(),
+                    sizeof(uint32_t),
+                    py::format_descriptor<uint32_t>::format(),
+                    2,
+                    arrayShape,
+                    arrayStrides
+                ),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<uint32_t> *>(pointer);
+                })
+            );
+        };
 
         py::dict gradientDictionary;
         gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
@@ -967,17 +967,19 @@ auto makeUintCameraArray =
 
         py::dict gradientStatsDictionary;
         gradientStatsDictionary["position_mean_norm"] =
-            makeFloat1Array(gradPositionMeanNormHost, pointCount);
+                makeFloat1Array(gradPositionMeanNormHost, pointCount);
         gradientStatsDictionary["position_std"] =
-            makeFloat1Array(gradPositionStdHost, pointCount);
+                makeFloat1Array(gradPositionStdHost, pointCount);
         gradientStatsDictionary["position_coherence"] =
-            makeFloat1Array(gradPositionCoherenceHost, pointCount);
+                makeFloat1Array(gradPositionCoherenceHost, pointCount);
         gradientStatsDictionary["position_disagreement"] =
-            makeFloat1Array(gradPositionDisagreementHost, pointCount);
+                makeFloat1Array(gradPositionDisagreementHost, pointCount);
         gradientStatsDictionary["position_active_camera_count"] =
-            makeUint1Array(gradPositionActiveCameraCountHost, pointCount);
-        gradientStatsDictionary["position_per_camera"] =            makeFloat3CameraArray(                gradPositionPerPrimitivePerCameraHost,                pointCount,                cameraSlotCount);
-        gradientStatsDictionary["position_record_count_per_camera"] =            makeUintCameraArray(                gradPositionRecordCountPerPrimitivePerCameraHost,                pointCount,                cameraSlotCount);
+                makeUint1Array(gradPositionActiveCameraCountHost, pointCount);
+        gradientStatsDictionary["position_per_camera"] = makeFloat3CameraArray(
+            gradPositionPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["position_record_count_per_camera"] = makeUintCameraArray(
+            gradPositionRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         adjointImagesDictionary["gradient_stats"] = std::move(gradientStatsDictionary);
 
         return py::make_tuple(gradientDictionary, adjointImagesDictionary);

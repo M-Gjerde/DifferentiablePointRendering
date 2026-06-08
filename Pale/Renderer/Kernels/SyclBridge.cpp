@@ -186,8 +186,8 @@ namespace Pale {
         queue.fill(gradients.gradPositionDisagreement, 0.0f, pointCount);
         queue.fill(gradients.gradPositionActiveCameraCount, 0u, pointCount);
         if (cameraSlotCount > 0u) {
-            queue.fill(                gradients.gradPositionPerPrimitivePerCamera,                float3{0.0f, 0.0f, 0.0f},                primitiveCameraCount);
-            queue.fill(                gradients.gradPositionRecordCountPerPrimitivePerCamera,                0u,                primitiveCameraCount);
+            queue.fill(gradients.gradPositionPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
+            queue.fill(gradients.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
         }
         queue.wait();
     }
@@ -290,9 +290,11 @@ namespace Pale {
                     pkg.queue.memset(pkg.intermediates.gradientRecords, 0x00,
                                      pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
                     uint32_t nextRayCountRaw = 0u;
-                    pkg.queue.memcpy(&nextRayCountRaw, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();const uint32_t nextRayCount =                            std::min(nextRayCountRaw, pkg.intermediates.maxRayQueueCapacity);
+                    pkg.queue.memcpy(&nextRayCountRaw, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
+                    const uint32_t nextRayCount = std::min(nextRayCountRaw, pkg.intermediates.maxRayQueueCapacity);
                     if (nextRayCountRaw > pkg.intermediates.maxRayQueueCapacity) {
-                        Log::PA_ERROR("Overflow: nextRayCount={} max={}",                                      nextRayCountRaw,                                      pkg.intermediates.maxRayQueueCapacity);
+                        Log::PA_ERROR("Overflow: nextRayCount={} max={}", nextRayCountRaw,
+                                      pkg.intermediates.maxRayQueueCapacity);
                     }
                     if (nextRayCount > 0u) {
                         pkg.queue.memcpy(pkg.intermediates.primaryRays,

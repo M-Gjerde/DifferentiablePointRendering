@@ -44,7 +44,8 @@ namespace Pale {
         if (!renderDebugGradientImages) {
             return;
         }
-        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex || selectedPrimitiveIndex == UINT32_MAX || gradientRecord.primitiveIndex == UINT32_MAX) {
+        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex || selectedPrimitiveIndex == UINT32_MAX ||
+            gradientRecord.primitiveIndex == UINT32_MAX) {
             return;
         }
         constexpr float maxAbsGradientComponent = 1.0e3f;
@@ -89,7 +90,7 @@ namespace Pale {
         //atomicAddFloat(debugImage.framebufferRot[pathId], rotationGradientMagnitude);
         atomicAddFloat(debugImage.framebufferScale[pathId], gradientRecord.gradScaleU);
         atomicAddFloat(debugImage.framebufferOpacity[pathId], gradientRecord.gradEta);
-        atomicAddFloat(debugImage.framebufferAlbedo[pathId],  gradientRecord.gradAlbedoR);
+        atomicAddFloat(debugImage.framebufferAlbedo[pathId], gradientRecord.gradAlbedoR);
         atomicAddFloat(debugImage.framebufferBeta[pathId], gradientRecord.gradBeta);
     }
 
@@ -1073,7 +1074,7 @@ namespace Pale {
         float geometricTerm,
         float scalarMaterialEdgeWeight,
         float invSpp,
-        const DebugImages& debugImage,
+        const DebugImages &debugImage,
         bool renderDebugGradientImages,
         uint32_t selectedPrimitiveIndex,
         uint32_t pathId) {

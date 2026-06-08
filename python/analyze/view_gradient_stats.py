@@ -20,27 +20,138 @@ COLORMAP_NAMES = [
 ]
 
 
-def find_latest_gradient_stats_dir(output_root: Path, run_index: int = 0) -> Path:
+def contains_gradient_plys(path: Path) -> bool:
+    return path.is_dir() and any(path.glob("gradient_*.ply"))
+
+
+def gradient_dir_sort_key(path: Path) -> float:
+    ply_paths = list(path.glob("gradient_*.ply"))
+    if ply_paths:
+        return max(ply_path.stat().st_mtime for ply_path in ply_paths)
+    return path.stat().st_mtime
+
+
+def find_latest_iteration_gradient_stats_dir(run_output_dir: Path) -> Path:
+    run_output_dir = run_output_dir.expanduser().resolve()
+
+    if not run_output_dir.exists():
+        raise FileNotFoundError(f"Run output dir does not exist: {run_output_dir}")
+    if not run_output_dir.is_dir():
+        raise NotADirectoryError(f"Run output dir is not a directory: {run_output_dir}")
+
+    # Case 1: user directly passed an iteration folder containing gradient_*.ply.
+    if contains_gradient_plys(run_output_dir):
+        return run_output_dir
+
+    gradient_stats_root = run_output_dir / "gradient_stats"
+    if not gradient_stats_root.exists():
+        raise FileNotFoundError(
+            f"Run output dir does not contain a gradient_stats folder: {run_output_dir}"
+        )
+    if not gradient_stats_root.is_dir():
+        raise NotADirectoryError(f"gradient_stats path is not a directory: {gradient_stats_root}")
+
+    # Preferred layout:
+    #   run_output_dir/gradient_stats/iter_000450/gradient_*.ply
+    candidate_dirs: List[Path] = [
+        child_path
+        for child_path in gradient_stats_root.iterdir()
+        if contains_gradient_plys(child_path)
+    ]
+
+    if candidate_dirs:
+        candidate_dirs = sorted(candidate_dirs, key=gradient_dir_sort_key, reverse=True)
+        return candidate_dirs[0]
+
+    # Fallback supported layout:
+    #   run_output_dir/gradient_stats/gradient_*.ply
+    if contains_gradient_plys(gradient_stats_root):
+        return gradient_stats_root
+
+    raise FileNotFoundError(
+        f"No gradient-stat folders containing gradient_*.ply found under: {gradient_stats_root}"
+    )
+
+
+def infer_output_dir_from_gradient_stats_dir(gradient_stats_dir: Path) -> Path:
+    gradient_stats_dir = gradient_stats_dir.expanduser().resolve()
+
+    if gradient_stats_dir.parent.name == "gradient_stats":
+        return gradient_stats_dir.parent.parent
+
+    if gradient_stats_dir.name == "gradient_stats":
+        return gradient_stats_dir.parent
+
+    return gradient_stats_dir
+
+
+def find_latest_output_dir(output_root: Path, run_index: int = 0) -> Path:
     output_root = output_root.expanduser().resolve()
+
     if not output_root.exists():
         raise FileNotFoundError(f"Output root does not exist: {output_root}")
     if not output_root.is_dir():
         raise NotADirectoryError(f"Output root is not a directory: {output_root}")
 
-    candidate_dirs: List[Path] = []
+    candidate_pairs: list[tuple[Path, Path]] = []
+
     for child_path in output_root.iterdir():
-        if child_path.is_dir() and list(child_path.glob("gradient_*.ply")):
-            candidate_dirs.append(child_path)
+        if not child_path.is_dir():
+            continue
 
-    if not candidate_dirs:
-        raise FileNotFoundError(f"No gradient-stat folders containing gradient_*.ply found under: {output_root}")
+        try:
+            latest_gradient_stats_dir = find_latest_iteration_gradient_stats_dir(child_path)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
 
-    candidate_dirs = sorted(candidate_dirs, key=lambda path: path.stat().st_mtime, reverse=True)
+        candidate_pairs.append((child_path, latest_gradient_stats_dir))
 
-    if run_index < 0 or run_index >= len(candidate_dirs):
-        raise IndexError(f"run_index must be in [0, {len(candidate_dirs) - 1}], got {run_index}")
+    if candidate_pairs:
+        candidate_pairs = sorted(
+            candidate_pairs,
+            key=lambda pair: gradient_dir_sort_key(pair[1]),
+            reverse=True,
+        )
 
-    return candidate_dirs[run_index]
+        if run_index < 0 or run_index >= len(candidate_pairs):
+            raise IndexError(
+                f"run_index must be in [0, {len(candidate_pairs) - 1}], got {run_index}"
+            )
+
+        return candidate_pairs[run_index][0]
+
+    # Support passing a single run dir as --output-root.
+    try:
+        find_latest_iteration_gradient_stats_dir(output_root)
+        return output_root
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+
+    raise FileNotFoundError(
+        f"No output run folders with gradient diagnostics found under: {output_root}"
+    )
+
+
+def resolve_gradient_stats_dir(
+        output_root: Path,
+        run_dir: Path | None,
+        run_index: int = 0,
+) -> tuple[Path, Path]:
+    if run_dir is not None:
+        selected_path = run_dir.expanduser().resolve()
+
+        if not selected_path.is_dir():
+            raise NotADirectoryError(f"--run-dir is not a directory: {selected_path}")
+
+        selected_gradient_stats_dir = find_latest_iteration_gradient_stats_dir(selected_path)
+        selected_output_dir = infer_output_dir_from_gradient_stats_dir(selected_gradient_stats_dir)
+
+        return selected_output_dir, selected_gradient_stats_dir
+
+    selected_output_dir = find_latest_output_dir(output_root, run_index=run_index)
+    selected_gradient_stats_dir = find_latest_iteration_gradient_stats_dir(selected_output_dir)
+
+    return selected_output_dir, selected_gradient_stats_dir
 
 
 def find_gradient_plys(gradient_stats_dir: Path) -> List[Path]:
@@ -81,7 +192,10 @@ def robust_normalize(values: np.ndarray, lower_percentile: float, upper_percenti
     return np.clip((values - value_min) / (value_max - value_min), 0.0, 1.0).astype(np.float32)
 
 
-def interpolate_colormap(normalized_values: np.ndarray, control_points: list[tuple[float, tuple[float, float, float]]]) -> np.ndarray:
+def interpolate_colormap(
+        normalized_values: np.ndarray,
+        control_points: list[tuple[float, tuple[float, float, float]]],
+) -> np.ndarray:
     t = np.clip(np.asarray(normalized_values, dtype=np.float32).reshape(-1), 0.0, 1.0)
 
     control_t = np.asarray([point[0] for point in control_points], dtype=np.float32)
@@ -240,10 +354,17 @@ def parse_ascii_ply_vertices(ply_path: Path) -> tuple[list[str], np.ndarray]:
     raise RuntimeError(f"No end_header found in PLY: {ply_path}")
 
 
-def infer_scalar_property_name(ply_path: Path, property_names: list[str], explicit_scalar_name: str | None) -> str:
+def infer_scalar_property_name(
+        ply_path: Path,
+        property_names: list[str],
+        explicit_scalar_name: str | None,
+) -> str:
     if explicit_scalar_name is not None:
         if explicit_scalar_name not in property_names:
-            raise RuntimeError(f"Scalar property '{explicit_scalar_name}' not found in {ply_path.name}. Available: {property_names}")
+            raise RuntimeError(
+                f"Scalar property '{explicit_scalar_name}' not found in {ply_path.name}. "
+                f"Available: {property_names}"
+            )
         return explicit_scalar_name
 
     if ply_path.stem in property_names:
@@ -358,6 +479,7 @@ def update_status_text(
         text_actor: vtk.vtkTextActor,
         current_index: int,
         ply_paths: List[Path],
+        selected_output_dir: Path,
         gradient_stats_dir: Path,
         point_size: float,
         colormap_name: str,
@@ -368,7 +490,8 @@ def update_status_text(
         f"{current_index + 1}/{len(ply_paths)} | point size {point_size:.1f} | colormap: {colormap_name}\n"
         f"{current_path.name}\n"
         f"Space = cycle colormap | Left/Right = cycle PLY\n"
-        f"{gradient_stats_dir}"
+        f"run: {selected_output_dir.name}\n"
+        f"stats: {gradient_stats_dir.name}"
     )
 
 
@@ -377,11 +500,27 @@ def parse_arguments() -> argparse.Namespace:
         description="Simple VTK viewer for cycling through gradient-stat colored PLY files."
     )
 
-    parser.add_argument("--output-root", type=Path, default=Path("../Assets/OptimizationOutput"))
-    parser.add_argument("--run-dir", type=Path, default=None)
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("../Assets/OptimizationOutput"),
+        help=(
+            "Root folder containing optimization run folders. "
+            "The latest run with gradient_stats/iter_*/gradient_*.ply is selected."
+        ),
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit run folder, gradient_stats folder, or exact iter_* folder. "
+            "If this is a run folder, the latest gradient_stats/iter_* folder is selected."
+        ),
+    )
     parser.add_argument("--run-index", type=int, default=0)
     parser.add_argument("--start-index", type=int, default=0)
-    parser.add_argument("--point-size", type=float, default=4.0)
+    parser.add_argument("--point-size", type=float, default=15.0)
     parser.add_argument("--point-size-step", type=float, default=1.0)
     parser.add_argument("--window-width", type=int, default=1200)
     parser.add_argument("--window-height", type=int, default=900)
@@ -398,15 +537,11 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     args = parse_arguments()
 
-    if args.run_dir is not None:
-        gradient_stats_dir = args.run_dir.expanduser().resolve()
-        if not gradient_stats_dir.is_dir():
-            raise NotADirectoryError(f"--run-dir is not a directory: {gradient_stats_dir}")
-    else:
-        gradient_stats_dir = find_latest_gradient_stats_dir(
-            output_root=args.output_root,
-            run_index=args.run_index,
-        )
+    selected_output_dir, gradient_stats_dir = resolve_gradient_stats_dir(
+        output_root=args.output_root,
+        run_dir=args.run_dir,
+        run_index=args.run_index,
+    )
 
     ply_paths = find_gradient_plys(gradient_stats_dir)
 
@@ -417,11 +552,15 @@ def main() -> None:
     point_size = float(args.point_size)
     colormap_index = COLORMAP_NAMES.index(args.colormap)
 
+    print(f"Using output folder       : {selected_output_dir}")
     print(f"Using gradient-stat folder: {gradient_stats_dir}")
     print(f"Found {len(ply_paths)} PLY files:")
     for index, path in enumerate(ply_paths):
         print(f"  {index}: {path.name}")
-    print("Controls: Left/Right = previous/next PLY, Space = cycle colormap, +/- = point size, R = reload, Q/Escape = quit")
+    print(
+        "Controls: Left/Right = previous/next PLY, Space = cycle colormap, "
+        "+/- = point size, R = reload/latest, Q/Escape = quit"
+    )
 
     poly_data = read_ply_as_points(
         ply_path=ply_paths[current_index],
@@ -451,6 +590,7 @@ def main() -> None:
         text_actor=status_text_actor,
         current_index=current_index,
         ply_paths=ply_paths,
+        selected_output_dir=selected_output_dir,
         gradient_stats_dir=gradient_stats_dir,
         point_size=point_size,
         colormap_name=COLORMAP_NAMES[colormap_index],
@@ -475,11 +615,24 @@ def main() -> None:
     navigation_repeat_seconds = max(float(args.navigation_repeat_seconds), 0.01)
 
     def reload_file_list_preserving_current() -> None:
+        nonlocal selected_output_dir
+        nonlocal gradient_stats_dir
         nonlocal ply_paths
         nonlocal current_index
 
         current_name = ply_paths[current_index].name if ply_paths else None
-        updated_paths = find_gradient_plys(gradient_stats_dir)
+
+        try:
+            selected_output_dir, gradient_stats_dir = resolve_gradient_stats_dir(
+                output_root=args.output_root,
+                run_dir=args.run_dir,
+                run_index=args.run_index,
+            )
+            updated_paths = find_gradient_plys(gradient_stats_dir)
+        except Exception as exception:
+            print(f"Warning: could not reload latest gradient stats ({exception})")
+            return
+
         ply_paths = updated_paths
 
         if current_name is not None:
@@ -511,12 +664,16 @@ def main() -> None:
             text_actor=status_text_actor,
             current_index=current_index,
             ply_paths=ply_paths,
+            selected_output_dir=selected_output_dir,
             gradient_stats_dir=gradient_stats_dir,
             point_size=point_size,
             colormap_name=current_colormap,
         )
 
-        render_window.SetWindowName(f"{current_index + 1}/{len(ply_paths)} - {current_path.name} - {current_colormap}")
+        render_window.SetWindowName(
+            f"{current_index + 1}/{len(ply_paths)} - "
+            f"{current_path.name} - {current_colormap}"
+        )
 
         if reset_camera:
             renderer.ResetCamera()
@@ -524,7 +681,10 @@ def main() -> None:
         renderer.ResetCameraClippingRange()
         render_window.Render()
 
-        print(f"Showing {current_index + 1}/{len(ply_paths)}: {current_path.name} | colormap={current_colormap}")
+        print(
+            f"Showing {current_index + 1}/{len(ply_paths)}: "
+            f"{current_path.name} | colormap={current_colormap} | dir={gradient_stats_dir}"
+        )
 
     def execute_action(action: str) -> None:
         nonlocal current_index
@@ -676,7 +836,8 @@ def main() -> None:
         held_navigation_action = None
 
     render_window.SetWindowName(
-        f"{current_index + 1}/{len(ply_paths)} - {ply_paths[current_index].name} - {COLORMAP_NAMES[colormap_index]}"
+        f"{current_index + 1}/{len(ply_paths)} - "
+        f"{ply_paths[current_index].name} - {COLORMAP_NAMES[colormap_index]}"
     )
 
     interactor.AddObserver("KeyPressEvent", on_key_press)
@@ -685,7 +846,11 @@ def main() -> None:
     interactor.AddObserver("LeaveEvent", clear_key_state)
 
     interactor.Initialize()
-    renderer.ResetCamera()
+    camera = renderer.GetActiveCamera()
+    camera.SetViewUp(0.0, 1.0, 0.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.25)
+
+    #renderer.ResetCamera()
     renderer.ResetCameraClippingRange()
     render_window.Render()
     interactor.CreateRepeatingTimer(50)

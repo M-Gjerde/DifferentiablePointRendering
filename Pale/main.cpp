@@ -706,6 +706,235 @@ static void saveDebugGradientImagesForSensors(
     }
 }
 
+
+static float sanitizeScalar(float value) {
+    if (!std::isfinite(value)) {
+        return 0.0f;
+    }
+    return value;
+}
+
+static std::vector<float> robustNormalizeScalars(
+    const std::vector<float> &values,
+    float lowerPercentile = 1.0f,
+    float upperPercentile = 99.0f) {
+    std::vector<float> finiteValues;
+    finiteValues.reserve(values.size());
+
+    for (float value: values) {
+        if (std::isfinite(value)) {
+            finiteValues.push_back(value);
+        }
+    }
+
+    std::vector<float> normalized(values.size(), 0.0f);
+
+    if (finiteValues.empty()) {
+        return normalized;
+    }
+
+    std::sort(finiteValues.begin(), finiteValues.end());
+
+    const auto percentileValue = [&](float percentile) -> float {
+        const float clampedPercentile = std::clamp(percentile, 0.0f, 100.0f);
+        const float position =
+            (clampedPercentile / 100.0f) * static_cast<float>(finiteValues.size() - 1u);
+
+        const std::size_t lowerIndex = static_cast<std::size_t>(std::floor(position));
+        const std::size_t upperIndex = std::min(lowerIndex + 1u, finiteValues.size() - 1u);
+        const float fraction = position - static_cast<float>(lowerIndex);
+
+        return finiteValues[lowerIndex] * (1.0f - fraction) + finiteValues[upperIndex] * fraction;
+    };
+
+    const float valueMin = percentileValue(lowerPercentile);
+    const float valueMax = percentileValue(upperPercentile);
+    const float denominator = valueMax - valueMin;
+
+    if (!(denominator > 1.0e-12f)) {
+        return normalized;
+    }
+
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        const float value = sanitizeScalar(values[index]);
+        normalized[index] = std::clamp((value - valueMin) / denominator, 0.0f, 1.0f);
+    }
+
+    return normalized;
+}
+
+static std::vector<float> normalizeByMaximumValue(
+    const std::vector<float> &values,
+    float maximumValue) {
+    std::vector<float> normalized(values.size(), 0.0f);
+
+    const float safeMaximumValue = std::max(maximumValue, 1.0f);
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        normalized[index] = std::clamp(sanitizeScalar(values[index]) / safeMaximumValue, 0.0f, 1.0f);
+    }
+
+    return normalized;
+}
+
+static std::array<uint8_t, 3> blackRedYellowWhiteColor(float normalizedValue) {
+    const float t = std::clamp(normalizedValue, 0.0f, 1.0f);
+
+    const float red = std::clamp(3.0f * t, 0.0f, 1.0f);
+    const float green = std::clamp(3.0f * t - 1.0f, 0.0f, 1.0f);
+    const float blue = std::clamp(3.0f * t - 2.0f, 0.0f, 1.0f);
+
+    return {
+        static_cast<uint8_t>(std::clamp(red * 255.0f, 0.0f, 255.0f)),
+        static_cast<uint8_t>(std::clamp(green * 255.0f, 0.0f, 255.0f)),
+        static_cast<uint8_t>(std::clamp(blue * 255.0f, 0.0f, 255.0f)),
+    };
+}
+
+static void saveColoredGradientStatsPly(
+    const Pale::PointGeometry &pointGeometry,
+    const std::vector<float> &scalarValues,
+    const std::vector<float> &normalizedValues,
+    const std::filesystem::path &path,
+    const std::string &scalarName) {
+    const std::size_t pointCount =
+        std::min(pointGeometry.positions.size(), scalarValues.size());
+
+    if (pointCount == 0u) {
+        Pale::Log::PA_WARN("saveColoredGradientStatsPly: no points for {}", path.string());
+        return;
+    }
+
+    std::filesystem::create_directories(path.parent_path());
+
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Could not open gradient-stat PLY for writing: " + path.string());
+    }
+
+    file << "ply\n";
+    file << "format ascii 1.0\n";
+    file << "element vertex " << pointCount << "\n";
+    file << "property float x\n";
+    file << "property float y\n";
+    file << "property float z\n";
+    file << "property uchar red\n";
+    file << "property uchar green\n";
+    file << "property uchar blue\n";
+    file << "property float " << scalarName << "\n";
+    file << "end_header\n";
+
+    for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+        const auto &position = pointGeometry.positions[pointIndex];
+        const auto color = blackRedYellowWhiteColor(normalizedValues[pointIndex]);
+        const float scalarValue = sanitizeScalar(scalarValues[pointIndex]);
+
+        file << position.x << " "
+             << position.y << " "
+             << position.z << " "
+             << static_cast<int>(color[0]) << " "
+             << static_cast<int>(color[1]) << " "
+             << static_cast<int>(color[2]) << " "
+             << scalarValue << "\n";
+    }
+
+    Pale::Log::PA_INFO("Saved gradient-stat PLY: {}", path.string());
+}
+
+static void savePointGradientStatsAsColoredPlys(
+    Pale::DeviceSelector &deviceSelector,
+    const Pale::PointGradients &gradients,
+    const Pale::PointGeometry &pointGeometry,
+    const std::filesystem::path &outputDir,
+    uint32_t activeCameraCountMax) {
+    auto queue = deviceSelector.getQueue();
+    const std::size_t pointCount = gradients.numPoints;
+
+    if (pointCount == 0u) {
+        Pale::Log::PA_WARN("savePointGradientStatsAsColoredPlys: no gradients to save");
+        return;
+    }
+
+    if (!gradients.gradPosition ||
+        !gradients.gradPositionMeanNorm ||
+        !gradients.gradPositionStd ||
+        !gradients.gradPositionActiveCameraCount) {
+        Pale::Log::PA_WARN("savePointGradientStatsAsColoredPlys: gradient stats buffers are missing");
+        return;
+    }
+
+    std::vector<Pale::float3> gradPositionHost(pointCount);
+    std::vector<float> positionMeanNormHost(pointCount, 0.0f);
+    std::vector<float> positionStdHost(pointCount, 0.0f);
+    std::vector<uint32_t> activeCameraCountHost(pointCount, 0u);
+
+    queue.memcpy(
+        gradPositionHost.data(),
+        gradients.gradPosition,
+        pointCount * sizeof(Pale::float3));
+
+    queue.memcpy(
+        positionMeanNormHost.data(),
+        gradients.gradPositionMeanNorm,
+        pointCount * sizeof(float));
+
+    queue.memcpy(
+        positionStdHost.data(),
+        gradients.gradPositionStd,
+        pointCount * sizeof(float));
+
+    queue.memcpy(
+        activeCameraCountHost.data(),
+        gradients.gradPositionActiveCameraCount,
+        pointCount * sizeof(uint32_t));
+
+    queue.wait();
+
+    std::vector<float> gradientNormHost(pointCount, 0.0f);
+    std::vector<float> activeCameraCountFloatHost(pointCount, 0.0f);
+
+    for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+        const Pale::float3 &gradient = gradPositionHost[pointIndex];
+
+        const float gradientSquaredNorm =
+            gradient.x() * gradient.x() +
+            gradient.y() * gradient.y() +
+            gradient.z() * gradient.z();
+
+        gradientNormHost[pointIndex] = std::sqrt(std::max(gradientSquaredNorm, 0.0f));
+        activeCameraCountFloatHost[pointIndex] = static_cast<float>(activeCameraCountHost[pointIndex]);
+    }
+
+    std::filesystem::create_directories(outputDir);
+
+    saveColoredGradientStatsPly(
+        pointGeometry,
+        positionStdHost,
+        robustNormalizeScalars(positionStdHost),
+        outputDir / "gradient_position_std.ply",
+        "gradient_position_std");
+
+    saveColoredGradientStatsPly(
+        pointGeometry,
+        positionMeanNormHost,
+        robustNormalizeScalars(positionMeanNormHost),
+        outputDir / "gradient_geometric_pressure.ply",
+        "gradient_geometric_pressure");
+
+    saveColoredGradientStatsPly(
+        pointGeometry,
+        gradientNormHost,
+        robustNormalizeScalars(gradientNormHost),
+        outputDir / "gradient_position_norm.ply",
+        "gradient_position_norm");
+
+    saveColoredGradientStatsPly(
+        pointGeometry,
+        activeCameraCountFloatHost,
+        normalizeByMaximumValue(activeCameraCountFloatHost, static_cast<float>(std::max(activeCameraCountMax, 1u))),
+        outputDir / "gradient_active_camera_count.ply",
+        "gradient_active_camera_count");
+}
+
 int main(int argc, char **argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
@@ -820,7 +1049,7 @@ int main(int argc, char **argv) {
         settings.numForwardPasses = 1;
         settings.numShadowRays = 1;
         settings.numAdjointShadowRays = 1;
-        settings.adjointSamplesPerPixel = 4;
+        settings.adjointSamplesPerPixel = 64;
 
         settings.renderDebugGradientImages = true;
         settings.enableAdjointDirectLight = true;
@@ -994,6 +1223,15 @@ int main(int argc, char **argv) {
                 photoDebugImagesSelected.data());
 
             Pale::Log::PA_INFO("Surface Regularizer Backward Pass...");
+
+            if (settings.renderDebugGradientImages) {
+                savePointGradientStatsAsColoredPlys(
+                    deviceSelector,
+                    photoGradients,
+                    pointGeometry,
+                    outputRoot / "gradient_stats",
+                    static_cast<uint32_t>(adjointSensors.size()));
+            }
 
             std::vector<Pale::DebugImages> surfaceDebugImages(sensors.size());
 
