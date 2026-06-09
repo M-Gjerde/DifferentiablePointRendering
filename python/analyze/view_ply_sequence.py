@@ -381,7 +381,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--window-width", type=int, default=1200)
     parser.add_argument("--window-height", type=int, default=900)
     parser.add_argument("--reset-camera-on-start", action="store_true", help="Frame the first point cloud once at startup. Camera is still preserved when cycling.")
-    parser.add_argument("--color-boost", type=float, default=1.0, help="Initial multiplier applied to surfel RGB values.")
+    parser.add_argument("--color-boost", type=float, default=4.0, help="Initial multiplier applied to surfel RGB values.")
     parser.add_argument("--color-boost-step", type=float, default=0.5, help="Amount added/subtracted from color boost when pressing +/-.")
     parser.add_argument("--navigation-repeat-seconds", type=float, default=0.15, help="Repeat delay for held left/right navigation keys.")
 

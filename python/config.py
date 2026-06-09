@@ -63,12 +63,12 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Position-only exponential LR schedule.
     use_position_lr_schedule: bool = True
-    position_lr_scale_init: float = 3.0
+    position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.3
     position_lr_max_steps: int = 15_000
 
     depth_distort_weight: float = 1000
-    depth_distort_start_iteration: int = 2000
+    depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.01
     visibility_weighted_opacity_weight: float = 0.01
 
@@ -77,7 +77,7 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 100
+    densification_interval: int = 50
     prune_interval: int = 50
     densify_after: int = -1
     prune_after: int = -1
@@ -86,8 +86,8 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 2.0e-2
-    densification_scale_min: float = 2.0e-2
+    densification_grad_abs_min: float = 6.0e-3
+    densification_scale_min: float = 1.2e-2
     save_gradient_diagnostics: bool = True
 
     # More densification on radiometrically darker primitives

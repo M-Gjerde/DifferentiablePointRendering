@@ -518,40 +518,34 @@ export namespace Pale {
     }
 
     inline void freeGradientsForScene(sycl::queue queue, PointGradients &gradients) {
-        if (gradients.gradPosition) {
-            sycl::free(gradients.gradPosition, queue);
-            gradients.gradPosition = nullptr;
-        }
-        if (gradients.gradTanU) {
-            sycl::free(gradients.gradTanU, queue);
-            gradients.gradTanU = nullptr;
-        }
-        if (gradients.gradTanV) {
-            sycl::free(gradients.gradTanV, queue);
-            gradients.gradTanV = nullptr;
-        }
-        if (gradients.gradScale) {
-            sycl::free(gradients.gradScale, queue);
-            gradients.gradScale = nullptr;
-        }
-        if (gradients.gradAlbedo) {
-            sycl::free(gradients.gradAlbedo, queue);
-            gradients.gradAlbedo = nullptr;
-        }
-        if (gradients.gradOpacity) {
-            sycl::free(gradients.gradOpacity, queue);
-            gradients.gradOpacity = nullptr;
-        }
-        if (gradients.gradBeta) {
-            sycl::free(gradients.gradBeta, queue);
-            gradients.gradBeta = nullptr;
-        }
-        if (gradients.gradShape) {
-            sycl::free(gradients.gradShape, queue);
-            gradients.gradShape = nullptr;
-        }
+        const auto freeDevicePtr = [&queue]<typename T>(T *&devicePtr) {
+            if (devicePtr) {
+                sycl::free(devicePtr, queue);
+                devicePtr = nullptr;
+            }
+        };
+
+        freeDevicePtr(gradients.gradPosition);
+        freeDevicePtr(gradients.gradTanU);
+        freeDevicePtr(gradients.gradTanV);
+        freeDevicePtr(gradients.gradScale);
+        freeDevicePtr(gradients.gradAlbedo);
+        freeDevicePtr(gradients.gradOpacity);
+        freeDevicePtr(gradients.gradBeta);
+        freeDevicePtr(gradients.gradShape);
+
+        freeDevicePtr(gradients.gradPositionPerPrimitivePerCamera);
+        freeDevicePtr(gradients.gradPositionRecordCountPerPrimitivePerCamera);
+
+        freeDevicePtr(gradients.gradPositionMeanNorm);
+        freeDevicePtr(gradients.gradPositionStd);
+        freeDevicePtr(gradients.gradPositionCoherence);
+        freeDevicePtr(gradients.gradPositionDisagreement);
+        freeDevicePtr(gradients.gradPositionActiveCameraCount);
 
         gradients.numPoints = 0;
+        gradients.cameraSlotCount = 0;
+
         queue.wait();
     }
 

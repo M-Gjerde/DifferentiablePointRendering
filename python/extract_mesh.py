@@ -565,7 +565,7 @@ if __name__ == "__main__":
 
         depth_trunc = pale_extractor.radius * 2.0 if args.depth_trunc < 0 else args.depth_trunc
         voxel_size = depth_trunc / args.mesh_res if args.voxel_size < 0 else args.voxel_size
-        sdf_trunc = 15.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
+        sdf_trunc = 10.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
 
         mesh = pale_extractor.extract_mesh_bounded(
             voxel_size=voxel_size,

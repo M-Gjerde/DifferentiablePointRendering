@@ -3098,6 +3098,8 @@ namespace Pale {
                         barA[i] = 0.0f;
                     }
 
+                    constexpr bool detachDepthDistortionWeights = true;
+
                     if (useDepthDistortion && hitCount > 1u) {
                         for (uint32_t i = 0u; i < hitCount; ++i) {
                             for (uint32_t j = i + 1u; j < hitCount; ++j) {
@@ -3108,8 +3110,10 @@ namespace Pale {
                                 const float depthDifference = mi - mj;
                                 const float depthDifferenceSquared = depthDifference * depthDifference;
 
-                                barW[i] += depthDistortionAdjoint * wj * depthDifferenceSquared;
-                                barW[j] += depthDistortionAdjoint * wi * depthDifferenceSquared;
+                                if constexpr (!detachDepthDistortionWeights) {
+                                    barW[i] += depthDistortionAdjoint * wj * depthDifferenceSquared;
+                                    barW[j] += depthDistortionAdjoint * wi * depthDifferenceSquared;
+                                }
 
                                 const float depthAdjointScale = 2.0f * depthDistortionAdjoint * wi * wj;
                                 barM[i] += depthAdjointScale * depthDifference;
@@ -3121,22 +3125,24 @@ namespace Pale {
                             barZ[i] += barM[i] * depthDistortionDndc01Ddepth(hits[i].zi);
                         }
 
-                        float barTnext = 0.0f;
-                        for (int i = static_cast<int>(hitCount) - 1; i >= 0; --i) {
-                            const float ai = hits[i].ai;
-                            const float Tprev = hits[i].Tprev;
+                        if constexpr (!detachDepthDistortionWeights) {
+                            float barTnext = 0.0f;
+                            for (int i = static_cast<int>(hitCount) - 1; i >= 0; --i) {
+                                const float ai = hits[i].ai;
+                                const float Tprev = hits[i].Tprev;
 
-                            float barAi = 0.0f;
-                            float barTprev = 0.0f;
+                                float barAi = 0.0f;
+                                float barTprev = 0.0f;
 
-                            barAi += Tprev * barW[i];
-                            barTprev += ai * barW[i];
+                                barAi += Tprev * barW[i];
+                                barTprev += ai * barW[i];
 
-                            barAi += -Tprev * barTnext;
-                            barTprev += (1.0f - ai) * barTnext;
+                                barAi += -Tprev * barTnext;
+                                barTprev += (1.0f - ai) * barTnext;
 
-                            barA[i] = barAi;
-                            barTnext = barTprev;
+                                barA[i] = barAi;
+                                barTnext = barTprev;
+                            }
                         }
                     }
 
