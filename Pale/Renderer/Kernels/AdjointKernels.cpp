@@ -3098,7 +3098,7 @@ namespace Pale {
                         barA[i] = 0.0f;
                     }
 
-                    constexpr bool detachDepthDistortionWeights = true;
+                    constexpr bool detachDepthDistortionWeights = false;
 
                     if (useDepthDistortion && hitCount > 1u) {
                         for (uint32_t i = 0u; i < hitCount; ++i) {

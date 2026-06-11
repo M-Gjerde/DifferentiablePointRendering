@@ -329,7 +329,7 @@ def orient_normals_outward(points: np.ndarray, normals: np.ndarray) -> np.ndarra
     return normals
 
 
-def build_normals(points: np.ndarray, vertex_table: VertexTable, normal_mode: str, pca_knn: int) -> tuple[np.ndarray, str]:
+def build_normals(points: np.ndarray, vertex_table: VertexTable, normal_mode: str) -> tuple[np.ndarray, str]:
     normals: np.ndarray | None = None
     normal_source = "unknown"
 
@@ -342,10 +342,6 @@ def build_normals(points: np.ndarray, vertex_table: VertexTable, normal_mode: st
         normals = load_tangent_normals(vertex_table)
         if normals is not None:
             normal_source = "cross(tanU, tanV)"
-
-    if normals is None and normal_mode in {"auto", "pca"}:
-        normals = estimate_pca_normals(points, pca_knn=pca_knn)
-        normal_source = f"Open3D PCA normals, knn={pca_knn}"
 
     if normals is None:
         raise ValueError(
@@ -426,9 +422,13 @@ def expand_surfel_samples(
         samples_per_surfel: int,
         scale_property_mode: str,
         max_sample_radius: float,
+        sample_radial_exponent: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, str]:
     if samples_per_surfel <= 1:
         return points, normals, colors, "center-only"
+
+    if sample_radial_exponent <= 0.0:
+        raise ValueError("--sample-radial-exponent must be positive.")
 
     scale_pair = load_scale_pair(
         vertex_table=vertex_table,
@@ -454,7 +454,8 @@ def expand_surfel_samples(
     golden_angle = np.pi * (3.0 - np.sqrt(5.0))
 
     for sample_index in range(samples_per_surfel - 1):
-        radial_coordinate = np.sqrt((sample_index + 0.5) / max(samples_per_surfel - 1, 1))
+        normalized_index = (sample_index + 0.5) / max(samples_per_surfel - 1, 1)
+        radial_coordinate = normalized_index ** sample_radial_exponent
         angular_coordinate = sample_index * golden_angle
         sample_offsets.append((radial_coordinate * np.cos(angular_coordinate), radial_coordinate * np.sin(angular_coordinate)))
 
@@ -473,7 +474,12 @@ def expand_surfel_samples(
     sampled_normals = np.ascontiguousarray(np.vstack(expanded_normals), dtype=np.float64)
     sampled_colors = np.ascontiguousarray(np.vstack(expanded_colors), dtype=np.float64) if colors is not None else None
 
-    return sampled_points, sampled_normals, sampled_colors, f"{samples_per_surfel} samples/surfel using {tangent_source}"
+    return (
+        sampled_points,
+        sampled_normals,
+        sampled_colors,
+        f"{samples_per_surfel} samples/surfel using {tangent_source}, radial exponent {sample_radial_exponent:g}",
+    )
 
 
 def apply_valid_point_mask(vertex_table: VertexTable, points: np.ndarray, colors: np.ndarray | None, mask: np.ndarray) -> tuple[VertexTable, np.ndarray, np.ndarray | None]:
@@ -660,20 +666,23 @@ def merge_meshes(meshes: list[o3d.geometry.TriangleMesh]) -> o3d.geometry.Triang
 def build_mesh_suffix(args: argparse.Namespace) -> str:
     suffix_parts: list[str] = []
 
-    #if args.samples_per_surfel != 16:
-    #    suffix_parts.append(f"samples_{args.samples_per_surfel}")
-#
-    #if args.poisson_depth != 9:
-    #    suffix_parts.append(f"depth_{args.poisson_depth}")
-#
-    #if args.density_quantile != 0.02:
-    #    suffix_parts.append(f"density_q_{format_suffix_value(args.density_quantile)}")
-#
-    #if args.bbox_padding_factor != 0.05:
-    #    suffix_parts.append(f"bbox_{format_suffix_value(args.bbox_padding_factor)}")
-#
-    #if getattr(args, "split_components", False):
-    #    suffix_parts.append(f"split_eps_{format_suffix_value(args.component_eps)}")
+    # if args.samples_per_surfel != 16:
+    #     suffix_parts.append(f"samples_{args.samples_per_surfel}")
+    #
+    # if args.sample_radial_exponent != 0.5:
+    #     suffix_parts.append(f"radial_exp_{format_suffix_value(args.sample_radial_exponent)}")
+    #
+    # if args.poisson_depth != 9:
+    #     suffix_parts.append(f"depth_{args.poisson_depth}")
+    #
+    # if args.density_quantile != 0.02:
+    #     suffix_parts.append(f"density_q_{format_suffix_value(args.density_quantile)}")
+    #
+    # if args.bbox_padding_factor != 0.05:
+    #     suffix_parts.append(f"bbox_{format_suffix_value(args.bbox_padding_factor)}")
+    #
+    # if getattr(args, "split_components", False):
+    #     suffix_parts.append(f"split_eps_{format_suffix_value(args.component_eps)}")
 
     return f"_{'_'.join(suffix_parts)}" if suffix_parts else ""
 
@@ -682,18 +691,27 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Poisson mesh extraction from optimized surfel/point primitives.")
     parser.add_argument("--output_root", type=Path, default=Path("../Assets/OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
-    parser.add_argument("--normal-mode", type=str, default="tangent", choices=["auto", "existing", "tangent", "pca"])
-    parser.add_argument("--pca-knn", type=int, default=30)
-    parser.add_argument("--samples-per-surfel", type=int, default=16)
+    parser.add_argument("--normal-mode", type=str, default="tangent", choices=["auto", "existing", "tangent"])
+    parser.add_argument("--samples-per-surfel", type=int, default=24)
+    parser.add_argument(
+        "--sample-radial-exponent",
+        type=float,
+        default=1.2,
+        help=(
+            "Controls how surfel samples are distributed radially. "
+            "0.5 preserves the old uniform-area disk sampling. "
+            "Larger values concentrate samples closer to the surfel center."
+        ),
+    )
     parser.add_argument("--scale-property-mode", type=str, default="linear", choices=["auto", "linear", "exp"])
-    parser.add_argument("--max-sample-radius", type=float, default=0.05)
+    parser.add_argument("--max-sample-radius", type=float, default=0.00)
     parser.add_argument("--poisson-depth", type=int, default=10)
     parser.add_argument("--poisson-scale", type=float, default=1.1)
-    parser.add_argument("--density-quantile", type=float, default=0.04)
+    parser.add_argument("--density-quantile", type=float, default=0.05)
     parser.add_argument("--bbox-padding-factor", type=float, default=0.05)
     parser.add_argument("--num-cluster", type=int, default=50)
     parser.add_argument("--split-components", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--component-eps", type=float, default=0.06)
+    parser.add_argument("--component-eps", type=float, default=0.05)
     parser.add_argument("--component-min-points", type=int, default=25)
     parser.add_argument("--save-samples", action="store_true")
     return parser.parse_args()
@@ -723,7 +741,7 @@ def main() -> None:
     if points.shape[0] == 0:
         raise RuntimeError("No valid points remain after filtering.")
 
-    normals, normal_source = build_normals(points=points, vertex_table=vertex_table, normal_mode=args.normal_mode, pca_knn=args.pca_knn)
+    normals, normal_source = build_normals(points=points, vertex_table=vertex_table, normal_mode=args.normal_mode)
 
     sampled_points, sampled_normals, sampled_colors, sampling_source = expand_surfel_samples(
         points=points,
@@ -733,6 +751,7 @@ def main() -> None:
         samples_per_surfel=args.samples_per_surfel,
         scale_property_mode=args.scale_property_mode,
         max_sample_radius=args.max_sample_radius,
+        sample_radial_exponent=args.sample_radial_exponent,
     )
 
     point_cloud = make_point_cloud(sampled_points, sampled_normals, sampled_colors)

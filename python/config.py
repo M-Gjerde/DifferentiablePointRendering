@@ -63,13 +63,19 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Position-only exponential LR schedule.
     use_position_lr_schedule: bool = True
-    position_lr_scale_init: float = 2.0
-    position_lr_scale_final: float = 0.3
-    position_lr_max_steps: int = 15_000
+    position_lr_scale_init: float = 5.0
+    position_lr_scale_final: float = 0.5
+    position_lr_max_steps: int = 10_000
+    # Global LR scheduling
+    use_global_lr_schedule: bool = True
+    global_lr_scale_init: float = 1.0
+    global_lr_scale_final: float = 0.3
+    global_lr_start_iteration: int = 7_000
+    global_lr_max_steps: int = 15_000
 
     depth_distort_weight: float = 1000
-    depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
+    depth_distort_start_iteration: int = 2000
+    normal_consistency_weight: float = 0.005
     visibility_weighted_opacity_weight: float = 0.01
 
     log_interval: int = 1
@@ -77,8 +83,8 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 50
-    prune_interval: int = 50
+    densification_interval: int = 100
+    prune_interval: int = 25
     densify_after: int = -1
     prune_after: int = -1
     densify_until_iteration: int = -1
@@ -86,13 +92,13 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 6.0e-3
-    densification_scale_min: float = 1.2e-2
+    densification_grad_abs_min: float = 5.0e-3
+    densification_scale_min: float = 1.0e-2
     save_gradient_diagnostics: bool = True
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.05
-    densify_bsdf_gamma: float = 1.2
+    densify_bsdf_gamma: float = 1.0
 
     # Pruning
     opacity_prune_threshold: float = 0.1
@@ -121,12 +127,12 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.001
+        factor_position = 0.0003
         factor_tangent = 0.005
         factor_scale = 0.0005
         factor_albedo = 0.001
         factor_opacity = 0.02
-        factor_beta = 0.001
+        factor_beta = 0.00
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -189,6 +195,12 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--position-lr-scale-init", type=float)
     parser.add_argument("--position-lr-scale-final", type=float)
     parser.add_argument("--position-lr-max-steps", type=int)
+    parser.add_argument("--global-lr-schedule", dest="use_global_lr_schedule",
+                        action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
+    parser.add_argument("--global-lr-scale-init", type=float)
+    parser.add_argument("--global-lr-scale-final", type=float)
+    parser.add_argument("--global-lr-start-iteration", type=int)
+    parser.add_argument("--global-lr-max-steps", type=int)
 
     parser.add_argument("--normal-consistency-weight", dest="normal_consistency_weight", type=float)
     parser.add_argument("--depth-distort-weight", dest="depth_distort_weight", type=float)

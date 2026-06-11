@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from typing import Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 from config import OptimizationConfig
 
 import numpy as np
@@ -33,30 +33,12 @@ def create_optimizer(
     lr_beta = config.learning_rate_beta
 
     param_groups = [
-        {
-            "params": [positions],
-            "lr": lr_pos,
-        },
-        {
-            "params": [tangent_u, tangent_v],
-            "lr": lr_tan,
-        },
-        {
-            "params": [scales],
-            "lr": lr_scale,
-        },
-        {
-            "params": [albedos],
-            "lr": lr_albedo,
-        },
-        {
-            "params": [opacities],
-            "lr": lr_opacity,
-        },
-        {
-            "params": [betas],
-            "lr": lr_beta,
-        },
+        {"params": [positions], "lr": lr_pos, "name": "position"},
+        {"params": [tangent_u, tangent_v], "lr": lr_tan, "name": "tangent"},
+        {"params": [scales], "lr": lr_scale, "name": "scale"},
+        {"params": [albedos], "lr": lr_albedo, "name": "albedo"},
+        {"params": [opacities], "lr": lr_opacity, "name": "opacity"},
+        {"params": [betas], "lr": lr_beta, "name": "beta"},
     ]
 
     if opt_type == "sgd":
@@ -341,76 +323,130 @@ def create_masked_optimizer(
 
     raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
-def update_optimizer_learning_rates(
-        optimizer: torch.optim.Optimizer,
-        learning_rate_schedules: dict[str, object],
-        iteration: int,
-) -> dict[str, float]:
-    active_learning_rates: dict[str, float] = {}
+def make_constant_scale_func() -> Callable[[int], float]:
+    def schedule(_: int) -> float:
+        return 1.0
 
-    for parameter_group in optimizer.param_groups:
-        group_name = parameter_group.get("name", None)
-
-        if group_name in learning_rate_schedules:
-            learning_rate = float(learning_rate_schedules[group_name](iteration))
-            parameter_group["lr"] = learning_rate
-            active_learning_rates[group_name] = learning_rate
-        else:
-            active_learning_rates[str(group_name)] = float(parameter_group["lr"])
-
-    return active_learning_rates
+    return schedule
 
 
-def make_exponential_lr_func(
-    lr_init: float,
-    lr_final: float,
-    max_steps: int,
-):
-    if lr_init <= 0.0:
-        raise ValueError(f"lr_init must be positive, got {lr_init}")
-    if lr_final <= 0.0:
-        raise ValueError(f"lr_final must be positive, got {lr_final}")
-    if max_steps <= 0:
-        raise ValueError(f"max_steps must be positive, got {max_steps}")
+def make_exponential_scale_func(
+        scale_init: float,
+        scale_final: float,
+        max_steps: int,
+        start_iteration: int = 0,
+) -> Callable[[int], float]:
+    if scale_init <= 0.0:
+        raise ValueError(f"scale_init must be positive, got {scale_init}")
+    if scale_final <= 0.0:
+        raise ValueError(f"scale_final must be positive, got {scale_final}")
+    if max_steps < 0:
+        raise ValueError(f"max_steps must be non-negative, got {max_steps}")
+
+    if max_steps == 0:
+        def immediate_schedule(iteration: int) -> float:
+            return scale_init if iteration < start_iteration else scale_final
+
+        return immediate_schedule
 
     def schedule(iteration: int) -> float:
-        t = np.clip(float(iteration) / float(max_steps), 0.0, 1.0)
+        t = np.clip(float(iteration - start_iteration) / float(max_steps), 0.0, 1.0)
         return float(
             np.exp(
-                np.log(lr_init) * (1.0 - t)
-                + np.log(lr_final) * t
+                np.log(scale_init) * (1.0 - t)
+                + np.log(scale_final) * t
             )
         )
 
     return schedule
 
 
+def get_required_learning_rate(config: OptimizationConfig, attribute_name: str) -> float:
+    learning_rate = getattr(config, attribute_name)
+    if learning_rate is None:
+        raise ValueError(f"config.{attribute_name} must be resolved before creating LR schedules.")
+    return float(learning_rate)
+
+
 def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, object]:
-    if not config.use_position_lr_schedule:
-        return {}
+    base_learning_rates = {
+        "position": get_required_learning_rate(config, "learning_rate_position"),
+        "tangent": get_required_learning_rate(config, "learning_rate_tangent"),
+        "scale": get_required_learning_rate(config, "learning_rate_scale"),
+        "albedo": get_required_learning_rate(config, "learning_rate_albedo"),
+        "opacity": get_required_learning_rate(config, "learning_rate_opacity"),
+        "beta": get_required_learning_rate(config, "learning_rate_beta"),
+        "power": 0.0,
+    }
 
-    if config.learning_rate <= 0.0:
-        raise ValueError(f"learning_rate must be positive, got {config.learning_rate}")
+    use_global_lr_schedule = bool(getattr(config, "use_global_lr_schedule", False))
+    if use_global_lr_schedule:
+        global_lr_scale_func = make_exponential_scale_func(
+            scale_init=float(getattr(config, "global_lr_scale_init", 1.0)),
+            scale_final=float(getattr(config, "global_lr_scale_final", 1.0)),
+            start_iteration=int(getattr(config, "global_lr_start_iteration", 0)),
+            max_steps=int(getattr(config, "global_lr_max_steps", 0)),
+        )
+    else:
+        global_lr_scale_func = make_constant_scale_func()
 
-    if config.learning_rate_position is None:
-        raise ValueError("config.learning_rate_position must be resolved first.")
+    parameter_lr_scale_funcs: dict[str, Callable[[int], float]] = {}
 
-    # Recover the optimizer-specific position factor.
-    # Example for SGD with --lr 0.5:
-    #   config.learning_rate_position = 0.2 * 0.5 = 0.1
-    #   position_lr_per_scale = 0.1 / 0.5 = 0.2
-    position_lr_per_scale = (
-        float(config.learning_rate_position)
-        / float(config.learning_rate)
-    )
-
-    position_lr_init = position_lr_per_scale * float(config.position_lr_scale_init)
-    position_lr_final = position_lr_per_scale * float(config.position_lr_scale_final)
+    if bool(getattr(config, "use_position_lr_schedule", False)):
+        parameter_lr_scale_funcs["position"] = make_exponential_scale_func(
+            scale_init=float(getattr(config, "position_lr_scale_init", 1.0)),
+            scale_final=float(getattr(config, "position_lr_scale_final", 1.0)),
+            start_iteration=0,
+            max_steps=int(getattr(config, "position_lr_max_steps", 0)),
+        )
 
     return {
-        "position": make_exponential_lr_func(
-            lr_init=position_lr_init,
-            lr_final=position_lr_final,
-            max_steps=int(config.position_lr_max_steps),
-        )
+        "base_learning_rates": base_learning_rates,
+        "global_lr_scale_func": global_lr_scale_func,
+        "parameter_lr_scale_funcs": parameter_lr_scale_funcs,
     }
+
+
+def update_optimizer_learning_rates(
+        optimizer: torch.optim.Optimizer,
+        learning_rate_schedules: dict[str, object],
+        iteration: int,
+) -> dict[str, float]:
+    base_learning_rates = learning_rate_schedules.get("base_learning_rates", {})
+    global_lr_scale_func = learning_rate_schedules.get("global_lr_scale_func", make_constant_scale_func())
+    parameter_lr_scale_funcs = learning_rate_schedules.get("parameter_lr_scale_funcs", {})
+
+    if not callable(global_lr_scale_func):
+        raise RuntimeError("global_lr_scale_func must be callable.")
+
+    global_lr_scale = float(global_lr_scale_func(iteration))
+    active_learning_rates: dict[str, float] = {
+        "global_lr_scale": global_lr_scale,
+    }
+
+    for parameter_group in optimizer.param_groups:
+        group_name = parameter_group.get("name", None)
+        if group_name is None:
+            raise RuntimeError(
+                "Optimizer parameter group is missing a 'name'. "
+                "Add names such as 'position', 'tangent', 'scale', 'albedo', 'opacity', 'beta', or 'power'."
+            )
+
+        group_name = str(group_name)
+
+        if group_name not in base_learning_rates:
+            raise RuntimeError(f"No base learning rate registered for parameter group '{group_name}'.")
+
+        base_learning_rate = float(base_learning_rates[group_name])
+        parameter_lr_scale_func = parameter_lr_scale_funcs.get(group_name, make_constant_scale_func())
+
+        if not callable(parameter_lr_scale_func):
+            raise RuntimeError(f"LR scale function for parameter group '{group_name}' must be callable.")
+
+        parameter_lr_scale = float(parameter_lr_scale_func(iteration))
+        learning_rate = base_learning_rate * global_lr_scale * parameter_lr_scale
+
+        parameter_group["lr"] = learning_rate
+        active_learning_rates[group_name] = learning_rate
+
+    return active_learning_rates
