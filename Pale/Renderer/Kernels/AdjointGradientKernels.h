@@ -91,9 +91,14 @@ namespace Pale {
         atomicAddFloat(debugImage.framebufferPosY[pathId], gradientRecord.gradPositionY);
         atomicAddFloat(debugImage.framebufferPosZ[pathId], gradientRecord.gradPositionZ);
 
-        atomicAddFloat(debugImage.framebufferRot[pathId], rotationGradientMagnitude);
+        // Signed local SO(3) components.
+        atomicAddFloat(debugImage.framebufferRotX[pathId], gradientRecord.gradRotationX);
+        atomicAddFloat(debugImage.framebufferRotY[pathId], gradientRecord.gradRotationY);
+        atomicAddFloat(debugImage.framebufferRotZ[pathId], gradientRecord.gradRotationZ);
+
         atomicAddFloat(debugImage.framebufferScaleU[pathId], gradientRecord.gradScaleU);
-        atomicAddFloat(debugImage.framebufferScaleV[pathId], gradientRecord.gradScaleU);
+        atomicAddFloat(debugImage.framebufferScaleV[pathId], gradientRecord.gradScaleV);
+
         atomicAddFloat(debugImage.framebufferOpacity[pathId], gradientRecord.gradEta);
         atomicAddFloat(debugImage.framebufferAlbedo[pathId], gradientRecord.gradAlbedoR);
         atomicAddFloat(debugImage.framebufferBeta[pathId], gradientRecord.gradBeta);

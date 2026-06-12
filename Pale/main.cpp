@@ -457,16 +457,12 @@ static std::vector<Pale::DebugImages> makeDebugImageSubsetForSensors(
     return selectedDebugImages;
 }
 
-static void savePointGradientsAsCsv(
-    Pale::DeviceSelector &deviceSelector,
-    const Pale::PointGradients &gradients,
-    const std::filesystem::path &path) {
+static void savePointGradientsAsCsv(Pale::DeviceSelector &deviceSelector, const Pale::PointGradients &gradients, const std::filesystem::path &path) {
     auto queue = deviceSelector.getQueue();
     const std::size_t pointCount = gradients.numPoints;
 
     std::vector<Pale::float3> gradPositionHost(pointCount);
-    std::vector<Pale::float3> gradTangentUHost(pointCount);
-    std::vector<Pale::float3> gradTangentVHost(pointCount);
+    std::vector<Pale::float3> gradRotationHost(pointCount);
     std::vector<Pale::float2> gradScaleHost(pointCount);
     std::vector<Pale::float3> gradAlbedoHost(pointCount);
     std::vector<float> gradOpacityHost(pointCount, 0.0f);
@@ -474,109 +470,54 @@ static void savePointGradientsAsCsv(
     std::vector<float> gradShapeHost(pointCount, 0.0f);
 
     if (pointCount > 0) {
-        if (gradients.gradPosition) {
-            queue.memcpy(gradPositionHost.data(), gradients.gradPosition, pointCount * sizeof(Pale::float3));
-        }
-        if (gradients.gradRotation) {
-            queue.memcpy(gradTangentUHost.data(), gradients.gradRotation, pointCount * sizeof(Pale::float3));
-        }
-        if (gradients.gradScale) {
-            queue.memcpy(gradScaleHost.data(), gradients.gradScale, pointCount * sizeof(Pale::float2));
-        }
-        if (gradients.gradAlbedo) {
-            queue.memcpy(gradAlbedoHost.data(), gradients.gradAlbedo, pointCount * sizeof(Pale::float3));
-        }
-        if (gradients.gradOpacity) {
-            queue.memcpy(gradOpacityHost.data(), gradients.gradOpacity, pointCount * sizeof(float));
-        }
-        if (gradients.gradBeta) {
-            queue.memcpy(gradBetaHost.data(), gradients.gradBeta, pointCount * sizeof(float));
-        }
-        if (gradients.gradShape) {
-            queue.memcpy(gradShapeHost.data(), gradients.gradShape, pointCount * sizeof(float));
-        }
+        if (gradients.gradPosition) queue.memcpy(gradPositionHost.data(), gradients.gradPosition, pointCount * sizeof(Pale::float3));
+        if (gradients.gradRotation) queue.memcpy(gradRotationHost.data(), gradients.gradRotation, pointCount * sizeof(Pale::float3));
+        if (gradients.gradScale) queue.memcpy(gradScaleHost.data(), gradients.gradScale, pointCount * sizeof(Pale::float2));
+        if (gradients.gradAlbedo) queue.memcpy(gradAlbedoHost.data(), gradients.gradAlbedo, pointCount * sizeof(Pale::float3));
+        if (gradients.gradOpacity) queue.memcpy(gradOpacityHost.data(), gradients.gradOpacity, pointCount * sizeof(float));
+        if (gradients.gradBeta) queue.memcpy(gradBetaHost.data(), gradients.gradBeta, pointCount * sizeof(float));
+        if (gradients.gradShape) queue.memcpy(gradShapeHost.data(), gradients.gradShape, pointCount * sizeof(float));
         queue.wait();
     }
 
     std::filesystem::create_directories(path.parent_path());
-
     std::ofstream file(path);
-    if (!file.is_open()) {
-        throw std::runtime_error("Could not open gradient CSV for writing: " + path.string());
-    }
+    if (!file.is_open()) throw std::runtime_error("Could not open gradient CSV for writing: " + path.string());
 
-    file << "index,"
-         << "grad_position_x,grad_position_y,grad_position_z,"
-         << "grad_tangent_u_x,grad_tangent_u_y,grad_tangent_u_z,"
-         << "grad_tangent_v_x,grad_tangent_v_y,grad_tangent_v_z,"
-         << "grad_scale_u,grad_scale_v,"
-         << "grad_albedo_r,grad_albedo_g,grad_albedo_b,"
-         << "grad_opacity,grad_beta,grad_shape\n";
-
+    file << "index,grad_position_x,grad_position_y,grad_position_z,grad_rotation_x,grad_rotation_y,grad_rotation_z,grad_scale_u,grad_scale_v,grad_albedo_r,grad_albedo_g,grad_albedo_b,grad_opacity,grad_beta,grad_shape\n";
     for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
         const Pale::float3 &gradPosition = gradPositionHost[pointIndex];
-        const Pale::float3 &gradTangentU = gradTangentUHost[pointIndex];
-        const Pale::float3 &gradTangentV = gradTangentVHost[pointIndex];
+        const Pale::float3 &gradRotation = gradRotationHost[pointIndex];
         const Pale::float2 &gradScale = gradScaleHost[pointIndex];
         const Pale::float3 &gradAlbedo = gradAlbedoHost[pointIndex];
-
-        file << pointIndex << ","
-             << gradPosition.x() << "," << gradPosition.y() << "," << gradPosition.z() << ","
-             << gradTangentU.x() << "," << gradTangentU.y() << "," << gradTangentU.z() << ","
-             << gradTangentV.x() << "," << gradTangentV.y() << "," << gradTangentV.z() << ","
+        file << pointIndex << "," << gradPosition.x() << "," << gradPosition.y() << "," << gradPosition.z() << ","
+             << gradRotation.x() << "," << gradRotation.y() << "," << gradRotation.z() << ","
              << gradScale.x() << "," << gradScale.y() << ","
              << gradAlbedo.x() << "," << gradAlbedo.y() << "," << gradAlbedo.z() << ","
-             << gradOpacityHost[pointIndex] << ","
-             << gradBetaHost[pointIndex] << ","
-             << gradShapeHost[pointIndex] << "\n";
+             << gradOpacityHost[pointIndex] << "," << gradBetaHost[pointIndex] << "," << gradShapeHost[pointIndex] << "\n";
     }
 
     Pale::Log::PA_INFO("Saved point gradients: {}", path.string());
 }
 
-static void logSinglePointGradient(
-    Pale::DeviceSelector &deviceSelector,
-    const Pale::PointGradients &gradients,
-    uint32_t pointIndex,
-    const std::string &label) {
-    if (pointIndex >= gradients.numPoints) {
-        return;
-    }
+static void logSinglePointGradient(Pale::DeviceSelector &deviceSelector, const Pale::PointGradients &gradients, uint32_t pointIndex, const std::string &label) {
+    if (pointIndex >= gradients.numPoints) return;
 
     float gradientBeta{};
     float gradientOpacity{};
     Pale::float3 gradientPosition{};
+    Pale::float3 gradientRotation{};
 
-    if (gradients.gradBeta) {
-        deviceSelector.getQueue().memcpy(
-            &gradientBeta,
-            &gradients.gradBeta[pointIndex],
-            sizeof(float)).wait();
-    }
-
-    if (gradients.gradOpacity) {
-        deviceSelector.getQueue().memcpy(
-            &gradientOpacity,
-            &gradients.gradOpacity[pointIndex],
-            sizeof(float)).wait();
-    }
-
-    if (gradients.gradPosition) {
-        deviceSelector.getQueue().memcpy(
-            &gradientPosition,
-            &gradients.gradPosition[pointIndex],
-            sizeof(Pale::float3)).wait();
-    }
+    if (gradients.gradBeta) deviceSelector.getQueue().memcpy(&gradientBeta, &gradients.gradBeta[pointIndex], sizeof(float)).wait();
+    if (gradients.gradOpacity) deviceSelector.getQueue().memcpy(&gradientOpacity, &gradients.gradOpacity[pointIndex], sizeof(float)).wait();
+    if (gradients.gradPosition) deviceSelector.getQueue().memcpy(&gradientPosition, &gradients.gradPosition[pointIndex], sizeof(Pale::float3)).wait();
+    if (gradients.gradRotation) deviceSelector.getQueue().memcpy(&gradientRotation, &gradients.gradRotation[pointIndex], sizeof(Pale::float3)).wait();
 
     Pale::Log::PA_INFO("{} debug surfel index = {}", label, pointIndex);
     Pale::Log::PA_INFO("{} grad Beta = ({})", label, gradientBeta);
     Pale::Log::PA_INFO("{} grad Opacity = ({})", label, gradientOpacity);
-    Pale::Log::PA_INFO(
-        "{} grad Position = ({}, {}, {})",
-        label,
-        gradientPosition.x(),
-        gradientPosition.y(),
-        gradientPosition.z());
+    Pale::Log::PA_INFO("{} grad Position = ({}, {}, {})", label, gradientPosition.x(), gradientPosition.y(), gradientPosition.z());
+    Pale::Log::PA_INFO("{} grad Rotation = ({}, {}, {})", label, gradientRotation.x(), gradientRotation.y(), gradientRotation.z());
 }
 
 static void saveGradientSet(
@@ -623,95 +564,29 @@ static void saveGradientSet(
         true);
 }
 
-static void saveDebugGradientImagesForSensors(
-    Pale::DeviceSelector &deviceSelector,
-    const std::vector<Pale::SensorGPU> &sensors,
-    const std::vector<Pale::DebugImages> &debugImages,
-    const std::filesystem::path &outputRoot,
-    const std::string &prefix,
-    float adjointSamplesPerPixel) {
+static void saveDebugGradientImagesForSensors(Pale::DeviceSelector &deviceSelector, const std::vector<Pale::SensorGPU> &sensors, const std::vector<Pale::DebugImages> &debugImages, const std::filesystem::path &outputRoot, const std::string &prefix, float adjointSamplesPerPixel) {
     for (std::size_t sensorIndex = 0; sensorIndex < sensors.size(); ++sensorIndex) {
         const Pale::SensorGPU &sensor = sensors[sensorIndex];
         const std::string sensorName = sensor.name;
         const uint32_t imageWidth = sensor.width;
         const uint32_t imageHeight = sensor.height;
-
         const std::filesystem::path cameraDebugDir = outputRoot / sensorName;
         std::filesystem::create_directories(cameraDebugDir);
 
-        Pale::DebugGradientImagesHost debugImagesHost =
-            Pale::downloadDebugGradientImages(
-                deviceSelector.getQueue(),
-                sensor,
-                debugImages[sensorIndex]);
-
-        saveGradientSet(
-            debugImagesHost.positionX,
-            cameraDebugDir,
-            prefix + "_position_x",
-            imageWidth,
-            imageHeight,
-            adjointSamplesPerPixel);
-
-        saveGradientSet(
-            debugImagesHost.positionY,
-            cameraDebugDir,
-            prefix + "_position_y",
-            imageWidth,
-            imageHeight,
-            adjointSamplesPerPixel);
-
-        saveGradientSet(
-            debugImagesHost.positionZ,
-            cameraDebugDir,
-            prefix + "_position_z",
-            imageWidth,
-            imageHeight,
-            adjointSamplesPerPixel);
-
-        saveGradientSet(
-            debugImagesHost.scaleU,
-            cameraDebugDir,
-            prefix + "_scaleU",
-            imageWidth,
-            imageHeight,
-            adjointSamplesPerPixel);
-
-
-        saveGradientSet(
-            debugImagesHost.scaleV,
-            cameraDebugDir,
-            prefix + "_scaleV",
-            imageWidth,
-            imageHeight,
-            adjointSamplesPerPixel);
-
-        saveGradientSet(
-            debugImagesHost.albedo,
-            cameraDebugDir,
-            prefix + "_albedo",
-            imageWidth,
-            imageHeight,
-            adjointSamplesPerPixel);
-
-        saveGradientSet(
-            debugImagesHost.opacity,
-            cameraDebugDir,
-            prefix + "_opacity",
-            imageWidth,
-            imageHeight,
-            adjointSamplesPerPixel);
-
-        saveGradientSet(
-            debugImagesHost.beta,
-            cameraDebugDir,
-            prefix + "_beta",
-            imageWidth,
-            imageHeight,
-            adjointSamplesPerPixel);
+        Pale::DebugGradientImagesHost debugImagesHost = Pale::downloadDebugGradientImages(deviceSelector.getQueue(), sensor, debugImages[sensorIndex]);
+        saveGradientSet(debugImagesHost.positionX, cameraDebugDir, prefix + "_position_x", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.positionY, cameraDebugDir, prefix + "_position_y", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.positionZ, cameraDebugDir, prefix + "_position_z", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.rotationX, cameraDebugDir, prefix + "_rotation_x", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.rotationY, cameraDebugDir, prefix + "_rotation_y", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.rotationZ, cameraDebugDir, prefix + "_rotation_z", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.scaleU, cameraDebugDir, prefix + "_scaleU", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.scaleV, cameraDebugDir, prefix + "_scaleV", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.albedo, cameraDebugDir, prefix + "_albedo", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.opacity, cameraDebugDir, prefix + "_opacity", imageWidth, imageHeight, adjointSamplesPerPixel);
+        saveGradientSet(debugImagesHost.beta, cameraDebugDir, prefix + "_beta", imageWidth, imageHeight, adjointSamplesPerPixel);
     }
 }
-
 
 static float sanitizeScalar(float value) {
     if (!std::isfinite(value)) {
@@ -846,12 +721,7 @@ static void saveColoredGradientStatsPly(
     Pale::Log::PA_INFO("Saved gradient-stat PLY: {}", path.string());
 }
 
-static void savePointGradientStatsAsColoredPlys(
-    Pale::DeviceSelector &deviceSelector,
-    const Pale::PointGradients &gradients,
-    const Pale::PointGeometry &pointGeometry,
-    const std::filesystem::path &outputDir,
-    uint32_t activeCameraCountMax) {
+static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector &deviceSelector, const Pale::PointGradients &gradients, const Pale::PointGeometry &pointGeometry, const std::filesystem::path &outputDir, uint32_t activeCameraCountMax) {
     auto queue = deviceSelector.getQueue();
     const std::size_t pointCount = gradients.numPoints;
 
@@ -860,85 +730,44 @@ static void savePointGradientStatsAsColoredPlys(
         return;
     }
 
-    if (!gradients.gradPosition ||
-        !gradients.gradPositionMeanNorm ||
-        !gradients.gradPositionStd ||
-        !gradients.gradPositionActiveCameraCount) {
+    if (!gradients.gradPosition || !gradients.gradPositionMeanNorm || !gradients.gradPositionStd || !gradients.gradPositionActiveCameraCount) {
         Pale::Log::PA_WARN("savePointGradientStatsAsColoredPlys: gradient stats buffers are missing");
         return;
     }
 
     std::vector<Pale::float3> gradPositionHost(pointCount);
+    std::vector<Pale::float3> gradRotationHost(pointCount);
     std::vector<float> positionMeanNormHost(pointCount, 0.0f);
     std::vector<float> positionStdHost(pointCount, 0.0f);
     std::vector<uint32_t> activeCameraCountHost(pointCount, 0u);
 
-    queue.memcpy(
-        gradPositionHost.data(),
-        gradients.gradPosition,
-        pointCount * sizeof(Pale::float3));
-
-    queue.memcpy(
-        positionMeanNormHost.data(),
-        gradients.gradPositionMeanNorm,
-        pointCount * sizeof(float));
-
-    queue.memcpy(
-        positionStdHost.data(),
-        gradients.gradPositionStd,
-        pointCount * sizeof(float));
-
-    queue.memcpy(
-        activeCameraCountHost.data(),
-        gradients.gradPositionActiveCameraCount,
-        pointCount * sizeof(uint32_t));
-
+    queue.memcpy(gradPositionHost.data(), gradients.gradPosition, pointCount * sizeof(Pale::float3));
+    if (gradients.gradRotation) queue.memcpy(gradRotationHost.data(), gradients.gradRotation, pointCount * sizeof(Pale::float3));
+    queue.memcpy(positionMeanNormHost.data(), gradients.gradPositionMeanNorm, pointCount * sizeof(float));
+    queue.memcpy(positionStdHost.data(), gradients.gradPositionStd, pointCount * sizeof(float));
+    queue.memcpy(activeCameraCountHost.data(), gradients.gradPositionActiveCameraCount, pointCount * sizeof(uint32_t));
     queue.wait();
 
     std::vector<float> gradientNormHost(pointCount, 0.0f);
+    std::vector<float> rotationGradientNormHost(pointCount, 0.0f);
     std::vector<float> activeCameraCountFloatHost(pointCount, 0.0f);
 
     for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-        const Pale::float3 &gradient = gradPositionHost[pointIndex];
-
-        const float gradientSquaredNorm =
-            gradient.x() * gradient.x() +
-            gradient.y() * gradient.y() +
-            gradient.z() * gradient.z();
-
-        gradientNormHost[pointIndex] = std::sqrt(std::max(gradientSquaredNorm, 0.0f));
+        const Pale::float3 &positionGradient = gradPositionHost[pointIndex];
+        const Pale::float3 &rotationGradient = gradRotationHost[pointIndex];
+        const float positionGradientSquaredNorm = positionGradient.x() * positionGradient.x() + positionGradient.y() * positionGradient.y() + positionGradient.z() * positionGradient.z();
+        const float rotationGradientSquaredNorm = rotationGradient.x() * rotationGradient.x() + rotationGradient.y() * rotationGradient.y() + rotationGradient.z() * rotationGradient.z();
+        gradientNormHost[pointIndex] = std::sqrt(std::max(positionGradientSquaredNorm, 0.0f));
+        rotationGradientNormHost[pointIndex] = std::sqrt(std::max(rotationGradientSquaredNorm, 0.0f));
         activeCameraCountFloatHost[pointIndex] = static_cast<float>(activeCameraCountHost[pointIndex]);
     }
 
     std::filesystem::create_directories(outputDir);
-
-    saveColoredGradientStatsPly(
-        pointGeometry,
-        positionStdHost,
-        robustNormalizeScalars(positionStdHost),
-        outputDir / "gradient_position_std.ply",
-        "gradient_position_std");
-
-    saveColoredGradientStatsPly(
-        pointGeometry,
-        positionMeanNormHost,
-        robustNormalizeScalars(positionMeanNormHost),
-        outputDir / "gradient_geometric_pressure.ply",
-        "gradient_geometric_pressure");
-
-    saveColoredGradientStatsPly(
-        pointGeometry,
-        gradientNormHost,
-        robustNormalizeScalars(gradientNormHost),
-        outputDir / "gradient_position_norm.ply",
-        "gradient_position_norm");
-
-    saveColoredGradientStatsPly(
-        pointGeometry,
-        activeCameraCountFloatHost,
-        normalizeByMaximumValue(activeCameraCountFloatHost, static_cast<float>(std::max(activeCameraCountMax, 1u))),
-        outputDir / "gradient_active_camera_count.ply",
-        "gradient_active_camera_count");
+    saveColoredGradientStatsPly(pointGeometry, positionStdHost, robustNormalizeScalars(positionStdHost), outputDir / "gradient_position_std.ply", "gradient_position_std");
+    saveColoredGradientStatsPly(pointGeometry, positionMeanNormHost, robustNormalizeScalars(positionMeanNormHost), outputDir / "gradient_geometric_pressure.ply", "gradient_geometric_pressure");
+    saveColoredGradientStatsPly(pointGeometry, gradientNormHost, robustNormalizeScalars(gradientNormHost), outputDir / "gradient_position_norm.ply", "gradient_position_norm");
+    saveColoredGradientStatsPly(pointGeometry, rotationGradientNormHost, robustNormalizeScalars(rotationGradientNormHost), outputDir / "gradient_rotation_norm.ply", "gradient_rotation_norm");
+    saveColoredGradientStatsPly(pointGeometry, activeCameraCountFloatHost, normalizeByMaximumValue(activeCameraCountFloatHost, static_cast<float>(std::max(activeCameraCountMax, 1u))), outputDir / "gradient_active_camera_count.ply", "gradient_active_camera_count");
 }
 
 int main(int argc, char **argv) {
@@ -1106,9 +935,9 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("debug gradients: surfelIndexForDebugImages is out of range");
             }
 
-            pointGeometry.positions[debugSurfelIndex].x = -0.2f;
-            pointGeometry.positions[debugSurfelIndex].y = 0.2f;
-            pointGeometry.positions[debugSurfelIndex].z = 0.6f;
+            pointGeometry.positions[debugSurfelIndex].x = -0.0f;
+            pointGeometry.positions[debugSurfelIndex].y =  0.3f;
+            pointGeometry.positions[debugSurfelIndex].z = 0.2f;
             rebuild_bvh(&tracer, scene, buildProducts, &assetManager, deviceSelector, sceneGpu);
 
             Pale::Log::PA_INFO("Forward Render Pass after debug perturbation...");
@@ -1169,6 +998,7 @@ int main(int argc, char **argv) {
                         "debug gradients: forward/adjoint resolution mismatch for sensor " + sensorName);
                 }
 
+/*
                 std::vector<float> rgbaHostRendered =
                     Pale::downloadSensorRGBARAW(
                         deviceSelector.getQueue(),
@@ -1218,7 +1048,20 @@ int main(int argc, char **argv) {
                     rgbaHostAdjointSource);
 
                 adjointSourceImages[sensorIndex] = std::move(rgbaHostAdjointSource);
+                */
+                const std::size_t pixelCount =
+                    static_cast<std::size_t>(imageWidth) * static_cast<std::size_t>(imageHeight);
+
+                std::vector<float> rgbaHostAdjointSource(pixelCount * 4u, 1.0f);
+
+                Pale::uploadSensorRGBA(
+                    deviceSelector.getQueue(),
+                    adjointSensor,
+                    rgbaHostAdjointSource);
+
+                adjointSourceImages[sensorIndex] = std::move(rgbaHostAdjointSource);
             }
+
 
             std::vector<Pale::DebugImages> photoDebugImagesSelected =
                 makeDebugImageSubsetForSensors(sensors, photoDebugImages);

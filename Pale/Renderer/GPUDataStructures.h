@@ -33,6 +33,7 @@ namespace Pale {
         QuadricPoint
     };
 
+    // GPU Struct
     struct alignas(16) Point {
         float3 position{0.0f};
         float3 tanU{0.0f};

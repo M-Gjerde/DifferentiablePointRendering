@@ -1,6 +1,9 @@
 module;
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+#include "glm/fwd.hpp"
 
 
 export module Pale.Assets:Point;
@@ -14,8 +17,7 @@ export namespace Pale {
 
     struct PointGeometry {
         std::vector<glm::vec3> positions{};
-        std::vector<glm::vec3> tanU{};
-        std::vector<glm::vec3> tanV{};
+        std::vector<glm::quat> quat{};
         std::vector<glm::vec2> scales{};
         std::vector<glm::vec3> albedos{};
         std::vector<float>     opacities{};

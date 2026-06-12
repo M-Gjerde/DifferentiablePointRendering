@@ -8,9 +8,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib
-import numpy as np
-import pale
-import torch
+
+from density_control import (
+    compute_prune_indices_by_degenerate_scale,
+    compute_prune_indices_by_opacity,
+    make_under_reconstruction_clones,
+    project_gradient_to_surfel_tangent_plane_np,
+    normalize_quaternions_torch,
+    quaternion_to_tangent_frame_torch,
+    apply_local_rotation_update_to_quaternions_inplace,
+)
 
 from config import OptimizationConfig, RendererSettingsConfig
 from density_control import (
@@ -31,8 +38,7 @@ from render_hooks import *
 
 PARAMETER_NAMES = (
     "position",
-    "tangent_u",
-    "tangent_v",
+    "rotation",
     "scale",
     "albedo",
     "opacity",
@@ -51,8 +57,7 @@ def as_config_float(value: Any) -> float:
 
 def make_named_parameter_dict(
         positions: torch.nn.Parameter,
-        tangent_u: torch.nn.Parameter,
-        tangent_v: torch.nn.Parameter,
+        rotation_delta: torch.nn.Parameter,
         scales: torch.nn.Parameter,
         albedos: torch.nn.Parameter,
         opacities: torch.nn.Parameter,
@@ -61,8 +66,7 @@ def make_named_parameter_dict(
 ) -> Dict[str, torch.nn.Parameter]:
     return {
         "position": positions,
-        "tangent_u": tangent_u,
-        "tangent_v": tangent_v,
+        "rotation": rotation_delta,
         "scale": scales,
         "albedo": albedos,
         "opacity": opacities,
@@ -127,8 +131,7 @@ def repair_nonfinite_gradient_dict_inplace(
 def apply_densification_source_updates_inplace(
         densification_result: Optional[Dict[str, Any]],
         positions: torch.nn.Parameter,
-        tangent_u: torch.nn.Parameter,
-        tangent_v: torch.nn.Parameter,
+        rotations: torch.Tensor,
         scales: torch.nn.Parameter,
         albedos: torch.nn.Parameter,
         opacities: torch.nn.Parameter,
@@ -137,26 +140,20 @@ def apply_densification_source_updates_inplace(
 ) -> None:
     if densification_result is None:
         return
-
     update = densification_result.get("update_source", None)
     if update is None:
         return
-
     device = positions.device
     idx = torch.as_tensor(update["index"], device=device, dtype=torch.long).reshape(-1)
     if idx.numel() == 0:
         return
-
     with torch.no_grad():
         if "position" in update:
             v = torch.as_tensor(update["position"], device=device, dtype=positions.dtype)
             positions.data[idx] = v.view_as(positions.data[idx])
-        if "tangent_u" in update:
-            v = torch.as_tensor(update["tangent_u"], device=device, dtype=tangent_u.dtype)
-            tangent_u.data[idx] = v.view_as(tangent_u.data[idx])
-        if "tangent_v" in update:
-            v = torch.as_tensor(update["tangent_v"], device=device, dtype=tangent_v.dtype)
-            tangent_v.data[idx] = v.view_as(tangent_v.data[idx])
+        if "rotation" in update:
+            v = torch.as_tensor(update["rotation"], device=device, dtype=rotations.dtype)
+            rotations.data[idx] = normalize_quaternions_torch(v.view_as(rotations.data[idx]))
         if "scale" in update:
             v = torch.as_tensor(update["scale"], device=device, dtype=scales.dtype)
             scales.data[idx] = v.view_as(scales.data[idx])
@@ -186,8 +183,7 @@ def rebuild_optimizer_preserving_state(
     new_optimizer = create_masked_optimizer(
         config,
         new_params["position"],
-        new_params["tangent_u"],
-        new_params["tangent_v"],
+        new_params["rotation"],
         new_params["scale"],
         new_params["albedo"],
         new_params["opacity"],
@@ -240,6 +236,7 @@ def rebuild_optimizer_preserving_state(
                 new_state[key] = value.detach().clone().to(new_p.device)
 
     return new_optimizer
+
 
 def save_normal_map_snapshot(
         output_path_png: Path,
@@ -340,8 +337,7 @@ def make_trainable_surfel_mask_from_powers(
 def zero_frozen_surfel_gradients_np(
         trainable_mask: torch.Tensor,
         grad_position_np: np.ndarray,
-        grad_tangent_u_np: np.ndarray,
-        grad_tangent_v_np: np.ndarray,
+        grad_rotation_np: np.ndarray,
         grad_scales_np: np.ndarray,
         grad_albedos_np: np.ndarray,
         grad_opacities_np: np.ndarray,
@@ -351,8 +347,7 @@ def zero_frozen_surfel_gradients_np(
     frozen_mask_np = ~trainable_mask_np
 
     grad_position_np[frozen_mask_np] = 0.0
-    grad_tangent_u_np[frozen_mask_np] = 0.0
-    grad_tangent_v_np[frozen_mask_np] = 0.0
+    grad_rotation_np[frozen_mask_np] = 0.0
     grad_scales_np[frozen_mask_np] = 0.0
     grad_albedos_np[frozen_mask_np] = 0.0
     grad_opacities_np[frozen_mask_np] = 0.0
@@ -469,13 +464,13 @@ def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
     return (
         f"{tag}: "
         f"{format_stat('position')}, "
-        f"{format_stat('tangent_u')}, "
-        f"{format_stat('tangent_v')}, "
+        f"{format_stat('rotation')}, "
         f"{format_stat('scale')}, "
         f"{format_stat('albedo')}, "
         f"{format_stat('opacity')}, "
         f"{format_stat('beta')}"
     )
+
 
 def zero_optimizer_state_for_parameter(optimizer, parameter: torch.Tensor) -> None:
     optimizer_state = optimizer.state.get(parameter, None)
@@ -486,8 +481,10 @@ def zero_optimizer_state_for_parameter(optimizer, parameter: torch.Tensor) -> No
         if torch.is_tensor(state_value):
             state_value.zero_()
 
+
 def scale_gradient_dict(gradient_dict: Dict[str, np.ndarray], scale: float) -> Dict[str, np.ndarray]:
     return {name: gradient * scale for name, gradient in gradient_dict.items()}
+
 
 def scheduled_regularizer_weight(
         base_weight: float,
@@ -501,6 +498,7 @@ def scheduled_regularizer_weight(
         return float(base_weight)
 
     return float(base_weight) if int(iteration) >= int(start_iteration) else 0.0
+
 
 def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
@@ -568,15 +566,13 @@ def format_training_iteration_log(
         lr_position: float,
         active_depth_distortion_weight: float,
         grad_pos_rms: float,
-        grad_tanu_rms: float,
-        grad_tanv_rms: float,
+        grad_rotation_rms: float,
         grad_scale_rms: float,
         grad_albedo_rms: float,
         grad_opacity_rms: float,
         grad_beta_rms: float,
         grad_pos_max: float,
-        grad_tanu_max: float,
-        grad_tanv_max: float,
+        grad_rotation_max: float,
         grad_scale_max: float,
         grad_albedo_max: float,
         grad_opacity_max: float,
@@ -600,21 +596,20 @@ def format_training_iteration_log(
         f" total={loss_state['total_loss_value']:.3e}\n"
         f"  grad_rms:"
         f" pos={grad_pos_rms:.2e}"
-        f" tu={grad_tanu_rms:.2e}"
-        f" tv={grad_tanv_rms:.2e}"
+        f" rot={grad_rotation_rms:.2e}"
         f" scale={grad_scale_rms:.2e}"
         f" albedo={grad_albedo_rms:.2e}"
         f" opacity={grad_opacity_rms:.2e}"
         f" beta={grad_beta_rms:.2e}\n"
         f"  grad_max:"
         f" pos={grad_pos_max:.2e}"
-        f" tu={grad_tanu_max:.2e}"
-        f" tv={grad_tanv_max:.2e}"
+        f" rot={grad_rotation_max:.2e}"
         f" scale={grad_scale_max:.2e}"
         f" albedo={grad_albedo_max:.2e}"
         f" opacity={grad_opacity_max:.2e}"
         f" beta={grad_beta_max:.2e}"
     )
+
 
 def format_gradient_source_balance(
         loss_gradients: Dict[str, np.ndarray],
@@ -626,8 +621,7 @@ def format_gradient_source_balance(
 ) -> str:
     keys = [
         ("position", "pos"),
-        ("tangent_u", "tan_u"),
-        ("tangent_v", "tan_v"),
+        ("rotation", "rot"),
         ("scale", "scale"),
         ("albedo", "albedo"),
         ("opacity", "opacity"),
@@ -691,6 +685,7 @@ def format_gradient_source_balance(
         )
 
     return "\n".join(lines)
+
 
 def compute_normal_consistency_loss_and_adjoints(
         visible_normal_rgba: np.ndarray,
@@ -763,30 +758,41 @@ def refetch_parameters_as_torch(
         device: torch.device,
 ) -> Tuple[torch.nn.Parameter, ...]:
     updated = fetch_parameters(renderer)
-
     positions = torch.nn.Parameter(torch.tensor(updated["position"], device=device, dtype=torch.float32))
-    tangent_u = torch.nn.Parameter(torch.tensor(updated["tangent_u"], device=device, dtype=torch.float32))
-    tangent_v = torch.nn.Parameter(torch.tensor(updated["tangent_v"], device=device, dtype=torch.float32))
+    rotations = torch.nn.Parameter(torch.tensor(updated["rotation"], device=device, dtype=torch.float32),
+                                   requires_grad=False)
     scales = torch.nn.Parameter(torch.tensor(updated["scale"], device=device, dtype=torch.float32))
     albedos = torch.nn.Parameter(torch.tensor(updated["albedo"], device=device, dtype=torch.float32))
     opacities = torch.nn.Parameter(torch.tensor(updated["opacity"], device=device, dtype=torch.float32))
     betas = torch.nn.Parameter(torch.tensor(updated["beta"], device=device, dtype=torch.float32))
     powers = torch.nn.Parameter(torch.tensor(updated["power"], device=device, dtype=torch.float32))
+    verify_rotations_inplace(rotations)
+    return positions, rotations, scales, albedos, opacities, betas, powers
 
-    return positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
+
+def verify_rotations_inplace(rotations: torch.Tensor) -> dict[str, float]:
+    with torch.no_grad():
+        before_norm = torch.linalg.norm(rotations.data, dim=1)
+        rotations.data.copy_(normalize_quaternions_torch(rotations.data))
+        after_norm = torch.linalg.norm(rotations.data, dim=1)
+        return {
+            "before_min_norm": float(before_norm.min().item()),
+            "before_max_norm": float(before_norm.max().item()),
+            "after_min_norm": float(after_norm.min().item()),
+            "after_max_norm": float(after_norm.max().item()),
+        }
 
 
 def verify_parameters_inplane(
         positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
+        rotations: torch.Tensor,
         scales: torch.Tensor,
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
         trainable_surfel_mask: Optional[torch.Tensor] = None,
 ) -> None:
-    verify_tangents_inplace(tangent_u, tangent_v)
+    verify_rotations_inplace(rotations)
     verify_scales_inplace(scales)
     verify_positions_inplace(positions)
     verify_albedos_inplace(albedos)
@@ -797,35 +803,33 @@ def verify_parameters_inplane(
 def assign_numpy_gradients_to_tensors(
         device: torch.device,
         positions: torch.nn.Parameter,
-        tangent_u: torch.nn.Parameter,
-        tangent_v: torch.nn.Parameter,
+        rotation_delta: torch.nn.Parameter,
         scales: torch.nn.Parameter,
         albedos: torch.nn.Parameter,
         opacities: torch.nn.Parameter,
         betas: torch.nn.Parameter,
         grad_position_np: np.ndarray,
-        grad_tangent_u_np: np.ndarray,
-        grad_tangent_v_np: np.ndarray,
+        grad_rotation_np: np.ndarray,
         grad_scales_np: np.ndarray,
         grad_albedos_np: np.ndarray,
         grad_opacities_np: np.ndarray,
         grad_betas_np: np.ndarray,
 ) -> None:
     positions.grad = torch.tensor(grad_position_np, device=device, dtype=torch.float32)
-    tangent_u.grad = torch.tensor(grad_tangent_u_np, device=device, dtype=torch.float32)
-    tangent_v.grad = torch.tensor(grad_tangent_v_np, device=device, dtype=torch.float32)
+    rotation_delta.grad = torch.tensor(grad_rotation_np, device=device, dtype=torch.float32)
     scales.grad = torch.tensor(grad_scales_np, device=device, dtype=torch.float32)
     albedos.grad = torch.tensor(grad_albedos_np, device=device, dtype=torch.float32)
     opacities.grad = torch.tensor(grad_opacities_np, device=device, dtype=torch.float32)
     betas.grad = torch.tensor(grad_betas_np, device=device, dtype=torch.float32)
 
 
+
+
 def save_gradients_snapshot(
         output_dir: Path,
         iteration: int,
         grad_position_np: np.ndarray,
-        grad_tangent_u_np: np.ndarray,
-        grad_tangent_v_np: np.ndarray,
+        grad_rotation_np: np.ndarray,
         grad_scales_np: np.ndarray,
         grad_albedos_np: np.ndarray,
         grad_opacities_np: np.ndarray,
@@ -841,54 +845,34 @@ def save_gradients_snapshot(
     csv_path = gradients_dir / f"gradients_iter_{iteration:04d}.csv"
     with open(csv_path, "w", newline="") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(
-            [
-                "point_index",
-                "grad_pos_x", "grad_pos_y", "grad_pos_z",
-                "grad_tan_u_x", "grad_tan_u_y", "grad_tan_u_z",
-                "grad_tan_v_x", "grad_tan_v_y", "grad_tan_v_z",
-                "grad_scale_u", "grad_scale_v",
-                "grad_albedo_r", "grad_albedo_g", "grad_albedo_b",
-                "grad_opacity",
-                "grad_beta",
-            ]
-        )
-
+        writer.writerow([
+            "point_index",
+            "grad_pos_x", "grad_pos_y", "grad_pos_z",
+            "grad_rotation_x", "grad_rotation_y", "grad_rotation_z",
+            "grad_scale_u", "grad_scale_v",
+            "grad_albedo_r", "grad_albedo_g", "grad_albedo_b",
+            "grad_opacity", "grad_beta",
+        ])
         for idx in range(num_points):
             gx, gy, gz = grad_position_np[idx]
-            gux, guy, guz = grad_tangent_u_np[idx]
-            gvx, gvy, gvz = grad_tangent_v_np[idx]
+            grx, gry, grz = grad_rotation_np[idx]
             gsu, gsv = grad_scales_np[idx]
             gcr, gcg, gcb = grad_albedos_np[idx]
             writer.writerow(
-                [
-                    idx,
-                    gx, gy, gz,
-                    gux, guy, guz,
-                    gvx, gvy, gvz,
-                    gsu, gsv,
-                    gcr, gcg, gcb,
-                    grad_opacity_flat[idx],
-                    grad_beta_flat[idx],
-                ]
-            )
+                [idx, gx, gy, gz, grx, gry, grz, gsu, gsv, gcr, gcg, gcb, grad_opacity_flat[idx], grad_beta_flat[idx]])
 
     npz_path = gradients_dir / f"gradients_iter_{iteration:04d}.npz"
     np.savez_compressed(
         npz_path,
         grad_position=grad_position_np,
-        grad_tangent_u=grad_tangent_u_np,
-        grad_tangent_v=grad_tangent_v_np,
+        grad_rotation=grad_rotation_np,
         grad_scales=grad_scales_np,
         grad_albedos=grad_albedos_np,
         grad_opacities=grad_opacities_np,
         grad_betas=grad_betas_np,
     )
 
-    print(
-        f"[Iter {iteration:04d}] Hotkey 'g' pressed -> "
-        f"saved gradients to:\n  {csv_path}\n  {npz_path}"
-    )
+    print(f"[Iter {iteration:04d}] Hotkey 'g' pressed -> saved gradients to:\n  {csv_path}\n  {npz_path}")
 
 
 def save_manual_snapshot(
@@ -896,8 +880,7 @@ def save_manual_snapshot(
         output_dir: Path,
         iteration: int,
         positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
+        rotations: torch.Tensor,
         scales: torch.Tensor,
         albedos: torch.Tensor,
         opacities: torch.Tensor,
@@ -932,8 +915,7 @@ def save_manual_snapshot(
     save_gaussians_to_ply(
         ply_path,
         positions,
-        tangent_u,
-        tangent_v,
+        rotations,
         scales,
         albedos,
         opacities,
@@ -947,13 +929,11 @@ def save_manual_snapshot(
         f"saved render_final_<camera>.png, depth_distortion_final_<camera>.png, and points_final.ply"
     )
 
-
 def save_iteration_point_cloud_snapshot(
         output_dir: Path,
         iteration: int,
         positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
+        rotations: torch.Tensor,
         scales: torch.Tensor,
         albedos: torch.Tensor,
         opacities: torch.Tensor,
@@ -962,13 +942,11 @@ def save_iteration_point_cloud_snapshot(
 ) -> None:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
-
     ply_path = points_dir / f"iter_{iteration:05d}_points.ply"
     save_gaussians_to_ply(
         ply_path,
         positions,
-        tangent_u,
-        tangent_v,
+        rotations,
         scales,
         albedos,
         opacities,
@@ -976,7 +954,6 @@ def save_iteration_point_cloud_snapshot(
         powers,
         shape_default=0.0,
     )
-
     print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
 
 
@@ -1012,21 +989,20 @@ def create_torch_parameters_from_initial(
         device: torch.device,
 ) -> Tuple[torch.nn.Parameter, ...]:
     positions = torch.nn.Parameter(torch.tensor(initial_params["position"], device=device, dtype=torch.float32))
-    tangent_u = torch.nn.Parameter(torch.tensor(initial_params["tangent_u"], device=device, dtype=torch.float32))
-    tangent_v = torch.nn.Parameter(torch.tensor(initial_params["tangent_v"], device=device, dtype=torch.float32))
+    rotations = torch.nn.Parameter(torch.tensor(initial_params["rotation"], device=device, dtype=torch.float32), requires_grad=False)
     scales = torch.nn.Parameter(torch.tensor(initial_params["scale"], device=device, dtype=torch.float32))
     albedos = torch.nn.Parameter(torch.tensor(initial_params["albedo"], device=device, dtype=torch.float32))
     opacities = torch.nn.Parameter(torch.tensor(initial_params["opacity"], device=device, dtype=torch.float32))
     betas = torch.nn.Parameter(torch.tensor(initial_params["beta"], device=device, dtype=torch.float32))
     powers = torch.nn.Parameter(torch.tensor(initial_params["power"], device=device, dtype=torch.float32))
-    return positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
+    verify_rotations_inplace(rotations)
+    return positions, rotations, scales, albedos, opacities, betas, powers
 
 
 def make_initial_params_reference(initial_params: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     return {
         "position": initial_params["position"].copy(),
-        "tangent_u": initial_params["tangent_u"].copy(),
-        "tangent_v": initial_params["tangent_v"].copy(),
+        "rotation": initial_params["rotation"].copy(),
         "scale": initial_params["scale"].copy(),
         "albedo": initial_params["albedo"].copy(),
         "opacity": initial_params["opacity"].copy(),
@@ -1037,8 +1013,7 @@ def make_initial_params_reference(initial_params: Dict[str, np.ndarray]) -> Dict
 
 def current_params_as_numpy(
         positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
+        rotations: torch.Tensor,
         scales: torch.Tensor,
         albedos: torch.Tensor,
         opacities: torch.Tensor,
@@ -1047,8 +1022,7 @@ def current_params_as_numpy(
 ) -> Dict[str, np.ndarray]:
     return {
         "position": positions.detach().cpu().numpy(),
-        "tangent_u": tangent_u.detach().cpu().numpy(),
-        "tangent_v": tangent_v.detach().cpu().numpy(),
+        "rotation": rotations.detach().cpu().numpy(),
         "scale": scales.detach().cpu().numpy(),
         "albedo": albedos.detach().cpu().numpy(),
         "opacity": opacities.detach().cpu().numpy(),
@@ -1056,14 +1030,14 @@ def current_params_as_numpy(
         "power": powers.detach().cpu().numpy(),
     }
 
+
 def compute_initial_losses_and_save_outputs(
         output_dir: Path,
         initial_images: Dict[str, dict],
         target_images: Dict[str, np.ndarray],
         all_camera_ids: List[str],
         positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
+        rotations: torch.Tensor,
         scales: torch.Tensor,
         albedos: torch.Tensor,
         opacities: torch.Tensor,
@@ -1080,8 +1054,7 @@ def compute_initial_losses_and_save_outputs(
     save_gaussians_to_ply(
         initial_points_path,
         positions,
-        tangent_u,
-        tangent_v,
+        rotations,
         scales,
         albedos,
         opacities,
@@ -1167,6 +1140,7 @@ def print_loss_summary(
     print(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
     print(f"{prefix} visibility opacity loss (weighted)    : {visibility_weighted_opacity_loss_weighted:.6e}")
     print(f"{prefix} total loss                             : {total_loss:.6e}")
+
 
 def compute_iteration_losses_and_adjoints(
         forward_out: Dict[str, dict],
@@ -1257,23 +1231,15 @@ def compute_iteration_losses_and_adjoints(
 
 def extract_total_gradient_arrays(
         total_gradients: Dict[str, np.ndarray],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
-    grad_tangent_u_np = np.asarray(total_gradients["tangent_u"], dtype=np.float32, order="C")
-    grad_tangent_v_np = np.asarray(total_gradients["tangent_v"], dtype=np.float32, order="C")
+    grad_rotation_np = np.asarray(total_gradients["rotation"], dtype=np.float32, order="C")
     grad_scales_np = np.asarray(total_gradients["scale"], dtype=np.float32, order="C")
     grad_albedos_np = np.asarray(total_gradients["albedo"], dtype=np.float32, order="C")
     grad_opacities_np = np.asarray(total_gradients["opacity"], dtype=np.float32, order="C")
     grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
-    return (
-        grad_position_np,
-        grad_tangent_u_np,
-        grad_tangent_v_np,
-        grad_scales_np,
-        grad_albedos_np,
-        grad_opacities_np,
-        grad_betas_np,
-    )
+    return (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np)
+
 
 def update_densification_statistics(
         iteration: int,
@@ -1282,8 +1248,7 @@ def update_densification_statistics(
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
         densify_position_grad_vector_accum_np: np.ndarray,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
+        rotations: torch.Tensor,
         albedos: torch.Tensor,
         trainable_surfel_mask: torch.Tensor,
         densify_bsdf_floor: float,
@@ -1296,11 +1261,11 @@ def update_densification_statistics(
 
     densification_phase = iteration % densification_interval
     should_accumulate = (
-        densification_interval <= 1
-        or (
-            densification_phase >= densification_stats_warmup_iterations
-            and densification_phase != 0
-        )
+            densification_interval <= 1
+            or (
+                    densification_phase >= densification_stats_warmup_iterations
+                    and densification_phase != 0
+            )
     )
     if not should_accumulate:
         return
@@ -1353,6 +1318,7 @@ def update_densification_statistics(
         )
 
     with torch.no_grad():
+        tangent_u, tangent_v, _ = quaternion_to_tangent_frame_torch(rotations.detach())
         tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
         tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
         albedo_np = albedos.detach().cpu().numpy().astype(np.float32)
@@ -1375,8 +1341,8 @@ def update_densification_statistics(
     dot_v_np = np.sum(per_camera_grad_np * tangent_v_unit_np[:, None, :], axis=2, keepdims=True)
 
     per_camera_tangent_grad_np = (
-        dot_u_np * tangent_u_unit_np[:, None, :]
-        + dot_v_np * tangent_v_unit_np[:, None, :]
+            dot_u_np * tangent_u_unit_np[:, None, :]
+            + dot_v_np * tangent_v_unit_np[:, None, :]
     )
 
     visible_camera_mask_np = per_camera_count_np > 0
@@ -1411,7 +1377,7 @@ def update_densification_statistics(
 
     linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
     bsdf_normalizer_np = (
-        np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma
+            np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma
     ).astype(np.float32)
 
     densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
@@ -1432,9 +1398,9 @@ def update_densification_statistics(
     )
 
     update_density_scalar_mask_np = (
-        trainable_np
-        & np.isfinite(densify_position_signal_np[:, 0])
-        & (densify_position_signal_np[:, 0] > 0.0)
+            trainable_np
+            & np.isfinite(densify_position_signal_np[:, 0])
+            & (densify_position_signal_np[:, 0] > 0.0)
     )
 
     densify_position_grad_accum_np[update_density_scalar_mask_np, 0] += (
@@ -1445,9 +1411,9 @@ def update_densification_statistics(
     vector_norm_np = np.linalg.norm(density_grad_position_vector_np, axis=1)
 
     update_density_vector_mask_np = (
-        trainable_np
-        & np.isfinite(vector_norm_np)
-        & (vector_norm_np > 0.0)
+            trainable_np
+            & np.isfinite(vector_norm_np)
+            & (vector_norm_np > 0.0)
     )
 
     densify_position_grad_vector_accum_np[update_density_vector_mask_np] += (
@@ -1459,8 +1425,7 @@ def maybe_make_densification_result(
         iteration: int,
         config: OptimizationConfig,
         positions: torch.nn.Parameter,
-        tangent_u: torch.nn.Parameter,
-        tangent_v: torch.nn.Parameter,
+        rotations: torch.Tensor,
         scales: torch.nn.Parameter,
         albedos: torch.nn.Parameter,
         opacities: torch.nn.Parameter,
@@ -1558,8 +1523,7 @@ def maybe_make_densification_result(
             densify_mask_torch = torch.as_tensor(candidate_mask_np, device=positions.device, dtype=torch.bool)
             densification_result = make_under_reconstruction_clones(
                 positions=positions,
-                tangent_u=tangent_u,
-                tangent_v=tangent_v,
+                rotations=rotations,
                 scales=scales,
                 albedos=albedos,
                 opacities=opacities,
@@ -1663,7 +1627,8 @@ def maybe_make_prune_indices(
     return scale_prune_indices, opacity_prune_indices, indices_to_remove_list
 
 
-def robust_normalize_scalar(values_np: np.ndarray, lower_percentile: float = 1.0, upper_percentile: float = 99.0) -> np.ndarray:
+def robust_normalize_scalar(values_np: np.ndarray, lower_percentile: float = 1.0,
+                            upper_percentile: float = 99.0) -> np.ndarray:
     values_np = np.nan_to_num(
         np.asarray(values_np, dtype=np.float32).reshape(-1),
         nan=0.0,
@@ -1764,13 +1729,13 @@ def average_densification_accumulators(
     avg_density_grad_vector_np = np.zeros((point_count, 3), dtype=np.float32)
 
     avg_density_grad_norm_np[valid_denom_np] = (
-        densify_position_grad_accum_np.reshape(-1)[valid_denom_np]
-        / densify_position_grad_denom_np.reshape(-1)[valid_denom_np]
+            densify_position_grad_accum_np.reshape(-1)[valid_denom_np]
+            / densify_position_grad_denom_np.reshape(-1)[valid_denom_np]
     )
 
     avg_density_grad_vector_np[valid_denom_np] = (
-        densify_position_grad_vector_accum_np[valid_denom_np]
-        / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
+            densify_position_grad_vector_accum_np[valid_denom_np]
+            / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
     )
 
     avg_density_grad_vector_norm_np = np.linalg.norm(avg_density_grad_vector_np, axis=1).astype(np.float32)
@@ -1844,7 +1809,8 @@ def save_densification_gradient_diagnostics(
             )
 
     if "position_coherence" in photo_gradient_surfel_stats:
-        position_coherence_np = np.asarray(photo_gradient_surfel_stats["position_coherence"], dtype=np.float32).reshape(-1)
+        position_coherence_np = np.asarray(photo_gradient_surfel_stats["position_coherence"], dtype=np.float32).reshape(
+            -1)
         if position_coherence_np.shape[0] == point_count:
             save_scalar_colored_point_ply(
                 output_path=diagnostic_dir / "gradient_position_coherence.ply",
@@ -1855,7 +1821,8 @@ def save_densification_gradient_diagnostics(
             )
 
     if "position_disagreement" in photo_gradient_surfel_stats:
-        position_disagreement_np = np.asarray(photo_gradient_surfel_stats["position_disagreement"], dtype=np.float32).reshape(-1)
+        position_disagreement_np = np.asarray(photo_gradient_surfel_stats["position_disagreement"],
+                                              dtype=np.float32).reshape(-1)
         if position_disagreement_np.shape[0] == point_count:
             save_scalar_colored_point_ply(
                 output_path=diagnostic_dir / "gradient_position_disagreement.ply",
@@ -1940,6 +1907,7 @@ def save_iteration_outputs(
                 flip_y=False,
             )
 
+
 def write_metrics_header(csv_writer: csv.writer) -> None:
     csv_writer.writerow(
         [
@@ -1953,7 +1921,6 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "loss_visibility_weighted_opacity_raw_sum",
             "loss_visibility_weighted_opacity_weighted_sum",
             "loss_total_sum",
-            "parameter_mse",
             "num_points",
             "iteration_time_sec",
             "total_time",

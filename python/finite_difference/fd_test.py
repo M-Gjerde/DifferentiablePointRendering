@@ -20,24 +20,15 @@ def safe_rel_err(value_a: float, value_b: float, eps: float = 1e-12) -> float:
     denominator = max(eps, abs(value_a) + abs(value_b))
     return abs(value_a - value_b) / denominator
 
-def _rotation_axis_from_parameter(parameter: str) -> np.ndarray:
+def _rotation_component_from_parameter(parameter: str) -> int:
     if parameter == "rotation_x":
-        return np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        return 0
     if parameter == "rotation_y":
-        return np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        return 1
     if parameter == "rotation_z":
-        return np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        return 2
     raise RuntimeError(f"Not a rotation parameter: '{parameter}'")
 
-
-def _rotate_axis_angle(v: np.ndarray, axis_unit: np.ndarray, angle_radians: float) -> np.ndarray:
-    c = np.cos(angle_radians)
-    s = np.sin(angle_radians)
-    return (
-        v * c
-        + np.cross(axis_unit, v) * s
-        + axis_unit * (np.dot(axis_unit, v) * (1.0 - c))
-    )
 
 def _extract_analytic_gradient(
     gradients: dict,
@@ -45,6 +36,8 @@ def _extract_analytic_gradient(
     index: int,
     parameter_value: float,
 ) -> float:
+    # parameter_value is kept for API stability; rotation gradients now come
+    # directly from gradients["rotation"] instead of reconstructing tangent VJPs.
     if parameter == "translation_x":
         return float(gradients["position"][index][0])
     if parameter == "translation_y":
@@ -70,26 +63,19 @@ def _extract_analytic_gradient(
         return float(gradients["beta"][index])
 
     if parameter in {"rotation_x", "rotation_y", "rotation_z"}:
-        axis = _rotation_axis_from_parameter(parameter)
+        if "rotation" not in gradients:
+            raise RuntimeError(
+                "Renderer gradients do not contain 'rotation'. "
+                "Update the Python bindings to return grads['rotation'] with shape (N, 3)."
+            )
 
-        g_tan_u = np.asarray(gradients["tangent_u"][index], dtype=np.float64)
-        g_tan_v = np.asarray(gradients["tangent_v"][index], dtype=np.float64)
+        component = _rotation_component_from_parameter(parameter)
+        rotation_gradient_radians = np.asarray(gradients["rotation"][index], dtype=np.float64)
 
-        tan_u0 = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        tan_v0 = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-
-        angle_radians = np.deg2rad(float(parameter_value))
-        tan_u = _rotate_axis_angle(tan_u0, axis, angle_radians)
-        tan_v = _rotate_axis_angle(tan_v0, axis, angle_radians)
-
-        d_tan_u_d_theta_rad = np.cross(axis, tan_u)
-        d_tan_v_d_theta_rad = np.cross(axis, tan_v)
-
-        dL_d_theta_rad = (
-            np.dot(g_tan_u, d_tan_u_d_theta_rad)
-            + np.dot(g_tan_v, d_tan_v_d_theta_rad)
-        )
-
+        # The renderer returns dL/dtheta for the local SO(3) update in radians.
+        # This finite-difference driver sweeps set_point_rotation_degrees(...), so
+        # convert the analytic derivative to dL/d(degrees).
+        dL_d_theta_rad = float(rotation_gradient_radians[component])
         dL_d_theta_deg = dL_d_theta_rad * (np.pi / 180.0)
         return float(dL_d_theta_deg)
 

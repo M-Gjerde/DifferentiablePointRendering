@@ -375,6 +375,10 @@ def infer_scalar_property_name(
         "nx", "ny", "nz",
         "red", "green", "blue",
         "alpha", "opacity",
+        "rot_w", "rot_x", "rot_y", "rot_z",
+        "su", "sv",
+        "albedo_r", "albedo_g", "albedo_b",
+        "beta", "shape", "power",
     }
 
     candidate_names = [name for name in property_names if name not in known_properties]

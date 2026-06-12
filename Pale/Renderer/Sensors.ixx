@@ -249,7 +249,9 @@ export namespace Pale {
             debugImage.framebufferPosX = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferPosY = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferPosZ = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferRot = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferRotX = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferRotY = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferRotZ = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferScaleU = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferScaleV = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferOpacity = sycl::malloc_device<float>(pixelCount, queue);
@@ -261,7 +263,7 @@ export namespace Pale {
             debugImage.numPixels = pixelCount;
 
             if (!debugImage.framebufferPosX || !debugImage.framebufferPosY || !debugImage.framebufferPosZ ||
-                !debugImage.framebufferRot || !debugImage.framebufferScaleU ||  !debugImage.framebufferScaleV || !debugImage.framebufferOpacity ||
+                !debugImage.framebufferRotX ||  !debugImage.framebufferRotY ||  !debugImage.framebufferRotZ || !debugImage.framebufferScaleU ||  !debugImage.framebufferScaleV || !debugImage.framebufferOpacity ||
                 !debugImage.framebufferAlbedo || !debugImage.framebufferBeta ||
                 !debugImage.framebufferDepthLoss || !debugImage.framebufferDepthLossPos ||
                 !debugImage.framebufferNormalLoss) {
@@ -271,7 +273,9 @@ export namespace Pale {
             queue.fill(debugImage.framebufferPosX, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferPosY, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferPosZ, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferRot, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferRotX, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferRotY, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferRotZ, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferScaleU, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferScaleV, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferOpacity, 0.0f, pixelCount);
@@ -432,7 +436,9 @@ export namespace Pale {
         std::vector<float> positionX; // framebuffer_pos
         std::vector<float> positionY; // framebuffer_pos
         std::vector<float> positionZ; // framebuffer_pos
-        std::vector<float> rotation; // framebuffer_rot
+        std::vector<float> rotationX;
+        std::vector<float> rotationY;
+        std::vector<float> rotationZ;
         std::vector<float> scaleU; // framebuffer_scale
         std::vector<float> scaleV; // framebuffer_scale
         std::vector<float> opacity; // framebuffer_opacity
@@ -458,7 +464,9 @@ export namespace Pale {
         images.positionX.resize(rgbaFloatCount);
         images.positionY.resize(rgbaFloatCount);
         images.positionZ.resize(rgbaFloatCount);
-        images.rotation.resize(rgbaFloatCount);
+        images.rotationX.resize(rgbaFloatCount);
+        images.rotationY.resize(rgbaFloatCount);
+        images.rotationZ.resize(rgbaFloatCount);
         images.scaleU.resize(rgbaFloatCount);
         images.scaleV.resize(rgbaFloatCount);
         images.opacity.resize(rgbaFloatCount);
@@ -492,7 +500,9 @@ export namespace Pale {
         downloadScalarImageAsGrayscaleRgba(images.positionX, debugImages.framebufferPosX);
         downloadScalarImageAsGrayscaleRgba(images.positionY, debugImages.framebufferPosY);
         downloadScalarImageAsGrayscaleRgba(images.positionZ, debugImages.framebufferPosZ);
-        downloadScalarImageAsGrayscaleRgba(images.rotation, debugImages.framebufferRot);
+        downloadScalarImageAsGrayscaleRgba(images.rotationX, debugImages.framebufferRotX);
+        downloadScalarImageAsGrayscaleRgba(images.rotationY, debugImages.framebufferRotY);
+        downloadScalarImageAsGrayscaleRgba(images.rotationZ, debugImages.framebufferRotZ);
         downloadScalarImageAsGrayscaleRgba(images.scaleU, debugImages.framebufferScaleU);
         downloadScalarImageAsGrayscaleRgba(images.scaleV, debugImages.framebufferScaleV);
         downloadScalarImageAsGrayscaleRgba(images.opacity, debugImages.framebufferOpacity);
@@ -574,9 +584,17 @@ export namespace Pale {
                 sycl::free(debugImage.framebufferPosZ, queue);
                 debugImage.framebufferPosZ = nullptr;
             }
-            if (debugImage.framebufferRot) {
-                sycl::free(debugImage.framebufferRot, queue);
-                debugImage.framebufferRot = nullptr;
+            if (debugImage.framebufferRotX) {
+                sycl::free(debugImage.framebufferRotX, queue);
+                debugImage.framebufferRotX = nullptr;
+            }
+            if (debugImage.framebufferRotY) {
+                sycl::free(debugImage.framebufferRotY, queue);
+                debugImage.framebufferRotY = nullptr;
+            }
+            if (debugImage.framebufferRotZ) {
+                sycl::free(debugImage.framebufferRotZ, queue);
+                debugImage.framebufferRotZ = nullptr;
             }
             if (debugImage.framebufferScaleU) {
                 sycl::free(debugImage.framebufferScaleU, queue);

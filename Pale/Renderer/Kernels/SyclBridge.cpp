@@ -206,7 +206,11 @@ namespace Pale {
                                pkg.debugImages[cameraIndex].numPixels).wait();
                 pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosZ, 0.0f,
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferRot, 0.0f,
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferRotX, 0.0f,
+                               pkg.debugImages[cameraIndex].numPixels).wait();
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferRotY, 0.0f,
+                               pkg.debugImages[cameraIndex].numPixels).wait();
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferRotZ, 0.0f,
                                pkg.debugImages[cameraIndex].numPixels).wait();
                 pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferScaleU, 0.0f,
                                pkg.debugImages[cameraIndex].numPixels).wait();

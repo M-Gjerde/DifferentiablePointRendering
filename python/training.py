@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import time
-from losses import compute_parameter_mse
 from optimizers import (create_learning_rate_schedules, update_optimizer_learning_rates, )
 from training_helpers import *
+from density_control import *
 
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
@@ -15,6 +15,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
     visibility_weighted_opacity_weight = float(config.visibility_weighted_opacity_weight)
+    save_ply_files_interval = float(config.save_ply_files_interval)
 
     use_depth_distortion = depth_distortion_base_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
@@ -34,24 +35,33 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     print(f"Fetched {initial_params['position'].shape[0]} initial points from PLY.")
 
     device = torch.device(config.device)
-    positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers = create_torch_parameters_from_initial(
+
+    positions, rotations, scales, albedos, opacities, betas, powers = create_torch_parameters_from_initial(
         initial_params, device)
+    rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
 
     trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
     frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
     print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
-    verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
-                              trainable_surfel_mask=trainable_surfel_mask)
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers)
+    verify_parameters_inplane(
+        positions,
+        rotations,
+        scales,
+        albedos,
+        opacities,
+        betas,
+        trainable_surfel_mask=trainable_surfel_mask,
+    )
+
+    apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
     rebuild_bvh(renderer)
 
-    positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(renderer,
-                                                                                                             device)
+    positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(renderer, device)
+    rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    optimizer = create_masked_optimizer(config, positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
-                                        powers)
+    optimizer = create_masked_optimizer(config, positions, rotation_delta, scales, albedos, opacities, betas, powers)
     learning_rate_schedules = create_learning_rate_schedules(config)
     active_learning_rates = update_optimizer_learning_rates(optimizer, learning_rate_schedules, 0)
 
@@ -64,8 +74,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     initial_loss_tuple = compute_initial_losses_and_save_outputs(
         output_dir=config.output_dir, initial_images=initial_images, target_images=target_images,
-        all_camera_ids=all_camera_ids, positions=positions, tangent_u=tangent_u, tangent_v=tangent_v, scales=scales,
-        albedos=albedos, opacities=opacities, betas=betas, powers=powers,
+        all_camera_ids=all_camera_ids, positions=positions, rotations=rotations,
+        scales=scales, albedos=albedos, opacities=opacities, betas=betas, powers=powers,
         depth_distortion_weight=initial_depth_distortion_weight,
         normal_consistency_weight=normal_consistency_weight,
         visibility_weighted_opacity_weight=visibility_weighted_opacity_weight,
@@ -190,7 +200,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 total_gradients = sum_gradient_dicts(photo_gradients, surface_regularizer_gradients)
 
-                grad_position_np, grad_tangent_u_np, grad_tangent_v_np, grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np = extract_total_gradient_arrays(
+                grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np = extract_total_gradient_arrays(
                     total_gradients
                 )
 
@@ -231,8 +241,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
                     densify_position_grad_denom_np=densify_position_grad_denom_np,
                     densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-                    tangent_u=tangent_u,
-                    tangent_v=tangent_v,
+                    rotations=rotations,
                     albedos=albedos,
                     trainable_surfel_mask=trainable_surfel_mask,
                     densify_bsdf_floor=densify_bsdf_floor,
@@ -244,18 +253,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 optimizer.zero_grad(set_to_none=True)
 
                 zero_frozen_surfel_gradients_np(
-                    trainable_surfel_mask, grad_position_np, grad_tangent_u_np, grad_tangent_v_np,
+                    trainable_surfel_mask, grad_position_np, grad_rotation_np,
                     grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np,
                 )
 
                 assign_numpy_gradients_to_tensors(
-                    device, positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
-                    grad_position_np, grad_tangent_u_np, grad_tangent_v_np, grad_scales_np,
+                    device, positions, rotation_delta, scales, albedos, opacities, betas,
+                    grad_position_np, grad_rotation_np, grad_scales_np,
                     grad_albedos_np, grad_opacities_np, grad_betas_np,
                 )
 
                 active_learning_rates = update_optimizer_learning_rates(optimizer, learning_rate_schedules, iteration)
                 optimizer.step()
+                apply_local_rotation_update_to_quaternions_inplace(
+                    rotations,
+                    rotation_delta,
+                    trainable_surfel_mask=trainable_surfel_mask,
+                    max_rotation_step_radians=float(config.max_rotation_step_radians),
+                )
 
                 if (
                         reset_scale_interval > 0 and iteration % reset_scale_interval == 0) or config.reset_scale_iterations:
@@ -278,9 +293,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     print(f"[Iter {iteration:04d}] Resetting all opacities to {reset_opacity_value}")
                     config.reset_opacity_iterations = False
 
-                verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
+                verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
                                           trainable_surfel_mask=trainable_surfel_mask)
-                apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
+                apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
                                        powers)
 
                 if iteration % rebuild_bvh_interval == 0:
@@ -293,8 +308,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 if not did_reset_opacity:
                     densification_result = maybe_make_densification_result(
-                        iteration=iteration, config=config, positions=positions, tangent_u=tangent_u,
-                        tangent_v=tangent_v, scales=scales, albedos=albedos, opacities=opacities,
+                        iteration=iteration, config=config, positions=positions, rotations=rotations, scales=scales,
+                        albedos=albedos, opacities=opacities,
                         betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
                         densify_position_grad_accum_np=densify_position_grad_accum_np,
                         densify_position_grad_denom_np=densify_position_grad_denom_np,
@@ -332,8 +347,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     print(f"[Iter {iteration:04d}] Skipping densification/pruning due to opacity reset")
 
                 if indices_to_remove_list or densification_result is not None:
-                    old_params_for_optimizer = make_named_parameter_dict(positions, tangent_u, tangent_v, scales,
-                                                                         albedos, opacities, betas, powers)
+                    old_params_for_optimizer = make_named_parameter_dict(                        positions,                        rotation_delta,                        scales,                        albedos,                       opacities,                        betas,                        powers,                    )
                     old_optimizer_for_migration = optimizer
                     old_point_count_for_migration = int(positions.shape[0])
                     keep_mask_np = np.ones(old_point_count_for_migration, dtype=bool)
@@ -348,12 +362,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                                       int(i) not in protected_set]
 
                     if densification_result is not None:
-                        apply_densification_source_updates_inplace(densification_result, positions, tangent_u,
-                                                                   tangent_v, scales, albedos, opacities, betas, powers)
-                        verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
-                                                  trainable_surfel_mask=trainable_surfel_mask)
-                        apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, albedos, opacities,
-                                               betas, powers)
+                        apply_densification_source_updates_inplace(densification_result, positions, rotations, scales,
+                                                                   albedos, opacities, betas, powers, )
+                        verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                                                  trainable_surfel_mask=trainable_surfel_mask, )
+                        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
+                                               powers, )
 
                     if indices_to_remove_list:
                         scale_prune_set = set(int(i) for i in scale_prune_indices)
@@ -398,8 +412,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)], axis=0)
 
                     rebuild_bvh(renderer)
-                    positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
+                    positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
                         renderer, device)
+                    rotation_delta = torch.nn.Parameter(
+                        torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
 
                     if densify_position_grad_accum_np.shape[0] != positions.shape[0]:
                         raise RuntimeError(
@@ -414,14 +430,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
 
                     trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
-                    verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
-                                              trainable_surfel_mask=trainable_surfel_mask)
-                    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
-                                           powers)
+                    verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                                              trainable_surfel_mask=trainable_surfel_mask, )
+
+                    apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers, )
                     rebuild_bvh(renderer)
 
-                    new_params_for_optimizer = make_named_parameter_dict(positions, tangent_u, tangent_v, scales,
-                                                                         albedos, opacities, betas, powers)
+                    new_params_for_optimizer = make_named_parameter_dict(positions, rotation_delta, scales, albedos,
+                                                                         opacities, betas, powers, )
                     optimizer = rebuild_optimizer_preserving_state(
                         config=config, old_optimizer=old_optimizer_for_migration,
                         old_params=old_params_for_optimizer, new_params=new_params_for_optimizer,
@@ -446,18 +462,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     forward_out=forward_out, adjoint_images=adjoint_images, renderer_settings=renderer_settings,
                 )
 
-                if prune_interval > 0 and iteration % prune_interval == 0:
-                    save_iteration_point_cloud_snapshot(config.output_dir, iteration, positions, tangent_u, tangent_v,
+                if save_ply_files_interval > 0 and iteration % save_ply_files_interval == 0:
+                    save_iteration_point_cloud_snapshot(config.output_dir, iteration, positions, rotations,
                                                         scales, albedos, opacities, betas, powers)
 
                 num_points = positions.shape[0]
                 iteration_end = time.perf_counter()
                 iteration_time = iteration_end - iteration_start
                 total_time = iteration_end - total_start_time
-
-                parameter_mse = compute_parameter_mse(
-                    current_params_as_numpy(positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers),
-                    initial_params_reference)
 
                 csv_writer.writerow(
                     [
@@ -471,7 +483,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         loss_state["total_visibility_weighted_opacity_loss_raw"],
                         loss_state["total_visibility_weighted_opacity_loss_weighted"],
                         loss_state["total_loss_value"],
-                        parameter_mse,
                         num_points,
                         iteration_time,
                         total_time,
@@ -490,16 +501,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 if iteration % config.log_interval == 0 or iteration == 1:
                     grad_pos_rms = rms_point(grad_position_np)
-                    grad_tanu_rms = rms_point(grad_tangent_u_np)
-                    grad_tanv_rms = rms_point(grad_tangent_v_np)
+                    grad_rotation_rms = rms_point(grad_rotation_np)
                     grad_scale_rms = rms_point(grad_scales_np)
                     grad_albedo_rms = rms_point(grad_albedos_np)
                     grad_opacity_rms = rms_point(grad_opacities_np)
                     grad_beta_rms = rms_point(grad_betas_np)
 
                     grad_pos_max = max_point_norm(grad_position_np)
-                    grad_tanu_max = max_point_norm(grad_tangent_u_np)
-                    grad_tanv_max = max_point_norm(grad_tangent_v_np)
+                    grad_rotation_max = max_point_norm(grad_rotation_np)
                     grad_scale_max = max_point_norm(grad_scales_np)
                     grad_albedo_max = max_point_norm(grad_albedos_np)
                     grad_opacity_max = max_point_norm(grad_opacities_np)
@@ -517,15 +526,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             lr_position=lr_position,
                             active_depth_distortion_weight=active_depth_distortion_weight,
                             grad_pos_rms=grad_pos_rms,
-                            grad_tanu_rms=grad_tanu_rms,
-                            grad_tanv_rms=grad_tanv_rms,
+                            grad_rotation_rms=grad_rotation_rms,
                             grad_scale_rms=grad_scale_rms,
                             grad_albedo_rms=grad_albedo_rms,
                             grad_opacity_rms=grad_opacity_rms,
                             grad_beta_rms=grad_beta_rms,
                             grad_pos_max=grad_pos_max,
-                            grad_tanu_max=grad_tanu_max,
-                            grad_tanv_max=grad_tanv_max,
+                            grad_rotation_max=grad_rotation_max,
                             grad_scale_max=grad_scale_max,
                             grad_albedo_max=grad_albedo_max,
                             grad_opacity_max=grad_opacity_max,
@@ -560,11 +567,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     hotkey = poll_hotkey()
                     if hotkey == "s":
-                        save_manual_snapshot(renderer, config.output_dir, iteration, positions, tangent_u, tangent_v,
+                        save_manual_snapshot(renderer, config.output_dir, iteration, positions, rotations,
                                              scales, albedos, opacities, betas, powers, training_camera_ids)
                     elif hotkey == "g":
-                        save_gradients_snapshot(config.output_dir, iteration, grad_position_np, grad_tangent_u_np,
-                                                grad_tangent_v_np, grad_scales_np, grad_albedos_np, grad_opacities_np,
+                        save_gradients_snapshot(config.output_dir, iteration, grad_position_np, grad_rotation_np,
+                                                grad_scales_np, grad_albedos_np, grad_opacities_np,
                                                 grad_betas_np)
 
         except KeyboardInterrupt:
@@ -575,7 +582,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 "Stopping optimization loop and saving current result..."
             )
 
-    apply_point_parameters(renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers)
+    apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
     final_images = renderer.render_forward()
 
     final_rgb_loss = 0.0
@@ -652,7 +659,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_total_loss,
     )
     ply_path = config.output_dir / "points_final.ply"
-    save_gaussians_to_ply(ply_path, positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers,
+    save_gaussians_to_ply(ply_path, positions, rotations, scales, albedos, opacities, betas, powers,
                           shape_default=0.0)
 
     print(f"Final parameters written to PLY: {ply_path}")

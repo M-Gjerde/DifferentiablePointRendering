@@ -69,7 +69,9 @@ namespace Pale {
         float *framebufferPosX = nullptr; // gradient image
         float *framebufferPosY = nullptr; // gradient image
         float *framebufferPosZ = nullptr; // gradient image
-        float *framebufferRot = nullptr; // gradient image
+        float *framebufferRotX = nullptr;
+        float *framebufferRotY = nullptr;
+        float *framebufferRotZ = nullptr;
         float *framebufferScaleU = nullptr; // gradient image
         float *framebufferScaleV = nullptr; // gradient image
         float *framebufferOpacity = nullptr; // gradient image

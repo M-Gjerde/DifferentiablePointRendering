@@ -8,9 +8,14 @@
 #include <memory>
 #include <filesystem>
 #include <entt/entt.hpp>
+#include <cmath>
+#include <cstring>
+#include <optional>
+#include <stdexcept>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include "glm/gtx/string_cast.hpp"
+#include <glm/gtc/quaternion.hpp>
 
 import Pale.DeviceSelector;
 import Pale.Scene.Components;
@@ -54,6 +59,34 @@ static inline float get_f(const py::dict &d, const char *k, float def) {
     if (d.contains(k)) return py::cast<float>(d[k]);
     return def;
 }
+
+static inline glm::quat normalizeQuaternionOrIdentity(glm::quat q) {
+    const bool finite = std::isfinite(q.w) && std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z);
+    const float lengthSquared = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
+    if (!finite || lengthSquared <= 1.0e-20f) return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const float invLength = 1.0f / std::sqrt(lengthSquared);
+    q.w *= invLength; q.x *= invLength; q.y *= invLength; q.z *= invLength;
+    if (q.w < 0.0f) { q.w = -q.w; q.x = -q.x; q.y = -q.y; q.z = -q.z; }
+    return q;
+}
+static inline float glmLengthSquared(const glm::vec3 &v) { return v.x * v.x + v.y * v.y + v.z * v.z; }
+static inline void frameFromQuaternion(const glm::quat &inputQuaternion, Pale::float3 &tangentUOut, Pale::float3 &tangentVOut) {
+    const glm::quat q = normalizeQuaternionOrIdentity(inputQuaternion);
+    const glm::mat3 rotation = glm::mat3_cast(q);
+    glm::vec3 tangentU = glm::vec3(rotation[0]);
+    glm::vec3 tangentV = glm::vec3(rotation[1]);
+    if (glmLengthSquared(tangentU) <= 1.0e-20f) tangentU = glm::vec3(1.0f, 0.0f, 0.0f);
+    tangentU = glm::normalize(tangentU);
+    tangentV -= glm::dot(tangentV, tangentU) * tangentU;
+    if (glmLengthSquared(tangentV) <= 1.0e-20f) {
+        const glm::vec3 fallback = std::abs(tangentU.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+        tangentV = fallback - glm::dot(fallback, tangentU) * tangentU;
+    }
+    tangentV = glm::normalize(tangentV);
+    tangentUOut = tangentU;
+    tangentVOut = tangentV;
+}
+
 
 class PythonRenderer {
 public:
@@ -902,9 +935,27 @@ public:
                 }
 
                 // Tangent U gradient image
-                if (!debugImagesHost.rotation.empty()) {
-                    cameraDebugDict["rotation"] = makeRgbaImageArray(
-                        debugImagesHost.rotation,
+                if (!debugImagesHost.rotationX.empty()) {
+                    cameraDebugDict["rotation_x"] = makeRgbaImageArray(
+                        debugImagesHost.rotationX,
+                        imageWidth,
+                        imageHeight
+                    );
+                }
+
+                // Tangent U gradient image
+                if (!debugImagesHost.rotationY.empty()) {
+                    cameraDebugDict["rotation_y"] = makeRgbaImageArray(
+                        debugImagesHost.rotationY,
+                        imageWidth,
+                        imageHeight
+                    );
+                }
+
+                // Tangent U gradient image
+                if (!debugImagesHost.rotationZ.empty()) {
+                    cameraDebugDict["rotation_z"] = makeRgbaImageArray(
+                        debugImagesHost.rotationZ,
                         imageWidth,
                         imageHeight
                     );
@@ -1885,329 +1936,167 @@ public:
     }
 
     py::dict get_point_parameters() {
-        const std::size_t pointCount = buildProducts.points.size();
-
-        // Host copies of all parameters
+        if (!assetManager) throw std::runtime_error("get_point_parameters: assetManager is null");
+        auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
+        if (!pointAssetSharedPtr) throw std::runtime_error("get_point_parameters: failed to get PointAsset for dynamic point cloud");
+        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty()) throw std::runtime_error("get_point_parameters: PointAsset has no PointGeometry blocks");
+        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        const std::size_t pointCount = pointGeometry.positions.size();
+        if (pointGeometry.quat.size() != pointCount || pointGeometry.scales.size() != pointCount || pointGeometry.albedos.size() != pointCount || pointGeometry.opacities.size() != pointCount || pointGeometry.betas.size() != pointCount || pointGeometry.powers.size() != pointCount) {
+            throw std::runtime_error("get_point_parameters: PointGeometry size mismatch");
+        }
         std::vector<Pale::float3> positionHost(pointCount);
-        std::vector<Pale::float3> tangentUHost(pointCount);
-        std::vector<Pale::float3> tangentVHost(pointCount);
+        std::vector<float> rotationHost(pointCount * 4u);
         std::vector<Pale::float2> scaleHost(pointCount);
         std::vector<Pale::float3> albedoHost(pointCount);
         std::vector<float> opacityHost(pointCount);
         std::vector<float> betaHost(pointCount);
         std::vector<float> shapeHost(pointCount);
         std::vector<float> powerHost(pointCount);
-
         for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-            const auto &point = buildProducts.points[pointIndex];
-            positionHost[pointIndex] = point.position;
-            tangentUHost[pointIndex] = point.tanU;
-            tangentVHost[pointIndex] = point.tanV;
-            scaleHost[pointIndex] = point.scale;
-            albedoHost[pointIndex] = point.albedo;
-            opacityHost[pointIndex] = point.opacity;
-            betaHost[pointIndex] = point.beta;
-            shapeHost[pointIndex] = point.shape;
-            powerHost[pointIndex] = point.flux;
+            const glm::quat q = normalizeQuaternionOrIdentity(pointGeometry.quat[pointIndex]);
+            positionHost[pointIndex] = pointGeometry.positions[pointIndex];
+            rotationHost[pointIndex * 4u + 0u] = q.w;
+            rotationHost[pointIndex * 4u + 1u] = q.x;
+            rotationHost[pointIndex * 4u + 2u] = q.y;
+            rotationHost[pointIndex * 4u + 3u] = q.z;
+            scaleHost[pointIndex].x() = pointGeometry.scales[pointIndex].x;
+            scaleHost[pointIndex].y() = pointGeometry.scales[pointIndex].y;
+            albedoHost[pointIndex] = pointGeometry.albedos[pointIndex];
+            opacityHost[pointIndex] = pointGeometry.opacities[pointIndex];
+            betaHost[pointIndex] = pointGeometry.betas[pointIndex];
+            shapeHost[pointIndex] = pointGeometry.shapes.size() == pointCount ? pointGeometry.shapes[pointIndex] : 0.0f;
+            powerHost[pointIndex] = pointGeometry.powers[pointIndex];
         }
-
-        // Reuse the same makers as in render_backward (or define them once)
-        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector,
-                                  std::size_t count) -> py::array {
+        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector, std::size_t count) -> py::array {
             auto *owner = new std::vector<Pale::float3>(std::move(hostVector));
-            std::vector<ssize_t> shape{
-                static_cast<ssize_t>(count),
-                3
-            };
-            std::vector<ssize_t> strides{
-                static_cast<ssize_t>(sizeof(Pale::float3)),
-                static_cast<ssize_t>(sizeof(float))
-            };
-
-            return py::array(
-                py::buffer_info(
-                    owner->data(),
-                    sizeof(float),
-                    py::format_descriptor<float>::format(),
-                    2,
-                    shape,
-                    strides
-                ),
-                py::capsule(owner, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float3> *>(pointer);
-                })
-            );
+            std::vector<ssize_t> shape{static_cast<ssize_t>(count), 3};
+            std::vector<ssize_t> strides{static_cast<ssize_t>(sizeof(Pale::float3)), static_cast<ssize_t>(sizeof(float))};
+            return py::array(py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape, strides), py::capsule(owner, [](void *pointer) { delete static_cast<std::vector<Pale::float3> *>(pointer); }));
         };
-
-        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector,
-                                  std::size_t count) -> py::array {
-            auto *owner = new std::vector<Pale::float2>(std::move(hostVector));
-            std::vector<ssize_t> shape{
-                static_cast<ssize_t>(count),
-                2
-            };
-            std::vector<ssize_t> strides{
-                static_cast<ssize_t>(sizeof(Pale::float2)),
-                static_cast<ssize_t>(sizeof(float))
-            };
-
-            return py::array(
-                py::buffer_info(
-                    owner->data(),
-                    sizeof(float),
-                    py::format_descriptor<float>::format(),
-                    2,
-                    shape,
-                    strides
-                ),
-                py::capsule(owner, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float2> *>(pointer);
-                })
-            );
-        };
-
-        auto makeFloat1Array = [](std::vector<float> &hostVector,
-                                  std::size_t count) -> py::array {
+        auto makeFloat4Array = [](std::vector<float> &hostVector, std::size_t count) -> py::array {
             auto *owner = new std::vector<float>(std::move(hostVector));
-            std::vector<ssize_t> shape{
-                static_cast<ssize_t>(count)
-            };
-            std::vector<ssize_t> strides{
-                static_cast<ssize_t>(sizeof(float))
-            };
-
-            return py::array(
-                py::buffer_info(
-                    owner->data(),
-                    sizeof(float),
-                    py::format_descriptor<float>::format(),
-                    1,
-                    shape,
-                    strides
-                ),
-                py::capsule(owner, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
-                })
-            );
+            std::vector<ssize_t> shape{static_cast<ssize_t>(count), 4};
+            std::vector<ssize_t> strides{static_cast<ssize_t>(4 * sizeof(float)), static_cast<ssize_t>(sizeof(float))};
+            return py::array(py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape, strides), py::capsule(owner, [](void *pointer) { delete static_cast<std::vector<float> *>(pointer); }));
         };
-
+        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector, std::size_t count) -> py::array {
+            auto *owner = new std::vector<Pale::float2>(std::move(hostVector));
+            std::vector<ssize_t> shape{static_cast<ssize_t>(count), 2};
+            std::vector<ssize_t> strides{static_cast<ssize_t>(sizeof(Pale::float2)), static_cast<ssize_t>(sizeof(float))};
+            return py::array(py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape, strides), py::capsule(owner, [](void *pointer) { delete static_cast<std::vector<Pale::float2> *>(pointer); }));
+        };
+        auto makeFloat1Array = [](std::vector<float> &hostVector, std::size_t count) -> py::array {
+            auto *owner = new std::vector<float>(std::move(hostVector));
+            std::vector<ssize_t> shape{static_cast<ssize_t>(count)};
+            std::vector<ssize_t> strides{static_cast<ssize_t>(sizeof(float))};
+            return py::array(py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 1, shape, strides), py::capsule(owner, [](void *pointer) { delete static_cast<std::vector<float> *>(pointer); }));
+        };
         py::dict parameterDictionary;
         parameterDictionary["position"] = makeFloat3Array(positionHost, pointCount);
-        parameterDictionary["tangent_u"] = makeFloat3Array(tangentUHost, pointCount);
-        parameterDictionary["tangent_v"] = makeFloat3Array(tangentVHost, pointCount);
+        parameterDictionary["rotation"] = makeFloat4Array(rotationHost, pointCount);
         parameterDictionary["scale"] = makeFloat2Array(scaleHost, pointCount);
         parameterDictionary["albedo"] = makeFloat3Array(albedoHost, pointCount);
         parameterDictionary["opacity"] = makeFloat1Array(opacityHost, pointCount);
         parameterDictionary["beta"] = makeFloat1Array(betaHost, pointCount);
         parameterDictionary["shape"] = makeFloat1Array(shapeHost, pointCount);
         parameterDictionary["power"] = makeFloat1Array(powerHost, pointCount);
-
         return parameterDictionary;
     }
 
 
     void apply_point_optimization(const py::dict &parameterDictionary) {
-        if (!parameterDictionary.contains("position")) {
-            // nothing to do if we do not get positions/point count
-            return;
-        }
-
-        // 1) Inspect incoming 'position' to determine desired point count
+        if (!parameterDictionary.contains("position")) return;
+        if (!parameterDictionary.contains("rotation")) throw std::runtime_error("apply_point_optimization: expected key 'rotation' with shape (N,4)");
         py::array positionArray = parameterDictionary["position"].cast<py::array>();
         py::buffer_info positionInfo = positionArray.request();
-
-        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) {
-            throw std::runtime_error("Expected 'position' to have shape (N,3)");
-        }
-
-        const std::size_t incomingPointCount =
-                static_cast<std::size_t>(positionInfo.shape[0]);
-
+        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) throw std::runtime_error("Expected 'position' to have shape (N,3)");
+        const std::size_t pointCount = static_cast<std::size_t>(positionInfo.shape[0]);
         const std::size_t currentPointCount = buildProducts.points.size();
-
-        if (incomingPointCount == 0) {
-            // Nothing to render; ignore.
-            return;
+        if (pointCount == 0) return;
+        if (pointCount != currentPointCount) {
+            Pale::Log::PA_ERROR("apply_point_optimization: incoming point count {} does not match current buildProducts.points size {}. This function does not handle topology changes.", pointCount, currentPointCount);
+            throw std::runtime_error("apply_point_optimization expects consistent point count; use densification API for adding/removing points.");
         }
-
-        // IMPORTANT: this function is for optimization only, not topology changes.
-        if (incomingPointCount != currentPointCount) {
-            Pale::Log::PA_ERROR(
-                "apply_point_optimization: incoming point count {} does not "
-                "match current buildProducts.points size {}. This function does "
-                "not handle topology changes.",
-                incomingPointCount,
-                currentPointCount
-            );
-            throw std::runtime_error(
-                "apply_point_optimization expects consistent point count; "
-                "use densification API for adding/removing points."
-            );
+        auto requireArray = [&](const char *key) -> py::array {
+            if (!parameterDictionary.contains(key)) throw std::runtime_error("apply_point_optimization: missing key: " + std::string(key));
+            return parameterDictionary[key].cast<py::array>();
+        };
+        auto checkMatrix = [&](const py::buffer_info &info, const char *key, std::size_t dim) {
+            if (info.ndim != 2 || info.shape[0] != static_cast<ssize_t>(pointCount) || info.shape[1] != static_cast<ssize_t>(dim)) throw std::runtime_error(std::string("Expected '") + key + "' to have shape (N," + std::to_string(dim) + ")");
+            if (info.itemsize != sizeof(float)) throw std::runtime_error(std::string("Expected '") + key + "' to be float32");
+        };
+        auto checkVector = [&](const py::buffer_info &info, const char *key) {
+            if (info.ndim != 1 || info.shape[0] != static_cast<ssize_t>(pointCount)) throw std::runtime_error(std::string("Expected '") + key + "' to have shape (N,)");
+            if (info.itemsize != sizeof(float)) throw std::runtime_error(std::string("Expected '") + key + "' to be float32");
+        };
+        py::array rotationArray = requireArray("rotation");
+        py::array scaleArray = requireArray("scale");
+        py::array albedoArray = requireArray("albedo");
+        py::array opacityArray = requireArray("opacity");
+        py::array betaArray = requireArray("beta");
+        py::array powerArray = requireArray("power");
+        py::buffer_info rotationInfo = rotationArray.request();
+        py::buffer_info scaleInfo = scaleArray.request();
+        py::buffer_info albedoInfo = albedoArray.request();
+        py::buffer_info opacityInfo = opacityArray.request();
+        py::buffer_info betaInfo = betaArray.request();
+        py::buffer_info powerInfo = powerArray.request();
+        checkMatrix(positionInfo, "position", 3);
+        checkMatrix(rotationInfo, "rotation", 4);
+        checkMatrix(scaleInfo, "scale", 2);
+        checkMatrix(albedoInfo, "albedo", 3);
+        checkVector(opacityInfo, "opacity");
+        checkVector(betaInfo, "beta");
+        checkVector(powerInfo, "power");
+        const float *positionData = static_cast<const float *>(positionInfo.ptr);
+        const float *rotationData = static_cast<const float *>(rotationInfo.ptr);
+        const float *scaleData = static_cast<const float *>(scaleInfo.ptr);
+        const float *albedoData = static_cast<const float *>(albedoInfo.ptr);
+        const float *opacityData = static_cast<const float *>(opacityInfo.ptr);
+        const float *betaData = static_cast<const float *>(betaInfo.ptr);
+        const float *powerData = static_cast<const float *>(powerInfo.ptr);
+        for (std::size_t i = 0; i < pointCount; ++i) {
+            const std::size_t i3 = i * 3u;
+            const std::size_t i4 = i * 4u;
+            const std::size_t i2 = i * 2u;
+            Pale::Point &point = buildProducts.points[i];
+            point.position = glm::vec3(positionData[i3 + 0u], positionData[i3 + 1u], positionData[i3 + 2u]);
+            const glm::quat q = normalizeQuaternionOrIdentity(glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u]));
+            frameFromQuaternion(q, point.tanU, point.tanV);
+            point.scale.x() = scaleData[i2 + 0u];
+            point.scale.y() = scaleData[i2 + 1u];
+            point.albedo = glm::vec3(albedoData[i3 + 0u], albedoData[i3 + 1u], albedoData[i3 + 2u]);
+            point.opacity = opacityData[i];
+            point.beta = betaData[i];
+            point.flux = powerData[i];
         }
-
-        const std::size_t pointCount = currentPointCount;
-
-        // 2) Helpers for writing into buildProducts.points
-        auto assignFloat3FieldFromArray =
-                [&](const char *key, Pale::float3 Pale::Point::*memberPointer) {
-            if (!parameterDictionary.contains(key)) {
-                throw std::runtime_error("New points dictionary does not contain key: " + std::string(key));
-            }
-            py::array arrayObject = parameterDictionary[key].cast<py::array>();
-
-            py::buffer_info bufferInfo = arrayObject.request();
-            if (bufferInfo.ndim != 2 ||
-                bufferInfo.shape[0] != static_cast<ssize_t>(pointCount) ||
-                bufferInfo.shape[1] != 3) {
-                throw std::runtime_error(
-                    std::string("Expected '") + key + "' to have shape (N,3)");
-            }
-            if (bufferInfo.itemsize != sizeof(float)) {
-                throw std::runtime_error(
-                    std::string("Expected '") + key + "' to be float32");
-            }
-
-            auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
-            for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-                const std::size_t baseIndex = pointIndex * 3;
-                Pale::float3 value;
-                value.x() = dataPointer[baseIndex + 0];
-                value.y() = dataPointer[baseIndex + 1];
-                value.z() = dataPointer[baseIndex + 2];
-                buildProducts.points[pointIndex].*memberPointer = value;
-            }
-        };
-
-        auto assignFloat2FieldFromArray =
-                [&](const char *key, Pale::float2 Pale::Point::*memberPointer) {
-            if (!parameterDictionary.contains(key)) {
-                throw std::runtime_error("New points dictionary does not contain key: " + std::string(key));
-            }
-            py::array arrayObject = parameterDictionary[key].cast<py::array>();
-
-            py::buffer_info bufferInfo = arrayObject.request();
-            if (bufferInfo.ndim != 2 ||
-                bufferInfo.shape[0] != static_cast<ssize_t>(pointCount) ||
-                bufferInfo.shape[1] != 2) {
-                throw std::runtime_error(
-                    std::string("Expected '") + key + "' to have shape (N,2)");
-            }
-            if (bufferInfo.itemsize != sizeof(float)) {
-                throw std::runtime_error(
-                    std::string("Expected '") + key + "' to be float32");
-            }
-
-            auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
-            for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-                const std::size_t baseIndex = pointIndex * 2;
-                Pale::float2 value;
-                value.x() = dataPointer[baseIndex + 0];
-                value.y() = dataPointer[baseIndex + 1];
-                buildProducts.points[pointIndex].*memberPointer = value;
-            }
-        };
-
-        auto assignFloat1FieldFromArray =
-                [&](const char *key, float Pale::Point::*memberPointer) {
-            if (!parameterDictionary.contains(key)) {
-                throw std::runtime_error("New points dictionary does not contain key: " + std::string(key));
-            }
-            py::array arrayObject = parameterDictionary[key].cast<py::array>();
-
-            py::buffer_info bufferInfo = arrayObject.request();
-            if (bufferInfo.ndim != 1 ||
-                bufferInfo.shape[0] != static_cast<ssize_t>(pointCount)) {
-                throw std::runtime_error(
-                    std::string("Expected '") + key + "' to have shape (N,)");
-            }
-            if (bufferInfo.itemsize != sizeof(float)) {
-                throw std::runtime_error(
-                    std::string("Expected '") + key + "' to be float32");
-            }
-
-            auto *dataPointer = static_cast<float *>(bufferInfo.ptr);
-            for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-                buildProducts.points[pointIndex].*memberPointer = dataPointer[pointIndex];
-            }
-        };
-
-        // 3) Assign provided fields into buildProducts
-        assignFloat3FieldFromArray("position", &Pale::Point::position);
-        assignFloat3FieldFromArray("tangent_u", &Pale::Point::tanU);
-        assignFloat3FieldFromArray("tangent_v", &Pale::Point::tanV);
-        assignFloat2FieldFromArray("scale", &Pale::Point::scale);
-        assignFloat3FieldFromArray("albedo", &Pale::Point::albedo);
-        assignFloat1FieldFromArray("opacity", &Pale::Point::opacity);
-        assignFloat1FieldFromArray("beta", &Pale::Point::beta);
-        assignFloat1FieldFromArray("power", &Pale::Point::flux);
-
-        // 4) Mirror changes back to the underlying point cloud asset
         if (!assetManager) {
-            Pale::Log::PA_WARN("apply_point_optimization: assetManager is null, "
-                "skipping asset point cloud update.");
+            Pale::Log::PA_WARN("apply_point_optimization: assetManager is null, skipping asset point cloud update.");
         } else {
             auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
             if (!pointAssetSharedPtr) {
-                Pale::Log::PA_ERROR("apply_point_optimization: failed to get PointAsset for handle {}",
-                                    std::string(pointCloudAssetHandle));
-            } else {
-                Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-                if (pointAsset.points.empty()) {
-                    Pale::Log::PA_WARN("apply_point_optimization: PointAsset has no PointGeometry blocks");
-                } else {
-                    Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-
-                    // Ensure the asset geometry has at least pointCount entries
-                    if (pointGeometry.positions.size() != pointCount ||
-                        pointGeometry.tanU.size() != pointCount ||
-                        pointGeometry.tanV.size() != pointCount ||
-                        pointGeometry.scales.size() != pointCount ||
-                        pointGeometry.albedos.size() != pointCount ||
-                        pointGeometry.betas.size() != pointCount ||
-                        pointGeometry.opacities.size() != pointCount ||
-                        pointGeometry.powers.size() != pointCount) {
-                        Pale::Log::PA_ERROR(
-                            "apply_point_optimization: PointGeometry size mismatch. "
-                            "positions={}, tanU={}, tanV={}, scales={}, albedos={}, opacities={}, betas={},  powers={}, expected={}",
-                            pointGeometry.positions.size(),
-                            pointGeometry.tanU.size(),
-                            pointGeometry.tanV.size(),
-                            pointGeometry.scales.size(),
-                            pointGeometry.albedos.size(),
-                            pointGeometry.opacities.size(),
-                            pointGeometry.betas.size(),
-                            pointGeometry.powers.size(),
-                            pointCount
-                        );
-                        throw std::runtime_error(
-                            "PointGeometry size mismatch when applying point optimization.");
-                    }
-
-                    for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-                        const Pale::Point &optimizedPoint = buildProducts.points[pointIndex];
-
-                        pointGeometry.positions[pointIndex] = Pale::sycl2glm(optimizedPoint.position);
-                        pointGeometry.tanU[pointIndex] = Pale::sycl2glm(optimizedPoint.tanU);
-                        pointGeometry.tanV[pointIndex] = Pale::sycl2glm(optimizedPoint.tanV);
-                        pointGeometry.scales[pointIndex] = Pale::sycl2glm(optimizedPoint.scale);
-                        pointGeometry.albedos[pointIndex] = Pale::sycl2glm(optimizedPoint.albedo);
-                        pointGeometry.opacities[pointIndex] = optimizedPoint.opacity;
-                        // If you also keep beta/shape in the asset, mirror them here as well:
-                        pointGeometry.betas[pointIndex] = optimizedPoint.beta;
-                        pointGeometry.powers[pointIndex] = optimizedPoint.flux;
-                        // pointGeometry.shapes[pointIndex]    = optimizedPoint.shape;
-                    }
-
-                    Pale::Log::PA_INFO(
-                        "apply_point_optimization: synchronized {} optimized points back into PointAsset.",
-                        pointCount
-                    );
+                Pale::Log::PA_ERROR("apply_point_optimization: failed to get PointAsset for handle {}", std::string(pointCloudAssetHandle));
+            } else if (!pointAssetSharedPtr->points.empty()) {
+                Pale::PointGeometry &pointGeometry = pointAssetSharedPtr->points.front();
+                if (pointGeometry.positions.size() != pointCount || pointGeometry.quat.size() != pointCount || pointGeometry.scales.size() != pointCount || pointGeometry.albedos.size() != pointCount || pointGeometry.betas.size() != pointCount || pointGeometry.opacities.size() != pointCount || pointGeometry.powers.size() != pointCount) {
+                    throw std::runtime_error("apply_point_optimization: PointGeometry size mismatch");
+                }
+                for (std::size_t i = 0; i < pointCount; ++i) {
+                    const std::size_t i3 = i * 3u;
+                    const std::size_t i4 = i * 4u;
+                    const std::size_t i2 = i * 2u;
+                    pointGeometry.positions[i] = glm::vec3(positionData[i3 + 0u], positionData[i3 + 1u], positionData[i3 + 2u]);
+                    pointGeometry.quat[i] = normalizeQuaternionOrIdentity(glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u]));
+                    pointGeometry.scales[i] = glm::vec2(scaleData[i2 + 0u], scaleData[i2 + 1u]);
+                    pointGeometry.albedos[i] = glm::vec3(albedoData[i3 + 0u], albedoData[i3 + 1u], albedoData[i3 + 2u]);
+                    pointGeometry.opacities[i] = opacityData[i];
+                    pointGeometry.betas[i] = betaData[i];
+                    pointGeometry.powers[i] = powerData[i];
                 }
             }
         }
-
-        //rebuild_bvh();
-        //// 5) Upload updated buildProducts to GPU, no BVH rebuild
         Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
         pathTracer->setScene(sceneGpu, buildProducts);
     }
@@ -2348,8 +2237,7 @@ public:
         };
 
         filterVectorInPlace(pointGeometry.positions);
-        filterVectorInPlace(pointGeometry.tanU);
-        filterVectorInPlace(pointGeometry.tanV);
+        filterVectorInPlace(pointGeometry.quat);
         filterVectorInPlace(pointGeometry.scales);
         filterVectorInPlace(pointGeometry.albedos);
         filterVectorInPlace(pointGeometry.opacities);
@@ -2370,230 +2258,87 @@ public:
     }
 
     void add_new_points(const py::dict &parameterDictionary) {
-        // ---------------------------------------------------------------------
-        // 0) Get point cloud asset
-        // ---------------------------------------------------------------------
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
-            throw std::runtime_error("add_new_points: failed to get PointAsset for dynamic point cloud");
-        }
-
+        if (!pointAssetSharedPtr) throw std::runtime_error("add_new_points: failed to get PointAsset for dynamic point cloud");
         Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
-            throw std::runtime_error("add_new_points: PointAsset has no PointGeometry blocks");
-        }
-
+        if (pointAsset.points.empty()) throw std::runtime_error("add_new_points: PointAsset has no PointGeometry blocks");
         Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-
-        // ---------------------------------------------------------------------
-        // 1) Read "new" points only
-        // ---------------------------------------------------------------------
-        if (!parameterDictionary.contains("new")) {
-            Pale::Log::PA_INFO("add_new_points: no 'new' block provided, nothing to append.");
-            return;
-        }
-
+        if (!parameterDictionary.contains("new")) { Pale::Log::PA_INFO("add_new_points: no 'new' block provided, nothing to append."); return; }
         py::dict newDict = parameterDictionary["new"].cast<py::dict>();
-
-        auto getFloatArray = [&](const char *key)
-            -> py::array_t<float, py::array::c_style | py::array::forcecast> {
-            if (!newDict.contains(key)) {
-                throw std::runtime_error(std::string("add_new_points: missing key 'new.") + key + "'");
-            }
-            return newDict[key].cast<py::array_t<float, py::array::c_style | py::array::forcecast> >();
+        auto getFloatArray = [&](const char *key) -> py::array_t<float, py::array::c_style | py::array::forcecast> {
+            if (!newDict.contains(key)) throw std::runtime_error(std::string("add_new_points: missing key 'new.") + key + "'");
+            return newDict[key].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         };
-
-        auto getOptionalFloatArray = [&](const char *key)
-            -> std::optional<py::array_t<float, py::array::c_style | py::array::forcecast> > {
-            if (!newDict.contains(key)) {
-                return std::nullopt;
-            }
-            return newDict[key].cast<py::array_t<float, py::array::c_style | py::array::forcecast> >();
+        auto getOptionalFloatArray = [&](const char *key) -> std::optional<py::array_t<float, py::array::c_style | py::array::forcecast>> {
+            if (!newDict.contains(key)) return std::nullopt;
+            return newDict[key].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         };
-
         py::array_t<float, py::array::c_style | py::array::forcecast> positionArray = getFloatArray("position");
-        py::array_t<float, py::array::c_style | py::array::forcecast> tangentUArray = getFloatArray("tangent_u");
-        py::array_t<float, py::array::c_style | py::array::forcecast> tangentVArray = getFloatArray("tangent_v");
+        py::array_t<float, py::array::c_style | py::array::forcecast> rotationArray = getFloatArray("rotation");
         py::array_t<float, py::array::c_style | py::array::forcecast> scaleArray = getFloatArray("scale");
         py::array_t<float, py::array::c_style | py::array::forcecast> albedoArray = getFloatArray("albedo");
         py::array_t<float, py::array::c_style | py::array::forcecast> opacityArray = getFloatArray("opacity");
         py::array_t<float, py::array::c_style | py::array::forcecast> betaArray = getFloatArray("beta");
-
-        std::optional<py::array_t<float, py::array::c_style | py::array::forcecast> > powerArrayOpt =
-                getOptionalFloatArray("power");
-
+        std::optional<py::array_t<float, py::array::c_style | py::array::forcecast>> powerArrayOpt = getOptionalFloatArray("power");
         py::buffer_info positionInfo = positionArray.request();
-        py::buffer_info tangentUInfo = tangentUArray.request();
-        py::buffer_info tangentVInfo = tangentVArray.request();
+        py::buffer_info rotationInfo = rotationArray.request();
         py::buffer_info scaleInfo = scaleArray.request();
         py::buffer_info albedoInfo = albedoArray.request();
         py::buffer_info opacityInfo = opacityArray.request();
         py::buffer_info betaInfo = betaArray.request();
-
-        auto checkMatrixShape = [](const py::buffer_info &bufferInfo,
-                                   std::size_t expectedCount,
-                                   std::size_t expectedDim,
-                                   const char *name) {
-            if (bufferInfo.ndim != 2 ||
-                bufferInfo.shape[0] != static_cast<ssize_t>(expectedCount) ||
-                bufferInfo.shape[1] != static_cast<ssize_t>(expectedDim)) {
-                throw std::runtime_error(
-                    std::string("add_new_points: 'new.") + name +
-                    "' must have shape (N," + std::to_string(expectedDim) + ")"
-                );
-            }
-            if (bufferInfo.itemsize != sizeof(float)) {
-                throw std::runtime_error(
-                    std::string("add_new_points: 'new.") + name + "' must be float32"
-                );
-            }
+        auto checkMatrixShape = [](const py::buffer_info &bufferInfo, std::size_t expectedCount, std::size_t expectedDim, const char *name) {
+            if (bufferInfo.ndim != 2 || bufferInfo.shape[0] != static_cast<ssize_t>(expectedCount) || bufferInfo.shape[1] != static_cast<ssize_t>(expectedDim)) throw std::runtime_error(std::string("add_new_points: 'new.") + name + "' must have shape (N," + std::to_string(expectedDim) + ")");
+            if (bufferInfo.itemsize != sizeof(float)) throw std::runtime_error(std::string("add_new_points: 'new.") + name + "' must be float32");
         };
-
-        auto checkVectorShape = [](const py::buffer_info &bufferInfo,
-                                   std::size_t expectedCount,
-                                   const char *name) {
-            bool validShape = false;
-
-            if (bufferInfo.ndim == 1 &&
-                bufferInfo.shape[0] == static_cast<ssize_t>(expectedCount)) {
-                validShape = true;
-            }
-
-            if (bufferInfo.ndim == 2 &&
-                bufferInfo.shape[0] == static_cast<ssize_t>(expectedCount) &&
-                bufferInfo.shape[1] == 1) {
-                validShape = true;
-            }
-
-            if (!validShape) {
-                throw std::runtime_error(
-                    std::string("add_new_points: 'new.") + name +
-                    "' must have shape (N,) or (N,1)"
-                );
-            }
-
-            if (bufferInfo.itemsize != sizeof(float)) {
-                throw std::runtime_error(
-                    std::string("add_new_points: 'new.") + name + "' must be float32"
-                );
-            }
+        auto checkVectorShape = [](const py::buffer_info &bufferInfo, std::size_t expectedCount, const char *name) {
+            const bool validShape = (bufferInfo.ndim == 1 && bufferInfo.shape[0] == static_cast<ssize_t>(expectedCount)) || (bufferInfo.ndim == 2 && bufferInfo.shape[0] == static_cast<ssize_t>(expectedCount) && bufferInfo.shape[1] == 1);
+            if (!validShape) throw std::runtime_error(std::string("add_new_points: 'new.") + name + "' must have shape (N,) or (N,1)");
+            if (bufferInfo.itemsize != sizeof(float)) throw std::runtime_error(std::string("add_new_points: 'new.") + name + "' must be float32");
         };
-
-        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) {
-            throw std::runtime_error("add_new_points: 'new.position' must have shape (N,3)");
-        }
-        if (positionInfo.itemsize != sizeof(float)) {
-            throw std::runtime_error("add_new_points: 'new.position' must be float32");
-        }
-
+        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) throw std::runtime_error("add_new_points: 'new.position' must have shape (N,3)");
+        if (positionInfo.itemsize != sizeof(float)) throw std::runtime_error("add_new_points: 'new.position' must be float32");
         const std::size_t newPointCount = static_cast<std::size_t>(positionInfo.shape[0]);
-        if (newPointCount == 0) {
-            Pale::Log::PA_INFO("add_new_points: 'new' block has zero points, nothing to append.");
-            return;
-        }
-
-        checkMatrixShape(tangentUInfo, newPointCount, 3, "tangent_u");
-        checkMatrixShape(tangentVInfo, newPointCount, 3, "tangent_v");
+        if (newPointCount == 0) { Pale::Log::PA_INFO("add_new_points: 'new' block has zero points, nothing to append."); return; }
+        checkMatrixShape(rotationInfo, newPointCount, 4, "rotation");
         checkMatrixShape(scaleInfo, newPointCount, 2, "scale");
         checkMatrixShape(albedoInfo, newPointCount, 3, "albedo");
-
         checkVectorShape(opacityInfo, newPointCount, "opacity");
         checkVectorShape(betaInfo, newPointCount, "beta");
-
         py::buffer_info powerInfo{};
         bool hasPower = false;
-        if (powerArrayOpt.has_value()) {
-            powerInfo = powerArrayOpt.value().request();
-            checkVectorShape(powerInfo, newPointCount, "power");
-            hasPower = true;
-        }
-
+        if (powerArrayOpt.has_value()) { powerInfo = powerArrayOpt.value().request(); checkVectorShape(powerInfo, newPointCount, "power"); hasPower = true; }
         const float *positionData = static_cast<const float *>(positionInfo.ptr);
-        const float *tangentUData = static_cast<const float *>(tangentUInfo.ptr);
-        const float *tangentVData = static_cast<const float *>(tangentVInfo.ptr);
+        const float *rotationData = static_cast<const float *>(rotationInfo.ptr);
         const float *scaleData = static_cast<const float *>(scaleInfo.ptr);
         const float *albedoData = static_cast<const float *>(albedoInfo.ptr);
         const float *opacityData = static_cast<const float *>(opacityInfo.ptr);
         const float *betaData = static_cast<const float *>(betaInfo.ptr);
         const float *powerData = hasPower ? static_cast<const float *>(powerInfo.ptr) : nullptr;
-
-        // ---------------------------------------------------------------------
-        // 2) Append new points at the bottom
-        // ---------------------------------------------------------------------
         const std::size_t currentPointCount = pointGeometry.positions.size();
         const std::size_t newTotalPointCount = currentPointCount + newPointCount;
-
-        auto reserveAttribute = [newTotalPointCount](auto &vectorAttribute) {
-            vectorAttribute.reserve(newTotalPointCount);
-        };
-
+        auto reserveAttribute = [newTotalPointCount](auto &vectorAttribute) { vectorAttribute.reserve(newTotalPointCount); };
         reserveAttribute(pointGeometry.positions);
-        reserveAttribute(pointGeometry.tanU);
-        reserveAttribute(pointGeometry.tanV);
+        reserveAttribute(pointGeometry.quat);
         reserveAttribute(pointGeometry.scales);
         reserveAttribute(pointGeometry.albedos);
         reserveAttribute(pointGeometry.opacities);
         reserveAttribute(pointGeometry.shapes);
         reserveAttribute(pointGeometry.betas);
         reserveAttribute(pointGeometry.powers);
-
         for (std::size_t pointIndex = 0; pointIndex < newPointCount; ++pointIndex) {
-            const std::size_t basePositionIndex = pointIndex * 3;
-            const std::size_t baseTangentUIndex = pointIndex * 3;
-            const std::size_t baseTangentVIndex = pointIndex * 3;
-            const std::size_t baseScaleIndex = pointIndex * 2;
-            const std::size_t baseColorIndex = pointIndex * 3;
-
-            glm::vec3 positionValue;
-            positionValue.x = positionData[basePositionIndex + 0];
-            positionValue.y = positionData[basePositionIndex + 1];
-            positionValue.z = positionData[basePositionIndex + 2];
-
-            glm::vec3 tangentUValue;
-            tangentUValue.x = tangentUData[baseTangentUIndex + 0];
-            tangentUValue.y = tangentUData[baseTangentUIndex + 1];
-            tangentUValue.z = tangentUData[baseTangentUIndex + 2];
-
-            glm::vec3 tangentVValue;
-            tangentVValue.x = tangentVData[baseTangentVIndex + 0];
-            tangentVValue.y = tangentVData[baseTangentVIndex + 1];
-            tangentVValue.z = tangentVData[baseTangentVIndex + 2];
-
-            glm::vec2 scaleValue;
-            scaleValue.x = scaleData[baseScaleIndex + 0];
-            scaleValue.y = scaleData[baseScaleIndex + 1];
-
-            glm::vec3 albedoValue;
-            albedoValue.x = albedoData[baseColorIndex + 0];
-            albedoValue.y = albedoData[baseColorIndex + 1];
-            albedoValue.z = albedoData[baseColorIndex + 2];
-
-            const float opacityValue = opacityData[pointIndex];
-            const float betaValue = betaData[pointIndex];
-            const float powerValue = hasPower ? powerData[pointIndex] : 0.0f;
-
-            pointGeometry.positions.push_back(positionValue);
-            pointGeometry.tanU.push_back(tangentUValue);
-            pointGeometry.tanV.push_back(tangentVValue);
-            pointGeometry.scales.push_back(scaleValue);
-            pointGeometry.albedos.push_back(albedoValue);
-            pointGeometry.opacities.push_back(opacityValue);
-            pointGeometry.betas.push_back(betaValue);
-            pointGeometry.powers.push_back(powerValue);
-
-            // Defaults for other attributes of new surfels.
+            const std::size_t i3 = pointIndex * 3u;
+            const std::size_t i4 = pointIndex * 4u;
+            const std::size_t i2 = pointIndex * 2u;
+            pointGeometry.positions.push_back(glm::vec3(positionData[i3 + 0u], positionData[i3 + 1u], positionData[i3 + 2u]));
+            pointGeometry.quat.push_back(normalizeQuaternionOrIdentity(glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u])));
+            pointGeometry.scales.push_back(glm::vec2(scaleData[i2 + 0u], scaleData[i2 + 1u]));
+            pointGeometry.albedos.push_back(glm::vec3(albedoData[i3 + 0u], albedoData[i3 + 1u], albedoData[i3 + 2u]));
+            pointGeometry.opacities.push_back(opacityData[pointIndex]);
+            pointGeometry.betas.push_back(betaData[pointIndex]);
+            pointGeometry.powers.push_back(hasPower ? powerData[pointIndex] : 0.0f);
             pointGeometry.shapes.push_back(0.0f);
         }
-
-        Pale::Log::PA_INFO(
-            "add_new_points: final point count in geometry = {} (added {} new points)",
-            pointGeometry.positions.size(),
-            newPointCount
-        );
-
-        // ---------------------------------------------------------------------
-        // 3) Rebuild buildProducts and GPU resources
-        // ---------------------------------------------------------------------
+        Pale::Log::PA_INFO("add_new_points: final point count in geometry = {} (added {} new points)", pointGeometry.positions.size(), newPointCount);
         rebuild_bvh();
     }
 
@@ -2723,54 +2468,22 @@ public:
     }
 
     void set_point_rotation_degrees(float angleDegrees, int axisIndex, int index) {
-        if (!assetManager) {
-            throw std::runtime_error("set_point_rotation_degrees: assetManager is null");
-        }
-
-        auto pointAssetSharedPtr =
-                assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
-            throw std::runtime_error("set_point_rotation_degrees: failed to get PointAsset");
-        }
-
+        if (!assetManager) throw std::runtime_error("set_point_rotation_degrees: assetManager is null");
+        auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
+        if (!pointAssetSharedPtr) throw std::runtime_error("set_point_rotation_degrees: failed to get PointAsset");
         Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
-            throw std::runtime_error("set_point_rotation_degrees: no PointGeometry blocks");
-        }
-
+        if (pointAsset.points.empty()) throw std::runtime_error("set_point_rotation_degrees: no PointGeometry blocks");
         Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-
         const int pointCount = static_cast<int>(pointGeometry.positions.size());
-        if (index < 0 || index >= pointCount) {
-            throw std::runtime_error("set_point_rotation_degrees: index out of range");
-        }
-
-
-        glm::vec3 axis = glm::vec3(0.0f, 0.0f, 0.0f);
+        if (index < 0 || index >= pointCount) throw std::runtime_error("set_point_rotation_degrees: index out of range");
+        glm::vec3 axis(0.0f, 0.0f, 0.0f);
         switch (axisIndex) {
-            case 0: axis = glm::vec3(1.0f, 0.0f, 0.0f);
-                break; // rotation_x
-            case 1: axis = glm::vec3(0.0f, 1.0f, 0.0f);
-                break; // rotation_y
-            case 2: axis = glm::vec3(0.0f, 0.0f, 1.0f);
-                break; // rotation_z
-            default:
-                throw std::runtime_error("set_point_rotation_degrees: invalid axisIndex");
+            case 0: axis = glm::vec3(1.0f, 0.0f, 0.0f); break;
+            case 1: axis = glm::vec3(0.0f, 1.0f, 0.0f); break;
+            case 2: axis = glm::vec3(0.0f, 0.0f, 1.0f); break;
+            default: throw std::runtime_error("set_point_rotation_degrees: invalid axisIndex");
         }
-
-        const float angleRadians = glm::radians(angleDegrees);
-
-        const glm::vec3 tanU0 = glm::vec3(1.0f, 0.0f, 0.0f);
-        const glm::vec3 tanV0 = glm::vec3(0.0f, 1.0f, 0.0f);
-
-        glm::vec3 tanURot = rotateAxisAngle(tanU0, axis, angleRadians);
-        glm::vec3 tanVRot = rotateAxisAngle(tanV0, axis, angleRadians);
-
-        orthonormalizeFrame(tanURot, tanVRot);
-
-        pointGeometry.tanU[index] = tanURot;
-        pointGeometry.tanV[index] = tanVRot;
-
+        pointGeometry.quat[index] = normalizeQuaternionOrIdentity(glm::angleAxis(glm::radians(angleDegrees), axis));
         rebuild_bvh();
     }
 
@@ -2836,105 +2549,35 @@ public:
     }
 
 
-    void set_point_properties(py::tuple translation3,
-                              py::tuple rotationQuat4,
-                              py::tuple scale3,
-                              py::tuple albedo3,
-                              float opacity,
-                              float beta,
-                              int index = -1) {
-        if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3) {
-            throw std::runtime_error("Expected translation(3), rotation_quat(4), scale(3)");
-        }
-
-        const glm::vec3 newTranslation{
-            py::cast<float>(translation3[0]),
-            py::cast<float>(translation3[1]),
-            py::cast<float>(translation3[2])
-        };
-        const glm::vec3 newColor{
-            py::cast<float>(albedo3[0]),
-            py::cast<float>(albedo3[1]),
-            py::cast<float>(albedo3[2])
-        };
-
-        // quaternion as (x, y, z, w)
-        const glm::quat rotationDelta{
-            py::cast<float>(rotationQuat4[3]), // w
-            py::cast<float>(rotationQuat4[0]), // x
-            py::cast<float>(rotationQuat4[1]), // y
-            py::cast<float>(rotationQuat4[2]) // z
-        };
-
-        const glm::vec2 newScale{
-            py::cast<float>(scale3[0]),
-            py::cast<float>(scale3[1]),
-        };
-
-        Pale::AssetAccessFromManager assetAccessor(*assetManager);
-        buildProducts = Pale::SceneBuild::build(
-            scene,
-            assetAccessor,
-            Pale::SceneBuild::BuildOptions()
-        );
-
+    void set_point_properties(py::tuple translation3, py::tuple rotationQuat4, py::tuple scale3, py::tuple albedo3, float opacity, float beta, int index = -1) {
+        if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3 || albedo3.size() != 3) throw std::runtime_error("Expected translation(3), rotation_quat_wxyz(4), scale(3), albedo(3)");
+        const glm::vec3 newTranslation{py::cast<float>(translation3[0]), py::cast<float>(translation3[1]), py::cast<float>(translation3[2])};
+        const glm::quat rotationDelta = normalizeQuaternionOrIdentity(glm::quat(py::cast<float>(rotationQuat4[0]), py::cast<float>(rotationQuat4[1]), py::cast<float>(rotationQuat4[2]), py::cast<float>(rotationQuat4[3])));
+        const glm::vec2 newScale{py::cast<float>(scale3[0]), py::cast<float>(scale3[1])};
+        const glm::vec3 newColor{py::cast<float>(albedo3[0]), py::cast<float>(albedo3[1]), py::cast<float>(albedo3[2])};
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
-            throw std::runtime_error("add_new_points: failed to get PointAsset for dynamic point cloud");
-        }
-
+        if (!pointAssetSharedPtr) throw std::runtime_error("set_point_properties: failed to get PointAsset for dynamic point cloud");
         Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
-            throw std::runtime_error("add_new_points: PointAsset has no PointGeometry blocks");
-        }
-
+        if (pointAsset.points.empty()) throw std::runtime_error("set_point_properties: PointAsset has no PointGeometry blocks");
         Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-
-        // --- apply translation to either one point or all points ---
         if (index < 0) {
-            // perturb all points
-            const sycl::float3 translationDelta = Pale::glm2sycl(newTranslation);
-            for (int i = 0; i < pointGeometry.positions.size(); ++i) {
+            for (std::size_t i = 0; i < pointGeometry.positions.size(); ++i) {
                 pointGeometry.positions[i] += newTranslation;
-
-                // 2) orientation: rotate tanU / tanV by the rotation delta
-                glm::vec3 tanUGlm = (pointGeometry.tanU[i]);
-                glm::vec3 tanVGlm = (pointGeometry.tanV[i]);
-
-                tanUGlm = rotationDelta * tanUGlm;
-                tanVGlm = rotationDelta * tanVGlm;
-
-                pointGeometry.tanU[i] = tanUGlm;
-                pointGeometry.tanV[i] = tanVGlm;
-
+                pointGeometry.quat[i] = normalizeQuaternionOrIdentity(rotationDelta * pointGeometry.quat[i]);
                 pointGeometry.albedos[i] += newColor;
                 pointGeometry.opacities[i] += opacity;
                 pointGeometry.betas[i] += beta;
-                pointGeometry.scales[i] *= newScale; // component-wise
-                i++;
+                pointGeometry.scales[i] *= newScale;
             }
         } else {
-            if (index > pointGeometry.positions.size() - 1)
-                throw std::runtime_error("add_new_points: index out of range");
+            if (index >= static_cast<int>(pointGeometry.positions.size())) throw std::runtime_error("set_point_properties: index out of range");
             pointGeometry.positions[index] += newTranslation;
-
-            // 2) orientation: rotate tanU / tanV by the rotation delta
-            glm::vec3 tanUGlm = (pointGeometry.tanU[index]);
-            glm::vec3 tanVGlm = (pointGeometry.tanV[index]);
-
-            tanUGlm = rotationDelta * tanUGlm;
-            tanVGlm = rotationDelta * tanVGlm;
-
-            pointGeometry.tanU[index] = (tanUGlm);
-            pointGeometry.tanV[index] = (tanVGlm);
-
+            pointGeometry.quat[index] = normalizeQuaternionOrIdentity(rotationDelta * pointGeometry.quat[index]);
             pointGeometry.albedos[index] = newColor;
             pointGeometry.opacities[index] = opacity;
             pointGeometry.betas[index] = beta;
-            pointGeometry.scales[index] = newScale; // component-wise
+            pointGeometry.scales[index] = newScale;
         }
-
-
         rebuild_bvh();
     }
 

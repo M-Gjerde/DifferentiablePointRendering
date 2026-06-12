@@ -1,16 +1,14 @@
 ply
 format ascii 1.0
-comment 2D Gaussian splats: pk, tu, tv, scales, diffuse albedo, opacity
+comment Quaternion surfels: position, rotation quaternion, scales, diffuse albedo, opacity
 element vertex 8
 property float x
 property float y
 property float z
-property float tu_x
-property float tu_y
-property float tu_z
-property float tv_x
-property float tv_y
-property float tv_z
+property float rot_w
+property float rot_x
+property float rot_y
+property float rot_z
 property float su
 property float sv
 property float albedo_r
@@ -21,20 +19,11 @@ property float beta
 property float shape
 property float power
 end_header
-
--0.4 0.5 0.95  1.0 0.0 0.0   0.0 -1.0 0.0  0.001 0.001  1.0 1.0 1.0   1.0  -100.0 0.0   4.0
-
-0.4 0.5 0.95  1.0 0.0 0.0   0.0 -1.0 0.0  0.01 0.01  1.0 1.0 1.0   1.0  -100.0 0.0   4.0
-
-0.0 0.5 0.7   0.0 1.0 0.0  0.0 0.0 1.0   0.3 0.3  0.5 0.5 1.0  0.9  -0.0 0.0   0.0
-
-0.0 0.5 0.0   1.0 0.0 0.0   0.0 1.0 0.0   1.0 1.0   1.0 1.0 1.0 1.0   -1.0 0.0   0.0
-
-0.0 0.5 1.0   1.0 0.0 0.0   0.0 -1.0 0.0  1.0 1.0   1.0 1.0 1.0   1.0   -1.0 0.0   0.0
-
-0.0 1.0 0.5   1.0 0.0 0.0   0.0 0.0 1.0   1.0 1.0   1.0 1.0 1.0   1.0   -1.0 0.0   0.0
-
--0.5 0.5 0.5  0.0 1.0 0.0   0.0 0.0 1.0   1.0 1.0   0.8 0.1 0.1   1.0   -1.0 0.0   0.0
-
-0.5 0.5 0.5   0.0 0.0 1.0   0.0 1.0 0.0   1.0 1.0   0.1 0.8 0.1   1.0   -1.0 0.0   0.0
-
+-0.4 0.5 0.95  0.0 1.0 0.0 0.0  0.001 0.001  1.0 1.0 1.0  1.0 -100.0 0.0 4.0
+0.4 0.5 0.95  0.0 1.0 0.0 0.0  0.01 0.01  1.0 1.0 1.0  1.0 -100.0 0.0 4.0
+0.0 0.6 0.5   0.920 0.392 0.0 0.0  0.3 0.3  0.5 0.5 1.0  1.0 -0.0 0.0 0.0
+0.0 0.5 0.0  1.0 0.0 0.0 0.0  1.0 1.0  1.0 1.0 1.0  1.0 0.0 0.0 0.0
+0.0 0.5 1.0  0.0 1.0 0.0 0.0  1.0 1.0  1.0 1.0 1.0  1.0 -0.0 0.0 0.0
+0.0 1.0 0.5  0.70710678 0.70710678 0.0 0.0  1.0 1.0  1.0 1.0 1.0  1.0 -0.0 0.0 0.0
+-0.5 0.5 0.5  0.5 0.5 0.5 0.5  1.0 1.0  0.8 0.1 0.1  1.0 -0.0 0.0 0.0
+0.5 0.5 0.5  0.70710678 0.0 -0.70710678 0.0  1.0 1.0  0.1 0.8 0.1  1.0 -0.0 0.0 0.0

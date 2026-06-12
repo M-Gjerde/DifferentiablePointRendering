@@ -3,41 +3,147 @@ import torch
 from typing import Optional, Any
 import math
 
+def normalize_quaternions_torch(q: torch.Tensor, eps: float = 1.0e-12) -> torch.Tensor:
+    finite = torch.isfinite(q).all(dim=1, keepdim=True)
+    n = torch.linalg.norm(q, dim=1, keepdim=True)
+    fallback = torch.zeros_like(q)
+    fallback[:, 0] = 1.0
+    qn = q / n.clamp_min(eps)
+    qn = torch.where(finite & (n > eps), qn, fallback)
+    qn = torch.where(qn[:, 0:1] < 0.0, -qn, qn)
+    return qn
+
+def quaternion_to_tangent_frame_torch(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    q = normalize_quaternions_torch(q)
+    qw, qx, qy, qz = q[:, 0:1], q[:, 1:2], q[:, 2:3], q[:, 3:4]
+    tu = torch.cat([
+        1.0 - 2.0 * (qy * qy + qz * qz),
+        2.0 * (qx * qy + qz * qw),
+        2.0 * (qx * qz - qy * qw),
+    ], dim=1)
+    tv = torch.cat([
+        2.0 * (qx * qy - qz * qw),
+        1.0 - 2.0 * (qx * qx + qz * qz),
+        2.0 * (qy * qz + qx * qw),
+    ], dim=1)
+    tw = torch.cat([
+        2.0 * (qx * qz + qy * qw),
+        2.0 * (qy * qz - qx * qw),
+        1.0 - 2.0 * (qx * qx + qy * qy),
+    ], dim=1)
+    tu = torch.nn.functional.normalize(tu, dim=1, eps=1.0e-8)
+    tv = tv - torch.sum(tv * tu, dim=1, keepdim=True) * tu
+    tv = torch.nn.functional.normalize(tv, dim=1, eps=1.0e-8)
+    tw = torch.nn.functional.normalize(torch.cross(tu, tv, dim=1), dim=1, eps=1.0e-8)
+    return tu, tv, tw
+
+def quaternion_multiply_wxyz(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    aw, ax, ay, az = a[:, 0:1], a[:, 1:2], a[:, 2:3], a[:, 3:4]
+    bw, bx, by, bz = b[:, 0:1], b[:, 1:2], b[:, 2:3], b[:, 3:4]
+    return torch.cat([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ], dim=1)
+
+def quaternion_exp_from_local_delta(delta: torch.Tensor, eps: float = 1.0e-12) -> torch.Tensor:
+    angle = torch.linalg.norm(delta, dim=1, keepdim=True)
+    half_angle = 0.5 * angle
+    sin_half_over_angle = torch.where(
+        angle > eps,
+        torch.sin(half_angle) / angle.clamp_min(eps),
+        0.5 - (angle * angle) / 48.0,
+    )
+    dq = torch.cat([torch.cos(half_angle), delta * sin_half_over_angle], dim=1)
+    return normalize_quaternions_torch(dq)
+
+def apply_local_rotation_update_to_quaternions_inplace(
+        rotations: torch.Tensor,
+        rotation_delta: torch.Tensor,
+        trainable_surfel_mask: Optional[torch.Tensor] = None,
+        max_rotation_step_radians: float = 0.0,
+) -> dict[str, float]:
+    if rotations.ndim != 2 or rotations.shape[1] != 4:
+        raise ValueError(f"rotations must be (N,4), got {tuple(rotations.shape)}")
+    if rotation_delta.ndim != 2 or rotation_delta.shape[1] != 3 or rotation_delta.shape[0] != rotations.shape[0]:
+        raise ValueError(f"rotation_delta must be (N,3), got {tuple(rotation_delta.shape)}")
+    with torch.no_grad():
+        delta = rotation_delta.detach().to(device=rotations.device, dtype=rotations.dtype)
+        if trainable_surfel_mask is not None:
+            mask = trainable_surfel_mask.to(device=rotations.device, dtype=torch.bool).view(-1, 1)
+            delta = torch.where(mask, delta, torch.zeros_like(delta))
+        if max_rotation_step_radians is not None and max_rotation_step_radians > 0.0:
+            delta_norm = torch.linalg.norm(delta, dim=1, keepdim=True)
+            clamp_scale = torch.clamp(float(max_rotation_step_radians) / delta_norm.clamp_min(1.0e-12), max=1.0)
+            delta = delta * clamp_scale
+        before = normalize_quaternions_torch(rotations.detach())
+        dq = quaternion_exp_from_local_delta(delta)
+        after = normalize_quaternions_torch(quaternion_multiply_wxyz(before, dq))
+        rotations.copy_(after)
+        rotation_delta.zero_()
+        return {
+            "max_quat_norm_error": float((torch.linalg.norm(rotations, dim=1) - 1.0).abs().max().item()),
+            "max_delta_norm": float(torch.linalg.norm(delta, dim=1).max().item()) if delta.numel() else 0.0,
+        }
+
+def quaternion_from_tangent_frame_torch(tangent_u: torch.Tensor, tangent_v: torch.Tensor) -> torch.Tensor:
+    eps = 1.0e-12
+    u = torch.nn.functional.normalize(tangent_u, dim=1, eps=eps)
+    v = tangent_v - torch.sum(tangent_v * u, dim=1, keepdim=True) * u
+    v = torch.nn.functional.normalize(v, dim=1, eps=eps)
+    w = torch.nn.functional.normalize(torch.cross(u, v, dim=1), dim=1, eps=eps)
+    m00, m01, m02 = u[:, 0], v[:, 0], w[:, 0]
+    m10, m11, m12 = u[:, 1], v[:, 1], w[:, 1]
+    m20, m21, m22 = u[:, 2], v[:, 2], w[:, 2]
+    q = torch.zeros((u.shape[0], 4), device=u.device, dtype=u.dtype)
+    trace = m00 + m11 + m22
+    mask = trace > 0.0
+    if mask.any():
+        s = torch.sqrt(trace[mask] + 1.0) * 2.0
+        q[mask, 0] = 0.25 * s
+        q[mask, 1] = (m21[mask] - m12[mask]) / s
+        q[mask, 2] = (m02[mask] - m20[mask]) / s
+        q[mask, 3] = (m10[mask] - m01[mask]) / s
+    mask_x = (~mask) & (m00 > m11) & (m00 > m22)
+    if mask_x.any():
+        s = torch.sqrt(1.0 + m00[mask_x] - m11[mask_x] - m22[mask_x]) * 2.0
+        q[mask_x, 0] = (m21[mask_x] - m12[mask_x]) / s
+        q[mask_x, 1] = 0.25 * s
+        q[mask_x, 2] = (m01[mask_x] + m10[mask_x]) / s
+        q[mask_x, 3] = (m02[mask_x] + m20[mask_x]) / s
+    mask_y = (~mask) & (~mask_x) & (m11 > m22)
+    if mask_y.any():
+        s = torch.sqrt(1.0 + m11[mask_y] - m00[mask_y] - m22[mask_y]) * 2.0
+        q[mask_y, 0] = (m02[mask_y] - m20[mask_y]) / s
+        q[mask_y, 1] = (m01[mask_y] + m10[mask_y]) / s
+        q[mask_y, 2] = 0.25 * s
+        q[mask_y, 3] = (m12[mask_y] + m21[mask_y]) / s
+    mask_z = (~mask) & (~mask_x) & (~mask_y)
+    if mask_z.any():
+        s = torch.sqrt(1.0 + m22[mask_z] - m00[mask_z] - m11[mask_z]) * 2.0
+        q[mask_z, 0] = (m10[mask_z] - m01[mask_z]) / s
+        q[mask_z, 1] = (m02[mask_z] + m20[mask_z]) / s
+        q[mask_z, 2] = (m12[mask_z] + m21[mask_z]) / s
+        q[mask_z, 3] = 0.25 * s
+    return normalize_quaternions_torch(q)
 
 def project_gradient_to_surfel_tangent_plane_np(
         grad_position_np: np.ndarray,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
+        rotations: torch.Tensor,
 ) -> np.ndarray:
-    """
-    Project world-space position gradients onto each surfel's tangent plane.
-
-    Returns:
-        projected_grad_np with shape (N, 3).
-    """
     grad_np = np.asarray(grad_position_np, dtype=np.float32, order="C")
-
     with torch.no_grad():
-        device = tangent_u.device
-
+        device = rotations.device
         g = torch.as_tensor(grad_np, device=device, dtype=torch.float32)
-
-        tu = torch.nn.functional.normalize(tangent_u.detach(), dim=1)
-        tv = torch.nn.functional.normalize(tangent_v.detach(), dim=1)
-
-        projected = (
-                torch.sum(g * tu, dim=1, keepdim=True) * tu
-                +
-                torch.sum(g * tv, dim=1, keepdim=True) * tv
-        )
-
+        tu, tv, _ = quaternion_to_tangent_frame_torch(rotations.detach())
+        projected = torch.sum(g * tu, dim=1, keepdim=True) * tu + torch.sum(g * tv, dim=1, keepdim=True) * tv
         return projected.detach().cpu().numpy().astype(np.float32)
 
 
 def make_under_reconstruction_clones(
         positions,
-        tangent_u,
-        tangent_v,
+        rotations,
         scales,
         albedos,
         opacities,
@@ -113,9 +219,11 @@ Both children:
             keep = torch.topk(selected_grad, k=max_new, largest=True).indices
             selected_idx = selected_idx[keep]
 
+        tu_all, tv_all, _ = quaternion_to_tangent_frame_torch(rotations.detach())
         p = positions[selected_idx].detach().clone()
-        tu = tangent_u[selected_idx].detach().clone()
-        tv = tangent_v[selected_idx].detach().clone()
+        rot = rotations[selected_idx].detach().clone()
+        tu = tu_all[selected_idx].detach().clone()
+        tv = tv_all[selected_idx].detach().clone()
         sc = scales[selected_idx].detach().clone()
         alb = albedos[selected_idx].detach().clone()
         opa = opacities[selected_idx].detach().clone()
@@ -214,8 +322,7 @@ Both children:
 
             "new": {
                 "position": clone_positions.detach().cpu().numpy().astype(np.float32),
-                "tangent_u": tu.detach().cpu().numpy().astype(np.float32),
-                "tangent_v": tv.detach().cpu().numpy().astype(np.float32),
+                "rotation": rot.detach().cpu().numpy().astype(np.float32),
                 "scale": child_sc.detach().cpu().numpy().astype(np.float32),
                 "albedo": alb.detach().cpu().numpy().astype(np.float32),
                 "opacity": child_opacity.detach().cpu().numpy().reshape(-1).astype(np.float32),
@@ -228,257 +335,6 @@ Both children:
             "grad_norm": selection_score[selected_idx].detach().cpu().numpy().astype(np.float32),
 
             "replace_source": False,
-        }
-
-
-def make_under_reconstruction_evsplits(
-        positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
-        scales: torch.Tensor,
-        albedos: torch.Tensor,
-        opacities: torch.Tensor,
-        betas: torch.Tensor,
-        powers: torch.Tensor,
-        grad_position_np: np.ndarray,
-        trainable_surfel_mask: torch.Tensor,
-        grad_threshold: float,
-        selection_score_np: np.ndarray | None = None,
-        min_scale: float = 1.0e-6,
-        min_opacity: float = 1.0e-5,
-        max_opacity: float = 1.0,
-        preserve_integrated_opacity: bool = True,
-) -> dict[str, dict[str, Any] | Any] | None:
-    """
-    EV-Splitting-style densification for Gaussian surfels.
-
-    This replaces each selected parent surfel by two children. It is not clone-additive.
-
-    Local measure:
-        2D world tangent-plane area measure.
-
-    Local model:
-        g(y) = alpha * exp(-0.5 y^T Sigma^{-1} y),
-        Sigma = diag(scale_u^2, scale_v^2) in the local tangent frame.
-
-    Split:
-        centered tangent-plane split with normal chosen from the projected descent
-        direction. If the descent direction is degenerate, split along the largest
-        local scale axis.
-
-    Returned structure:
-        Compatible with your existing add_new_points(...), plus:
-            replace_source = True
-            source_index = parent indices to remove
-    """
-
-    with torch.no_grad():
-        device = positions.device
-
-        grad_pos = torch.as_tensor(
-            np.asarray(grad_position_np, dtype=np.float32, order="C"),
-            device=device,
-            dtype=torch.float32,
-        )
-
-        if selection_score_np is None:
-            selection_score = torch.linalg.norm(grad_pos, dim=1)
-        else:
-            selection_score = torch.as_tensor(
-                selection_score_np,
-                device=device,
-                dtype=torch.float32,
-            ).reshape(-1)
-
-        selected = (
-                torch.isfinite(selection_score)
-                & (selection_score >= float(grad_threshold))
-                & trainable_surfel_mask
-        )
-
-        selected_idx = torch.nonzero(selected, as_tuple=False).flatten()
-        if selected_idx.numel() == 0:
-            return None
-
-        n_points = int(positions.shape[0])
-
-        # EV split creates two children and removes one parent.
-        # Net growth is +1 per selected surfel.
-        p = positions[selected_idx].detach().clone()
-        tu = tangent_u[selected_idx].detach().clone()
-        tv = tangent_v[selected_idx].detach().clone()
-        sc = scales[selected_idx].detach().clone()
-        alb = albedos[selected_idx].detach().clone()
-        opa = opacities[selected_idx].detach().clone().reshape(-1)
-        be = betas[selected_idx].detach().clone().reshape(-1)
-        pow_ = powers[selected_idx].detach().clone().reshape(-1)
-
-        g = grad_pos[selected_idx]
-
-        eps = 1.0e-12
-
-        tu_n = torch.nn.functional.normalize(tu, dim=1, eps=eps)
-        tv_n = torch.nn.functional.normalize(tv, dim=1, eps=eps)
-
-        old_normal = torch.cross(tu_n, tv_n, dim=1)
-        old_normal = torch.nn.functional.normalize(old_normal, dim=1, eps=eps)
-
-        # For minimization, grad = dL/dp, so descent is -grad.
-        descent = -g
-
-        # Local tangent components of descent.
-        a_u = torch.sum(descent * tu_n, dim=1)
-        a_v = torch.sum(descent * tv_n, dim=1)
-        a = torch.stack([a_u, a_v], dim=1)
-
-        a_norm = torch.linalg.norm(a, dim=1, keepdim=True)
-        valid_direction = a_norm[:, 0] > 1.0e-10
-
-        # Fallback: split along largest local scale.
-        major_is_u = sc[:, 0] >= sc[:, 1]
-        fallback_a = torch.stack(
-            [
-                major_is_u.to(torch.float32),
-                (~major_is_u).to(torch.float32),
-            ],
-            dim=1,
-        )
-
-        a_unit = torch.where(
-            valid_direction[:, None],
-            a / torch.clamp(a_norm, min=eps),
-            fallback_a,
-        )
-
-        su2 = torch.clamp(sc[:, 0], min=min_scale) ** 2
-        sv2 = torch.clamp(sc[:, 1], min=min_scale) ** 2
-
-        sigma = torch.zeros((selected_idx.numel(), 2, 2), device=device, dtype=torch.float32)
-        sigma[:, 0, 0] = su2
-        sigma[:, 1, 1] = sv2
-
-        sigma_a = torch.bmm(sigma, a_unit[:, :, None]).squeeze(-1)
-        tau2 = torch.sum(a_unit * sigma_a, dim=1)
-        tau2 = torch.clamp(tau2, min=min_scale ** 2)
-        tau = torch.sqrt(tau2)
-
-        sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
-
-        # Centered EV split displacement in local tangent coordinates.
-        chill_factor = 0.5
-        delta_local = (sqrt_2_over_pi * sigma_a / tau[:, None]) * chill_factor
-
-        # Centered EV child covariance.
-        outer = sigma_a[:, :, None] * sigma_a[:, None, :]
-        child_sigma = sigma - (2.0 / math.pi) * outer / tau2[:, None, None]
-        child_sigma = 0.5 * (child_sigma + child_sigma.transpose(1, 2))
-
-        eigval, eigvec = torch.linalg.eigh(child_sigma)
-
-        # Sort descending so scale[:, 0] is the major axis.
-        order = torch.argsort(eigval, dim=1, descending=True)
-        eigval = torch.gather(eigval, 1, order)
-        eigvec = torch.gather(
-            eigvec,
-            2,
-            order[:, None, :].expand(-1, 2, -1),
-        )
-
-        eigval = torch.clamp(eigval, min=min_scale ** 2)
-        child_sc = torch.sqrt(eigval)
-
-        # Eigenvectors are local 2D directions. Convert them to world tangent directions.
-        e0 = eigvec[:, 0, 0:1] * tu_n + eigvec[:, 1, 0:1] * tv_n
-        e1 = eigvec[:, 0, 1:2] * tu_n + eigvec[:, 1, 1:2] * tv_n
-
-        e0 = torch.nn.functional.normalize(e0, dim=1, eps=eps)
-        e1 = torch.nn.functional.normalize(e1, dim=1, eps=eps)
-
-        # Preserve original normal orientation.
-        child_normal = torch.cross(e0, e1, dim=1)
-        wrong_handed = torch.sum(child_normal * old_normal, dim=1) < 0.0
-        e1 = torch.where(wrong_handed[:, None], -e1, e1)
-
-        offset_world = delta_local[:, 0:1] * tu_n + delta_local[:, 1:2] * tv_n
-
-        pos_l = p - offset_world
-        pos_r = p + offset_world
-
-        # Small random signed normal offset to avoid exact coplanar ray-intersection ties.
-        # This is not part of the EV split itself; it is only a numerical robustness offset.
-        normal_perturbation_min = 1.0e-4
-        normal_perturbation_max = 5.0e-4
-
-        child_normal = torch.cross(e0, e1, dim=1)
-        child_normal = torch.nn.functional.normalize(child_normal, dim=1, eps=eps)
-
-        left_random_magnitude = (
-                normal_perturbation_min
-                + (normal_perturbation_max - normal_perturbation_min)
-                * torch.rand((selected_idx.numel(), 1), device=device, dtype=torch.float32)
-        )
-
-        right_random_magnitude = (
-                normal_perturbation_min
-                + (normal_perturbation_max - normal_perturbation_min)
-                * torch.rand((selected_idx.numel(), 1), device=device, dtype=torch.float32)
-        )
-
-        left_random_sign = torch.where(
-            torch.rand((selected_idx.numel(), 1), device=device, dtype=torch.float32) < 0.5,
-            -torch.ones((selected_idx.numel(), 1), device=device, dtype=torch.float32),
-            torch.ones((selected_idx.numel(), 1), device=device, dtype=torch.float32),
-        )
-
-        right_random_sign = torch.where(
-            torch.rand((selected_idx.numel(), 1), device=device, dtype=torch.float32) < 0.5,
-            -torch.ones((selected_idx.numel(), 1), device=device, dtype=torch.float32),
-            torch.ones((selected_idx.numel(), 1), device=device, dtype=torch.float32),
-        )
-
-        pos_l = pos_l + left_random_sign * left_random_magnitude * child_normal
-        pos_r = pos_r + right_random_sign * right_random_magnitude * child_normal
-
-        if preserve_integrated_opacity:
-            det_parent = torch.clamp(su2 * sv2, min=min_scale ** 4)
-            det_child = torch.clamp(eigval[:, 0] * eigval[:, 1], min=min_scale ** 4)
-
-            # Each child receives half the normalized mass, converted back to peak opacity.
-            opacity_factor = 0.5 * torch.sqrt(det_parent / det_child)
-        else:
-            # Use only if your renderer already interprets opacity as normalized mass.
-            opacity_factor = torch.full_like(opa, 0.5)
-
-        child_opa = torch.clamp(
-            opa,
-            min=float(min_opacity),
-            max=float(max_opacity),
-        )
-
-        new_positions = torch.cat([pos_l, pos_r], dim=0)
-        new_tu = torch.cat([e0, e0], dim=0)
-        new_tv = torch.cat([e1, e1], dim=0)
-        new_scales = torch.cat([child_sc, child_sc], dim=0)
-
-        new_albedos = torch.cat([alb, alb], dim=0)
-        new_opacities = torch.cat([child_opa, child_opa], dim=0)
-        new_betas = torch.cat([be, be], dim=0)
-        new_powers = torch.cat([pow_, pow_], dim=0)
-
-        return {
-            "new": {
-                "position": new_positions.detach().cpu().numpy().astype(np.float32),
-                "tangent_u": new_tu.detach().cpu().numpy().astype(np.float32),
-                "tangent_v": new_tv.detach().cpu().numpy().astype(np.float32),
-                "scale": new_scales.detach().cpu().numpy().astype(np.float32),
-                "albedo": new_albedos.detach().cpu().numpy().astype(np.float32),
-                "opacity": new_opacities.detach().cpu().numpy().reshape(-1).astype(np.float32),
-                "beta": new_betas.detach().cpu().numpy().reshape(-1).astype(np.float32),
-                "power": new_powers.detach().cpu().numpy().reshape(-1).astype(np.float32),
-            },
-            "source_index": selected_idx.detach().cpu().numpy().astype(np.int64),
-            "replace_source": True,
-            "grad_norm": selection_score[selected_idx].detach().cpu().numpy().astype(np.float32),
         }
 
 

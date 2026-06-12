@@ -90,82 +90,49 @@ def numpy_rgb01_and_alpha01_to_vtk_u8_rgba(name: str, rgb01: np.ndarray, alpha01
 
     return array_handle
 
+def normalize_quaternion_wxyz(q: np.ndarray) -> np.ndarray:
+    q = np.asarray(q, dtype=np.float32)
+    norm = np.linalg.norm(q, axis=1, keepdims=True)
+    valid = np.isfinite(q).all(axis=1, keepdims=True) & (norm > 1.0e-12)
+    q = np.where(valid, q / np.maximum(norm, 1.0e-12), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    q = np.where(q[:, 0:1] < 0.0, -q, q)
+    return q.astype(np.float32)
 
-def load_surfels_from_ply(ply_path: Path, opacity_threshold: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    position_x_values: List[float] = []
-    position_y_values: List[float] = []
-    position_z_values: List[float] = []
-
-    tangent_u_x_values: List[float] = []
-    tangent_u_y_values: List[float] = []
-    tangent_u_z_values: List[float] = []
-
-    tangent_v_x_values: List[float] = []
-    tangent_v_y_values: List[float] = []
-    tangent_v_z_values: List[float] = []
-
+def load_surfels_from_ply(ply_path: Path, opacity_threshold: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    positions: List[Tuple[float, float, float]] = []
+    quaternions: List[Tuple[float, float, float, float]] = []
     scale_u_values: List[float] = []
     scale_v_values: List[float] = []
-
-    color_r_values: List[float] = []
-    color_g_values: List[float] = []
-    color_b_values: List[float] = []
-
+    colors: List[Tuple[float, float, float]] = []
     opacity_values: List[float] = []
-
     with ply_path.open("r", encoding="utf-8") as file_handle:
         header_finished = False
-
         for line in file_handle:
             if not header_finished:
                 if line.strip() == "end_header":
                     header_finished = True
                 continue
-
             parts = line.strip().split()
-            if not parts:
+            if not parts or len(parts) < 16:
                 continue
-
-            if len(parts) < 15:
-                continue
-
-            opacity_value = float(parts[14])
+            opacity_value = float(parts[12])
             if opacity_value < opacity_threshold:
                 continue
-
-            position_x_values.append(float(parts[0]))
-            position_y_values.append(float(parts[1]))
-            position_z_values.append(float(parts[2]))
-
-            tangent_u_x_values.append(float(parts[3]))
-            tangent_u_y_values.append(float(parts[4]))
-            tangent_u_z_values.append(float(parts[5]))
-
-            tangent_v_x_values.append(float(parts[6]))
-            tangent_v_y_values.append(float(parts[7]))
-            tangent_v_z_values.append(float(parts[8]))
-
-            scale_u_values.append(float(parts[9]))
-            scale_v_values.append(float(parts[10]))
-
-            color_r_values.append(float(parts[11]))
-            color_g_values.append(float(parts[12]))
-            color_b_values.append(float(parts[13]))
-
+            positions.append((float(parts[0]), float(parts[1]), float(parts[2])))
+            quaternions.append((float(parts[3]), float(parts[4]), float(parts[5]), float(parts[6])))
+            scale_u_values.append(float(parts[7]))
+            scale_v_values.append(float(parts[8]))
+            colors.append((float(parts[9]), float(parts[10]), float(parts[11])))
             opacity_values.append(opacity_value)
-
-    if len(position_x_values) == 0:
+    if len(positions) == 0:
         raise RuntimeError(f"No points loaded from '{ply_path}'. Try lowering --opacity-threshold.")
-
-    positions = np.stack([position_x_values, position_y_values, position_z_values], axis=1).astype(np.float32)
-    tangent_u = np.stack([tangent_u_x_values, tangent_u_y_values, tangent_u_z_values], axis=1).astype(np.float32)
-    tangent_v = np.stack([tangent_v_x_values, tangent_v_y_values, tangent_v_z_values], axis=1).astype(np.float32)
-    scale_u = np.asarray(scale_u_values, dtype=np.float32)
-    scale_v = np.asarray(scale_v_values, dtype=np.float32)
-    colors = np.stack([color_r_values, color_g_values, color_b_values], axis=1).astype(np.float32).clip(0.0, 1.0)
-    opacities = np.asarray(opacity_values, dtype=np.float32).clip(0.0, 1.0)
-
-    return positions, tangent_u, tangent_v, scale_u, scale_v, colors, opacities
+    positions_np = np.asarray(positions, dtype=np.float32)
+    quaternions_np = normalize_quaternion_wxyz(np.asarray(quaternions, dtype=np.float32))
+    scale_u_np = np.asarray(scale_u_values, dtype=np.float32)
+    scale_v_np = np.asarray(scale_v_values, dtype=np.float32)
+    colors_np = np.asarray(colors, dtype=np.float32).clip(0.0, 1.0)
+    opacities_np = np.asarray(opacity_values, dtype=np.float32).clip(0.0, 1.0)
+    return positions_np, quaternions_np, scale_u_np, scale_v_np, colors_np, opacities_np
 
 
 def rotation_matrix_to_quaternion_wxyz(rotation_matrices: np.ndarray) -> np.ndarray:
@@ -261,7 +228,6 @@ def numpy_to_vtk_float_array(name: str, data: np.ndarray, num_components: int) -
 
     return array_handle
 
-
 def build_poly_data_from_ply(
     ply_path: Path,
     opacity_threshold: float,
@@ -272,55 +238,41 @@ def build_poly_data_from_ply(
     color_multiplier: float,
     solid: bool,
 ) -> vtk.vtkPolyData:
-    positions, tangent_u, tangent_v, scale_u, scale_v, colors, opacities = load_surfels_from_ply(
+    positions, quaternions, scale_u, scale_v, colors, opacities = load_surfels_from_ply(
         ply_path=ply_path,
         opacity_threshold=opacity_threshold,
     )
-
     ellipse_area = scale_u * scale_v
     ellipse_mask = ellipse_area >= float(area_threshold)
-
     positions = positions[ellipse_mask]
-    tangent_u = tangent_u[ellipse_mask]
-    tangent_v = tangent_v[ellipse_mask]
+    quaternions = quaternions[ellipse_mask]
     scale_u = scale_u[ellipse_mask] * scale_multiplier
     scale_v = scale_v[ellipse_mask] * scale_multiplier
     colors = (colors[ellipse_mask] * float(color_multiplier)).clip(0.0, 1.0)
     opacities = opacities[ellipse_mask]
-
     if solid:
         opacities = np.ones_like(opacities)
     else:
         opacities = opacities * float(alpha_multiplier)
-
     if max_ellipses > 0 and positions.shape[0] > max_ellipses:
         positions = positions[:max_ellipses]
-        tangent_u = tangent_u[:max_ellipses]
-        tangent_v = tangent_v[:max_ellipses]
+        quaternions = quaternions[:max_ellipses]
         scale_u = scale_u[:max_ellipses]
         scale_v = scale_v[:max_ellipses]
         colors = colors[:max_ellipses]
         opacities = opacities[:max_ellipses]
-
     print(f"Loaded {positions.shape[0]} visible surfels from: {ply_path.name}")
-
     points = vtk.vtkPoints()
     points.SetDataTypeToFloat()
     points.SetNumberOfPoints(int(positions.shape[0]))
-
     for point_index in range(int(positions.shape[0])):
         points.SetPoint(point_index, float(positions[point_index, 0]), float(positions[point_index, 1]), float(positions[point_index, 2]))
-
     poly_data = vtk.vtkPolyData()
     poly_data.SetPoints(points)
-
-    quaternions = build_orientation_quaternions_wxyz(tangent_u, tangent_v)
     poly_data.GetPointData().AddArray(numpy_to_vtk_float_array("orientation", quaternions, 4))
-
     scale_triples = np.stack([scale_u, scale_v, np.ones_like(scale_u)], axis=1).astype(np.float32)
     poly_data.GetPointData().AddArray(numpy_to_vtk_float_array("scale", scale_triples, 3))
     poly_data.GetPointData().AddArray(numpy_rgb01_and_alpha01_to_vtk_u8_rgba("color_rgba", colors, opacities))
-
     poly_data.Modified()
     return poly_data
 

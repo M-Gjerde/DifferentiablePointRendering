@@ -12,6 +12,7 @@ module;
 #include <glm/glm.hpp>
 
 #define GLM_ENABLE_EXPERIMENTAL
+#include "glm/gtx/quaternion.hpp"
 #include "glm/gtx/string_cast.hpp"
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/Kernels/KernelHelpers.h"
@@ -23,6 +24,44 @@ import Pale.Render.BVH;
 import Pale.Log;
 
 namespace Pale {
+    namespace {
+        glm::quat normalizeOrIdentity(glm::quat q) {
+            if (glm::length2(q) <= 1.0e-20f) {
+                return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+            q = glm::normalize(q);
+            if (q.w < 0.0f) {
+                q = -q;
+            }
+            return q;
+        }
+
+        void surfelFrameFromQuaternion(
+            const glm::quat &inputQuaternion,
+            glm::vec3 &tangentU,
+            glm::vec3 &tangentV) {
+            const glm::quat q = normalizeOrIdentity(inputQuaternion);
+            const glm::mat3 rotation = glm::mat3_cast(q);
+
+            tangentU = glm::normalize(glm::vec3(rotation[0]));
+            tangentV = glm::normalize(glm::vec3(rotation[1]));
+
+            // Clean tiny numerical drift while preserving the quaternion orientation.
+            tangentV = tangentV - glm::dot(tangentV, tangentU) * tangentU;
+
+            if (glm::length2(tangentV) <= 1.0e-20f) {
+                const glm::vec3 fallback =
+                    glm::abs(tangentU.y) < 0.9f
+                        ? glm::vec3(0.0f, 1.0f, 0.0f)
+                        : glm::vec3(1.0f, 0.0f, 0.0f);
+
+                tangentV = fallback - glm::dot(fallback, tangentU) * tangentU;
+            }
+
+            tangentV = glm::normalize(tangentV);
+        }
+    }
+
     SceneBuild::BuildProducts SceneBuild::build(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
                                                 const BuildOptions &buildOptions) {
         BuildProducts buildProducts;
@@ -204,8 +243,17 @@ namespace Pale {
             for (size_t i = 0; i < pointGeometry.positions.size(); ++i) {
                 Point gpuPoint{};
                 gpuPoint.position = pointGeometry.positions[i];
-                gpuPoint.tanU = normalize(pointGeometry.tanU[i]);
-                gpuPoint.tanV = normalize(pointGeometry.tanV[i]); // assume orthonormal input
+                if (pointGeometry.quat.size() != pointGeometry.positions.size()) {
+                    throw std::runtime_error(
+                        "SceneBuild::collectPointCloudGeometry: pointGeometry.quat size mismatch");
+                }
+
+                glm::vec3 tangentU;
+                glm::vec3 tangentV;
+                surfelFrameFromQuaternion(pointGeometry.quat[i], tangentU, tangentV);
+
+                gpuPoint.tanU = tangentU;
+                gpuPoint.tanV = tangentV;
                 gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
                 gpuPoint.albedo = glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
                 gpuPoint.opacity = glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
@@ -370,9 +418,15 @@ namespace Pale {
                     light.flux = pointGeometry.powers[i];
                     light.color = pointGeometry.albedos[i];
 
-                    glm::vec3 tangentUWorld = pointGeometry.scales[i].x * pointGeometry.tanU[i];
-                    glm::vec3 tangentVWorld = pointGeometry.scales[i].y * pointGeometry.tanV[i];
-                    float totalAreaWorld = M_PIf * length(cross(tangentUWorld, tangentVWorld));
+                    glm::vec3 tangentU;
+                    glm::vec3 tangentV;
+                    surfelFrameFromQuaternion(pointGeometry.quat[i], tangentU, tangentV);
+
+                    glm::vec3 tangentUWorld = pointGeometry.scales[i].x * tangentU;
+                    glm::vec3 tangentVWorld = pointGeometry.scales[i].y * tangentV;
+
+                    float totalAreaWorld =
+                        M_PIf * glm::length(glm::cross(tangentUWorld, tangentVWorld));
                     light.totalAreaWorld = totalAreaWorld;
                     out.lights.push_back(light);
                 }
