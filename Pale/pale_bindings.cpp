@@ -483,8 +483,7 @@ public:
         const std::size_t primitiveCameraCount = pointCount * cameraSlotCount;
 
         std::vector<Pale::float3> gradPositionHost(pointCount);
-        std::vector<Pale::float3> gradTangentUHost(pointCount);
-        std::vector<Pale::float3> gradTangentVHost(pointCount);
+        std::vector<Pale::float3> gradRotationHost(pointCount);
         std::vector<Pale::float2> gradScaleHost(pointCount);
         std::vector<Pale::float3> gradColorHost(pointCount);
         std::vector<float> gradOpacityHost(pointCount);
@@ -509,20 +508,14 @@ public:
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.gradTanU) {
+            if (gradients.gradRotation) {
                 syclQueue.memcpy(
-                    gradTangentUHost.data(),
-                    gradients.gradTanU,
+                    gradRotationHost.data(),
+                    gradients.gradRotation,
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.gradTanV) {
-                syclQueue.memcpy(
-                    gradTangentVHost.data(),
-                    gradients.gradTanV,
-                    pointCount * sizeof(Pale::float3)
-                );
-            }
+
             if (gradients.gradScale) {
                 syclQueue.memcpy(
                     gradScaleHost.data(),
@@ -805,8 +798,7 @@ public:
 
         py::dict gradientDictionary;
         gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
-        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
-        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+        gradientDictionary["rotation"] = makeFloat3Array(gradRotationHost, pointCount);
         gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
         gradientDictionary["albedo"] = makeFloat3Array(gradColorHost, pointCount);
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
@@ -920,9 +912,18 @@ public:
 
 
                 // Scale gradient image
-                if (!debugImagesHost.scale.empty()) {
-                    cameraDebugDict["scale"] = makeRgbaImageArray(
-                        debugImagesHost.scale,
+                if (!debugImagesHost.scaleU.empty()) {
+                    cameraDebugDict["scale_u"] = makeRgbaImageArray(
+                        debugImagesHost.scaleU,
+                        imageWidth,
+                        imageHeight
+                    );
+                }
+
+                // Scale gradient image
+                if (!debugImagesHost.scaleV.empty()) {
+                    cameraDebugDict["scale_v"] = makeRgbaImageArray(
+                        debugImagesHost.scaleV,
                         imageWidth,
                         imageHeight
                     );
@@ -1092,8 +1093,7 @@ public:
         const std::size_t pointCount = gradients.numPoints;
 
         std::vector<Pale::float3> gradPositionHost(pointCount);
-        std::vector<Pale::float3> gradTangentUHost(pointCount);
-        std::vector<Pale::float3> gradTangentVHost(pointCount);
+        std::vector<Pale::float3> gradRotationHost(pointCount);
         std::vector<Pale::float2> gradScaleHost(pointCount);
         std::vector<Pale::float3> gradColorHost(pointCount); // should remain zero
         std::vector<float> gradOpacityHost(pointCount);
@@ -1109,20 +1109,14 @@ public:
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.gradTanU) {
+            if (gradients.gradRotation) {
                 syclQueue.memcpy(
-                    gradTangentUHost.data(),
-                    gradients.gradTanU,
+                    gradRotationHost.data(),
+                    gradients.gradRotation,
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.gradTanV) {
-                syclQueue.memcpy(
-                    gradTangentVHost.data(),
-                    gradients.gradTanV,
-                    pointCount * sizeof(Pale::float3)
-                );
-            }
+
             if (gradients.gradScale) {
                 syclQueue.memcpy(
                     gradScaleHost.data(),
@@ -1241,8 +1235,7 @@ public:
 
         py::dict gradientDictionary;
         gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
-        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
-        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+        gradientDictionary["rotation"] = makeFloat3Array(gradRotationHost, pointCount);
         gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
         gradientDictionary["albedo"] = makeFloat3Array(gradColorHost, pointCount);
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
@@ -1416,8 +1409,7 @@ public:
         const std::size_t pointCount = gradients.numPoints;
 
         std::vector<Pale::float3> gradPositionHost(pointCount);
-        std::vector<Pale::float3> gradTangentUHost(pointCount);
-        std::vector<Pale::float3> gradTangentVHost(pointCount);
+        std::vector<Pale::float3> gradRotationHost(pointCount);
         std::vector<Pale::float2> gradScaleHost(pointCount);
         std::vector<Pale::float3> gradColorHost(pointCount);
         std::vector<float> gradOpacityHost(pointCount);
@@ -1432,18 +1424,13 @@ public:
                     gradients.gradPosition,
                     pointCount * sizeof(Pale::float3));
             }
-            if (gradients.gradTanU) {
+            if (gradients.gradRotation) {
                 syclQueue.memcpy(
-                    gradTangentUHost.data(),
-                    gradients.gradTanU,
+                    gradRotationHost.data(),
+                    gradients.gradRotation,
                     pointCount * sizeof(Pale::float3));
             }
-            if (gradients.gradTanV) {
-                syclQueue.memcpy(
-                    gradTangentVHost.data(),
-                    gradients.gradTanV,
-                    pointCount * sizeof(Pale::float3));
-            }
+
             if (gradients.gradScale) {
                 syclQueue.memcpy(
                     gradScaleHost.data(),
@@ -1555,8 +1542,7 @@ public:
 
         py::dict gradientDictionary;
         gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
-        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
-        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+        gradientDictionary["rotation"] = makeFloat3Array(gradRotationHost, pointCount);
         gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
         gradientDictionary["albedo"] = makeFloat3Array(gradColorHost, pointCount);
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
@@ -1572,8 +1558,7 @@ public:
         const std::size_t pointCount = sourceGradients.numPoints;
 
         std::vector<Pale::float3> gradPositionHost(pointCount);
-        std::vector<Pale::float3> gradTangentUHost(pointCount);
-        std::vector<Pale::float3> gradTangentVHost(pointCount);
+        std::vector<Pale::float3> gradRotationHost(pointCount);
         std::vector<Pale::float2> gradScaleHost(pointCount);
         std::vector<Pale::float3> gradAlbedoHost(pointCount);
         std::vector<float> gradOpacityHost(pointCount, 0.0f);
@@ -1586,11 +1571,9 @@ public:
                 syclQueue.memcpy(gradPositionHost.data(), sourceGradients.gradPosition,
                                  pointCount * sizeof(Pale::float3));
             }
-            if (sourceGradients.gradTanU) {
-                syclQueue.memcpy(gradTangentUHost.data(), sourceGradients.gradTanU, pointCount * sizeof(Pale::float3));
-            }
-            if (sourceGradients.gradTanV) {
-                syclQueue.memcpy(gradTangentVHost.data(), sourceGradients.gradTanV, pointCount * sizeof(Pale::float3));
+            if (sourceGradients.gradRotation) {
+                syclQueue.memcpy(gradRotationHost.data(), sourceGradients.gradRotation,
+                                 pointCount * sizeof(Pale::float3));
             }
             if (sourceGradients.gradScale) {
                 syclQueue.memcpy(gradScaleHost.data(), sourceGradients.gradScale, pointCount * sizeof(Pale::float2));
@@ -1673,8 +1656,7 @@ public:
 
         py::dict gradientDictionary;
         gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
-        gradientDictionary["tangent_u"] = makeFloat3Array(gradTangentUHost, pointCount);
-        gradientDictionary["tangent_v"] = makeFloat3Array(gradTangentVHost, pointCount);
+        gradientDictionary["rotation"] = makeFloat3Array(gradRotationHost, pointCount);
         gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
         gradientDictionary["albedo"] = makeFloat3Array(gradAlbedoHost, pointCount);
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);

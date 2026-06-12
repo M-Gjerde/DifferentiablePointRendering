@@ -472,6 +472,22 @@ namespace Pale {
         bool useImplicitRayHitJacobian = false;
     };
 
+    struct OccluderDerivative {
+        float3 gradPosition{0.0f, 0.0f, 0.0f};
+        float gradScaleU = 0.0f;
+        float gradScaleV = 0.0f;
+        float gradEta = 0.0f;
+        float gradBeta = 0.0f;
+        float3 gradRotation{0.0f, 0.0f, 0.0f};
+
+        float3 gradAlphaWrtStartPoint{0.0f, 0.0f, 0.0f};
+        float3 gradAlphaWrtEndPoint{0.0f, 0.0f, 0.0f};
+
+        float prefixTransmittance = 1.0f;
+        float oneMinusAlpha = 1.0f;
+        uint32_t primitiveIndex = kInvalidIndex;
+    };
+
     struct MeasurementGradientEventXY {
         PointCloudSurfaceRecord xSurface;
         PointCloudSurfaceRecord ySurface;
@@ -537,13 +553,9 @@ namespace Pale {
         float gradScaleU = FLT_MAX;
         float gradScaleV = FLT_MAX;
 
-        float gradTangentUX = FLT_MAX;
-        float gradTangentUY = FLT_MAX;
-        float gradTangentUZ = FLT_MAX;
-
-        float gradTangentVX = FLT_MAX;
-        float gradTangentVY = FLT_MAX;
-        float gradTangentVZ = FLT_MAX;
+        float gradRotationX = FLT_MAX;
+        float gradRotationY = FLT_MAX;
+        float gradRotationZ = FLT_MAX;
     };
 
 
@@ -566,16 +578,6 @@ namespace Pale {
         uint32_t totalCount = 0u;
     };
 
-    struct OccluderDerivative {
-        float3 gradPosition{0.0f};
-        float gradScaleU = 0.0f;
-        float gradScaleV = 0.0f;
-        float gradEta = 0.0f;
-        float gradBeta = 0.0f;
-        float3 gradTangentU{0.0f};
-        float3 gradTangentV{0.0f};
-        uint32_t primitiveIndex = kInvalidIndex;
-    };
 
     struct CompletedGradientEvent {
         bool valid = false;

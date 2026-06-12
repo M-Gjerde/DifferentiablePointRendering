@@ -875,23 +875,13 @@ namespace Pale {
                     }
                     const float distance = sycl::sqrt(distanceSquared);
                     const float targetDistance = distance;
-                    struct OccluderDerivative {
-                        float3 gradPosition{0.0f, 0.0f, 0.0f};
-                        float gradScaleU = 0.0f;
-                        float gradScaleV = 0.0f;
-                        float gradEta = 0.0f;
-                        float gradBeta = 0.0f;
-                        float3 gradTangentU{0.0f, 0.0f, 0.0f};
-                        float3 gradTangentV{0.0f, 0.0f, 0.0f};
-                        float prefixTransmittance = 1.0f;
-                        float oneMinusAlpha = 1.0f;
-                        uint32_t primitiveIndex = kInvalidIndex;
-                    };
+
 
                     OccluderDerivative occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
                     float segmentTransmittance = 1.0f;
                     const float3 pathWeight = eventRecord.xPathThroughput;
+                    float3 localRotationGradient{0.0f};
                     const float scalarWeightOcclusion = dot(pathWeight, outgoingRadianceX); {
                         const float3 rayDirection = normalize(vectorCameraToX);
                         Ray ray{};
@@ -974,8 +964,7 @@ namespace Pale {
                             // ------------------------------------------------------------
                             // Rotation derivative for fixed ray line
                             // -------------------------------------------------------------
-                            float3 gradTangentUOcc = float3(0.0f);
-                            float3 gradTangentVOcc = float3(0.0f);
+                            float3 localRotationGradientOcc = float3(0.0f);
 
                             const float nDotD = dot(occluderNormal, rayDirection);
                             if (sycl::fabs(nDotD) > 1e-8f) {
@@ -993,8 +982,11 @@ namespace Pale {
                                 const float3 dAlphaEffectiveDRotation =
                                         occluderSurfel.opacity * (
                                             dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
-                                gradTangentUOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanU);
-                                gradTangentVOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanV);
+                                localRotationGradientOcc =
+                                        computeLocalRotationGradientFromWorldRotationGradient(
+                                            occluderSurfel.tanU,
+                                            occluderSurfel.tanV,
+                                            dAlphaEffectiveDRotation);
                             }
 
                             if (storedOccluderCount < kMaxSplatEventsPerRay) {
@@ -1004,8 +996,8 @@ namespace Pale {
                                 occluderDerivative.gradScaleV = dAlphaEffectiveDScaleV;
                                 occluderDerivative.gradEta = dAlphaEffectiveDEta;
                                 occluderDerivative.gradBeta = dAlphaEffectiveDBeta;
-                                occluderDerivative.gradTangentU = gradTangentUOcc;
-                                occluderDerivative.gradTangentV = gradTangentVOcc;
+                                occluderDerivative.gradRotation = localRotationGradientOcc;
+
                                 occluderDerivative.prefixTransmittance = prefixTransmittance;
                                 occluderDerivative.oneMinusAlpha = oneMinusAlpha;
                                 occluderDerivative.primitiveIndex = worldHit.primitiveIndex;
@@ -1082,9 +1074,14 @@ namespace Pale {
                                                        surfelX.tanV, xMinusSp) / scaleV;
                         const float3 dAlphaGeomDRotation = dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation;
                         const float3 dAlphaEffectiveDRotation = surfelX.opacity * dAlphaGeomDRotation;
-                        const float3 rotationGradientZeta = dAlphaEffectiveDRotation * scalarWeightNoAlpha * invSpp;
-                        tanUGradient = cross(rotationGradientZeta, surfelX.tanU);
-                        tanVGradient = cross(rotationGradientZeta, surfelX.tanV);
+                        const float3 worldRotationGradient =
+                                dAlphaEffectiveDRotation * scalarWeightNoAlpha * invSpp;
+
+                        localRotationGradient =
+                                computeLocalRotationGradientFromWorldRotationGradient(
+                                    surfelX.tanU,
+                                    surfelX.tanV,
+                                    worldRotationGradient);
                     }
                     const float alphaGeomX = eventRecord.xSurface.alphaGeom;
                     const float opacityGradient = alphaGeomX * scalarWeightNoAlpha * invSpp;
@@ -1098,12 +1095,9 @@ namespace Pale {
                     gradientRecord.gradPositionZ = positionGradient.z();
                     gradientRecord.gradScaleU = scaleGradientU;
                     gradientRecord.gradScaleV = scaleGradientV;
-                    gradientRecord.gradTangentUX = tanUGradient.x();
-                    gradientRecord.gradTangentUY = tanUGradient.y();
-                    gradientRecord.gradTangentUZ = tanUGradient.z();
-                    gradientRecord.gradTangentVX = tanVGradient.x();
-                    gradientRecord.gradTangentVY = tanVGradient.y();
-                    gradientRecord.gradTangentVZ = tanVGradient.z();
+                    gradientRecord.gradRotationX = localRotationGradient.x();
+                    gradientRecord.gradRotationY = localRotationGradient.y();
+                    gradientRecord.gradRotationZ = localRotationGradient.z();
                     gradientRecord.gradEta = opacityGradient;
                     gradientRecord.gradBeta = betaGradient;
                     gradientRecord.gradAlbedoR = 0.0f;
@@ -1123,8 +1117,11 @@ namespace Pale {
                         SurfelGradientRecord occluderRecord{};
                         occluderRecord.primitiveIndex = occluderDerivative.primitiveIndex;
                         const float3 positionContribution = visibilityDerivativeScale * occluderDerivative.gradPosition;
-                        const float3 tangentUContribution = visibilityDerivativeScale * occluderDerivative.gradTangentU;
-                        const float3 tangentVContribution = visibilityDerivativeScale * occluderDerivative.gradTangentV;
+                        const float3 rotationContribution =
+                                visibilityDerivativeScale * occluderDerivative.gradRotation;
+                        occluderRecord.gradRotationX = rotationContribution.x();
+                        occluderRecord.gradRotationY = rotationContribution.y();
+                        occluderRecord.gradRotationZ = rotationContribution.z();
                         occluderRecord.gradPositionX = positionContribution.x();
                         occluderRecord.gradPositionY = positionContribution.y();
                         occluderRecord.gradPositionZ = positionContribution.z();
@@ -1132,12 +1129,6 @@ namespace Pale {
                         occluderRecord.gradScaleV = visibilityDerivativeScale * occluderDerivative.gradScaleV;
                         occluderRecord.gradEta = visibilityDerivativeScale * occluderDerivative.gradEta;
                         occluderRecord.gradBeta = visibilityDerivativeScale * occluderDerivative.gradBeta;
-                        occluderRecord.gradTangentUX = tangentUContribution.x();
-                        occluderRecord.gradTangentUY = tangentUContribution.y();
-                        occluderRecord.gradTangentUZ = tangentUContribution.z();
-                        occluderRecord.gradTangentVX = tangentVContribution.x();
-                        occluderRecord.gradTangentVY = tangentVContribution.y();
-                        occluderRecord.gradTangentVZ = tangentVContribution.z();
                         occluderRecord.gradAlbedoR = 0.0f;
                         occluderRecord.gradAlbedoG = 0.0f;
                         occluderRecord.gradAlbedoB = 0.0f;
@@ -1147,7 +1138,7 @@ namespace Pale {
 
                         accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                           settings.surfelIndexForDebugImages,
-                                                          eventRecord.xSurface.pathId, SurfelGradientRecord());
+                                                          eventRecord.xSurface.pathId, occluderRecord);
                     }
 
 
@@ -1227,15 +1218,6 @@ namespace Pale {
                         pathWeight, transportWithoutTauAndGeometric);
                     const float3 albedoWeightWithoutTauAndGeometricBase =
                             pathWeight * outgoingRadianceY * (alphaX * brdfScaleX);
-
-                    struct OccluderDerivative {
-                        float3 gradPosition{0.0f, 0.0f, 0.0f};
-                        float gradScaleU = 0.0f, gradScaleV = 0.0f, gradEta = 0.0f, gradBeta = 0.0f;
-                        float3 gradTangentU{0.0f, 0.0f, 0.0f}, gradTangentV{0.0f, 0.0f, 0.0f};
-                        float3 gradAlphaWrtStartPoint{0.0f, 0.0f, 0.0f}, gradAlphaWrtEndPoint{0.0f, 0.0f, 0.0f};
-                        float prefixTransmittance = 1.0f, oneMinusAlpha = 1.0f;
-                        uint32_t primitiveIndex = kInvalidIndex;
-                    };
 
                     OccluderDerivative occluderDerivatives[kMaxSplatEventsPerRay];
                     uint32_t storedOccluderCount = 0u;
@@ -1356,8 +1338,7 @@ namespace Pale {
                             const float dAlphaEffectiveDBeta =
                                     betaScale * sycl::log(oneMinusRadiusSquared) * alphaEffective;
 
-                            float3 gradTangentUOcc{0.0f, 0.0f, 0.0f};
-                            float3 gradTangentVOcc{0.0f, 0.0f, 0.0f};
+                            float3 localRotationGradientOcc{0.0f, 0.0f, 0.0f};
 
                             const float nDotD = dot(occluderNormal, rayDirection);
                             if (sycl::fabs(nDotD) > 1e-8f) {
@@ -1376,8 +1357,11 @@ namespace Pale {
                                         occluderSurfel.opacity * (
                                             dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
 
-                                gradTangentUOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanU);
-                                gradTangentVOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanV);
+                                localRotationGradientOcc =
+                                        computeLocalRotationGradientFromWorldRotationGradient(
+                                            occluderSurfel.tanU,
+                                            occluderSurfel.tanV,
+                                            dAlphaEffectiveDRotation);
                             }
 
                             if (storedOccluderCount < kMaxSplatEventsPerRay) {
@@ -1387,8 +1371,7 @@ namespace Pale {
                                 occluderDerivative.gradScaleV = dAlphaEffectiveDScaleV;
                                 occluderDerivative.gradEta = dAlphaEffectiveDEta;
                                 occluderDerivative.gradBeta = dAlphaEffectiveDBeta;
-                                occluderDerivative.gradTangentU = gradTangentUOcc;
-                                occluderDerivative.gradTangentV = gradTangentVOcc;
+                                occluderDerivative.gradRotation = localRotationGradientOcc;
                                 occluderDerivative.gradAlphaWrtStartPoint = dAlphaEffectiveDx;
                                 occluderDerivative.gradAlphaWrtEndPoint = dAlphaEffectiveDy;
                                 occluderDerivative.prefixTransmittance = prefixTransmittance;
@@ -1467,12 +1450,16 @@ namespace Pale {
                     xRecord.gradPositionX = xContribution.x();
                     xRecord.gradPositionY = xContribution.y();
                     xRecord.gradPositionZ = xContribution.z();
-                    xRecord.gradTangentUX = tanUContribution.x();
-                    xRecord.gradTangentUY = tanUContribution.y();
-                    xRecord.gradTangentUZ = tanUContribution.z();
-                    xRecord.gradTangentVX = tanVContribution.x();
-                    xRecord.gradTangentVY = tanVContribution.y();
-                    xRecord.gradTangentVZ = tanVContribution.z();
+                    const float3 xRotationContribution =
+                            computeLocalRotationGradientFromTangentGradients(
+                                surfelX.tanU,
+                                surfelX.tanV,
+                                tanUContribution,
+                                tanVContribution);
+
+                    xRecord.gradRotationX = xRotationContribution.x();
+                    xRecord.gradRotationY = xRotationContribution.y();
+                    xRecord.gradRotationZ = xRotationContribution.z();
                     xRecord.gradScaleU = 0.0f;
                     xRecord.gradScaleV = 0.0f;
                     xRecord.gradEta = 0.0f;
@@ -1493,8 +1480,8 @@ namespace Pale {
                                 -occluderDerivative.prefixTransmittance * suffixTransmittance * geometricTermXY *
                                 scalarWeightWithoutTauAndGeometric * invSpp;
                         const float3 positionContribution = visibilityDerivativeScale * occluderDerivative.gradPosition;
-                        const float3 tangentUContribution = visibilityDerivativeScale * occluderDerivative.gradTangentU;
-                        const float3 tangentVContribution = visibilityDerivativeScale * occluderDerivative.gradTangentV;
+                        const float3 rotationContribution =
+                                visibilityDerivativeScale * occluderDerivative.gradRotation;
 
                         SurfelGradientRecord occluderRecord{};
                         occluderRecord.primitiveIndex = occluderDerivative.primitiveIndex;
@@ -1505,12 +1492,9 @@ namespace Pale {
                         occluderRecord.gradScaleV = visibilityDerivativeScale * occluderDerivative.gradScaleV;
                         occluderRecord.gradEta = visibilityDerivativeScale * occluderDerivative.gradEta;
                         occluderRecord.gradBeta = visibilityDerivativeScale * occluderDerivative.gradBeta;
-                        occluderRecord.gradTangentUX = tangentUContribution.x();
-                        occluderRecord.gradTangentUY = tangentUContribution.y();
-                        occluderRecord.gradTangentUZ = tangentUContribution.z();
-                        occluderRecord.gradTangentVX = tangentVContribution.x();
-                        occluderRecord.gradTangentVY = tangentVContribution.y();
-                        occluderRecord.gradTangentVZ = tangentVContribution.z();
+                        occluderRecord.gradRotationX = rotationContribution.x();
+                        occluderRecord.gradRotationY = rotationContribution.y();
+                        occluderRecord.gradRotationZ = rotationContribution.z();
                         occluderRecord.gradAlbedoR = 0.0f;
                         occluderRecord.gradAlbedoG = 0.0f;
                         occluderRecord.gradAlbedoB = 0.0f;
@@ -1595,13 +1579,9 @@ namespace Pale {
                     gradientRecord.gradScaleU = 0.0f;
                     gradientRecord.gradScaleV = 0.0f;
 
-                    gradientRecord.gradTangentUX = 0.0f;
-                    gradientRecord.gradTangentUY = 0.0f;
-                    gradientRecord.gradTangentUZ = 0.0f;
-
-                    gradientRecord.gradTangentVX = 0.0f;
-                    gradientRecord.gradTangentVY = 0.0f;
-                    gradientRecord.gradTangentVZ = 0.0f;
+                    gradientRecord.gradRotationX = 0.0f;
+                    gradientRecord.gradRotationY = 0.0f;
+                    gradientRecord.gradRotationZ = 0.0f;
                     gradientRecord.gradEta = opacityGradient;
                     gradientRecord.gradBeta = betaGradient;
 
@@ -1831,14 +1811,16 @@ namespace Pale {
 
                     endRecord.gradScaleU = endScaleUGradient;
                     endRecord.gradScaleV = endScaleVGradient;
+                    const float3 endRotationGradient =
+                            computeLocalRotationGradientFromTangentGradients(
+                                endSurfel.tanU,
+                                endSurfel.tanV,
+                                endTangentUGradient,
+                                endTangentVGradient);
 
-                    endRecord.gradTangentUX = endTangentUGradient.x();
-                    endRecord.gradTangentUY = endTangentUGradient.y();
-                    endRecord.gradTangentUZ = endTangentUGradient.z();
-
-                    endRecord.gradTangentVX = endTangentVGradient.x();
-                    endRecord.gradTangentVY = endTangentVGradient.y();
-                    endRecord.gradTangentVZ = endTangentVGradient.z();
+                    endRecord.gradRotationX = endRotationGradient.x();
+                    endRecord.gradRotationY = endRotationGradient.y();
+                    endRecord.gradRotationZ = endRotationGradient.z();
 
                     endRecord.gradEta = 0.0f;
                     endRecord.gradBeta = 0.0f;
@@ -2025,13 +2007,16 @@ namespace Pale {
                     startRecord.gradScaleU = startScaleUGradient;
                     startRecord.gradScaleV = startScaleVGradient;
 
-                    startRecord.gradTangentUX = startTangentUGradient.x();
-                    startRecord.gradTangentUY = startTangentUGradient.y();
-                    startRecord.gradTangentUZ = startTangentUGradient.z();
+                    const float3 startRotationGradient =
+                            computeLocalRotationGradientFromTangentGradients(
+                                startSurfel.tanU,
+                                startSurfel.tanV,
+                                startTangentUGradient,
+                                startTangentVGradient);
 
-                    startRecord.gradTangentVX = startTangentVGradient.x();
-                    startRecord.gradTangentVY = startTangentVGradient.y();
-                    startRecord.gradTangentVZ = startTangentVGradient.z();
+                    startRecord.gradRotationX = startRotationGradient.x();
+                    startRecord.gradRotationY = startRotationGradient.y();
+                    startRecord.gradRotationZ = startRotationGradient.z();
 
                     startRecord.gradEta = 0.0f;
                     startRecord.gradBeta = 0.0f;
@@ -2101,12 +2086,9 @@ namespace Pale {
                             isValidGradientComponent(gradientRecord.gradPositionZ) &&
                             isValidGradientComponent(gradientRecord.gradScaleU) &&
                             isValidGradientComponent(gradientRecord.gradScaleV) &&
-                            isValidGradientComponent(gradientRecord.gradTangentUX) &&
-                            isValidGradientComponent(gradientRecord.gradTangentUY) &&
-                            isValidGradientComponent(gradientRecord.gradTangentUZ) &&
-                            isValidGradientComponent(gradientRecord.gradTangentVX) &&
-                            isValidGradientComponent(gradientRecord.gradTangentVY) &&
-                            isValidGradientComponent(gradientRecord.gradTangentVZ) &&
+                            isValidGradientComponent(gradientRecord.gradRotationX) &&
+                            isValidGradientComponent(gradientRecord.gradRotationY) &&
+                            isValidGradientComponent(gradientRecord.gradRotationZ) &&
                             isValidGradientComponent(gradientRecord.gradEta) &&
                             isValidGradientComponent(gradientRecord.gradBeta) &&
                             isValidGradientComponent(gradientRecord.gradAlbedoR) &&
@@ -2138,13 +2120,9 @@ namespace Pale {
                     atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
                     atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradientRecord.gradScaleV);
 
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradientRecord.gradTangentUX);
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradientRecord.gradTangentUY);
-                    atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradientRecord.gradTangentUZ);
-
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradientRecord.gradTangentVX);
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradientRecord.gradTangentVY);
-                    atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradientRecord.gradTangentVZ);
+                    atomicAddFloat(gradients.gradRotation[primitiveIndex].x(), gradientRecord.gradRotationX);
+                    atomicAddFloat(gradients.gradRotation[primitiveIndex].y(), gradientRecord.gradRotationY);
+                    atomicAddFloat(gradients.gradRotation[primitiveIndex].z(), gradientRecord.gradRotationZ);
 
                     atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradientRecord.gradEta);
                     atomicAddFloat(gradients.gradBeta[primitiveIndex], gradientRecord.gradBeta);
@@ -2511,8 +2489,9 @@ namespace Pale {
                         }
 
                         atomicAddFloat3(grads.gradPosition[hit.primitiveIndex], barP);
-                        atomicAddFloat3(grads.gradTanU[hit.primitiveIndex], barTu);
-                        atomicAddFloat3(grads.gradTanV[hit.primitiveIndex], barTv);
+                        const float3 rotationGradient = computeLocalRotationGradientFromTangentGradients(
+                            tu, tv, barTu, barTv);
+                        atomicAddFloat3(grads.gradRotation[hit.primitiveIndex], rotationGradient);
                         atomicAddFloat2(grads.gradScale[hit.primitiveIndex], float2(barSu, barSv));
                         atomicAddFloat(grads.gradOpacity[hit.primitiveIndex], barEta);
                         atomicAddFloat(grads.gradBeta[hit.primitiveIndex], barBeta);
@@ -2732,9 +2711,8 @@ namespace Pale {
 
                             if (isMedian) {
                                 float3 gradPosition = float3{0.0f, 0.0f, 0.0f};
-                                float3 gradTanU = float3{0.0f, 0.0f, 0.0f};
-                                float3 gradTanV = float3{0.0f, 0.0f, 0.0f};
-
+                                float3 gradTangentU = float3{0.0f, 0.0f, 0.0f};
+                                float3 gradTangentV = float3{0.0f, 0.0f, 0.0f};
                                 // -------------------------------------------------
                                 // 1) Visible normal adjoint -> tangent frame
                                 // -------------------------------------------------
@@ -2757,8 +2735,8 @@ namespace Pale {
                                         const float3 gradCross =
                                                 gradProjected / rawCrossLen;
 
-                                        gradTanU += cross(surfel.tanV, gradCross);
-                                        gradTanV += cross(gradCross, surfel.tanU);
+                                        gradTangentU += cross(surfel.tanV, gradCross);
+                                        gradTangentV += cross(gradCross, surfel.tanU);
                                     }
                                 }
 
@@ -2804,22 +2782,19 @@ namespace Pale {
                                         const float3 gradCross =
                                                 gradProjected / rawCrossLen;
 
-                                        gradTanU += cross(surfel.tanV, gradCross);
-                                        gradTanV += cross(gradCross, surfel.tanU);
+                                        gradTangentU += cross(surfel.tanV, gradCross);
+                                        gradTangentV += cross(gradCross, surfel.tanU);
                                     }
                                 }
 
-                                atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradPosition.x());
-                                atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradPosition.y());
-                                atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradPosition.z());
+                                const float3 rotationGradient =
+                                        computeLocalRotationGradientFromTangentGradients(
+                                            surfel.tanU,
+                                            surfel.tanV,
+                                            gradTangentU,
+                                            gradTangentV);
 
-                                atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradTanU.x());
-                                atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradTanU.y());
-                                atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradTanU.z());
-
-                                atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradTanV.x());
-                                atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradTanV.y());
-                                atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradTanV.z());
+                                atomicAddFloat3(gradients.gradRotation[primitiveIndex], rotationGradient);
                                 return;
                             }
 
@@ -2920,13 +2895,9 @@ namespace Pale {
                         gradientRecord.gradPositionY = 0.0f;
                         gradientRecord.gradPositionZ = 0.0f;
                         gradientRecord.gradScaleU = 0.0f;
-                        gradientRecord.gradScaleV = 0.0f;
-                        gradientRecord.gradTangentUX = 0.0f;
-                        gradientRecord.gradTangentUY = 0.0f;
-                        gradientRecord.gradTangentUZ = 0.0f;
-                        gradientRecord.gradTangentVX = 0.0f;
-                        gradientRecord.gradTangentVY = 0.0f;
-                        gradientRecord.gradTangentVZ = 0.0f;
+                        gradientRecord.gradRotationX = 0.0f;
+                        gradientRecord.gradRotationY = 0.0f;
+                        gradientRecord.gradRotationZ = 0.0f;
                         gradientRecord.gradEta =
                                 lossWeight * lossNormalization * 2.0f * visibilityWeight * (surfel.opacity - 1.0f);
                         gradientRecord.gradBeta = 0.0f;
@@ -3305,8 +3276,9 @@ namespace Pale {
 
                         if (useDepthDistortion) {
                             atomicAddFloat3(depthGradients.gradPosition[hit.primitiveIndex], depthGradPosition);
-                            atomicAddFloat3(depthGradients.gradTanU[hit.primitiveIndex], depthGradTanU);
-                            atomicAddFloat3(depthGradients.gradTanV[hit.primitiveIndex], depthGradTanV);
+                            const float3 depthGradRotation = computeLocalRotationGradientFromTangentGradients(
+                                tu, tv, depthGradTanU, depthGradTanV);
+                            atomicAddFloat3(depthGradients.gradRotation[hit.primitiveIndex], depthGradRotation);
                             atomicAddFloat2(depthGradients.gradScale[hit.primitiveIndex],
                                             float2{depthGradScaleU, depthGradScaleV});
                             atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradOpacity);
@@ -3315,8 +3287,10 @@ namespace Pale {
 
                         if (useNormalConsistency) {
                             atomicAddFloat3(normalGradients.gradPosition[hit.primitiveIndex], normalGradPosition);
-                            atomicAddFloat3(normalGradients.gradTanU[hit.primitiveIndex], normalGradTanU);
-                            atomicAddFloat3(normalGradients.gradTanV[hit.primitiveIndex], normalGradTanV);
+                            const float3 normalGradRotation =
+                                    computeLocalRotationGradientFromTangentGradients(
+                                        tu, tv, normalGradTanU, normalGradTanV);
+                            atomicAddFloat3(normalGradients.gradRotation[hit.primitiveIndex], normalGradRotation);
                             atomicAddFloat2(normalGradients.gradScale[hit.primitiveIndex],
                                             float2{normalGradScaleU, normalGradScaleV});
                             atomicAddFloat(normalGradients.gradOpacity[hit.primitiveIndex], normalGradOpacity);
@@ -3329,8 +3303,8 @@ namespace Pale {
 
                         if (writeDebugImages) {
                             const float3 totalGradPosition = depthGradPosition + normalGradPosition;
-                            const float3 totalGradTanU = depthGradTanU + normalGradTanU;
-                            const float3 totalGradTanV = depthGradTanV + normalGradTanV;
+                            const float3 totalGradRotation = computeLocalRotationGradientFromTangentGradients(
+                                tu, tv, depthGradTanU + normalGradTanU, depthGradTanV + normalGradTanV);
                             const float totalGradScaleU = depthGradScaleU + normalGradScaleU;
                             const float totalGradScaleV = depthGradScaleV + normalGradScaleV;
                             const float totalGradOpacity = depthGradOpacity + normalGradOpacity + visibilityGradOpacity;
@@ -3343,12 +3317,9 @@ namespace Pale {
                             debugRecord.gradPositionZ = totalGradPosition.z();
                             debugRecord.gradScaleU = totalGradScaleU;
                             debugRecord.gradScaleV = totalGradScaleV;
-                            debugRecord.gradTangentUX = totalGradTanU.x();
-                            debugRecord.gradTangentUY = totalGradTanU.y();
-                            debugRecord.gradTangentUZ = totalGradTanU.z();
-                            debugRecord.gradTangentVX = totalGradTanV.x();
-                            debugRecord.gradTangentVY = totalGradTanV.y();
-                            debugRecord.gradTangentVZ = totalGradTanV.z();
+                            debugRecord.gradRotationX = totalGradRotation.x();
+                            debugRecord.gradRotationY = totalGradRotation.y();
+                            debugRecord.gradRotationZ = totalGradRotation.z();
                             debugRecord.gradEta = totalGradOpacity;
                             debugRecord.gradBeta = totalGradBeta;
                             debugRecord.gradAlbedoR = 0.0f;

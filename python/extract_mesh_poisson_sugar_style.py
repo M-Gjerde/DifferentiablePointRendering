@@ -692,11 +692,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_root", type=Path, default=Path("../Assets/OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--normal-mode", type=str, default="tangent", choices=["auto", "existing", "tangent"])
-    parser.add_argument("--samples-per-surfel", type=int, default=24)
+    parser.add_argument("--samples-per-surfel", type=int, default=16)
     parser.add_argument(
         "--sample-radial-exponent",
         type=float,
-        default=1.2,
+        default=1.5,
         help=(
             "Controls how surfel samples are distributed radially. "
             "0.5 preserves the old uniform-area disk sampling. "
@@ -707,7 +707,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-sample-radius", type=float, default=0.00)
     parser.add_argument("--poisson-depth", type=int, default=10)
     parser.add_argument("--poisson-scale", type=float, default=1.1)
-    parser.add_argument("--density-quantile", type=float, default=0.05)
+    parser.add_argument("--density-quantile", type=float, default=0.00)
     parser.add_argument("--bbox-padding-factor", type=float, default=0.05)
     parser.add_argument("--num-cluster", type=int, default=50)
     parser.add_argument("--split-components", action=argparse.BooleanOptionalAction, default=True)

@@ -173,8 +173,7 @@ namespace Pale {
             return;
         }
         queue.fill(gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pointCount);
-        queue.fill(gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pointCount);
-        queue.fill(gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        queue.fill(gradients.gradRotation, float3{0.0f, 0.0f, 0.0f}, pointCount);
         queue.fill(gradients.gradScale, float2{0.0f, 0.0f}, pointCount);
         queue.fill(gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pointCount);
         queue.fill(gradients.gradOpacity, 0.0f, pointCount);
@@ -209,7 +208,9 @@ namespace Pale {
                                pkg.debugImages[cameraIndex].numPixels).wait();
                 pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferRot, 0.0f,
                                pkg.debugImages[cameraIndex].numPixels).wait();
-                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferScale, 0.0f,
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferScaleU, 0.0f,
+                               pkg.debugImages[cameraIndex].numPixels).wait();
+                pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferScaleV, 0.0f,
                                pkg.debugImages[cameraIndex].numPixels).wait();
                 pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferOpacity, 0.0f,
                                pkg.debugImages[cameraIndex].numPixels).wait();
@@ -316,15 +317,11 @@ namespace Pale {
         if (pointCount == 0) {
             return;
         }
-
         if (gradients.gradPosition) {
             queue.fill(gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pointCount);
         }
-        if (gradients.gradTanU) {
-            queue.fill(gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pointCount);
-        }
-        if (gradients.gradTanV) {
-            queue.fill(gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        if (gradients.gradRotation) {
+            queue.fill(gradients.gradRotation, float3{0.0f, 0.0f, 0.0f}, pointCount);
         }
         if (gradients.gradScale) {
             queue.fill(gradients.gradScale, float2{0.0f, 0.0f}, pointCount);
@@ -367,8 +364,7 @@ namespace Pale {
 
     void submitDepthDistortionKernel(RenderPackage &pkg) {
         pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.gradRotation, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradScale, float2{0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints);
@@ -381,8 +377,7 @@ namespace Pale {
 
     void submitNormalConsistencyKernel(RenderPackage &pkg) {
         pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradTanU, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
-        pkg.queue.fill(pkg.gradients.gradTanV, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.gradRotation, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradScale, float2{0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradOpacity, 0.0f, pkg.gradients.numPoints);

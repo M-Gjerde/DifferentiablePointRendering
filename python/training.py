@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import time
 from losses import compute_parameter_mse
-from optimizers import create_learning_rate_schedules, update_optimizer_learning_rates
-from render_hooks import apply_point_parameters, rebuild_bvh, remove_points, add_new_points
+from optimizers import (create_learning_rate_schedules, update_optimizer_learning_rates, )
 from training_helpers import *
 
 
@@ -268,10 +267,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     )
                     config.reset_scale_iterations = False
 
-                if (
-                        reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0) or config.reset_opacity_iterations:
+                scheduled_opacity_reset = reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0
+                manual_opacity_reset = bool(config.reset_opacity_iterations)
+                did_reset_opacity = scheduled_opacity_reset or manual_opacity_reset
+
+                if did_reset_opacity:
                     with torch.no_grad():
                         opacities[trainable_surfel_mask] = float(reset_opacity_value)
+
                     print(f"[Iter {iteration:04d}] Resetting all opacities to {reset_opacity_value}")
                     config.reset_opacity_iterations = False
 
@@ -283,42 +286,50 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 if iteration % rebuild_bvh_interval == 0:
                     rebuild_bvh(renderer)
 
-                densification_result = maybe_make_densification_result(
-                    iteration=iteration, config=config, positions=positions, tangent_u=tangent_u,
-                    tangent_v=tangent_v, scales=scales, albedos=albedos, opacities=opacities,
-                    betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
-                    densify_position_grad_accum_np=densify_position_grad_accum_np,
-                    densify_position_grad_denom_np=densify_position_grad_denom_np,
-                    densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-                    densify_after=densify_after, densify_until_iteration=densify_until_iteration,
-                    densification_interval=densification_interval, densification_verbose=densification_verbose,
-                    densification_grad_quantile=densification_grad_quantile,
-                    densification_grad_abs_min=densification_grad_abs_min,
-                )
+                densification_result = None
+                scale_prune_indices = []
+                opacity_prune_indices = []
+                indices_to_remove_list = []
 
-                if (
-                        save_gradient_diagnostics
-                        and densification_interval > 0
-                        and densify_after <= iteration <= densify_until_iteration
-                        and iteration % densification_interval == 0
-                ):
-                    save_densification_gradient_diagnostics(
-                        output_dir=config.output_dir,
-                        iteration=iteration,
-                        positions=positions,
+                if not did_reset_opacity:
+                    densification_result = maybe_make_densification_result(
+                        iteration=iteration, config=config, positions=positions, tangent_u=tangent_u,
+                        tangent_v=tangent_v, scales=scales, albedos=albedos, opacities=opacities,
+                        betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
                         densify_position_grad_accum_np=densify_position_grad_accum_np,
                         densify_position_grad_denom_np=densify_position_grad_denom_np,
                         densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-                        photo_gradient_surfel_stats=photo_gradient_surfel_stats,
-                        active_camera_count_max=len(training_camera_ids),
+                        densify_after=densify_after, densify_until_iteration=densify_until_iteration,
+                        densification_interval=densification_interval, densification_verbose=densification_verbose,
+                        densification_grad_quantile=densification_grad_quantile,
+                        densification_grad_abs_min=densification_grad_abs_min,
                     )
 
-                scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
-                    iteration=iteration, config=config, scales=scales, opacities=opacities,
-                    trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
-                    prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
-                    opacity_prune_threshold=opacity_prune_threshold, max_prune_fraction=max_prune_fraction,
-                )
+                    if (
+                            save_gradient_diagnostics
+                            and densification_interval > 0
+                            and densify_after <= iteration <= densify_until_iteration
+                            and iteration % densification_interval == 0
+                    ):
+                        save_densification_gradient_diagnostics(
+                            output_dir=config.output_dir,
+                            iteration=iteration,
+                            positions=positions,
+                            densify_position_grad_accum_np=densify_position_grad_accum_np,
+                            densify_position_grad_denom_np=densify_position_grad_denom_np,
+                            densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                            photo_gradient_surfel_stats=photo_gradient_surfel_stats,
+                            active_camera_count_max=len(training_camera_ids),
+                        )
+
+                    scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
+                        iteration=iteration, config=config, scales=scales, opacities=opacities,
+                        trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
+                        prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
+                        opacity_prune_threshold=opacity_prune_threshold, max_prune_fraction=max_prune_fraction,
+                    )
+                else:
+                    print(f"[Iter {iteration:04d}] Skipping densification/pruning due to opacity reset")
 
                 if indices_to_remove_list or densification_result is not None:
                     old_params_for_optimizer = make_named_parameter_dict(positions, tangent_u, tangent_v, scales,

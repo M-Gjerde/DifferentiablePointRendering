@@ -57,6 +57,8 @@ class OptimizationConfig:
 
     learning_rate_position: float | None = None
     learning_rate_tangent: float | None = None
+    learning_rate_rotation: float | None = None
+    max_rotation_step_radians: float = 0.01
     learning_rate_scale: float | None = None
     learning_rate_albedo: float | None = None
     learning_rate_opacity: float | None = None
@@ -70,13 +72,13 @@ class OptimizationConfig:
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.3
-    global_lr_start_iteration: int = 7_000
+    global_lr_start_iteration: int = 7500
     global_lr_max_steps: int = 15_000
 
     depth_distort_weight: float = 1000
-    depth_distort_start_iteration: int = 2000
-    normal_consistency_weight: float = 0.005
-    visibility_weighted_opacity_weight: float = 0.01
+    depth_distort_start_iteration: int = 500
+    normal_consistency_weight: float = 0.05
+    visibility_weighted_opacity_weight: float = 0.008
 
     log_interval: int = 1
     save_interval: int = 5
@@ -92,7 +94,7 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 5.0e-3
+    densification_grad_abs_min: float = 6.0e-3
     densification_scale_min: float = 1.0e-2
     save_gradient_diagnostics: bool = True
 
@@ -101,7 +103,7 @@ class OptimizationConfig:
     densify_bsdf_gamma: float = 1.0
 
     # Pruning
-    opacity_prune_threshold: float = 0.1
+    opacity_prune_threshold: float = 0.2
     max_prune_fraction: float = 0.9
     scale_prune_min_scale: float = 1.0e-3
     min_points_to_keep_after_scale_prune: int = 1
@@ -122,13 +124,15 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
     if config.optimizer_type == "sgd":
         factor_position = 0.2
         factor_tangent = 0.1
+        factor_rotation = 0.1
         factor_scale = 0.005
         factor_albedo = 2.0
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.0003
-        factor_tangent = 0.005
+        factor_position = 0.0005
+        factor_tangent = 0.008
+        factor_rotation = 0.003
         factor_scale = 0.0005
         factor_albedo = 0.001
         factor_opacity = 0.02
@@ -140,6 +144,8 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         config.learning_rate_position = factor_position * base_learning_rate
     if config.learning_rate_tangent is None:
         config.learning_rate_tangent = factor_tangent * base_learning_rate
+    if config.learning_rate_rotation is None:
+        config.learning_rate_rotation = factor_rotation * base_learning_rate
     if config.learning_rate_scale is None:
         config.learning_rate_scale = factor_scale * base_learning_rate
     if config.learning_rate_albedo is None:
@@ -186,6 +192,8 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float)
     parser.add_argument("--lr-pos", dest="learning_rate_position", type=float)
     parser.add_argument("--lr-tan", dest="learning_rate_tangent", type=float)
+    parser.add_argument("--lr-rot", dest="learning_rate_rotation", type=float)
+    parser.add_argument("--max-rotation-step-radians", type=float)
     parser.add_argument("--lr-scale", dest="learning_rate_scale", type=float)
     parser.add_argument("--lr-albedo", dest="learning_rate_albedo", type=float)
     parser.add_argument("--lr-opacity", dest="learning_rate_opacity", type=float)

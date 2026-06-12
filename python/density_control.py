@@ -200,7 +200,7 @@ Both children:
         child_sc = torch.clamp(child_sc, min=float(min_clone_scale))
 
         parent_opacity = 1.0 * opa
-        child_opacity = torch.clamp(0.6 * opa, min=0.1)
+        child_opacity = torch.clamp(0.6 * opa, min=0.2)
 
         selected_idx_np = selected_idx.detach().cpu().numpy().astype(np.int64)
 

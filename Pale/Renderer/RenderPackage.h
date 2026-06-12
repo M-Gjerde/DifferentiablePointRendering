@@ -36,8 +36,7 @@ namespace Pale {
     // WE use SoA for actual optimizer gradients since  pytorch likely consumes each parameter gradient as a contiguous array
     struct PointGradients {
         float3 *gradPosition = nullptr;
-        float3 *gradTanU = nullptr;
-        float3 *gradTanV = nullptr;
+        float3 *gradRotation = nullptr;
         float2 *gradScale = nullptr;
         float3 *gradAlbedo = nullptr;
         float *gradOpacity = nullptr;
@@ -71,7 +70,8 @@ namespace Pale {
         float *framebufferPosY = nullptr; // gradient image
         float *framebufferPosZ = nullptr; // gradient image
         float *framebufferRot = nullptr; // gradient image
-        float *framebufferScale = nullptr; // gradient image
+        float *framebufferScaleU = nullptr; // gradient image
+        float *framebufferScaleV = nullptr; // gradient image
         float *framebufferOpacity = nullptr; // gradient image
         float *framebufferAlbedo = nullptr; // gradient image
         float *framebufferBeta = nullptr; // gradient image

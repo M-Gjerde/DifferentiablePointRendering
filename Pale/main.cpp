@@ -477,11 +477,8 @@ static void savePointGradientsAsCsv(
         if (gradients.gradPosition) {
             queue.memcpy(gradPositionHost.data(), gradients.gradPosition, pointCount * sizeof(Pale::float3));
         }
-        if (gradients.gradTanU) {
-            queue.memcpy(gradTangentUHost.data(), gradients.gradTanU, pointCount * sizeof(Pale::float3));
-        }
-        if (gradients.gradTanV) {
-            queue.memcpy(gradTangentVHost.data(), gradients.gradTanV, pointCount * sizeof(Pale::float3));
+        if (gradients.gradRotation) {
+            queue.memcpy(gradTangentUHost.data(), gradients.gradRotation, pointCount * sizeof(Pale::float3));
         }
         if (gradients.gradScale) {
             queue.memcpy(gradScaleHost.data(), gradients.gradScale, pointCount * sizeof(Pale::float2));
@@ -673,9 +670,18 @@ static void saveDebugGradientImagesForSensors(
             adjointSamplesPerPixel);
 
         saveGradientSet(
-            debugImagesHost.scale,
+            debugImagesHost.scaleU,
             cameraDebugDir,
-            prefix + "_scale",
+            prefix + "_scaleU",
+            imageWidth,
+            imageHeight,
+            adjointSamplesPerPixel);
+
+
+        saveGradientSet(
+            debugImagesHost.scaleV,
+            cameraDebugDir,
+            prefix + "_scaleV",
             imageWidth,
             imageHeight,
             adjointSamplesPerPixel);

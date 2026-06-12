@@ -151,8 +151,7 @@ export namespace Pale {
 
         if (numPoints > 0u) {
             out.gradPosition = sycl::malloc_device<float3>(numPoints, queue);
-            out.gradTanU = sycl::malloc_device<float3>(numPoints, queue);
-            out.gradTanV = sycl::malloc_device<float3>(numPoints, queue);
+            out.gradRotation = sycl::malloc_device<float3>(numPoints, queue);
             out.gradScale = sycl::malloc_device<float2>(numPoints, queue);
             out.gradAlbedo = sycl::malloc_device<float3>(numPoints, queue);
             out.gradOpacity = sycl::malloc_device<float>(numPoints, queue);
@@ -176,7 +175,7 @@ export namespace Pale {
                         sycl::malloc_device<uint32_t>(primitiveCameraCount, queue);
             }
 
-            if (!out.gradPosition || !out.gradTanU || !out.gradTanV || !out.gradScale ||
+            if (!out.gradPosition || !out.gradRotation || !out.gradScale ||
                 !out.gradAlbedo || !out.gradOpacity || !out.gradBeta || !out.gradShape ||
                 !out.gradPositionMeanNorm || !out.gradPositionStd ||
                 !out.gradPositionCoherence || !out.gradPositionDisagreement ||
@@ -187,8 +186,7 @@ export namespace Pale {
             }
 
             queue.fill(out.gradPosition, float3{0.0f, 0.0f, 0.0f}, numPoints);
-            queue.fill(out.gradTanU, float3{0.0f, 0.0f, 0.0f}, numPoints);
-            queue.fill(out.gradTanV, float3{0.0f, 0.0f, 0.0f}, numPoints);
+            queue.fill(out.gradRotation, float3{0.0f, 0.0f, 0.0f}, numPoints);
             queue.fill(out.gradScale, float2{0.0f, 0.0f}, numPoints);
             queue.fill(out.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, numPoints);
             queue.fill(out.gradOpacity, 0.0f, numPoints);
@@ -252,7 +250,8 @@ export namespace Pale {
             debugImage.framebufferPosY = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferPosZ = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferRot = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferScale = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferScaleU = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferScaleV = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferOpacity = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferAlbedo = sycl::malloc_device<float>(pixelCount, queue);
             debugImage.framebufferBeta = sycl::malloc_device<float>(pixelCount, queue);
@@ -262,7 +261,7 @@ export namespace Pale {
             debugImage.numPixels = pixelCount;
 
             if (!debugImage.framebufferPosX || !debugImage.framebufferPosY || !debugImage.framebufferPosZ ||
-                !debugImage.framebufferRot || !debugImage.framebufferScale || !debugImage.framebufferOpacity ||
+                !debugImage.framebufferRot || !debugImage.framebufferScaleU ||  !debugImage.framebufferScaleV || !debugImage.framebufferOpacity ||
                 !debugImage.framebufferAlbedo || !debugImage.framebufferBeta ||
                 !debugImage.framebufferDepthLoss || !debugImage.framebufferDepthLossPos ||
                 !debugImage.framebufferNormalLoss) {
@@ -273,7 +272,8 @@ export namespace Pale {
             queue.fill(debugImage.framebufferPosY, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferPosZ, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferRot, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferScale, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferScaleU, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferScaleV, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferOpacity, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferAlbedo, 0.0f, pixelCount);
             queue.fill(debugImage.framebufferBeta, 0.0f, pixelCount);
@@ -433,7 +433,8 @@ export namespace Pale {
         std::vector<float> positionY; // framebuffer_pos
         std::vector<float> positionZ; // framebuffer_pos
         std::vector<float> rotation; // framebuffer_rot
-        std::vector<float> scale; // framebuffer_scale
+        std::vector<float> scaleU; // framebuffer_scale
+        std::vector<float> scaleV; // framebuffer_scale
         std::vector<float> opacity; // framebuffer_opacity
         std::vector<float> albedo; // framebuffer_albedo
         std::vector<float> beta; // framebuffer_albedo
@@ -458,7 +459,8 @@ export namespace Pale {
         images.positionY.resize(rgbaFloatCount);
         images.positionZ.resize(rgbaFloatCount);
         images.rotation.resize(rgbaFloatCount);
-        images.scale.resize(rgbaFloatCount);
+        images.scaleU.resize(rgbaFloatCount);
+        images.scaleV.resize(rgbaFloatCount);
         images.opacity.resize(rgbaFloatCount);
         images.albedo.resize(rgbaFloatCount);
         images.beta.resize(rgbaFloatCount);
@@ -491,7 +493,8 @@ export namespace Pale {
         downloadScalarImageAsGrayscaleRgba(images.positionY, debugImages.framebufferPosY);
         downloadScalarImageAsGrayscaleRgba(images.positionZ, debugImages.framebufferPosZ);
         downloadScalarImageAsGrayscaleRgba(images.rotation, debugImages.framebufferRot);
-        downloadScalarImageAsGrayscaleRgba(images.scale, debugImages.framebufferScale);
+        downloadScalarImageAsGrayscaleRgba(images.scaleU, debugImages.framebufferScaleU);
+        downloadScalarImageAsGrayscaleRgba(images.scaleV, debugImages.framebufferScaleV);
         downloadScalarImageAsGrayscaleRgba(images.opacity, debugImages.framebufferOpacity);
         downloadScalarImageAsGrayscaleRgba(images.albedo, debugImages.framebufferAlbedo);
         downloadScalarImageAsGrayscaleRgba(images.beta, debugImages.framebufferBeta);
@@ -526,8 +529,7 @@ export namespace Pale {
         };
 
         freeDevicePtr(gradients.gradPosition);
-        freeDevicePtr(gradients.gradTanU);
-        freeDevicePtr(gradients.gradTanV);
+        freeDevicePtr(gradients.gradRotation);
         freeDevicePtr(gradients.gradScale);
         freeDevicePtr(gradients.gradAlbedo);
         freeDevicePtr(gradients.gradOpacity);
@@ -576,9 +578,13 @@ export namespace Pale {
                 sycl::free(debugImage.framebufferRot, queue);
                 debugImage.framebufferRot = nullptr;
             }
-            if (debugImage.framebufferScale) {
-                sycl::free(debugImage.framebufferScale, queue);
-                debugImage.framebufferScale = nullptr;
+            if (debugImage.framebufferScaleU) {
+                sycl::free(debugImage.framebufferScaleU, queue);
+                debugImage.framebufferScaleU = nullptr;
+            }
+            if (debugImage.framebufferScaleV) {
+                sycl::free(debugImage.framebufferScaleV, queue);
+                debugImage.framebufferScaleV = nullptr;
             }
             if (debugImage.framebufferOpacity) {
                 sycl::free(debugImage.framebufferOpacity, queue);

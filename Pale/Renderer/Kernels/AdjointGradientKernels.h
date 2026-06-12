@@ -44,15 +44,19 @@ namespace Pale {
         if (!renderDebugGradientImages) {
             return;
         }
-        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex || selectedPrimitiveIndex == UINT32_MAX ||
+
+        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex ||
+            selectedPrimitiveIndex == UINT32_MAX ||
             gradientRecord.primitiveIndex == UINT32_MAX) {
             return;
         }
+
         constexpr float maxAbsGradientComponent = 1.0e3f;
 
         const auto isValidGradientComponent = [](float value) -> bool {
-            return sycl::isfinite(value) && !sycl::isnan(value) && sycl::fabs(value) <=
-                   maxAbsGradientComponent;
+            return sycl::isfinite(value) &&
+                   !sycl::isnan(value) &&
+                   sycl::fabs(value) <= maxAbsGradientComponent;
         };
 
         const bool validGradientRecord =
@@ -61,97 +65,40 @@ namespace Pale {
                 isValidGradientComponent(gradientRecord.gradPositionZ) &&
                 isValidGradientComponent(gradientRecord.gradScaleU) &&
                 isValidGradientComponent(gradientRecord.gradScaleV) &&
-                isValidGradientComponent(gradientRecord.gradTangentUX) &&
-                isValidGradientComponent(gradientRecord.gradTangentUY) &&
-                isValidGradientComponent(gradientRecord.gradTangentUZ) &&
-                isValidGradientComponent(gradientRecord.gradTangentVX) &&
-                isValidGradientComponent(gradientRecord.gradTangentVY) &&
-                isValidGradientComponent(gradientRecord.gradTangentVZ) &&
+                isValidGradientComponent(gradientRecord.gradRotationX) &&
+                isValidGradientComponent(gradientRecord.gradRotationY) &&
+                isValidGradientComponent(gradientRecord.gradRotationZ) &&
                 isValidGradientComponent(gradientRecord.gradEta) &&
                 isValidGradientComponent(gradientRecord.gradBeta) &&
                 isValidGradientComponent(gradientRecord.gradAlbedoR) &&
                 isValidGradientComponent(gradientRecord.gradAlbedoG) &&
                 isValidGradientComponent(gradientRecord.gradAlbedoB);
-        if (!validGradientRecord)
+
+        if (!validGradientRecord) {
             return;
-        if (pathId >= debugImage.numPixels)
+        }
+
+        if (pathId >= debugImage.numPixels) {
             return;
+        }
+
+        const float rotationGradientMagnitude = sycl::sqrt(
+            gradientRecord.gradRotationX * gradientRecord.gradRotationX +
+            gradientRecord.gradRotationY * gradientRecord.gradRotationY +
+            gradientRecord.gradRotationZ * gradientRecord.gradRotationZ);
 
         atomicAddFloat(debugImage.framebufferPosX[pathId], gradientRecord.gradPositionX);
         atomicAddFloat(debugImage.framebufferPosY[pathId], gradientRecord.gradPositionY);
         atomicAddFloat(debugImage.framebufferPosZ[pathId], gradientRecord.gradPositionZ);
-        const float3 tangentUGradient{
-            gradientRecord.gradTangentUX, gradientRecord.gradTangentUY, gradientRecord.gradTangentUZ
-        };
-        const float3 tangentVGradient{
-            gradientRecord.gradTangentVX, gradientRecord.gradTangentVY, gradientRecord.gradTangentVZ
-        };
 
-        //atomicAddFloat(debugImage.framebufferRot[pathId], rotationGradientMagnitude);
-        atomicAddFloat(debugImage.framebufferScale[pathId], gradientRecord.gradScaleU);
+        atomicAddFloat(debugImage.framebufferRot[pathId], rotationGradientMagnitude);
+        atomicAddFloat(debugImage.framebufferScaleU[pathId], gradientRecord.gradScaleU);
+        atomicAddFloat(debugImage.framebufferScaleV[pathId], gradientRecord.gradScaleU);
         atomicAddFloat(debugImage.framebufferOpacity[pathId], gradientRecord.gradEta);
         atomicAddFloat(debugImage.framebufferAlbedo[pathId], gradientRecord.gradAlbedoR);
         atomicAddFloat(debugImage.framebufferBeta[pathId], gradientRecord.gradBeta);
     }
 
-    SYCL_EXTERNAL inline void accumulateSurfelGradientAtomic(
-        const PointGradients &gradients,
-        uint32_t primitiveIndex,
-        const float3 &gradPosition,
-        const float2 &gradScale,
-        const float3 &gradTanU,
-        const float3 &gradTanV,
-        float gradEta,
-        float gradBeta,
-        const float3 &gradAlbedo = float3{0.0f, 0.0f, 0.0f}) {
-        atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradPosition.x());
-        atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradPosition.y());
-        atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradPosition.z());
-
-        atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradScale.x());
-        atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradScale.y());
-
-        atomicAddFloat(gradients.gradTanU[primitiveIndex].x(), gradTanU.x());
-        atomicAddFloat(gradients.gradTanU[primitiveIndex].y(), gradTanU.y());
-        atomicAddFloat(gradients.gradTanU[primitiveIndex].z(), gradTanU.z());
-
-        atomicAddFloat(gradients.gradTanV[primitiveIndex].x(), gradTanV.x());
-        atomicAddFloat(gradients.gradTanV[primitiveIndex].y(), gradTanV.y());
-        atomicAddFloat(gradients.gradTanV[primitiveIndex].z(), gradTanV.z());
-
-        atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradEta);
-        atomicAddFloat(gradients.gradBeta[primitiveIndex], gradBeta);
-
-        atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradAlbedo.x());
-        atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradAlbedo.y());
-        atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradAlbedo.z());
-    }
-
-    SYCL_EXTERNAL inline float3 mapHitPointGradientToSurfelTranslation(
-        const float3 &gradientWrtHitPosition,
-        const float3 &cameraRayDirection,
-        const float3 &surfelNormal) {
-        const float denominator = dot(surfelNormal, cameraRayDirection);
-
-        if (sycl::fabs(denominator) <= 1e-6f) {
-            return float3{0.0f};
-        }
-
-        const float numerator = dot(cameraRayDirection, gradientWrtHitPosition);
-
-        // J^T * g_x = n * (w · g_x) / (n · w)
-        return surfelNormal * (numerator / denominator);
-    }
-
-    SYCL_EXTERNAL inline float3x3 planeHitPointJacobianWrtOrigin(
-        const float3 &rayDirection,
-        const float3 &planeNormal) {
-        float3x3 identity = identity3x3();
-
-        float3x3 numerator = outerProduct(rayDirection, planeNormal);
-        float denom = dot(rayDirection, planeNormal);
-        return identity - numerator / denom;
-    }
 
     SYCL_EXTERNAL inline float3x3 planeHitPointIntersectionJacobian(
         const float3 &rayDirection,
@@ -279,6 +226,34 @@ namespace Pale {
         const float uniformHemispherePdf = 1.0f / (2.0f * M_PIf);
         return cosineAtStart / uniformHemispherePdf;
     }
+
+    SYCL_EXTERNAL inline float3 computeLocalRotationGradientFromWorldRotationGradient(
+    const float3 &tangentU,
+    const float3 &tangentV,
+    const float3 &worldRotationGradient) {
+        const float3 tangentW = normalize(cross(tangentU, tangentV));
+
+        return float3{
+            dot(worldRotationGradient, tangentU),
+            dot(worldRotationGradient, tangentV),
+            dot(worldRotationGradient, tangentW)
+        };
+    }
+
+    SYCL_EXTERNAL inline float3 computeLocalRotationGradientFromTangentGradients(
+        const float3 &tangentU,
+        const float3 &tangentV,
+        const float3 &gradientTangentU,
+        const float3 &gradientTangentV) {
+        const float3 tangentW = normalize(cross(tangentU, tangentV));
+
+        return float3{
+            dot(gradientTangentV, tangentW),
+            -dot(gradientTangentU, tangentW),
+            dot(gradientTangentU, tangentV) - dot(gradientTangentV, tangentU)
+        };
+    }
+
 
     inline float3 computeGeometryOverAreaPdfGradientWrtEndpointFromUniformHemisphereSample(
         const float3 &startPosition,
@@ -878,8 +853,7 @@ namespace Pale {
         float gradEta = 0.0f;
         float gradBeta = 0.0f;
 
-        float3 gradTangentU{0.0f, 0.0f, 0.0f};
-        float3 gradTangentV{0.0f, 0.0f, 0.0f};
+        float3 gradRotation{0.0f, 0.0f, 0.0f};
 
         float3 gradAlphaWrtStartPoint{0.0f, 0.0f, 0.0f};
         float3 gradAlphaWrtEndPoint{0.0f, 0.0f, 0.0f};
@@ -1008,8 +982,8 @@ namespace Pale {
                     2.0f * betaScale * vOcc * vOcc * alphaEffective / (occluderScaleV * oneMinusRadiusSquared);
             const float dAlphaEffectiveDEta = alphaGeomOccluder;
             const float dAlphaEffectiveDBeta = betaScale * sycl::log(oneMinusRadiusSquared) * alphaEffective;
-            float3 gradTangentUOcc{0.0f, 0.0f, 0.0f};
-            float3 gradTangentVOcc{0.0f, 0.0f, 0.0f};
+            float3 localRotationGradientOcc{0.0f, 0.0f, 0.0f};
+
             const float nDotD = dot(occluderNormal, rayDirection);
             if (sycl::fabs(nDotD) > 1.0e-8f) {
                 const float3 hitMinusSp = worldHit.hitPositionW - occluderSurfel.position;
@@ -1017,16 +991,29 @@ namespace Pale {
                 const float nDotA = dot(occluderNormal, aOcc);
                 const float invNDotD = 1.0f / nDotD;
                 const float invNDotDSquared = invNDotD * invNDotD;
-                const float3 qOcc = (cross(occluderNormal, aOcc) * nDotD - nDotA * cross(occluderNormal, rayDirection))
-                                    * invNDotDSquared;
-                const float3 duDRotation = qOcc * (dot(rayDirection, tangentU) / occluderScaleU) + cross(
-                                               tangentU, hitMinusSp) / occluderScaleU;
-                const float3 dvDRotation = qOcc * (dot(rayDirection, tangentV) / occluderScaleV) + cross(
-                                               tangentV, hitMinusSp) / occluderScaleV;
-                const float3 dAlphaEffectiveDRotation =
-                        occluderSurfel.opacity * (dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
-                gradTangentUOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanU);
-                gradTangentVOcc = cross(dAlphaEffectiveDRotation, occluderSurfel.tanV);
+
+                const float3 qOcc =
+                    (cross(occluderNormal, aOcc) * nDotD -
+                     nDotA * cross(occluderNormal, rayDirection)) *
+                    invNDotDSquared;
+
+                const float3 duDRotation =
+                    qOcc * (dot(rayDirection, tangentU) / occluderScaleU) +
+                    cross(tangentU, hitMinusSp) / occluderScaleU;
+
+                const float3 dvDRotation =
+                    qOcc * (dot(rayDirection, tangentV) / occluderScaleV) +
+                    cross(tangentV, hitMinusSp) / occluderScaleV;
+
+                const float3 worldRotationGradient =
+                    occluderSurfel.opacity *
+                    (dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
+
+                localRotationGradientOcc =
+                    computeLocalRotationGradientFromWorldRotationGradient(
+                        occluderSurfel.tanU,
+                        occluderSurfel.tanV,
+                        worldRotationGradient);
             }
 
             if (result.storedOccluderCount < kMaxSplatEventsPerRay) {
@@ -1037,8 +1024,7 @@ namespace Pale {
                 occluderDerivative.gradScaleV = dAlphaEffectiveDScaleV;
                 occluderDerivative.gradEta = dAlphaEffectiveDEta;
                 occluderDerivative.gradBeta = dAlphaEffectiveDBeta;
-                occluderDerivative.gradTangentU = gradTangentUOcc;
-                occluderDerivative.gradTangentV = gradTangentVOcc;
+                occluderDerivative.gradRotation = localRotationGradientOcc;
                 occluderDerivative.gradAlphaWrtStartPoint = dAlphaEffectiveDx;
                 occluderDerivative.gradAlphaWrtEndPoint = dAlphaEffectiveDy;
                 occluderDerivative.prefixTransmittance = prefixTransmittance;
@@ -1067,6 +1053,7 @@ namespace Pale {
         return result;
     }
 
+
     SYCL_EXTERNAL inline void writeMaterialEdgeOccluderGradientRecords(
         SurfelGradientRecord *gradientRecords,
         uint32_t firstOccluderRecordIndex,
@@ -1079,41 +1066,52 @@ namespace Pale {
         uint32_t selectedPrimitiveIndex,
         uint32_t pathId) {
         float suffixTransmittance = 1.0f;
-        for (uint32_t reverseIndex = visibilityResult.storedOccluderCount;
-             reverseIndex > 0u;
-             --reverseIndex) {
+
+        for (uint32_t reverseIndex = visibilityResult.storedOccluderCount; reverseIndex > 0u; --reverseIndex) {
             const uint32_t occluderIndex = reverseIndex - 1u;
             const uint32_t occluderRecordIndex = firstOccluderRecordIndex + occluderIndex;
-            const MaterialEdgeOccluderDerivative &occluderDerivative = visibilityResult.occluderDerivatives[
-                occluderIndex];
+
+            const MaterialEdgeOccluderDerivative &occluderDerivative =
+                    visibilityResult.occluderDerivatives[occluderIndex];
+
             const float visibilityDerivativeScale =
-                    -occluderDerivative.prefixTransmittance * suffixTransmittance * geometricTerm *
-                    scalarMaterialEdgeWeight * invSpp;
+                    -occluderDerivative.prefixTransmittance *
+                    suffixTransmittance *
+                    geometricTerm *
+                    scalarMaterialEdgeWeight *
+                    invSpp;
 
             SurfelGradientRecord occluderRecord{};
             occluderRecord.primitiveIndex = occluderDerivative.primitiveIndex;
-            const float3 positionContribution = visibilityDerivativeScale * occluderDerivative.gradPosition;
-            const float3 tangentUContribution = visibilityDerivativeScale * occluderDerivative.gradTangentU;
-            const float3 tangentVContribution = visibilityDerivativeScale * occluderDerivative.gradTangentV;
+
+            const float3 positionContribution =
+                    visibilityDerivativeScale * occluderDerivative.gradPosition;
+
+            const float3 rotationContribution =
+                    visibilityDerivativeScale * occluderDerivative.gradRotation;
 
             occluderRecord.gradPositionX = positionContribution.x();
             occluderRecord.gradPositionY = positionContribution.y();
             occluderRecord.gradPositionZ = positionContribution.z();
+
             occluderRecord.gradScaleU = visibilityDerivativeScale * occluderDerivative.gradScaleU;
             occluderRecord.gradScaleV = visibilityDerivativeScale * occluderDerivative.gradScaleV;
-            occluderRecord.gradTangentUX = tangentUContribution.x();
-            occluderRecord.gradTangentUY = tangentUContribution.y();
-            occluderRecord.gradTangentUZ = tangentUContribution.z();
-            occluderRecord.gradTangentVX = tangentVContribution.x();
-            occluderRecord.gradTangentVY = tangentVContribution.y();
-            occluderRecord.gradTangentVZ = tangentVContribution.z();
+
+            occluderRecord.gradRotationX = rotationContribution.x();
+            occluderRecord.gradRotationY = rotationContribution.y();
+            occluderRecord.gradRotationZ = rotationContribution.z();
+
             occluderRecord.gradEta = visibilityDerivativeScale * occluderDerivative.gradEta;
             occluderRecord.gradBeta = visibilityDerivativeScale * occluderDerivative.gradBeta;
+
             occluderRecord.gradAlbedoR = 0.0f;
             occluderRecord.gradAlbedoG = 0.0f;
             occluderRecord.gradAlbedoB = 0.0f;
+
             gradientRecords[occluderRecordIndex] = occluderRecord;
+
             suffixTransmittance *= occluderDerivative.oneMinusAlpha;
+
             accumulateDebugGradientIfSelected(
                 debugImage,
                 renderDebugGradientImages,
