@@ -5,6 +5,7 @@ import sys
 import subprocess
 from pathlib import Path
 import os
+import shutil
 
 import pale
 from config import RendererSettingsConfig, parse_args
@@ -13,6 +14,27 @@ from training import run_optimization
 from render_hooks import get_training_camera_names
 
 
+def recreate_output_dir(output_dir: Path) -> Path:
+    resolved_output_dir = output_dir.expanduser().resolve()
+
+    unsafe_paths = {
+        Path("/").resolve(),
+        Path.home().resolve(),
+        Path.cwd().resolve(),
+    }
+
+    if resolved_output_dir in unsafe_paths:
+        raise ValueError(f"Refusing to delete unsafe output directory: {resolved_output_dir}")
+
+    if resolved_output_dir.exists():
+        if not resolved_output_dir.is_dir():
+            raise NotADirectoryError(f"Output path exists but is not a directory: {resolved_output_dir}")
+
+        print(f"Clearing existing output directory: {resolved_output_dir}")
+        shutil.rmtree(resolved_output_dir)
+
+    resolved_output_dir.mkdir(parents=True, exist_ok=False)
+    return resolved_output_dir
 
 
 def main() -> None:
@@ -43,7 +65,7 @@ def main() -> None:
     else:
         config.output_dir = base_output_dir / run_folder_name
 
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    config.output_dir = recreate_output_dir(config.output_dir)
 
     save_run_config(
         output_dir=config.output_dir,
@@ -51,6 +73,7 @@ def main() -> None:
         renderer_settings=renderer_settings,
         run_folder_name=run_folder_name,
     )
+
     # ------------------------------------------------------------------
     # 1. Initialize renderer once
     # ------------------------------------------------------------------
@@ -60,11 +83,13 @@ def main() -> None:
         config.pointcloud_ply,
         renderer_settings.as_dict(config),
     )
-    # Camera IDs from C++
+
     camera_ids = get_training_camera_names(renderer)
     if len(camera_ids) == 0:
         raise RuntimeError("No cameras found in scene.")
+
     main_camera = camera_ids[0]
+
     print("Starting optimization with configuration:")
     print(f"  assets_root          : {config.assets_root}")
     print(f"  scene_xml            : {config.scene_xml}")
@@ -73,7 +98,7 @@ def main() -> None:
     print(f"  iterations           : {config.iterations}")
     print(f"  lr_base              : {config.learning_rate}")
     print(f"  lr_position          : {config.learning_rate_position}")
-    print(f"  lr_rotation           : {config.learning_rate_rotation}")
+    print(f"  lr_rotation          : {config.learning_rate_rotation}")
     print(f"  lr_scale             : {config.learning_rate_scale}")
     print(f"  lr_color             : {config.learning_rate_albedo}")
     print(f"  lr_opacity           : {config.learning_rate_opacity}")
@@ -89,13 +114,21 @@ def main() -> None:
     # ------------------------------------------------------------------
     image_preview_script = Path(__file__).parent / "image_preview.py"
     image_preview_process = None
-    # dataset_path is usually relative to assets_root (directory or file)
+
     dataset_path_full = Path(config.dataset_path).expanduser().resolve()
+
     if image_preview_script.exists():
         preview_args = [
-            sys.executable, str(image_preview_script), "--output-path", str(config.output_dir.resolve()),
-            "--refresh-ms", "200", "--parent-pid", str(os.getpid()),
+            sys.executable,
+            str(image_preview_script),
+            "--output-path",
+            str(config.output_dir.resolve()),
+            "--refresh-ms",
+            "200",
+            "--parent-pid",
+            str(os.getpid()),
         ]
+
         try:
             image_preview_process = subprocess.Popen(preview_args)
             print(f"Started image preview : {image_preview_script}")

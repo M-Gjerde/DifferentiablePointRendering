@@ -185,7 +185,7 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--optimizer", dest="optimizer_type", type=str, choices=["adam", "sgd"])
     parser.add_argument("--log-interval", type=int)
-    parser.add_argument("--save-interval", type=int)
+    parser.add_argument("--save-interval", default=10, type=int)
     parser.add_argument("--device", type=str)
 
     parser.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float)
