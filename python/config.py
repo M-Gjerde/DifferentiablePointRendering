@@ -49,6 +49,9 @@ class OptimizationConfig:
     pointcloud_ply: str = "initial.ply"
     dataset_path: Path = Path("./Output/target")
     output_dir: Path = Path("OptimizationOutput")
+    output_dir_is_explicit: bool = False
+    scene_xml_is_explicit: bool = False
+    pointcloud_ply_is_explicit: bool = False
 
     iterations: int = int(1e5)
 
@@ -77,7 +80,7 @@ class OptimizationConfig:
     depth_distort_weight: float = 500
     depth_distort_start_iteration: int = 300
     normal_consistency_weight: float = 0.01
-    visibility_weighted_opacity_weight: float = 0.005
+    visibility_weighted_opacity_weight: float = 0.009
 
     log_interval: int = 1
     save_interval: int = 5
@@ -132,8 +135,8 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_position = 0.0005
         factor_rotation = 0.05
         factor_scale = 0.0005
-        factor_albedo = 0.008
-        factor_opacity = 0.001
+        factor_albedo = 0.006
+        factor_opacity = 0.0008
         factor_beta = 0.00
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
@@ -174,10 +177,10 @@ def parse_args() -> OptimizationConfig:
     )
 
     parser.add_argument("--assets-root", type=Path)
-    parser.add_argument("--scene-xml", type=str)
+    parser.add_argument("--scene", "--scene-xml", dest="scene_xml", type=str)
     parser.add_argument("--pointcloud", dest="pointcloud_ply", type=str)
     parser.add_argument("--dataset-path", type=Path)
-    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--output", "--output-dir", dest="output_dir", type=Path)
 
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--optimizer", dest="optimizer_type", type=str, choices=["adam", "sgd"])
@@ -255,26 +258,20 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--reset-scale-factor", type=float)
 
     args = parser.parse_args()
+    cli_overrides = set(vars(args).keys())
 
     config = OptimizationConfig()
 
     for parameter_name, parameter_value in vars(args).items():
         if not hasattr(config, parameter_name):
-            raise RuntimeError(
-                f"CLI argument produced unknown config field: {parameter_name}"
-            )
+            raise RuntimeError(f"CLI argument produced unknown config field: {parameter_name}")
         setattr(config, parameter_name, parameter_value)
 
-    resolve_learning_rates(config)
+    config.output_dir_is_explicit = "output_dir" in cli_overrides
+    config.scene_xml_is_explicit = "scene_xml" in cli_overrides
+    config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
-    # for parameter_name, parameter_value in vars(args).items():
-    #    if not hasattr(config, parameter_name):
-    #        raise RuntimeError(
-    #            f"CLI argument produced unknown config field: {parameter_name}"
-    #        )
-    #    setattr(config, parameter_name, parameter_value)
-    #
-    ##resolve_iteration_schedules(config, cli_overrides)
-    # resolve_learning_rates(config)
+    resolve_learning_rates(config)
+    resolve_iteration_schedules(config, cli_overrides)
 
     return config

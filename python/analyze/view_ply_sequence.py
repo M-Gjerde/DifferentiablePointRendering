@@ -519,7 +519,7 @@ def parse_arguments() -> argparse.Namespace:
         description="VTK viewer for cycling through optimization point-cloud checkpoints from the latest run's ./points folder."
     )
 
-    parser.add_argument("--output-root", type=Path, default=Path("../Assets/OptimizationOutput"), help="Root folder containing timestamped optimization output folders.")
+    parser.add_argument("--output-root", type=Path, default=Path("OptimizationOutput"), help="Root folder containing timestamped optimization output folders.")
     parser.add_argument("--run-dir", type=Path, default=None, help="Optional explicit optimization run directory. If omitted, the latest run under --output-root is used.")
     parser.add_argument("--run-index", type=int, default=0, help="0 means latest run, 1 means second latest run, etc. Ignored when --run-dir is provided.")
     parser.add_argument("--start-index", type=int, default=0, help="Initial PLY index inside the points folder.")

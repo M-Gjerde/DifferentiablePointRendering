@@ -430,7 +430,7 @@ def parse_args() -> argparse.Namespace:
         description="Render a moving emissive surfel orbit and save PNG frames + GIF."
     )
 
-    parser.add_argument("--optimization-output-root", type=Path, default=Path("../Assets/OptimizationOutput"))
+    parser.add_argument("--optimization-output-root", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--run-dir", type=Path, default=None)
 
     parser.add_argument(

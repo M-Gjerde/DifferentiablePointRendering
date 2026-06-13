@@ -536,10 +536,14 @@ class PaleExtractor:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PALE 2DGS-style mesh extraction")
 
-    parser.add_argument("--output_root", type=Path, default=Path("../Assets/OptimizationOutput"))
+    parser.add_argument("--output_root", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
 
-    parser.add_argument("--cameras-json", type=Path, default="/home/magnus/phd/models/teapot_pbdr/transforms.json")
+    parser.add_argument(
+        "--cameras-json",
+        type=Path,
+        default=Path("~/phd/models/teapot_pbdr/transforms.json").expanduser().resolve(),
+    )
     parser.add_argument("--camera-names", type=str, default=None)
 
     parser.add_argument("--skip_mesh", action="store_true")

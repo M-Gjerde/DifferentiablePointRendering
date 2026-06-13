@@ -10,7 +10,7 @@ import open3d as o3d
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Poisson mesh extraction from optimized quaternion surfel primitives.")
-    parser.add_argument("--output_root", type=Path, default=Path("../Assets/OptimizationOutput"))
+    parser.add_argument("--output_root", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--input-path", type=Path, default=None)
 
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normal-smoothing-max-angle-deg", type=float, default=35.0)
     parser.add_argument("--normal-smoothing-plane-sigma-factor", type=float, default=0.5)
     parser.add_argument("--normal-smoothing-distance-sigma-factor", type=float, default=1.0)
-    parser.add_argument("--normal-smoothing-iterations", type=int, default=5)
+    parser.add_argument("--normal-smoothing-iterations", type=int, default=2)
 
     parser.add_argument("--poisson-depth", type=int, default=11)
     parser.add_argument("--poisson-scale", type=float, default=1.1)

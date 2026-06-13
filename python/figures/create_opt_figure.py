@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--optimization-output-root",
         type=Path,
-        default=Path("../Assets/OptimizationOutput"),
+        default=Path("OptimizationOutput"),
         help="Root folder containing timestamped optimization runs.",
     )
     parser.add_argument(

@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
         "--optimization-output-root",
         type=Path,
         required=False,
-        default=Path("../Assets/OptimizationOutput"),
+        default=Path("OptimizationOutput"),
         help="Path to the OptimizationOutput directory.",
     )
     parser.add_argument(

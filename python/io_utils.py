@@ -362,6 +362,67 @@ def _jsonify_value(value):
     return value
 
 
+def resolve_existing_path(path: Path, description: str) -> Path:
+    resolved_path = path.expanduser().resolve()
+
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"Could not find {description}: {resolved_path}")
+
+    return resolved_path
+
+
+def resolve_dataset_file(dataset_folder: Path, filename: str, description: str) -> Path:
+    file_path = dataset_folder / filename
+
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Could not find {description}: {file_path}")
+
+    return file_path.resolve()
+
+
+def configure_paths_from_dataset_folder(config) -> None:
+    dataset_folder = resolve_existing_path(Path(config.dataset_path), "dataset folder")
+
+    if not dataset_folder.is_dir():
+        raise RuntimeError(f"--dataset-path must point to a dataset folder: {dataset_folder}")
+
+    images_folder = dataset_folder / "images"
+    if not images_folder.is_dir():
+        raise RuntimeError(f"Dataset folder is missing images folder: {images_folder}")
+
+    if not config.scene_xml_is_explicit:
+        config.scene_xml = str(resolve_dataset_file(dataset_folder, "scene.xml", "scene XML"))
+
+    if not config.pointcloud_ply_is_explicit:
+        config.pointcloud_ply = str(resolve_dataset_file(dataset_folder, "points.ply", "pointcloud PLY"))
+
+    config.dataset_path = dataset_folder
+
+def get_python_project_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def get_python_project_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def resolve_output_dir(output_dir: Path, output_dir_is_explicit: bool) -> Path:
+    python_project_dir = get_python_project_dir()
+    output_dir = Path(output_dir).expanduser()
+
+    if output_dir.is_absolute():
+        return output_dir.resolve()
+
+    default_output_root = python_project_dir / "OptimizationOutput"
+
+    if not output_dir_is_explicit:
+        return default_output_root.resolve()
+
+    if output_dir.parts and output_dir.parts[0] == "OptimizationOutput":
+        return (python_project_dir / output_dir).resolve()
+
+    return (default_output_root / output_dir).resolve()
+
 def save_run_config(
     output_dir: Path,
     config,

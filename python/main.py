@@ -8,32 +8,49 @@ import os
 
 import pale
 from config import RendererSettingsConfig, parse_args
-from io_utils import save_run_config
+from io_utils import *
 from training import run_optimization
 from render_hooks import get_training_camera_names
 
 
+
+
 def main() -> None:
     config = parse_args()
+    configure_paths_from_dataset_folder(config)
+
+    config.assets_root = Path(config.assets_root).expanduser().resolve()
+
     renderer_settings = RendererSettingsConfig()
-    base_output_dir: Path = config.output_dir
-    # Human-readable timestamp
+
+    base_output_dir = resolve_output_dir(
+        config.output_dir,
+        output_dir_is_explicit=config.output_dir_is_explicit,
+    )
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    # Short scene name
     scene_short = Path(config.scene_xml).stem
-    # Build readable base
+
     run_folder_name = (
         f"{timestamp}_"
         f"lr{config.learning_rate_position:.3g}_"
         f"it{config.iterations}_"
         f"{scene_short}"
     )
-    run_output_dir = base_output_dir / run_folder_name
-    # Override config.output_dir
-    config.output_dir = config.assets_root / run_output_dir
+
+    if config.output_dir_is_explicit:
+        config.output_dir = base_output_dir
+        run_folder_name = config.output_dir.name
+    else:
+        config.output_dir = base_output_dir / run_folder_name
+
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    save_run_config(output_dir=config.output_dir, config=config, renderer_settings=renderer_settings,
-                    run_folder_name=run_folder_name, )
+
+    save_run_config(
+        output_dir=config.output_dir,
+        config=config,
+        renderer_settings=renderer_settings,
+        run_folder_name=run_folder_name,
+    )
     # ------------------------------------------------------------------
     # 1. Initialize renderer once
     # ------------------------------------------------------------------
@@ -73,7 +90,7 @@ def main() -> None:
     image_preview_script = Path(__file__).parent / "image_preview.py"
     image_preview_process = None
     # dataset_path is usually relative to assets_root (directory or file)
-    dataset_path_full = (config.assets_root / config.dataset_path).resolve()
+    dataset_path_full = Path(config.dataset_path).expanduser().resolve()
     if image_preview_script.exists():
         preview_args = [
             sys.executable, str(image_preview_script), "--output-path", str(config.output_dir.resolve()),

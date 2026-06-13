@@ -356,7 +356,7 @@ def parse_arguments() -> argparse.Namespace:
             "When omitted, the latest matching reconstruction is selected from --optimization-output-root."
         ),
     )
-    parser.add_argument("--optimization-output-root", type=Path, default=Path("../Assets/OptimizationOutput"))
+    parser.add_argument("--optimization-output-root", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--run-dir", type=Path, default=None, help="Explicit run folder. Uses <run-dir>/<mesh-subdir>/<reconstruction-name>.")
     parser.add_argument("--index", type=int, default=0, help="0 = latest matching reconstruction, 1 = second latest, etc.")
     parser.add_argument("--mesh-subdir", type=str, default="mesh", help="Mesh folder inside each run directory.")
