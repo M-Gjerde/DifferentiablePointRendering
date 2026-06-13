@@ -64,7 +64,7 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Position-only exponential LR schedule.
     use_position_lr_schedule: bool = True
-    position_lr_scale_init: float = 5.0
+    position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.5
     position_lr_max_steps: int = 10_000
     # Global LR scheduling
@@ -74,10 +74,10 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 7500
     global_lr_max_steps: int = 15_000
 
-    depth_distort_weight: float = 100
+    depth_distort_weight: float = 500
     depth_distort_start_iteration: int = 300
-    normal_consistency_weight: float = 0.005
-    visibility_weighted_opacity_weight: float = 0.008
+    normal_consistency_weight: float = 0.01
+    visibility_weighted_opacity_weight: float = 0.005
 
     log_interval: int = 1
     save_interval: int = 5
@@ -93,7 +93,7 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 6.0e-3
+    densification_grad_abs_min: float = 8.0e-3
     densification_scale_min: float = 1.0e-2
     save_gradient_diagnostics: bool = True
     save_ply_files_interval: int = 25
@@ -109,7 +109,7 @@ class OptimizationConfig:
     min_points_to_keep_after_scale_prune: int = 1
 
     # Misc scheduling
-    reset_opacity_interval: int = 1000
+    reset_opacity_interval: int = 0
     reset_opacity_value: float = 0
     reset_scale_interval: int = 0
     reset_scale_shrink_factor: float = 1.0
@@ -132,8 +132,8 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_position = 0.0005
         factor_rotation = 0.05
         factor_scale = 0.0005
-        factor_albedo = 0.001
-        factor_opacity = 0.02
+        factor_albedo = 0.008
+        factor_opacity = 0.001
         factor_beta = 0.00
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")

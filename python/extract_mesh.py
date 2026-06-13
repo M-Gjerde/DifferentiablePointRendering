@@ -208,6 +208,66 @@ def write_points_with_forced_opacity(points_path: Path, output_path: Path) -> Pa
         property_values={"opacity": 1.0},
     )
 
+
+
+def validate_quaternion_surfel_ply(points_path: Path) -> None:
+    points_path = points_path.resolve()
+
+    required_vertex_properties = {
+        "x", "y", "z",
+        "rot_w", "rot_x", "rot_y", "rot_z",
+        "su", "sv",
+        "albedo_r", "albedo_g", "albedo_b",
+        "opacity", "beta", "shape", "power",
+    }
+
+    current_element = None
+    vertex_property_names: list[str] = []
+    ply_format: str | None = None
+
+    with points_path.open("r", encoding="utf-8") as file:
+        for line in file:
+            stripped = line.strip()
+            parts = stripped.split()
+
+            if not parts:
+                continue
+
+            if parts[0] == "format":
+                if len(parts) < 2:
+                    raise ValueError(f"Malformed PLY format line in {points_path}")
+                ply_format = parts[1]
+                continue
+
+            if parts[0] == "element":
+                if len(parts) < 3:
+                    raise ValueError(f"Malformed PLY element line in {points_path}: {stripped}")
+                current_element = parts[1]
+                continue
+
+            if parts[0] == "property" and current_element == "vertex":
+                if len(parts) < 3:
+                    raise ValueError(f"Malformed PLY property line in {points_path}: {stripped}")
+                vertex_property_names.append(parts[-1])
+                continue
+
+            if stripped == "end_header":
+                break
+
+    if ply_format != "ascii":
+        raise ValueError(
+            f"{points_path} is {ply_format!r}. The current quaternion surfel loader expects ASCII PLY."
+        )
+
+    available = set(vertex_property_names)
+    missing = sorted(required_vertex_properties - available)
+    if missing:
+        raise ValueError(
+            f"{points_path} is not in the quaternion surfel format. Missing vertex properties: "
+            + ", ".join(missing)
+            + ". Expected x y z rot_w rot_x rot_y rot_z su sv albedo_r albedo_g albedo_b opacity beta shape power."
+        )
+
 def load_renderer(run_dir: Path, points_path: Path):
     config_path = run_dir / "run_config.json"
     if not config_path.is_file():
@@ -536,6 +596,8 @@ if __name__ == "__main__":
             property_values=point_property_overrides,
         )
         print(f"Using property-overridden point cloud {points_path}")
+
+    validate_quaternion_surfel_ply(points_path)
 
     renderer, run_config = load_renderer(run_dir, points_path)
 

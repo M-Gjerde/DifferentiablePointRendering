@@ -90,6 +90,7 @@ def numpy_rgb01_and_alpha01_to_vtk_u8_rgba(name: str, rgb01: np.ndarray, alpha01
 
     return array_handle
 
+
 def normalize_quaternion_wxyz(q: np.ndarray) -> np.ndarray:
     q = np.asarray(q, dtype=np.float32)
     norm = np.linalg.norm(q, axis=1, keepdims=True)
@@ -98,6 +99,127 @@ def normalize_quaternion_wxyz(q: np.ndarray) -> np.ndarray:
     q = np.where(q[:, 0:1] < 0.0, -q, q)
     return q.astype(np.float32)
 
+
+def quaternion_wxyz_to_normal(quaternions: np.ndarray) -> np.ndarray:
+    quaternions = normalize_quaternion_wxyz(quaternions)
+    w = quaternions[:, 0]
+    x = quaternions[:, 1]
+    y = quaternions[:, 2]
+    z = quaternions[:, 3]
+
+    normals = np.empty((quaternions.shape[0], 3), dtype=np.float32)
+    normals[:, 0] = 2.0 * (x * z + w * y)
+    normals[:, 1] = 2.0 * (y * z - w * x)
+    normals[:, 2] = 1.0 - 2.0 * (x * x + y * y)
+
+    normal_lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    normals = normals / np.maximum(normal_lengths, 1.0e-12)
+    return normals.astype(np.float32)
+
+
+def correct_isolated_normal_flips(
+    positions: np.ndarray,
+    normals: np.ndarray,
+    neighbor_count: int,
+    flip_threshold: float,
+) -> tuple[np.ndarray, int]:
+    if positions.shape[0] <= 1 or neighbor_count <= 0:
+        return normals, 0
+
+    corrected_normals = np.asarray(normals, dtype=np.float32).copy()
+    normal_lengths = np.linalg.norm(corrected_normals, axis=1, keepdims=True)
+    corrected_normals = corrected_normals / np.maximum(normal_lengths, 1.0e-12)
+
+    point_set = vtk.vtkPoints()
+    point_set.SetDataTypeToFloat()
+    point_set.SetNumberOfPoints(int(positions.shape[0]))
+
+    for point_index in range(int(positions.shape[0])):
+        position = positions[point_index]
+        point_set.SetPoint(point_index, float(position[0]), float(position[1]), float(position[2]))
+
+    point_poly_data = vtk.vtkPolyData()
+    point_poly_data.SetPoints(point_set)
+
+    point_locator = vtk.vtkStaticPointLocator()
+    point_locator.SetDataSet(point_poly_data)
+    point_locator.BuildLocator()
+
+    effective_neighbor_count = min(int(neighbor_count), int(positions.shape[0]) - 1)
+    flip_mask = np.zeros(int(positions.shape[0]), dtype=bool)
+
+    for surfel_index in range(int(positions.shape[0])):
+        nearby_point_ids = vtk.vtkIdList()
+        point_locator.FindClosestNPoints(
+            effective_neighbor_count + 1,
+            (
+                float(positions[surfel_index, 0]),
+                float(positions[surfel_index, 1]),
+                float(positions[surfel_index, 2]),
+            ),
+            nearby_point_ids,
+        )
+
+        neighbor_indices: list[int] = []
+        for nearby_index in range(nearby_point_ids.GetNumberOfIds()):
+            point_id = int(nearby_point_ids.GetId(nearby_index))
+            if point_id != surfel_index:
+                neighbor_indices.append(point_id)
+
+        if not neighbor_indices:
+            continue
+
+        neighborhood_normal = np.mean(corrected_normals[neighbor_indices], axis=0)
+        neighborhood_normal_length = float(np.linalg.norm(neighborhood_normal))
+
+        if neighborhood_normal_length <= 1.0e-12:
+            continue
+
+        neighborhood_normal = neighborhood_normal / neighborhood_normal_length
+        local_alignment = float(np.dot(corrected_normals[surfel_index], neighborhood_normal))
+
+        if local_alignment < -abs(float(flip_threshold)):
+            flip_mask[surfel_index] = True
+
+    corrected_normals[flip_mask] *= -1.0
+    return corrected_normals.astype(np.float32), int(np.count_nonzero(flip_mask))
+
+
+def build_normal_poly_data(positions: np.ndarray, normals: np.ndarray, normal_lengths: np.ndarray) -> vtk.vtkPolyData:
+    points = vtk.vtkPoints()
+    points.SetDataTypeToFloat()
+    points.SetNumberOfPoints(int(positions.shape[0]))
+
+    normal_directions = vtk.vtkFloatArray()
+    normal_directions.SetName("normal_direction")
+    normal_directions.SetNumberOfComponents(3)
+    normal_directions.SetNumberOfTuples(int(positions.shape[0]))
+
+    normal_scales = vtk.vtkFloatArray()
+    normal_scales.SetName("normal_scale")
+    normal_scales.SetNumberOfComponents(3)
+    normal_scales.SetNumberOfTuples(int(positions.shape[0]))
+
+    for surfel_index in range(int(positions.shape[0])):
+        position = positions[surfel_index]
+        normal = normals[surfel_index]
+        normal = normal / max(float(np.linalg.norm(normal)), 1.0e-12)
+
+        normal_length = float(normal_lengths[surfel_index])
+
+        points.SetPoint(surfel_index, float(position[0]), float(position[1]), float(position[2]))
+        normal_directions.SetTuple3(surfel_index, float(normal[0]), float(normal[1]), float(normal[2]))
+        normal_scales.SetTuple3(surfel_index, normal_length, normal_length, normal_length)
+
+    poly_data = vtk.vtkPolyData()
+    poly_data.SetPoints(points)
+    poly_data.GetPointData().AddArray(normal_directions)
+    poly_data.GetPointData().AddArray(normal_scales)
+    poly_data.Modified()
+
+    return poly_data
+
+
 def load_surfels_from_ply(ply_path: Path, opacity_threshold: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     positions: List[Tuple[float, float, float]] = []
     quaternions: List[Tuple[float, float, float, float]] = []
@@ -105,33 +227,43 @@ def load_surfels_from_ply(ply_path: Path, opacity_threshold: float) -> Tuple[np.
     scale_v_values: List[float] = []
     colors: List[Tuple[float, float, float]] = []
     opacity_values: List[float] = []
+
     with ply_path.open("r", encoding="utf-8") as file_handle:
         header_finished = False
+
         for line in file_handle:
             if not header_finished:
                 if line.strip() == "end_header":
                     header_finished = True
                 continue
+
             parts = line.strip().split()
+
             if not parts or len(parts) < 16:
                 continue
+
             opacity_value = float(parts[12])
+
             if opacity_value < opacity_threshold:
                 continue
+
             positions.append((float(parts[0]), float(parts[1]), float(parts[2])))
             quaternions.append((float(parts[3]), float(parts[4]), float(parts[5]), float(parts[6])))
             scale_u_values.append(float(parts[7]))
             scale_v_values.append(float(parts[8]))
             colors.append((float(parts[9]), float(parts[10]), float(parts[11])))
             opacity_values.append(opacity_value)
+
     if len(positions) == 0:
         raise RuntimeError(f"No points loaded from '{ply_path}'. Try lowering --opacity-threshold.")
+
     positions_np = np.asarray(positions, dtype=np.float32)
     quaternions_np = normalize_quaternion_wxyz(np.asarray(quaternions, dtype=np.float32))
     scale_u_np = np.asarray(scale_u_values, dtype=np.float32)
     scale_v_np = np.asarray(scale_v_values, dtype=np.float32)
     colors_np = np.asarray(colors, dtype=np.float32).clip(0.0, 1.0)
     opacities_np = np.asarray(opacity_values, dtype=np.float32).clip(0.0, 1.0)
+
     return positions_np, quaternions_np, scale_u_np, scale_v_np, colors_np, opacities_np
 
 
@@ -228,6 +360,7 @@ def numpy_to_vtk_float_array(name: str, data: np.ndarray, num_components: int) -
 
     return array_handle
 
+
 def build_poly_data_from_ply(
     ply_path: Path,
     opacity_threshold: float,
@@ -242,18 +375,22 @@ def build_poly_data_from_ply(
         ply_path=ply_path,
         opacity_threshold=opacity_threshold,
     )
+
     ellipse_area = scale_u * scale_v
     ellipse_mask = ellipse_area >= float(area_threshold)
+
     positions = positions[ellipse_mask]
     quaternions = quaternions[ellipse_mask]
     scale_u = scale_u[ellipse_mask] * scale_multiplier
     scale_v = scale_v[ellipse_mask] * scale_multiplier
     colors = (colors[ellipse_mask] * float(color_multiplier)).clip(0.0, 1.0)
     opacities = opacities[ellipse_mask]
+
     if solid:
         opacities = np.ones_like(opacities)
     else:
         opacities = opacities * float(alpha_multiplier)
+
     if max_ellipses > 0 and positions.shape[0] > max_ellipses:
         positions = positions[:max_ellipses]
         quaternions = quaternions[:max_ellipses]
@@ -261,20 +398,81 @@ def build_poly_data_from_ply(
         scale_v = scale_v[:max_ellipses]
         colors = colors[:max_ellipses]
         opacities = opacities[:max_ellipses]
+
     print(f"Loaded {positions.shape[0]} visible surfels from: {ply_path.name}")
+
     points = vtk.vtkPoints()
     points.SetDataTypeToFloat()
     points.SetNumberOfPoints(int(positions.shape[0]))
+
     for point_index in range(int(positions.shape[0])):
         points.SetPoint(point_index, float(positions[point_index, 0]), float(positions[point_index, 1]), float(positions[point_index, 2]))
+
     poly_data = vtk.vtkPolyData()
     poly_data.SetPoints(points)
     poly_data.GetPointData().AddArray(numpy_to_vtk_float_array("orientation", quaternions, 4))
+
     scale_triples = np.stack([scale_u, scale_v, np.ones_like(scale_u)], axis=1).astype(np.float32)
     poly_data.GetPointData().AddArray(numpy_to_vtk_float_array("scale", scale_triples, 3))
     poly_data.GetPointData().AddArray(numpy_rgb01_and_alpha01_to_vtk_u8_rgba("color_rgba", colors, opacities))
     poly_data.Modified()
+
     return poly_data
+
+
+def build_normal_poly_data_from_ply(
+    ply_path: Path,
+    opacity_threshold: float,
+    area_threshold: float,
+    max_ellipses: int,
+    scale_multiplier: float,
+    normal_length: float,
+    correct_normal_flips: bool,
+    normal_neighbor_count: int,
+    normal_flip_threshold: float,
+) -> vtk.vtkPolyData:
+    positions, quaternions, scale_u, scale_v, colors, opacities = load_surfels_from_ply(
+        ply_path=ply_path,
+        opacity_threshold=opacity_threshold,
+    )
+
+    ellipse_area = scale_u * scale_v
+    ellipse_mask = ellipse_area >= float(area_threshold)
+
+    positions = positions[ellipse_mask]
+    quaternions = quaternions[ellipse_mask]
+    scale_u = scale_u[ellipse_mask] * scale_multiplier
+    scale_v = scale_v[ellipse_mask] * scale_multiplier
+
+    if max_ellipses > 0 and positions.shape[0] > max_ellipses:
+        positions = positions[:max_ellipses]
+        quaternions = quaternions[:max_ellipses]
+        scale_u = scale_u[:max_ellipses]
+        scale_v = scale_v[:max_ellipses]
+
+    normals = quaternion_wxyz_to_normal(quaternions)
+
+    if correct_normal_flips:
+        normals, flipped_normal_count = correct_isolated_normal_flips(
+            positions=positions,
+            normals=normals,
+            neighbor_count=normal_neighbor_count,
+            flip_threshold=normal_flip_threshold,
+        )
+        print(f"Corrected isolated normal flips: {flipped_normal_count}/{positions.shape[0]}")
+
+    surfel_linear_size = np.sqrt(np.maximum(scale_u * scale_v, 1.0e-12))
+
+    if normal_length > 0.0:
+        normal_lengths = float(normal_length) * surfel_linear_size
+    else:
+        normal_lengths = 2.0 * surfel_linear_size
+
+    return build_normal_poly_data(
+        positions=positions,
+        normals=normals,
+        normal_lengths=normal_lengths,
+    )
 
 
 def make_status_text_actor() -> vtk.vtkTextActor:
@@ -297,10 +495,12 @@ def update_status_text(
     points_dir: Path,
     color_multiplier: float,
     solid_opacity_enabled: bool,
+    correct_normal_flips_enabled: bool,
 ) -> None:
     current_ply_path = ply_paths[current_index]
     iteration = parse_iteration_from_ply_name(current_ply_path)
     opacity_mode = "solid" if solid_opacity_enabled else "file"
+    normal_correction_mode = "corrected" if correct_normal_flips_enabled else "raw"
 
     if iteration >= 0:
         iteration_text = f"iteration {iteration}"
@@ -308,7 +508,7 @@ def update_status_text(
         iteration_text = current_ply_path.stem
 
     text_actor.SetInput(
-        f"{current_index + 1}/{len(ply_paths)} | {iteration_text} | color x{color_multiplier:.2f} | opacity {opacity_mode}\n"
+        f"{current_index + 1}/{len(ply_paths)} | {iteration_text} | color x{color_multiplier:.2f} | opacity {opacity_mode} | normals {normal_correction_mode}\n"
         f"{current_ply_path.name}\n"
         f"{points_dir}"
     )
@@ -336,6 +536,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--color-boost", type=float, default=4.0, help="Initial multiplier applied to surfel RGB values.")
     parser.add_argument("--color-boost-step", type=float, default=0.5, help="Amount added/subtracted from color boost when pressing +/-.")
     parser.add_argument("--navigation-repeat-seconds", type=float, default=0.15, help="Repeat delay for held left/right navigation keys.")
+    parser.add_argument("--normal-length", type=float, default=0.0, help="Length of displayed normal vectors. If <= 0, use 2 * median max(su, sv).")
+    parser.add_argument("--show-normals", action="store_true", help="Show surfel normals at startup. Press N in the viewer to toggle.")
+    parser.add_argument("--normal-neighbor-count", type=int, default=32, help="Number of nearest surfels used when pressing F to correct isolated normal flips.")
+    parser.add_argument("--normal-flip-threshold", type=float, default=0.0, help="Flip a normal when its local neighborhood alignment is below -threshold.")
 
     return parser.parse_args()
 
@@ -357,6 +561,7 @@ def main() -> None:
     current_index = args.start_index
     color_multiplier = float(args.color_boost)
     solid_opacity_enabled = bool(args.solid)
+    correct_normal_flips_enabled = False
 
     queued_action: str | None = None
     held_navigation_action: str | None = None
@@ -366,7 +571,7 @@ def main() -> None:
 
     print(f"Using points folder: {points_dir}")
     print(f"Found {len(ply_paths)} PLY files.")
-    print("Controls: Right/Left arrow = refresh + next/previous PLY, Home/End = refresh + first/last, +/- = color boost, S = toggle solid/file opacity, r = reload current, q/Escape = quit")
+    print("Controls: Right/Left arrow = refresh + next/previous PLY, Home/End = refresh + first/last, +/- = color boost, S = toggle solid/file opacity, N = toggle normals, F = correct isolated normal flips, r = reload current, q/Escape = quit")
 
     poly_data = build_poly_data_from_ply(
         ply_path=ply_paths[current_index],
@@ -377,6 +582,18 @@ def main() -> None:
         alpha_multiplier=args.alpha,
         color_multiplier=color_multiplier,
         solid=solid_opacity_enabled,
+    )
+
+    normal_poly_data = build_normal_poly_data_from_ply(
+        ply_path=ply_paths[current_index],
+        opacity_threshold=args.opacity_threshold,
+        area_threshold=args.area_threshold,
+        max_ellipses=args.max_ellipses,
+        scale_multiplier=args.scale,
+        normal_length=args.normal_length,
+        correct_normal_flips=correct_normal_flips_enabled,
+        normal_neighbor_count=args.normal_neighbor_count,
+        normal_flip_threshold=args.normal_flip_threshold,
     )
 
     disk = vtk.vtkDiskSource()
@@ -405,8 +622,32 @@ def main() -> None:
     actor.GetProperty().SetAmbient(0.25)
     actor.GetProperty().SetDiffuse(0.75)
 
+    normal_arrow_source = vtk.vtkArrowSource()
+    normal_arrow_source.SetTipLength(0.30)
+    normal_arrow_source.SetTipRadius(0.10)
+    normal_arrow_source.SetTipResolution(16)
+    normal_arrow_source.SetShaftRadius(0.025)
+    normal_arrow_source.SetShaftResolution(8)
+    normal_arrow_source.Update()
+
+    normal_mapper = vtk.vtkGlyph3DMapper()
+    normal_mapper.SetInputData(normal_poly_data)
+    normal_mapper.SetSourceConnection(normal_arrow_source.GetOutputPort())
+    normal_mapper.SetOrientationArray("normal_direction")
+    normal_mapper.SetOrientationModeToDirection()
+    normal_mapper.SetScaleArray("normal_scale")
+    normal_mapper.SetScaleModeToScaleByVectorComponents()
+    normal_mapper.ScalingOn()
+    normal_mapper.ScalarVisibilityOff()
+
+    normal_actor = vtk.vtkActor()
+    normal_actor.SetMapper(normal_mapper)
+    normal_actor.GetProperty().SetColor(1.0, 0.5, 0.1)
+    normal_actor.SetVisibility(bool(args.show_normals))
+
     renderer = vtk.vtkRenderer()
     renderer.AddActor(actor)
+    renderer.AddActor(normal_actor)
     renderer.SetBackground(0.2, 0.2, 0.25)
     renderer.SetUseDepthPeeling(True)
     renderer.SetMaximumNumberOfPeels(100)
@@ -420,6 +661,7 @@ def main() -> None:
         points_dir=points_dir,
         color_multiplier=color_multiplier,
         solid_opacity_enabled=solid_opacity_enabled,
+        correct_normal_flips_enabled=correct_normal_flips_enabled,
     )
     renderer.AddActor2D(status_text_actor)
 
@@ -449,6 +691,7 @@ def main() -> None:
         nonlocal current_index
         nonlocal color_multiplier
         nonlocal solid_opacity_enabled
+        nonlocal correct_normal_flips_enabled
 
         current_ply_path = ply_paths[current_index]
 
@@ -463,8 +706,23 @@ def main() -> None:
             solid=solid_opacity_enabled,
         )
 
+        new_normal_poly_data = build_normal_poly_data_from_ply(
+            ply_path=current_ply_path,
+            opacity_threshold=args.opacity_threshold,
+            area_threshold=args.area_threshold,
+            max_ellipses=args.max_ellipses,
+            scale_multiplier=args.scale,
+            normal_length=args.normal_length,
+            correct_normal_flips=correct_normal_flips_enabled,
+            normal_neighbor_count=args.normal_neighbor_count,
+            normal_flip_threshold=args.normal_flip_threshold,
+        )
+
         mapper.SetInputData(new_poly_data)
         mapper.Modified()
+
+        normal_mapper.SetInputData(new_normal_poly_data)
+        normal_mapper.Modified()
 
         update_status_text(
             text_actor=status_text_actor,
@@ -473,6 +731,7 @@ def main() -> None:
             points_dir=points_dir,
             color_multiplier=color_multiplier,
             solid_opacity_enabled=solid_opacity_enabled,
+            correct_normal_flips_enabled=correct_normal_flips_enabled,
         )
 
         render_window.SetWindowName(f"{current_index + 1}/{len(ply_paths)} - {current_ply_path.name}")
@@ -483,7 +742,8 @@ def main() -> None:
         print(
             f"Showing {current_index + 1}/{len(ply_paths)}: {current_ply_path.name} "
             f"| color x{color_multiplier:.2f} "
-            f"| opacity {'solid' if solid_opacity_enabled else 'file'}"
+            f"| opacity {'solid' if solid_opacity_enabled else 'file'} "
+            f"| normals {'corrected' if correct_normal_flips_enabled else 'raw'}"
         )
 
     def refresh_ply_file_list_preserving_current() -> bool:
@@ -531,6 +791,7 @@ def main() -> None:
         nonlocal current_index
         nonlocal color_multiplier
         nonlocal solid_opacity_enabled
+        nonlocal correct_normal_flips_enabled
 
         if action == "next":
             refresh_ply_file_list_preserving_current()
@@ -575,6 +836,18 @@ def main() -> None:
         if action == "toggle_solid":
             solid_opacity_enabled = not solid_opacity_enabled
             print(f"Opacity mode: {'solid' if solid_opacity_enabled else 'file'}")
+            load_current_index()
+            return
+
+        if action == "toggle_normals":
+            normal_actor.SetVisibility(not normal_actor.GetVisibility())
+            print(f"Normals: {'on' if normal_actor.GetVisibility() else 'off'}")
+            render_window.Render()
+            return
+
+        if action == "toggle_normal_correction":
+            correct_normal_flips_enabled = not correct_normal_flips_enabled
+            print(f"Normal correction: {'corrected' if correct_normal_flips_enabled else 'raw'}")
             load_current_index()
             return
 
@@ -626,6 +899,14 @@ def main() -> None:
 
         if key_symbol in ("s", "S"):
             queue_action("toggle_solid")
+            return
+
+        if key_symbol in ("n", "N"):
+            queue_action("toggle_normals")
+            return
+
+        if key_symbol in ("m", "m"):
+            queue_action("toggle_normal_correction")
             return
 
         if key_symbol in ("q", "Q", "Escape"):
