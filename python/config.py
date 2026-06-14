@@ -53,7 +53,7 @@ class OptimizationConfig:
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
 
-    iterations: int = int(1e5)
+    iterations: int = int(1e4)
 
     optimizer_type: str = "sgd"
     learning_rate: float = 1.0
@@ -71,11 +71,11 @@ class OptimizationConfig:
     position_lr_scale_final: float = 0.5
     position_lr_max_steps: int = 10_000
     # Global LR scheduling
-    use_global_lr_schedule: bool = True
+    use_global_lr_schedule: bool = False
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.3
-    global_lr_start_iteration: int = 7500
-    global_lr_max_steps: int = 15_000
+    global_lr_scale_final: float = 0.5
+    global_lr_start_iteration: int = 7000
+    global_lr_max_steps: int = 10_000
 
     depth_distort_weight: float = 500
     depth_distort_start_iteration: int = 300
@@ -134,7 +134,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
     elif config.optimizer_type == "adam":
         factor_position = 0.0005
         factor_rotation = 0.05
-        factor_scale = 0.0005
+        factor_scale = 0.0008
         factor_albedo = 0.006
         factor_opacity = 0.0008
         factor_beta = 0.00
@@ -181,13 +181,11 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--pointcloud", dest="pointcloud_ply", type=str)
     parser.add_argument("--dataset-path", type=Path)
     parser.add_argument("--output", "--output-dir", dest="output_dir", type=Path)
-
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--optimizer", dest="optimizer_type", type=str, default="adam", choices=["adam", "sgd"])
     parser.add_argument("--log-interval", type=int)
     parser.add_argument("--save-interval", default=10, type=int)
     parser.add_argument("--device", type=str)
-
     parser.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float)
     parser.add_argument("--lr-pos", dest="learning_rate_position", type=float)
     parser.add_argument("--lr-rot", dest="learning_rate_rotation", type=float)
@@ -207,7 +205,6 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--global-lr-scale-final", type=float)
     parser.add_argument("--global-lr-start-iteration", type=int)
     parser.add_argument("--global-lr-max-steps", type=int)
-
     parser.add_argument("--normal-consistency-weight", dest="normal_consistency_weight", type=float)
     parser.add_argument("--depth-distort-weight", dest="depth_distort_weight", type=float)
     parser.add_argument("--depth-distort-start-iteration", type=int)
@@ -219,37 +216,22 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--prune-after", type=int)
     parser.add_argument("--densify-until-iteration", type=int)
     parser.add_argument("--densify-until-fraction", type=float)
-
-    parser.add_argument(
-        "--densification-verbose",
-        action=argparse.BooleanOptionalAction,
-        default=argparse.SUPPRESS,
-    )
-
+    parser.add_argument("--densification-verbose", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS, )
     parser.add_argument("--densification-grad-quantile", type=float)
     parser.add_argument("--densification-grad-abs-min", type=float)
     parser.add_argument("--save-gradient-diagnostics", action=argparse.BooleanOptionalAction,
                         default=argparse.SUPPRESS, )
-
     parser.add_argument("--densify-bsdf-floor", type=float)
     parser.add_argument("--densify-bsdf-gamma", type=float)
-
     parser.add_argument("--max-split-fraction", type=float)
-
-    parser.add_argument(
-        "--evsplit-preserve-integrated-opacity",
-        action=argparse.BooleanOptionalAction,
-        default=argparse.SUPPRESS,
-    )
-
+    parser.add_argument("--evsplit-preserve-integrated-opacity", action=argparse.BooleanOptionalAction,
+                        default=argparse.SUPPRESS, )
     parser.add_argument("--evsplit-min-scale", type=float)
-
     # Pruning
     parser.add_argument("--opacity-prune-threshold", type=float)
     parser.add_argument("--max-prune-fraction", type=float)
     parser.add_argument("--scale-prune-min-scale", type=float)
     parser.add_argument("--min-points-to-keep-after-scale-prune", type=int)
-
     # Misc scheduling
     parser.add_argument("--reset-opacity-interval", type=int)
     parser.add_argument("--reset-opacity-value", type=float)
