@@ -77,9 +77,9 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 7000
     global_lr_max_steps: int = 10_000
 
-    depth_distort_weight: float = 500
+    depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 300
-    normal_consistency_weight: float = 0.01
+    normal_consistency_weight: float = 0.005
     visibility_weighted_opacity_weight: float = 0.009
 
     log_interval: int = 1
@@ -87,16 +87,16 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 100
+    densification_interval: int = 75
     prune_interval: int = 25
-    densify_after: int = 300
-    prune_after: int = 300
+    densify_after: int = 200
+    prune_after: int = 200
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.8
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 8.0e-3
+    densification_grad_abs_min: float = 5.0e-3
     densification_scale_min: float = 1.0e-2
     save_gradient_diagnostics: bool = True
     save_ply_files_interval: int = 25
@@ -106,7 +106,7 @@ class OptimizationConfig:
     densify_bsdf_gamma: float = 1.0
 
     # Pruning
-    opacity_prune_threshold: float = 0.2
+    opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
     scale_prune_min_scale: float = 1.0e-3
     min_points_to_keep_after_scale_prune: int = 1
