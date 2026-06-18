@@ -12,7 +12,7 @@ from sympy import false
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
-    bounces: int = 1
+    bounces: int = 0
     adjoint_bounces: int = 1
     forward_passes: int = 1
     primal_shadow_rays: int = 1  # Li
@@ -53,7 +53,7 @@ class OptimizationConfig:
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
 
-    iterations: int = int(1e4)
+    iterations: int = int(5e4)
 
     optimizer_type: str = "sgd"
     learning_rate: float = 1.0
@@ -77,17 +77,26 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 7000
     global_lr_max_steps: int = 10_000
 
-    depth_distort_weight: float = 500
+    depth_distort_weight: float = 10
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
+    normal_consistency_weight: float = 0.0001
     visibility_weighted_opacity_weight: float = 0.008
 
     log_interval: int = 1
-    save_interval: int = 5
+    save_interval: int = 25
+    save_gradient_diagnostics: bool = False
+    # Iteration snapshot content
+    save_snapshot_rgb: bool = True
+    save_snapshot_median_depth: bool = True
+    save_snapshot_depth_distortion: bool = False
+    save_snapshot_visible_normal: bool = False
+    save_snapshot_normal_from_depth: bool = False
+    save_snapshot_grad: bool = False
+
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 100
+    densification_interval: int = 200
     prune_interval: int = 25
     densify_after: int = 200
     prune_after: int = 200
@@ -96,12 +105,11 @@ class OptimizationConfig:
 
     densification_verbose: bool = True
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 8.0e-3
-    densification_grad_abs_min_final: float = 5.5e-3
+    densification_grad_abs_min: float = 1.0e-2
+    densification_grad_abs_min_final: float = 6.0e-3
     densification_grad_abs_min_schedule_start_iteration: int = 2000
-    densification_grad_abs_min_schedule_end_iteration: int = 3000
+    densification_grad_abs_min_schedule_end_iteration: int = 5000
     densification_scale_min: float = 1.0e-2
-    save_gradient_diagnostics: bool = True
     save_ply_files_interval: int = 25
 
     # More densification on radiometrically darker primitives
@@ -122,6 +130,12 @@ class OptimizationConfig:
     reset_opacity_iterations: bool = False
     reset_scale_iterations: bool = False
     rebuild_bvh_interval: int = 1
+
+    # Camera batching
+    one_camera_per_iteration: bool = True
+    camera_sampling_mode: str = "round_robin"  # "round_robin" or "random"
+    camera_sampling_seed: int = 0
+    scale_single_camera_gradients: bool = True
 
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
@@ -187,7 +201,7 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--optimizer", dest="optimizer_type", type=str, default="adam", choices=["adam", "sgd"])
     parser.add_argument("--log-interval", type=int)
-    parser.add_argument("--save-interval", default=10, type=int)
+    parser.add_argument("--save-interval", type=int)
     parser.add_argument("--device", type=str)
     parser.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float)
     parser.add_argument("--lr-pos", dest="learning_rate_position", type=float)

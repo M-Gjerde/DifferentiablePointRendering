@@ -123,7 +123,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         try:
             for iteration in range(1, config.iterations + 1):
                 iteration_start = time.perf_counter()
-                forward_out = renderer.render_forward()
+
+                active_training_camera_ids = select_active_training_camera_ids(
+                    training_camera_ids=training_camera_ids,
+                    iteration=iteration,
+                    config=config,
+                )
+
+                if config.one_camera_per_iteration:
+                    active_camera_name = active_training_camera_ids[0]
+                    forward_out = renderer.render_forward(active_camera_name)
+                else:
+                    active_camera_name = "ALL_CAMERAS"
+                    forward_out = renderer.render_forward()
 
                 active_depth_distortion_weight = scheduled_regularizer_weight(
                     depth_distortion_base_weight,
@@ -137,7 +149,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 loss_state = compute_iteration_losses_and_adjoints(
                     forward_out=forward_out,
                     target_images=target_images,
-                    training_camera_ids=training_camera_ids,
+                    training_camera_ids=active_training_camera_ids,
                     depth_distortion_weight=active_depth_distortion_weight,
                     normal_consistency_weight=normal_consistency_weight,
                     visibility_weighted_opacity_weight=visibility_weighted_opacity_weight,
@@ -163,7 +175,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 if use_surface_regularizers:
                     surface_regularizer_components = renderer.render_surface_regularizers_backward(
-                        training_camera_ids,
+                        active_training_camera_ids,
                         loss_state["depth_distortion_grad_images"],
                         loss_state["visible_normal_adjoints"],
                         loss_state["depth_normal_adjoints"],
@@ -179,11 +191,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                                            iteration)
                     repair_nonfinite_gradient_dict_inplace("visibility_opacity_gradients", visibility_opacity_gradients,
                                                            iteration)
-                    surface_regularizer_gradients = sum_gradient_dicts(
-                        depth_regularizer_gradients,
-                        normal_regularizer_gradients,
-                        visibility_opacity_gradients,
-                    )
+                    surface_regularizer_gradients = sum_gradient_dicts(depth_regularizer_gradients,
+                                                                       normal_regularizer_gradients,
+                                                                       visibility_opacity_gradients)
 
                 photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
                 surface_regularizer_gradient_stats = (
@@ -198,6 +208,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     surface_regularizer_gradients,
                     iteration,
                 )
+
+                camera_batch_scale = (
+                    float(len(training_camera_ids)) / float(len(active_training_camera_ids))
+                    if config.one_camera_per_iteration and config.scale_single_camera_gradients
+                    else 1.0
+                )
+
+                if camera_batch_scale != 1.0:
+                    photo_gradients = scale_gradient_dict(photo_gradients, camera_batch_scale)
+                    surface_regularizer_gradients = scale_gradient_dict(
+                        surface_regularizer_gradients,
+                        camera_batch_scale,
+                    )
 
                 total_gradients = sum_gradient_dicts(photo_gradients, surface_regularizer_gradients)
 
@@ -350,7 +373,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     print(f"[Iter {iteration:04d}] Skipping densification/pruning due to opacity reset")
 
                 if indices_to_remove_list or densification_result is not None:
-                    old_params_for_optimizer = make_named_parameter_dict(                        positions,                        rotation_delta,                        scales,                        albedos,                       opacities,                        betas,                        powers,                    )
+                    old_params_for_optimizer = make_named_parameter_dict(positions, rotation_delta, scales, albedos,
+                                                                         opacities, betas, powers, )
                     old_optimizer_for_migration = optimizer
                     old_point_count_for_migration = int(positions.shape[0])
                     keep_mask_np = np.ones(old_point_count_for_migration, dtype=bool)
@@ -459,11 +483,32 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_position_grad_denom_np[:] = 0.0
                     densify_position_grad_vector_accum_np[:] = 0.0
 
-                save_iteration_outputs(
-                    output_dir=config.output_dir, iteration=iteration, save_interval=config.save_interval,
-                    final_iteration=config.iterations, all_camera_ids=all_camera_ids,
-                    forward_out=forward_out, adjoint_images=adjoint_images, renderer_settings=renderer_settings,
-                )
+                save_interval = int(config.save_interval)
+                should_save_iteration_outputs = (
+                            save_interval > 0 and (iteration % save_interval == 0 or iteration == config.iterations))
+
+                if should_save_iteration_outputs:
+                    if config.one_camera_per_iteration:
+                        save_forward_out = renderer.render_forward()
+                    else:
+                        save_forward_out = forward_out
+
+                    save_iteration_outputs(
+                        output_dir=config.output_dir,
+                        iteration=iteration,
+                        save_interval=config.save_interval,
+                        final_iteration=config.iterations,
+                        all_camera_ids=all_camera_ids,
+                        forward_out=save_forward_out,
+                        adjoint_images=adjoint_images,
+                        renderer_settings=renderer_settings,
+                        save_rgb=config.save_snapshot_rgb,
+                        save_median_depth=config.save_snapshot_median_depth,
+                        save_depth_distortion=config.save_snapshot_depth_distortion,
+                        save_visible_normal=config.save_snapshot_visible_normal,
+                        save_normal_from_depth=config.save_snapshot_normal_from_depth,
+                        save_grad=config.save_snapshot_grad,
+                    )
 
                 if save_ply_files_interval > 0 and iteration % save_ply_files_interval == 0:
                     save_iteration_point_cloud_snapshot(config.output_dir, iteration, positions, rotations,
@@ -477,7 +522,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 csv_writer.writerow(
                     [
                         iteration,
-                        "ALL_CAMERAS",
+                        active_camera_name,
                         loss_state["total_rgb_loss_value"],
                         loss_state["total_depth_distortion_loss_raw"],
                         loss_state["total_depth_distortion_loss_weighted"],

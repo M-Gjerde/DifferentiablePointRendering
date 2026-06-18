@@ -46,6 +46,27 @@ PARAMETER_NAMES = (
     "power",
 )
 
+def select_active_training_camera_ids(
+        training_camera_ids: list[str],
+        iteration: int,
+        config: OptimizationConfig,
+) -> list[str]:
+    if not training_camera_ids:
+        raise RuntimeError("No training cameras available.")
+
+    if not config.one_camera_per_iteration:
+        return training_camera_ids
+
+    if config.camera_sampling_mode == "round_robin":
+        camera_index = (iteration - 1) % len(training_camera_ids)
+        return [training_camera_ids[camera_index]]
+
+    if config.camera_sampling_mode == "random":
+        rng = np.random.default_rng(config.camera_sampling_seed + iteration)
+        camera_index = int(rng.integers(0, len(training_camera_ids)))
+        return [training_camera_ids[camera_index]]
+
+    raise RuntimeError(f"Unknown camera_sampling_mode: {config.camera_sampling_mode}")
 
 def as_config_float(value: Any) -> float:
     if isinstance(value, tuple):
@@ -1865,70 +1886,101 @@ def save_iteration_outputs(
         forward_out: Dict[str, dict],
         adjoint_images: Dict[str, Any],
         renderer_settings: RendererSettingsConfig,
+        save_rgb: bool = True,
+        save_median_depth: bool = True,
+        save_depth_distortion: bool = False,
+        save_visible_normal: bool = False,
+        save_normal_from_depth: bool = False,
+        save_grad: bool = False,
 ) -> None:
+    save_interval = int(save_interval)
+
+    if save_interval <= 0:
+        return
+
     if iteration % save_interval != 0 and iteration != final_iteration:
         return
 
     for camera_name in all_camera_ids:
         camera_base_dir = output_dir / camera_name
-        camera_render_dir = camera_base_dir / "render"
-        camera_grad_dir = camera_base_dir / "grad"
-        camera_depth_dir = camera_base_dir / "depth_distortion"
-        camera_visible_normal_dir = camera_base_dir / "visible_normal"
-        camera_depth_normal_dir = camera_base_dir / "normal_from_depth"
-        camera_median_depth_dir = camera_base_dir / "median_depth"
 
-        camera_render_dir.mkdir(parents=True, exist_ok=True)
-        camera_grad_dir.mkdir(parents=True, exist_ok=True)
-        camera_depth_dir.mkdir(parents=True, exist_ok=True)
-        camera_visible_normal_dir.mkdir(parents=True, exist_ok=True)
-        camera_depth_normal_dir.mkdir(parents=True, exist_ok=True)
-        camera_median_depth_dir.mkdir(parents=True, exist_ok=True)
+        if save_rgb:
+            camera_render_dir = camera_base_dir / "render"
+            camera_render_dir.mkdir(parents=True, exist_ok=True)
 
-        save_render(
-            camera_render_dir / f"{iteration:04d}_render.png",
-            get_forward_rgb(forward_out, camera_name),
-        )
-
-        save_depth_distortion_snapshot(
-            camera_depth_dir / f"{iteration:04d}_depth_distortion.png",
-            get_forward_depth_distortion(forward_out, camera_name),
-            quantile=0.99,
-            save_npy=False,
-        )
-
-        save_median_depth_snapshot(
-            camera_median_depth_dir / f"{iteration:04d}_median_depth.png",
-            get_forward_median_depth(forward_out, camera_name),
-            quantile=0.99,
-            save_npy=False,
-        )
-
-        save_normal_map_snapshot(
-            camera_visible_normal_dir / f"{iteration:04d}_visible_normal.png",
-            get_forward_visible_normal(forward_out, camera_name),
-            save_npy=False,
-        )
-
-        save_normal_map_snapshot(
-            camera_depth_normal_dir / f"{iteration:04d}_normal_from_depth.png",
-            get_forward_normal_from_depth(forward_out, camera_name),
-            save_npy=False,
-        )
-
-        adjoint_source_images = adjoint_images.get("adjoint_source")
-        if adjoint_source_images is not None and camera_name in adjoint_source_images:
-            grad_img_np = np.asarray(adjoint_source_images[camera_name], dtype=np.float32, order="C")
-            grad_img_np = np.nan_to_num(grad_img_np, nan=0.0, posinf=0.0, neginf=0.0)
-
-            save_gradient_sign_png_py(
-                camera_grad_dir / f"{iteration:04d}_grad_099.png",
-                grad_img_np,
-                adjoint_spp=renderer_settings.adjoint_passes,
-                abs_quantile=0.999,
-                flip_y=False,
+            save_render(
+                camera_render_dir / f"{iteration:04d}_render.png",
+                get_forward_rgb(forward_out, camera_name),
             )
 
+        if save_median_depth:
+            camera_median_depth_dir = camera_base_dir / "median_depth"
+            camera_median_depth_dir.mkdir(parents=True, exist_ok=True)
+
+            save_median_depth_snapshot(
+                camera_median_depth_dir / f"{iteration:04d}_median_depth.png",
+                get_forward_median_depth(forward_out, camera_name),
+                quantile=0.99,
+                save_npy=False,
+            )
+
+        if save_depth_distortion:
+            camera_depth_dir = camera_base_dir / "depth_distortion"
+            camera_depth_dir.mkdir(parents=True, exist_ok=True)
+
+            save_depth_distortion_snapshot(
+                camera_depth_dir / f"{iteration:04d}_depth_distortion.png",
+                get_forward_depth_distortion(forward_out, camera_name),
+                quantile=0.99,
+                save_npy=False,
+            )
+
+        if save_visible_normal:
+            camera_visible_normal_dir = camera_base_dir / "visible_normal"
+            camera_visible_normal_dir.mkdir(parents=True, exist_ok=True)
+
+            save_normal_map_snapshot(
+                camera_visible_normal_dir / f"{iteration:04d}_visible_normal.png",
+                get_forward_visible_normal(forward_out, camera_name),
+                save_npy=False,
+            )
+
+        if save_normal_from_depth:
+            camera_depth_normal_dir = camera_base_dir / "normal_from_depth"
+            camera_depth_normal_dir.mkdir(parents=True, exist_ok=True)
+
+            save_normal_map_snapshot(
+                camera_depth_normal_dir / f"{iteration:04d}_normal_from_depth.png",
+                get_forward_normal_from_depth(forward_out, camera_name),
+                save_npy=False,
+            )
+
+        if save_grad:
+            adjoint_source_images = adjoint_images.get("adjoint_source")
+
+            if adjoint_source_images is not None and camera_name in adjoint_source_images:
+                camera_grad_dir = camera_base_dir / "grad"
+                camera_grad_dir.mkdir(parents=True, exist_ok=True)
+
+                grad_img_np = np.asarray(
+                    adjoint_source_images[camera_name],
+                    dtype=np.float32,
+                    order="C",
+                )
+                grad_img_np = np.nan_to_num(
+                    grad_img_np,
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                )
+
+                save_gradient_sign_png_py(
+                    camera_grad_dir / f"{iteration:04d}_grad_099.png",
+                    grad_img_np,
+                    adjoint_spp=renderer_settings.adjoint_passes,
+                    abs_quantile=0.999,
+                    flip_y=False,
+                )
 
 def write_metrics_header(csv_writer: csv.writer) -> None:
     csv_writer.writerow(

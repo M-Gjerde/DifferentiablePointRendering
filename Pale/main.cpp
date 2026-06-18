@@ -878,13 +878,13 @@ int main(int argc, char **argv) {
         Pale::PathTracerSettings settings{};
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 1e6;
-        settings.maxBounces = 1;
+        settings.maxBounces = 0;
         settings.maxAdjointBounces = 1;
 
         settings.numForwardPasses = 1;
         settings.numShadowRays = 1;
         settings.numAdjointShadowRays = 1;
-        settings.adjointSamplesPerPixel = 64;
+        settings.adjointSamplesPerPixel = 1;
 
         settings.renderDebugGradientImages = true;
         settings.enableAdjointDirectLight = true;
@@ -907,7 +907,9 @@ int main(int argc, char **argv) {
         tracer.renderForward(sensors);
         saveForwardImagesAndAuxiliaryBuffers(deviceSelector, sensors, outputRoot);
 
+
         {
+            /*
             auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
             if (entities.empty()) {
                 throw std::runtime_error("debug gradients: scene has no PointCloudComponent");
@@ -944,6 +946,7 @@ int main(int argc, char **argv) {
             sensors = Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
             tracer.renderForward(sensors);
             saveForwardImagesAndAuxiliaryBuffers(deviceSelector, sensors, outputRoot, "_debug");
+            */
 
             std::vector<Pale::SensorGPU> adjointSensors = makeAdjointSensorSubset(sensors);
 
@@ -1073,6 +1076,7 @@ int main(int argc, char **argv) {
 
             Pale::Log::PA_INFO("Surface Regularizer Backward Pass...");
 
+            /*
             if (settings.renderDebugGradientImages) {
                 savePointGradientStatsAsColoredPlys(
                     deviceSelector,
@@ -1081,6 +1085,7 @@ int main(int argc, char **argv) {
                     outputRoot / "gradient_stats",
                     static_cast<uint32_t>(adjointSensors.size()));
             }
+            */
 
             std::vector<Pale::DebugImages> surfaceDebugImages(sensors.size());
 
@@ -1141,25 +1146,25 @@ int main(int argc, char **argv) {
             logSinglePointGradient(
                 deviceSelector,
                 photoGradients,
-                debugSurfelIndex,
+                settings.surfelIndexForDebugImages,
                 "photo");
 
             logSinglePointGradient(
                 deviceSelector,
                 depthDistortionGradients,
-                debugSurfelIndex,
+                settings.surfelIndexForDebugImages,
                 "depth distortion");
 
             logSinglePointGradient(
                 deviceSelector,
                 normalConsistencyGradients,
-                debugSurfelIndex,
+                settings.surfelIndexForDebugImages,
                 "normal consistency");
 
             logSinglePointGradient(
                 deviceSelector,
                 visibilityOpacityGradients,
-                debugSurfelIndex,
+                settings.surfelIndexForDebugImages,
                 "visibility opacity");
 
             for (std::size_t sensorIndex = 0; sensorIndex < adjointSensors.size(); ++sensorIndex) {

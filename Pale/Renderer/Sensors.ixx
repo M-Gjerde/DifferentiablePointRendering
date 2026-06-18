@@ -24,11 +24,14 @@ export namespace Pale {
         }
         sensorDevices.reserve(cameraList.size());
 
-        for (const auto &camera: cameraList) {
+        for (std::size_t cameraIndex = 0; cameraIndex < cameraList.size(); ++cameraIndex) {
+            const auto& camera = cameraList[cameraIndex];
+
             if (simulateAdjoint && !camera.useForAdjointPass)
                 continue;
             SensorGPU sensorGpu{};
             copyName(sensorGpu.name, camera.name);
+
             const size_t pixelCount = static_cast<size_t>(camera.width) * static_cast<size_t>(camera.height);
             float4 *deviceHighDynamicRangeFramebuffer = reinterpret_cast<float4 *>(sycl::malloc_device(
                 pixelCount * sizeof(float4), queue));
@@ -117,6 +120,7 @@ export namespace Pale {
             sensorGpu.visibleNormalAdjointBuffer = visibleNormalAdjointBuffer;
             sensorGpu.width = camera.width;
             sensorGpu.height = camera.height;
+            sensorGpu.cameraSlotIndex = static_cast<uint32_t>(cameraIndex);
 
             sensorDevices.push_back(sensorGpu);
         }

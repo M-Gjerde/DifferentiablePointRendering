@@ -9,6 +9,7 @@ namespace Pale {
         CameraGPU camera; // camera parameters
         float4 *framebuffer = nullptr; // RAW framebuffer
         uint32_t width{}, height{};
+        uint32_t cameraSlotIndex; // original scene.xml camera index
 
         float gammaCorrection = 1.0f;
         float exposureCorrection = 1.0f;

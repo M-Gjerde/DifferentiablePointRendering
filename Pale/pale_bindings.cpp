@@ -238,16 +238,13 @@ public:
     py::dict render_forward(std::string cameraName) {
         py::gil_scoped_release release;
 
-        std::vector<Pale::SensorGPU> selectedSensors;
-        for (const auto &sensor: sensorsForward) {
-            if (cameraName == sensor.name) {
-                selectedSensors.push_back(sensor);
-            }
-        }
-        if (cameraName.empty()) {
-            selectedSensors = sensorsForward;
-        }
+        std::vector<Pale::SensorGPU> selectedSensors =
+            selectSensorsByName(cameraName.empty()
+                ? std::optional<std::string>{}
+                : std::optional<std::string>{cameraName});
+
         pathTracer->renderForward(selectedSensors);
+
         auto queue = deviceSelector->getQueue();
 
         struct HostImage {
@@ -2485,6 +2482,29 @@ public:
         }
         pointGeometry.quat[index] = normalizeQuaternionOrIdentity(glm::angleAxis(glm::radians(angleDegrees), axis));
         rebuild_bvh();
+    }
+
+    std::vector<Pale::SensorGPU> selectSensorsByName(const std::optional<std::string>& cameraName) const {
+        if (!cameraName.has_value() || cameraName->empty()) {
+            return sensorsForward;
+        }
+
+        std::vector<Pale::SensorGPU> selectedSensors;
+
+        for (const Pale::SensorGPU& sensor : sensorsForward) {
+            const std::string sensorName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
+
+            if (sensorName == cameraName.value()) {
+                selectedSensors.push_back(sensor);
+                break;
+            }
+        }
+
+        if (selectedSensors.empty()) {
+            throw std::runtime_error("Camera not found: " + cameraName.value());
+        }
+
+        return selectedSensors;
     }
 
     void set_point_scale(float newScale, float axis, int index) {

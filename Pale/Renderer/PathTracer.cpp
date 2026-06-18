@@ -23,8 +23,12 @@ namespace Pale {
     void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
         m_sceneGPU = scene;
 
-        const uint32_t requiredCapacity = m_settings.photonsPerLaunch;
-        ensureRayCapacity(requiredCapacity);
+        uint32_t requiredRayQueueCapacity = m_settings.photonsPerLaunch;
+        for (const CameraGPU& camera : bp.cameras()) {
+            const uint32_t cameraPixelCount = camera.width * camera.height;
+            requiredRayQueueCapacity = std::max(requiredRayQueueCapacity, cameraPixelCount);
+        }
+        ensureRayCapacity(requiredRayQueueCapacity);
 
         if (m_settings.integratorKind == IntegratorKind::photonMapping) {
             freePhotonMap();
@@ -105,14 +109,15 @@ namespace Pale {
                 sycl::malloc_device<MeasurementGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated sizeMeasurementEventsBytes: {}", Utils::formatBytes(sizeMeasurementEventsBytes));
 
+        const uint32_t measurementTwoPointEventCapacity =
+                m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 2u;
         const std::size_t sizeMeasurementEventsTwoPointBytes =
-                sizeof(MeasurementGradientEventXY) * m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 2;
+                sizeof(MeasurementGradientEventXY) * measurementTwoPointEventCapacity;
         m_intermediates.measurementTwoPointEvents =
-                sycl::malloc_device<MeasurementGradientEventXY>(m_rayQueueCapacity, m_queue);
-        Log::PA_TRACE("Allocated sizeMeasurementEventsTwoPointBytes: {}",
-                      Utils::formatBytes(sizeMeasurementEventsTwoPointBytes));
-        m_intermediates.maxMeasurementTwoPointEventCount = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 2;
-
+                sycl::malloc_device<MeasurementGradientEventXY>(
+                    measurementTwoPointEventCapacity,
+                    m_queue);
+        m_intermediates.maxMeasurementTwoPointEventCount = measurementTwoPointEventCapacity;
         const std::size_t cameraAttachedBridgeEventSize =
                 sizeof(MaterialVertexGradientEvent) * m_rayQueueCapacity;
         m_intermediates.materialVertexEvents =

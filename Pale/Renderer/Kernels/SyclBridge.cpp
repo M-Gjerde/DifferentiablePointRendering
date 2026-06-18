@@ -113,9 +113,6 @@ namespace Pale {
             ScopedTimer timer("Camera Gather for " + std::to_string(pkg.numSensors) + " cameras", spdlog::level::debug);
 
             for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                //if (pkg.sensors[cameraIndex].name[6] != '1')
-                //    continue;
-
                 ScopedTimer timer(
                     "launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" +
                     std::to_string(pkg.numSensors), spdlog::level::debug);
