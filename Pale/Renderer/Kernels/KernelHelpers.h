@@ -178,12 +178,11 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline float3 safeInvDir(const float3 &dir) {
-        constexpr float EPS = 1e-6f; // treat anything smaller as “zero”
         constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
         float3 inv;
-        inv.x() = (abs(dir.x()) < EPS) ? HUGE : 1.f / dir.x();
-        inv.y() = (abs(dir.y()) < EPS) ? HUGE : 1.f / dir.y();
-        inv.z() = (abs(dir.z()) < EPS) ? HUGE : 1.f / dir.z();
+        inv.x() = (abs(dir.x()) < RayEpsilon) ? HUGE : 1.f / dir.x();
+        inv.y() = (abs(dir.y()) < RayEpsilon) ? HUGE : 1.f / dir.y();
+        inv.z() = (abs(dir.z()) < RayEpsilon) ? HUGE : 1.f / dir.z();
         return inv;
     }
 
@@ -238,8 +237,7 @@ namespace Pale {
         if (tmax < 0.0f) return false;
         /* 3.  Already found a closer hit in the SAME SPACE                   */
         if (tmin > tMaxLimit) return false;
-        constexpr float kEps = 1e-6f;
-        tEntry = max(tmin, kEps); // clamp if origin is inside
+        tEntry = max(tmin, RayEpsilon); // clamp if origin is inside
         return true;
     }
 
