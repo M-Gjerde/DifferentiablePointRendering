@@ -528,7 +528,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max-ellipses", type=int, default=0)
     parser.add_argument("--disk-resolution", type=int, default=16)
     parser.add_argument("--alpha", type=float, default=0.95)
-    parser.add_argument("--scale", type=float, default=1.0)
+    parser.add_argument("--scale", type=float, default=0.6)
     parser.add_argument("--solid", action="store_true", help="Start with solid opacity enabled. Press S in the viewer to toggle.")
     parser.add_argument("--window-width", type=int, default=1200)
     parser.add_argument("--window-height", type=int, default=900)
