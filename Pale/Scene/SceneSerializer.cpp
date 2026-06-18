@@ -6,6 +6,7 @@ module;
 #include <pugixml.hpp>
 #include <filesystem>
 #include <optional>
+#include <cmath>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -66,23 +67,6 @@ namespace Pale {
             return parseXmlBoolValue(floatNode.attribute("value").as_string(), defaultValue);
         }
         return defaultValue;
-    }
-
-    static float computeFovYDegrees(float fovDegrees, const std::string &fovAxis,
-                                    int filmWidth, int filmHeight) {
-        const float aspect = static_cast<float>(filmWidth) / static_cast<float>(filmHeight);
-        if (fovAxis == "y") return fovDegrees;
-        if (fovAxis == "x") {
-            const float fovXrad = glm::radians(fovDegrees);
-            const float fovYrad = 2.0f * std::atan(std::tan(fovXrad * 0.5f) / aspect);
-            return glm::degrees(fovYrad);
-        }
-        if (filmWidth <= filmHeight) {
-            const float fovXrad = glm::radians(fovDegrees);
-            const float fovYrad = 2.0f * std::atan(std::tan(fovXrad * 0.5f) / aspect);
-            return glm::degrees(fovYrad);
-        }
-        return fovDegrees;
     }
 
     static std::optional<float> readFloatByName(const pugi::xml_node& parentNode,
@@ -169,21 +153,14 @@ namespace Pale {
             const float nearClip = sensor.find_child_by_attribute("float", "name", "near_clip").attribute("value").as_float(0.01f);
             const float farClip  = sensor.find_child_by_attribute("float", "name", "far_clip").attribute("value").as_float(1000.0f);
 
-            // Optional explicit pinhole intrinsics (pixels)
+            // Required explicit pinhole intrinsics (pixels) for perspective cameras.
             const std::optional<float> fxOpt = readFloatByName(sensor, "float", "name", "fx");
             const std::optional<float> fyOpt = readFloatByName(sensor, "float", "name", "fy");
             const std::optional<float> cxOpt = readFloatByName(sensor, "float", "name", "cx");
             const std::optional<float> cyOpt = readFloatByName(sensor, "float", "name", "cy");
 
-            const bool hasPinholeIntrinsics = fxOpt.has_value() && fyOpt.has_value() && cxOpt.has_value() && cyOpt.has_value();
-
-            // FOV fallback (legacy)
-            const float fovDegreesRaw =
-                sensor.find_child_by_attribute("float", "name", "fov").attribute("value").as_float(45.0f);
-            const std::string fovAxis =
-                sensor.find_child_by_attribute("string", "name", "fov_axis").attribute("value").as_string("smaller");
-
-            const float fovYDegrees = computeFovYDegrees(fovDegreesRaw, fovAxis, filmWidth, filmHeight);
+            const bool hasPinholeIntrinsics =
+                fxOpt.has_value() && fyOpt.has_value() && cxOpt.has_value() && cyOpt.has_value();
 
             // to_world via <lookat>
             const auto toWorld = sensor.child("transform");
@@ -204,56 +181,55 @@ namespace Pale {
             glm::mat4 projectionMatrix(1.0f);
 
             if (cameraComponent.projectionType == CameraComponent::Type::Perspective) {
-                if (hasPinholeIntrinsics) {
-                    const float fx = *fxOpt;
-                    const float fy = *fyOpt;
-                    const float cx = *cxOpt;
-                    const float cy = *cyOpt;
-
-                    // Store pinhole intrinsics in component and camera
-                    cameraComponent.pinholeIntrinsics.isValid = true;
-                    cameraComponent.pinholeIntrinsics.fx = fx;
-                    cameraComponent.pinholeIntrinsics.fy = fy;
-                    cameraComponent.pinholeIntrinsics.cx = cx;
-                    cameraComponent.pinholeIntrinsics.cy = cy;
-
-                    cameraComponent.camera.setPinholeIntrinsics(fx, fy, cx, cy);
-
-                    // Off-center frustum from intrinsics:
-                    // u = fx * x / (-z) + cx
-                    // v = fy * y / (-z) + cy
-                    // Here we assume:
-                    // - camera forward is -Z
-                    // - pixel coordinates: u right, v down
-                    // - camera space: +Y up
-                    //
-                    // Convert pixel extents to camera-plane extents at near:
-                    const float left   = -(cx) * nearClip / fx;
-                    const float right  = (static_cast<float>(filmWidth) - cx) * nearClip / fx;
-
-                    // y: v grows downward; camera-space y grows upward => top uses +cy, bottom uses -(H-cy)
-                    const float top    = (cy) * nearClip / fy;
-                    const float bottom = -(static_cast<float>(filmHeight) - cy) * nearClip / fy;
-
-                    projectionMatrix = perspectiveOffCenterRH_ZO(left, right, bottom, top, nearClip, farClip);
-
-                    // For debug/legacy UI, keep a consistent fovy value too:
-                    cameraComponent.fovy = fovYDegrees;
-                } else {
-                    // Legacy symmetric projection from fov
-                    cameraComponent.pinholeIntrinsics.isValid = false;
-
-                    const float fovYRadians = glm::radians(fovYDegrees);
-                    projectionMatrix = glm::perspectiveFovRH_ZO(
-                        fovYRadians,
-                        static_cast<float>(filmWidth),
-                        static_cast<float>(filmHeight),
-                        nearClip,
-                        farClip
+                if (!hasPinholeIntrinsics) {
+                    Log::PA_INFO(
+                        "Perspective sensor '{}' is missing required pinhole intrinsics: fx, fy, cx, cy",
+                        name
                     );
-
-                    cameraComponent.fovy = fovYDegrees;
+                    return false;
                 }
+
+                const float fx = *fxOpt;
+                const float fy = *fyOpt;
+                const float cx = *cxOpt;
+                const float cy = *cyOpt;
+
+                if (filmWidth <= 0 || filmHeight <= 0 || fx <= 0.0f || fy <= 0.0f ||
+                    !std::isfinite(fx) || !std::isfinite(fy) || !std::isfinite(cx) || !std::isfinite(cy)) {
+                    Log::PA_INFO(
+                        "Perspective sensor '{}' has invalid pinhole camera parameters: width={}, height={}, fx={}, fy={}, cx={}, cy={}",
+                        name, filmWidth, filmHeight, fx, fy, cx, cy
+                    );
+                    return false;
+                }
+
+                // Store pinhole intrinsics in component and camera.
+                cameraComponent.pinholeIntrinsics.isValid = true;
+                cameraComponent.pinholeIntrinsics.fx = fx;
+                cameraComponent.pinholeIntrinsics.fy = fy;
+                cameraComponent.pinholeIntrinsics.cx = cx;
+                cameraComponent.pinholeIntrinsics.cy = cy;
+
+                cameraComponent.camera.setPinholeIntrinsics(fx, fy, cx, cy);
+
+                // Off-center frustum from intrinsics:
+                // u = fx * x / (-z) + cx
+                // v = fy * y / (-z) + cy
+                // Assumptions:
+                // - camera forward is -Z
+                // - pixel coordinates: u right, v down
+                // - camera space: +Y up
+                const float left = -cx * nearClip / fx;
+                const float right = (static_cast<float>(filmWidth) - cx) * nearClip / fx;
+                const float top = cy * nearClip / fy;
+                const float bottom = -(static_cast<float>(filmHeight) - cy) * nearClip / fy;
+
+                projectionMatrix = perspectiveOffCenterRH_ZO(left, right, bottom, top, nearClip, farClip);
+
+                // Derived only for legacy UI/debug display. It is not used for camera loading.
+                cameraComponent.fovy = glm::degrees(
+                    2.0f * std::atan(static_cast<float>(filmHeight) / (2.0f * fy))
+                );
             } else {
                 // Orthographic handling (unchanged)
                 cameraComponent.pinholeIntrinsics.isValid = false;

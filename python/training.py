@@ -131,6 +131,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     start_iteration=depth_distortion_start_iteration,
                 )
 
+                active_densification_grad_abs_min = scheduled_densification_grad_abs_min(config, iteration)
                 use_depth_distortion_gradients = active_depth_distortion_weight != 0.0
 
                 loss_state = compute_iteration_losses_and_adjoints(
@@ -232,6 +233,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         f"gradient_stats_keys={list(photo_gradient_surfel_stats.keys())} "
                         f"position_per_camera_shape={None if position_per_camera_np is None else np.asarray(position_per_camera_np).shape} "
                         f"count_shape={None if position_record_count_per_camera_np is None else np.asarray(position_record_count_per_camera_np).shape}"
+                        f"grad_abs_min={active_densification_grad_abs_min:.3e}"
+
                     )
 
                 update_densification_statistics(
@@ -317,7 +320,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_after=densify_after, densify_until_iteration=densify_until_iteration,
                         densification_interval=densification_interval, densification_verbose=densification_verbose,
                         densification_grad_quantile=densification_grad_quantile,
-                        densification_grad_abs_min=densification_grad_abs_min,
+                        densification_grad_abs_min=active_densification_grad_abs_min,
                     )
 
                     if (

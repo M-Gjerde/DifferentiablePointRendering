@@ -824,6 +824,28 @@ def assign_numpy_gradients_to_tensors(
 
 
 
+def scheduled_densification_grad_abs_min(config: OptimizationConfig, iteration: int) -> float:
+    initial_threshold = float(config.densification_grad_abs_min)
+    final_threshold_value = getattr(config, "densification_grad_abs_min_final", None)
+
+    if final_threshold_value is None:
+        return initial_threshold
+
+    final_threshold = float(final_threshold_value)
+    start_iteration = int(config.densification_grad_abs_min_schedule_start_iteration)
+    end_iteration = int(config.densification_grad_abs_min_schedule_end_iteration)
+
+    if end_iteration <= start_iteration:
+        return final_threshold if iteration >= start_iteration else initial_threshold
+
+    if iteration <= start_iteration:
+        return initial_threshold
+
+    if iteration >= end_iteration:
+        return final_threshold
+
+    interpolation = float(iteration - start_iteration) / float(end_iteration - start_iteration)
+    return initial_threshold + interpolation * (final_threshold - initial_threshold)
 
 def save_gradients_snapshot(
         output_dir: Path,

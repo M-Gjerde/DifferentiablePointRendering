@@ -77,17 +77,17 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 7000
     global_lr_max_steps: int = 10_000
 
-    depth_distort_weight: float = 100
-    depth_distort_start_iteration: int = 300
-    normal_consistency_weight: float = 0.005
-    visibility_weighted_opacity_weight: float = 0.009
+    depth_distort_weight: float = 500
+    depth_distort_start_iteration: int = 0
+    normal_consistency_weight: float = 0.01
+    visibility_weighted_opacity_weight: float = 0.008
 
     log_interval: int = 1
     save_interval: int = 5
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 75
+    densification_interval: int = 100
     prune_interval: int = 25
     densify_after: int = 200
     prune_after: int = 200
@@ -95,8 +95,11 @@ class OptimizationConfig:
     densify_until_fraction: float = 0.8
 
     densification_verbose: bool = True
-    densification_grad_quantile: float = 0.0,
-    densification_grad_abs_min: float = 5.0e-3
+    densification_grad_quantile: float = 0.0
+    densification_grad_abs_min: float = 8.0e-3
+    densification_grad_abs_min_final: float = 5.5e-3
+    densification_grad_abs_min_schedule_start_iteration: int = 2000
+    densification_grad_abs_min_schedule_end_iteration: int = 3000
     densification_scale_min: float = 1.0e-2
     save_gradient_diagnostics: bool = True
     save_ply_files_interval: int = 25
@@ -219,6 +222,9 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--densification-verbose", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS, )
     parser.add_argument("--densification-grad-quantile", type=float)
     parser.add_argument("--densification-grad-abs-min", type=float)
+    parser.add_argument("--densification-grad-abs-min-final", type=float)
+    parser.add_argument("--densification-grad-abs-min-schedule-start-iteration", type=int)
+    parser.add_argument("--densification-grad-abs-min-schedule-end-iteration", type=int)
     parser.add_argument("--save-gradient-diagnostics", action=argparse.BooleanOptionalAction,
                         default=argparse.SUPPRESS, )
     parser.add_argument("--densify-bsdf-floor", type=float)

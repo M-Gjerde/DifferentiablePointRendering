@@ -267,7 +267,7 @@ static void saveCameraAuxiliaryBuffers(
 }
 
 static void saveForwardImagesAndAuxiliaryBuffers(
-    Pale::DeviceSelector &deviceSelector,i
+    Pale::DeviceSelector &deviceSelector,
     const std::vector<Pale::SensorGPU> &sensors,
     const std::filesystem::path &baseDir,
     const std::string &fileNameSuffix = "") {

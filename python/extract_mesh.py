@@ -7,13 +7,133 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
+import xml.etree.ElementTree as ET
 import numpy as np
 import open3d as o3d
 
 import pale
 from render_hooks import get_training_camera_names
 
+def parse_vector3(value: str) -> np.ndarray:
+    values = [float(part.strip()) for part in value.split(",")]
+    if len(values) != 3:
+        raise ValueError(f"Expected 3 comma-separated values, got: {value}")
+    return np.asarray(values, dtype=np.float64)
+
+
+def normalize_vector(vector: np.ndarray, name: str) -> np.ndarray:
+    norm = np.linalg.norm(vector)
+    if norm < 1.0e-12:
+        raise ValueError(f"Cannot normalize near-zero vector: {name}")
+    return vector / norm
+
+
+def get_named_child(parent: ET.Element, tag: str, name: str) -> ET.Element:
+    child = parent.find(f"{tag}[@name='{name}']")
+    if child is None:
+        raise ValueError(f"Missing <{tag} name=\"{name}\"> in XML element {parent.tag}")
+    return child
+
+
+def get_named_float(parent: ET.Element, name: str) -> float:
+    return float(get_named_child(parent, "float", name).attrib["value"])
+
+
+def get_named_integer(parent: ET.Element, name: str) -> int:
+    return int(get_named_child(parent, "integer", name).attrib["value"])
+
+
+def lookat_to_opencv_world_to_camera(origin: np.ndarray, target: np.ndarray, up: np.ndarray) -> np.ndarray:
+    # XML/Mitsuba-style lookat (Z-Up world):
+    #   forward = target - origin
+    #   up      = world-space camera up
+    #
+    # Open3D/OpenCV camera convention:
+    #   +X right
+    #   +Y down
+    #   +Z forward
+    forward = normalize_vector(target - origin, "forward")
+    world_up = normalize_vector(up, "up")
+
+    camera_right = normalize_vector(np.cross(forward, world_up), "camera_right")
+    camera_down = normalize_vector(np.cross(forward, camera_right), "camera_down")
+
+    camera_to_world = np.eye(4, dtype=np.float64)
+    camera_to_world[:3, 0] = camera_right
+    camera_to_world[:3, 1] = camera_down
+    camera_to_world[:3, 2] = forward
+    camera_to_world[:3, 3] = origin
+
+    return np.linalg.inv(camera_to_world)
+
+
+def load_scene_xml_cameras(scene_xml: Path) -> dict[str, Open3DCamera]:
+    scene_xml = scene_xml.expanduser().resolve()
+    root = ET.parse(scene_xml).getroot()
+
+    cameras: dict[str, Open3DCamera] = {}
+
+    for sensor in root.findall("sensor[@type='perspective']"):
+        camera_name = sensor.attrib.get("id")
+        if camera_name is None:
+            raise ValueError("Found perspective sensor without id attribute.")
+
+        film = sensor.find("film")
+        if film is None:
+            raise ValueError(f"Camera {camera_name} is missing <film>.")
+
+        width = get_named_integer(film, "width")
+        height = get_named_integer(film, "height")
+
+        fx = get_named_float(sensor, "fx")
+        fy = get_named_float(sensor, "fy")
+        cx = get_named_float(sensor, "cx")
+        cy = get_named_float(sensor, "cy")
+
+        lookat = sensor.find("transform[@name='to_world']/lookat")
+        if lookat is None:
+            raise ValueError(f"Camera {camera_name} is missing transform/to_world/lookat.")
+
+        origin = parse_vector3(lookat.attrib["origin"])
+        target = parse_vector3(lookat.attrib["target"])
+        up = parse_vector3(lookat.attrib["up"])
+
+        world_to_camera = lookat_to_opencv_world_to_camera(
+            origin=origin,
+            target=target,
+            up=up,
+        )
+
+        cameras[camera_name] = Open3DCamera(
+            name=camera_name,
+            width=width,
+            height=height,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            world_to_camera=world_to_camera,
+        )
+
+    if not cameras:
+        raise ValueError(f"No perspective cameras found in {scene_xml}")
+
+    return cameras
+
+def infer_cameras_xml(args: argparse.Namespace, run_config: dict) -> Path:
+    if args.cameras_xml is not None:
+        return args.cameras_xml.expanduser().resolve()
+
+    assets_root = Path(run_config["assets_root"]).expanduser().resolve()
+    scene_xml = Path(run_config["scene_xml"]).expanduser()
+
+    if not scene_xml.is_absolute():
+        scene_xml = assets_root / scene_xml
+
+    if not scene_xml.is_file():
+        raise FileNotFoundError(f"Could not find scene XML: {scene_xml}")
+
+    return scene_xml.resolve()
 
 @dataclass(frozen=True)
 class Open3DCamera:
@@ -539,11 +659,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_root", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
 
-    parser.add_argument(
-        "--cameras-json",
-        type=Path,
-        default=Path("~/phd/models/teapot_pbdr/transforms.json").expanduser().resolve(),
-    )
+    parser.add_argument("--cameras-xml", type=Path, default=Path("~/phd/models/teapot_pbdr/scene.xml").expanduser().resolve())
+
     parser.add_argument("--camera-names", type=str, default=None)
 
     parser.add_argument("--skip_mesh", action="store_true")
@@ -605,13 +722,15 @@ if __name__ == "__main__":
 
     renderer, run_config = load_renderer(run_dir, points_path)
 
-    cameras_json = infer_cameras_json(args, run_config)
-    cameras = load_nerf_cameras(cameras_json)
+    cameras_path = infer_cameras_xml(args, run_config)
+    cameras = load_scene_xml_cameras(cameras_path)
     camera_names = get_camera_names(renderer, args)
+
+    print(f"Using cameras {cameras_path}")
 
     print(f"Extracting mesh from {run_dir}")
     print(f"Using point cloud {points_path}")
-    print(f"Using cameras {cameras_json}")
+    print(f"Using cameras {args.cameras_xml}")
     print(f"Rendering {len(camera_names)} cameras")
 
     radius = load_point_radius(points_path)

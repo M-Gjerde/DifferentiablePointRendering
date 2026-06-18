@@ -7,20 +7,51 @@ from typing import Iterable
 import numpy as np
 import open3d as o3d
 
+SH_C0 = 0.28209479177387814
+
+PLY_SCALAR_DTYPES: dict[str, str] = {
+    "char": "i1",
+    "int8": "i1",
+    "uchar": "u1",
+    "uint8": "u1",
+    "short": "i2",
+    "int16": "i2",
+    "ushort": "u2",
+    "uint16": "u2",
+    "int": "i4",
+    "int32": "i4",
+    "uint": "u4",
+    "uint32": "u4",
+    "float": "f4",
+    "float32": "f4",
+    "double": "f8",
+    "float64": "f8",
+}
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Poisson mesh extraction from optimized quaternion surfel primitives.")
-    parser.add_argument("--output_root", type=Path, default=Path("OptimizationOutput"))
+    parser = argparse.ArgumentParser(description="Poisson mesh extraction from 2D Gaussian Splatting PLY files.")
+    parser.add_argument("--output-root", type=Path, default=Path("output"))
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--input-path", type=Path, default=None)
 
-    parser.add_argument("--samples-per-surfel", type=int, default=16)
+    parser.add_argument("--samples-per-surfel", type=int, default=4)
     parser.add_argument("--area-weighted-sampling", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--area-sample-power", type=float, default=1.0)
+    parser.add_argument("--area-sample-power", type=float, default=0.5)
     parser.add_argument("--min-samples-per-surfel", type=int, default=1)
-    parser.add_argument("--max-samples-per-surfel", type=int, default=512)
+    parser.add_argument("--max-samples-per-surfel", type=int, default=64)
     parser.add_argument("--area-reference-quantile", type=float, default=0.50)
 
+    parser.add_argument("--scale-activation", type=str, default="exp", choices=["exp", "none"])
+    parser.add_argument("--scale-multiplier", type=float, default=1.0)
+    parser.add_argument("--scale-clamp-quantile", type=float, default=0.995)
+    parser.add_argument("--min-scale", type=float, default=1.0e-8)
+
+    parser.add_argument("--opacity-activation", type=str, default="sigmoid", choices=["sigmoid", "none"])
+    parser.add_argument("--min-opacity", type=float, default=0.01)
+
+    parser.add_argument("--normal-source", type=str, default="rotation", choices=["rotation", "ply"])
+    parser.add_argument("--flip-normals", action="store_true")
     parser.add_argument("--correct-normal-flips", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--normal-neighbor-count", type=int, default=32)
     parser.add_argument("--normal-flip-threshold", type=float, default=0.0)
@@ -32,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normal-smoothing-max-angle-deg", type=float, default=35.0)
     parser.add_argument("--normal-smoothing-plane-sigma-factor", type=float, default=0.5)
     parser.add_argument("--normal-smoothing-distance-sigma-factor", type=float, default=1.0)
-    parser.add_argument("--normal-smoothing-iterations", type=int, default=5)
+    parser.add_argument("--normal-smoothing-iterations", type=int, default=3)
 
     parser.add_argument("--poisson-depth", type=int, default=11)
     parser.add_argument("--poisson-scale", type=float, default=1.1)
@@ -40,16 +71,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bbox-padding-factor", type=float, default=0.05)
 
     parser.add_argument("--num-cluster", type=int, default=50)
-    parser.add_argument("--split-components", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--split-components", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--component-eps", type=float, default=0.05)
     parser.add_argument("--component-min-points", type=int, default=50)
 
     parser.add_argument("--save-samples", action="store_true")
+    parser.add_argument("--output-name", type=str, default="poisson_2dgs_post.ply")
 
     args = parser.parse_args()
 
     if args.samples_per_surfel <= 0:
         raise ValueError("--samples-per-surfel must be greater than 0")
+
+    if args.min_samples_per_surfel <= 0:
+        raise ValueError("--min-samples-per-surfel must be greater than 0")
+
+    if args.max_samples_per_surfel < args.min_samples_per_surfel:
+        raise ValueError("--max-samples-per-surfel must be >= --min-samples-per-surfel")
+
+    if not 0.0 <= args.area_reference_quantile <= 1.0:
+        raise ValueError("--area-reference-quantile must be in [0, 1]")
+
+    if args.scale_multiplier <= 0.0:
+        raise ValueError("--scale-multiplier must be > 0")
+
+    if args.scale_clamp_quantile != 0.0 and not 0.0 < args.scale_clamp_quantile <= 1.0:
+        raise ValueError("--scale-clamp-quantile must be 0 to disable, or in (0, 1]")
+
+    if args.min_scale <= 0.0:
+        raise ValueError("--min-scale must be > 0")
+
+    if not 0.0 <= args.min_opacity <= 1.0:
+        raise ValueError("--min-opacity must be in [0, 1]")
 
     if args.normal_neighbor_count < 0:
         raise ValueError("--normal-neighbor-count must be >= 0")
@@ -75,6 +128,123 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def sigmoid(values: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-np.clip(values, -80.0, 80.0)))
+
+
+def read_ply_header(ply_path: Path) -> tuple[str, int, list[tuple[str, str]], int]:
+    with ply_path.open("rb") as file:
+        first_line = file.readline().decode("ascii", errors="strict").strip()
+
+        if first_line != "ply":
+            raise ValueError(f"Not a PLY file: {ply_path}")
+
+        ply_format: str | None = None
+        vertex_count: int | None = None
+        vertex_properties: list[tuple[str, str]] = []
+        inside_vertex_element = False
+
+        while True:
+            line_bytes = file.readline()
+
+            if not line_bytes:
+                raise ValueError(f"PLY header is missing end_header: {ply_path}")
+
+            stripped_line = line_bytes.decode("ascii", errors="strict").strip()
+
+            if stripped_line.startswith("format "):
+                ply_format = stripped_line.split()[1]
+            elif stripped_line.startswith("element vertex"):
+                vertex_count = int(stripped_line.split()[-1])
+                inside_vertex_element = True
+            elif stripped_line.startswith("element "):
+                inside_vertex_element = False
+            elif inside_vertex_element and stripped_line.startswith("property "):
+                property_tokens = stripped_line.split()
+
+                if len(property_tokens) != 3:
+                    raise ValueError(f"Only scalar vertex properties are supported: {stripped_line}")
+
+                property_type = property_tokens[1]
+                property_name = property_tokens[2]
+                vertex_properties.append((property_name, property_type))
+            elif stripped_line == "end_header":
+                data_offset = file.tell()
+                break
+
+    if ply_format is None:
+        raise ValueError(f"PLY format line is missing: {ply_path}")
+
+    if vertex_count is None:
+        raise ValueError(f"PLY vertex element is missing: {ply_path}")
+
+    return ply_format, vertex_count, vertex_properties, data_offset
+
+
+def read_vertex_properties(ply_path: Path) -> dict[str, np.ndarray]:
+    ply_path = ply_path.expanduser().resolve()
+    ply_format, vertex_count, vertex_properties, data_offset = read_ply_header(ply_path)
+
+    if not vertex_properties:
+        raise ValueError(f"PLY has no vertex properties: {ply_path}")
+
+    property_names = [name for name, _ in vertex_properties]
+
+    if ply_format == "ascii":
+        with ply_path.open("rb") as file:
+            file.seek(data_offset)
+            vertex_array = np.loadtxt(file, dtype=np.float32, max_rows=vertex_count)
+
+        if vertex_array.ndim == 1:
+            vertex_array = vertex_array[None, :]
+
+        return {
+            name: vertex_array[:, property_index]
+            for property_index, name in enumerate(property_names)
+        }
+
+    if ply_format not in {"binary_little_endian", "binary_big_endian"}:
+        raise ValueError(f"Unsupported PLY format: {ply_format}")
+
+    endian_prefix = "<" if ply_format == "binary_little_endian" else ">"
+    dtype_fields: list[tuple[str, str]] = []
+
+    for property_name, property_type in vertex_properties:
+        if property_type not in PLY_SCALAR_DTYPES:
+            raise ValueError(f"Unsupported PLY property type: {property_type}")
+
+        dtype_fields.append((property_name, endian_prefix + PLY_SCALAR_DTYPES[property_type]))
+
+    vertex_dtype = np.dtype(dtype_fields)
+
+    with ply_path.open("rb") as file:
+        file.seek(data_offset)
+        vertex_data = np.fromfile(file, dtype=vertex_dtype, count=vertex_count)
+
+    if vertex_data.shape[0] != vertex_count:
+        raise ValueError(f"Expected {vertex_count} vertices, read {vertex_data.shape[0]} from: {ply_path}")
+
+    return {name: np.asarray(vertex_data[name], dtype=np.float32) for name in property_names}
+
+
+def has_2dgs_properties(ply_path: Path) -> bool:
+    try:
+        _, _, vertex_properties, _ = read_ply_header(ply_path)
+    except Exception:
+        return False
+
+    property_names = {name for name, _ in vertex_properties}
+    required_names = {
+        "x", "y", "z",
+        "f_dc_0", "f_dc_1", "f_dc_2",
+        "opacity",
+        "scale_0", "scale_1",
+        "rot_0", "rot_1", "rot_2", "rot_3",
+    }
+
+    return required_names.issubset(property_names)
+
+
 def get_latest_output_dir(output_root: Path, index: int) -> Path:
     output_root = output_root.expanduser().resolve()
 
@@ -95,87 +265,35 @@ def get_latest_output_dir(output_root: Path, index: int) -> Path:
 
 
 def find_input_ply(output_dir: Path) -> Path:
-    search_dirs = [output_dir / "mesh", output_dir]
-    preferred_names = ["points_final.ply", "initial_points.ply", "points.ply", "point_cloud.ply", "optimized_points.ply", "surfels.ply"]
+    output_dir = output_dir.expanduser().resolve()
+    preferred_patterns = [
+        "point_cloud/iteration_*/point_cloud.ply",
+        "point_cloud.ply",
+        "**/point_cloud.ply",
+        "**/*2dgs*.ply",
+        "**/*gaussian*.ply",
+        "**/*points*.ply",
+    ]
 
     candidates: list[Path] = []
 
-    for search_dir in search_dirs:
-        if not search_dir.exists():
-            continue
-
-        for preferred_name in preferred_names:
-            preferred_path = search_dir / preferred_name
-            if preferred_path.exists():
-                candidates.append(preferred_path)
-
-        candidates.extend(search_dir.glob("*points*.ply"))
-        candidates.extend(search_dir.glob("*surfels*.ply"))
+    for pattern in preferred_patterns:
+        candidates.extend(output_dir.glob(pattern))
 
     candidates = sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)
     candidates = [
         path for path in candidates
-        if "sample" not in path.stem.lower()
-        and "poisson" not in path.stem.lower()
-        and "post" not in path.stem.lower()
+        if path.is_file()
+           and "sample" not in path.stem.lower()
+           and "poisson" not in path.stem.lower()
+           and "mesh" not in path.stem.lower()
     ]
 
-    if not candidates:
-        raise FileNotFoundError(f"Could not find an input point/surfel PLY in: {output_dir}")
+    for candidate in candidates:
+        if has_2dgs_properties(candidate):
+            return candidate
 
-    return candidates[0]
-
-
-def read_vertex_properties(ply_path: Path) -> dict[str, np.ndarray]:
-    try:
-        from plyfile import PlyData
-
-        ply_data = PlyData.read(str(ply_path))
-        vertex_data = ply_data["vertex"].data
-
-        return {name: np.asarray(vertex_data[name]) for name in vertex_data.dtype.names}
-    except ImportError:
-        return read_ascii_vertex_properties(ply_path)
-    except Exception as exception:
-        raise RuntimeError(f"Failed to read PLY file: {ply_path}") from exception
-
-
-def read_ascii_vertex_properties(ply_path: Path) -> dict[str, np.ndarray]:
-    with ply_path.open("r", encoding="utf-8") as file:
-        lines = file.readlines()
-
-    property_names: list[str] = []
-    vertex_count = None
-    header_end_index = None
-    inside_vertex_element = False
-
-    for line_index, line in enumerate(lines):
-        stripped_line = line.strip()
-
-        if stripped_line.startswith("element vertex"):
-            vertex_count = int(stripped_line.split()[-1])
-            inside_vertex_element = True
-        elif stripped_line.startswith("element "):
-            inside_vertex_element = False
-        elif inside_vertex_element and stripped_line.startswith("property"):
-            property_names.append(stripped_line.split()[-1])
-        elif stripped_line == "end_header":
-            header_end_index = line_index + 1
-            break
-
-    if vertex_count is None or header_end_index is None:
-        raise ValueError(f"Invalid ASCII PLY header: {ply_path}")
-
-    vertex_lines = lines[header_end_index:header_end_index + vertex_count]
-    vertex_array = np.loadtxt(vertex_lines, dtype=np.float32)
-
-    if vertex_array.ndim == 1:
-        vertex_array = vertex_array[None, :]
-
-    return {
-        name: vertex_array[:, property_index]
-        for property_index, name in enumerate(property_names)
-    }
+    raise FileNotFoundError(f"Could not find a 2DGS point_cloud PLY below: {output_dir}")
 
 
 def require_property(properties: dict[str, np.ndarray], names: Iterable[str]) -> np.ndarray:
@@ -186,7 +304,8 @@ def require_property(properties: dict[str, np.ndarray], names: Iterable[str]) ->
     raise KeyError(f"Missing required property. Tried: {list(names)}")
 
 
-def optional_property(properties: dict[str, np.ndarray], names: Iterable[str], default_value: float, count: int) -> np.ndarray:
+def optional_property(properties: dict[str, np.ndarray], names: Iterable[str], default_value: float,
+                      count: int) -> np.ndarray:
     for name in names:
         if name in properties:
             return np.asarray(properties[name], dtype=np.float32)
@@ -196,7 +315,7 @@ def optional_property(properties: dict[str, np.ndarray], names: Iterable[str], d
 
 def normalize_vectors(vectors: np.ndarray, fallback: np.ndarray | None = None) -> np.ndarray:
     vector_lengths = np.linalg.norm(vectors, axis=1, keepdims=True)
-    valid_mask = vector_lengths[:, 0] > 1e-12
+    valid_mask = vector_lengths[:, 0] > 1.0e-12
 
     normalized_vectors = np.zeros_like(vectors, dtype=np.float32)
     normalized_vectors[valid_mask] = vectors[valid_mask] / vector_lengths[valid_mask]
@@ -209,7 +328,7 @@ def normalize_vectors(vectors: np.ndarray, fallback: np.ndarray | None = None) -
 
 def normalize_quaternions_wxyz(quaternions: np.ndarray) -> np.ndarray:
     quaternion_lengths = np.linalg.norm(quaternions, axis=1, keepdims=True)
-    valid_mask = quaternion_lengths[:, 0] > 1e-12
+    valid_mask = quaternion_lengths[:, 0] > 1.0e-12
 
     normalized_quaternions = np.zeros_like(quaternions, dtype=np.float32)
     normalized_quaternions[valid_mask] = quaternions[valid_mask] / quaternion_lengths[valid_mask]
@@ -245,14 +364,118 @@ def quaternion_wxyz_to_frame(quaternions: np.ndarray) -> tuple[np.ndarray, np.nd
     return normalize_vectors(tangent_u), normalize_vectors(tangent_v), normalize_vectors(normals)
 
 
+def load_2dgs_surfels(
+        properties: dict[str, np.ndarray],
+        args: argparse.Namespace,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    positions = np.stack(
+        [
+            require_property(properties, ["x"]),
+            require_property(properties, ["y"]),
+            require_property(properties, ["z"]),
+        ],
+        axis=1,
+    ).astype(np.float32)
+
+    rotations = np.stack(
+        [
+            require_property(properties, ["rot_0"]),
+            require_property(properties, ["rot_1"]),
+            require_property(properties, ["rot_2"]),
+            require_property(properties, ["rot_3"]),
+        ],
+        axis=1,
+    ).astype(np.float32)
+
+    tangent_u, tangent_v, rotation_normals = quaternion_wxyz_to_frame(rotations)
+    surfel_count = int(positions.shape[0])
+
+    if args.normal_source == "ply":
+        ply_normals = np.stack(
+            [
+                optional_property(properties, ["nx"], 0.0, surfel_count),
+                optional_property(properties, ["ny"], 0.0, surfel_count),
+                optional_property(properties, ["nz"], 0.0, surfel_count),
+            ],
+            axis=1,
+        ).astype(np.float32)
+
+        normals = normalize_vectors(ply_normals, fallback=rotation_normals)
+        invalid_ply_normal_mask = np.linalg.norm(ply_normals, axis=1) <= 1.0e-12
+        normals[invalid_ply_normal_mask] = rotation_normals[invalid_ply_normal_mask]
+    else:
+        normals = rotation_normals
+
+    if args.flip_normals:
+        normals *= -1.0
+
+    raw_scales = np.stack(
+        [
+            require_property(properties, ["scale_0"]),
+            require_property(properties, ["scale_1"]),
+        ],
+        axis=1,
+    ).astype(np.float32)
+
+    if args.scale_activation == "exp":
+        scales = np.exp(np.clip(raw_scales, -30.0, 30.0)).astype(np.float32)
+    else:
+        scales = raw_scales.astype(np.float32)
+
+    scales *= float(args.scale_multiplier)
+
+    if args.scale_clamp_quantile > 0.0:
+        scale_upper_bounds = np.quantile(scales, float(args.scale_clamp_quantile), axis=0)
+        scale_upper_bounds = np.maximum(scale_upper_bounds, args.min_scale)
+        scales = np.minimum(scales, scale_upper_bounds[None, :]).astype(np.float32)
+
+    raw_opacity = require_property(properties, ["opacity"])
+
+    if args.opacity_activation == "sigmoid":
+        opacity = sigmoid(raw_opacity).astype(np.float32)
+    else:
+        opacity = raw_opacity.astype(np.float32)
+
+    f_dc_0 = require_property(properties, ["f_dc_0"])
+    f_dc_1 = require_property(properties, ["f_dc_1"])
+    f_dc_2 = require_property(properties, ["f_dc_2"])
+
+    colors = 0.5 + SH_C0 * np.stack([f_dc_0, f_dc_1, f_dc_2], axis=1).astype(np.float32)
+    colors = np.clip(colors, 0.0, 1.0).astype(np.float32)
+
+    valid_mask = (
+            np.isfinite(positions).all(axis=1)
+            & np.isfinite(rotations).all(axis=1)
+            & np.isfinite(tangent_u).all(axis=1)
+            & np.isfinite(tangent_v).all(axis=1)
+            & np.isfinite(normals).all(axis=1)
+            & np.isfinite(scales).all(axis=1)
+            & np.isfinite(opacity)
+            & np.isfinite(colors).all(axis=1)
+            & (scales[:, 0] > args.min_scale)
+            & (scales[:, 1] > args.min_scale)
+            & (opacity >= args.min_opacity)
+    )
+
+    return (
+        positions[valid_mask],
+        tangent_u[valid_mask],
+        tangent_v[valid_mask],
+        normals[valid_mask],
+        scales[valid_mask],
+        colors[valid_mask],
+        opacity[valid_mask],
+    )
+
+
 def compute_samples_per_surfel(
-    scales: np.ndarray,
-    base_samples_per_surfel: int,
-    area_weighted_sampling: bool,
-    area_sample_power: float,
-    min_samples_per_surfel: int,
-    max_samples_per_surfel: int,
-    area_reference_quantile: float,
+        scales: np.ndarray,
+        base_samples_per_surfel: int,
+        area_weighted_sampling: bool,
+        area_sample_power: float,
+        min_samples_per_surfel: int,
+        max_samples_per_surfel: int,
+        area_reference_quantile: float,
 ) -> np.ndarray:
     surfel_count = int(scales.shape[0])
 
@@ -276,7 +499,6 @@ def sample_unit_disk(sample_count: int) -> np.ndarray:
         return np.zeros((1, 2), dtype=np.float32)
 
     sample_indices = np.arange(sample_count, dtype=np.float32)
-
     golden_angle = np.pi * (3.0 - np.sqrt(5.0))
     radii = np.sqrt((sample_indices + 0.5) / float(sample_count))
     angles = sample_indices * golden_angle
@@ -294,77 +516,11 @@ def sample_unit_disk(sample_count: int) -> np.ndarray:
     return samples
 
 
-def load_surfels(properties: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    positions = np.stack(
-        [
-            require_property(properties, ["x"]),
-            require_property(properties, ["y"]),
-            require_property(properties, ["z"]),
-        ],
-        axis=1,
-    ).astype(np.float32)
-
-    quaternions = np.stack(
-        [
-            require_property(properties, ["rot_w"]),
-            require_property(properties, ["rot_x"]),
-            require_property(properties, ["rot_y"]),
-            require_property(properties, ["rot_z"]),
-        ],
-        axis=1,
-    ).astype(np.float32)
-
-    surfel_count = positions.shape[0]
-
-    scale_u = optional_property(properties, ["su", "scale_u", "scale_x", "scale_0"], 1.0, surfel_count)
-    scale_v = optional_property(properties, ["sv", "scale_v", "scale_y", "scale_1"], 1.0, surfel_count)
-    opacity = optional_property(properties, ["opacity"], 1.0, surfel_count)
-
-    albedo_r = optional_property(properties, ["albedo_r", "red", "r"], 0.7, surfel_count)
-    albedo_g = optional_property(properties, ["albedo_g", "green", "g"], 0.7, surfel_count)
-    albedo_b = optional_property(properties, ["albedo_b", "blue", "b"], 0.7, surfel_count)
-
-    colors = np.stack([albedo_r, albedo_g, albedo_b], axis=1).astype(np.float32)
-
-    if float(np.nanmax(colors)) > 1.0:
-        colors = colors / 255.0
-
-    colors = np.clip(colors, 0.0, 1.0).astype(np.float32)
-
-    tangent_u, tangent_v, normals = quaternion_wxyz_to_frame(quaternions)
-
-    valid_mask = (
-        np.isfinite(positions).all(axis=1)
-        & np.isfinite(quaternions).all(axis=1)
-        & np.isfinite(tangent_u).all(axis=1)
-        & np.isfinite(tangent_v).all(axis=1)
-        & np.isfinite(normals).all(axis=1)
-        & np.isfinite(scale_u)
-        & np.isfinite(scale_v)
-        & np.isfinite(opacity)
-        & np.isfinite(colors).all(axis=1)
-        & (scale_u > 0.0)
-        & (scale_v > 0.0)
-        & (opacity > 0.0)
-    )
-
-    scales = np.stack([scale_u, scale_v], axis=1).astype(np.float32)
-
-    return (
-        positions[valid_mask],
-        tangent_u[valid_mask],
-        tangent_v[valid_mask],
-        normals[valid_mask],
-        scales[valid_mask],
-        colors[valid_mask],
-    )
-
-
 def correct_isolated_normal_flips(
-    positions: np.ndarray,
-    normals: np.ndarray,
-    neighbor_count: int,
-    flip_threshold: float,
+        positions: np.ndarray,
+        normals: np.ndarray,
+        neighbor_count: int,
+        flip_threshold: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     if positions.shape[0] <= 1 or neighbor_count <= 0:
         return normals.astype(np.float32), np.zeros(positions.shape[0], dtype=bool)
@@ -375,7 +531,6 @@ def correct_isolated_normal_flips(
 
     point_cloud = o3d.geometry.PointCloud()
     point_cloud.points = o3d.utility.Vector3dVector(positions.astype(np.float64))
-
     kdtree = o3d.geometry.KDTreeFlann(point_cloud)
 
     effective_neighbor_count = min(int(neighbor_count), int(positions.shape[0]) - 1)
@@ -416,9 +571,9 @@ def estimate_reference_radius_from_scales(scales: np.ndarray, radius_factor: flo
 
 
 def weighted_pca_normal(
-    neighbor_positions: np.ndarray,
-    neighbor_weights: np.ndarray,
-    fallback_normal: np.ndarray,
+        neighbor_positions: np.ndarray,
+        neighbor_weights: np.ndarray,
+        fallback_normal: np.ndarray,
 ) -> np.ndarray:
     weight_sum = float(np.sum(neighbor_weights))
 
@@ -429,9 +584,9 @@ def weighted_pca_normal(
     centered_positions = neighbor_positions - weighted_center[None, :]
 
     covariance = (
-        centered_positions.T
-        @ (centered_positions * neighbor_weights[:, None])
-    ) / weight_sum
+                         centered_positions.T
+                         @ (centered_positions * neighbor_weights[:, None])
+                 ) / weight_sum
 
     try:
         eigenvalues, eigenvectors = np.linalg.eigh(covariance)
@@ -453,16 +608,16 @@ def weighted_pca_normal(
 
 
 def smooth_surfel_normals_same_layer(
-    positions: np.ndarray,
-    normals: np.ndarray,
-    scales: np.ndarray,
-    neighbor_count: int,
-    radius_factor: float,
-    max_angle_degrees: float,
-    plane_sigma_factor: float,
-    distance_sigma_factor: float,
-    mode: str,
-    iterations: int,
+        positions: np.ndarray,
+        normals: np.ndarray,
+        scales: np.ndarray,
+        neighbor_count: int,
+        radius_factor: float,
+        max_angle_degrees: float,
+        plane_sigma_factor: float,
+        distance_sigma_factor: float,
+        mode: str,
+        iterations: int,
 ) -> np.ndarray:
     if positions.shape[0] <= 1:
         return normals.astype(np.float32)
@@ -471,7 +626,6 @@ def smooth_surfel_normals_same_layer(
 
     point_cloud = o3d.geometry.PointCloud()
     point_cloud.points = o3d.utility.Vector3dVector(positions.astype(np.float64))
-
     kdtree = o3d.geometry.KDTreeFlann(point_cloud)
 
     reference_radius = estimate_reference_radius_from_scales(scales, radius_factor)
@@ -528,13 +682,10 @@ def smooth_surfel_normals_same_layer(
             distance_weights = np.exp(
                 -valid_distances_squared / (2.0 * distance_sigma * distance_sigma)
             )
-
             normal_weights = valid_normal_alignment * valid_normal_alignment
-
             plane_weights = np.exp(
                 -(valid_plane_offsets * valid_plane_offsets) / (2.0 * plane_sigma * plane_sigma)
             )
-
             weights = distance_weights * normal_weights * plane_weights
             weight_sum = float(np.sum(weights))
 
@@ -554,18 +705,15 @@ def smooth_surfel_normals_same_layer(
                     normal *= -1.0
 
                 next_normals[surfel_index] = normal.astype(np.float32)
-
             elif mode == "pca":
                 pca_positions = np.concatenate(
                     [query_position[None, :], valid_positions],
                     axis=0,
                 )
-
                 pca_weights = np.concatenate(
                     [np.array([weight_sum], dtype=np.float32), weights.astype(np.float32)],
                     axis=0,
                 )
-
                 next_normals[surfel_index] = weighted_pca_normal(
                     neighbor_positions=pca_positions,
                     neighbor_weights=pca_weights,
@@ -580,13 +728,13 @@ def smooth_surfel_normals_same_layer(
 
 
 def sample_surfels(
-    positions: np.ndarray,
-    tangent_u: np.ndarray,
-    tangent_v: np.ndarray,
-    normals: np.ndarray,
-    scales: np.ndarray,
-    colors: np.ndarray,
-    args: argparse.Namespace,
+        positions: np.ndarray,
+        tangent_u: np.ndarray,
+        tangent_v: np.ndarray,
+        normals: np.ndarray,
+        scales: np.ndarray,
+        colors: np.ndarray,
+        args: argparse.Namespace,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     samples_per_surfel = compute_samples_per_surfel(
         scales=scales,
@@ -598,30 +746,27 @@ def sample_surfels(
         area_reference_quantile=args.area_reference_quantile,
     )
 
-    sample_points_list: list[np.ndarray] = []
-    sample_normals_list: list[np.ndarray] = []
-    sample_colors_list: list[np.ndarray] = []
+    total_sample_count = int(np.sum(samples_per_surfel))
+    sample_points = np.empty((total_sample_count, 3), dtype=np.float32)
+    sample_normals = np.empty((total_sample_count, 3), dtype=np.float32)
+    sample_colors = np.empty((total_sample_count, 3), dtype=np.float32)
+
+    sample_offset = 0
 
     for surfel_index in range(int(positions.shape[0])):
         current_sample_count = int(samples_per_surfel[surfel_index])
         sample_uv = sample_unit_disk(current_sample_count)
+        next_sample_offset = sample_offset + current_sample_count
 
-        sample_points = (
-            positions[surfel_index][None, :]
-            + tangent_u[surfel_index][None, :] * (sample_uv[:, 0:1] * scales[surfel_index, 0])
-            + tangent_v[surfel_index][None, :] * (sample_uv[:, 1:2] * scales[surfel_index, 1])
+        sample_points[sample_offset:next_sample_offset] = (
+                positions[surfel_index][None, :]
+                + tangent_u[surfel_index][None, :] * (sample_uv[:, 0:1] * scales[surfel_index, 0])
+                + tangent_v[surfel_index][None, :] * (sample_uv[:, 1:2] * scales[surfel_index, 1])
         )
+        sample_normals[sample_offset:next_sample_offset] = normals[surfel_index][None, :]
+        sample_colors[sample_offset:next_sample_offset] = colors[surfel_index][None, :]
 
-        sample_normals = np.repeat(normals[surfel_index][None, :], current_sample_count, axis=0)
-        sample_colors = np.repeat(colors[surfel_index][None, :], current_sample_count, axis=0)
-
-        sample_points_list.append(sample_points.astype(np.float32))
-        sample_normals_list.append(sample_normals.astype(np.float32))
-        sample_colors_list.append(sample_colors.astype(np.float32))
-
-    sample_points = np.concatenate(sample_points_list, axis=0)
-    sample_normals = np.concatenate(sample_normals_list, axis=0)
-    sample_colors = np.concatenate(sample_colors_list, axis=0)
+        sample_offset = next_sample_offset
 
     return sample_points, sample_normals, sample_colors, samples_per_surfel
 
@@ -659,9 +804,9 @@ def filter_sample_components(point_cloud: o3d.geometry.PointCloud, args: argpars
 
 
 def remove_low_density_vertices(
-    mesh: o3d.geometry.TriangleMesh,
-    densities: np.ndarray,
-    density_quantile: float,
+        mesh: o3d.geometry.TriangleMesh,
+        densities: np.ndarray,
+        density_quantile: float,
 ) -> o3d.geometry.TriangleMesh:
     if density_quantile <= 0.0:
         return mesh
@@ -674,25 +819,23 @@ def remove_low_density_vertices(
 
 
 def crop_to_source_bbox(
-    mesh: o3d.geometry.TriangleMesh,
-    source_points: np.ndarray,
-    padding_factor: float,
+        mesh: o3d.geometry.TriangleMesh,
+        source_points: np.ndarray,
+        padding_factor: float,
 ) -> o3d.geometry.TriangleMesh:
     min_bound = source_points.min(axis=0)
     max_bound = source_points.max(axis=0)
 
     diagonal = max_bound - min_bound
-    padding = np.maximum(diagonal * padding_factor, 1e-6)
-
+    padding = np.maximum(diagonal * padding_factor, 1.0e-6)
     bounding_box = o3d.geometry.AxisAlignedBoundingBox(min_bound - padding, max_bound + padding)
 
     return mesh.crop(bounding_box)
 
 
-
 def transfer_point_cloud_colors_to_mesh(
-    mesh: o3d.geometry.TriangleMesh,
-    point_cloud: o3d.geometry.PointCloud,
+        mesh: o3d.geometry.TriangleMesh,
+        point_cloud: o3d.geometry.PointCloud,
 ) -> o3d.geometry.TriangleMesh:
     if not point_cloud.has_colors():
         return mesh
@@ -724,9 +867,9 @@ def transfer_point_cloud_colors_to_mesh(
 
 
 def keep_largest_mesh_components(
-    mesh: o3d.geometry.TriangleMesh,
-    max_components: int,
-    min_triangles: int,
+        mesh: o3d.geometry.TriangleMesh,
+        max_components: int,
+        min_triangles: int,
 ) -> o3d.geometry.TriangleMesh:
     if max_components <= 0:
         return mesh
@@ -770,11 +913,31 @@ def clean_mesh(mesh: o3d.geometry.TriangleMesh) -> o3d.geometry.TriangleMesh:
     return mesh
 
 
+def print_scale_summary(scales: np.ndarray, opacity: np.ndarray) -> None:
+    effective_radii = np.sqrt(np.maximum(scales[:, 0] * scales[:, 1], 1.0e-12))
+    print(
+        "Scale summary after activation/filtering: "
+        f"median_radius={float(np.median(effective_radii)):.6g}, "
+        f"p95_radius={float(np.quantile(effective_radii, 0.95)):.6g}, "
+        f"max_radius={float(np.max(effective_radii)):.6g}"
+    )
+    print(
+        "Opacity summary after activation/filtering: "
+        f"median={float(np.median(opacity)):.4f}, "
+        f"p05={float(np.quantile(opacity, 0.05)):.4f}, "
+        f"min={float(np.min(opacity)):.4f}"
+    )
+
+
 def main() -> None:
     args = parse_args()
 
-    output_dir = get_latest_output_dir(args.output_root, args.index)
-    input_path = args.input_path.expanduser().resolve() if args.input_path is not None else find_input_ply(output_dir)
+    if args.input_path is not None:
+        input_path = args.input_path.expanduser().resolve()
+        output_dir = input_path.parent
+    else:
+        output_dir = get_latest_output_dir(args.output_root, args.index)
+        input_path = find_input_ply(output_dir)
 
     mesh_dir = output_dir / "mesh"
     mesh_dir.mkdir(parents=True, exist_ok=True)
@@ -783,10 +946,15 @@ def main() -> None:
     print(f"Using input PLY: {input_path}")
 
     properties = read_vertex_properties(input_path)
-    positions, tangent_u, tangent_v, normals, scales, colors = load_surfels(properties)
+    positions, tangent_u, tangent_v, normals, scales, colors, opacity = load_2dgs_surfels(properties, args)
 
-    print(f"Loaded surfels: {positions.shape[0]}")
-    print(f"Samples per surfel: {args.samples_per_surfel}")
+    if positions.shape[0] == 0:
+        raise RuntimeError(
+            "No valid 2DGS surfels left after filtering. Try lowering --min-opacity or check scale activation.")
+
+    print(f"Loaded valid 2DGS surfels: {positions.shape[0]}")
+    print_scale_summary(scales, opacity)
+    print(f"Samples per surfel base value: {args.samples_per_surfel}")
 
     if args.correct_normal_flips:
         normals, normal_flip_mask = correct_isolated_normal_flips(
@@ -795,7 +963,6 @@ def main() -> None:
             neighbor_count=args.normal_neighbor_count,
             flip_threshold=args.normal_flip_threshold,
         )
-
         print(
             f"Corrected isolated normal flips: {int(np.count_nonzero(normal_flip_mask))}/{positions.shape[0]} "
             f"| neighbor_count={args.normal_neighbor_count} "
@@ -806,7 +973,6 @@ def main() -> None:
 
     if args.smooth_normals:
         normals_before_smoothing = normals.copy()
-
         normals = smooth_surfel_normals_same_layer(
             positions=positions,
             normals=normals,
@@ -857,16 +1023,14 @@ def main() -> None:
     )
 
     point_cloud = create_point_cloud(sample_points, sample_normals, sample_colors)
-
     print(f"Generated samples: {np.asarray(point_cloud.points).shape[0]}")
 
     if args.save_samples:
-        sample_path = mesh_dir / "poisson_samples.ply"
+        sample_path = mesh_dir / "poisson_2dgs_samples.ply"
         o3d.io.write_point_cloud(str(sample_path), point_cloud, write_ascii=False)
         print(f"Saved samples: {sample_path}")
 
     point_cloud = filter_sample_components(point_cloud, args)
-
     print(f"Samples after component filtering: {np.asarray(point_cloud.points).shape[0]}")
 
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
@@ -881,7 +1045,7 @@ def main() -> None:
     mesh = clean_mesh(mesh)
     mesh = transfer_point_cloud_colors_to_mesh(mesh, point_cloud)
 
-    output_path = mesh_dir / "poisson_post.ply"
+    output_path = mesh_dir / args.output_name
     o3d.io.write_triangle_mesh(str(output_path), mesh, write_ascii=False)
 
     print(f"Saved mesh: {output_path}")
