@@ -45,10 +45,13 @@ namespace Pale {
             return;
         }
 
-        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex ||
-            selectedPrimitiveIndex == UINT32_MAX ||
+        if (            selectedPrimitiveIndex == UINT32_MAX ||
             gradientRecord.primitiveIndex == UINT32_MAX) {
             return;
+        }
+
+        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex) {
+            //return;
         }
 
         constexpr float maxAbsGradientComponent = 1.0e3f;
@@ -572,8 +575,7 @@ namespace Pale {
         const float3 centerMinusOrigin = surfelCenterWorld - rayOriginWorld;
         const float nd = dot(normalWorld, rayDirectionWorld);
         const float np = dot(normalWorld, centerMinusOrigin);
-        const float epsilon = 1e-6f;
-        if (sycl::fabs(nd) < epsilon) {
+        if (sycl::fabs(nd) < RayEpsilon) {
             return float3{0.0f, 0.0f, 0.0f};
         }
         const float3 crossTvWithPkMinusX = cross(tangentVWorld, centerMinusOrigin);
@@ -595,8 +597,7 @@ namespace Pale {
         float3 normalWorld = cross(tangentUWorld, tangentVWorld);
         const float nd = dot(normalWorld, rayDirectionWorld);
         const float np = dot(normalWorld, centerMinusOrigin);
-        const float epsilon = 1e-6f;
-        if (sycl::fabs(nd) < epsilon) {
+        if (sycl::fabs(nd) < RayEpsilon) {
             return float3{0.0f, 0.0f, 0.0f};
         }
         const float3 crossTuWithPkMinusX = cross(tangentUWorld, centerMinusOrigin);
@@ -892,7 +893,6 @@ namespace Pale {
         bool applyNullSamplingWeight,
         float qNullInv) {
         MaterialEdgeVisibilityDerivativeResult result{};
-        constexpr float distanceEpsilon = 1.0e-5f;
         const float3 startToEnd = endPositionWorld - startPositionWorld;
         const float targetDistance = length(startToEnd);
         if (targetDistance <= 1.0e-12f) {
@@ -900,7 +900,7 @@ namespace Pale {
         }
         const float3 rayDirection = startToEnd / targetDistance;
         Ray ray{};
-        ray.origin = startPositionWorld + rayDirection * distanceEpsilon;
+        ray.origin = startPositionWorld + rayDirection * RayEpsilon;
         ray.direction = rayDirection;
         ray.normal = startNormalWorld;
         const float3 dxy = startPositionWorld - endPositionWorld;
@@ -912,7 +912,7 @@ namespace Pale {
                 break;
             }
             const float hitDistance = length(worldHit.hitPositionW - startPositionWorld);
-            if (hitDistance >= targetDistance - distanceEpsilon) {
+            if (hitDistance >= targetDistance - RayEpsilon) {
                 break;
             }
             buildIntersectionNormal(scene, worldHit);
@@ -922,7 +922,7 @@ namespace Pale {
                 break;
             }
             if (worldHit.primitiveIndex == startPrimitiveIndex || worldHit.primitiveIndex == endPrimitiveIndex) {
-                ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
+                ray.origin = worldHit.hitPositionW + ray.direction * RayEpsilon;
                 continue;
             }
             const Point &occluderSurfel = scene.points[worldHit.primitiveIndex];
@@ -935,7 +935,7 @@ namespace Pale {
             const float oneMinusAlpha = sycl::fmax(0.0f, 1.0f - alphaEffective);
             const float prefixTransmittance = tracedTransmittance;
             tracedTransmittance *= oneMinusAlpha;
-            ray.origin = worldHit.hitPositionW + ray.direction * distanceEpsilon;
+            ray.origin = worldHit.hitPositionW + ray.direction * RayEpsilon;
             if (applyNullSamplingWeight) {
                 result.nullSamplingWeight *= qNullInv;
             }

@@ -178,7 +178,7 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline float3 safeInvDir(const float3 &dir) {
-        constexpr float HUGE = 1e30f; // 2^100 ≃ 1.27e30 still fits in float
+        constexpr float HUGE = 1e20f; // 2^100 ≃ 1.27e30 still fits in float
         float3 inv;
         inv.x() = (abs(dir.x()) < RayEpsilon) ? HUGE : 1.f / dir.x();
         inv.y() = (abs(dir.y()) < RayEpsilon) ? HUGE : 1.f / dir.y();
@@ -221,14 +221,14 @@ namespace Pale {
         float3 t0 = (node.aabbMin - ray.origin) * invDir;
         float3 t1 = (node.aabbMax - ray.origin) * invDir;
 
-        float txmin = sycl::min(t0.x(), t1.x());
-        float txmax = sycl::max(t0.x(), t1.x());
-        float tymin = sycl::min(t0.y(), t1.y());
-        float tymax = sycl::max(t0.y(), t1.y());
-        float tzmin = sycl::min(t0.z(), t1.z());
-        float tzmax = sycl::max(t0.z(), t1.z());
-        float tmin = sycl::max(sycl::max(txmin, tymin), tzmin);
-        float tmax = sycl::min(sycl::min(txmax, tymax), tzmax);
+        float txmin = sycl::fmin(t0.x(), t1.x());
+        float txmax = sycl::fmax(t0.x(), t1.x());
+        float tymin = sycl::fmin(t0.y(), t1.y());
+        float tymax = sycl::fmax(t0.y(), t1.y());
+        float tzmin = sycl::fmin(t0.z(), t1.z());
+        float tzmax = sycl::fmax(t0.z(), t1.z());
+        float tmin = sycl::fmax(sycl::fmax(txmin, tymin), tzmin);
+        float tmax = sycl::fmin(sycl::fmin(txmax, tymax), tzmax);
         /* 1.  Origin outside slabs AND entry after exit  ➜  miss          */
         if (tmin > tmax) {
             return false;
@@ -510,7 +510,7 @@ namespace Pale {
 
         // 2) Ray-plane hit
         const float nDotD = dot(unitNormal, rayObject.direction);
-        if (sycl::fabs(nDotD) < eps)
+        if (sycl::fabs(nDotD) <= eps)
             return false;
 
         const float tHit = dot(unitNormal, (surfel.position - rayObject.origin)) / nDotD;

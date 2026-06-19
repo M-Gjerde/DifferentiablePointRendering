@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normal-neighbor-count", type=int, default=32)
     parser.add_argument("--normal-flip-threshold", type=float, default=0.0)
 
-    parser.add_argument("--smooth-normals", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--smooth-normals", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--normal-smoothing-mode", type=str, default="pca", choices=["pca", "bilateral"])
     parser.add_argument("--normal-smoothing-neighbor-count", type=int, default=32)
     parser.add_argument("--normal-smoothing-radius-factor", type=float, default=3.0)
