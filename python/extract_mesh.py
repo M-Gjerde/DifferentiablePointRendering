@@ -121,9 +121,6 @@ def load_scene_xml_cameras(scene_xml: Path) -> dict[str, Open3DCamera]:
     return cameras
 
 def infer_cameras_xml(args: argparse.Namespace, run_config: dict) -> Path:
-    if args.cameras_xml is not None:
-        return args.cameras_xml.expanduser().resolve()
-
     assets_root = Path(run_config["assets_root"]).expanduser().resolve()
     scene_xml = Path(run_config["scene_xml"]).expanduser()
 
@@ -658,9 +655,6 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--output_root", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
-
-    parser.add_argument("--cameras-xml", type=Path, default=Path("~/phd/datasets/teapot_10_pbdr/scene.xml").expanduser().resolve())
-
     parser.add_argument("--camera-names", type=str, default=None)
 
     parser.add_argument("--skip_mesh", action="store_true")
@@ -730,7 +724,7 @@ if __name__ == "__main__":
 
     print(f"Extracting mesh from {run_dir}")
     print(f"Using point cloud {points_path}")
-    print(f"Using cameras {args.cameras_xml}")
+    #print(f"Using cameras {args.cameras_xml}")
     print(f"Rendering {len(camera_names)} cameras")
 
     radius = load_point_radius(points_path)

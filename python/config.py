@@ -106,8 +106,8 @@ class OptimizationConfig:
     densify_until_fraction: float = 0.8
 
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.1e-2
-    densification_grad_abs_min_final: float = 9.0e-3
+    densification_grad_abs_min: float = 1.0e-2
+    densification_grad_abs_min_final: float = 5.0e-3
     densification_grad_abs_min_schedule_start_iteration: int = 2000
     densification_grad_abs_min_schedule_end_iteration: int = 15000
     densification_scale_min: float = 1.5e-2
