@@ -291,7 +291,7 @@ namespace Pale {
     }
 
 
-    void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex) {
+    void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPass) {
         auto &queue = pkg.queue;
         auto &scene = pkg.scene;
         auto &settings = pkg.settings;
@@ -327,16 +327,18 @@ namespace Pale {
                     const std::uint32_t pixelX = pixelIndex % imageWidth;
                     const std::uint32_t pixelY = pixelIndex / imageWidth;
                     const uint64_t directionSeed = rng::makeSeed(renderSeed, pixelIndex, cameraIndex,
-                                                                 rng::kStreamGather, 0u);
+                                                                 rng::kStreamGather, gatherPass);
                     rng::Xorshift128 rng(directionSeed);
                     float3 accumulatedRadianceRGB(0.0f, 0.0f, 0.0f);
                     // Center-of-pixel sample in your jitter convention
+                    const float jitterX = rng.nextFloat() - 0.5f;
+                    const float jitterY = rng.nextFloat() - 0.5f;
                     Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
                         sensor.camera,
                         static_cast<float>(pixelX),
                         static_cast<float>(pixelY),
-                        0.0f,
-                        0.0f);
+                        jitterX, jitterY
+                    );
                     const float cameraCosine = dot(sensor.camera.forward, primaryRay.direction);
                     float transmittance = 1.0f;
                     // Depth distortion accumulation
@@ -354,6 +356,12 @@ namespace Pale {
                     float3 medianNormalW(0.0f, 0.0f, 0.0f);
                     float accumulatedMeanDepthWeight = 0.0f;
                     float accumulatedMeanDepth = 0.0f;
+                    bool debug = false;
+                    if (pixelX == 286 && pixelY == 240) {
+                        debug = true;
+                    } else {
+                        //return;
+                    }
 
                     for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
                         WorldHit worldHit{};
@@ -367,55 +375,90 @@ namespace Pale {
                         // Visible point-cloud layer
                         // -------------------------------------------------------------
                         if (instance.geometryType == GeometryType::PointCloud) {
-                            const Point &surfel = scene.points[worldHit.primitiveIndex];
-                            float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
-                            const bool hitBackside = dot(normalW, -primaryRay.direction) < 0.0f;
-                            if (hitBackside) {
-                                normalW = -normalW;
-                            }
-                            const float alphaEff = surfel.opacity * worldHit.alphaGeom;
-                            const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
-                                worldHit.hitPositionW, normalW, photonMap);
-                            const float3 indirectRadiance =
-                                    indirectIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf) * alphaEff;
-                            const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
-                            float3 emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * surfelArea)) * alphaEff;
-                            if (surfel.isEmissive() && hitBackside) {
-                                //emittedRadiance = float3(0.0f, 0.0f, 0.0f);
-                            }
-                            const float3 directRadiance =
-                                    estimateDirectAreaLightAtDiffuseSurface(scene, worldHit.hitPositionW, normalW,
-                                                                            surfel.alpha_r * surfel.albedo, settings,
-                                                                            rng) * alphaEff;
-                            const float3 outgoingRadiance = emittedRadiance + indirectRadiance + directRadiance;
-                            accumulatedRadianceRGB += transmittance * outgoingRadiance;
-                            // Median depth using compositing weights w_i = T_i * alpha_i
-                            const float wi = transmittance * alphaEff;
-                            const float zi = dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+                            const Transform &transform = scene.transforms[instance.transformIndex];
+                            // This should scale with surfel size, not be a global value such as 0.1.
+                            constexpr float localLayerEps = 2.5e-2f;
+                            const float localTMin = worldHit.t - localLayerEps;
+                            const float localTMax = worldHit.t + localLayerEps;
 
-                            accumulatedMeanDepthWeight += wi;
-                            accumulatedMeanDepth += wi * zi;
+                            LocalSurfelLayerHit localHits[kMaxLocalSurfelHits];
+                            const Ray rayObject = toObjectSpace(primaryRay, transform);
+                            uint32_t localHitCount = collectBLASPointCloudLocalLayer(
+                                primaryRay, rayObject, instance.blasRangeIndex, transform, localTMin, localTMax,
+                                localHits, kMaxLocalSurfelHits, scene);
 
-                            const float opacityResidual = 1.0f - surfel.opacity;
-                            visibilityWeightedOpacityLoss += wi * opacityResidual * opacityResidual;
-
-                            if (!medianFound && (accumulatedCompositeWeight + wi) >= 0.5f) {
-                                medianFound = true;
-                                medianDepth = zi;
-                                medianWorldPosition = worldHit.hitPositionW;
-                                medianNormalW = normalW;
+                            // Numerical fallback: preserve the already found FirstHit.
+                            if (localHitCount == 0u) {
+                                localHits[0].tWorld = worldHit.t;
+                                localHits[0].primitiveIndex = worldHit.primitiveIndex;
+                                localHits[0].alphaGeom = worldHit.alphaGeom;
+                                localHits[0].hitPositionW = worldHit.hitPositionW;
+                                localHitCount = 1u;
                             }
 
-                            accumulatedCompositeWeight += wi;
-                            // Depth distortion
-                            const float mi = depthDistortionNdc01(zi);
-                            distortion += wi * (mi * mi * prefixWeight + prefixWeightDepthSquared - 2.0f * mi *
-                                                prefixWeightDepth);
-                            prefixWeight += wi;
-                            prefixWeightDepth += wi * mi;
-                            prefixWeightDepthSquared += wi * mi * mi;
-                            transmittance *= (1.0f - alphaEff);
-                            primaryRay.origin = worldHit.hitPositionW + primaryRay.direction * RayEpsilon;
+                            float furthestLayerT = worldHit.t;
+                            // Exact front-to-back compositing over the local layer.
+                            for (uint32_t localHitIndex = 0u; localHitIndex < localHitCount; ++localHitIndex) {
+                                const LocalSurfelLayerHit &localHit = localHits[localHitIndex];
+                                const Point &surfel = scene.points[localHit.primitiveIndex];
+                                const float alphaEff = sycl::clamp(surfel.opacity * localHit.alphaGeom, 0.0f, 1.0f);
+                                furthestLayerT = sycl::fmax(furthestLayerT, localHit.tWorld);
+                                if (alphaEff <= 0.0f) {
+                                    continue;
+                                }
+                                float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
+                                const bool hitBackside = dot(normalW, -primaryRay.direction) < 0.0f;
+                                if (hitBackside) {
+                                    normalW = -normalW;
+                                }
+                                const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
+                                    localHit.hitPositionW, normalW, photonMap);
+                                const float3 indirectRadiance =
+                                        indirectIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf) * alphaEff;
+
+                                const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
+                                float3 emittedRadiance =
+                                        surfel.albedo * (surfel.flux / (M_PIf * surfelArea)) * alphaEff;
+
+                                const float3 directRadiance =
+                                    estimateDirectAreaLightAtDiffuseSurface(
+                                        scene,
+                                        localHits[0].hitPositionW,
+                                        normalW,
+                                        surfel.alpha_r * surfel.albedo,
+                                        settings,
+                                        rng) * alphaEff;
+
+                                const float3 outgoingRadiance = emittedRadiance + indirectRadiance + directRadiance;
+                                accumulatedRadianceRGB += transmittance * outgoingRadiance;
+                                const float compositeWeight = transmittance * alphaEff;
+                                const float depth = dot(localHit.hitPositionW - sensor.camera.pos,
+                                                        sensor.camera.forward);
+                                accumulatedMeanDepthWeight += compositeWeight;
+                                accumulatedMeanDepth += compositeWeight * depth;
+                                const float opacityResidual = 1.0f - surfel.opacity;
+                                visibilityWeightedOpacityLoss += compositeWeight * opacityResidual * opacityResidual;
+                                if (!medianFound &&
+                                    (accumulatedCompositeWeight + compositeWeight) >= 0.5f) {
+                                    medianFound = true;
+                                    medianDepth = depth;
+                                    medianWorldPosition = localHit.hitPositionW;
+                                    medianNormalW = normalW;
+                                }
+                                accumulatedCompositeWeight += compositeWeight;
+                                const float normalizedDepth = depthDistortionNdc01(depth);
+                                distortion += compositeWeight * (
+                                    normalizedDepth * normalizedDepth * prefixWeight + prefixWeightDepthSquared - 2.0f *
+                                    normalizedDepth * prefixWeightDepth);
+                                prefixWeight += compositeWeight;
+                                prefixWeightDepth += compositeWeight * normalizedDepth;
+                                prefixWeightDepthSquared += compositeWeight * normalizedDepth * normalizedDepth;
+                                transmittance *= 1.0f - alphaEff;
+                            }
+
+                            // Advance once past the whole local layer.
+                            primaryRay.origin = primaryRay.origin + primaryRay.direction * (
+                                                    furthestLayerT + RayEpsilon);
                             continue;
                         }
                         // -------------------------------------------------------------
@@ -431,30 +474,25 @@ namespace Pale {
                             {
                                 const float wi = transmittance;
                                 const float zi = dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
-
                                 accumulatedMeanDepthWeight += wi;
                                 accumulatedMeanDepth += wi * zi;
-
                                 if (!medianFound && (accumulatedCompositeWeight + wi) >= 0.5f) {
                                     medianFound = true;
                                     medianDepth = zi;
                                     medianWorldPosition = worldHit.hitPositionW;
                                     medianNormalW = normalW;
                                 }
-
                                 accumulatedCompositeWeight += wi;
                             }
                             if (material.isEmissive()) {
                                 const float3 emittedRadiance = material.power * material.baseColor;
-                                accumulatedRadianceRGB +=
-                                        transmittance * min(emittedRadiance, 1.0f);
+                                accumulatedRadianceRGB += transmittance * min(emittedRadiance, 1.0f);
                             } else {
                                 const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
                                     worldHit.hitPositionW, normalW, photonMap);
                                 const float3 indirectRadiance = (material.baseColor * M_1_PIf) * indirectIrradiance;
-                                const float3 directRadiance =
-                                        estimateDirectAreaLightAtDiffuseSurface(
-                                            scene, worldHit.hitPositionW, normalW, material.baseColor, settings, rng);
+                                const float3 directRadiance = estimateDirectAreaLightAtDiffuseSurface(
+                                    scene, worldHit.hitPositionW, normalW, material.baseColor, settings, rng);
                                 const float3 outgoingRadiance = indirectRadiance + directRadiance;
                                 accumulatedRadianceRGB += transmittance * outgoingRadiance;
                             }
@@ -470,8 +508,7 @@ namespace Pale {
                     sensor.depthDistortionBuffer[pixelIndex] = distortion;
                     sensor.visibilityWeightedOpacityBuffer[pixelIndex] = visibilityWeightedOpacityLoss;
                     if (accumulatedMeanDepthWeight > 1.0e-6f) {
-                        sensor.meanDepthBuffer[pixelIndex] =
-                                accumulatedMeanDepth / accumulatedMeanDepthWeight;
+                        sensor.meanDepthBuffer[pixelIndex] = accumulatedMeanDepth / accumulatedMeanDepthWeight;
                     } else {
                         sensor.meanDepthBuffer[pixelIndex] = 0.0f;
                     }
@@ -489,7 +526,8 @@ namespace Pale {
                         sensor.medianWorldPositionBuffer[pixelIndex] = float4{0.0f};
                         sensor.visibleNormalBuffer[pixelIndex] = float4{0.0f};
                     }
-                });
+                }
+            );
         });
 
         queue.wait();
@@ -722,6 +760,7 @@ namespace Pale {
         queue.wait();
     }
     */
+
 
     void computePhotonCellIdsAndPermutation(
         sycl::queue &queue,

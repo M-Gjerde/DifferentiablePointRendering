@@ -32,7 +32,6 @@ namespace Pale {
         //m_queue.submit([&](sycl::handler& commandGroupHandler){
         //    commandGroupHandler.single_task<class WarmupKernel>([](){});
         //});
-
         m_queue.wait();
     }
 

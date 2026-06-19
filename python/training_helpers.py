@@ -46,6 +46,52 @@ PARAMETER_NAMES = (
     "power",
 )
 
+LOSS_VALUE_KEYS = (
+    "total_rgb_loss_value",
+    "total_depth_distortion_loss_raw",
+    "total_depth_distortion_loss_weighted",
+    "total_normal_loss_raw",
+    "total_normal_loss_weighted",
+    "total_visibility_weighted_opacity_loss_raw",
+    "total_visibility_weighted_opacity_loss_weighted",
+    "total_loss_value",
+)
+
+
+def make_zero_loss_values() -> Dict[str, float]:
+    return {loss_key: 0.0 for loss_key in LOSS_VALUE_KEYS}
+
+
+def make_averaged_loss_state_from_camera_cache(
+        latest_loss_values_by_camera: Dict[str, Dict[str, float]],
+        expected_camera_ids: List[str],
+) -> Dict[str, Any]:
+    available_camera_ids = [
+        camera_name
+        for camera_name in expected_camera_ids
+        if camera_name in latest_loss_values_by_camera
+    ]
+
+    if not available_camera_ids:
+        raise RuntimeError("Cannot compute averaged loss: no camera losses have been recorded.")
+
+    averaged_loss_state: Dict[str, Any] = {}
+
+    for loss_key in LOSS_VALUE_KEYS:
+        averaged_loss_state[loss_key] = float(np.mean([
+            latest_loss_values_by_camera[camera_name][loss_key]
+            for camera_name in available_camera_ids
+        ]))
+
+    averaged_loss_state["loss_metric_camera_count"] = len(available_camera_ids)
+    averaged_loss_state["loss_metric_expected_camera_count"] = len(expected_camera_ids)
+    averaged_loss_state["loss_metric_is_complete"] = (
+            len(available_camera_ids) == len(expected_camera_ids)
+    )
+
+    return averaged_loss_state
+
+
 def select_active_training_camera_ids(
         training_camera_ids: list[str],
         iteration: int,
@@ -67,6 +113,7 @@ def select_active_training_camera_ids(
         return [training_camera_ids[camera_index]]
 
     raise RuntimeError(f"Unknown camera_sampling_mode: {config.camera_sampling_mode}")
+
 
 def as_config_float(value: Any) -> float:
     if isinstance(value, tuple):
@@ -553,8 +600,12 @@ def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
     after_normal = after_depth + normal_weighted
     after_visibility_opacity = after_normal + visibility_opacity_weighted
     regularizer_total = depth_weighted + normal_weighted + visibility_opacity_weighted
+    loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
+    loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
 
     return (
+        f"Mean loss stack [{loss_camera_count}/{loss_camera_expected_count} cameras]:\n"
+
         "Loss stack:\n"
         f"  {'RGB only':<28} {rgb_loss:>12.3e}\n"
         f"  {'+ depth distortion':<28} {after_depth:>12.3e}  "
@@ -600,12 +651,14 @@ def format_training_iteration_log(
         grad_beta_max: float,
 ) -> str:
     iteration_rate = 1.0 / max(iteration_time, 1.0e-12)
+    loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
+    loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
 
     return (
         f"\n[Iter {iteration:04d}/{total_iterations}] "
         f"time={iteration_time:.3f}s total={total_time:.1f}s "
         f"it/s={iteration_rate:.2f} pts={num_points} adaptive_lr_pos={lr_position}\n"
-        f"  losses:"
+        f"  losses_mean[{loss_camera_count}/{loss_camera_expected_count} cameras]:"
         f" rgb={loss_state['total_rgb_loss_value']:.3e}"
         f" depth_raw={loss_state['total_depth_distortion_loss_raw']:.3e}"
         f" depth_w={loss_state['total_depth_distortion_loss_weighted']:.3e}"
@@ -844,7 +897,6 @@ def assign_numpy_gradients_to_tensors(
     betas.grad = torch.tensor(grad_betas_np, device=device, dtype=torch.float32)
 
 
-
 def scheduled_densification_grad_abs_min(config: OptimizationConfig, iteration: int) -> float:
     initial_threshold = float(config.densification_grad_abs_min)
     final_threshold_value = getattr(config, "densification_grad_abs_min_final", None)
@@ -867,6 +919,7 @@ def scheduled_densification_grad_abs_min(config: OptimizationConfig, iteration: 
 
     interpolation = float(iteration - start_iteration) / float(end_iteration - start_iteration)
     return initial_threshold + interpolation * (final_threshold - initial_threshold)
+
 
 def save_gradients_snapshot(
         output_dir: Path,
@@ -972,6 +1025,7 @@ def save_manual_snapshot(
         f"saved render_final_<camera>.png, depth_distortion_final_<camera>.png, and points_final.ply"
     )
 
+
 def save_iteration_point_cloud_snapshot(
         output_dir: Path,
         iteration: int,
@@ -1032,7 +1086,8 @@ def create_torch_parameters_from_initial(
         device: torch.device,
 ) -> Tuple[torch.nn.Parameter, ...]:
     positions = torch.nn.Parameter(torch.tensor(initial_params["position"], device=device, dtype=torch.float32))
-    rotations = torch.nn.Parameter(torch.tensor(initial_params["rotation"], device=device, dtype=torch.float32), requires_grad=False)
+    rotations = torch.nn.Parameter(torch.tensor(initial_params["rotation"], device=device, dtype=torch.float32),
+                                   requires_grad=False)
     scales = torch.nn.Parameter(torch.tensor(initial_params["scale"], device=device, dtype=torch.float32))
     albedos = torch.nn.Parameter(torch.tensor(initial_params["albedo"], device=device, dtype=torch.float32))
     opacities = torch.nn.Parameter(torch.tensor(initial_params["opacity"], device=device, dtype=torch.float32))
@@ -1196,32 +1251,28 @@ def compute_iteration_losses_and_adjoints(
         use_normal_consistency: bool,
         use_visibility_weighted_opacity: bool,
 ) -> Dict[str, Any]:
-    result: Dict[str, Any] = {
-        "total_rgb_loss_value": 0.0,
-        "total_depth_distortion_loss_raw": 0.0,
-        "total_depth_distortion_loss_weighted": 0.0,
-        "total_normal_loss_raw": 0.0,
-        "total_normal_loss_weighted": 0.0,
-        "total_visibility_weighted_opacity_loss_raw": 0.0,
-        "total_visibility_weighted_opacity_loss_weighted": 0.0,
-        "total_loss_value": 0.0,
+    result: Dict[str, Any] = make_zero_loss_values()
+    result.update({
         "loss_grad_images": {},
         "depth_distortion_grad_images": {},
         "visible_normal_adjoints": {},
         "depth_normal_adjoints": {},
         "depth_distortion_maps_for_logging": {},
         "visibility_weighted_opacity_maps_for_logging": {},
-    }
+        "per_camera_loss_values": {},
+    })
 
     for camera_name in training_camera_ids:
+        camera_loss_values = make_zero_loss_values()
+
         current_rgb_np = get_forward_rgb(forward_out, camera_name)
         target_rgb_np = target_images[camera_name]
 
         rgb_grad = compute_l2_grad(current_rgb_np, target_rgb_np)
         rgb_loss_value = float(compute_l2_loss(current_rgb_np, target_rgb_np))
 
-        result["total_rgb_loss_value"] += rgb_loss_value
-        result["total_loss_value"] += rgb_loss_value
+        camera_loss_values["total_rgb_loss_value"] = rgb_loss_value
+        camera_loss_values["total_loss_value"] += rgb_loss_value
         result["loss_grad_images"][camera_name] = rgb_grad
 
         if use_depth_distortion:
@@ -1229,10 +1280,11 @@ def compute_iteration_losses_and_adjoints(
             depth_distortion_loss_raw = float(current_depth_distortion_np.mean())
             depth_distortion_loss_weighted = depth_distortion_weight * depth_distortion_loss_raw
 
+            camera_loss_values["total_depth_distortion_loss_raw"] = depth_distortion_loss_raw
+            camera_loss_values["total_depth_distortion_loss_weighted"] = depth_distortion_loss_weighted
+            camera_loss_values["total_loss_value"] += depth_distortion_loss_weighted
+
             result["depth_distortion_maps_for_logging"][camera_name] = current_depth_distortion_np
-            result["total_depth_distortion_loss_raw"] += depth_distortion_loss_raw
-            result["total_depth_distortion_loss_weighted"] += depth_distortion_loss_weighted
-            result["total_loss_value"] += depth_distortion_loss_weighted
             result["depth_distortion_grad_images"][camera_name] = make_mean_reduction_adjoint_image(
                 current_depth_distortion_np,
                 depth_distortion_weight,
@@ -1242,32 +1294,49 @@ def compute_iteration_losses_and_adjoints(
             visible_normal = get_forward_visible_normal(forward_out, camera_name)
             normal_from_depth = get_forward_normal_from_depth(forward_out, camera_name)
 
-            raw_normal_loss_value, dvis_raw, ddepth_raw = compute_normal_consistency_loss_and_adjoints(
-                visible_normal,
-                normal_from_depth,
-                1.0,
+            normal_loss_raw, visible_normal_adjoint, depth_normal_adjoint = (
+                compute_normal_consistency_loss_and_adjoints(
+                    visible_normal,
+                    normal_from_depth,
+                    1.0,
+                )
             )
 
-            weighted_normal_loss_value = normal_consistency_weight * raw_normal_loss_value
-            result["total_normal_loss_raw"] += raw_normal_loss_value
-            result["total_normal_loss_weighted"] += weighted_normal_loss_value
-            result["total_loss_value"] += weighted_normal_loss_value
+            normal_loss_weighted = normal_consistency_weight * normal_loss_raw
+
+            camera_loss_values["total_normal_loss_raw"] = normal_loss_raw
+            camera_loss_values["total_normal_loss_weighted"] = normal_loss_weighted
+            camera_loss_values["total_loss_value"] += normal_loss_weighted
+
             result["visible_normal_adjoints"][camera_name] = (
-                    normal_consistency_weight * dvis_raw
+                    normal_consistency_weight * visible_normal_adjoint
             ).astype(np.float32, copy=False)
+
             result["depth_normal_adjoints"][camera_name] = (
-                    normal_consistency_weight * ddepth_raw
+                    normal_consistency_weight * depth_normal_adjoint
             ).astype(np.float32, copy=False)
 
         if use_visibility_weighted_opacity:
             visibility_opacity_np = get_forward_visibility_weighted_opacity(forward_out, camera_name)
             visibility_opacity_loss_raw = float(visibility_opacity_np.mean())
-            visibility_opacity_loss_weighted = visibility_weighted_opacity_weight * visibility_opacity_loss_raw
+            visibility_opacity_loss_weighted = (
+                    visibility_weighted_opacity_weight * visibility_opacity_loss_raw
+            )
+
+            camera_loss_values["total_visibility_weighted_opacity_loss_raw"] = (
+                visibility_opacity_loss_raw
+            )
+            camera_loss_values["total_visibility_weighted_opacity_loss_weighted"] = (
+                visibility_opacity_loss_weighted
+            )
+            camera_loss_values["total_loss_value"] += visibility_opacity_loss_weighted
 
             result["visibility_weighted_opacity_maps_for_logging"][camera_name] = visibility_opacity_np
-            result["total_visibility_weighted_opacity_loss_raw"] += visibility_opacity_loss_raw
-            result["total_visibility_weighted_opacity_loss_weighted"] += visibility_opacity_loss_weighted
-            result["total_loss_value"] += visibility_opacity_loss_weighted
+
+        for loss_key in LOSS_VALUE_KEYS:
+            result[loss_key] += camera_loss_values[loss_key]
+
+        result["per_camera_loss_values"][camera_name] = camera_loss_values
 
     return result
 
@@ -1982,22 +2051,27 @@ def save_iteration_outputs(
                     flip_y=False,
                 )
 
+
 def write_metrics_header(csv_writer: csv.writer) -> None:
     csv_writer.writerow(
         [
             "iteration",
-            "camera_name",
-            "loss_rgb_sum",
-            "loss_depth_distortion_raw_sum",
-            "loss_depth_distortion_weighted_sum",
-            "loss_normal_consistency_raw_sum",
-            "loss_normal_consistency_weighted_sum",
-            "loss_visibility_weighted_opacity_raw_sum",
-            "loss_visibility_weighted_opacity_weighted_sum",
-            "loss_total_sum",
+            "active_camera_name",
+            "active_camera_count",
+            "loss_average_camera_count",
+            "loss_average_expected_camera_count",
+            "loss_average_is_complete",
+            "loss_rgb_mean",
+            "loss_depth_distortion_raw_mean",
+            "loss_depth_distortion_weighted_mean",
+            "loss_normal_consistency_raw_mean",
+            "loss_normal_consistency_weighted_mean",
+            "loss_visibility_weighted_opacity_raw_mean",
+            "loss_visibility_weighted_opacity_weighted_mean",
+            "loss_total_mean",
             "num_points",
             "iteration_time_sec",
-            "total_time",
+            "total_time_sec",
             "grad_position_renderer_norm",
             "grad_position_renderer_max",
             "grad_position_surface_regularizer_norm",

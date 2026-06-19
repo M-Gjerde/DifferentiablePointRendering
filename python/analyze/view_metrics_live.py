@@ -13,6 +13,7 @@ import pandas as pd
 
 from matplotlib.ticker import StrMethodFormatter
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -51,7 +52,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional explicit loss column for the single-loss plot. "
-            "If omitted, defaults to loss_total_sum, then loss_rgb_sum."
+            "If omitted, defaults to loss_total_mean, then loss_rgb_mean."
         ),
     )
     parser.add_argument(
@@ -86,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--refresh-seconds",
         type=float,
-        default=1.0,
+        default=0.1,
         help="Polling interval for checking whether metrics.csv changed.",
     )
     parser.add_argument(
@@ -137,9 +138,9 @@ def parse_run_timestamp(run_dir_name: str) -> datetime | None:
 
 
 def find_latest_run_dir(
-    optimization_output_root: Path,
-    metrics_name: str,
-    index: int = 0,
+        optimization_output_root: Path,
+        metrics_name: str,
+        index: int = 0,
 ) -> Path:
     if not optimization_output_root.exists():
         raise FileNotFoundError(
@@ -195,9 +196,23 @@ def find_latest_run_dir(
 
 def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
     """
-    Prefer the aggregated ALL_CAMERAS rows from the newer CSV format.
-    Fall back to the whole dataframe if camera_name does not exist.
+    New metrics files write one loss-average row per iteration, even when one
+    camera is optimized per iteration. Do not filter these rows.
+
+    Older metrics files may contain one row per camera plus ALL_CAMERAS rows.
+    For those, retain only ALL_CAMERAS rows when available.
     """
+    averaged_loss_columns = (
+        "loss_total_mean",
+        "loss_rgb_mean",
+    )
+
+    if any(column_name in dataframe.columns for column_name in averaged_loss_columns):
+        return dataframe.copy()
+
+    if "active_camera_name" in dataframe.columns:
+        return dataframe.copy()
+
     if "camera_name" not in dataframe.columns:
         return dataframe.copy()
 
@@ -209,10 +224,10 @@ def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare_metrics_dataframe(
-    dataframe: pd.DataFrame,
-    from_iteration: int | None,
-    last_iterations: int | None,
-    skip_opacity_reset_noise: int,
+        dataframe: pd.DataFrame,
+        from_iteration: int | None,
+        last_iterations: int | None,
+        skip_opacity_reset_noise: int,
 ) -> pd.DataFrame:
     dataframe = filter_metrics_rows(dataframe)
 
@@ -233,12 +248,12 @@ def prepare_metrics_dataframe(
 
         dataframe = dataframe.loc[
             dataframe["iteration"] >= from_iteration
-        ].reset_index(drop=True)
+            ].reset_index(drop=True)
 
     if skip_opacity_reset_noise:
         opacity_reset_noise_mask = (
-            (dataframe["iteration"] >= skip_opacity_reset_noise)
-            & ((dataframe["iteration"] % skip_opacity_reset_noise) < 100)
+                (dataframe["iteration"] >= skip_opacity_reset_noise)
+                & ((dataframe["iteration"] % skip_opacity_reset_noise) < 100)
         )
         dataframe = dataframe.loc[~opacity_reset_noise_mask].reset_index(drop=True)
 
@@ -254,8 +269,8 @@ def prepare_metrics_dataframe(
 
 
 def read_metrics_csv_safely(
-    metrics_csv_path: Path,
-    previous_dataframe: pd.DataFrame | None,
+        metrics_csv_path: Path,
+        previous_dataframe: pd.DataFrame | None,
 ) -> pd.DataFrame | None:
     """
     The optimizer can write while pandas is reading.
@@ -274,8 +289,8 @@ def read_metrics_csv_safely(
 
 
 def get_available_columns(
-    dataframe: pd.DataFrame,
-    candidate_columns: list[str],
+        dataframe: pd.DataFrame,
+        candidate_columns: list[str],
 ) -> list[str]:
     return [
         column_name
@@ -284,9 +299,24 @@ def get_available_columns(
     ]
 
 
+def get_first_available_columns(
+        dataframe: pd.DataFrame,
+        candidate_groups: list[tuple[str, ...]],
+) -> list[str]:
+    selected_columns: list[str] = []
+
+    for candidate_columns in candidate_groups:
+        for column_name in candidate_columns:
+            if column_name in dataframe.columns:
+                selected_columns.append(column_name)
+                break
+
+    return selected_columns
+
+
 def select_loss_column(
-    dataframe: pd.DataFrame,
-    explicit_loss_column: str | None,
+        dataframe: pd.DataFrame,
+        explicit_loss_column: str | None,
 ) -> str:
     if explicit_loss_column is not None:
         if explicit_loss_column not in dataframe.columns:
@@ -297,6 +327,17 @@ def select_loss_column(
         return explicit_loss_column
 
     preferred_columns = [
+        # New averaged metrics format.
+        "loss_total_mean",
+        "loss_rgb_mean",
+        "loss_visibility_weighted_opacity_weighted_mean",
+        "loss_visibility_weighted_opacity_raw_mean",
+        "loss_normal_consistency_weighted_mean",
+        "loss_depth_distortion_weighted_mean",
+        "loss_normal_consistency_raw_mean",
+        "loss_depth_distortion_raw_mean",
+
+        # Backward compatibility with old metrics files.
         "loss_total_sum",
         "loss_rgb_sum",
         "loss_visibility_weighted_opacity_weighted_sum",
@@ -316,9 +357,10 @@ def select_loss_column(
         f"Available columns: {list(dataframe.columns)}"
     )
 
+
 def dataframe_column_as_float_array(
-    dataframe: pd.DataFrame,
-    column_name: str,
+        dataframe: pd.DataFrame,
+        column_name: str,
 ) -> np.ndarray:
     return pd.to_numeric(
         dataframe[column_name],
@@ -327,10 +369,10 @@ def dataframe_column_as_float_array(
 
 
 def plot_linear_columns(
-    axis,
-    dataframe: pd.DataFrame,
-    columns: list[str],
-    style_map: dict[str, dict[str, Any]],
+        axis,
+        dataframe: pd.DataFrame,
+        columns: list[str],
+        style_map: dict[str, dict[str, Any]],
 ) -> None:
     for column_name in columns:
         values = dataframe_column_as_float_array(dataframe, column_name)
@@ -344,25 +386,37 @@ def plot_linear_columns(
 
 
 def plot_top_loss_columns_with_dual_axis(
-    left_axis,
-    dataframe: pd.DataFrame,
-    columns: list[str],
-    style_map: dict[str, dict[str, Any]],
+        left_axis,
+        dataframe: pd.DataFrame,
+        columns: list[str],
+        style_map: dict[str, dict[str, Any]],
 ):
+    rgb_column_names = {
+        "loss_rgb_mean",
+        "loss_rgb_sum",
+    }
+
+    total_column_names = {
+        "loss_total_mean",
+        "loss_total_sum",
+    }
+
     rgb_columns = [
         column_name
         for column_name in columns
-        if column_name == "loss_rgb_sum"
+        if column_name in rgb_column_names
     ]
+
     total_columns = [
         column_name
         for column_name in columns
-        if column_name == "loss_total_sum"
+        if column_name in total_column_names
     ]
+
     extra_columns = [
         column_name
         for column_name in columns
-        if column_name not in {"loss_rgb_sum", "loss_total_sum"}
+        if column_name not in rgb_column_names | total_column_names
     ]
 
     plot_linear_columns(
@@ -402,10 +456,10 @@ def set_combined_legend(left_axis, right_axis=None) -> None:
 
 
 def plot_positive_log_columns(
-    axis,
-    dataframe: pd.DataFrame,
-    columns: list[str],
-    style_map: dict[str, dict[str, Any]],
+        axis,
+        dataframe: pd.DataFrame,
+        columns: list[str],
+        style_map: dict[str, dict[str, Any]],
 ) -> bool:
     plotted_any_positive_values = False
 
@@ -427,14 +481,14 @@ def plot_positive_log_columns(
 
 
 def draw_metrics_figure(
-    figure,
-    dataframe: pd.DataFrame,
-    metrics_csv_path: Path,
-    explicit_loss_column: str | None,
-    plot_all_losses: bool,
-    from_iteration: int | None,
-    last_iterations: int | None,
-    skip_opacity_reset_noise: int,
+        figure,
+        dataframe: pd.DataFrame,
+        metrics_csv_path: Path,
+        explicit_loss_column: str | None,
+        plot_all_losses: bool,
+        from_iteration: int | None,
+        last_iterations: int | None,
+        skip_opacity_reset_noise: int,
 ) -> str:
     dataframe = prepare_metrics_dataframe(
         dataframe,
@@ -470,29 +524,45 @@ def draw_metrics_figure(
 
         return loss_column_name
 
-    top_columns = get_available_columns(
+    top_columns = get_first_available_columns(
         dataframe,
         [
-            "loss_rgb_sum",
-            "loss_total_sum",
+            ("loss_rgb_mean", "loss_rgb_sum"),
+            ("loss_total_mean", "loss_total_sum"),
         ],
     )
-
-    weighted_regularizer_columns = get_available_columns(
+    weighted_regularizer_columns = get_first_available_columns(
         dataframe,
         [
-            "loss_depth_distortion_weighted_sum",
-            "loss_normal_consistency_weighted_sum",
-            "loss_visibility_weighted_opacity_weighted_sum",
+            (
+                "loss_depth_distortion_weighted_mean",
+                "loss_depth_distortion_weighted_sum",
+            ),
+            (
+                "loss_normal_consistency_weighted_mean",
+                "loss_normal_consistency_weighted_sum",
+            ),
+            (
+                "loss_visibility_weighted_opacity_weighted_mean",
+                "loss_visibility_weighted_opacity_weighted_sum",
+            ),
         ],
     )
-
-    raw_diagnostic_columns = get_available_columns(
+    raw_diagnostic_columns = get_first_available_columns(
         dataframe,
         [
-            "loss_depth_distortion_raw_sum",
-            "loss_normal_consistency_raw_sum",
-            "loss_visibility_weighted_opacity_raw_sum",
+            (
+                "loss_depth_distortion_raw_mean",
+                "loss_depth_distortion_raw_sum",
+            ),
+            (
+                "loss_normal_consistency_raw_mean",
+                "loss_normal_consistency_raw_sum",
+            ),
+            (
+                "loss_visibility_weighted_opacity_raw_mean",
+                "loss_visibility_weighted_opacity_raw_sum",
+            ),
         ],
     )
 
@@ -505,15 +575,28 @@ def draw_metrics_figure(
     )
 
     if (
-        not top_columns
-        and not weighted_regularizer_columns
-        and not raw_diagnostic_columns
-        and not point_count_columns
+            not top_columns
+            and not weighted_regularizer_columns
+            and not raw_diagnostic_columns
+            and not point_count_columns
     ):
         selected_loss_column = select_loss_column(dataframe, explicit_loss_column)
         top_columns = [selected_loss_column]
 
     style_map = {
+        "loss_rgb_mean": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
+        "loss_total_mean": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
+
+        "loss_depth_distortion_weighted_mean": dict(color="tab:red", linewidth=1.8, alpha=0.95),
+        "loss_normal_consistency_weighted_mean": dict(color="tab:green", linewidth=1.8, alpha=0.95),
+        "loss_visibility_weighted_opacity_weighted_mean": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
+
+        "loss_depth_distortion_raw_mean": dict(color="tab:red", linewidth=1.2, alpha=0.75, linestyle="--"),
+        "loss_normal_consistency_raw_mean": dict(color="tab:green", linewidth=1.2, alpha=0.75, linestyle="--"),
+        "loss_visibility_weighted_opacity_raw_mean": dict(color="tab:purple", linewidth=1.2, alpha=0.75,
+                                                          linestyle="--"),
+
+        # Legacy CSV compatibility.
         "loss_rgb_sum": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
         "loss_total_sum": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
 
@@ -528,7 +611,6 @@ def draw_metrics_figure(
         "num_points": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
         "point_count": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
     }
-
     include_point_count_panel = len(point_count_columns) > 0
     num_panels = 3 + int(include_point_count_panel)
 
@@ -573,30 +655,57 @@ def draw_metrics_figure(
         style_map,
     )
 
-    if "loss_rgb_sum" in top_columns:
-        ax_top.set_ylabel("RGB loss")
+    if any(column_name in {"loss_rgb_mean", "loss_rgb_sum"} for column_name in top_columns):
+        ax_top.set_ylabel("Mean RGB loss")
     else:
-        ax_top.set_ylabel("Image loss")
+        ax_top.set_ylabel("Mean image loss")
 
     if ax_top_right is not None:
-        ax_top_right.set_ylabel("Total loss")
+        ax_top_right.set_ylabel("Mean total loss")
 
     latest_iteration = int(dataframe["iteration"].iloc[-1])
     row_count = len(dataframe)
 
+    loss_average_coverage = ""
+
+    if (
+            "loss_average_camera_count" in dataframe.columns
+            and "loss_average_expected_camera_count" in dataframe.columns
+    ):
+        latest_averaged_camera_count = pd.to_numeric(
+            pd.Series([dataframe["loss_average_camera_count"].iloc[-1]]),
+            errors="coerce",
+        ).iloc[0]
+
+        latest_expected_camera_count = pd.to_numeric(
+            pd.Series([dataframe["loss_average_expected_camera_count"].iloc[-1]]),
+            errors="coerce",
+        ).iloc[0]
+
+        if (
+                np.isfinite(latest_averaged_camera_count)
+                and np.isfinite(latest_expected_camera_count)
+        ):
+            loss_average_coverage = (
+                f" | loss average={int(latest_averaged_camera_count)}"
+                f"/{int(latest_expected_camera_count)} cameras"
+            )
+
     ax_top.set_title(
         f"Live optimization metrics\n"
-        f"{metrics_csv_path.parent.name} | rows={row_count} | latest iteration={latest_iteration}"
+        f"{metrics_csv_path.parent.name} | rows={row_count} | "
+        f"latest iteration={latest_iteration}{loss_average_coverage}"
     )
+
     ax_top.grid(True)
     set_combined_legend(ax_top, ax_top_right)
 
-    ax_weighted.set_ylabel("Weighted regularizers")
+    ax_weighted.set_ylabel("Mean weighted regularizers")
     ax_weighted.grid(True)
     if weighted_regularizer_columns:
         ax_weighted.legend(loc='upper left')
 
-    ax_raw.set_ylabel("Raw diagnostics")
+    ax_raw.set_ylabel("Mean raw diagnostics")
     if raw_has_positive_values:
         ax_raw.set_yscale("log")
     ax_raw.grid(True)
@@ -626,10 +735,10 @@ def draw_metrics_figure(
     figure.tight_layout()
 
     plotted_columns = (
-        top_columns
-        + weighted_regularizer_columns
-        + raw_diagnostic_columns
-        + point_count_columns
+            top_columns
+            + weighted_regularizer_columns
+            + raw_diagnostic_columns
+            + point_count_columns
     )
 
     return ", ".join(plotted_columns)

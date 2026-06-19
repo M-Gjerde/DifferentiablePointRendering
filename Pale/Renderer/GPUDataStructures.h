@@ -232,11 +232,13 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 16;
+    constexpr uint32_t kMaxSplatEventsPerRay = 24;
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
+    constexpr uint32_t kMaxLocalSurfelHits = 24;
+    constexpr float LocalLayerDepthEpsilon = 1.0e-1f;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -261,6 +263,13 @@ namespace Pale {
     };
 
     static_assert(std::is_trivially_copyable_v<RayState>);
+
+    struct LocalSurfelLayerHit {
+        float tWorld;
+        uint32_t primitiveIndex;
+        float alphaGeom;
+        float3 hitPositionW;
+    };
 
     struct SurfelEvent {
         float t = FLT_MAX; // local space t
@@ -667,6 +676,7 @@ namespace Pale {
         uint32_t adjointSamplesPerPixel = 6;
         uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
+        uint32_t numGatherPasses = 1;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
         uint32_t surfelIndexForDebugImages = 1;

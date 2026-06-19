@@ -112,12 +112,14 @@ namespace Pale {
         } {
             ScopedTimer timer("Camera Gather for " + std::to_string(pkg.numSensors) + " cameras", spdlog::level::debug);
 
-            for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                ScopedTimer timer(
-                    "launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" +
-                    std::to_string(pkg.numSensors), spdlog::level::debug);
-                launchCameraGatherKernel(pkg, cameraIndex); // generate image from photon map
-                pkg.queue.wait();
+            for (size_t gatherPass = 0; gatherPass < pkg.settings.numGatherPasses; ++gatherPass) {
+                for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                    ScopedTimer timer(
+                        "launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" +
+                        std::to_string(pkg.numSensors), spdlog::level::debug);
+                    launchCameraGatherKernel(pkg, cameraIndex, gatherPass); // generate image from photon map
+                    pkg.queue.wait();
+                }
             }
 
             // Photon map stats:

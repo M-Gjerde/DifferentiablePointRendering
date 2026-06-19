@@ -36,6 +36,17 @@ def recreate_output_dir(output_dir: Path) -> Path:
     resolved_output_dir.mkdir(parents=True, exist_ok=False)
     return resolved_output_dir
 
+def copy_scene_xml_to_run_folder(scene_xml: str | Path, output_dir: Path) -> Path:
+    scene_xml_path = Path(scene_xml).expanduser().resolve()
+
+    if not scene_xml_path.is_file():
+        raise FileNotFoundError(f"Scene XML file does not exist: {scene_xml_path}")
+
+    output_scene_xml_path = output_dir / scene_xml_path.name
+    shutil.copy2(scene_xml_path, output_scene_xml_path)
+
+    print(f"Copied scene XML       : {output_scene_xml_path}")
+    return output_scene_xml_path
 
 def main() -> None:
     config = parse_args()
@@ -66,6 +77,11 @@ def main() -> None:
         config.output_dir = base_output_dir / run_folder_name
 
     config.output_dir = recreate_output_dir(config.output_dir)
+
+    saved_scene_xml_path = copy_scene_xml_to_run_folder(
+        scene_xml=config.scene_xml,
+        output_dir=config.output_dir,
+    )
 
     save_run_config(
         output_dir=config.output_dir,

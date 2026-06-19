@@ -73,44 +73,44 @@ class OptimizationConfig:
     # Global LR scheduling
     use_global_lr_schedule: bool = False
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.5
-    global_lr_start_iteration: int = 5000
+    global_lr_scale_final: float = 0.25
+    global_lr_start_iteration: int = 10000
     global_lr_max_steps: int = 50_000
 
-    depth_distort_weight: float = 500
+    depth_distort_weight: float = 1000
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.001
-    visibility_weighted_opacity_weight: float = 0.008
+    normal_consistency_weight: float = 0.01
+    visibility_weighted_opacity_weight: float = 0.01
 
     log_interval: int = 1
-    save_interval: int = 25
+    save_interval: int = 100
+    save_ply_files_interval: int = save_interval
     save_gradient_diagnostics: bool = False
     # Iteration snapshot content
     save_snapshot_rgb: bool = True
-    save_snapshot_median_depth: bool = True
+    save_snapshot_median_depth: bool = False
     save_snapshot_depth_distortion: bool = False
     save_snapshot_visible_normal: bool = False
     save_snapshot_normal_from_depth: bool = False
     save_snapshot_grad: bool = False
+    densification_verbose: bool = True
 
     device: str = "cpu"
 
     # Density control / EV-splitting
     densification_interval: int = 400
-    prune_interval: int = 25
-    densify_after: int = 200
-    prune_after: int = 200
+    prune_interval: int = 400
+    densify_after: int = 0
+    prune_after: int = 0
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.8
 
-    densification_verbose: bool = True
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-2
-    densification_grad_abs_min_final: float = 6.0e-3
+    densification_grad_abs_min: float = 1.1e-2
+    densification_grad_abs_min_final: float = 9.0e-3
     densification_grad_abs_min_schedule_start_iteration: int = 2000
-    densification_grad_abs_min_schedule_end_iteration: int = 5000
-    densification_scale_min: float = 1.0e-2
-    save_ply_files_interval: int = 25
+    densification_grad_abs_min_schedule_end_iteration: int = 15000
+    densification_scale_min: float = 1.5e-2
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.05
@@ -135,7 +135,7 @@ class OptimizationConfig:
     one_camera_per_iteration: bool = True
     camera_sampling_mode: str = "round_robin"  # "round_robin" or "random"
     camera_sampling_seed: int = 0
-    scale_single_camera_gradients: bool = True
+    scale_single_camera_gradients: bool = False
 
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
@@ -149,12 +149,12 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.00025
-        factor_rotation = 0.025
-        factor_scale = 0.0004
-        factor_albedo = 0.003
-        factor_opacity = 0.0004
-        factor_beta = 0.00
+        factor_position = 0.00013
+        factor_rotation = 0.010
+        factor_scale = 0.0003
+        factor_albedo = 0.001
+        factor_opacity = 0.0002
+        factor_beta = 0.001
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 

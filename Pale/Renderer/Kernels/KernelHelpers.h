@@ -494,41 +494,64 @@ namespace Pale {
         return true;
     }
 
+    SYCL_EXTERNAL inline void insertLocalSurfelLayerHit(LocalSurfelLayerHit *hits, uint32_t &hitCount,
+                                                        uint32_t hitCapacity, const LocalSurfelLayerHit &candidateHit) {
+        if (hitCapacity == 0u) {
+            return;
+        }
+        uint32_t insertIndex = hitCount;
+        if (hitCount < hitCapacity) {
+            ++hitCount;
+        } else {
+            // The list is already full. Keep only the nearest hits.
+            if (candidateHit.tWorld >= hits[hitCapacity - 1u].tWorld) {
+                return;
+            }
+            insertIndex = hitCapacity - 1u;
+        }
+        while (insertIndex > 0u && candidateHit.tWorld < hits[insertIndex - 1u].tWorld) {
+            hits[insertIndex] = hits[insertIndex - 1u];
+            --insertIndex;
+        }
+        hits[insertIndex] = candidateHit;
+    }
 
-    SYCL_EXTERNAL static bool intersectSurfel(const Ray &rayObject,
-                                              const Point &surfel,
-                                              float tMin, float tMax,
-                                              float &outTHit,
-                                              float3 &outHitLocal,
-                                              float &outOpacity,
-                                              const float &eps) {
-        // Should match the same kSigmas as in BVH construction
-        // 1) Orthonormal in-plane frame (assumes your rotation already baked into tanU/tanV)
+
+    SYCL_EXTERNAL static bool intersectSurfel(
+        const Ray &rayObject,
+        const Point &surfel,
+        float tMin,
+        float tMax,
+        float &outTHit,
+        float3 &outHitLocal,
+        float &outOpacity,
+        const float &eps) {
         const float3 unitTangentU = normalize(surfel.tanU);
         const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));
         const float3 unitNormal = normalize(cross(unitTangentU, unitTangentV));
-
-        // 2) Ray-plane hit
-        const float nDotD = dot(unitNormal, rayObject.direction);
-        if (sycl::fabs(nDotD) <= eps)
+        const float normalDirectionDot = dot(unitNormal, rayObject.direction);
+        if (sycl::fabs(normalDirectionDot) <= eps) {
             return false;
-
-        const float tHit = dot(unitNormal, (surfel.position - rayObject.origin)) / nDotD;
-        if (tHit <= tMin || tHit >= tMax)
+        }
+        const float tHit = dot(unitNormal, surfel.position - rayObject.origin) / normalDirectionDot;
+        if (tHit <= tMin || tHit >= tMax) {
             return false;
-
+        }
         outHitLocal = rayObject.origin + tHit * rayObject.direction;
-        float2 uv = phiInverse(outHitLocal, surfel);
-
-        //if (!opacityGaussian(uv[0], uv[1], &outOpacity))
-        //    return false;
-
-        if (!opacityBeta(uv[0], uv[1], surfel, &outOpacity))
+        const float2 uv = phiInverse(outHitLocal, surfel);
+        // For the ordinary renderer footprintScale remains 1.0f.
+        // The local-layer collector may use e.g. 1.05f to include a
+        const float scaledU = uv[0];
+        const float scaledV = uv[1];
+        if (!opacityBeta(scaledU, scaledV, surfel, &outOpacity)) {
             return false;
+        }
+        //if (!opacityGaussian(scaledU, scaledV, &outOpacity)) {
+        //    return false;
+        //}
         outTHit = tHit;
         return true;
     }
-
 
     SYCL_EXTERNAL inline Ray makePrimaryRayFromPixelJitteredFov(
         const CameraGPU &cam,

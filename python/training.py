@@ -115,6 +115,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     metrics_csv_path = config.output_dir / "metrics.csv"
     total_start_time = time.perf_counter()
     iteration = 0
+    latest_loss_values_by_camera: Dict[str, Dict[str, float]] = {}
 
     with open(metrics_csv_path, "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
@@ -156,6 +157,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     use_depth_distortion=use_depth_distortion,
                     use_normal_consistency=use_normal_consistency,
                     use_visibility_weighted_opacity=use_visibility_weighted_opacity,
+                )
+
+                for camera_name, camera_loss_values in loss_state["per_camera_loss_values"].items():
+                    latest_loss_values_by_camera[camera_name] = dict(camera_loss_values)
+
+                averaged_loss_state = make_averaged_loss_state_from_camera_cache(
+                    latest_loss_values_by_camera=latest_loss_values_by_camera,
+                    expected_camera_ids=training_camera_ids,
                 )
 
                 photo_gradients, adjoint_images = renderer.render_backward(loss_state["loss_grad_images"])
@@ -523,14 +532,18 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     [
                         iteration,
                         active_camera_name,
-                        loss_state["total_rgb_loss_value"],
-                        loss_state["total_depth_distortion_loss_raw"],
-                        loss_state["total_depth_distortion_loss_weighted"],
-                        loss_state["total_normal_loss_raw"],
-                        loss_state["total_normal_loss_weighted"],
-                        loss_state["total_visibility_weighted_opacity_loss_raw"],
-                        loss_state["total_visibility_weighted_opacity_loss_weighted"],
-                        loss_state["total_loss_value"],
+                        len(active_training_camera_ids),
+                        averaged_loss_state["loss_metric_camera_count"],
+                        averaged_loss_state["loss_metric_expected_camera_count"],
+                        averaged_loss_state["loss_metric_is_complete"],
+                        averaged_loss_state["total_rgb_loss_value"],
+                        averaged_loss_state["total_depth_distortion_loss_raw"],
+                        averaged_loss_state["total_depth_distortion_loss_weighted"],
+                        averaged_loss_state["total_normal_loss_raw"],
+                        averaged_loss_state["total_normal_loss_weighted"],
+                        averaged_loss_state["total_visibility_weighted_opacity_loss_raw"],
+                        averaged_loss_state["total_visibility_weighted_opacity_loss_weighted"],
+                        averaged_loss_state["total_loss_value"],
                         num_points,
                         iteration_time,
                         total_time,
@@ -570,7 +583,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             iteration_time=iteration_time,
                             total_time=total_time,
                             num_points=num_points,
-                            loss_state=loss_state,
+                            loss_state=averaged_loss_state,
                             lr_position=lr_position,
                             active_depth_distortion_weight=active_depth_distortion_weight,
                             grad_pos_rms=grad_pos_rms,
@@ -588,7 +601,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
                     )
 
-                    print(format_loss_breakdown(loss_state))
+                    print(format_loss_breakdown(averaged_loss_state))
 
                     print(
                         format_gradient_source_balance(
