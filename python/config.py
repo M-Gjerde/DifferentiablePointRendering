@@ -77,9 +77,9 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 5000
     global_lr_max_steps: int = 50_000
 
-    depth_distort_weight: float = 25
+    depth_distort_weight: float = 500
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.00025
+    normal_consistency_weight: float = 0.001
     visibility_weighted_opacity_weight: float = 0.008
 
     log_interval: int = 1

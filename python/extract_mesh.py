@@ -659,7 +659,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_root", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
 
-    parser.add_argument("--cameras-xml", type=Path, default=Path("~/phd/models/teapot_pbdr/scene.xml").expanduser().resolve())
+    parser.add_argument("--cameras-xml", type=Path, default=Path("~/phd/datasets/teapot_10_pbdr/scene.xml").expanduser().resolve())
 
     parser.add_argument("--camera-names", type=str, default=None)
 
