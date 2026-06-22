@@ -50,7 +50,7 @@ class OptimizationConfig:
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
 
-    iterations: int = int(6e5)
+    iterations: int = int(30_000)
 
     optimizer_type: str = "sgd"
     learning_rate: float = 1.0
@@ -74,10 +74,10 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 10000
     global_lr_max_steps: int = 50_000
 
-    depth_distort_weight: float = 200
+    depth_distort_weight: float = 50
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.001
-    visibility_weighted_opacity_weight: float = 0.005
+    visibility_weighted_opacity_weight: float = 0.008
 
     log_interval: int = 1
     save_interval: int = 100
@@ -104,7 +104,7 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 6.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 500
     densification_grad_abs_min_schedule_end_iteration: int = 5000
     densification_scale_min: float = 1.5e-2
