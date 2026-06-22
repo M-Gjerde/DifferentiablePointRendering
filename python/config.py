@@ -76,7 +76,7 @@ class OptimizationConfig:
 
     depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.001
+    normal_consistency_weight: float = 0.005
     visibility_weighted_opacity_weight: float = 0.008
 
     log_interval: int = 1
@@ -104,7 +104,7 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 6.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 500
     densification_grad_abs_min_schedule_end_iteration: int = 5000
     densification_scale_min: float = 1.25e-2
@@ -114,7 +114,7 @@ class OptimizationConfig:
     densify_bsdf_gamma: float = 0.0
 
     # Pruning
-    opacity_prune_threshold: float = 0.2
+    opacity_prune_threshold: float = 0.45
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 1.0e-5
     min_points_to_keep_after_scale_prune: int = 1
