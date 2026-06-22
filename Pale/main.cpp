@@ -926,10 +926,10 @@ int main(int argc, char **argv) {
         settings.numForwardPasses = 1;
         settings.numShadowRays = 1;
         settings.numAdjointShadowRays = 1;
-        settings.adjointSamplesPerPixel = 0;
+        settings.adjointSamplesPerPixel = 16;
         settings.numGatherPasses = 1;
 
-        settings.renderDebugGradientImages = !true;
+        settings.renderDebugGradientImages = true;
         settings.enableAdjointDirectLight = true;
         settings.surfelIndexForDebugImages = 2;
 
@@ -950,7 +950,6 @@ int main(int argc, char **argv) {
         tracer.renderForward(sensors);
         saveForwardImagesAndAuxiliaryBuffers(deviceSelector, sensors, outputRoot);
 
-        return 0;
         {
             /*
             auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();

@@ -74,15 +74,15 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 10000
     global_lr_max_steps: int = 50_000
 
-    depth_distort_weight: float = 5000
+    depth_distort_weight: float = 200
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
-    visibility_weighted_opacity_weight: float = 0.010
+    normal_consistency_weight: float = 0.001
+    visibility_weighted_opacity_weight: float = 0.005
 
     log_interval: int = 1
     save_interval: int = 100
     save_ply_files_interval: int = save_interval
-    save_gradient_diagnostics: bool = False
+    save_gradient_diagnostics: bool = True
     # Iteration snapshot content
     save_snapshot_rgb: bool = True
     save_snapshot_median_depth: bool = False
@@ -151,7 +151,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_scale = 0.0012
         factor_albedo = 0.005
         factor_opacity = 0.0009
-        factor_beta = 0.0009
+        factor_beta = 0.0006
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
