@@ -53,7 +53,7 @@ class OptimizationConfig:
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
 
-    iterations: int = int(5e5)
+    iterations: int = int(6e5)
 
     optimizer_type: str = "sgd"
     learning_rate: float = 1.0
@@ -77,7 +77,7 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 10000
     global_lr_max_steps: int = 50_000
 
-    depth_distort_weight: float = 1000
+    depth_distort_weight: float = 750
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.01
     visibility_weighted_opacity_weight: float = 0.01
@@ -98,18 +98,18 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 400
+    densification_interval: int = 800
     prune_interval: int = 400
     densify_after: int = 0
     prune_after: int = 0
     densify_until_iteration: int = -1
-    densify_until_fraction: float = 0.8
+    densify_until_fraction: float = 0.9
 
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.1e-2
-    densification_grad_abs_min_final: float = 9.0e-3
-    densification_grad_abs_min_schedule_start_iteration: int = 2000
-    densification_grad_abs_min_schedule_end_iteration: int = 15000
+    densification_grad_abs_min: float = 1.0e-2
+    densification_grad_abs_min_final: float = 5.0e-3
+    densification_grad_abs_min_schedule_start_iteration: int = 2500
+    densification_grad_abs_min_schedule_end_iteration: int = 10000
     densification_scale_min: float = 1.5e-2
 
     # More densification on radiometrically darker primitives
@@ -149,12 +149,12 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.00013
-        factor_rotation = 0.010
-        factor_scale = 0.0003
-        factor_albedo = 0.001
-        factor_opacity = 0.0002
-        factor_beta = 0.001
+        factor_position = 0.00025
+        factor_rotation = 0.015
+        factor_scale = 0.0006
+        factor_albedo = 0.002
+        factor_opacity = 0.0004
+        factor_beta = 0.0002
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 

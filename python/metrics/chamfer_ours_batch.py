@@ -420,7 +420,7 @@ def parse_arguments() -> argparse.Namespace:
         "--reconstruction-name",
         dest="mode",
         type=str,
-        default="poisson",
+        default="tsdf",
         choices=["poisson", "tsdf"],
         help="poisson uses poisson_post.ply, tsdf uses fuse_post.ply.",
     )

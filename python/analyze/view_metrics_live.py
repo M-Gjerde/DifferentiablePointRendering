@@ -72,17 +72,37 @@ def parse_args() -> argparse.Namespace:
         "--it",
         type=int,
         default=None,
-        help="Only plot the last N iterations. Example: --iterations 1000",
+        help=(
+            "Only plot the last N loss iterations. "
+            "Point-count history remains full by default."
+        ),
+    )
+    parser.add_argument(
+        "--point-count-windowed",
+        action="store_true",
+        help=(
+            "Also apply --iterations to the point-count panel. "
+            "By default, point count always shows the full run history."
+        ),
+    )
+    parser.add_argument(
+        "--loss-y-scale",
+        choices=("linear", "log", "symlog"),
+        default="log",
+        help=(
+            "Y-axis scale for RGB, total-loss, and weighted-regularizer panels. "
+            "Default: log."
+        ),
     )
     parser.add_argument(
         "--skip",
         help=(
             "Skip the first 100 iterations after each opacity reset at every "
-            "1000 iterations. This removes 1000-1099, 2000-2099, etc. "
-            "from the plotted dataframe."
+            "N iterations. For example, --skip 1000 removes 1000-1099, "
+            "2000-2099, etc. from loss plots."
         ),
         type=int,
-        default=0
+        default=0,
     )
     parser.add_argument(
         "--refresh-seconds",
@@ -179,7 +199,9 @@ def find_latest_run_dir(
     candidate_run_dirs.sort(
         key=lambda item: (
             item["parsed_timestamp"] is not None,
-            item["parsed_timestamp"] if item["parsed_timestamp"] is not None else datetime.min,
+            item["parsed_timestamp"]
+            if item["parsed_timestamp"] is not None
+            else datetime.min,
             item["modified_time"],
         ),
         reverse=True,
@@ -248,12 +270,12 @@ def prepare_metrics_dataframe(
 
         dataframe = dataframe.loc[
             dataframe["iteration"] >= from_iteration
-            ].reset_index(drop=True)
+        ].reset_index(drop=True)
 
     if skip_opacity_reset_noise:
         opacity_reset_noise_mask = (
-                (dataframe["iteration"] >= skip_opacity_reset_noise)
-                & ((dataframe["iteration"] % skip_opacity_reset_noise) < 100)
+            (dataframe["iteration"] >= skip_opacity_reset_noise)
+            & ((dataframe["iteration"] % skip_opacity_reset_noise) < 100)
         )
         dataframe = dataframe.loc[~opacity_reset_noise_mask].reset_index(drop=True)
 
@@ -321,13 +343,12 @@ def select_loss_column(
     if explicit_loss_column is not None:
         if explicit_loss_column not in dataframe.columns:
             raise ValueError(
-                f"Requested loss column '{explicit_loss_column}' was not found in metrics.csv. "
-                f"Available columns: {list(dataframe.columns)}"
+                f"Requested loss column '{explicit_loss_column}' was not found in "
+                f"metrics.csv. Available columns: {list(dataframe.columns)}"
             )
         return explicit_loss_column
 
     preferred_columns = [
-        # New averaged metrics format.
         "loss_total_mean",
         "loss_rgb_mean",
         "loss_visibility_weighted_opacity_weighted_mean",
@@ -336,8 +357,6 @@ def select_loss_column(
         "loss_depth_distortion_weighted_mean",
         "loss_normal_consistency_raw_mean",
         "loss_depth_distortion_raw_mean",
-
-        # Backward compatibility with old metrics files.
         "loss_total_sum",
         "loss_rgb_sum",
         "loss_visibility_weighted_opacity_weighted_sum",
@@ -368,6 +387,17 @@ def dataframe_column_as_float_array(
     ).to_numpy(dtype=np.float64)
 
 
+def apply_loss_y_scale(axis, loss_y_scale: str) -> None:
+    if loss_y_scale == "linear":
+        return
+
+    if loss_y_scale == "log":
+        axis.set_yscale("log", nonpositive="mask")
+        return
+
+    axis.set_yscale("symlog", linthresh=1.0e-8)
+
+
 def plot_linear_columns(
         axis,
         dataframe: pd.DataFrame,
@@ -395,7 +425,6 @@ def plot_top_loss_columns_with_dual_axis(
         "loss_rgb_mean",
         "loss_rgb_sum",
     }
-
     total_column_names = {
         "loss_total_mean",
         "loss_total_sum",
@@ -406,13 +435,11 @@ def plot_top_loss_columns_with_dual_axis(
         for column_name in columns
         if column_name in rgb_column_names
     ]
-
     total_columns = [
         column_name
         for column_name in columns
         if column_name in total_column_names
     ]
-
     extra_columns = [
         column_name
         for column_name in columns
@@ -452,7 +479,7 @@ def set_combined_legend(left_axis, right_axis=None) -> None:
     labels = left_labels + right_labels
 
     if handles:
-        left_axis.legend(handles, labels, loc='lower left')
+        left_axis.legend(handles, labels, loc="lower left")
 
 
 def plot_positive_log_columns(
@@ -489,50 +516,60 @@ def draw_metrics_figure(
         from_iteration: int | None,
         last_iterations: int | None,
         skip_opacity_reset_noise: int,
+        point_count_windowed: bool,
+        loss_y_scale: str,
 ) -> str:
-    dataframe = prepare_metrics_dataframe(
-        dataframe,
-        from_iteration,
-        last_iterations,
-        skip_opacity_reset_noise,
+    loss_dataframe = prepare_metrics_dataframe(
+        dataframe=dataframe,
+        from_iteration=from_iteration,
+        last_iterations=last_iterations,
+        skip_opacity_reset_noise=skip_opacity_reset_noise,
     )
 
-    if dataframe.empty:
-        raise ValueError("No valid rows to plot yet.")
+    point_count_dataframe = prepare_metrics_dataframe(
+        dataframe=dataframe,
+        from_iteration=from_iteration,
+        last_iterations=last_iterations if point_count_windowed else None,
+        skip_opacity_reset_noise=0,
+    )
+
+    if loss_dataframe.empty:
+        raise ValueError("No valid loss rows to plot yet.")
 
     figure.clear()
 
     if not plot_all_losses:
-        loss_column_name = select_loss_column(dataframe, explicit_loss_column)
-
-        # Do not resize the figure during live updates. Resizing here makes the GUI
-        # window snap back after the user manually changes its size.
+        loss_column_name = select_loss_column(loss_dataframe, explicit_loss_column)
         axis = figure.subplots(1, 1)
 
         axis.plot(
-            dataframe["iteration"],
-            dataframe_column_as_float_array(dataframe, loss_column_name),
+            loss_dataframe["iteration"],
+            dataframe_column_as_float_array(loss_dataframe, loss_column_name),
             linewidth=2.2,
             color="tab:blue",
         )
+
+        apply_loss_y_scale(axis, loss_y_scale)
+
         axis.set_xlabel("Iteration")
         axis.set_ylabel(loss_column_name)
-        axis.set_title(f"{loss_column_name} over iterations\n{metrics_csv_path.parent.name}")
+        axis.set_title(
+            f"{loss_column_name} over iterations\n{metrics_csv_path.parent.name}"
+        )
         axis.grid(True)
 
         figure.tight_layout()
-
         return loss_column_name
 
     top_columns = get_first_available_columns(
-        dataframe,
+        loss_dataframe,
         [
             ("loss_rgb_mean", "loss_rgb_sum"),
             ("loss_total_mean", "loss_total_sum"),
         ],
     )
     weighted_regularizer_columns = get_first_available_columns(
-        dataframe,
+        loss_dataframe,
         [
             (
                 "loss_depth_distortion_weighted_mean",
@@ -549,7 +586,7 @@ def draw_metrics_figure(
         ],
     )
     raw_diagnostic_columns = get_first_available_columns(
-        dataframe,
+        loss_dataframe,
         [
             (
                 "loss_depth_distortion_raw_mean",
@@ -565,9 +602,8 @@ def draw_metrics_figure(
             ),
         ],
     )
-
     point_count_columns = get_available_columns(
-        dataframe,
+        point_count_dataframe,
         [
             "num_points",
             "point_count",
@@ -580,37 +616,93 @@ def draw_metrics_figure(
             and not raw_diagnostic_columns
             and not point_count_columns
     ):
-        selected_loss_column = select_loss_column(dataframe, explicit_loss_column)
+        selected_loss_column = select_loss_column(
+            loss_dataframe,
+            explicit_loss_column,
+        )
         top_columns = [selected_loss_column]
 
     style_map = {
         "loss_rgb_mean": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
         "loss_total_mean": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
 
-        "loss_depth_distortion_weighted_mean": dict(color="tab:red", linewidth=1.8, alpha=0.95),
-        "loss_normal_consistency_weighted_mean": dict(color="tab:green", linewidth=1.8, alpha=0.95),
-        "loss_visibility_weighted_opacity_weighted_mean": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
+        "loss_depth_distortion_weighted_mean": dict(
+            color="tab:red",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
+        "loss_normal_consistency_weighted_mean": dict(
+            color="tab:green",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
+        "loss_visibility_weighted_opacity_weighted_mean": dict(
+            color="tab:purple",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
 
-        "loss_depth_distortion_raw_mean": dict(color="tab:red", linewidth=1.2, alpha=0.75, linestyle="--"),
-        "loss_normal_consistency_raw_mean": dict(color="tab:green", linewidth=1.2, alpha=0.75, linestyle="--"),
-        "loss_visibility_weighted_opacity_raw_mean": dict(color="tab:purple", linewidth=1.2, alpha=0.75,
-                                                          linestyle="--"),
+        "loss_depth_distortion_raw_mean": dict(
+            color="tab:red",
+            linewidth=1.2,
+            alpha=0.75,
+            linestyle="--",
+        ),
+        "loss_normal_consistency_raw_mean": dict(
+            color="tab:green",
+            linewidth=1.2,
+            alpha=0.75,
+            linestyle="--",
+        ),
+        "loss_visibility_weighted_opacity_raw_mean": dict(
+            color="tab:purple",
+            linewidth=1.2,
+            alpha=0.75,
+            linestyle="--",
+        ),
 
-        # Legacy CSV compatibility.
         "loss_rgb_sum": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
         "loss_total_sum": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
 
-        "loss_depth_distortion_weighted_sum": dict(color="tab:red", linewidth=1.8, alpha=0.95),
-        "loss_normal_consistency_weighted_sum": dict(color="tab:green", linewidth=1.8, alpha=0.95),
-        "loss_visibility_weighted_opacity_weighted_sum": dict(color="tab:purple", linewidth=1.8, alpha=0.95),
+        "loss_depth_distortion_weighted_sum": dict(
+            color="tab:red",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
+        "loss_normal_consistency_weighted_sum": dict(
+            color="tab:green",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
+        "loss_visibility_weighted_opacity_weighted_sum": dict(
+            color="tab:purple",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
 
-        "loss_depth_distortion_raw_sum": dict(color="tab:red", linewidth=1.2, alpha=0.75, linestyle="--"),
-        "loss_normal_consistency_raw_sum": dict(color="tab:green", linewidth=1.2, alpha=0.75, linestyle="--"),
-        "loss_visibility_weighted_opacity_raw_sum": dict(color="tab:purple", linewidth=1.2, alpha=0.75, linestyle="--"),
+        "loss_depth_distortion_raw_sum": dict(
+            color="tab:red",
+            linewidth=1.2,
+            alpha=0.75,
+            linestyle="--",
+        ),
+        "loss_normal_consistency_raw_sum": dict(
+            color="tab:green",
+            linewidth=1.2,
+            alpha=0.75,
+            linestyle="--",
+        ),
+        "loss_visibility_weighted_opacity_raw_sum": dict(
+            color="tab:purple",
+            linewidth=1.2,
+            alpha=0.75,
+            linestyle="--",
+        ),
 
         "num_points": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
         "point_count": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
     }
+
     include_point_count_panel = len(point_count_columns) > 0
     num_panels = 3 + int(include_point_count_panel)
 
@@ -618,13 +710,12 @@ def draw_metrics_figure(
     if include_point_count_panel:
         height_ratios.append(0.8)
 
-    # Keep the current figure/window size during live updates. The initial size is
-    # chosen in main(), and after that the user can freely resize the window without
-    # the next CSV update reverting it.
+    share_x_axis = not include_point_count_panel or point_count_windowed
+
     axes = figure.subplots(
         num_panels,
         1,
-        sharex=True,
+        sharex=share_x_axis,
         gridspec_kw={"height_ratios": height_ratios},
     )
     axes = np.atleast_1d(axes).tolist()
@@ -636,49 +727,61 @@ def draw_metrics_figure(
 
     ax_top_right = plot_top_loss_columns_with_dual_axis(
         ax_top,
-        dataframe,
+        loss_dataframe,
         top_columns,
         style_map,
     )
 
     plot_linear_columns(
         ax_weighted,
-        dataframe,
+        loss_dataframe,
         weighted_regularizer_columns,
         style_map,
     )
 
     raw_has_positive_values = plot_positive_log_columns(
         ax_raw,
-        dataframe,
+        loss_dataframe,
         raw_diagnostic_columns,
         style_map,
     )
 
-    if any(column_name in {"loss_rgb_mean", "loss_rgb_sum"} for column_name in top_columns):
-        ax_top.set_ylabel("Mean RGB loss")
-    else:
-        ax_top.set_ylabel("Mean image loss")
+    apply_loss_y_scale(ax_top, loss_y_scale)
+    apply_loss_y_scale(ax_weighted, loss_y_scale)
 
     if ax_top_right is not None:
-        ax_top_right.set_ylabel("Mean total loss")
+        apply_loss_y_scale(ax_top_right, loss_y_scale)
 
-    latest_iteration = int(dataframe["iteration"].iloc[-1])
-    row_count = len(dataframe)
+    if any(
+            column_name in {"loss_rgb_mean", "loss_rgb_sum"}
+            for column_name in top_columns
+    ):
+        ax_top.set_ylabel(f"Mean RGB loss ({loss_y_scale})")
+    else:
+        ax_top.set_ylabel(f"Mean image loss ({loss_y_scale})")
+
+    if ax_top_right is not None:
+        ax_top_right.set_ylabel(f"Mean total loss ({loss_y_scale})")
+
+    latest_iteration = int(loss_dataframe["iteration"].iloc[-1])
+    loss_row_count = len(loss_dataframe)
+    point_count_row_count = len(point_count_dataframe)
 
     loss_average_coverage = ""
 
     if (
-            "loss_average_camera_count" in dataframe.columns
-            and "loss_average_expected_camera_count" in dataframe.columns
+            "loss_average_camera_count" in loss_dataframe.columns
+            and "loss_average_expected_camera_count" in loss_dataframe.columns
     ):
         latest_averaged_camera_count = pd.to_numeric(
-            pd.Series([dataframe["loss_average_camera_count"].iloc[-1]]),
+            pd.Series([loss_dataframe["loss_average_camera_count"].iloc[-1]]),
             errors="coerce",
         ).iloc[0]
 
         latest_expected_camera_count = pd.to_numeric(
-            pd.Series([dataframe["loss_average_expected_camera_count"].iloc[-1]]),
+            pd.Series(
+                [loss_dataframe["loss_average_expected_camera_count"].iloc[-1]]
+            ),
             errors="coerce",
         ).iloc[0]
 
@@ -691,33 +794,43 @@ def draw_metrics_figure(
                 f"/{int(latest_expected_camera_count)} cameras"
             )
 
+    point_count_history_label = (
+        "windowed"
+        if point_count_windowed
+        else f"full history ({point_count_row_count} rows)"
+    )
+
     ax_top.set_title(
         f"Live optimization metrics\n"
-        f"{metrics_csv_path.parent.name} | rows={row_count} | "
+        f"{metrics_csv_path.parent.name} | loss rows={loss_row_count} | "
+        f"point count={point_count_history_label} | "
         f"latest iteration={latest_iteration}{loss_average_coverage}"
     )
 
     ax_top.grid(True)
     set_combined_legend(ax_top, ax_top_right)
 
-    ax_weighted.set_ylabel("Mean weighted regularizers")
+    ax_weighted.set_ylabel(f"Mean weighted regularizers ({loss_y_scale})")
     ax_weighted.grid(True)
     if weighted_regularizer_columns:
-        ax_weighted.legend(loc='upper left')
+        ax_weighted.legend(loc="upper left")
 
     ax_raw.set_ylabel("Mean raw diagnostics")
     if raw_has_positive_values:
         ax_raw.set_yscale("log")
     ax_raw.grid(True)
     if raw_diagnostic_columns:
-        ax_raw.legend(loc='upper left')
+        ax_raw.legend(loc="upper left")
 
     if ax_point_count is not None:
         point_count_column = point_count_columns[0]
-        point_values = dataframe_column_as_float_array(dataframe, point_count_column)
+        point_values = dataframe_column_as_float_array(
+            point_count_dataframe,
+            point_count_column,
+        )
 
         ax_point_count.step(
-            dataframe["iteration"],
+            point_count_dataframe["iteration"],
             point_values,
             where="post",
             label=point_count_column,
@@ -727,18 +840,25 @@ def draw_metrics_figure(
         ax_point_count.set_ylabel("Point count")
         ax_point_count.yaxis.set_major_formatter(StrMethodFormatter("{x:.0f}"))
         ax_point_count.grid(True)
-        ax_point_count.legend()
+        ax_point_count.legend(loc="upper left")
 
-    last_axis = ax_point_count if ax_point_count is not None else ax_raw
-    last_axis.set_xlabel("Iteration")
+    if ax_point_count is None:
+        ax_raw.set_xlabel("Iteration")
+    elif point_count_windowed:
+        ax_point_count.set_xlabel("Iteration")
+    else:
+        ax_top.tick_params(axis="x", labelbottom=False)
+        ax_weighted.tick_params(axis="x", labelbottom=False)
+        ax_raw.set_xlabel("Iteration (loss window)")
+        ax_point_count.set_xlabel("Iteration (full point-count history)")
 
     figure.tight_layout()
 
     plotted_columns = (
-            top_columns
-            + weighted_regularizer_columns
-            + raw_diagnostic_columns
-            + point_count_columns
+        top_columns
+        + weighted_regularizer_columns
+        + raw_diagnostic_columns
+        + point_count_columns
     )
 
     return ", ".join(plotted_columns)
@@ -770,23 +890,25 @@ def main() -> None:
     args = parse_args()
 
     if args.refresh_seconds <= 0.0:
-        raise ValueError(f"--refresh-seconds must be positive, got: {args.refresh_seconds}")
+        raise ValueError(
+            f"--refresh-seconds must be positive, got: {args.refresh_seconds}"
+        )
 
     plt.ion()
     plt.rcParams["figure.raise_window"] = False
-    # Keep the default window compact enough for laptop screens. Avoid resizing it
-    # inside draw_metrics_figure(), otherwise manual GUI resizing is overwritten on
-    # every metrics.csv update.
+
     figure = plt.figure(figsize=(12, 7))
     previous_dataframe: pd.DataFrame | None = None
     previous_file_state: tuple[float, int] | None = None
     previous_run_dir: Path | None = None
 
     print("Starting live metrics viewer. Press Ctrl+C in the terminal to stop.")
-    print(f"Refresh interval : {args.refresh_seconds:.3f}s")
-    print(f"Watch latest     : {args.watch_latest}")
-    print(f"Save plot        : {args.save_plot}")
-    print(f"Skip reset noise : {args.skip}")
+    print(f"Refresh interval   : {args.refresh_seconds:.3f}s")
+    print(f"Watch latest       : {args.watch_latest}")
+    print(f"Save plot          : {args.save_plot}")
+    print(f"Skip reset noise   : {args.skip}")
+    print(f"Loss y-scale       : {args.loss_y_scale}")
+    print(f"Point count window : {args.point_count_windowed}")
 
     try:
         while plt.fignum_exists(figure.number):
@@ -797,9 +919,10 @@ def main() -> None:
                 previous_run_dir = run_dir
                 previous_file_state = None
                 previous_dataframe = None
+
                 print()
-                print(f"Watching run     : {run_dir}")
-                print(f"Metrics file     : {metrics_csv_path}")
+                print(f"Watching run       : {run_dir}")
+                print(f"Metrics file       : {metrics_csv_path}")
 
             file_state = get_file_state(metrics_csv_path)
 
@@ -828,6 +951,8 @@ def main() -> None:
                         from_iteration=args.from_iteration,
                         last_iterations=args.iterations,
                         skip_opacity_reset_noise=args.skip,
+                        point_count_windowed=args.point_count_windowed,
+                        loss_y_scale=args.loss_y_scale,
                     )
 
                     figure.canvas.draw_idle()
@@ -838,20 +963,25 @@ def main() -> None:
                         figure.savefig(output_png_path, dpi=200)
 
                     latest_iteration = "unknown"
+
                     try:
                         prepared_dataframe = prepare_metrics_dataframe(
-                            dataframe,
-                            args.from_iteration,
-                            args.iterations,
-                            args.skip,
+                            dataframe=dataframe,
+                            from_iteration=args.from_iteration,
+                            last_iterations=args.iterations,
+                            skip_opacity_reset_noise=args.skip,
                         )
+
                         if not prepared_dataframe.empty:
-                            latest_iteration = str(int(prepared_dataframe["iteration"].iloc[-1]))
+                            latest_iteration = str(
+                                int(prepared_dataframe["iteration"].iloc[-1])
+                            )
                     except Exception:
                         pass
 
                     print(
-                        f"\rUpdated live plot | iteration={latest_iteration} | columns={plotted_columns}",
+                        f"\rUpdated live plot | iteration={latest_iteration} | "
+                        f"columns={plotted_columns}",
                         end="",
                         flush=True,
                     )
@@ -859,7 +989,6 @@ def main() -> None:
             plt.pause(args.refresh_seconds)
 
             if not args.watch_latest and args.run_dir is None:
-                # Keep the initially resolved latest run unless --watch-latest is enabled.
                 args.run_dir = run_dir
 
     except KeyboardInterrupt:
