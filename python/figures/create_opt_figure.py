@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional explicit loss column from metrics.csv. "
-            "Defaults to loss_total_sum, then loss_rgb_sum, then loss_depth_distortion_sum."
+            "Defaults to loss_total_mean, then loss_rgb_mean, then the weighted mean regularizers."
         ),
     )
     parser.add_argument(
@@ -176,32 +176,52 @@ def find_run_dir_by_index(optimization_output_root: Path, run_index: int) -> Pat
 
     return candidate_run_dirs[run_index]["run_dir"]
 
-    if not candidate_run_dirs:
-        raise FileNotFoundError(
-            f"No run folders with metrics.csv found under: {optimization_output_root}"
-        )
 
-    candidate_run_dirs.sort(
-        key=lambda item: (
-            item["parsed_timestamp"] is not None,
-            item["parsed_timestamp"] if item["parsed_timestamp"] is not None else datetime.min,
-            item["modified_time"],
-        ),
-        reverse=True,
-    )
+def csv_value_is_true(value: object) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
 
-    return candidate_run_dirs[0]["run_dir"]
+    if pd.isna(value):
+        return False
+
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y"}
 
 
 def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
-    if "camera_name" not in dataframe.columns:
-        return dataframe
+    """Return the rows representing the global/averaged optimization metric.
 
-    mask = dataframe["camera_name"].astype(str) == "ALL_CAMERAS"
-    if mask.any():
-        return dataframe.loc[mask].copy()
+    Current training writes one row per iteration with ``*_mean`` losses. For
+    one-camera-per-iteration training, the first few rows only average over the
+    cameras visited so far; once the camera cache is complete,
+    ``loss_average_is_complete`` becomes true. Prefer only those complete
+    averages, while retaining all rows for short/interrupted runs that never
+    reach a complete average.
 
-    return dataframe.copy()
+    Older metrics files may instead contain one row per camera and mark the
+    aggregate row as ``camera_name == ALL_CAMERAS``. That format remains
+    supported for old runs.
+    """
+    if dataframe.empty:
+        return dataframe.copy()
+
+    filtered = dataframe.copy()
+
+    if "loss_average_is_complete" in filtered.columns:
+        complete_mask = filtered["loss_average_is_complete"].map(csv_value_is_true)
+        if bool(complete_mask.any()):
+            filtered = filtered.loc[complete_mask].copy()
+
+    if "camera_name" in filtered.columns:
+        aggregate_mask = filtered["camera_name"].astype(str) == "ALL_CAMERAS"
+        if bool(aggregate_mask.any()):
+            filtered = filtered.loc[aggregate_mask].copy()
+
+    if "iteration" not in filtered.columns:
+        return filtered
+
+    filtered["iteration"] = pd.to_numeric(filtered["iteration"], errors="coerce")
+    filtered = filtered.loc[np.isfinite(filtered["iteration"])].copy()
+    return filtered.sort_values("iteration").reset_index(drop=True)
 
 
 def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None) -> str:
@@ -214,11 +234,26 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         return explicit_loss_column
 
     preferred = [
+        # Current averaged metrics.csv format.
+        "loss_total_mean",
+        "loss_rgb_mean",
+        "loss_visibility_weighted_opacity_weighted_mean",
+        "loss_normal_consistency_weighted_mean",
+        "loss_depth_distortion_weighted_mean",
+        "loss_visibility_weighted_opacity_raw_mean",
+        "loss_normal_consistency_raw_mean",
+        "loss_depth_distortion_raw_mean",
+
+        # Backward compatibility with previous metrics.csv formats.
         "loss_total_sum",
         "loss_rgb_sum",
-        "loss_depth_distortion_sum",
-        "loss_depth_distortion_weighted_sum",
+        "loss_visibility_weighted_opacity_weighted_sum",
         "loss_normal_consistency_weighted_sum",
+        "loss_depth_distortion_weighted_sum",
+        "loss_visibility_weighted_opacity_raw_sum",
+        "loss_normal_consistency_raw_sum",
+        "loss_depth_distortion_raw_sum",
+        "loss_depth_distortion_sum",
         "loss_l2_window_mean",
         "loss_l2_current_camera",
         "loss_l2_window_sum_scaled",
@@ -228,7 +263,10 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         if column_name in dataframe.columns:
             return column_name
 
-    raise ValueError(f"No supported loss column found. Available columns: {list(dataframe.columns)}")
+    raise ValueError(
+        "No supported loss column found. "
+        f"Available columns: {list(dataframe.columns)}"
+    )
 
 
 def discover_camera_names(run_dir: Path) -> List[str]:
@@ -261,14 +299,23 @@ def make_loss_curve_image(
     if "iteration" not in dataframe.columns:
         raise ValueError("metrics.csv does not contain an 'iteration' column")
 
-    dataframe = dataframe.sort_values("iteration").reset_index(drop=True)
     loss_column = select_loss_column(dataframe, explicit_loss_column)
+    loss_values = pd.to_numeric(dataframe[loss_column], errors="coerce")
+
+    valid_mask = np.isfinite(dataframe["iteration"]) & np.isfinite(loss_values)
+    dataframe = dataframe.loc[valid_mask].copy()
+    dataframe[loss_column] = loss_values.loc[valid_mask]
+
+    if dataframe.empty:
+        raise ValueError(
+            f"No finite values were found for '{loss_column}' after filtering metrics.csv."
+        )
 
     plt.figure(figsize=(width / 100.0, height / 100.0), dpi=100)
     plt.plot(dataframe["iteration"], dataframe[loss_column], linewidth=2.0)
     plt.xlabel("Iteration")
     plt.ylabel(loss_column)
-    plt.title("Loss curve")
+    plt.title("Mean loss curve" if loss_column.endswith("_mean") else "Loss curve")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_png_path, dpi=100)

@@ -998,6 +998,20 @@ def save_manual_snapshot(
             save_npy=False,
         )
 
+        visible_normal_np = get_forward_visible_normal(final_images, camera_name)
+        save_normal_map_snapshot(
+            output_dir / f"visible_normal_final_{camera_name}.png",
+            visible_normal_np,
+            save_npy=False,
+        )
+
+        normal_from_depth_np = get_forward_normal_from_depth(final_images, camera_name)
+        save_normal_map_snapshot(
+            output_dir / f"normal_from_depth_final_{camera_name}.png",
+            normal_from_depth_np,
+            save_npy=False,
+        )
+
     ply_path = output_dir / "points_final.ply"
     save_gaussians_to_ply(
         ply_path,
@@ -1012,8 +1026,10 @@ def save_manual_snapshot(
     )
 
     print(
-        f"[Iter {iteration:04d}] Hotkey 's' pressed -> "
-        f"saved render_final_<camera>.png, depth_distortion_final_<camera>.png, and points_final.ply"
+        f"[Iter {iteration:04d}] Hotkey 's' pressed -> saved "
+        f"render_final_<camera>.png, depth_distortion_final_<camera>.png, "
+        f"median_depth_final_<camera>.png, visible_normal_final_<camera>.png, "
+        f"normal_from_depth_final_<camera>.png, and points_final.ply"
     )
 
 

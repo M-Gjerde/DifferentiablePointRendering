@@ -68,13 +68,13 @@ class OptimizationConfig:
     position_lr_scale_final: float = 0.5
     position_lr_max_steps: int = 50_000
     # Global LR scheduling
-    use_global_lr_schedule: bool = False
+    use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.25
-    global_lr_start_iteration: int = 10000
+    global_lr_start_iteration: int = 20_000
     global_lr_max_steps: int = 50_000
 
-    depth_distort_weight: float = 50
+    depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.001
     visibility_weighted_opacity_weight: float = 0.008
@@ -85,7 +85,7 @@ class OptimizationConfig:
     save_gradient_diagnostics: bool = True
     # Iteration snapshot content
     save_snapshot_rgb: bool = True
-    save_snapshot_median_depth: bool = False
+    save_snapshot_median_depth: bool = True
     save_snapshot_depth_distortion: bool = False
     save_snapshot_visible_normal: bool = False
     save_snapshot_normal_from_depth: bool = False
@@ -104,10 +104,10 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min_final: float = 6.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 500
     densification_grad_abs_min_schedule_end_iteration: int = 5000
-    densification_scale_min: float = 1.5e-2
+    densification_scale_min: float = 1.25e-2
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.00
