@@ -383,7 +383,7 @@ def add_light_point(
                 "albedo": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
                 "opacity": np.array([opacity], dtype=np.float32),
                 "beta": np.array([beta], dtype=np.float32),
-                "power": np.array([200.0], dtype=np.float32),
+                "power": np.array([100.0], dtype=np.float32),
             }
         }
     )
@@ -425,6 +425,60 @@ def update_light_point_in_params(
     params["power"][light_index] = power
 
 
+def get_camera_output_paths(
+    animation_output_dir: Path,
+    camera_name: str,
+    gif_name: str,
+    render_all_cameras: bool,
+) -> tuple[Path, Path]:
+    if render_all_cameras:
+        return (
+            animation_output_dir / "frames" / camera_name,
+            animation_output_dir / f"{camera_name}.gif",
+        )
+
+    camera_output_dir = animation_output_dir / camera_name
+    return camera_output_dir / "frames", camera_output_dir / gif_name
+
+
+def find_existing_camera_output_dirs(animation_output_dir: Path) -> list[Path]:
+    if not animation_output_dir.exists():
+        raise FileNotFoundError(
+            f"Animation output directory does not exist: {animation_output_dir}"
+        )
+
+    camera_output_dirs = sorted(
+        child
+        for child in animation_output_dir.iterdir()
+        if child.is_dir() and (child / "frames").is_dir()
+    )
+
+    if not camera_output_dirs:
+        raise FileNotFoundError(
+            "No per-camera frame folders found. Expected folders such as "
+            f"'{animation_output_dir / 'view_camera_00' / 'frames'}'."
+        )
+
+    return camera_output_dirs
+
+
+def select_camera_names(
+    available_camera_names: Sequence[str],
+    requested_camera_name: str,
+    render_all_cameras: bool,
+) -> list[str]:
+    if render_all_cameras:
+        return list(available_camera_names)
+
+    if requested_camera_name not in available_camera_names:
+        raise ValueError(
+            f"Unknown camera name '{requested_camera_name}'. "
+            f"Available cameras: {list(available_camera_names)}"
+        )
+
+    return [requested_camera_name]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Render a moving emissive surfel orbit and save PNG frames + GIF."
@@ -451,7 +505,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fps", type=float, default=5.0)
     parser.add_argument("--radius", type=float, default=2.0)
-    parser.add_argument("--power", type=float, default=200.0)
+    parser.add_argument("--power", type=float, default=100.0)
     parser.add_argument("--orbit", type=str, default="y", choices=["x", "y"])
     parser.add_argument("--scale-u", type=float, default=0.05)
     parser.add_argument("--scale-v", type=float, default=0.05)
@@ -493,7 +547,15 @@ def parse_args() -> argparse.Namespace:
         "--camera-name",
         type=str,
         default="view_camera",
-        help="Camera name to render from, e.g. DatasetCam_022.",
+        help="Single camera name to render when --all is not used.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Render every camera in the scene. Each camera gets its own frames/ folder "
+            "and GIF under --output-subdir."
+        ),
     )
     parser.add_argument(
         "--rebuild-every-frame",
@@ -533,24 +595,68 @@ def main() -> None:
             run_index=args.index,
         )
 
-    output_dir = run_dir / args.output_subdir
-    frames_dir = output_dir / "frames"
-    output_gif_path = output_dir / args.gif_name
+    animation_output_dir = run_dir / args.output_subdir
 
     if args.skip_render:
+        if args.all:
+            camera_output_dirs = find_existing_camera_output_dirs(animation_output_dir)
+            completed_camera_names: list[str] = []
+
+            for camera_output_dir in camera_output_dirs:
+                camera_name = camera_output_dir.name
+                frames_dir = camera_output_dir / "frames"
+                output_gif_path = camera_output_dir / args.gif_name
+                frame_paths = collect_existing_frame_paths(
+                    frames_dir=frames_dir,
+                    requested_frame_count=args.frames,
+                )
+
+                build_gif_from_pngs(frame_paths, output_gif_path, fps=args.fps)
+                completed_camera_names.append(camera_name)
+
+                print(
+                    f"[GIF] camera={camera_name} "
+                    f"frames={len(frame_paths)} -> {output_gif_path}"
+                )
+
+            print()
+            print("Done.")
+            print("Skipped rendering and rebuilt GIFs from existing PNG frames.")
+            print(f"Run folder : {run_dir}")
+            print(f"Camera count: {len(completed_camera_names)}")
+            print(f"Cameras    : {', '.join(completed_camera_names)}")
+            print(f"FPS        : {args.fps}")
+            print(f"Output root: {animation_output_dir}")
+            return
+
+        frames_dir, output_gif_path = get_camera_output_paths(
+            animation_output_dir=animation_output_dir,
+            camera_name=args.camera_name,
+            gif_name=args.gif_name,
+        )
+
+        # Backward compatibility with the old single-camera output layout.
+        if not frames_dir.exists() and (animation_output_dir / "frames").exists():
+            frames_dir = animation_output_dir / "frames"
+            output_gif_path = animation_output_dir / args.gif_name
+            print(
+                "Using legacy single-camera frame layout: "
+                f"{frames_dir}"
+            )
+
         frame_paths = collect_existing_frame_paths(
             frames_dir=frames_dir,
             requested_frame_count=args.frames,
         )
 
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_gif_path.parent.mkdir(parents=True, exist_ok=True)
         build_gif_from_pngs(frame_paths, output_gif_path, fps=args.fps)
 
         print()
         print("Done.")
         print("Skipped rendering.")
         print(f"Run folder : {run_dir}")
-        print(f"Run index  : {args.index if args.run_dir is None else 'explicit --run-dir'}")
+        print(f"Camera     : {args.camera_name}")
         print(f"Frames     : {frames_dir}")
         print(f"Frame count: {len(frame_paths)}")
         print(f"FPS        : {args.fps}")
@@ -581,20 +687,37 @@ def main() -> None:
         renderer_settings,
     )
 
-    camera_names = get_camera_names_from_renderer(renderer)
+    available_camera_names = get_camera_names_from_renderer(renderer)
+    camera_names = select_camera_names(
+        available_camera_names=available_camera_names,
+        requested_camera_name=args.camera_name,
+        render_all_cameras=args.all,
+    )
 
-    if args.camera_name is None:
-        camera_name = camera_names[0]
-        print(f"No --camera-name provided, using first camera: {camera_name}")
+    if args.all:
+        print(
+            f"Rendering {len(camera_names)} cameras: "
+            f"{', '.join(camera_names)}"
+        )
     else:
-        if args.camera_name not in camera_names:
-            raise ValueError(
-                f"Unknown camera name '{args.camera_name}'. "
-                f"Available cameras: {camera_names}"
-            )
-        camera_name = args.camera_name
+        print(f"Rendering camera: {camera_names[0]}")
 
-    frames_dir.mkdir(parents=True, exist_ok=True)
+    frames_dirs: dict[str, Path] = {}
+    gif_paths: dict[str, Path] = {}
+    frame_paths_by_camera: dict[str, list[Path]] = {}
+
+    for camera_name in camera_names:
+        frames_dir, output_gif_path = get_camera_output_paths(
+            animation_output_dir=animation_output_dir,
+            camera_name=camera_name,
+            gif_name=args.gif_name,
+            render_all_cameras=args.all,
+        )
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+        frames_dirs[camera_name] = frames_dir
+        gif_paths[camera_name] = output_gif_path
+        frame_paths_by_camera[camera_name] = []
 
     zero_existing_lights(renderer)
 
@@ -608,8 +731,8 @@ def main() -> None:
 
     params = fetch_parameters(renderer)
 
-    frame_paths: list[Path] = []
-
+    # Outer loop is the light animation. This updates the point parameters and BVH once
+    # per light position, then renders that identical lighting state from every camera.
     for frame_index in range(frame_count):
         t = 0.0 if frame_count <= 1 else frame_index / float(frame_count - 1)
 
@@ -652,31 +775,40 @@ def main() -> None:
         if args.rebuild_every_frame:
             renderer.rebuild_bvh()
 
-        rendered_images = renderer.render_forward(camera_name)
-        rgb = get_forward_rgb(rendered_images, camera_name)
+        for camera_name in camera_names:
+            rendered_images = renderer.render_forward(camera_name)
+            rgb = get_forward_rgb(rendered_images, camera_name)
 
-        frame_png_path = frames_dir / f"frame_{frame_index:04d}.png"
-        save_rgb_png(frame_png_path, rgb)
-        frame_paths.append(frame_png_path)
+            frame_png_path = frames_dirs[camera_name] / f"frame_{frame_index:04d}.png"
+            save_rgb_png(frame_png_path, rgb)
+            frame_paths_by_camera[camera_name].append(frame_png_path)
 
-        print(
-            f"[{frame_index + 1:03d}/{frame_count:03d}] "
-            f"camera={camera_name} "
-            f"pos=({light_position[0]:.3f}, {light_position[1]:.3f}, {light_position[2]:.3f}) "
-            f"color=({light_color[0]:.3f}, {light_color[1]:.3f}, {light_color[2]:.3f}) "
-            f"-> {frame_png_path.name}"
+            print(
+                f"[{frame_index + 1:03d}/{frame_count:03d}] "
+                f"camera={camera_name} "
+                f"pos=({light_position[0]:.3f}, {light_position[1]:.3f}, {light_position[2]:.3f}) "
+                f"color=({light_color[0]:.3f}, {light_color[1]:.3f}, {light_color[2]:.3f}) "
+                f"-> {frame_png_path.name}"
+            )
+
+    for camera_name in camera_names:
+        build_gif_from_pngs(
+            frame_paths_by_camera[camera_name],
+            gif_paths[camera_name],
+            fps=args.fps,
         )
-
-    build_gif_from_pngs(frame_paths, output_gif_path, fps=args.fps)
 
     print()
     print("Done.")
     print(f"Run folder : {run_dir}")
     print(f"Run index  : {args.index if args.run_dir is None else 'explicit --run-dir'}")
-    print(f"Frames     : {frames_dir}")
-    print(f"Frame count: {len(frame_paths)}")
+    print(f"Camera count: {len(camera_names)}")
+    print(f"Frame count: {frame_count}")
     print(f"FPS        : {args.fps}")
-    print(f"GIF        : {output_gif_path}")
+    print(f"Output root: {animation_output_dir}")
+
+    for camera_name in camera_names:
+        print(f"  {camera_name}: {gif_paths[camera_name]}")
 
 
 if __name__ == "__main__":
