@@ -1487,13 +1487,13 @@ def update_densification_statistics(
     density_grad_position_vector_np[active_camera_count_np[:, 0] == 0.0] = 0.0
     densify_position_signal_np[active_camera_count_np[:, 0] == 0.0] = 0.0
 
-    linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
-    bsdf_normalizer_np = (
-            np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma
-    ).astype(np.float32)
+    #linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
+    #bsdf_normalizer_np = (
+    #        np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma
+    #).astype(np.float32)
 
-    densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
-    density_grad_position_vector_np = density_grad_position_vector_np / bsdf_normalizer_np[:, None]
+    #densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
+    #density_grad_position_vector_np = density_grad_position_vector_np / bsdf_normalizer_np[:, None]
 
     densify_position_signal_np = np.nan_to_num(
         densify_position_signal_np,

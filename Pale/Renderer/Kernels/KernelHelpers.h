@@ -234,7 +234,7 @@ namespace Pale {
             return false;
         }
         /* 2.  Whole box lies behind the ray                                  */
-        if (tmax < 0.0f) return false;
+        if (tmax <= 0.0f) return false;
         /* 3.  Already found a closer hit in the SAME SPACE                   */
         if (tmin > tMaxLimit) return false;
         tEntry = max(tmin, RayEpsilon); // clamp if origin is inside

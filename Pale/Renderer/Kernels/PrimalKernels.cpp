@@ -337,7 +337,7 @@ namespace Pale {
                         sensor.camera,
                         static_cast<float>(pixelX),
                         static_cast<float>(pixelY),
-                        jitterX, jitterY
+                        0, 0
                     );
                     const float cameraCosine = dot(sensor.camera.forward, primaryRay.direction);
                     float transmittance = 1.0f;
@@ -377,7 +377,7 @@ namespace Pale {
                         if (instance.geometryType == GeometryType::PointCloud) {
                             const Transform &transform = scene.transforms[instance.transformIndex];
                             // This should scale with surfel size, not be a global value such as 0.1.
-                            constexpr float localLayerEps = 2.5e-2f;
+                            constexpr float localLayerEps = 1.0e-3f;
                             const float localTMin = worldHit.t - localLayerEps;
                             const float localTMax = worldHit.t + localLayerEps;
 
@@ -423,7 +423,7 @@ namespace Pale {
                                 const float3 directRadiance =
                                     estimateDirectAreaLightAtDiffuseSurface(
                                         scene,
-                                        localHits[0].hitPositionW,
+                                        localHit.hitPositionW,
                                         normalW,
                                         surfel.alpha_r * surfel.albedo,
                                         settings,

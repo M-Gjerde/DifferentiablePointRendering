@@ -77,9 +77,9 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 10000
     global_lr_max_steps: int = 50_000
 
-    depth_distort_weight: float = 750
+    depth_distort_weight: float = 1000
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
+    normal_consistency_weight: float = 0.05
     visibility_weighted_opacity_weight: float = 0.01
 
     log_interval: int = 1
@@ -98,7 +98,7 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 800
+    densification_interval: int = 500
     prune_interval: int = 400
     densify_after: int = 0
     prune_after: int = 0
@@ -113,8 +113,8 @@ class OptimizationConfig:
     densification_scale_min: float = 1.5e-2
 
     # More densification on radiometrically darker primitives
-    densify_bsdf_floor: float = 0.05
-    densify_bsdf_gamma: float = 1.0
+    densify_bsdf_floor: float = 0.00
+    densify_bsdf_gamma: float = 0.0
 
     # Pruning
     opacity_prune_threshold: float = 0.1
@@ -149,12 +149,12 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.00025
-        factor_rotation = 0.015
-        factor_scale = 0.0006
-        factor_albedo = 0.002
-        factor_opacity = 0.0004
-        factor_beta = 0.0002
+        factor_position = 0.0008
+        factor_rotation = 0.02
+        factor_scale = 0.0012
+        factor_albedo = 0.005
+        factor_opacity = 0.0009
+        factor_beta = 0.0009
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
