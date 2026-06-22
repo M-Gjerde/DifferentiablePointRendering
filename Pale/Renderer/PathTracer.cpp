@@ -155,14 +155,14 @@ namespace Pale {
         Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingCameraSegmentBytes));
         m_intermediates.maxMeasurementEventCount = m_rayQueueCapacity;;
 
-        const uint32_t gradientRecordCapacity = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 30;
+        const uint32_t gradientRecordCapacity = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays  * 50;
         // TODO depends on number of sensors
         const std::size_t sizeGradientRecordsBytes =
                 sizeof(SurfelGradientRecord) * gradientRecordCapacity;
         m_intermediates.gradientRecords =
                 sycl::malloc_device<SurfelGradientRecord>(gradientRecordCapacity, m_queue);
         m_intermediates.maxGradientRecordCount = gradientRecordCapacity;
-        Log::PA_INFO("Allocated gradientRecords: QueueCapacity: {}, adjointSPP {}, adjointShadowSPP {}, {}",
+        Log::PA_WARN("Allocated gradientRecords: QueueCapacity: {}, adjointSPP {}, adjointShadowSPP {}, {}",
                      m_rayQueueCapacity, m_settings.adjointSamplesPerPixel, m_settings.numAdjointPathShadowRays,
                      Utils::formatBytes(sizeGradientRecordsBytes));
 
