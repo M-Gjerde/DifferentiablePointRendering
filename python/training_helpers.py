@@ -5,26 +5,17 @@ import csv
 import select
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import matplotlib
 
-from density_control import (
-    compute_prune_indices_by_degenerate_scale,
-    compute_prune_indices_by_opacity,
-    make_under_reconstruction_clones,
-    project_gradient_to_surfel_tangent_plane_np,
-    normalize_quaternions_torch,
-    quaternion_to_tangent_frame_torch,
-    apply_local_rotation_update_to_quaternions_inplace,
-)
-
 from config import OptimizationConfig, RendererSettingsConfig
 from density_control import (
-    compute_prune_indices_by_degenerate_scale,
+    compute_prune_indices_by_degenerate_area,
     compute_prune_indices_by_opacity,
     make_under_reconstruction_clones,
-    project_gradient_to_surfel_tangent_plane_np,
+    normalize_quaternions_torch,
+    quaternion_to_tangent_frame_torch
 )
 from io_utils import (
     load_target_image,
@@ -1718,11 +1709,10 @@ def maybe_make_prune_indices(
     if not (iteration >= prune_after and iteration % prune_interval == 0 and not is_reset_iteration):
         return scale_prune_indices, opacity_prune_indices, indices_to_remove_list
 
-    scale_prune_indices = compute_prune_indices_by_degenerate_scale(
+    area_prune_indices = compute_prune_indices_by_degenerate_area(
         scales,
-        min_scale=config.scale_prune_min_scale,
+        min_area=config.min_surfel_area,
         trainable_mask=trainable_surfel_mask,
-        min_points_to_keep=config.min_points_to_keep_after_scale_prune,
     )
     if scale_prune_indices.size > 0:
         indices_to_remove_list.extend(int(i) for i in scale_prune_indices)

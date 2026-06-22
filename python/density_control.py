@@ -488,75 +488,81 @@ def compute_prune_indices_by_opacity(
     return selected.astype(np.int64)
 
 
-def compute_prune_indices_by_degenerate_scale(
+def compute_prune_indices_by_degenerate_area(
         scales: torch.Tensor,
         *,
-        min_scale: float = 1.0e-5,
+        min_area: float = math.pi * 1.0e-10,
         trainable_mask: Optional[torch.Tensor] = None,
         min_points_to_keep: int = 1,
 ) -> np.ndarray:
     """
-    Prune surfels where either scale parameter is degenerate.
+    Prune surfels with degenerate in-plane ellipse area.
 
-    A surfel is considered degenerate if:
+    The geometric area is:
 
-        scale_u <= min_scale OR scale_v <= min_scale
+        area = pi * scale_u * scale_v
 
-    Non-finite scale values are also treated as degenerate.
-
-    Args:
-        scales:
-            Torch tensor with shape (N, 2).
-
-        min_scale:
-            Minimum valid scale. Use 1.0e-5 to prune zero-scale and near-zero-scale surfels.
-
-        trainable_mask:
-            Optional bool tensor with shape (N,). If provided, only trainable surfels
-            are eligible for pruning. This protects emissive/light surfels.
-
-        min_points_to_keep:
-            Safety guard to avoid pruning all points.
-
-    Returns:
-        np.ndarray[int64] of indices to prune.
+    This preserves elongated surfels as long as their total support area remains
+    meaningful. Non-finite or non-positive scale values are always degenerate.
     """
+    if min_area < 0.0:
+        raise ValueError(f"min_area must be non-negative, got {min_area}")
+
     with torch.no_grad():
         scales_np = scales.detach().cpu().numpy().astype(np.float32, copy=False)
 
         if trainable_mask is not None:
-            trainable_mask_np = trainable_mask.detach().cpu().numpy().astype(bool)
+            trainable_mask_np = trainable_mask.detach().cpu().numpy().astype(bool).reshape(-1)
         else:
             trainable_mask_np = np.ones((scales_np.shape[0],), dtype=bool)
 
     if scales_np.ndim != 2 or scales_np.shape[1] != 2:
-        raise ValueError(
-            f"Expected scales to have shape (N, 2), got: {scales_np.shape}"
-        )
+        raise ValueError(f"Expected scales to have shape (N, 2), got {scales_np.shape}")
 
     num_points = scales_np.shape[0]
     if num_points == 0:
         return np.zeros((0,), dtype=np.int64)
 
+    scale_u = scales_np[:, 0]
+    scale_v = scales_np[:, 1]
+
     finite_mask = np.isfinite(scales_np).all(axis=1)
-    degenerate_mask = (
-            (~finite_mask)
-            | (scales_np[:, 0] <= min_scale)
-            | (scales_np[:, 1] <= min_scale)
+    positive_scale_mask = (scale_u > 0.0) & (scale_v > 0.0)
+
+    surfel_area = np.full((num_points,), np.nan, dtype=np.float32)
+    valid_area_mask = finite_mask & positive_scale_mask
+    surfel_area[valid_area_mask] = (
+        np.float32(math.pi)
+        * scale_u[valid_area_mask]
+        * scale_v[valid_area_mask]
     )
 
-    candidate_mask = degenerate_mask & trainable_mask_np
-    candidate_indices = np.nonzero(candidate_mask)[0].astype(np.int64)
+    degenerate_mask = (
+        ~finite_mask
+        | ~positive_scale_mask
+        | (surfel_area <= float(min_area))
+    )
+
+    candidate_indices = np.nonzero(
+        degenerate_mask & trainable_mask_np
+    )[0].astype(np.int64)
 
     if candidate_indices.size == 0:
         return np.zeros((0,), dtype=np.int64)
 
-    max_prune_by_min_points = max(0, num_points - min_points_to_keep)
-
+    max_prune_by_min_points = max(0, num_points - int(min_points_to_keep))
     if max_prune_by_min_points <= 0:
         return np.zeros((0,), dtype=np.int64)
 
     if candidate_indices.size <= max_prune_by_min_points:
-        return candidate_indices.astype(np.int64)
+        return candidate_indices
 
-    return candidate_indices[:max_prune_by_min_points].astype(np.int64)
+    # Prefer pruning the smallest-area surfels first if the safety cap applies.
+    candidate_area = np.nan_to_num(
+        surfel_area[candidate_indices],
+        nan=-np.inf,
+        posinf=np.inf,
+        neginf=-np.inf,
+    )
+    order = np.argsort(candidate_area)
+    return candidate_indices[order[:max_prune_by_min_points]]

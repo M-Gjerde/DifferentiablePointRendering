@@ -6,9 +6,6 @@ from pathlib import Path
 from typing import Dict
 import math
 
-from sympy import false
-
-
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
@@ -77,10 +74,10 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 10000
     global_lr_max_steps: int = 50_000
 
-    depth_distort_weight: float = 1000
+    depth_distort_weight: float = 5000
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.05
-    visibility_weighted_opacity_weight: float = 0.01
+    normal_consistency_weight: float = 0.005
+    visibility_weighted_opacity_weight: float = 0.0
 
     log_interval: int = 1
     save_interval: int = 100
@@ -106,10 +103,10 @@ class OptimizationConfig:
     densify_until_fraction: float = 0.9
 
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-2
-    densification_grad_abs_min_final: float = 5.5e-3
-    densification_grad_abs_min_schedule_start_iteration: int = 2500
-    densification_grad_abs_min_schedule_end_iteration: int = 10000
+    densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min_final: float = 4.0e-4
+    densification_grad_abs_min_schedule_start_iteration: int = 500
+    densification_grad_abs_min_schedule_end_iteration: int = 5000
     densification_scale_min: float = 1.5e-2
 
     # More densification on radiometrically darker primitives
@@ -119,7 +116,7 @@ class OptimizationConfig:
     # Pruning
     opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
-    scale_prune_min_scale: float = 1.0e-3
+    min_surfel_area: float = math.pi * 1.0e-7
     min_points_to_keep_after_scale_prune: int = 1
 
     # Misc scheduling

@@ -494,6 +494,7 @@ def update_status_text(
     ply_paths: List[Path],
     points_dir: Path,
     color_multiplier: float,
+    scale_multiplier: float,
     solid_opacity_enabled: bool,
     correct_normal_flips_enabled: bool,
 ) -> None:
@@ -508,7 +509,8 @@ def update_status_text(
         iteration_text = current_ply_path.stem
 
     text_actor.SetInput(
-        f"{current_index + 1}/{len(ply_paths)} | {iteration_text} | color x{color_multiplier:.2f} | opacity {opacity_mode} | normals {normal_correction_mode}\n"
+        f"{current_index + 1}/{len(ply_paths)} | {iteration_text} | scale x{scale_multiplier:.3f} | "
+        f"color x{color_multiplier:.2f} | opacity {opacity_mode} | normals {normal_correction_mode}\n"
         f"{current_ply_path.name}\n"
         f"{points_dir}"
     )
@@ -528,7 +530,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max-ellipses", type=int, default=0)
     parser.add_argument("--disk-resolution", type=int, default=16)
     parser.add_argument("--alpha", type=float, default=0.95)
-    parser.add_argument("--scale", type=float, default=0.6)
+    parser.add_argument("--scale", type=float, default=0.6, help="Initial global display multiplier for surfel radii.")
+    parser.add_argument("--scale-min", type=float, default=0.05, help="Minimum global display scale exposed by the slider and scale keys.")
+    parser.add_argument("--scale-max", type=float, default=3.0, help="Maximum global display scale exposed by the slider and scale keys.")
+    parser.add_argument("--scale-step", type=float, default=0.05, help="Additive global display-scale step for [ ] and PageDown/PageUp.")
     parser.add_argument("--solid", action="store_true", help="Start with solid opacity enabled. Press S in the viewer to toggle.")
     parser.add_argument("--window-width", type=int, default=1200)
     parser.add_argument("--window-height", type=int, default=900)
@@ -538,7 +543,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--navigation-repeat-seconds", type=float, default=0.15, help="Repeat delay for held left/right navigation keys.")
     parser.add_argument("--normal-length", type=float, default=0.0, help="Length of displayed normal vectors. If <= 0, use 2 * median max(su, sv).")
     parser.add_argument("--show-normals", action="store_true", help="Show surfel normals at startup. Press N in the viewer to toggle.")
-    parser.add_argument("--normal-neighbor-count", type=int, default=32, help="Number of nearest surfels used when pressing F to correct isolated normal flips.")
+    parser.add_argument("--normal-neighbor-count", type=int, default=32, help="Number of nearest surfels used when pressing F or M to correct isolated normal flips.")
     parser.add_argument("--normal-flip-threshold", type=float, default=0.0, help="Flip a normal when its local neighborhood alignment is below -threshold.")
 
     return parser.parse_args()
@@ -560,6 +565,18 @@ def main() -> None:
 
     current_index = args.start_index
     color_multiplier = float(args.color_boost)
+
+    scale_minimum = max(float(args.scale_min), 1.0e-6)
+    scale_maximum = max(float(args.scale_max), scale_minimum)
+    scale_step = max(float(args.scale_step), 1.0e-6)
+    scale_multiplier = float(np.clip(float(args.scale), scale_minimum, scale_maximum))
+
+    if scale_multiplier != float(args.scale):
+        print(
+            f"Clamped initial --scale from {float(args.scale):.6g} to {scale_multiplier:.6g} "
+            f"within [{scale_minimum:.6g}, {scale_maximum:.6g}]."
+        )
+
     solid_opacity_enabled = bool(args.solid)
     correct_normal_flips_enabled = False
 
@@ -571,25 +588,30 @@ def main() -> None:
 
     print(f"Using points folder: {points_dir}")
     print(f"Found {len(ply_paths)} PLY files.")
-    print("Controls: Right/Left arrow = refresh + next/previous PLY, Home/End = refresh + first/last, +/- = color boost, S = toggle solid/file opacity, N = toggle normals, F = correct isolated normal flips, r = reload current, q/Escape = quit")
+    print(
+        "Controls: Right/Left arrow = refresh + next/previous PLY, Home/End = refresh + first/last, "
+        "+/- = color boost, [/] or PageDown/PageUp = surfel scale, slider = surfel scale, "
+        "S = toggle solid/file opacity, N = toggle normals, F/M = correct isolated normal flips, "
+        "R = reload current, Q/Escape = quit"
+    )
 
-    poly_data = build_poly_data_from_ply(
+    current_poly_data = build_poly_data_from_ply(
         ply_path=ply_paths[current_index],
         opacity_threshold=args.opacity_threshold,
         area_threshold=args.area_threshold,
         max_ellipses=args.max_ellipses,
-        scale_multiplier=args.scale,
+        scale_multiplier=scale_multiplier,
         alpha_multiplier=args.alpha,
         color_multiplier=color_multiplier,
         solid=solid_opacity_enabled,
     )
 
-    normal_poly_data = build_normal_poly_data_from_ply(
+    current_normal_poly_data = build_normal_poly_data_from_ply(
         ply_path=ply_paths[current_index],
         opacity_threshold=args.opacity_threshold,
         area_threshold=args.area_threshold,
         max_ellipses=args.max_ellipses,
-        scale_multiplier=args.scale,
+        scale_multiplier=scale_multiplier,
         normal_length=args.normal_length,
         correct_normal_flips=correct_normal_flips_enabled,
         normal_neighbor_count=args.normal_neighbor_count,
@@ -604,7 +626,7 @@ def main() -> None:
     disk.Update()
 
     mapper = vtk.vtkGlyph3DMapper()
-    mapper.SetInputData(poly_data)
+    mapper.SetInputData(current_poly_data)
     mapper.SetSourceConnection(disk.GetOutputPort())
     mapper.SetOrientationArray("orientation")
     mapper.SetOrientationModeToQuaternion()
@@ -631,7 +653,7 @@ def main() -> None:
     normal_arrow_source.Update()
 
     normal_mapper = vtk.vtkGlyph3DMapper()
-    normal_mapper.SetInputData(normal_poly_data)
+    normal_mapper.SetInputData(current_normal_poly_data)
     normal_mapper.SetSourceConnection(normal_arrow_source.GetOutputPort())
     normal_mapper.SetOrientationArray("normal_direction")
     normal_mapper.SetOrientationModeToDirection()
@@ -660,6 +682,7 @@ def main() -> None:
         ply_paths=ply_paths,
         points_dir=points_dir,
         color_multiplier=color_multiplier,
+        scale_multiplier=scale_multiplier,
         solid_opacity_enabled=solid_opacity_enabled,
         correct_normal_flips_enabled=correct_normal_flips_enabled,
     )
@@ -687,41 +710,67 @@ def main() -> None:
 
     renderer.ResetCameraClippingRange()
 
-    def load_current_index() -> None:
-        nonlocal current_index
-        nonlocal color_multiplier
-        nonlocal solid_opacity_enabled
-        nonlocal correct_normal_flips_enabled
+    scale_slider_representation = vtk.vtkSliderRepresentation2D()
+    scale_slider_representation.SetMinimumValue(scale_minimum)
+    scale_slider_representation.SetMaximumValue(scale_maximum)
+    scale_slider_representation.SetValue(scale_multiplier)
+    scale_slider_representation.SetTitleText("Surfel display scale")
+    scale_slider_representation.GetPoint1Coordinate().SetCoordinateSystemToNormalizedDisplay()
+    scale_slider_representation.GetPoint1Coordinate().SetValue(0.64, 0.07)
+    scale_slider_representation.GetPoint2Coordinate().SetCoordinateSystemToNormalizedDisplay()
+    scale_slider_representation.GetPoint2Coordinate().SetValue(0.94, 0.07)
+    scale_slider_representation.SetSliderLength(0.03)
+    scale_slider_representation.SetSliderWidth(0.02)
+    scale_slider_representation.SetEndCapLength(0.015)
+    scale_slider_representation.SetEndCapWidth(0.02)
+    scale_slider_representation.SetTubeWidth(0.005)
+    scale_slider_representation.SetLabelFormat("%.3f")
 
-        current_ply_path = ply_paths[current_index]
+    scale_slider_widget = vtk.vtkSliderWidget()
+    scale_slider_widget.SetInteractor(interactor)
+    scale_slider_widget.SetRepresentation(scale_slider_representation)
+    scale_slider_widget.SetAnimationModeToAnimate()
 
-        new_poly_data = build_poly_data_from_ply(
-            ply_path=current_ply_path,
-            opacity_threshold=args.opacity_threshold,
-            area_threshold=args.area_threshold,
-            max_ellipses=args.max_ellipses,
-            scale_multiplier=args.scale,
-            alpha_multiplier=args.alpha,
-            color_multiplier=color_multiplier,
-            solid=solid_opacity_enabled,
-        )
+    def update_display_scale_multiplier(new_scale_multiplier: float) -> None:
+        nonlocal scale_multiplier
 
-        new_normal_poly_data = build_normal_poly_data_from_ply(
-            ply_path=current_ply_path,
-            opacity_threshold=args.opacity_threshold,
-            area_threshold=args.area_threshold,
-            max_ellipses=args.max_ellipses,
-            scale_multiplier=args.scale,
-            normal_length=args.normal_length,
-            correct_normal_flips=correct_normal_flips_enabled,
-            normal_neighbor_count=args.normal_neighbor_count,
-            normal_flip_threshold=args.normal_flip_threshold,
-        )
+        clamped_scale_multiplier = float(np.clip(new_scale_multiplier, scale_minimum, scale_maximum))
+        if abs(clamped_scale_multiplier - scale_multiplier) <= 1.0e-12:
+            return
 
-        mapper.SetInputData(new_poly_data)
+        scale_ratio = clamped_scale_multiplier / scale_multiplier
+
+        surfel_scale_array = current_poly_data.GetPointData().GetArray("scale")
+        if surfel_scale_array is None:
+            raise RuntimeError("Current surfel poly data has no 'scale' array.")
+
+        for surfel_index in range(surfel_scale_array.GetNumberOfTuples()):
+            scale_u, scale_v, scale_w = surfel_scale_array.GetTuple3(surfel_index)
+            surfel_scale_array.SetTuple3(
+                surfel_index,
+                float(scale_u * scale_ratio),
+                float(scale_v * scale_ratio),
+                float(scale_w),
+            )
+        surfel_scale_array.Modified()
+
+        normal_scale_array = current_normal_poly_data.GetPointData().GetArray("normal_scale")
+        if normal_scale_array is None:
+            raise RuntimeError("Current normal poly data has no 'normal_scale' array.")
+
+        for surfel_index in range(normal_scale_array.GetNumberOfTuples()):
+            normal_scale_x, normal_scale_y, normal_scale_z = normal_scale_array.GetTuple3(surfel_index)
+            normal_scale_array.SetTuple3(
+                surfel_index,
+                float(normal_scale_x * scale_ratio),
+                float(normal_scale_y * scale_ratio),
+                float(normal_scale_z * scale_ratio),
+            )
+        normal_scale_array.Modified()
+
+        scale_multiplier = clamped_scale_multiplier
+        scale_slider_representation.SetValue(scale_multiplier)
         mapper.Modified()
-
-        normal_mapper.SetInputData(new_normal_poly_data)
         normal_mapper.Modified()
 
         update_status_text(
@@ -730,6 +779,67 @@ def main() -> None:
             ply_paths=ply_paths,
             points_dir=points_dir,
             color_multiplier=color_multiplier,
+            scale_multiplier=scale_multiplier,
+            solid_opacity_enabled=solid_opacity_enabled,
+            correct_normal_flips_enabled=correct_normal_flips_enabled,
+        )
+        renderer.ResetCameraClippingRange()
+        render_window.Render()
+        print(f"Surfel display scale: x{scale_multiplier:.3f}")
+
+    def on_scale_slider_interaction(caller, event_name) -> None:
+        requested_scale_multiplier = float(scale_slider_representation.GetValue())
+        update_display_scale_multiplier(requested_scale_multiplier)
+
+    scale_slider_widget.AddObserver("InteractionEvent", on_scale_slider_interaction)
+
+    def load_current_index() -> None:
+        nonlocal current_index
+        nonlocal color_multiplier
+        nonlocal scale_multiplier
+        nonlocal solid_opacity_enabled
+        nonlocal correct_normal_flips_enabled
+        nonlocal current_poly_data
+        nonlocal current_normal_poly_data
+
+        current_ply_path = ply_paths[current_index]
+
+        current_poly_data = build_poly_data_from_ply(
+            ply_path=current_ply_path,
+            opacity_threshold=args.opacity_threshold,
+            area_threshold=args.area_threshold,
+            max_ellipses=args.max_ellipses,
+            scale_multiplier=scale_multiplier,
+            alpha_multiplier=args.alpha,
+            color_multiplier=color_multiplier,
+            solid=solid_opacity_enabled,
+        )
+
+        current_normal_poly_data = build_normal_poly_data_from_ply(
+            ply_path=current_ply_path,
+            opacity_threshold=args.opacity_threshold,
+            area_threshold=args.area_threshold,
+            max_ellipses=args.max_ellipses,
+            scale_multiplier=scale_multiplier,
+            normal_length=args.normal_length,
+            correct_normal_flips=correct_normal_flips_enabled,
+            normal_neighbor_count=args.normal_neighbor_count,
+            normal_flip_threshold=args.normal_flip_threshold,
+        )
+
+        mapper.SetInputData(current_poly_data)
+        mapper.Modified()
+
+        normal_mapper.SetInputData(current_normal_poly_data)
+        normal_mapper.Modified()
+
+        update_status_text(
+            text_actor=status_text_actor,
+            current_index=current_index,
+            ply_paths=ply_paths,
+            points_dir=points_dir,
+            color_multiplier=color_multiplier,
+            scale_multiplier=scale_multiplier,
             solid_opacity_enabled=solid_opacity_enabled,
             correct_normal_flips_enabled=correct_normal_flips_enabled,
         )
@@ -741,6 +851,7 @@ def main() -> None:
 
         print(
             f"Showing {current_index + 1}/{len(ply_paths)}: {current_ply_path.name} "
+            f"| scale x{scale_multiplier:.3f} "
             f"| color x{color_multiplier:.2f} "
             f"| opacity {'solid' if solid_opacity_enabled else 'file'} "
             f"| normals {'corrected' if correct_normal_flips_enabled else 'raw'}"
@@ -790,6 +901,7 @@ def main() -> None:
     def execute_action(action: str) -> None:
         nonlocal current_index
         nonlocal color_multiplier
+        nonlocal scale_multiplier
         nonlocal solid_opacity_enabled
         nonlocal correct_normal_flips_enabled
 
@@ -831,6 +943,14 @@ def main() -> None:
             color_multiplier = max(color_multiplier - float(args.color_boost_step), 0.0)
             print(f"Color boost: x{color_multiplier:.2f}")
             load_current_index()
+            return
+
+        if action == "scale_up":
+            update_display_scale_multiplier(scale_multiplier + scale_step)
+            return
+
+        if action == "scale_down":
+            update_display_scale_multiplier(scale_multiplier - scale_step)
             return
 
         if action == "toggle_solid":
@@ -897,6 +1017,14 @@ def main() -> None:
             queue_action("color_down")
             return
 
+        if key_symbol in ("bracketright", "]", "PageUp"):
+            queue_action("scale_up")
+            return
+
+        if key_symbol in ("bracketleft", "[", "PageDown"):
+            queue_action("scale_down")
+            return
+
         if key_symbol in ("s", "S"):
             queue_action("toggle_solid")
             return
@@ -905,7 +1033,7 @@ def main() -> None:
             queue_action("toggle_normals")
             return
 
-        if key_symbol in ("m", "m"):
+        if key_symbol in ("f", "F", "m", "M"):
             queue_action("toggle_normal_correction")
             return
 
@@ -960,6 +1088,7 @@ def main() -> None:
     render_window.SetWindowName(f"{current_index + 1}/{len(ply_paths)} - {ply_paths[current_index].name}")
 
     interactor.Initialize()
+    scale_slider_widget.EnabledOn()
     render_window.Render()
     interactor.CreateRepeatingTimer(50)
     interactor.Start()
