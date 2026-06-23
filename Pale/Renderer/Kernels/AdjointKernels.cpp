@@ -3162,8 +3162,14 @@ namespace Pale {
 
                             const AlphaKernelEval kernelEval = evaluateAlphaKernelAndDerivatives(surfel, hit.u, hit.v);
 
+                            constexpr bool detachOpacityInDepthDistortion = true;
                             const float barAlphaGeom = barA[i] * eta;
-                            const float barEta = barA[i] * hit.alphaGeom;
+                            // Opacity still affects forward compositing weights, but the depth
+                            // distortion loss does not update opacity.
+                            const float barEta = detachOpacityInDepthDistortion
+                                ? 0.0f
+                                : barA[i] * hit.alphaGeom;
+
                             const float barU = barAlphaGeom * kernelEval.dValue_dU;
                             const float barV = barAlphaGeom * kernelEval.dValue_dV;
                             const float barBeta = barAlphaGeom * kernelEval.dValue_dBeta;
@@ -3214,7 +3220,7 @@ namespace Pale {
                         if (useVisibilityOpacity) {
                             const float visibilityOpacityAdjoint =
                                     visibilityOpacityLossWeight * visibilityOpacityLossNormalization;
-                            visibilityGradOpacity += visibilityOpacityAdjoint * 2.0f * hit.wi * (eta - 1.0f);
+                            visibilityGradOpacity += visibilityOpacityAdjoint * 2.0f * hit.wi * (eta - 2.0f);
                         }
 
                         if (useNormalConsistency && i == medianHitIndex) {

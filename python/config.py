@@ -68,23 +68,24 @@ class OptimizationConfig:
     use_position_lr_schedule: bool = True
     position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.5
-    position_lr_max_steps: int = 50_000
+    position_lr_max_steps: int = iterations
     # Global LR scheduling
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.25
-    global_lr_start_iteration: int = 20_000
-    global_lr_max_steps: int = 50_000
+    global_lr_start_iteration: int = 10_000
+    global_lr_max_steps: int = iterations
 
     depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
-    visibility_weighted_opacity_weight: float = 0.008
+    normal_consistency_weight: float = 0.001
+    visibility_weighted_opacity_weight: float = 0.01
+    bsdf_decay_weight: float = 0.0    # Encourages high opacity / low BSDF factorizations for equal radiance.
 
     log_interval: int = 1
     save_interval: int = 100
     save_ply_files_interval: int = save_interval
-    save_gradient_diagnostics: bool = True
+    save_gradient_diagnostics: bool = False
     # Iteration snapshot content
     save_snapshot_rgb: bool = True
     save_snapshot_median_depth: bool = True
@@ -97,7 +98,7 @@ class OptimizationConfig:
     device: str = "cpu"
 
     # Density control / EV-splitting
-    densification_interval: int = 500
+    densification_interval: int = 300
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
@@ -105,24 +106,24 @@ class OptimizationConfig:
     densify_until_fraction: float = 0.9
 
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 6.0e-4
-    densification_grad_abs_min_schedule_start_iteration: int = 500
-    densification_grad_abs_min_schedule_end_iteration: int = 5000
+    densification_grad_abs_min: float = 3.5e-4
+    densification_grad_abs_min_final: float = 3.5e-4
+    densification_grad_abs_min_schedule_start_iteration: int = 5000
+    densification_grad_abs_min_schedule_end_iteration: int = 10000
     densification_scale_min: float = 1.25e-2
 
     # More densification on radiometrically darker primitives
-    densify_bsdf_floor: float = 0.00
-    densify_bsdf_gamma: float = 0.0
+    densify_bsdf_floor: float = 0.05
+    densify_bsdf_gamma: float = 1.0
 
     # Pruning
-    opacity_prune_threshold: float = 0.45
+    opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = math.pi * 1.0e-4
+    min_surfel_area: float = math.pi * 5.0e-6
     min_points_to_keep_after_scale_prune: int = 1
-
+    inactive_gradient_prune_cycles: int = 0
     # Misc scheduling
-    reset_opacity_interval: int = 0
+    reset_opacity_interval: int = 2000
     reset_opacity_value: float = 0
     reset_scale_interval: int = 0
     reset_scale_shrink_factor: float = 1.0
@@ -151,8 +152,8 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_position = 0.0008
         factor_rotation = 0.02
         factor_scale = 0.0012
-        factor_albedo = 0.005
-        factor_opacity = 0.0009
+        factor_albedo = 0.001
+        factor_opacity = 0.005
         factor_beta = 0.0006
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")

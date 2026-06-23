@@ -15,6 +15,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
     visibility_weighted_opacity_weight = float(config.visibility_weighted_opacity_weight)
+    bsdf_decay_weight = float(config.bsdf_decay_weight)
+    use_bsdf_decay = bsdf_decay_weight != 0.0
     save_ply_files_interval = float(config.save_ply_files_interval)
 
     use_depth_distortion = depth_distortion_base_weight != 0.0
@@ -28,7 +30,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         f"start_iter={depth_distortion_start_iteration}, "
         f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
         f"visibility_weighted_opacity={use_visibility_weighted_opacity} "
-        f"weight={visibility_weighted_opacity_weight:.3e}"
+        f"weight={visibility_weighted_opacity_weight:.3e}, "
+        f"bsdf_decay={use_bsdf_decay} "
+        f"weight={bsdf_decay_weight:.3e}"
     )
     initial_params = fetch_parameters(renderer)
     initial_params_reference = make_initial_params_reference(initial_params)
@@ -96,6 +100,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     opacity_prune_threshold = float(config.opacity_prune_threshold)
     max_prune_fraction = float(config.max_prune_fraction)
+    inactive_gradient_prune_cycles = int(config.inactive_gradient_prune_cycles)
     reset_opacity_interval = int(config.reset_opacity_interval)
     reset_opacity_value = float(config.reset_opacity_value)
     reset_scale_interval = int(config.reset_scale_interval)
@@ -112,6 +117,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     densify_position_grad_vector_accum_np = np.zeros(tuple(positions.shape), dtype=np.float32)
     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool)
+    inactive_gradient_cycle_count_np = np.zeros((positions.shape[0],), dtype=np.uint32, )
     visited_training_camera_ids_this_cycle: set[str] = set()
 
     metrics_csv_path = config.output_dir / "metrics.csv"
@@ -159,6 +165,21 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     use_depth_distortion=use_depth_distortion,
                     use_normal_consistency=use_normal_consistency,
                     use_visibility_weighted_opacity=use_visibility_weighted_opacity,
+                )
+                (
+                    bsdf_decay_loss_raw,
+                    bsdf_decay_loss_weighted,
+                    bsdf_decay_grad_albedos_np,
+                ) = compute_global_bsdf_decay_loss_and_gradient(
+                    albedos=albedos,
+                    trainable_surfel_mask=trainable_surfel_mask,
+                    weight=bsdf_decay_weight,
+                )
+
+                add_global_bsdf_decay_loss_to_loss_state(
+                    loss_state=loss_state,
+                    raw_loss=bsdf_decay_loss_raw,
+                    weighted_loss=bsdf_decay_loss_weighted,
                 )
 
                 for camera_name, camera_loss_values in loss_state["per_camera_loss_values"].items():
@@ -251,11 +272,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         camera_batch_scale,
                     )
 
-                total_gradients = sum_gradient_dicts(photo_gradients, surface_regularizer_gradients)
-
-                grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np = extract_total_gradient_arrays(
-                    total_gradients
+                bsdf_decay_gradients = make_albedo_only_gradient_dict(
+                    reference_gradients=photo_gradients,
+                    albedo_gradient=bsdf_decay_grad_albedos_np,
                 )
+
+                total_gradients = sum_gradient_dicts(
+                    photo_gradients,
+                    surface_regularizer_gradients,
+                    bsdf_decay_gradients,
+                )
+
+                (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np,
+                 grad_betas_np,) = extract_total_gradient_arrays(total_gradients)
 
                 grad_opacity_total_norm = gradient_l2_norm(grad_opacities_np)
                 grad_opacity_total_max = max_point_norm(grad_opacities_np)
@@ -288,6 +317,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         f"grad_abs_min={active_densification_grad_abs_min:.3e}"
 
                     )
+                bsdf_decay_gradient_stats = gradient_stats_from_dict(bsdf_decay_gradients)
 
                 update_densification_statistics(
                     iteration=iteration,
@@ -377,9 +407,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     if (
                             save_gradient_diagnostics
-                            and densification_interval > 0
+                            and config.save_interval > 0
                             and densify_after <= iteration <= densify_until_iteration
-                            and iteration % densification_interval == 0
+                            and iteration % config.save_interval == 0
                     ):
                         save_densification_gradient_diagnostics(
                             output_dir=config.output_dir,
@@ -400,17 +430,25 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     )
 
                     inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
-
-                    if camera_cycle_complete and iteration >= prune_after:
+                    if (camera_cycle_complete and iteration >= prune_after and inactive_gradient_prune_cycles > 0):
                         trainable_surfel_mask_np = (
                             trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
-
-                        inactive_camera_cycle_indices = np.flatnonzero(
-                            trainable_surfel_mask_np & ~active_during_camera_cycle_np).astype(np.int64)
+                        active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
+                        inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
+                        # A surfel with any position-gradient record in this
+                        # complete camera cycle is no longer considered inactive.
+                        inactive_gradient_cycle_count_np[active_this_cycle_np] = 0
+                        # Count consecutive complete cycles with no position-gradient
+                        # record. Saturate at the threshold; larger values are irrelevant.
+                        inactive_gradient_cycle_count_np[inactive_this_cycle_np] = np.minimum(
+                            inactive_gradient_cycle_count_np[inactive_this_cycle_np] + 1,
+                            inactive_gradient_prune_cycles, )
+                        inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
+                                inactive_gradient_cycle_count_np >= inactive_gradient_prune_cycles)).astype(
+                            np.int64)
 
                         if inactive_camera_cycle_indices.size > 0:
-                            indices_to_remove_list.extend(
-                                int(index) for index in inactive_camera_cycle_indices)
+                            indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
                 else:
                     print(f"[Iter {iteration:04d}] Skipping densification/pruning due to opacity reset")
 
@@ -450,7 +488,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                             f"scale={len(scale_prune_set)}, "
                             f"opacity={len(opacity_prune_set)}, "
-                            f"inactive_cycle={len(inactive_cycle_prune_set)}, "
+                            f"inactive_gradient={len(inactive_cycle_prune_set)} "
+                            f"(threshold={inactive_gradient_prune_cycles} cycles), "
                             f"both_scale_opacity={len(overlap_set)}, "
                             f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
                             f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
@@ -462,6 +501,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                         densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
                         active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
+                        inactive_gradient_cycle_count_np = (inactive_gradient_cycle_count_np[keep_mask_np])
                     source_index_for_new_np = None
 
                     if densification_result is not None:
@@ -486,6 +526,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)], axis=0)
                             active_during_camera_cycle_np = np.concatenate(
                                 [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
+                            inactive_gradient_cycle_count_np = np.concatenate(
+                                [inactive_gradient_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0, )
 
                     rebuild_bvh(renderer)
                     positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
@@ -587,6 +629,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["total_normal_loss_weighted"],
                         averaged_loss_state["total_visibility_weighted_opacity_loss_raw"],
                         averaged_loss_state["total_visibility_weighted_opacity_loss_weighted"],
+                        averaged_loss_state["total_bsdf_decay_loss_raw"],
+                        averaged_loss_state["total_bsdf_decay_loss_weighted"],
                         averaged_loss_state["total_loss_value"],
                         num_points,
                         iteration_time,
@@ -653,7 +697,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             depth_regularizer_gradients=depth_regularizer_gradients,
                             normal_regularizer_gradients=normal_regularizer_gradients,
                             visibility_opacity_gradients=visibility_opacity_gradients,
-                            regularizer_gradients=surface_regularizer_gradients,
+                            bsdf_decay_gradients=bsdf_decay_gradients,
+                            surface_regularizer_gradients=surface_regularizer_gradients,
                             total_gradients=total_gradients,
                         )
                     )
@@ -669,6 +714,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         visibility_maps = loss_state["visibility_weighted_opacity_maps_for_logging"]
                         visibility_loss_mean = np.mean([float(v.mean()) for v in visibility_maps.values()])
                         print(f"visibility_weighted_opacity_raw_mean={visibility_loss_mean:.3e}")
+
+                    if use_bsdf_decay:
+                        print(format_gradient_stats("bsdf_decay", bsdf_decay_gradient_stats))
 
                     hotkey = poll_hotkey()
                     if hotkey == "s":
