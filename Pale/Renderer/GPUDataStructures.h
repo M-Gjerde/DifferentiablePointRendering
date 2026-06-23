@@ -685,7 +685,7 @@ namespace Pale {
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
-        uint32_t numAdjointPathShadowRays = 4;
+        uint32_t numAdjointPathShadowRays = 1;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

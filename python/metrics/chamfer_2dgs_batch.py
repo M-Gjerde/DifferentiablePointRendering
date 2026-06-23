@@ -20,9 +20,9 @@ class DatasetConfig:
 DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
     #DatasetConfig("dragon", "2dgs_dragon", "dragon.ply"),
     #DatasetConfig("horse", "2dgs_horse", "horse.ply"),
-    #DatasetConfig("lego", "2dgs_lego", "lego.ply"),
+    DatasetConfig("lego", "2dgs_lego_15", "lego.ply"),
     #DatasetConfig("plant", "2dgs_plant", "plant.ply"),
-    DatasetConfig("teapot", "2dgs_teapot_10", "teapot.ply"),
+    #DatasetConfig("teapot", "2dgs_teapot_10", "teapot.ply"),
 )
 
 

@@ -507,7 +507,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=Path("../Assets/OptimizationOutput"),
+        default=Path("OptimizationOutput"),
         help=(
             "Root folder containing optimization run folders. "
             "The latest run with gradient_stats/iter_*/gradient_*.ply is selected."

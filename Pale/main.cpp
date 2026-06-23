@@ -926,7 +926,7 @@ int main(int argc, char **argv) {
         settings.numForwardPasses = 1;
         settings.numShadowRays = 1;
         settings.numAdjointShadowRays = 1;
-        settings.adjointSamplesPerPixel = 16;
+        settings.adjointSamplesPerPixel = 1;
         settings.numGatherPasses = 1;
 
         settings.renderDebugGradientImages = true;
@@ -951,7 +951,7 @@ int main(int argc, char **argv) {
         saveForwardImagesAndAuxiliaryBuffers(deviceSelector, sensors, outputRoot);
 
         {
-            /*
+
             auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
             if (entities.empty()) {
                 throw std::runtime_error("debug gradients: scene has no PointCloudComponent");
@@ -978,7 +978,7 @@ int main(int argc, char **argv) {
             if (debugSurfelIndex >= pointGeometry.positions.size()) {
                 throw std::runtime_error("debug gradients: surfelIndexForDebugImages is out of range");
             }
-
+            /*
             pointGeometry.positions[debugSurfelIndex].x = -0.0f;
             pointGeometry.positions[debugSurfelIndex].y =  0.3f;
             pointGeometry.positions[debugSurfelIndex].z = 0.2f;
@@ -1118,7 +1118,6 @@ int main(int argc, char **argv) {
 
             Pale::Log::PA_INFO("Surface Regularizer Backward Pass...");
 
-            /*
             if (settings.renderDebugGradientImages) {
                 savePointGradientStatsAsColoredPlys(
                     deviceSelector,
@@ -1127,7 +1126,6 @@ int main(int argc, char **argv) {
                     outputRoot / "gradient_stats",
                     static_cast<uint32_t>(adjointSensors.size()));
             }
-            */
 
             std::vector<Pale::DebugImages> surfaceDebugImages(sensors.size());
 

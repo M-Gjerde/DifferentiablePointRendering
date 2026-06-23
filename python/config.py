@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict
 import math
 
+
 @dataclass
 class RendererSettingsConfig:
     photons: float = 1e6
@@ -49,8 +50,9 @@ class OptimizationConfig:
     output_dir_is_explicit: bool = False
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
+    checkpoint: Path | None = None
 
-    iterations: int = int(30_000)
+    iterations: int = int(60_000)
 
     optimizer_type: str = "sgd"
     learning_rate: float = 1.0
@@ -96,7 +98,7 @@ class OptimizationConfig:
 
     # Density control / EV-splitting
     densification_interval: int = 500
-    prune_interval: int = 250
+    prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
     densify_until_iteration: int = -1
@@ -104,7 +106,7 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min_final: float = 6.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 500
     densification_grad_abs_min_schedule_end_iteration: int = 5000
     densification_scale_min: float = 1.25e-2
@@ -116,7 +118,7 @@ class OptimizationConfig:
     # Pruning
     opacity_prune_threshold: float = 0.45
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = math.pi * 1.0e-5
+    min_surfel_area: float = math.pi * 1.0e-4
     min_points_to_keep_after_scale_prune: int = 1
 
     # Misc scheduling
@@ -193,12 +195,14 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--assets-root", type=Path)
     parser.add_argument("--scene", "--scene-xml", dest="scene_xml", type=str)
     parser.add_argument("--pointcloud", dest="pointcloud_ply", type=str)
-    parser.add_argument("--dataset-path", type=Path)
-    parser.add_argument("--output", "--output-dir", dest="output_dir", type=Path)
+    parser.add_argument("-s", "--dataset-path", type=Path)
+    parser.add_argument("--output", "-o", "-m", "--output-dir", dest="output_dir", type=Path)
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--optimizer", dest="optimizer_type", type=str, default="adam", choices=["adam", "sgd"])
     parser.add_argument("--log-interval", type=int)
     parser.add_argument("--save-interval", type=int)
+    parser.add_argument("--checkpoint", type=Path, help=(
+        "Prior optimization run directory. Uses "            "<checkpoint>/points_final.ply as this run's initial point cloud."), )
     parser.add_argument("--device", type=str)
     parser.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float)
     parser.add_argument("--lr-pos", dest="learning_rate_position", type=float)
@@ -269,6 +273,19 @@ def parse_args() -> OptimizationConfig:
     config.output_dir_is_explicit = "output_dir" in cli_overrides
     config.scene_xml_is_explicit = "scene_xml" in cli_overrides
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
+
+    if config.checkpoint is not None:
+        checkpoint_dir = config.checkpoint.expanduser().resolve()
+        if not checkpoint_dir.is_dir():
+            raise NotADirectoryError(f"--checkpoint is not an existing run directory: {checkpoint_dir}")
+        checkpoint_points_path = checkpoint_dir / "points_final.ply"
+        if not checkpoint_points_path.is_file():
+            raise FileNotFoundError(
+                f"Could not find points_final.ply in checkpoint directory: "                f"{checkpoint_points_path}")
+        config.checkpoint = checkpoint_dir
+        config.pointcloud_ply = str(checkpoint_points_path)
+        config.pointcloud_ply_is_explicit = True
+        print(f"[checkpoint] Starting a fresh optimization from: "            f"{checkpoint_points_path}")
 
     resolve_learning_rates(config)
     resolve_iteration_schedules(config, cli_overrides)

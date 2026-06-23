@@ -1730,6 +1730,8 @@ def maybe_make_prune_indices(
         min_area=config.min_surfel_area,
         trainable_mask=trainable_surfel_mask,
     )
+
+    scale_prune_indices = area_prune_indices
     if scale_prune_indices.size > 0:
         indices_to_remove_list.extend(int(i) for i in scale_prune_indices)
 
