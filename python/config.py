@@ -16,7 +16,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 8
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -52,11 +52,12 @@ class OptimizationConfig:
     pointcloud_ply_is_explicit: bool = False
     checkpoint: Path | None = None
 
+    device: str = "cpu"
+
     iterations: int = int(60_000)
-
-    optimizer_type: str = "sgd"
+    optimizer_type: str = "adam"
+    # Learning rates
     learning_rate: float = 1.0
-
     learning_rate_position: float | None = None
     learning_rate_rotation: float | None = None
     max_rotation_step_radians: float = 0.01
@@ -76,25 +77,12 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 20_000
     global_lr_max_steps: int = iterations
 
-    depth_distort_weight: float = 100
+    # Regularizers
+    depth_distort_weight: float = 50
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
-    visibility_weighted_opacity_weight: float = 0.05
+    normal_consistency_weight: float = 0.0025
+    visibility_weighted_opacity_weight: float = 0.01
 
-    log_interval: int = 1
-    save_interval: int = 100
-    save_ply_files_interval: int = save_interval
-    save_gradient_diagnostics: bool = True
-    # Iteration snapshot content
-    save_snapshot_rgb: bool = True
-    save_snapshot_median_depth: bool = True
-    save_snapshot_depth_distortion: bool = False
-    save_snapshot_visible_normal: bool = False
-    save_snapshot_normal_from_depth: bool = False
-    save_snapshot_grad: bool = False
-    densification_verbose: bool = True
-
-    device: str = "cpu"
 
     # Density control / EV-splitting
     densification_interval: int = 400
@@ -118,8 +106,9 @@ class OptimizationConfig:
     # Pruning
     opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = math.pi * 5.0e-7
+    min_surfel_area: float = math.pi * 5.0e-6
     min_points_to_keep_after_scale_prune: int = 1
+    inactive_gradient_prune_cycles: int = 10
 
     # Misc scheduling
     reset_opacity_interval: int = 0
@@ -136,6 +125,19 @@ class OptimizationConfig:
     camera_sampling_seed: int = 0
     scale_single_camera_gradients: bool = False
 
+    # Logging
+    log_interval: int = 1
+    save_interval: int = 100
+    save_ply_files_interval: int = save_interval
+    save_gradient_diagnostics: bool = True
+    # Iteration snapshot content
+    save_snapshot_rgb: bool = True
+    save_snapshot_median_depth: bool = True
+    save_snapshot_depth_distortion: bool = False
+    save_snapshot_visible_normal: bool = False
+    save_snapshot_normal_from_depth: bool = False
+    save_snapshot_grad: bool = False
+    densification_verbose: bool = True
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
     base_learning_rate = config.learning_rate

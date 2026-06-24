@@ -3162,7 +3162,7 @@ namespace Pale {
 
                             const AlphaKernelEval kernelEval = evaluateAlphaKernelAndDerivatives(surfel, hit.u, hit.v);
 
-                            constexpr bool detachOpacityInDepthDistortion = true;
+                            constexpr bool detachOpacityInDepthDistortion = false;
                             const float barAlphaGeom = barA[i] * eta;
                             // Opacity still affects forward compositing weights, but the depth
                             // distortion loss does not update opacity.

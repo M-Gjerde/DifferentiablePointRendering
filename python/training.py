@@ -15,8 +15,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
     visibility_weighted_opacity_weight = float(config.visibility_weighted_opacity_weight)
-    bsdf_decay_weight = float(config.bsdf_decay_weight)
-    use_bsdf_decay = bsdf_decay_weight != 0.0
     save_ply_files_interval = float(config.save_ply_files_interval)
 
     use_depth_distortion = depth_distortion_base_weight != 0.0
@@ -31,8 +29,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
         f"visibility_weighted_opacity={use_visibility_weighted_opacity} "
         f"weight={visibility_weighted_opacity_weight:.3e}, "
-        f"bsdf_decay={use_bsdf_decay} "
-        f"weight={bsdf_decay_weight:.3e}"
     )
     initial_params = fetch_parameters(renderer)
     initial_params_reference = make_initial_params_reference(initial_params)
@@ -166,21 +162,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     use_normal_consistency=use_normal_consistency,
                     use_visibility_weighted_opacity=use_visibility_weighted_opacity,
                 )
-                (
-                    bsdf_decay_loss_raw,
-                    bsdf_decay_loss_weighted,
-                    bsdf_decay_grad_albedos_np,
-                ) = compute_global_bsdf_decay_loss_and_gradient(
-                    albedos=albedos,
-                    trainable_surfel_mask=trainable_surfel_mask,
-                    weight=bsdf_decay_weight,
-                )
-
-                add_global_bsdf_decay_loss_to_loss_state(
-                    loss_state=loss_state,
-                    raw_loss=bsdf_decay_loss_raw,
-                    weighted_loss=bsdf_decay_loss_weighted,
-                )
 
                 for camera_name, camera_loss_values in loss_state["per_camera_loss_values"].items():
                     latest_loss_values_by_camera[camera_name] = dict(camera_loss_values)
@@ -272,15 +253,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         camera_batch_scale,
                     )
 
-                bsdf_decay_gradients = make_albedo_only_gradient_dict(
-                    reference_gradients=photo_gradients,
-                    albedo_gradient=bsdf_decay_grad_albedos_np,
-                )
 
                 total_gradients = sum_gradient_dicts(
                     photo_gradients,
                     surface_regularizer_gradients,
-                    bsdf_decay_gradients,
                 )
 
                 (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np,
@@ -317,8 +293,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         f"grad_abs_min={active_densification_grad_abs_min:.3e}"
 
                     )
-                bsdf_decay_gradient_stats = gradient_stats_from_dict(bsdf_decay_gradients)
-
                 update_densification_statistics(
                     iteration=iteration,
                     densification_interval=densification_interval,
@@ -629,8 +603,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["total_normal_loss_weighted"],
                         averaged_loss_state["total_visibility_weighted_opacity_loss_raw"],
                         averaged_loss_state["total_visibility_weighted_opacity_loss_weighted"],
-                        averaged_loss_state["total_bsdf_decay_loss_raw"],
-                        averaged_loss_state["total_bsdf_decay_loss_weighted"],
                         averaged_loss_state["total_loss_value"],
                         num_points,
                         iteration_time,
@@ -697,7 +669,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             depth_regularizer_gradients=depth_regularizer_gradients,
                             normal_regularizer_gradients=normal_regularizer_gradients,
                             visibility_opacity_gradients=visibility_opacity_gradients,
-                            bsdf_decay_gradients=bsdf_decay_gradients,
                             surface_regularizer_gradients=surface_regularizer_gradients,
                             total_gradients=total_gradients,
                         )
@@ -715,8 +686,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         visibility_loss_mean = np.mean([float(v.mean()) for v in visibility_maps.values()])
                         print(f"visibility_weighted_opacity_raw_mean={visibility_loss_mean:.3e}")
 
-                    if use_bsdf_decay:
-                        print(format_gradient_stats("bsdf_decay", bsdf_decay_gradient_stats))
 
                     hotkey = poll_hotkey()
                     if hotkey == "s":
