@@ -45,9 +45,70 @@ LOSS_VALUE_KEYS = (
     "total_normal_loss_weighted",
     "total_visibility_weighted_opacity_loss_raw",
     "total_visibility_weighted_opacity_loss_weighted",
+    "total_bsdf_decay_loss_raw",
+    "total_bsdf_decay_loss_weighted",
     "total_loss_value",
 )
 
+def make_albedo_only_gradient_dict(
+        reference_gradients: Dict[str, np.ndarray],
+        albedo_gradient: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    """
+    Build a gradient dictionary compatible with renderer gradient dictionaries.
+
+    Only albedo has a non-zero contribution. All other parameter gradients are
+    explicitly zero so this source can be summed and reported independently.
+    """
+    if "albedo" not in reference_gradients:
+        raise RuntimeError(
+            f"Expected an 'albedo' entry in reference gradients, got keys: "
+            f"{list(reference_gradients.keys())}"
+        )
+
+    gradient_dict = {
+        parameter_name: np.zeros_like(
+            np.asarray(parameter_gradient, dtype=np.float32, order="C")
+        )
+        for parameter_name, parameter_gradient in reference_gradients.items()
+    }
+
+    albedo_gradient_np = np.asarray(
+        albedo_gradient,
+        dtype=np.float32,
+        order="C",
+    )
+
+    if gradient_dict["albedo"].shape != albedo_gradient_np.shape:
+        raise RuntimeError(
+            "BSDF decay albedo gradient shape mismatch: "
+            f"expected {gradient_dict['albedo'].shape}, got {albedo_gradient_np.shape}"
+        )
+
+    gradient_dict["albedo"] = albedo_gradient_np.copy()
+    return gradient_dict
+
+def add_global_bsdf_decay_loss_to_loss_state(
+        loss_state: Dict[str, Any],
+        raw_loss: float,
+        weighted_loss: float,
+) -> None:
+    """
+    The BSDF regularizer is global rather than camera-specific. Store the same
+    scalar on every active camera so the existing camera-cache averaging remains
+    correct for one-camera-per-iteration training.
+    """
+    per_camera_loss_values = loss_state["per_camera_loss_values"]
+    active_camera_count = len(per_camera_loss_values)
+
+    for camera_loss_values in per_camera_loss_values.values():
+        camera_loss_values["total_bsdf_decay_loss_raw"] = float(raw_loss)
+        camera_loss_values["total_bsdf_decay_loss_weighted"] = float(weighted_loss)
+        camera_loss_values["total_loss_value"] += float(weighted_loss)
+
+    loss_state["total_bsdf_decay_loss_raw"] += active_camera_count * float(raw_loss)
+    loss_state["total_bsdf_decay_loss_weighted"] += active_camera_count * float(weighted_loss)
+    loss_state["total_loss_value"] += active_camera_count * float(weighted_loss)
 
 def make_zero_loss_values() -> Dict[str, float]:
     return {loss_key: 0.0 for loss_key in LOSS_VALUE_KEYS}
@@ -675,13 +736,13 @@ def format_training_iteration_log(
         f" beta={grad_beta_max:.2e}"
     )
 
-
 def format_gradient_source_balance(
         loss_gradients: Dict[str, np.ndarray],
         depth_regularizer_gradients: Dict[str, np.ndarray],
         normal_regularizer_gradients: Dict[str, np.ndarray],
         visibility_opacity_gradients: Dict[str, np.ndarray],
-        regularizer_gradients: Dict[str, np.ndarray],
+        bsdf_decay_gradients: Dict[str, np.ndarray],
+        surface_regularizer_gradients: Dict[str, np.ndarray],
         total_gradients: Dict[str, np.ndarray],
 ) -> str:
     keys = [
@@ -698,13 +759,15 @@ def format_gradient_source_balance(
         "  "
         f"{'param':<8}"
         f"{'loss':>11}"
-        f"{'regularizers':>14}"
+        f"{'surface':>11}"
+        f"{'bsdf':>11}"
         f"{'total':>11}"
-        f"{'regs%':>8}"
+        f"{'prior%':>8}"
         f"{'depth%':>8}"
         f"{'normal%':>9}"
         f"{'vis_eta%':>10}"
-        f"   {'regularizer components'}",
+        f"{'bsdf%':>8}"
+        f"   {'source norms'}",
     ]
 
     for key, label in keys:
@@ -712,23 +775,50 @@ def format_gradient_source_balance(
 
         depth_norm = gradient_norm_for_key(depth_regularizer_gradients, key)
         normal_norm = gradient_norm_for_key(normal_regularizer_gradients, key)
-        visibility_opacity_norm = gradient_norm_for_key(visibility_opacity_gradients, key)
+        visibility_opacity_norm = gradient_norm_for_key(
+            visibility_opacity_gradients,
+            key,
+        )
+        bsdf_decay_norm = gradient_norm_for_key(bsdf_decay_gradients, key)
 
-        regularizer_norm = gradient_norm_for_key(regularizer_gradients, key)
+        surface_regularizer_norm = gradient_norm_for_key(
+            surface_regularizer_gradients,
+            key,
+        )
         total_norm = gradient_norm_for_key(total_gradients, key)
 
-        loss_regularizer_denom = loss_norm + regularizer_norm
-        regularizer_percent = (
-            100.0 * regularizer_norm / loss_regularizer_denom
-            if loss_regularizer_denom > 1.0e-20
+        prior_norm = surface_regularizer_norm + bsdf_decay_norm
+        prior_denom = loss_norm + prior_norm
+        prior_percent = (
+            100.0 * prior_norm / prior_denom
+            if prior_denom > 1.0e-20
             else 0.0
         )
 
-        component_denom = depth_norm + normal_norm + visibility_opacity_norm
-        depth_percent = 100.0 * depth_norm / component_denom if component_denom > 1.0e-20 else 0.0
-        normal_percent = 100.0 * normal_norm / component_denom if component_denom > 1.0e-20 else 0.0
+        component_denom = (
+            depth_norm
+            + normal_norm
+            + visibility_opacity_norm
+            + bsdf_decay_norm
+        )
+
+        depth_percent = (
+            100.0 * depth_norm / component_denom
+            if component_denom > 1.0e-20
+            else 0.0
+        )
+        normal_percent = (
+            100.0 * normal_norm / component_denom
+            if component_denom > 1.0e-20
+            else 0.0
+        )
         visibility_opacity_percent = (
             100.0 * visibility_opacity_norm / component_denom
+            if component_denom > 1.0e-20
+            else 0.0
+        )
+        bsdf_decay_percent = (
+            100.0 * bsdf_decay_norm / component_denom
             if component_denom > 1.0e-20
             else 0.0
         )
@@ -737,16 +827,19 @@ def format_gradient_source_balance(
             "  "
             f"{label:<8}"
             f"{loss_norm:>11.2e}"
-            f"{regularizer_norm:>14.2e}"
+            f"{surface_regularizer_norm:>11.2e}"
+            f"{bsdf_decay_norm:>11.2e}"
             f"{total_norm:>11.2e}"
-            f"{regularizer_percent:>7.1f}%"
+            f"{prior_percent:>7.1f}%"
             f"{depth_percent:>7.1f}%"
             f"{normal_percent:>8.1f}%"
             f"{visibility_opacity_percent:>9.1f}%"
+            f"{bsdf_decay_percent:>7.1f}%"
             f"   "
             f"depth={depth_norm:.2e}, "
             f"normal={normal_norm:.2e}, "
-            f"vis_eta={visibility_opacity_norm:.2e}"
+            f"vis_eta={visibility_opacity_norm:.2e}, "
+            f"bsdf={bsdf_decay_norm:.2e}"
         )
 
     return "\n".join(lines)
@@ -1953,6 +2046,73 @@ def save_densification_gradient_diagnostics(
 
     print(f"[Iter {iteration:04d}] Saved gradient diagnostics: {diagnostic_dir}")
 
+def compute_global_bsdf_decay_loss_and_gradient(
+        albedos: torch.Tensor,
+        trainable_surfel_mask: torch.Tensor,
+        weight: float,
+) -> tuple[float, float, np.ndarray]:
+    """
+    Global trainable-surfel BSDF/albedo L2 regularizer:
+
+        L = weight * mean(albedo[i, c]^2), i in trainable surfels.
+
+    This is deliberately not visibility weighted. It applies equally to all
+    non-emissive surfels and lets the photometric loss compensate by increasing
+    opacity where that produces an equivalent radiance.
+
+    Returns:
+        raw_loss:      mean(albedo^2) over trainable RGB entries.
+        weighted_loss: weight * raw_loss.
+        gradient_np:   d(weighted_loss) / d(albedos), shape (N, 3).
+    """
+    if weight < 0.0:
+        raise ValueError(f"bsdf decay weight must be non-negative, got {weight}")
+
+    if albedos.ndim != 2 or albedos.shape[1] != 3:
+        raise RuntimeError(
+            f"Expected albedos with shape (N, 3), got {tuple(albedos.shape)}"
+        )
+
+    if trainable_surfel_mask.ndim != 1:
+        raise RuntimeError(
+            "trainable_surfel_mask must have shape (N,), "
+            f"got {tuple(trainable_surfel_mask.shape)}"
+        )
+
+    if trainable_surfel_mask.shape[0] != albedos.shape[0]:
+        raise RuntimeError(
+            "Trainable-mask/albedo length mismatch: "
+            f"{trainable_surfel_mask.shape[0]} vs {albedos.shape[0]}"
+        )
+
+    with torch.no_grad():
+        gradient = torch.zeros_like(albedos)
+
+        if weight == 0.0:
+            return 0.0, 0.0, gradient.cpu().numpy().astype(np.float32, copy=False)
+
+        trainable_mask = trainable_surfel_mask.to(
+            device=albedos.device,
+            dtype=torch.bool,
+        )
+
+        trainable_albedos = albedos.detach()[trainable_mask]
+        if trainable_albedos.numel() == 0:
+            return 0.0, 0.0, gradient.cpu().numpy().astype(np.float32, copy=False)
+
+        raw_loss = trainable_albedos.square().mean()
+        weighted_loss = float(weight) * raw_loss
+
+        gradient[trainable_mask] = (
+            (2.0 * float(weight) / float(trainable_albedos.numel()))
+            * trainable_albedos
+        )
+
+        return (
+            float(raw_loss.item()),
+            float(weighted_loss.item()),
+            gradient.cpu().numpy().astype(np.float32, copy=False),
+        )
 
 def save_iteration_outputs(
         output_dir: Path,
@@ -2076,6 +2236,8 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "loss_normal_consistency_weighted_mean",
             "loss_visibility_weighted_opacity_raw_mean",
             "loss_visibility_weighted_opacity_weighted_mean",
+            "loss_bsdf_decay_raw_mean",
+            "loss_bsdf_decay_weighted_mean",
             "loss_total_mean",
             "num_points",
             "iteration_time_sec",

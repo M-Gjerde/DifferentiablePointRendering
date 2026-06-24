@@ -180,30 +180,26 @@ def find_latest_run_dir(
         if not metrics_csv_path.exists():
             continue
 
-        parsed_timestamp = parse_run_timestamp(child.name)
-        modified_time = metrics_csv_path.stat().st_mtime
+        # Deliberately use run-folder age, not metrics.csv modification time.
+        # Updating a file inside a directory does not normally update the
+        # directory mtime on Linux.
+        run_dir_modified_time_ns = child.stat().st_mtime_ns
 
         candidate_run_dirs.append(
             {
                 "run_dir": child,
-                "parsed_timestamp": parsed_timestamp,
-                "modified_time": modified_time,
+                "run_dir_modified_time_ns": run_dir_modified_time_ns,
             }
         )
 
     if not candidate_run_dirs:
         raise FileNotFoundError(
-            f"No run folders with {metrics_name} found under: {optimization_output_root}"
+            f"No run folders with {metrics_name} found under: "
+            f"{optimization_output_root}"
         )
 
     candidate_run_dirs.sort(
-        key=lambda item: (
-            item["parsed_timestamp"] is not None,
-            item["parsed_timestamp"]
-            if item["parsed_timestamp"] is not None
-            else datetime.min,
-            item["modified_time"],
-        ),
+        key=lambda item: item["run_dir_modified_time_ns"],
         reverse=True,
     )
 
@@ -351,6 +347,8 @@ def select_loss_column(
     preferred_columns = [
         "loss_total_mean",
         "loss_rgb_mean",
+        "loss_bsdf_decay_weighted_mean",
+        "loss_bsdf_decay_raw_mean",
         "loss_visibility_weighted_opacity_weighted_mean",
         "loss_visibility_weighted_opacity_raw_mean",
         "loss_normal_consistency_weighted_mean",
@@ -359,6 +357,8 @@ def select_loss_column(
         "loss_depth_distortion_raw_mean",
         "loss_total_sum",
         "loss_rgb_sum",
+        "loss_bsdf_decay_weighted_sum",
+        "loss_bsdf_decay_raw_sum",
         "loss_visibility_weighted_opacity_weighted_sum",
         "loss_visibility_weighted_opacity_raw_sum",
         "loss_normal_consistency_weighted_sum",
@@ -568,6 +568,7 @@ def draw_metrics_figure(
             ("loss_total_mean", "loss_total_sum"),
         ],
     )
+
     weighted_regularizer_columns = get_first_available_columns(
         loss_dataframe,
         [
@@ -583,8 +584,13 @@ def draw_metrics_figure(
                 "loss_visibility_weighted_opacity_weighted_mean",
                 "loss_visibility_weighted_opacity_weighted_sum",
             ),
+            (
+                "loss_bsdf_decay_weighted_mean",
+                "loss_bsdf_decay_weighted_sum",
+            ),
         ],
     )
+
     raw_diagnostic_columns = get_first_available_columns(
         loss_dataframe,
         [
@@ -600,8 +606,13 @@ def draw_metrics_figure(
                 "loss_visibility_weighted_opacity_raw_mean",
                 "loss_visibility_weighted_opacity_raw_sum",
             ),
+            (
+                "loss_bsdf_decay_raw_mean",
+                "loss_bsdf_decay_raw_sum",
+            ),
         ],
     )
+
     point_count_columns = get_available_columns(
         point_count_dataframe,
         [
@@ -641,6 +652,11 @@ def draw_metrics_figure(
             linewidth=1.8,
             alpha=0.95,
         ),
+        "loss_bsdf_decay_weighted_mean": dict(
+            color="tab:brown",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
 
         "loss_depth_distortion_raw_mean": dict(
             color="tab:red",
@@ -656,6 +672,12 @@ def draw_metrics_figure(
         ),
         "loss_visibility_weighted_opacity_raw_mean": dict(
             color="tab:purple",
+            linewidth=1.2,
+            alpha=0.75,
+            linestyle="--",
+        ),
+        "loss_bsdf_decay_raw_mean": dict(
+            color="tab:brown",
             linewidth=1.2,
             alpha=0.75,
             linestyle="--",
@@ -679,6 +701,11 @@ def draw_metrics_figure(
             linewidth=1.8,
             alpha=0.95,
         ),
+        "loss_bsdf_decay_weighted_sum": dict(
+            color="tab:brown",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
 
         "loss_depth_distortion_raw_sum": dict(
             color="tab:red",
@@ -694,6 +721,12 @@ def draw_metrics_figure(
         ),
         "loss_visibility_weighted_opacity_raw_sum": dict(
             color="tab:purple",
+            linewidth=1.2,
+            alpha=0.75,
+            linestyle="--",
+        ),
+        "loss_bsdf_decay_raw_sum": dict(
+            color="tab:brown",
             linewidth=1.2,
             alpha=0.75,
             linestyle="--",
