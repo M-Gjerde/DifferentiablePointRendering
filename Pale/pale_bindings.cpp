@@ -131,13 +131,44 @@ public:
 
         // Store for later use in set_point_parameters
         pointCloudAssetHandle = pointCloudHandle;
-
         deviceSelector = std::make_unique<Pale::DeviceSelector>();
         Pale::AssetAccessFromManager assetAccessor(*assetManager);
 
+        // Map python keys -> engine m_settings. Adjust names to your struct.
+        // Example mappings based on your dict:
+        //   "photons": 1e6, "bounces": 6, "gather_passes": 6,
+        //   "adjoint_bounces": 1, "adjoint_passes": 6
+        if (!settingsDict.is_none()) {
+            // use integer types consistent with your struct
+            m_settings.photonsPerLaunch = get_u64(settingsDict, "photons", m_settings.photonsPerLaunch);
+            m_settings.maxBounces = get_i(settingsDict, "bounces", m_settings.maxBounces);
+            m_settings.numForwardPasses = get_i(settingsDict, "forward_passes", m_settings.numForwardPasses);
+            m_settings.numShadowRays = get_i(settingsDict, "primal_shadow_rays", m_settings.numShadowRays);
+            m_settings.numAdjointShadowRays = get_i(settingsDict, "adjoint_shadow_rays", m_settings.numAdjointShadowRays);
+            m_settings.maxAdjointBounces = get_i(settingsDict, "adjoint_bounces", m_settings.maxAdjointBounces);
+            m_settings.adjointSamplesPerPixel = get_i(settingsDict, "adjoint_passes", m_settings.adjointSamplesPerPixel);
+            m_settings.random.seed = get_i(settingsDict, "seed", m_settings.random.seed);
+            m_settings.renderDebugGradientImages =
+                    get_b(settingsDict, "debug_images", m_settings.renderDebugGradientImages);
+            m_settings.enableAdjointDirectLight =
+                    get_b(settingsDict, "enable_adjoint_shadow_rays", m_settings.enableAdjointDirectLight);
+            m_settings.numAdjointPathShadowRays =
+                    get_i(settingsDict, "adjoint_shadow_path_rays", m_settings.numAdjointPathShadowRays);
+            m_settings.depthDistortionWeight =
+                    get_f(settingsDict, "depth_distort_weight", m_settings.depthDistortionWeight);
+
+            m_settings.normalConsistencyWeight =
+                    get_f(settingsDict, "normal_consistency_weight", m_settings.normalConsistencyWeight);
+
+            m_settings.visibilityWeightedOpacityRegularizerWeight =
+                    get_f(settingsDict,
+                          "visibility_weighted_opacity_weight",
+                          m_settings.visibilityWeightedOpacityRegularizerWeight);
+            // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
+        }
+
         buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
         sceneGpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector->getQueue());
-
         sensorsForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
         //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
         //Pale::setBackgroundColor(deviceSelector->getQueue(), sensorsForward, color);
@@ -148,55 +179,20 @@ public:
         normalConsistencyGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
 
-        Pale::PathTracerSettings settings{}; // defaults from engine
-
-        // Map python keys -> engine settings. Adjust names to your struct.
-        // Example mappings based on your dict:
-        //   "photons": 1e6, "bounces": 6, "gather_passes": 6,
-        //   "adjoint_bounces": 1, "adjoint_passes": 6
-        if (!settingsDict.is_none()) {
-            // use integer types consistent with your struct
-            settings.photonsPerLaunch = get_u64(settingsDict, "photons", settings.photonsPerLaunch);
-            settings.maxBounces = get_i(settingsDict, "bounces", settings.maxBounces);
-            settings.numForwardPasses = get_i(settingsDict, "forward_passes", settings.numForwardPasses);
-            settings.numShadowRays = get_i(settingsDict, "primal_shadow_rays", settings.numShadowRays);
-            settings.numAdjointShadowRays = get_i(settingsDict, "adjoint_shadow_rays", settings.numAdjointShadowRays);
-            settings.maxAdjointBounces = get_i(settingsDict, "adjoint_bounces", settings.maxAdjointBounces);
-            settings.adjointSamplesPerPixel = get_i(settingsDict, "adjoint_passes", settings.adjointSamplesPerPixel);
-            settings.random.seed = get_i(settingsDict, "seed", settings.random.seed);
-            settings.renderDebugGradientImages =
-                    get_b(settingsDict, "debug_images", settings.renderDebugGradientImages);
-            settings.enableAdjointDirectLight =
-                    get_b(settingsDict, "enable_adjoint_shadow_rays", settings.enableAdjointDirectLight);
-            settings.numAdjointPathShadowRays =
-                    get_i(settingsDict, "adjoint_shadow_path_rays", settings.numAdjointPathShadowRays);
-            settings.depthDistortionWeight =
-                    get_f(settingsDict, "depth_distort_weight", settings.depthDistortionWeight);
-
-            settings.normalConsistencyWeight =
-                    get_f(settingsDict, "normal_consistency_weight", settings.normalConsistencyWeight);
-
-            settings.visibilityWeightedOpacityRegularizerWeight =
-                    get_f(settingsDict,
-                          "visibility_weighted_opacity_weight",
-                          settings.visibilityWeightedOpacityRegularizerWeight);
-            // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
-        }
-
         // Print summary
         Pale::Log::PA_WARN("=== Renderer Settings ===");
-        Pale::Log::PA_WARN("  Photons per launch        : {}", settings.photonsPerLaunch);
-        Pale::Log::PA_WARN("  Max bounces               : {}", settings.maxBounces);
-        Pale::Log::PA_WARN("  Forward passes            : {}", settings.numForwardPasses);
-        Pale::Log::PA_WARN("  Shadow Rays               : {}", settings.numShadowRays);
-        Pale::Log::PA_WARN("  Adjoint Shadow Rays       : {}", settings.numAdjointShadowRays);
-        Pale::Log::PA_WARN("  Adjoint bounces           : {}", settings.maxAdjointBounces);
-        Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", settings.adjointSamplesPerPixel);
-        Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", settings.enableAdjointDirectLight);
-        Pale::Log::PA_WARN("  Adjoint Shadow ray count  : {}", settings.numAdjointPathShadowRays);
-        Pale::Log::PA_WARN("  Visibility opacity weight : {}", settings.visibilityWeightedOpacityRegularizerWeight);
-        Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", settings.depthDistortionWeight);
-        Pale::Log::PA_WARN("  Normal Consistency Weight : {}", settings.normalConsistencyWeight);
+        Pale::Log::PA_WARN("  Photons per launch        : {}", m_settings.photonsPerLaunch);
+        Pale::Log::PA_WARN("  Max bounces               : {}", m_settings.maxBounces);
+        Pale::Log::PA_WARN("  Forward passes            : {}", m_settings.numForwardPasses);
+        Pale::Log::PA_WARN("  Shadow Rays               : {}", m_settings.numShadowRays);
+        Pale::Log::PA_WARN("  Adjoint Shadow Rays       : {}", m_settings.numAdjointShadowRays);
+        Pale::Log::PA_WARN("  Adjoint bounces           : {}", m_settings.maxAdjointBounces);
+        Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", m_settings.adjointSamplesPerPixel);
+        Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", m_settings.enableAdjointDirectLight);
+        Pale::Log::PA_WARN("  Adjoint Shadow ray count  : {}", m_settings.numAdjointPathShadowRays);
+        Pale::Log::PA_WARN("  Visibility opacity weight : {}", m_settings.visibilityWeightedOpacityRegularizerWeight);
+        Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", m_settings.depthDistortionWeight);
+        Pale::Log::PA_WARN("  Normal Consistency Weight : {}", m_settings.normalConsistencyWeight);
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorsForward.size(); ++i) {
             const auto &s = sensorsForward[i];
@@ -213,7 +209,7 @@ public:
         }
 
 
-        pathTracer = std::make_unique<Pale::PathTracer>(deviceSelector->getQueue(), settings);
+        pathTracer = std::make_unique<Pale::PathTracer>(deviceSelector->getQueue(), m_settings);
         pathTracer->setScene(sceneGpu, buildProducts);
     }
 
@@ -2605,6 +2601,7 @@ private:
     std::unique_ptr<Pale::AssetManager> assetManager{};
     std::shared_ptr<Pale::Scene> scene{};
     std::unique_ptr<Pale::DeviceSelector> deviceSelector{};
+    Pale::PathTracerSettings m_settings{};
 
     std::vector<Pale::SensorGPU> sensorsForward{};
     std::unique_ptr<Pale::PathTracer> pathTracer{};

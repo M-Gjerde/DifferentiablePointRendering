@@ -30,7 +30,7 @@ namespace Pale {
         }
         ensureRayCapacity(requiredRayQueueCapacity);
 
-        if (m_settings.integratorKind == IntegratorKind::photonMapping) {
+        if (m_settings.integratorKind == IntegratorKind::photonMapping || m_settings.integratorKind == IntegratorKind::lightTracingCylinderRay) {
             freePhotonMap();
             freePhotonGridBuffers();
 
@@ -499,7 +499,7 @@ namespace Pale {
                 submitLightTracingKernel(renderPackage);
                 break;
             case IntegratorKind::lightTracingCylinderRay:
-                //submitLightTracingKernelCylinderRay(renderPackage);
+                submitLightTracingKernelCylinderRay(renderPackage);
                 break;
             case IntegratorKind::photonMapping:
                 submitPhotonMappingKernel(renderPackage);

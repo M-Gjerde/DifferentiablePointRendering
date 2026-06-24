@@ -28,7 +28,7 @@ import Pale.Render.PathTracer;
 import Pale.Render.Sensors;
 import Pale.Scene;
 
-static std::string assetPathOrId(const Pale::AssetRegistry &registry, const Pale::AssetHandle &assetHandle) {
+static std::string assetPathOrId(const Pale::AssetRegistry& registry, const Pale::AssetHandle& assetHandle) {
     if (auto meta = registry.meta(assetHandle)) {
         return meta->path.string();
     }
@@ -39,8 +39,8 @@ static bool isNonzeroWeight(float weight) {
     return std::isfinite(weight) && std::fabs(weight) > 0.0f;
 }
 
-static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene, Pale::AssetManager &assetManager) {
-    auto &registry = assetManager.registry();
+static void logSceneSummary(std::shared_ptr<Pale::Scene>& scene, Pale::AssetManager& assetManager) {
+    auto& registry = assetManager.registry();
 
     Pale::Log::PA_INFO("===== Scene Summary =====");
     size_t entityCount = 0;
@@ -48,11 +48,11 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene, Pale::AssetMana
     size_t emissiveCount = 0;
 
     auto view = scene->getAllEntitiesWith<Pale::IDComponent>();
-    for (entt::entity entity: view) {
+    for (entt::entity entity : view) {
         Pale::Entity sceneEntity(entity, scene.get());
         ++entityCount;
 
-        const char *name = sceneEntity.getName().c_str();
+        const char* name = sceneEntity.getName().c_str();
         const bool hasMesh = sceneEntity.hasComponent<Pale::MeshComponent>();
         const bool hasMaterial = sceneEntity.hasComponent<Pale::MaterialComponent>();
         const bool hasEmitter = sceneEntity.hasComponent<Pale::AreaLightComponent>();
@@ -60,14 +60,15 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene, Pale::AssetMana
         Pale::Log::PA_INFO("[Entity] {}", name);
 
         if (hasMesh) {
-            auto &meshComponent = sceneEntity.getComponent<Pale::MeshComponent>();
+            auto& meshComponent = sceneEntity.getComponent<Pale::MeshComponent>();
             ++meshCount;
             std::string meshLabel = assetPathOrId(registry, meshComponent.meshID);
 
             size_t submeshCount = 0;
             if (auto mesh = assetManager.get<Pale::Mesh>(meshComponent.meshID)) {
                 submeshCount = mesh->submeshes.size();
-            } else {
+            }
+            else {
                 Pale::Log::PA_WARN("  Mesh: {} (FAILED to load)", meshLabel);
             }
 
@@ -75,7 +76,7 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene, Pale::AssetMana
         }
 
         if (hasMaterial) {
-            auto &materialComponent = sceneEntity.getComponent<Pale::MaterialComponent>();
+            auto& materialComponent = sceneEntity.getComponent<Pale::MaterialComponent>();
             std::string materialLabel = assetPathOrId(registry, materialComponent.materialID);
 
             if (auto material = assetManager.get<Pale::Material>(materialComponent.materialID)) {
@@ -87,14 +88,15 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene, Pale::AssetMana
                     material->baseColor.z,
                     material->roughness,
                     material->metallic);
-            } else {
+            }
+            else {
                 Pale::Log::PA_INFO("  Material: {}  (pending load)", materialLabel);
             }
         }
 
         if (hasEmitter) {
             ++emissiveCount;
-            auto &emitterComponent = sceneEntity.getComponent<Pale::AreaLightComponent>();
+            auto& emitterComponent = sceneEntity.getComponent<Pale::AreaLightComponent>();
             Pale::Log::PA_INFO(
                 "  Emissive radiance=({:.3f},{:.3f},{:.3f})",
                 emitterComponent.radiance.x,
@@ -110,29 +112,31 @@ static void logSceneSummary(std::shared_ptr<Pale::Scene> &scene, Pale::AssetMana
         emissiveCount);
 }
 
-void rebuild_bvh(Pale::PathTracer *pathTracer,
-                 std::shared_ptr<Pale::Scene> &scene,
-                 Pale::SceneBuild::BuildProducts &buildProducts,
-                 Pale::AssetManager *assetManager,
-                 Pale::DeviceSelector &deviceSelector,
-                 Pale::GPUSceneBuffers &sceneGpu) {
+void rebuild_bvh(Pale::PathTracer* pathTracer,
+                 std::shared_ptr<Pale::Scene>& scene,
+                 Pale::SceneBuild::BuildProducts& buildProducts,
+                 Pale::AssetManager* assetManager,
+                 Pale::DeviceSelector& deviceSelector,
+                 Pale::GPUSceneBuffers& sceneGpu) {
     Pale::AssetAccessFromManager assetAccessor(*assetManager);
 
-    auto options = Pale::SceneBuild::BuildOptions();
-    options.bvhMaxLeafPoints = 4;
+    /*
+        auto options = Pale::SceneBuild::BuildOptions();
+        options.bvhMaxLeafPoints = 4;
 
-    buildProducts = Pale::SceneBuild::build(scene, assetAccessor, options);
+        //buildProducts = Pale::SceneBuild::build(scene, assetAccessor, options);
 
-    Pale::SceneUpload::uploadOrReallocate(
-        buildProducts,
-        sceneGpu,
-        deviceSelector.getQueue());
+        Pale::SceneUpload::uploadOrReallocate(
+            buildProducts,
+            sceneGpu,
+            deviceSelector.getQueue());
 
-    pathTracer->setScene(sceneGpu, buildProducts);
+        pathTracer->setScene(sceneGpu, buildProducts);
+        */
 }
 
 static std::vector<float> packScalarToRGBA(
-    const std::vector<float> &scalarValues,
+    const std::vector<float>& scalarValues,
     uint32_t pixelCount,
     bool zeroIsValid) {
     std::vector<float> rgbaValues(pixelCount * 4u, 0.0f);
@@ -155,22 +159,22 @@ static std::vector<float> packScalarToRGBA(
 }
 
 static void saveScalarFloatBufferAsEXR(
-    Pale::DeviceSelector &deviceSelector,
-    float *deviceBuffer,
+    Pale::DeviceSelector& deviceSelector,
+    float* deviceBuffer,
     uint32_t imageWidth,
     uint32_t imageHeight,
-    const std::filesystem::path &path,
+    const std::filesystem::path& path,
     bool zeroIsValid) {
     const uint32_t pixelCount = imageWidth * imageHeight;
 
     std::vector<float> scalarValues =
-            Pale::downloadFloatBuffer(
-                deviceSelector.getQueue(),
-                deviceBuffer,
-                pixelCount);
+        Pale::downloadFloatBuffer(
+            deviceSelector.getQueue(),
+            deviceBuffer,
+            pixelCount);
 
     std::vector<float> rgbaValues =
-            packScalarToRGBA(scalarValues, pixelCount, zeroIsValid);
+        packScalarToRGBA(scalarValues, pixelCount, zeroIsValid);
 
     Pale::Utils::saveRGBAFloatAsEXR(
         path,
@@ -180,10 +184,10 @@ static void saveScalarFloatBufferAsEXR(
 }
 
 static void saveCameraAuxiliaryBuffers(
-    Pale::DeviceSelector &deviceSelector,
-    const Pale::SensorGPU &sensor,
-    const std::filesystem::path &baseDir,
-    const std::string &fileName) {
+    Pale::DeviceSelector& deviceSelector,
+    const Pale::SensorGPU& sensor,
+    const std::filesystem::path& baseDir,
+    const std::string& fileName) {
     const uint32_t imageWidth = sensor.camera.width;
     const uint32_t imageHeight = sensor.camera.height;
     const uint32_t pixelCount = imageWidth * imageHeight;
@@ -221,36 +225,39 @@ static void saveCameraAuxiliaryBuffers(
         imageWidth,
         imageHeight,
         imageDir / (fileName + "_visibility_weighted_opacity.exr"),
-        true); {
+        true);
+    {
         std::vector<float> medianWorldPositionRGBA =
-                Pale::downloadFloat4Buffer(
-                    deviceSelector.getQueue(),
-                    sensor.medianWorldPositionBuffer,
-                    pixelCount);
+            Pale::downloadFloat4Buffer(
+                deviceSelector.getQueue(),
+                sensor.medianWorldPositionBuffer,
+                pixelCount);
 
         Pale::Utils::saveRGBAFloatAsEXR(
             imageDir / (fileName + "_median_world_position.exr"),
             medianWorldPositionRGBA,
             imageWidth,
             imageHeight);
-    } {
+    }
+    {
         std::vector<float> visibleNormalRGBA =
-                Pale::downloadFloat4Buffer(
-                    deviceSelector.getQueue(),
-                    sensor.visibleNormalBuffer,
-                    pixelCount);
+            Pale::downloadFloat4Buffer(
+                deviceSelector.getQueue(),
+                sensor.visibleNormalBuffer,
+                pixelCount);
 
         Pale::Utils::saveRGBAFloatAsEXR(
             imageDir / (fileName + "_visible_normal.exr"),
             visibleNormalRGBA,
             imageWidth,
             imageHeight);
-    } {
+    }
+    {
         std::vector<float> normalFromDepthRGBA =
-                Pale::downloadFloat4Buffer(
-                    deviceSelector.getQueue(),
-                    sensor.normalFromDepthBuffer,
-                    pixelCount);
+            Pale::downloadFloat4Buffer(
+                deviceSelector.getQueue(),
+                sensor.normalFromDepthBuffer,
+                pixelCount);
 
         Pale::Utils::saveRGBAFloatAsEXR(
             imageDir / (fileName + "_normal_from_depth.exr"),
@@ -261,29 +268,29 @@ static void saveCameraAuxiliaryBuffers(
 }
 
 static void saveForwardImagesAndAuxiliaryBuffers(
-    Pale::DeviceSelector &deviceSelector,
-    const std::vector<Pale::SensorGPU> &sensors,
-    const std::filesystem::path &baseDir,
-    const std::string &fileNameSuffix = "") {
+    Pale::DeviceSelector& deviceSelector,
+    const std::vector<Pale::SensorGPU>& sensors,
+    const std::filesystem::path& baseDir,
+    const std::string& fileNameSuffix = "") {
     const std::filesystem::path imageDir = baseDir / "images";
     std::filesystem::create_directories(imageDir);
 
-    for (const auto &sensor: sensors) {
+    for (const auto& sensor : sensors) {
         const uint32_t imageWidth = sensor.width;
         const uint32_t imageHeight = sensor.height;
         const std::string fileName = std::string(sensor.name) + fileNameSuffix;
 
         std::vector<uint8_t> rgba =
-                Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
+            Pale::downloadSensorRGBA(deviceSelector.getQueue(), sensor);
 
         std::vector<float> rgbaRaw =
-                Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
+            Pale::downloadSensorRGBARAW(deviceSelector.getQueue(), sensor);
 
         const std::filesystem::path pngPath =
-                imageDir / (fileName + ".png");
+            imageDir / (fileName + ".png");
 
         const std::filesystem::path rawPath =
-                imageDir / (fileName + "_raw.exr");
+            imageDir / (fileName + "_raw.exr");
 
         Pale::Utils::savePNG(pngPath, rgba, imageWidth, imageHeight);
 
@@ -306,8 +313,8 @@ static void saveForwardImagesAndAuxiliaryBuffers(
 }
 
 static void uploadSurfaceRegularizerAdjoints(
-    Pale::DeviceSelector &deviceSelector,
-    Pale::SensorGPU &sensor,
+    Pale::DeviceSelector& deviceSelector,
+    Pale::SensorGPU& sensor,
     float depthDistortionWeight,
     float normalConsistencyWeight) {
     auto queue = deviceSelector.getQueue();
@@ -323,7 +330,7 @@ static void uploadSurfaceRegularizerAdjoints(
 
     if (isNonzeroWeight(depthDistortionWeight)) {
         const float depthDistortionAdjoint =
-                depthDistortionWeight / static_cast<float>(std::max(pixelCount, 1u));
+            depthDistortionWeight / static_cast<float>(std::max(pixelCount, 1u));
 
         std::vector<float> depthDistortionAdjointHost(pixelCount, depthDistortionAdjoint);
 
@@ -338,16 +345,16 @@ static void uploadSurfaceRegularizerAdjoints(
     }
 
     std::vector<float> visibleNormalHost =
-            Pale::downloadFloat4Buffer(
-                queue,
-                sensor.visibleNormalBuffer,
-                pixelCount);
+        Pale::downloadFloat4Buffer(
+            queue,
+            sensor.visibleNormalBuffer,
+            pixelCount);
 
     std::vector<float> normalFromDepthHost =
-            Pale::downloadFloat4Buffer(
-                queue,
-                sensor.normalFromDepthBuffer,
-                pixelCount);
+        Pale::downloadFloat4Buffer(
+            queue,
+            sensor.normalFromDepthBuffer,
+            pixelCount);
 
     uint32_t validCount = 0u;
 
@@ -358,14 +365,14 @@ static void uploadSurfaceRegularizerAdjoints(
         const bool depthValid = normalFromDepthHost[baseIndex + 3u] > 0.0f;
 
         const bool visibleFinite =
-                std::isfinite(visibleNormalHost[baseIndex + 0u]) &&
-                std::isfinite(visibleNormalHost[baseIndex + 1u]) &&
-                std::isfinite(visibleNormalHost[baseIndex + 2u]);
+            std::isfinite(visibleNormalHost[baseIndex + 0u]) &&
+            std::isfinite(visibleNormalHost[baseIndex + 1u]) &&
+            std::isfinite(visibleNormalHost[baseIndex + 2u]);
 
         const bool depthFinite =
-                std::isfinite(normalFromDepthHost[baseIndex + 0u]) &&
-                std::isfinite(normalFromDepthHost[baseIndex + 1u]) &&
-                std::isfinite(normalFromDepthHost[baseIndex + 2u]);
+            std::isfinite(normalFromDepthHost[baseIndex + 0u]) &&
+            std::isfinite(normalFromDepthHost[baseIndex + 1u]) &&
+            std::isfinite(normalFromDepthHost[baseIndex + 2u]);
 
         if (visibleValid && depthValid && visibleFinite && depthFinite) {
             ++validCount;
@@ -373,7 +380,7 @@ static void uploadSurfaceRegularizerAdjoints(
     }
 
     const float normalAdjointScale =
-            normalConsistencyWeight / static_cast<float>(std::max(validCount, 1u));
+        normalConsistencyWeight / static_cast<float>(std::max(validCount, 1u));
 
     std::vector<float> visibleNormalAdjointHost(pixelCount * 4u, 0.0f);
     std::vector<float> normalFromDepthAdjointHost(pixelCount * 4u, 0.0f);
@@ -385,14 +392,14 @@ static void uploadSurfaceRegularizerAdjoints(
         const bool depthValid = normalFromDepthHost[baseIndex + 3u] > 0.0f;
 
         const bool visibleFinite =
-                std::isfinite(visibleNormalHost[baseIndex + 0u]) &&
-                std::isfinite(visibleNormalHost[baseIndex + 1u]) &&
-                std::isfinite(visibleNormalHost[baseIndex + 2u]);
+            std::isfinite(visibleNormalHost[baseIndex + 0u]) &&
+            std::isfinite(visibleNormalHost[baseIndex + 1u]) &&
+            std::isfinite(visibleNormalHost[baseIndex + 2u]);
 
         const bool depthFinite =
-                std::isfinite(normalFromDepthHost[baseIndex + 0u]) &&
-                std::isfinite(normalFromDepthHost[baseIndex + 1u]) &&
-                std::isfinite(normalFromDepthHost[baseIndex + 2u]);
+            std::isfinite(normalFromDepthHost[baseIndex + 0u]) &&
+            std::isfinite(normalFromDepthHost[baseIndex + 1u]) &&
+            std::isfinite(normalFromDepthHost[baseIndex + 2u]);
 
         if (!(visibleValid && depthValid && visibleFinite && depthFinite)) {
             continue;
@@ -429,9 +436,9 @@ static void uploadSurfaceRegularizerAdjoints(
 }
 
 static std::vector<Pale::SensorGPU> makeAdjointSensorSubset(
-    const std::vector<Pale::SensorGPU> &allSensors) {
+    const std::vector<Pale::SensorGPU>& allSensors) {
     std::vector<Pale::SensorGPU> adjointSensors;
-    for (const Pale::SensorGPU &sensor: allSensors) {
+    for (const Pale::SensorGPU& sensor : allSensors) {
         if (sensor.camera.useForAdjointPass) {
             adjointSensors.push_back(sensor);
         }
@@ -440,8 +447,8 @@ static std::vector<Pale::SensorGPU> makeAdjointSensorSubset(
 }
 
 static std::vector<Pale::DebugImages> makeDebugImageSubsetForSensors(
-    const std::vector<Pale::SensorGPU> &allSensors,
-    const std::vector<Pale::DebugImages> &debugImages) {
+    const std::vector<Pale::SensorGPU>& allSensors,
+    const std::vector<Pale::DebugImages>& debugImages) {
     std::vector<Pale::DebugImages> selectedDebugImages;
     for (std::size_t sensorIndex = 0; sensorIndex < allSensors.size(); ++sensorIndex) {
         if (allSensors[sensorIndex].camera.useForAdjointPass) {
@@ -451,8 +458,8 @@ static std::vector<Pale::DebugImages> makeDebugImageSubsetForSensors(
     return selectedDebugImages;
 }
 
-static void savePointGradientsAsCsv(Pale::DeviceSelector &deviceSelector, const Pale::PointGradients &gradients,
-                                    const std::filesystem::path &path) {
+static void savePointGradientsAsCsv(Pale::DeviceSelector& deviceSelector, const Pale::PointGradients& gradients,
+                                    const std::filesystem::path& path) {
     auto queue = deviceSelector.getQueue();
     const std::size_t pointCount = gradients.numPoints;
 
@@ -465,16 +472,21 @@ static void savePointGradientsAsCsv(Pale::DeviceSelector &deviceSelector, const 
     std::vector<float> gradShapeHost(pointCount, 0.0f);
 
     if (pointCount > 0) {
-        if (gradients.gradPosition) queue.memcpy(gradPositionHost.data(), gradients.gradPosition,
-                                                 pointCount * sizeof(Pale::float3));
-        if (gradients.gradRotation) queue.memcpy(gradRotationHost.data(), gradients.gradRotation,
-                                                 pointCount * sizeof(Pale::float3));
-        if (gradients.gradScale) queue.memcpy(gradScaleHost.data(), gradients.gradScale,
-                                              pointCount * sizeof(Pale::float2));
-        if (gradients.gradAlbedo) queue.memcpy(gradAlbedoHost.data(), gradients.gradAlbedo,
-                                               pointCount * sizeof(Pale::float3));
-        if (gradients.gradOpacity) queue.memcpy(gradOpacityHost.data(), gradients.gradOpacity,
-                                                pointCount * sizeof(float));
+        if (gradients.gradPosition)
+            queue.memcpy(gradPositionHost.data(), gradients.gradPosition,
+                         pointCount * sizeof(Pale::float3));
+        if (gradients.gradRotation)
+            queue.memcpy(gradRotationHost.data(), gradients.gradRotation,
+                         pointCount * sizeof(Pale::float3));
+        if (gradients.gradScale)
+            queue.memcpy(gradScaleHost.data(), gradients.gradScale,
+                         pointCount * sizeof(Pale::float2));
+        if (gradients.gradAlbedo)
+            queue.memcpy(gradAlbedoHost.data(), gradients.gradAlbedo,
+                         pointCount * sizeof(Pale::float3));
+        if (gradients.gradOpacity)
+            queue.memcpy(gradOpacityHost.data(), gradients.gradOpacity,
+                         pointCount * sizeof(float));
         if (gradients.gradBeta) queue.memcpy(gradBetaHost.data(), gradients.gradBeta, pointCount * sizeof(float));
         if (gradients.gradShape) queue.memcpy(gradShapeHost.data(), gradients.gradShape, pointCount * sizeof(float));
         queue.wait();
@@ -485,25 +497,25 @@ static void savePointGradientsAsCsv(Pale::DeviceSelector &deviceSelector, const 
     if (!file.is_open()) throw std::runtime_error("Could not open gradient CSV for writing: " + path.string());
 
     file <<
-            "index,grad_position_x,grad_position_y,grad_position_z,grad_rotation_x,grad_rotation_y,grad_rotation_z,grad_scale_u,grad_scale_v,grad_albedo_r,grad_albedo_g,grad_albedo_b,grad_opacity,grad_beta,grad_shape\n";
+        "index,grad_position_x,grad_position_y,grad_position_z,grad_rotation_x,grad_rotation_y,grad_rotation_z,grad_scale_u,grad_scale_v,grad_albedo_r,grad_albedo_g,grad_albedo_b,grad_opacity,grad_beta,grad_shape\n";
     for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-        const Pale::float3 &gradPosition = gradPositionHost[pointIndex];
-        const Pale::float3 &gradRotation = gradRotationHost[pointIndex];
-        const Pale::float2 &gradScale = gradScaleHost[pointIndex];
-        const Pale::float3 &gradAlbedo = gradAlbedoHost[pointIndex];
+        const Pale::float3& gradPosition = gradPositionHost[pointIndex];
+        const Pale::float3& gradRotation = gradRotationHost[pointIndex];
+        const Pale::float2& gradScale = gradScaleHost[pointIndex];
+        const Pale::float3& gradAlbedo = gradAlbedoHost[pointIndex];
         file << pointIndex << "," << gradPosition.x() << "," << gradPosition.y() << "," << gradPosition.z() << ","
-                << gradRotation.x() << "," << gradRotation.y() << "," << gradRotation.z() << ","
-                << gradScale.x() << "," << gradScale.y() << ","
-                << gradAlbedo.x() << "," << gradAlbedo.y() << "," << gradAlbedo.z() << ","
-                << gradOpacityHost[pointIndex] << "," << gradBetaHost[pointIndex] << "," << gradShapeHost[pointIndex] <<
-                "\n";
+            << gradRotation.x() << "," << gradRotation.y() << "," << gradRotation.z() << ","
+            << gradScale.x() << "," << gradScale.y() << ","
+            << gradAlbedo.x() << "," << gradAlbedo.y() << "," << gradAlbedo.z() << ","
+            << gradOpacityHost[pointIndex] << "," << gradBetaHost[pointIndex] << "," << gradShapeHost[pointIndex] <<
+            "\n";
     }
 
     Pale::Log::PA_INFO("Saved point gradients: {}", path.string());
 }
 
-static void logSinglePointGradient(Pale::DeviceSelector &deviceSelector, const Pale::PointGradients &gradients,
-                                   uint32_t pointIndex, const std::string &label) {
+static void logSinglePointGradient(Pale::DeviceSelector& deviceSelector, const Pale::PointGradients& gradients,
+                                   uint32_t pointIndex, const std::string& label) {
     if (pointIndex >= gradients.numPoints) return;
 
     float gradientBeta{};
@@ -511,14 +523,18 @@ static void logSinglePointGradient(Pale::DeviceSelector &deviceSelector, const P
     Pale::float3 gradientPosition{};
     Pale::float3 gradientRotation{};
 
-    if (gradients.gradBeta) deviceSelector.getQueue().memcpy(&gradientBeta, &gradients.gradBeta[pointIndex],
-                                                             sizeof(float)).wait();
-    if (gradients.gradOpacity) deviceSelector.getQueue().memcpy(&gradientOpacity, &gradients.gradOpacity[pointIndex],
-                                                                sizeof(float)).wait();
-    if (gradients.gradPosition) deviceSelector.getQueue().memcpy(&gradientPosition, &gradients.gradPosition[pointIndex],
-                                                                 sizeof(Pale::float3)).wait();
-    if (gradients.gradRotation) deviceSelector.getQueue().memcpy(&gradientRotation, &gradients.gradRotation[pointIndex],
-                                                                 sizeof(Pale::float3)).wait();
+    if (gradients.gradBeta)
+        deviceSelector.getQueue().memcpy(&gradientBeta, &gradients.gradBeta[pointIndex],
+                                         sizeof(float)).wait();
+    if (gradients.gradOpacity)
+        deviceSelector.getQueue().memcpy(&gradientOpacity, &gradients.gradOpacity[pointIndex],
+                                         sizeof(float)).wait();
+    if (gradients.gradPosition)
+        deviceSelector.getQueue().memcpy(&gradientPosition, &gradients.gradPosition[pointIndex],
+                                         sizeof(Pale::float3)).wait();
+    if (gradients.gradRotation)
+        deviceSelector.getQueue().memcpy(&gradientRotation, &gradients.gradRotation[pointIndex],
+                                         sizeof(Pale::float3)).wait();
 
     Pale::Log::PA_INFO("{} debug surfel index = {}", label, pointIndex);
     Pale::Log::PA_INFO("{} grad Beta = ({})", label, gradientBeta);
@@ -530,9 +546,9 @@ static void logSinglePointGradient(Pale::DeviceSelector &deviceSelector, const P
 }
 
 static void saveGradientSet(
-    const std::vector<float> &rgbaBuffer,
-    const std::filesystem::path &cameraDebugDir,
-    const std::string &baseName,
+    const std::vector<float>& rgbaBuffer,
+    const std::filesystem::path& cameraDebugDir,
+    const std::string& baseName,
     uint32_t imageWidth,
     uint32_t imageHeight,
     float adjointSamplesPerPixel) {
@@ -573,13 +589,13 @@ static void saveGradientSet(
         true);
 }
 
-static void saveDebugGradientImagesForSensors(Pale::DeviceSelector &deviceSelector,
-                                              const std::vector<Pale::SensorGPU> &sensors,
-                                              const std::vector<Pale::DebugImages> &debugImages,
-                                              const std::filesystem::path &outputRoot, const std::string &prefix,
+static void saveDebugGradientImagesForSensors(Pale::DeviceSelector& deviceSelector,
+                                              const std::vector<Pale::SensorGPU>& sensors,
+                                              const std::vector<Pale::DebugImages>& debugImages,
+                                              const std::filesystem::path& outputRoot, const std::string& prefix,
                                               float adjointSamplesPerPixel) {
     for (std::size_t sensorIndex = 0; sensorIndex < sensors.size(); ++sensorIndex) {
-        const Pale::SensorGPU &sensor = sensors[sensorIndex];
+        const Pale::SensorGPU& sensor = sensors[sensorIndex];
         const std::string sensorName = sensor.name;
         const uint32_t imageWidth = sensor.width;
         const uint32_t imageHeight = sensor.height;
@@ -621,13 +637,13 @@ static float sanitizeScalar(float value) {
 }
 
 static std::vector<float> robustNormalizeScalars(
-    const std::vector<float> &values,
+    const std::vector<float>& values,
     float lowerPercentile = 1.0f,
     float upperPercentile = 99.0f) {
     std::vector<float> finiteValues;
     finiteValues.reserve(values.size());
 
-    for (float value: values) {
+    for (float value : values) {
         if (std::isfinite(value)) {
             finiteValues.push_back(value);
         }
@@ -644,7 +660,7 @@ static std::vector<float> robustNormalizeScalars(
     const auto percentileValue = [&](float percentile) -> float {
         const float clampedPercentile = std::clamp(percentile, 0.0f, 100.0f);
         const float position =
-                (clampedPercentile / 100.0f) * static_cast<float>(finiteValues.size() - 1u);
+            (clampedPercentile / 100.0f) * static_cast<float>(finiteValues.size() - 1u);
 
         const std::size_t lowerIndex = static_cast<std::size_t>(std::floor(position));
         const std::size_t upperIndex = std::min(lowerIndex + 1u, finiteValues.size() - 1u);
@@ -670,7 +686,7 @@ static std::vector<float> robustNormalizeScalars(
 }
 
 static std::vector<float> normalizeByMaximumValue(
-    const std::vector<float> &values,
+    const std::vector<float>& values,
     float maximumValue) {
     std::vector<float> normalized(values.size(), 0.0f);
 
@@ -697,13 +713,13 @@ static std::array<uint8_t, 3> blackRedYellowWhiteColor(float normalizedValue) {
 }
 
 static void saveColoredGradientStatsPly(
-    const Pale::PointGeometry &pointGeometry,
-    const std::vector<float> &scalarValues,
-    const std::vector<float> &normalizedValues,
-    const std::filesystem::path &path,
-    const std::string &scalarName) {
+    const Pale::PointGeometry& pointGeometry,
+    const std::vector<float>& scalarValues,
+    const std::vector<float>& normalizedValues,
+    const std::filesystem::path& path,
+    const std::string& scalarName) {
     const std::size_t pointCount =
-            std::min(pointGeometry.positions.size(), scalarValues.size());
+        std::min(pointGeometry.positions.size(), scalarValues.size());
 
     if (pointCount == 0u) {
         Pale::Log::PA_WARN("saveColoredGradientStatsPly: no points for {}", path.string());
@@ -730,26 +746,26 @@ static void saveColoredGradientStatsPly(
     file << "end_header\n";
 
     for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-        const auto &position = pointGeometry.positions[pointIndex];
+        const auto& position = pointGeometry.positions[pointIndex];
         const auto color = blackRedYellowWhiteColor(normalizedValues[pointIndex]);
         const float scalarValue = sanitizeScalar(scalarValues[pointIndex]);
 
         file << position.x << " "
-                << position.y << " "
-                << position.z << " "
-                << static_cast<int>(color[0]) << " "
-                << static_cast<int>(color[1]) << " "
-                << static_cast<int>(color[2]) << " "
-                << scalarValue << "\n";
+            << position.y << " "
+            << position.z << " "
+            << static_cast<int>(color[0]) << " "
+            << static_cast<int>(color[1]) << " "
+            << static_cast<int>(color[2]) << " "
+            << scalarValue << "\n";
     }
 
     Pale::Log::PA_INFO("Saved gradient-stat PLY: {}", path.string());
 }
 
-static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector &deviceSelector,
-                                                const Pale::PointGradients &gradients,
-                                                const Pale::PointGeometry &pointGeometry,
-                                                const std::filesystem::path &outputDir, uint32_t activeCameraCountMax) {
+static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector& deviceSelector,
+                                                const Pale::PointGradients& gradients,
+                                                const Pale::PointGeometry& pointGeometry,
+                                                const std::filesystem::path& outputDir, uint32_t activeCameraCountMax) {
     auto queue = deviceSelector.getQueue();
     const std::size_t pointCount = gradients.numPoints;
 
@@ -771,8 +787,9 @@ static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector &deviceSele
     std::vector<uint32_t> activeCameraCountHost(pointCount, 0u);
 
     queue.memcpy(gradPositionHost.data(), gradients.gradPosition, pointCount * sizeof(Pale::float3));
-    if (gradients.gradRotation) queue.memcpy(gradRotationHost.data(), gradients.gradRotation,
-                                             pointCount * sizeof(Pale::float3));
+    if (gradients.gradRotation)
+        queue.memcpy(gradRotationHost.data(), gradients.gradRotation,
+                     pointCount * sizeof(Pale::float3));
     queue.memcpy(positionMeanNormHost.data(), gradients.gradPositionMeanNorm, pointCount * sizeof(float));
     queue.memcpy(positionStdHost.data(), gradients.gradPositionStd, pointCount * sizeof(float));
     queue.memcpy(activeCameraCountHost.data(), gradients.gradPositionActiveCameraCount, pointCount * sizeof(uint32_t));
@@ -783,14 +800,14 @@ static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector &deviceSele
     std::vector<float> activeCameraCountFloatHost(pointCount, 0.0f);
 
     for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-        const Pale::float3 &positionGradient = gradPositionHost[pointIndex];
-        const Pale::float3 &rotationGradient = gradRotationHost[pointIndex];
+        const Pale::float3& positionGradient = gradPositionHost[pointIndex];
+        const Pale::float3& rotationGradient = gradRotationHost[pointIndex];
         const float positionGradientSquaredNorm =
-                positionGradient.x() * positionGradient.x() + positionGradient.y() * positionGradient.y() +
-                positionGradient.z() * positionGradient.z();
+            positionGradient.x() * positionGradient.x() + positionGradient.y() * positionGradient.y() +
+            positionGradient.z() * positionGradient.z();
         const float rotationGradientSquaredNorm =
-                rotationGradient.x() * rotationGradient.x() + rotationGradient.y() * rotationGradient.y() +
-                rotationGradient.z() * rotationGradient.z();
+            rotationGradient.x() * rotationGradient.x() + rotationGradient.y() * rotationGradient.y() +
+            rotationGradient.z() * rotationGradient.z();
         gradientNormHost[pointIndex] = std::sqrt(std::max(positionGradientSquaredNorm, 0.0f));
         rotationGradientNormHost[pointIndex] = std::sqrt(std::max(rotationGradientSquaredNorm, 0.0f));
         activeCameraCountFloatHost[pointIndex] = static_cast<float>(activeCameraCountHost[pointIndex]);
@@ -812,7 +829,7 @@ static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector &deviceSele
                                 outputDir / "gradient_active_camera_count.ply", "gradient_active_camera_count");
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     std::filesystem::path workingDirectory = "../Assets";
     std::filesystem::current_path(workingDirectory);
 
@@ -860,7 +877,7 @@ int main(int argc, char **argv) {
 
     if (addPoints) {
         auto pointCloudAssetHandle =
-                assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
+            assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
 
         auto pointCloudEntity = scene->createEntity("PointCloud");
         pointCloudEntity.addComponent<Pale::PointCloudComponent>().pointCloudID = pointCloudAssetHandle;
@@ -872,30 +889,30 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Point cloud asset failed to load or contains no PointGeometry blocks.");
         }
 
-        const Pale::PointGeometry &pointGeometry = pointCloudAsset->points.front();
+        const Pale::PointGeometry& pointGeometry = pointCloudAsset->points.front();
         Pale::Log::PA_INFO("Loaded point cloud with {} surfels.", pointGeometry.positions.size());
     }
 
     if (addModel) {
         Pale::Entity bunnyEntity = scene->createEntity("Model");
 
-        auto &bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
+        auto& bunnyTransformComponent = bunnyEntity.getComponent<Pale::TransformComponent>();
         bunnyTransformComponent.setPosition(glm::vec3(0.3f, 0.4f, 0.3f));
         bunnyTransformComponent.setRotationEuler(glm::vec3(0.0f, 0.0f, 0.0f));
         bunnyTransformComponent.setScale(glm::vec3(0.7f, 0.7f, 0.7f));
 
         Pale::AssetHandle bunnyMeshAssetHandle =
-                assetIndexer.importPath("meshes/bunny.ply", Pale::AssetType::Mesh);
+            assetIndexer.importPath("meshes/bunny.ply", Pale::AssetType::Mesh);
 
-        auto &bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
+        auto& bunnyMeshComponent = bunnyEntity.addComponent<Pale::MeshComponent>();
         bunnyMeshComponent.meshID = bunnyMeshAssetHandle;
 
         Pale::AssetHandle bunnyMaterialAssetHandle =
-                assetIndexer.importPath(
-                    "Materials/cbox/bsdf_blue_0.mat.yaml",
-                    Pale::AssetType::Material);
+            assetIndexer.importPath(
+                "Materials/cbox/bsdf_blue_0.mat.yaml",
+                Pale::AssetType::Material);
 
-        auto &bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
+        auto& bunnyMaterialComponent = bunnyEntity.addComponent<Pale::MaterialComponent>();
         bunnyMaterialComponent.materialID = bunnyMaterialAssetHandle;
     }
 
@@ -910,7 +927,52 @@ int main(int argc, char **argv) {
     auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, options);
     auto sceneGpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue());
 
-    const bool renderPhotonMapping = true;
+    bool renderCylinderRay = true;
+    bool renderPhotonMapping = true;
+
+    if (renderCylinderRay) {
+        const float depthDistortionWeight = 500.0f;
+        const float normalConsistencyWeight = 0.05f;
+        const float visibilityWeightedOpacityWeight = 0.01f;
+        Pale::PathTracerSettings settings{};
+        settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
+        settings.photonsPerLaunch = 1e6;
+        settings.maxBounces = 0;
+        settings.maxAdjointBounces = 1;
+        settings.numForwardPasses = 1;
+        settings.numShadowRays = 1;
+        settings.numAdjointShadowRays = 1;
+        settings.adjointSamplesPerPixel = 1;
+        settings.numGatherPasses = 1;
+        settings.renderDebugGradientImages = true;
+        settings.enableAdjointDirectLight = true;
+        settings.surfelIndexForDebugImages = 2;
+        settings.depthDistortionWeight = depthDistortionWeight;
+        settings.normalConsistencyWeight = normalConsistencyWeight;
+        settings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
+
+
+        settings.pointGeometrySupportRadius = 0.1f;
+        settings.pointGeometryReconstructionLength = 2.0f * settings.pointGeometrySupportRadius;
+        settings.pointGeometryRayOffsetMultiplier = 2.0f;
+        settings.pointGeometryMinimumContributors = 1u;
+        settings.pointGeometryCoverageScale = 1.01f;
+
+
+        Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
+        tracer.setScene(sceneGpu, buildProducts);
+
+        const std::filesystem::path outputRoot =
+            std::filesystem::path("Output") / sceneName.parent_path() / "cylinder_debug";
+
+        Pale::Log::PA_INFO("Forward Render Pass...");
+        std::vector<Pale::SensorGPU> sensors =
+            Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+
+        tracer.renderForward(sensors);
+        saveForwardImagesAndAuxiliaryBuffers(deviceSelector, sensors, outputRoot);
+    }
+
 
     if (renderPhotonMapping) {
         const float depthDistortionWeight = 500.0f;
@@ -941,17 +1003,16 @@ int main(int argc, char **argv) {
         tracer.setScene(sceneGpu, buildProducts);
 
         const std::filesystem::path outputRoot =
-                std::filesystem::path("Output") / sceneName.parent_path();
+            std::filesystem::path("Output") / sceneName.parent_path();
 
         Pale::Log::PA_INFO("Forward Render Pass...");
         std::vector<Pale::SensorGPU> sensors =
-                Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
+            Pale::makeSensorsForScene(deviceSelector.getQueue(), buildProducts);
 
         tracer.renderForward(sensors);
         saveForwardImagesAndAuxiliaryBuffers(deviceSelector, sensors, outputRoot);
 
         {
-
             auto entities = scene->getAllEntitiesWith<Pale::PointCloudComponent>();
             if (entities.empty()) {
                 throw std::runtime_error("debug gradients: scene has no PointCloudComponent");
@@ -967,12 +1028,12 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("debug gradients: failed to get PointAsset for dynamic point cloud");
             }
 
-            Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+            Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
             if (pointAsset.points.empty()) {
                 throw std::runtime_error("debug gradients: PointAsset has no PointGeometry blocks");
             }
 
-            Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+            Pale::PointGeometry& pointGeometry = pointAsset.points.front();
             const uint32_t debugSurfelIndex = settings.surfelIndexForDebugImages;
 
             if (debugSurfelIndex >= pointGeometry.positions.size()) {
@@ -997,25 +1058,25 @@ int main(int argc, char **argv) {
             std::vector<Pale::DebugImages> photoDebugImages(sensors.size());
 
             Pale::PointGradients photoGradients =
-                    Pale::makeGradientsForScene(
-                        deviceSelector.getQueue(),
-                        buildProducts,
-                        photoDebugImages.data());
+                Pale::makeGradientsForScene(
+                    deviceSelector.getQueue(),
+                    buildProducts,
+                    photoDebugImages.data());
 
             const bool useConstantDebugTarget = true;
             const float constantDebugTargetValue = -100.0f;
             const float adjointSamplesPerPixel =
-                    static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
+                static_cast<float>(tracer.getSettings().adjointSamplesPerPixel);
 
-            std::vector<std::vector<float> > adjointSourceImages(adjointSensors.size());
+            std::vector<std::vector<float>> adjointSourceImages(adjointSensors.size());
 
-            auto sensorNameString = [](const Pale::SensorGPU &sensor) {
+            auto sensorNameString = [](const Pale::SensorGPU& sensor) {
                 return std::string(sensor.name);
             };
 
             auto findForwardSensorByName =
-                    [&](const std::string &sensorName) -> const Pale::SensorGPU * {
-                for (const auto &forwardSensor: sensors) {
+                [&](const std::string& sensorName) -> const Pale::SensorGPU* {
+                for (const auto& forwardSensor : sensors) {
                     if (sensorNameString(forwardSensor) == sensorName) {
                         return &forwardSensor;
                     }
@@ -1024,11 +1085,11 @@ int main(int argc, char **argv) {
             };
 
             for (std::size_t sensorIndex = 0; sensorIndex < adjointSensors.size(); ++sensorIndex) {
-                Pale::SensorGPU &adjointSensor = adjointSensors[sensorIndex];
+                Pale::SensorGPU& adjointSensor = adjointSensors[sensorIndex];
                 const std::string sensorName = sensorNameString(adjointSensor);
 
-                const Pale::SensorGPU *forwardSensor =
-                        findForwardSensorByName(sensorName);
+                const Pale::SensorGPU* forwardSensor =
+                    findForwardSensorByName(sensorName);
 
                 if (!forwardSensor) {
                     throw std::runtime_error(
@@ -1095,7 +1156,7 @@ int main(int argc, char **argv) {
                                 adjointSourceImages[sensorIndex] = std::move(rgbaHostAdjointSource);
                                 */
                 const std::size_t pixelCount =
-                        static_cast<std::size_t>(imageWidth) * static_cast<std::size_t>(imageHeight);
+                    static_cast<std::size_t>(imageWidth) * static_cast<std::size_t>(imageHeight);
 
                 std::vector<float> rgbaHostAdjointSource(pixelCount * 4u, 1.0f);
 
@@ -1109,7 +1170,7 @@ int main(int argc, char **argv) {
 
 
             std::vector<Pale::DebugImages> photoDebugImagesSelected =
-                    makeDebugImageSubsetForSensors(sensors, photoDebugImages);
+                makeDebugImageSubsetForSensors(sensors, photoDebugImages);
 
             tracer.renderBackward(
                 adjointSensors,
@@ -1130,24 +1191,24 @@ int main(int argc, char **argv) {
             std::vector<Pale::DebugImages> surfaceDebugImages(sensors.size());
 
             Pale::PointGradients depthDistortionGradients =
-                    Pale::makeGradientsForScene(
-                        deviceSelector.getQueue(),
-                        buildProducts,
-                        surfaceDebugImages.data());
+                Pale::makeGradientsForScene(
+                    deviceSelector.getQueue(),
+                    buildProducts,
+                    surfaceDebugImages.data());
 
             Pale::PointGradients normalConsistencyGradients =
-                    Pale::makeGradientsForScene(
-                        deviceSelector.getQueue(),
-                        buildProducts,
-                        nullptr);
+                Pale::makeGradientsForScene(
+                    deviceSelector.getQueue(),
+                    buildProducts,
+                    nullptr);
 
             Pale::PointGradients visibilityOpacityGradients =
-                    Pale::makeGradientsForScene(
-                        deviceSelector.getQueue(),
-                        buildProducts,
-                        nullptr);
+                Pale::makeGradientsForScene(
+                    deviceSelector.getQueue(),
+                    buildProducts,
+                    nullptr);
 
-            for (Pale::SensorGPU &sensor: adjointSensors) {
+            for (Pale::SensorGPU& sensor : adjointSensors) {
                 uploadSurfaceRegularizerAdjoints(
                     deviceSelector,
                     sensor,
@@ -1156,7 +1217,7 @@ int main(int argc, char **argv) {
             }
 
             std::vector<Pale::DebugImages> surfaceDebugImagesSelected =
-                    makeDebugImageSubsetForSensors(sensors, surfaceDebugImages);
+                makeDebugImageSubsetForSensors(sensors, surfaceDebugImages);
 
             tracer.renderSurfaceRegularizersBackward(
                 adjointSensors,
@@ -1208,7 +1269,7 @@ int main(int argc, char **argv) {
                 "visibility opacity");
 
             for (std::size_t sensorIndex = 0; sensorIndex < adjointSensors.size(); ++sensorIndex) {
-                const Pale::SensorGPU &adjointSensor = adjointSensors[sensorIndex];
+                const Pale::SensorGPU& adjointSensor = adjointSensors[sensorIndex];
                 const std::string sensorName = adjointSensor.name;
                 const uint32_t imageWidth = adjointSensor.width;
                 const uint32_t imageHeight = adjointSensor.height;

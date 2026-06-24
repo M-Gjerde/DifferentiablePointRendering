@@ -81,20 +81,20 @@ class OptimizationConfig:
     depth_distort_weight: float = 50
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.0025
-    visibility_weighted_opacity_weight: float = 0.01
+    visibility_weighted_opacity_weight: float = 0.001
 
 
     # Density control / EV-splitting
-    densification_interval: int = 400
+    densification_interval: int = 300
     prune_interval: int = 200
-    densify_after: int = 0
+    densify_after: int = 500
     prune_after: int = 0
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.9
 
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 7.0e-4
+    densification_grad_abs_min: float = 8.0e-4
+    densification_grad_abs_min_final: float = 8.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 500
     densification_grad_abs_min_schedule_end_iteration: int = 5000
     densification_scale_min: float = 1.25e-2
@@ -106,7 +106,7 @@ class OptimizationConfig:
     # Pruning
     opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = math.pi * 5.0e-6
+    min_surfel_area: float = math.pi * 1.0e-7
     min_points_to_keep_after_scale_prune: int = 1
     inactive_gradient_prune_cycles: int = 10
 
@@ -155,7 +155,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_scale = 0.0012
         factor_albedo = 0.005
         factor_opacity = 0.0009
-        factor_beta = 0.005
+        factor_beta = 0.01
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 

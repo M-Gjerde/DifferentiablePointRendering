@@ -648,9 +648,9 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<WorldHit>);
 
     enum class IntegratorKind : uint32_t {
-        lightTracing,
-        lightTracingCylinderRay,
-        photonMapping
+        lightTracing = 0x0001,
+        lightTracingCylinderRay = 0x0002,
+        photonMapping = 0x0004
     };
 
     struct Random {
@@ -686,6 +686,15 @@ namespace Pale {
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
         uint32_t numAdjointPathShadowRays = 1;
+
+        // Cylinder ray:
+        // EGWR 2000 point-sampled geometry debug renderer.
+        float pointGeometrySupportRadius = 0.02f;
+        float pointGeometryReconstructionLength = 0.04f;
+        float pointGeometryRayOffsetMultiplier = 2.0f;
+        float pointGeometryCoverageScale = 1.1f;
+        uint32_t pointGeometryMinimumContributors = 1u;
+        bool pointGeometryDebugShowAlbedo = false;
     };
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
