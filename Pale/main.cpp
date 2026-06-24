@@ -952,11 +952,11 @@ int main(int argc, char** argv) {
         settings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
 
 
-        settings.pointGeometrySupportRadius = 0.1f;
-        settings.pointGeometryReconstructionLength = 2.0f * settings.pointGeometrySupportRadius;
-        settings.pointGeometryRayOffsetMultiplier = 2.0f;
+        settings.pointGeometrySupportRadius = 0.01f;
+        settings.pointGeometryReconstructionLength = 0.0f;
+        settings.pointGeometryRayOffsetMultiplier = 1.0f;
         settings.pointGeometryMinimumContributors = 1u;
-        settings.pointGeometryCoverageScale = 1.01f;
+        settings.pointGeometryCoverageScale = 1.00f;
 
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);

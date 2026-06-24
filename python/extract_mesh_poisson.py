@@ -14,15 +14,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--input-path", type=Path, default=None)
 
-    parser.add_argument("--samples-per-surfel", type=int, default=16)
+    parser.add_argument("--samples-per-surfel", type=int, default=1)
     parser.add_argument("--area-weighted-sampling", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--area-sample-power", type=float, default=1.0)
     parser.add_argument("--min-samples-per-surfel", type=int, default=1)
-    parser.add_argument("--max-samples-per-surfel", type=int, default=512)
+    parser.add_argument("--max-samples-per-surfel", type=int, default=64)
     parser.add_argument("--area-reference-quantile", type=float, default=0.50)
 
     parser.add_argument("--correct-normal-flips", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--normal-neighbor-count", type=int, default=32)
+    parser.add_argument("--normal-neighbor-count", type=int, default=16)
     parser.add_argument("--normal-flip-threshold", type=float, default=0.0)
 
     parser.add_argument("--smooth-normals", action=argparse.BooleanOptionalAction, default=False)
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normal-smoothing-max-angle-deg", type=float, default=35.0)
     parser.add_argument("--normal-smoothing-plane-sigma-factor", type=float, default=0.5)
     parser.add_argument("--normal-smoothing-distance-sigma-factor", type=float, default=1.0)
-    parser.add_argument("--normal-smoothing-iterations", type=int, default=5)
+    parser.add_argument("--normal-smoothing-iterations", type=int, default=2)
 
     parser.add_argument("--poisson-depth", type=int, default=11)
     parser.add_argument("--poisson-scale", type=float, default=1.1)

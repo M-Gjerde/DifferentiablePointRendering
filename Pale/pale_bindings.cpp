@@ -104,6 +104,13 @@ public:
 
         Pale::Log::init(level);
 
+        m_settings.integratorKind = Pale::IntegratorKind::photonMapping;
+        m_settings.pointGeometrySupportRadius = 0.08f;
+        m_settings.pointGeometryReconstructionLength = 0.0f;
+        m_settings.pointGeometryRayOffsetMultiplier = 1.0f;
+        m_settings.pointGeometryMinimumContributors = 1u;
+        m_settings.pointGeometryCoverageScale = 1.01f;
+
         assetManager = std::make_unique<Pale::AssetManager>(256);
         assetManager->enableHotReload(true);
         assetManager->registerLoader<Pale::Mesh>(Pale::AssetType::Mesh, std::make_shared<Pale::AssimpMeshLoader>());

@@ -534,44 +534,6 @@ namespace Pale {
         return {surfel.position - halfExtent, surfel.position + halfExtent};
     }
 
-    inline AABB surfelObjectAabbHybrid(
-    const Point& surfel,
-    float coverageScale, float normalThickness = 0.005f) {
-        const float3 tangentU = normalize(surfel.tanU);
-        const float3 tangentV = normalize(surfel.tanV);
-        const float3 normal = normalize(cross(tangentU, tangentV));
-        const float supportU =            std::abs(surfel.scale.x()) * coverageScale;
-        const float supportV =             std::abs(surfel.scale.y()) * coverageScale;
-
-        auto axisExtent = [&](int axis) -> float {
-            const float tangentUComponent =
-                axis == 0 ? tangentU.x() :
-                axis == 1 ? tangentU.y() : tangentU.z();
-
-            const float tangentVComponent =
-                axis == 0 ? tangentV.x() :
-                axis == 1 ? tangentV.y() : tangentV.z();
-
-            const float normalComponent =
-                axis == 0 ? std::abs(normal.x()) :
-                axis == 1 ? std::abs(normal.y()) : std::abs(normal.z());
-
-            const float ellipseExtent = std::sqrt(
-                (supportU * tangentUComponent) * (supportU * tangentUComponent) +
-                (supportV * tangentVComponent) * (supportV * tangentVComponent));
-
-            return ellipseExtent + normalThickness * normalComponent;
-        };
-
-        const float3 halfExtent{
-            axisExtent(0),
-            axisExtent(1),
-            axisExtent(2)
-        };
-
-        return {surfel.position - halfExtent, surfel.position + halfExtent};
-    }
-
 
     inline AABB surfelObjectAabb(const Point &surfel,
                                  float kStdDevs = 2.8f, // Should be similar to the same kSigmas as in intersect surfels

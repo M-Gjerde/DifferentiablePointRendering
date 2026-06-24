@@ -78,14 +78,13 @@ class OptimizationConfig:
     global_lr_max_steps: int = iterations
 
     # Regularizers
-    depth_distort_weight: float = 50
+    depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.0025
-    visibility_weighted_opacity_weight: float = 0.001
-
+    visibility_weighted_opacity_weight: float = 0.01
 
     # Density control / EV-splitting
-    densification_interval: int = 300
+    densification_interval: int = 500
     prune_interval: int = 200
     densify_after: int = 500
     prune_after: int = 0
@@ -94,10 +93,10 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 8.0e-4
-    densification_grad_abs_min_schedule_start_iteration: int = 500
-    densification_grad_abs_min_schedule_end_iteration: int = 5000
-    densification_scale_min: float = 1.25e-2
+    densification_grad_abs_min_final: float = 3.0e-4
+    densification_grad_abs_min_schedule_start_iteration: int = 3000
+    densification_grad_abs_min_schedule_end_iteration: int = 3000
+    densification_scale_min: float = 1.0e-2
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.00
@@ -155,7 +154,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_scale = 0.0012
         factor_albedo = 0.005
         factor_opacity = 0.0009
-        factor_beta = 0.01
+        factor_beta = 0.008
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 

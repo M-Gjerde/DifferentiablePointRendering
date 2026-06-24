@@ -704,9 +704,8 @@ namespace Pale {
                             radiance += throughput * hit.albedo;
                             break;
                         }
-                        radiance += estimateDirectAreaLightAtDiffuseSurface(
-                            scene, hit.hitPositionW, orientedNormal, hit.albedo, settings,
-                            randomGenerator) * throughput;
+                        radiance += throughput * estimateDirectPointSampledAreaLight(
+                            scene, settings, hit.hitPositionW, orientedNormal, hit.albedo, randomGenerator);
 
                         if (bounceIndex + 1u >= maximumCameraBounces) {
                             break;

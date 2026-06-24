@@ -949,20 +949,16 @@ namespace Pale {
         if (sycl::fabs(normalDirectionDot) <= RayEpsilon2) {
             return false;
         }
-
         const float tPlane = dot(normalObject, surfel.position - rayObject.origin) / normalDirectionDot;
         if (tPlane <= tMin || tPlane >= tMax) {
             return false;
         }
-
         const float3 rayPlaneIntersection = rayObject.origin + tPlane * rayObject.direction;
         const float3 tangentOffset = rayPlaneIntersection - surfel.position;
         const float distanceSquared = dot(tangentOffset, tangentOffset);
-
         if (distanceSquared >= supportRadius * supportRadius) {
             return false;
         }
-
         outT = tPlane;
         outDistanceToRayPlaneHit = sycl::sqrt(distanceSquared);
         return true;
@@ -976,40 +972,31 @@ namespace Pale {
         if (supportRadius <= 0.0f) {
             return false;
         }
-
         const BLASRange& blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode* bvhNodes = scene.blasNodes + blasRange.firstNode;
         const float3 inverseDirection = safeInvDir(rayObject.direction);
-
         bool foundSeed = false;
         float seedTObject = std::numeric_limits<float>::infinity();
         uint32_t seedPrimitiveIndex = UINT32_MAX;
-
         SmallStack<256> seedTraversalStack;
         seedTraversalStack.push(0);
-
         while (!seedTraversalStack.empty()) {
             const int nodeIndex = seedTraversalStack.pop();
             const BVHNode& node = bvhNodes[nodeIndex];
-
             float nodeTEntry = 0.0f;
             if (!slabIntersectAABB(
                 rayObject, node, inverseDirection,
                 seedTObject, nodeTEntry)) {
                 continue;
             }
-
             if (node.triCount == 0u) {
                 const int leftIndex = node.leftFirst;
                 const int rightIndex = node.leftFirst + 1;
-
                 float leftTEntry = 0.0f;
                 float rightTEntry = 0.0f;
-
                 const bool hitLeft = slabIntersectAABB(
                     rayObject, bvhNodes[leftIndex], inverseDirection,
                     seedTObject, leftTEntry);
-
                 const bool hitRight = slabIntersectAABB(
                     rayObject, bvhNodes[rightIndex], inverseDirection,
                     seedTObject, rightTEntry);
@@ -1023,47 +1010,32 @@ namespace Pale {
                 else if (hitRight) {
                     seedTraversalStack.push(rightIndex);
                 }
-
                 continue;
             }
-
             for (uint32_t primitiveOffset = 0u; primitiveOffset < node.triCount; ++primitiveOffset) {
                 const uint32_t primitiveIndex = scene.pointPermutation[node.leftFirst + primitiveOffset];
                 const Point& surfel = scene.points[primitiveIndex];
-
                 float tDiskObject = 0.0f;
                 float diskDistance = 0.0f;
-
                 if (!intersectPointSampledDisk(
                     rayObject, surfel, supportRadius,
                     RayEpsilon2, seedTObject,
                     tDiskObject, diskDistance)) {
                     continue;
                 }
-
                 foundSeed = true;
                 seedTObject = tDiskObject;
                 seedPrimitiveIndex = primitiveIndex;
             }
         }
-
         if (!foundSeed) {
             return false;
         }
-
-        const float reconstructionLength = sycl::fmax(
-            settings.pointGeometryReconstructionLength,
-            2.0f * supportRadius);
-
-        const float cylinderTMin = sycl::fmax(
-            RayEpsilon2,
-            seedTObject - RayEpsilon2);
-
+        const float reconstructionLength = sycl::fmax(settings.pointGeometryReconstructionLength, 2.0f * supportRadius);
+        const float pointGeometryMinimumT = 2.0f * settings.pointGeometrySupportRadius;
+        const float cylinderTMin = sycl::fmax(pointGeometryMinimumT, seedTObject - RayEpsilon2);
         const float cylinderTMax = seedTObject + reconstructionLength;
-
-        const float3 referenceNormalWorld =
-            pointSampledNormalWorld(scene.points[seedPrimitiveIndex], transform);
-
+        const float3 referenceNormalWorld = pointSampledNormalWorld(scene.points[seedPrimitiveIndex], transform);
         float totalWeight = 0.0f;
         float weightedTWorld = 0.0f;
         float3 weightedNormalWorld{0.0f};
@@ -1071,44 +1043,28 @@ namespace Pale {
         float3 weightedEmission{0.0f};
         float emissiveWeight = 0.0f;
         float largestWeight = -1.0f;
-
         uint32_t representativePrimitiveIndex = seedPrimitiveIndex;
         uint32_t contributorCount = 0u;
-
         SmallStack<256> reconstructionTraversalStack;
         reconstructionTraversalStack.push(0);
-
         while (!reconstructionTraversalStack.empty()) {
             const int nodeIndex = reconstructionTraversalStack.pop();
             const BVHNode& node = bvhNodes[nodeIndex];
-
             float nodeTEntry = 0.0f;
-            if (!slabIntersectAABB(
-                rayObject, node, inverseDirection,
-                cylinderTMax, nodeTEntry)) {
+            if (!slabIntersectAABB(rayObject, node, inverseDirection, cylinderTMax, nodeTEntry)) {
                 continue;
             }
-
             if (node.triCount == 0u) {
                 const int leftIndex = node.leftFirst;
                 const int rightIndex = node.leftFirst + 1;
-
                 float leftTEntry = 0.0f;
                 float rightTEntry = 0.0f;
-
-                const bool hitLeft = slabIntersectAABB(
-                    rayObject, bvhNodes[leftIndex], inverseDirection,
-                    cylinderTMax, leftTEntry);
-
-                const bool hitRight = slabIntersectAABB(
-                    rayObject, bvhNodes[rightIndex], inverseDirection,
-                    cylinderTMax, rightTEntry);
-
+                const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, cylinderTMax,
+                                                       leftTEntry);
+                const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, cylinderTMax,
+                                                        rightTEntry);
                 if (hitLeft && hitRight) {
-                    pushNearFar(
-                        reconstructionTraversalStack,
-                        leftIndex, leftTEntry,
-                        rightIndex, rightTEntry);
+                    pushNearFar(reconstructionTraversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
                 }
                 else if (hitLeft) {
                     reconstructionTraversalStack.push(leftIndex);
@@ -1116,96 +1072,61 @@ namespace Pale {
                 else if (hitRight) {
                     reconstructionTraversalStack.push(rightIndex);
                 }
-
                 continue;
             }
-
             for (uint32_t primitiveOffset = 0u; primitiveOffset < node.triCount; ++primitiveOffset) {
                 const uint32_t primitiveIndex = scene.pointPermutation[node.leftFirst + primitiveOffset];
                 const Point& surfel = scene.points[primitiveIndex];
-
                 float tPlaneObject = 0.0f;
                 float distanceToRayPlaneHit = 0.0f;
-
-                if (!intersectPointSampledDisk(
-                    rayObject, surfel, supportRadius,
-                    cylinderTMin, cylinderTMax,
-                    tPlaneObject, distanceToRayPlaneHit)) {
+                if (!intersectPointSampledDisk(rayObject, surfel, supportRadius, cylinderTMin, cylinderTMax,
+                                               tPlaneObject, distanceToRayPlaneHit)) {
                     continue;
                 }
-
-                const float weight = sycl::fmax(
-                    0.0f,
-                    supportRadius - distanceToRayPlaneHit);
-
+                const float weight = sycl::fmax(0.0f, supportRadius - distanceToRayPlaneHit);
                 if (weight <= 0.0f) {
                     continue;
                 }
-
-                const float3 localRayPoint =
-                    rayObject.origin + tPlaneObject * rayObject.direction;
-
-                const float3 worldRayPoint =
-                    toWorldPoint(localRayPoint, transform);
-
-                const float tWorld =
-                    dot(worldRayPoint - rayWorld.origin, rayWorld.direction);
-
-                float3 normalWorld =
-                    pointSampledNormalWorld(surfel, transform);
-
+                const float3 localRayPoint = rayObject.origin + tPlaneObject * rayObject.direction;
+                const float3 worldRayPoint = toWorldPoint(localRayPoint, transform);
+                const float tWorld = dot(worldRayPoint - rayWorld.origin, rayWorld.direction);
+                float3 normalWorld = pointSampledNormalWorld(surfel, transform);
                 if (dot(normalWorld, referenceNormalWorld) < 0.0f) {
                     normalWorld = -normalWorld;
                 }
-
                 totalWeight += weight;
                 weightedTWorld += weight * tWorld;
                 weightedNormalWorld += weight * normalWorld;
                 weightedAlbedo += weight * (surfel.alpha_r * surfel.albedo);
-
                 if (surfel.isEmissive()) {
-                    const float surfelArea =
-                        M_PIf * surfel.scale.x() * surfel.scale.y();
-
+                    const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
                     if (surfelArea > 1.0e-10f) {
-                        const float3 emittedRadiance =
-                            surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
-
+                        const float3 emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
                         weightedEmission += weight * emittedRadiance;
                         emissiveWeight += weight;
                     }
                 }
-
                 if (weight > largestWeight) {
                     largestWeight = weight;
                     representativePrimitiveIndex = primitiveIndex;
                 }
-
                 ++contributorCount;
             }
         }
-
         if (contributorCount < settings.pointGeometryMinimumContributors ||
             totalWeight <= 1.0e-8f) {
             return false;
         }
-
-        const float weightedNormalLengthSquared =
-            dot(weightedNormalWorld, weightedNormalWorld);
-
+        const float weightedNormalLengthSquared = dot(weightedNormalWorld, weightedNormalWorld);
         outHit.hit = true;
         outHit.tWorld = weightedTWorld / totalWeight;
         outHit.hitPositionW = rayWorld.origin + rayWorld.direction * outHit.tWorld;
-        outHit.geometricNormalW =
-            weightedNormalLengthSquared > 1.0e-12f
-                ? normalize(weightedNormalWorld)
-                : referenceNormalWorld;
+        outHit.geometricNormalW =            weightedNormalLengthSquared > 1.0e-12f                ? normalize(weightedNormalWorld)                : referenceNormalWorld;
         outHit.albedo = weightedAlbedo / totalWeight;
         outHit.emittedRadiance = weightedEmission / totalWeight;
         outHit.isEmissive = emissiveWeight > 0.0f;
         outHit.primitiveIndex = representativePrimitiveIndex;
         outHit.contributorCount = contributorCount;
-
         return true;
     }
 
@@ -1326,5 +1247,88 @@ namespace Pale {
         }
 
         return outHit.hit;
+    }
+
+    SYCL_EXTERNAL inline bool isPointSampledLightVisible(
+        const GPUSceneBuffers& scene,
+        const PathTracerSettings& settings,
+        const float3& surfacePositionW,
+        const float3& surfaceNormalW,
+        const float3& lightPositionW) {
+        const float rayOffset = settings.pointGeometryRayOffsetMultiplier * settings.pointGeometrySupportRadius;
+        Ray shadowRay{};
+        shadowRay.origin = surfacePositionW + surfaceNormalW * rayOffset;
+
+        const float3 lightVector = lightPositionW - shadowRay.origin;
+        const float lightDistanceSquared = dot(lightVector, lightVector);
+
+        if (lightDistanceSquared <= 1.0e-10f) {
+            return false;
+        }
+
+        const float lightDistance = sycl::sqrt(lightDistanceSquared);
+        shadowRay.direction = lightVector / lightDistance;
+        shadowRay.normal = surfaceNormalW;
+
+        PointSampledSceneHit shadowHit{};
+        if (!intersectScenePointSampledGeometry(shadowRay, scene, settings, shadowHit)) {
+            return true;
+        }
+
+        return shadowHit.tWorld >=
+            lightDistance - rayOffset;
+    }
+
+    SYCL_EXTERNAL inline float3 estimateDirectPointSampledAreaLight(
+        const GPUSceneBuffers& scene,
+        const PathTracerSettings& settings,
+        const float3& surfacePositionW,
+        const float3& surfaceNormalW,
+        const float3& diffuseAlbedo,
+        rng::Xorshift128& rng128) {
+        if (settings.numShadowRays == 0u) {
+            return float3{0.0f};
+        }
+
+        float3 radiance{0.0f};
+        const float inverseSampleCount = 1.0f / static_cast<float>(settings.numShadowRays);
+        for (uint32_t lightIndex = 0u; lightIndex < scene.lightCount; ++lightIndex) {
+            const GPULightRecord& light = scene.lights[lightIndex];
+
+            if (light.lightType != LightType::Surfel) {
+                continue;
+            }
+            for (uint32_t shadowSampleIndex = 0u; shadowSampleIndex < settings.numShadowRays; ++shadowSampleIndex) {
+                const AreaLightSample lightSample = sampleMeshAreaLightByIndex(scene, lightIndex, rng128);
+                if (!lightSample.valid ||
+                    lightSample.pdfArea <= 0.0f ||
+                    lightSample.totalAreaWorld <= 1.0e-10f) {
+                    continue;
+                }
+                const float3 toLight = lightSample.positionW - surfacePositionW;
+                const float distanceSquared = dot(toLight, toLight);
+                if (distanceSquared <= 1.0e-10f) {
+                    continue;
+                }
+                const float distance = sycl::sqrt(distanceSquared);
+                const float3 lightDirection = toLight / distance;
+                const float surfaceCosine = sycl::fmax(0.0f, dot(surfaceNormalW, lightDirection));
+                const float lightCosine = sycl::fmax(0.0f, dot(lightSample.normalW, -lightDirection));
+                if (surfaceCosine <= 0.0f ||
+                    lightCosine <= 0.0f) {
+                    continue;
+                }
+                if (!isPointSampledLightVisible(scene, settings, surfacePositionW, surfaceNormalW,
+                                                lightSample.positionW)) {
+                    continue;
+                }
+                const float3 brdf = diffuseAlbedo * M_1_PIf;
+                const float3 emittedRadiance = lightSample.flux / (M_PIf * lightSample.totalAreaWorld);
+                radiance += brdf * emittedRadiance * (surfaceCosine * lightCosine / (distanceSquared + 1.0e-8f)) * (1.0f
+                    / lightSample.pdfArea) * inverseSampleCount;
+            }
+        }
+
+        return radiance;
     }
 } // namespace Pale
