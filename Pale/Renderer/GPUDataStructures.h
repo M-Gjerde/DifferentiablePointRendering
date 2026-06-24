@@ -237,7 +237,7 @@ namespace Pale {
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-    constexpr uint32_t kMaxLocalSurfelHits = 16;
+    constexpr uint32_t kMaxLocalSurfelHits = 4;
     constexpr float LocalLayerDepthEpsilon = 1.0e-1f;
 
     /*************************  Ray & Hit *****************************/
