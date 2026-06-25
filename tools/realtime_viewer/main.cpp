@@ -278,6 +278,60 @@ namespace {
         std::snprintf(buffer.data(), buffer.size(), "%s", path.string().c_str());
     }
 
+    [[nodiscard]] Pale::AssetMeta makeAssetMeta(
+        const std::filesystem::path& path,
+        Pale::AssetType assetType) {
+        Pale::AssetMeta meta{};
+        meta.type = assetType;
+        meta.path = path;
+        std::error_code error;
+        if (std::filesystem::exists(path, error) && !error) {
+            meta.lastWrite = std::filesystem::last_write_time(path, error);
+        }
+        return meta;
+    }
+
+    [[nodiscard]] Pale::AssetHandle importPathAsType(
+        Pale::AssetRegistry& registry,
+        const std::filesystem::path& path,
+        Pale::AssetType assetType) {
+        if (const std::optional<Pale::AssetHandle> existing = registry.findByPath(path)) {
+            const Pale::AssetMeta* meta = registry.meta(*existing);
+            if (meta && meta->type == assetType) {
+                return *existing;
+            }
+        }
+        return registry.import(path, assetType);
+    }
+
+    [[nodiscard]] std::size_t countSurfels(const Pale::PointAsset& pointAsset) {
+        std::size_t surfelCount = 0;
+        for (const Pale::PointGeometry& pointGeometry : pointAsset.points) {
+            surfelCount += pointGeometry.positions.size();
+        }
+        return surfelCount;
+    }
+
+    [[nodiscard]] std::size_t countMeshTriangles(const Pale::Mesh& mesh) {
+        std::size_t triangleCount = 0;
+        for (const Pale::Submesh& submesh : mesh.submeshes) {
+            triangleCount += submesh.indices.size() / 3u;
+        }
+        return triangleCount;
+    }
+
+    [[nodiscard]] std::shared_ptr<Pale::Mesh> loadMeshPlyForValidation(
+        const std::filesystem::path& path) {
+        Pale::AssimpMeshLoader loader;
+        return loader.load(Pale::AssetHandle{}, makeAssetMeta(path, Pale::AssetType::Mesh));
+    }
+
+    [[nodiscard]] std::shared_ptr<Pale::PointAsset> loadPointCloudPlyForValidation(
+        const std::filesystem::path& path) {
+        Pale::PLYPointLoader loader;
+        return loader.load(Pale::AssetHandle{}, makeAssetMeta(path, Pale::AssetType::PointCloud));
+    }
+
     [[nodiscard]] std::vector<FileBrowserEntry> listBrowserEntries(const std::filesystem::path& directory) {
         std::vector<FileBrowserEntry> entries;
         std::error_code error;
@@ -299,15 +353,17 @@ namespace {
     }
 
     bool drawPlyBrowser(
+        const char* popupTitle,
+        const char* childId,
         bool& browserOpen,
         std::filesystem::path& browserDirectory,
         std::filesystem::path& selectedPath) {
         bool selected = false;
         if (browserOpen) {
-            ImGui::OpenPopup("Select PLY");
+            ImGui::OpenPopup(popupTitle);
         }
 
-        if (ImGui::BeginPopupModal("Select PLY", &browserOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ImGui::BeginPopupModal(popupTitle, &browserOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
             std::error_code error;
             if (!std::filesystem::exists(browserDirectory, error)) {
                 browserDirectory = std::filesystem::current_path(error);
@@ -330,7 +386,7 @@ namespace {
             }
 
             ImGui::Separator();
-            if (ImGui::BeginChild("PlyFiles", ImVec2(560.0f, 380.0f), true)) {
+            if (ImGui::BeginChild(childId, ImVec2(560.0f, 380.0f), true)) {
                 for (const FileBrowserEntry& entry : listBrowserEntries(browserDirectory)) {
                     const std::string label =
                         entry.directory ? "[dir] " + entry.path.filename().string()
@@ -399,6 +455,19 @@ namespace {
             }
         }
         return indices;
+    }
+
+    [[nodiscard]] std::vector<Pale::Entity> collectRuntimeMeshEntities(
+        const std::shared_ptr<Pale::Scene>& scene) {
+        std::vector<Pale::Entity> meshes;
+        for (auto [entityHandle, meshComponent, tagComponent] :
+             scene->getAllEntitiesWith<Pale::MeshComponent, Pale::TagComponent>().each()) {
+            (void)meshComponent;
+            if (tagComponent.tag.rfind("RuntimeMesh", 0u) == 0u) {
+                meshes.emplace_back(entityHandle, scene.get());
+            }
+        }
+        return meshes;
     }
 
     AppArgs parseArgs(int argc, char** argv) {
@@ -513,7 +582,7 @@ namespace {
         }
 
         const Pale::AssetHandle pointCloudAssetHandle =
-            assetIndexer.importPath(pointCloudPath, Pale::AssetType::PointCloud);
+            importPathAsType(assetManager.registry(), pointCloudPath, Pale::AssetType::PointCloud);
         Pale::Entity pointCloudEntity = scene->createEntity("RealtimePointCloud");
         pointCloudEntity.addComponent<Pale::PointCloudComponent>().pointCloudID = pointCloudAssetHandle;
 
@@ -704,6 +773,13 @@ int main(int argc, char** argv) {
         std::filesystem::path plyBrowserDirectory =
             currentPointCloudPath.has_parent_path() ? currentPointCloudPath.parent_path()
                                                     : std::filesystem::current_path();
+        std::filesystem::path currentRuntimeMeshPath;
+        std::array<char, 1024> meshPathBuffer{};
+        std::string meshStatus = "Drop a triangle .ply file into the render view or load one here";
+        bool meshBrowserOpen = false;
+        std::filesystem::path meshBrowserDirectory =
+            currentPointCloudPath.has_parent_path() ? currentPointCloudPath.parent_path()
+                                                    : std::filesystem::current_path();
         DropState dropState;
 
         uint32_t renderWidth = args.width;
@@ -797,19 +873,15 @@ int main(int argc, char** argv) {
                 return;
             }
 
-            Pale::AssetIndexFromRegistry assetIndexer(assetManager.registry());
             const Pale::AssetHandle pointCloudAssetHandle =
-                assetIndexer.importPath(requestedPath, Pale::AssetType::PointCloud);
+                importPathAsType(assetManager.registry(), requestedPath, Pale::AssetType::PointCloud);
             const auto pointCloudAsset = assetAccessor.getPointCloud(pointCloudAssetHandle);
             if (!pointCloudAsset) {
                 pointCloudStatus = "Failed to load PLY: " + requestedPath.string();
                 return;
             }
 
-            std::size_t surfelCount = 0;
-            for (const auto& pointGeometry : pointCloudAsset->points) {
-                surfelCount += pointGeometry.positions.size();
-            }
+            const std::size_t surfelCount = countSurfels(*pointCloudAsset);
             if (surfelCount == 0) {
                 pointCloudStatus = "PLY contained no surfels: " + requestedPath.string();
                 return;
@@ -837,6 +909,99 @@ int main(int argc, char** argv) {
 
             pointCloudStatus = "Loaded " + std::to_string(surfelCount) + " surfels";
             cameraDirty = true;
+        };
+
+        auto removeRuntimeMeshes = [&]() {
+            const std::vector<Pale::Entity> runtimeMeshes = collectRuntimeMeshEntities(scene);
+            for (Pale::Entity entity : runtimeMeshes) {
+                scene->destroyEntity(entity);
+            }
+            if (!runtimeMeshes.empty()) {
+                rebuildSceneGpu();
+                currentRuntimeMeshPath.clear();
+                meshPathBuffer.fill('\0');
+                meshStatus = "Removed runtime mesh";
+                cameraDirty = true;
+            }
+        };
+
+        auto loadRuntimeMesh = [&](const std::filesystem::path& requestedPath) -> bool {
+            if (requestedPath.empty()) {
+                meshStatus = "No mesh PLY path selected";
+                return false;
+            }
+            if (!isPlyPath(requestedPath)) {
+                meshStatus = "Selected mesh file is not a .ply file";
+                return false;
+            }
+
+            std::error_code error;
+            if (!std::filesystem::exists(requestedPath, error) || error) {
+                meshStatus = "Mesh PLY file does not exist: " + requestedPath.string();
+                return false;
+            }
+
+            const std::shared_ptr<Pale::Mesh> validationMesh = loadMeshPlyForValidation(requestedPath);
+            if (!validationMesh) {
+                meshStatus = "Failed to load mesh PLY: " + requestedPath.string();
+                return false;
+            }
+            const std::size_t triangleCount = countMeshTriangles(*validationMesh);
+            if (triangleCount == 0) {
+                meshStatus = "PLY contains no triangles: " + requestedPath.string();
+                return false;
+            }
+
+            const Pale::AssetHandle meshAssetHandle =
+                importPathAsType(assetManager.registry(), requestedPath, Pale::AssetType::Mesh);
+            const auto meshAsset = assetAccessor.getMesh(meshAssetHandle);
+            if (!meshAsset || countMeshTriangles(*meshAsset) == 0) {
+                meshStatus = "Imported mesh asset contains no triangles: " + requestedPath.string();
+                return false;
+            }
+
+            for (Pale::Entity entity : collectRuntimeMeshEntities(scene)) {
+                scene->destroyEntity(entity);
+            }
+
+            Pale::Entity meshEntity =
+                scene->createEntity("RuntimeMesh: " + requestedPath.filename().string());
+            meshEntity.addComponent<Pale::MeshComponent>().meshID = meshAssetHandle;
+
+            rebuildSceneGpu();
+            currentRuntimeMeshPath = requestedPath;
+            copyPathToBuffer(currentRuntimeMeshPath, meshPathBuffer);
+            if (currentRuntimeMeshPath.has_parent_path()) {
+                meshBrowserDirectory = currentRuntimeMeshPath.parent_path();
+            }
+
+            meshStatus = "Loaded mesh with " + std::to_string(triangleCount) + " triangles";
+            cameraDirty = true;
+            return true;
+        };
+
+        auto handleDroppedPly = [&](const std::filesystem::path& droppedPath) {
+            std::error_code error;
+            if (!std::filesystem::exists(droppedPath, error) || error) {
+                meshStatus = "Dropped PLY file does not exist: " + droppedPath.string();
+                return;
+            }
+
+            const std::shared_ptr<Pale::Mesh> validationMesh = loadMeshPlyForValidation(droppedPath);
+            if (validationMesh && countMeshTriangles(*validationMesh) > 0) {
+                loadRuntimeMesh(droppedPath);
+                return;
+            }
+
+            const std::shared_ptr<Pale::PointAsset> validationPointCloud =
+                loadPointCloudPlyForValidation(droppedPath);
+            if (validationPointCloud && countSurfels(*validationPointCloud) > 0) {
+                replacePointCloud(droppedPath);
+                return;
+            }
+
+            meshStatus = "Dropped PLY is neither a triangle mesh nor a surfel point cloud";
+            pointCloudStatus = meshStatus;
         };
 
         auto renderNow = [&]() {
@@ -909,7 +1074,7 @@ int main(int argc, char** argv) {
             if (dropState.hasPendingPlyPath) {
                 const std::filesystem::path droppedPath = dropState.pendingPlyPath;
                 dropState.hasPendingPlyPath = false;
-                replacePointCloud(droppedPath);
+                handleDroppedPly(droppedPath);
             }
 
             if ((autoRender && cameraDirty) || renderRequested) {
@@ -938,23 +1103,62 @@ int main(int argc, char** argv) {
             ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
             ImGui::TextWrapped("Scene: %s", args.scenePath.string().c_str());
             ImGui::TextWrapped("Point cloud: %s", currentPointCloudPath.string().c_str());
-            ImGui::Text("PLY path");
+            ImGui::Text("Point cloud PLY path");
             ImGui::PushItemWidth(-1.0f);
             ImGui::InputText("##PlyPath", pointCloudPathBuffer.data(), pointCloudPathBuffer.size());
             ImGui::PopItemWidth();
-            if (ImGui::Button("Load PLY")) {
+            if (ImGui::Button("Load point cloud PLY")) {
                 replacePointCloud(std::filesystem::path(pointCloudPathBuffer.data()));
             }
             ImGui::SameLine();
-            if (ImGui::Button("Browse")) {
+            if (ImGui::Button("Browse##PointCloud")) {
                 plyBrowserOpen = true;
             }
             if (!pointCloudStatus.empty()) {
                 ImGui::TextWrapped("%s", pointCloudStatus.c_str());
             }
             std::filesystem::path selectedPlyPath;
-            if (drawPlyBrowser(plyBrowserOpen, plyBrowserDirectory, selectedPlyPath)) {
+            if (drawPlyBrowser(
+                    "Select Point Cloud PLY",
+                    "PointCloudPlyFiles",
+                    plyBrowserOpen,
+                    plyBrowserDirectory,
+                    selectedPlyPath)) {
                 replacePointCloud(selectedPlyPath);
+            }
+
+            ImGui::Separator();
+            ImGui::TextWrapped(
+                "Runtime mesh: %s",
+                currentRuntimeMeshPath.empty() ? "(none)" : currentRuntimeMeshPath.string().c_str());
+            ImGui::Text("Mesh PLY path");
+            ImGui::PushItemWidth(-1.0f);
+            ImGui::InputText("##MeshPlyPath", meshPathBuffer.data(), meshPathBuffer.size());
+            ImGui::PopItemWidth();
+            if (ImGui::Button("Load mesh PLY")) {
+                loadRuntimeMesh(std::filesystem::path(meshPathBuffer.data()));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Browse##Mesh")) {
+                meshBrowserOpen = true;
+            }
+            if (!currentRuntimeMeshPath.empty()) {
+                ImGui::SameLine();
+                if (ImGui::Button("Remove mesh")) {
+                    removeRuntimeMeshes();
+                }
+            }
+            if (!meshStatus.empty()) {
+                ImGui::TextWrapped("%s", meshStatus.c_str());
+            }
+            std::filesystem::path selectedMeshPath;
+            if (drawPlyBrowser(
+                    "Select Mesh PLY",
+                    "MeshPlyFiles",
+                    meshBrowserOpen,
+                    meshBrowserDirectory,
+                    selectedMeshPath)) {
+                loadRuntimeMesh(selectedMeshPath);
             }
             ImGui::Separator();
 

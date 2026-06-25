@@ -6,6 +6,8 @@ module;
 
 #include <cmath>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -124,35 +126,50 @@ namespace Pale {
         // 2) For each unique mesh, append geometry once and record ALL ranges
         for (const UUID &meshId: uniqueMeshIds) {
             const auto meshAsset = assetAccess.getMesh(meshId);
-            Submesh mesh = meshAsset->submeshes.front();
             const uint32_t vertexBaseIndex = static_cast<uint32_t>(vertices.size());
             const uint32_t triangleBaseIndex = static_cast<uint32_t>(triangles.size());
-            for (size_t i = 0; i < mesh.positions.size(); ++i) {
-                Vertex gpuVertex{};
-                gpuVertex.pos = float3{mesh.positions[i].x, mesh.positions[i].y, mesh.positions[i].z};
-                gpuVertex.norm = float3{mesh.normals[i].x, mesh.normals[i].y, mesh.normals[i].z};
-                vertices.push_back(gpuVertex);
+            if (!meshAsset) {
+                std::ostringstream errorStream;
+                errorStream << "Mesh asset does not exist. Mesh id: " << std::string(meshId);
+                throw std::runtime_error(errorStream.str());
             }
+
             constexpr float oneThird = 1.0f / 3.0f;
-            for (size_t i = 0; i < mesh.indices.size(); i += 3) {
-                const uint32_t i0 = mesh.indices[i + 0] + vertexBaseIndex;
-                const uint32_t i1 = mesh.indices[i + 1] + vertexBaseIndex;
-                const uint32_t i2 = mesh.indices[i + 2] + vertexBaseIndex;
-                Triangle tri{};
-                tri.v0 = i0;
-                tri.v1 = i1;
-                tri.v2 = i2;
-                const float3 p0 = vertices[i0].pos;
-                const float3 p1 = vertices[i1].pos;
-                const float3 p2 = vertices[i2].pos;
-                tri.centroid = (p0 + p1 + p2) * oneThird;
-                triangles.push_back(tri);
+            for (const Submesh &mesh: meshAsset->submeshes) {
+                const uint32_t submeshVertexBaseIndex = static_cast<uint32_t>(vertices.size());
+                for (size_t i = 0; i < mesh.positions.size(); ++i) {
+                    const glm::vec3 normal =
+                        i < mesh.normals.size() ? mesh.normals[i] : glm::vec3(0.0f, 0.0f, 1.0f);
+                    Vertex gpuVertex{};
+                    gpuVertex.pos = float3{mesh.positions[i].x, mesh.positions[i].y, mesh.positions[i].z};
+                    gpuVertex.norm = float3{normal.x, normal.y, normal.z};
+                    vertices.push_back(gpuVertex);
+                }
+                for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+                    const uint32_t i0 = mesh.indices[i + 0] + submeshVertexBaseIndex;
+                    const uint32_t i1 = mesh.indices[i + 1] + submeshVertexBaseIndex;
+                    const uint32_t i2 = mesh.indices[i + 2] + submeshVertexBaseIndex;
+                    Triangle tri{};
+                    tri.v0 = i0;
+                    tri.v1 = i1;
+                    tri.v2 = i2;
+                    const float3 p0 = vertices[i0].pos;
+                    const float3 p1 = vertices[i1].pos;
+                    const float3 p2 = vertices[i2].pos;
+                    tri.centroid = (p0 + p1 + p2) * oneThird;
+                    triangles.push_back(tri);
+                }
             }
             MeshRange meshRange{};
             meshRange.firstVert = vertexBaseIndex;
-            meshRange.vertCount = static_cast<uint32_t>(mesh.positions.size());
+            meshRange.vertCount = static_cast<uint32_t>(vertices.size()) - vertexBaseIndex;
             meshRange.firstTri = triangleBaseIndex;
-            meshRange.triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
+            meshRange.triCount = static_cast<uint32_t>(triangles.size()) - triangleBaseIndex;
+            if (meshRange.triCount == 0u) {
+                vertices.resize(vertexBaseIndex);
+                triangles.resize(triangleBaseIndex);
+                continue;
+            }
             const uint32_t rangeIndex = static_cast<uint32_t>(outBuildProducts.meshRanges.size());
             outBuildProducts.meshRanges.push_back(meshRange);
             outBuildProducts.meshIndexById[meshId] = rangeIndex;
@@ -166,33 +183,54 @@ namespace Pale {
                                       const std::unordered_map<UUID, uint32_t> &meshIndexById,
                                       BuildProducts &outBuildProducts) {
         std::unordered_map<UUID, uint32_t> materialIndexByUuid;
-        auto view = scene->getAllEntitiesWith<MeshComponent, MaterialComponent, TransformComponent, TagComponent>();
-        for (auto [entityId, meshComponent, materialComponent, transformComponent, tagComponent]: view.each()) {
+        std::optional<uint32_t> defaultMaterialIndex;
+        auto getDefaultMaterialIndex = [&]() -> uint32_t {
+            if (!defaultMaterialIndex.has_value()) {
+                GPUMaterial gpuMaterial{};
+                gpuMaterial.baseColor = float3{0.72f, 0.72f, 0.72f};
+                gpuMaterial.specular = 0.0f;
+                gpuMaterial.diffuse = 0.65f;
+                gpuMaterial.power = 0.0f;
+                gpuMaterial.phongExp = 16.0f;
+                defaultMaterialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
+                outBuildProducts.materials.push_back(gpuMaterial);
+            }
+            return *defaultMaterialIndex;
+        };
+
+        auto view = scene->getAllEntitiesWith<MeshComponent, TransformComponent, TagComponent>();
+        for (auto [entityId, meshComponent, transformComponent, tagComponent]: view.each()) {
             auto it = meshIndexById.find(meshComponent.meshID);
             if (it == meshIndexById.end()) continue;
             const uint32_t geometryIndex = it->second;
             // material de-dup
             uint32_t materialIndex;
-            if (auto mit = materialIndexByUuid.find(materialComponent.materialID); mit != materialIndexByUuid.end()) {
-                materialIndex = mit->second;
+            Entity entity(entityId, scene.get());
+            if (!entity.hasComponent<MaterialComponent>()) {
+                materialIndex = getDefaultMaterialIndex();
             } else {
-                const auto materialAsset = assetAccess.getMaterial(materialComponent.materialID);
-                if (!materialAsset) {
-                    std::ostringstream errorStream;
-                    errorStream
-                        << "Material does not exist. Entity tag: " << tagComponent.tag << "\n";
+                const MaterialComponent &materialComponent = entity.getComponent<MaterialComponent>();
+                if (auto mit = materialIndexByUuid.find(materialComponent.materialID); mit != materialIndexByUuid.end()) {
+                    materialIndex = mit->second;
+                } else {
+                    const auto materialAsset = assetAccess.getMaterial(materialComponent.materialID);
+                    if (!materialAsset) {
+                        std::ostringstream errorStream;
+                        errorStream
+                            << "Material does not exist. Entity tag: " << tagComponent.tag << "\n";
 
-                    throw std::runtime_error(errorStream.str());
+                        throw std::runtime_error(errorStream.str());
+                    }
+                    GPUMaterial gpuMaterial{};
+                    gpuMaterial.baseColor = materialAsset->baseColor;
+                    gpuMaterial.specular = materialAsset->metallic;
+                    gpuMaterial.diffuse = materialAsset->roughness;
+                    gpuMaterial.power = materialAsset->power;
+                    gpuMaterial.phongExp = 16;
+                    materialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
+                    outBuildProducts.materials.push_back(gpuMaterial);
+                    materialIndexByUuid.emplace(materialComponent.materialID, materialIndex);
                 }
-                GPUMaterial gpuMaterial{};
-                gpuMaterial.baseColor = materialAsset->baseColor;
-                gpuMaterial.specular = materialAsset->metallic;
-                gpuMaterial.diffuse = materialAsset->roughness;
-                gpuMaterial.power = materialAsset->power;
-                gpuMaterial.phongExp = 16;
-                materialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
-                outBuildProducts.materials.push_back(gpuMaterial);
-                materialIndexByUuid.emplace(materialComponent.materialID, materialIndex);
             }
             // transform
             Transform gpuTransform{};
