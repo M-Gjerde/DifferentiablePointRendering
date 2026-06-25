@@ -30,11 +30,11 @@ class ReconstructionCandidate:
 
 
 DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
-    #DatasetConfig("dragon", "dragon.ply"),
-    #DatasetConfig("horse", "horse.ply"),
-    #DatasetConfig("lego", "lego.ply"),
-    #DatasetConfig("plant", "plant.ply"),
-    DatasetConfig("teapot_10", "teapot.ply"),
+    #DatasetConfig("dragon_30", "dragon.ply"),
+    DatasetConfig("horse_30", "horse.ply"),
+    #DatasetConfig("lego_30", "lego.ply"),
+    #DatasetConfig("plant_30", "plant.ply"),
+    #DatasetConfig("teapot_30", "teapot.ply"),
 )
 
 
@@ -431,7 +431,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducible surface sampling.")
     parser.add_argument("--scale", type=float, default=1.0, help="Scale applied to reported metrics.")
     parser.add_argument("--label", type=str, default="scene units", help="Metric scale label.")
-    parser.add_argument("--digits", type=int, default=3, help="Digits used in the printed markdown table.")
+    parser.add_argument("--digits", type=int, default=5, help="Digits used in the printed markdown table.")
     parser.add_argument("--allow-missing", action="store_true", help="Skip missing datasets instead of failing.")
     parser.add_argument("--csv-output", type=Path, default=Path("ours_chamfer_results.csv"), help="Output CSV path.")
 

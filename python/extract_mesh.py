@@ -653,7 +653,7 @@ class PaleExtractor:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PALE 2DGS-style mesh extraction")
 
-    parser.add_argument("--output-root", type=Path, default=Path("OptimizationOutput"))
+    parser.add_argument("--output-root", "-o", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--camera-names", type=str, default=None)
 
@@ -664,7 +664,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-trunc", default=-1.0, type=float)
     parser.add_argument("--sdf-trunc", default=-1.0, type=float)
     parser.add_argument("--num-cluster", default=50, type=int)
-    parser.add_argument("--mesh-res", default=2048, type=int)
+    parser.add_argument("--mesh-res", default=1024, type=int)
 
     parser.add_argument("--depth-key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
     parser.add_argument(

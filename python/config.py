@@ -16,7 +16,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
+    adjoint_passes: int = 8
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -93,7 +93,7 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 3.0e-4
+    densification_grad_abs_min_final: float = 4.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 3000
     densification_grad_abs_min_schedule_end_iteration: int = 3000
     densification_scale_min: float = 1.0e-2

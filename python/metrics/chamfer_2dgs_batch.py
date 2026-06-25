@@ -17,13 +17,21 @@ class DatasetConfig:
     ground_truth_file: str
 
 
+
 DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
-    #DatasetConfig("dragon", "2dgs_dragon", "dragon.ply"),
-    #DatasetConfig("horse", "2dgs_horse", "horse.ply"),
-    #DatasetConfig("lego", "2dgs_lego_15", "lego.ply"),
-    #DatasetConfig("plant", "2dgs_plant", "plant.ply"),
-    DatasetConfig("teapot", "2dgs_teapot_10", "teapot.ply"),
+    DatasetConfig("dragon", "2dgs_dragon_30", "dragon.ply"),
+    DatasetConfig("horse", "2dgs_horse_30", "horse.ply"),
+    DatasetConfig("lego", "2dgs_lego_30", "lego.ply"),
+    DatasetConfig("plant", "2dgs_plant_30", "plant.ply"),
+    DatasetConfig("teapot", "2dgs_teapot_30", "teapot.ply"),
 )
+#DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
+#    DatasetConfig("dragon", "2dgs_dragon_10", "dragon.ply"),
+#    DatasetConfig("horse", "2dgs_horse_10", "horse.ply"),
+#    DatasetConfig("lego", "2dgs_lego_10", "lego.ply"),
+#    DatasetConfig("plant", "2dgs_plant_10", "plant.ply"),
+#    DatasetConfig("teapot", "2dgs_teapot_10", "teapot.ply"),
+#)
 
 
 def require_existing_path(path: Path, description: str) -> Path:
@@ -174,7 +182,11 @@ def write_csv(csv_path: Path, rows: list[dict]) -> None:
             writer.writerow({fieldname: row[fieldname] for fieldname in fieldnames})
 
 
-def print_markdown_table(rows: list[dict]) -> None:
+def format_metric(value: float, digits: int) -> str:
+    return f"{value:.{digits}f}"
+
+
+def print_markdown_table(rows: list[dict], digits: int) -> None:
     print()
     print("| Dataset | CD ↓ | Accuracy ↓ | Completion ↓ |")
     print("|---|---:|---:|---:|")
@@ -182,9 +194,9 @@ def print_markdown_table(rows: list[dict]) -> None:
     for row in rows:
         print(
             f"| {row['dataset']} "
-            f"| {row['cd']:.12f} "
-            f"| {row['accuracy']:.12f} "
-            f"| {row['completion']:.12f} |"
+            f"| {format_metric(row['cd'], digits)} "
+            f"| {format_metric(row['accuracy'], digits)} "
+            f"| {format_metric(row['completion'], digits)} |"
         )
 
     if rows:
@@ -194,9 +206,9 @@ def print_markdown_table(rows: list[dict]) -> None:
 
         print(
             f"| **Mean** "
-            f"| **{mean_cd:.12f}** "
-            f"| **{mean_accuracy:.12f}** "
-            f"| **{mean_completion:.12f}** |"
+            f"| **{format_metric(mean_cd, digits)}** "
+            f"| **{format_metric(mean_accuracy, digits)}** "
+            f"| **{format_metric(mean_completion, digits)}** |"
         )
 
 
@@ -243,6 +255,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducible surface sampling.")
     parser.add_argument("--scale", type=float, default=1.0, help="Scale applied to reported metrics.")
     parser.add_argument("--label", type=str, default="scene units", help="Metric scale label.")
+    parser.add_argument("--digits", type=int, default=5, help="Digits used in the printed markdown table.")
     parser.add_argument("--use-vertices", action="store_true", help="Use raw vertices instead of uniform mesh surface sampling.")
     parser.add_argument("--csv-output", type=Path, default=Path("2dgs_chamfer_results.csv"), help="Output CSV path.")
 
@@ -298,7 +311,7 @@ def main() -> None:
     csv_output_path = args.csv_output.expanduser().resolve()
     write_csv(csv_output_path, rows)
 
-    print_markdown_table(rows)
+    print_markdown_table(rows, args.digits)
     print()
     print(f"Saved CSV: {csv_output_path}")
 

@@ -10,14 +10,6 @@
 namespace Pale {
     void launchRayGenAdjointKernel(RenderPackage &pkg, int spp, uint32_t cameraIndex);
 
-    void launchAdjointProjectionKernel(RenderPackage &pkg, uint32_t activeRayCount, uint32_t cameraIndex);
-
-    void launchAdjointDirectLightKernel(
-        RenderPackage& pkg,
-        uint32_t spp,
-        uint32_t activeQueryCount,
-        uint32_t cameraIndex);
-
     void adjointContributionKernels(
         RenderPackage& pkg,
         uint32_t measurementEventCount,
@@ -28,8 +20,6 @@ namespace Pale {
         uint32_t cameraIndex);
 
     void computePerPrimitiveTranslationGradientStats(RenderPackage &pkg);
-
-    void generateNextAdjointRays(RenderPackage &pkg, uint32_t activeRayCount);
 
     void launchDepthDistortionBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
     void launchNormalConsistencyBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
