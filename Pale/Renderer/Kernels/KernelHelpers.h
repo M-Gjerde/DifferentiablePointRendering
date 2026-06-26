@@ -490,8 +490,6 @@ namespace Pale {
         float tMin,
         float tMax,
         float &outTHit,
-        float3 &outHitLocal,
-        float &outOpacity,
         const float &eps) {
         const float3 unitTangentU = normalize(surfel.tanU);
         const float3 unitTangentV = normalize(surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV));

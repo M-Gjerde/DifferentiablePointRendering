@@ -92,7 +92,7 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 4.0e-4
+    densification_grad_abs_min_final: float = 7.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 3000
     densification_grad_abs_min_schedule_end_iteration: int = 3000
     densification_scale_min: float = 1.25e-2
@@ -125,7 +125,7 @@ class OptimizationConfig:
 
     # Logging
     log_interval: int = 1
-    save_interval: int = 100
+    save_interval: int = 10
     save_ply_files_interval: int = save_interval
     save_gradient_diagnostics: bool = True
     # Iteration snapshot content
@@ -153,7 +153,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_scale = 0.0012
         factor_albedo = 0.005
         factor_opacity = 0.0009
-        factor_beta = 0.008
+        factor_beta = 0.000
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 

@@ -723,11 +723,12 @@ namespace {
         settings.numGatherPasses = 1u;
         settings.renderDebugGradientImages = false;
         settings.enableAdjointDirectLight = true;
-        settings.pointGeometrySupportRadius = 0.002f;
+        settings.pointGeometrySupportRadius = 0.00f;
         settings.pointGeometryReconstructionLength = 0.0f;
         settings.pointGeometryRayOffsetMultiplier = 1.0f;
         settings.pointGeometryCoverageScale = 1.0f;
         settings.pointGeometryMinimumContributors = 1u;
+        settings.pointGeometryDebugShowAlbedo = false;
         return settings;
     }
 
@@ -849,7 +850,7 @@ int main(int argc, char** argv) {
         float candidateSurfelPower = 1.0f;
         bool showSurfelGizmo = true;
         ImGuizmo::OPERATION surfelGizmoOperation = ImGuizmo::TRANSLATE;
-        ImGuizmo::MODE surfelGizmoMode = ImGuizmo::LOCAL;
+        ImGuizmo::MODE surfelGizmoMode = ImGuizmo::WORLD;
         bool viewportGizmoMouseCapture = false;
         std::string surfelLightStatus;
         float exposure = 1.0f;
@@ -1574,6 +1575,9 @@ int main(int argc, char** argv) {
                 renderRequested = true;
             }
             if (ImGui::DragFloat("Coverage", &settings.pointGeometryCoverageScale, 0.0f, 0.01f, 10.0f, "%.3f")) {
+                renderRequested = true;
+            }
+            if (ImGui::Checkbox("Show point albedo", &settings.pointGeometryDebugShowAlbedo)) {
                 renderRequested = true;
             }
 

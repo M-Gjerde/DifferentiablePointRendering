@@ -172,9 +172,14 @@ namespace Pale {
                 float alphaGeom = 0.0f;
                 float3 hitLocal{0.0f};
 
-                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
-                                                            hitLocal, alphaGeom, RayEpsilon2))
+                if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal, RayEpsilon2))
                     continue;
+
+                hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
+                const float2 uv = phiInverse(hitLocal, surfel);
+                if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                    continue;
+                }
 
                 // Keep closest
                 hitAny = true;
@@ -257,10 +262,16 @@ namespace Pale {
                 float tHitObject = 0.0f;
                 float alphaGeom = 0.0f;
                 float3 hitPositionObject(0.0f);
-                if (!intersectSurfel(rayObject, surfel, RayEpsilon2, std::numeric_limits<float>::infinity(), tHitObject,
-                                     hitPositionObject, alphaGeom, RayEpsilon2)) {
+                if (!intersectSurfel(rayObject, surfel, RayEpsilon2, std::numeric_limits<float>::infinity(), tHitObject, RayEpsilon2)) {
                     continue;
                 }
+
+                hitPositionObject = rayObject.origin + tHitObject * rayObject.direction;
+                const float2 uv = phiInverse(hitPositionObject, surfel);
+                if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                    continue;
+                }
+
                 const float3 hitPositionW = toWorldPoint(hitPositionObject, transform);
                 const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
                 if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
@@ -344,9 +355,15 @@ namespace Pale {
                     float tHitLocal = 0.0f;
                     float alphaGeom = 0.0f;
                     float3 hitLocal{};
-                    if (!intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal, hitLocal, alphaGeom,
+                    if (!intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
                                          RayEpsilon2))
                         continue;
+
+                    hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
+                    const float2 uv = phiInverse(hitLocal, surfel);
+                    if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                        continue;
+                    }
 
                     if (tHitLocal <= tMin)
                         continue;
@@ -914,6 +931,7 @@ namespace Pale {
         float3 geometricNormalW{0.0f};
         float3 albedo{0.0f};
         float3 emittedRadiance{0.0f};
+        float opacity = 1.0f;
         uint32_t instanceIndex = UINT32_MAX;
         uint32_t primitiveIndex = UINT32_MAX;
         GeometryType geometryType{};
@@ -1012,13 +1030,17 @@ namespace Pale {
                 float3 hitLocal;
 
                 if (!intersectSurfel(rayObject, surfel, RayEpsilon2, seedTObject,
-                                     tDiskObject, hitLocal, alphaGeom, RayEpsilon2)) {
+                                     tDiskObject, RayEpsilon2)) {
                     continue;
                 }
 
                 hitLocal = rayObject.origin + tDiskObject * rayObject.direction;
                 const float2 uv = phiInverse(hitLocal, surfel);
                 if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                    continue;
+                }
+                const float seedEffectiveOpacity = sycl::clamp(surfel.opacity * alphaGeom, 0.0f, 1.0f);
+                if (seedEffectiveOpacity <= 0.0f) {
                     continue;
                 }
 
@@ -1037,12 +1059,12 @@ namespace Pale {
         const float cylinderTMax = seedTObject + reconstructionLength;
         const float3 referenceNormalWorld = pointSampledNormalWorld(scene.points[seedPrimitiveIndex], transform);
         float totalWeight = 0.0f;
-        float weightedTWorld = 0.0f;
+        float closestTWorld = std::numeric_limits<float>::infinity();
         float3 weightedNormalWorld{0.0f};
         float3 weightedAlbedo{0.0f};
         float3 weightedEmission{0.0f};
+        float weightedOpacity = 0.0f;
         float emissiveWeight = 0.0f;
-        float largestWeight = -1.0f;
         uint32_t representativePrimitiveIndex = seedPrimitiveIndex;
         uint32_t contributorCount = 0u;
         SmallStack<256> reconstructionTraversalStack;
@@ -1080,7 +1102,7 @@ namespace Pale {
                 float alphaGeom;
 
                 if (!intersectSurfel(rayObject, surfel, cylinderTMin, cylinderTMax,
-                                     tPlaneObject, hitLocal, alphaGeom, RayEpsilon2)) {
+                                     tPlaneObject, RayEpsilon2)) {
                     continue;
                 }
                 hitLocal = rayObject.origin + tPlaneObject * rayObject.direction;
@@ -1088,12 +1110,12 @@ namespace Pale {
                 if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom)) {
                     continue;
                 }
-
-                const float distanceToSeed = sycl::sqrt(dot(hitLocal - seedHitObject, hitLocal - seedHitObject));
-                const float weight = sycl::fmax(0.0f, supportRadius - distanceToSeed);
-                if (weight <= 0.0f) {
+                const float effectiveOpacity = sycl::clamp(surfel.opacity * alphaGeom, 0.0f, 1.0f);
+                if (effectiveOpacity <= 0.0f) {
                     continue;
                 }
+
+                constexpr float weight = 1.0f;
                 const float3 localRayPoint = rayObject.origin + tPlaneObject * rayObject.direction;
                 const float3 worldRayPoint = toWorldPoint(localRayPoint, transform);
                 const float tWorld = dot(worldRayPoint - rayWorld.origin, rayWorld.direction);
@@ -1102,9 +1124,9 @@ namespace Pale {
                     normalWorld = -normalWorld;
                 }
                 totalWeight += weight;
-                weightedTWorld += weight * tWorld;
                 weightedNormalWorld += weight * normalWorld;
                 weightedAlbedo += weight * (surfel.alpha_r * surfel.albedo);
+                weightedOpacity += effectiveOpacity;
                 if (surfel.isEmissive()) {
                     const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
                     if (surfelArea > 1.0e-10f) {
@@ -1113,8 +1135,8 @@ namespace Pale {
                         emissiveWeight += weight;
                     }
                 }
-                if (weight > largestWeight) {
-                    largestWeight = weight;
+                if (tWorld < closestTWorld) {
+                    closestTWorld = tWorld;
                     representativePrimitiveIndex = primitiveIndex;
                 }
                 ++contributorCount;
@@ -1126,13 +1148,14 @@ namespace Pale {
         }
         const float weightedNormalLengthSquared = dot(weightedNormalWorld, weightedNormalWorld);
         outHit.hit = true;
-        outHit.tWorld = weightedTWorld / totalWeight;
+        outHit.tWorld = closestTWorld;
         outHit.hitPositionW = rayWorld.origin + rayWorld.direction * outHit.tWorld;
         outHit.geometricNormalW = weightedNormalLengthSquared > 1.0e-12f
                                       ? normalize(weightedNormalWorld)
                                       : referenceNormalWorld;
         outHit.albedo = weightedAlbedo / totalWeight;
         outHit.emittedRadiance = weightedEmission / totalWeight;
+        outHit.opacity = sycl::clamp(weightedOpacity, 0.0f, 1.0f);
         outHit.isEmissive = emissiveWeight > 0.0f;
         outHit.primitiveIndex = representativePrimitiveIndex;
         outHit.contributorCount = contributorCount;
@@ -1245,6 +1268,7 @@ namespace Pale {
                 outHit.albedo = material.baseColor;
                 outHit.isEmissive = material.isEmissive();
                 outHit.emittedRadiance = material.power * material.baseColor;
+                outHit.opacity = 1.0f;
                 outHit.instanceIndex = instanceIndex;
                 outHit.primitiveIndex = localHit.primitiveIndex;
                 outHit.geometryType = GeometryType::Mesh;
@@ -1256,34 +1280,53 @@ namespace Pale {
         return outHit.hit;
     }
 
-    SYCL_EXTERNAL inline bool isPointSampledLightVisible(
+    SYCL_EXTERNAL inline float tracePointSampledShadowTransmissionToPoint(
         const GPUSceneBuffers &scene,
         const PathTracerSettings &settings,
         const float3 &surfacePositionW,
         const float3 &surfaceNormalW,
         const float3 &lightPositionW) {
-        const float rayOffset = settings.pointGeometryRayOffsetMultiplier * settings.pointGeometrySupportRadius;
+        const float rayOffset = sycl::fmax(
+            RayEpsilon,
+            settings.pointGeometryRayOffsetMultiplier * settings.pointGeometrySupportRadius);
         Ray shadowRay{};
         shadowRay.origin = surfacePositionW + surfaceNormalW * rayOffset;
-
-        const float3 lightVector = lightPositionW - shadowRay.origin;
-        const float lightDistanceSquared = dot(lightVector, lightVector);
-
-        if (lightDistanceSquared <= 1.0e-10f) {
-            return false;
-        }
-
-        const float lightDistance = sycl::sqrt(lightDistanceSquared);
-        shadowRay.direction = lightVector / lightDistance;
         shadowRay.normal = surfaceNormalW;
 
-        PointSampledSceneHit shadowHit{};
-        if (!intersectScenePointSampledGeometry(shadowRay, scene, settings, shadowHit)) {
-            return true;
+        float transmission = 1.0f;
+        for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
+            const float3 lightVector = lightPositionW - shadowRay.origin;
+            const float lightDistanceSquared = dot(lightVector, lightVector);
+            if (lightDistanceSquared <= 1.0e-10f) {
+                return transmission;
+            }
+
+            const float lightDistance = sycl::sqrt(lightDistanceSquared);
+            shadowRay.direction = lightVector / lightDistance;
+
+            PointSampledSceneHit shadowHit{};
+            if (!intersectScenePointSampledGeometry(shadowRay, scene, settings, shadowHit)) {
+                return transmission;
+            }
+
+            if (shadowHit.tWorld >= lightDistance - rayOffset) {
+                return transmission;
+            }
+
+            if (shadowHit.geometryType == GeometryType::Mesh) {
+                return 0.0f;
+            }
+
+            const float alphaEff = sycl::clamp(shadowHit.opacity, 0.0f, 1.0f);
+            transmission *= 1.0f - alphaEff;
+            if (transmission <= 1.0e-6f) {
+                return 0.0f;
+            }
+
+            shadowRay.origin = shadowRay.origin + shadowRay.direction * (shadowHit.tWorld + rayOffset);
         }
 
-        return shadowHit.tWorld >=
-               lightDistance - rayOffset;
+        return transmission;
     }
 
     SYCL_EXTERNAL inline float3 estimateDirectPointSampledAreaLight(
@@ -1325,14 +1368,16 @@ namespace Pale {
                     lightCosine <= 0.0f) {
                     continue;
                 }
-                if (!isPointSampledLightVisible(scene, settings, surfacePositionW, surfaceNormalW,
-                                                lightSample.positionW)) {
+                const float shadowTransmission = tracePointSampledShadowTransmissionToPoint(
+                    scene, settings, surfacePositionW, surfaceNormalW, lightSample.positionW);
+                if (shadowTransmission <= 0.0f) {
                     continue;
                 }
                 const float3 brdf = diffuseAlbedo * M_1_PIf;
                 const float3 emittedRadiance = lightSample.flux / (M_PIf * lightSample.totalAreaWorld);
-                radiance += brdf * emittedRadiance * (surfaceCosine * lightCosine / (distanceSquared + 1.0e-8f)) * (1.0f
-                    / lightSample.pdfArea) * inverseSampleCount;
+                radiance += brdf * emittedRadiance * shadowTransmission *
+                    (surfaceCosine * lightCosine / (distanceSquared + 1.0e-8f)) *
+                    (1.0f / lightSample.pdfArea) * inverseSampleCount;
             }
         }
 

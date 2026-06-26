@@ -648,88 +648,142 @@ namespace Pale {
             queue.wait();
         }
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler& cgh) {
             const uint64_t renderSeed = pkg.random.seed;
             const uint32_t totalSamples = sycl::max(1u, settings.numGatherPasses);
             const float inverseTotalSamples = 1.0f / static_cast<float>(totalSamples);
 
-            commandGroupHandler.parallel_for<class PointSampledPathTracingCameraKernel>(
+            cgh.parallel_for<class PointSampledCylinderCameraGatherKernel>(
                 sycl::range<1>(pixelCount),
-                [=](sycl::id<1> globalId) {
-                    const uint32_t pixelIndex = globalId[0];
-                    const uint32_t pixelX = pixelIndex % imageWidth;
-                    const uint32_t pixelY = pixelIndex / imageWidth;
-                    const uint64_t sampleSeed =
-                        rng::makeSeed(renderSeed, pixelIndex, cameraIndex, rng::kStreamGather, sampleIndex);
-                    rng::Xorshift128 randomGenerator(sampleSeed);
-                    const float jitterX = randomGenerator.nextFloat() - 0.5f;
-                    const float jitterY = randomGenerator.nextFloat() - 0.5f;
-                    Ray ray = makePrimaryRayFromPixelJitteredFov(sensor.camera, static_cast<float>(pixelX) + 0.5f,
-                                                                 static_cast<float>(pixelY) + 0.5f, jitterX, jitterY);
-                    float3 throughput{1.0f};
-                    float3 radiance{0.0f};
-                    const uint32_t maximumCameraBounces = sycl::max(1u, settings.maxBounces);
-                    bool storedPrimarySurface = false;
-                    for (uint32_t bounceIndex = 0u; bounceIndex < maximumCameraBounces; ++bounceIndex) {
+                [=](sycl::id<1> tid) {
+                    const std::uint32_t pixelIndex = tid[0];
+                    const std::uint32_t pixelX = pixelIndex % imageWidth;
+                    const std::uint32_t pixelY = pixelIndex / imageWidth;
+                    const uint64_t directionSeed = rng::makeSeed(renderSeed, pixelIndex, cameraIndex,
+                                                                 rng::kStreamGather, sampleIndex);
+                    rng::Xorshift128 rng(directionSeed);
+                    float3 accumulatedRadianceRGB(0.0f, 0.0f, 0.0f);
+                    Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
+                        sensor.camera,
+                        static_cast<float>(pixelX),
+                        static_cast<float>(pixelY),
+                        0.0f,
+                        0.0f
+                    );
+                    float transmittance = 1.0f;
+                    float distortion = 0.0f;
+                    float prefixWeight = 0.0f;
+                    float prefixWeightDepth = 0.0f;
+                    float prefixWeightDepthSquared = 0.0f;
+                    float visibilityWeightedOpacityLoss = 0.0f;
+                    float accumulatedCompositeWeight = 0.0f;
+                    bool medianFound = false;
+                    float medianDepth = 0.0f;
+                    float3 medianWorldPosition(0.0f, 0.0f, 0.0f);
+                    float3 medianNormalW(0.0f, 0.0f, 0.0f);
+                    float accumulatedMeanDepthWeight = 0.0f;
+                    float accumulatedMeanDepth = 0.0f;
+
+                    for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
                         PointSampledSceneHit hit{};
-                        if (!intersectScenePointSampledGeometry(ray, scene, settings, hit)) {
+                        if (!intersectScenePointSampledGeometry(primaryRay, scene, settings, hit)) {
                             break;
                         }
-                        float3 orientedNormal = hit.geometricNormalW;
-                        if (dot(orientedNormal, -ray.direction) < 0.0f) {
-                            orientedNormal = -orientedNormal;
+
+                        float alphaEff = sycl::clamp(hit.opacity, 0.0f, 1.0f);
+                        if (hit.geometryType == GeometryType::Mesh) {
+                            alphaEff = 1.0f;
                         }
-                        if (!storedPrimarySurface && sampleIndex == 0u) {
-                            const float cameraDepth = dot(hit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
-                            sensor.medianDepthBuffer[pixelIndex] = cameraDepth;
-                            sensor.meanDepthBuffer[pixelIndex] = cameraDepth;
-                            sensor.medianWorldPositionBuffer[pixelIndex] = float4{
-                                hit.hitPositionW.x(), hit.hitPositionW.y(), hit.hitPositionW.z(), 1.0f
-                            };
-                            sensor.visibleNormalBuffer[pixelIndex] = float4{
-                                orientedNormal.x(), orientedNormal.y(), orientedNormal.z(), 1.0f
-                            };
-                            storedPrimarySurface = true;
+                        if (alphaEff <= 0.0f) {
+                            primaryRay.origin = primaryRay.origin + primaryRay.direction * (hit.tWorld + RayEpsilon);
+                            continue;
                         }
-                        if (hit.isEmissive) {
-                            // No MIS in this debug integrator.
-                            // Keep visible emitters, but avoid double-counting
-                            // BSDF-sampled emitter hits after explicit NEE.
-                            if (bounceIndex == 0u) {
-                                radiance += throughput * hit.emittedRadiance;
-                            }
-                            break;
+
+                        float3 normalW = hit.geometricNormalW;
+                        if (dot(normalW, -primaryRay.direction) < 0.0f) {
+                            normalW = -normalW;
                         }
+
+                        float3 outgoingRadiance = hit.emittedRadiance;
                         if (settings.pointGeometryDebugShowAlbedo) {
-                            radiance += throughput * hit.albedo;
-                            break;
+                            outgoingRadiance = hit.albedo;
+                            //alphaEff = 1.0f;
+                        } else if (!hit.isEmissive || hit.geometryType == GeometryType::PointCloud) {
+                            outgoingRadiance += estimateDirectPointSampledAreaLight(
+                                scene,
+                                settings,
+                                hit.hitPositionW,
+                                normalW,
+                                hit.albedo,
+                                rng);
                         }
-                        radiance += throughput * estimateDirectPointSampledAreaLight(
-                            scene, settings, hit.hitPositionW, orientedNormal, hit.albedo, randomGenerator);
 
-                        if (bounceIndex + 1u >= maximumCameraBounces) {
-                            break;
-                        }
-                        float3 outgoingDirectionW = ray.direction;
-                        float outgoingPdf = 0.0f;
-                        sampleCosineHemisphere(randomGenerator, orientedNormal, outgoingDirectionW, outgoingPdf);
-                        throughput *= hit.albedo;
-                        if (!applyRussianRoulette(randomGenerator, bounceIndex + 1u, throughput,
-                                                  settings.russianRouletteStart)) {
-                            break;
-                        }
-                        const float rayOffset = settings.pointGeometryRayOffsetMultiplier * settings.
-                            pointGeometrySupportRadius;
+                        accumulatedRadianceRGB += transmittance * alphaEff * outgoingRadiance;
 
-                        ray.origin = hit.hitPositionW + orientedNormal * rayOffset;
-                        ray.direction = outgoingDirectionW;
-                        ray.normal = orientedNormal;
+                        const float compositeWeight = transmittance * alphaEff;
+                        const float depth = dot(hit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+                        accumulatedMeanDepthWeight += compositeWeight;
+                        accumulatedMeanDepth += compositeWeight * depth;
+                        const float opacityResidual = 1.0f - alphaEff;
+                        visibilityWeightedOpacityLoss += compositeWeight * opacityResidual * opacityResidual;
+                        if (!medianFound && (accumulatedCompositeWeight + compositeWeight) >= 0.5f) {
+                            medianFound = true;
+                            medianDepth = depth;
+                            medianWorldPosition = hit.hitPositionW;
+                            medianNormalW = normalW;
+                        }
+                        accumulatedCompositeWeight += compositeWeight;
+
+                        const float normalizedDepth = depthDistortionNdc01(depth);
+                        distortion += compositeWeight * (
+                            normalizedDepth * normalizedDepth * prefixWeight +
+                            prefixWeightDepthSquared -
+                            2.0f * normalizedDepth * prefixWeightDepth);
+                        prefixWeight += compositeWeight;
+                        prefixWeightDepth += compositeWeight * normalizedDepth;
+                        prefixWeightDepthSquared += compositeWeight * normalizedDepth * normalizedDepth;
+
+                        transmittance *= 1.0f - alphaEff;
+                        if (transmittance <= 1.0e-4f || alphaEff >= 1.0f) {
+                            break;
+                        }
+
+                        const float rayOffset = RayEpsilon;
+                        primaryRay.origin = primaryRay.origin + primaryRay.direction * (hit.tWorld + rayOffset);
                     }
-                    sensor.framebuffer[pixelIndex] += float4{
-                        radiance.x() * inverseTotalSamples, radiance.y() * inverseTotalSamples,
-                        radiance.z() * inverseTotalSamples, 1.0f
-                    };
-                });
+                    const std::uint32_t framebufferIndex = pixelY * imageWidth + pixelX;
+                    const float4 currentValue(
+                        accumulatedRadianceRGB.x() * inverseTotalSamples,
+                        accumulatedRadianceRGB.y() * inverseTotalSamples,
+                        accumulatedRadianceRGB.z() * inverseTotalSamples,
+                        1.0f);
+                    sensor.framebuffer[framebufferIndex] += currentValue;
+                    sensor.depthDistortionBuffer[pixelIndex] += distortion * inverseTotalSamples;
+                    sensor.visibilityWeightedOpacityBuffer[pixelIndex] +=
+                        visibilityWeightedOpacityLoss * inverseTotalSamples;
+                    if (accumulatedMeanDepthWeight > 1.0e-6f) {
+                        sensor.meanDepthBuffer[pixelIndex] = accumulatedMeanDepth / accumulatedMeanDepthWeight;
+                    }
+                    else {
+                        sensor.meanDepthBuffer[pixelIndex] = 0.0f;
+                    }
+
+                    if (medianFound) {
+                        sensor.medianDepthBuffer[pixelIndex] = medianDepth;
+                        sensor.medianWorldPositionBuffer[pixelIndex] = float4{
+                            medianWorldPosition.x(), medianWorldPosition.y(), medianWorldPosition.z(), 1.0f
+                        };
+                        sensor.visibleNormalBuffer[pixelIndex] = float4{
+                            medianNormalW.x(), medianNormalW.y(), medianNormalW.z(), 1.0f
+                        };
+                    }
+                    else {
+                        sensor.medianDepthBuffer[pixelIndex] = 0.0f;
+                        sensor.medianWorldPositionBuffer[pixelIndex] = float4{0.0f};
+                        sensor.visibleNormalBuffer[pixelIndex] = float4{0.0f};
+                    }
+                }
+            );
         });
 
         queue.wait();

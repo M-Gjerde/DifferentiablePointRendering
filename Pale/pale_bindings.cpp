@@ -104,8 +104,8 @@ public:
 
         Pale::Log::init(level);
 
-        m_settings.integratorKind = Pale::IntegratorKind::photonMapping;
-        m_settings.pointGeometrySupportRadius = 0.08f;
+        m_settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
+        m_settings.pointGeometrySupportRadius = 0.1f;
         m_settings.pointGeometryReconstructionLength = 0.0f;
         m_settings.pointGeometryRayOffsetMultiplier = 1.0f;
         m_settings.pointGeometryMinimumContributors = 1u;
