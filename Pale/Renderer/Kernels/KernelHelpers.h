@@ -449,14 +449,14 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL static bool opacityBeta(float u, float v, const Point &surfel, float *outOpacity) {
-        const float r2 = u * u + v * v;
-        // Optional accel window. Prefer k=3..4. If you keep this, you lose tail mass.
-        if (r2 >= 1.0)
-            return false;
 
+        const float r2 = u * u + v * v;
+        if (r2 > 1.0f) {
+            *outOpacity = 0.0f;
+            return false;
+        }
         float base = 1 - r2;
         float exp = 4 * std::exp(surfel.beta);
-
         *outOpacity = std::pow(base, exp);
         return true;
     }
@@ -504,15 +504,7 @@ namespace Pale {
         if (tHit <= tMin || tHit >= tMax) {
             return false;
         }
-        outHitLocal = rayObject.origin + tHit * rayObject.direction;
-        const float2 uv = phiInverse(outHitLocal, surfel);
-        // For the ordinary renderer footprintScale remains 1.0f.
-        // The local-layer collector may use e.g. 1.05f to include a
-        const float scaledU = uv[0];
-        const float scaledV = uv[1];
-        if (!opacityBeta(scaledU, scaledV, surfel, &outOpacity)) {
-            return false;
-        }
+
         //if (!opacityGaussian(scaledU, scaledV, &outOpacity)) {
         //    return false;
         //}

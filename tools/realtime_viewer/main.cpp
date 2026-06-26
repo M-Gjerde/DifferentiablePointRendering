@@ -23,6 +23,7 @@
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 #include <sycl/sycl.hpp>
@@ -457,6 +458,39 @@ namespace {
         return indices;
     }
 
+    [[nodiscard]] glm::quat normalizeQuaternionOrIdentity(glm::quat quaternion) {
+        const float lengthSquared = glm::dot(quaternion, quaternion);
+        if (lengthSquared <= 1.0e-20f || !std::isfinite(lengthSquared)) {
+            return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        }
+        quaternion = glm::normalize(quaternion);
+        return quaternion.w < 0.0f ? -quaternion : quaternion;
+    }
+
+    [[nodiscard]] glm::quat extractRotationQuaternion(const glm::mat4& transform) {
+        glm::vec3 tangentU = glm::vec3(transform[0]);
+        glm::vec3 tangentV = glm::vec3(transform[1]);
+
+        if (glm::dot(tangentU, tangentU) <= 1.0e-20f || glm::dot(tangentV, tangentV) <= 1.0e-20f) {
+            return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        }
+
+        tangentU = glm::normalize(tangentU);
+        tangentV = tangentV - glm::dot(tangentV, tangentU) * tangentU;
+
+        if (glm::dot(tangentV, tangentV) <= 1.0e-20f) {
+            const glm::vec3 fallback =
+                glm::abs(tangentU.y) < 0.9f
+                    ? glm::vec3(0.0f, 1.0f, 0.0f)
+                    : glm::vec3(1.0f, 0.0f, 0.0f);
+            tangentV = fallback - glm::dot(fallback, tangentU) * tangentU;
+        }
+
+        tangentV = glm::normalize(tangentV);
+        const glm::vec3 normal = glm::normalize(glm::cross(tangentU, tangentV));
+        return normalizeQuaternionOrIdentity(glm::quat_cast(glm::mat3(tangentU, tangentV, normal)));
+    }
+
     [[nodiscard]] std::vector<Pale::Entity> collectRuntimeMeshEntities(
         const std::shared_ptr<Pale::Scene>& scene) {
         std::vector<Pale::Entity> meshes;
@@ -678,7 +712,7 @@ namespace {
 
     Pale::PathTracerSettings makeDefaultSettings() {
         Pale::PathTracerSettings settings{};
-        settings.integratorKind = Pale::IntegratorKind::photonMapping;
+        settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
         settings.photonsPerLaunch = 65536u;
         settings.maxBounces = 0;
         settings.maxAdjointBounces = 0;
@@ -689,7 +723,7 @@ namespace {
         settings.numGatherPasses = 1u;
         settings.renderDebugGradientImages = false;
         settings.enableAdjointDirectLight = true;
-        settings.pointGeometrySupportRadius = 0.01f;
+        settings.pointGeometrySupportRadius = 0.002f;
         settings.pointGeometryReconstructionLength = 0.0f;
         settings.pointGeometryRayOffsetMultiplier = 1.0f;
         settings.pointGeometryCoverageScale = 1.0f;
@@ -814,6 +848,9 @@ int main(int argc, char** argv) {
         int candidateZeroPowerSurfelIndex = 0;
         float candidateSurfelPower = 1.0f;
         bool showSurfelGizmo = true;
+        ImGuizmo::OPERATION surfelGizmoOperation = ImGuizmo::TRANSLATE;
+        ImGuizmo::MODE surfelGizmoMode = ImGuizmo::LOCAL;
+        bool viewportGizmoMouseCapture = false;
         std::string surfelLightStatus;
         float exposure = 1.0f;
         float gamma = 1.0f;
@@ -1242,7 +1279,7 @@ int main(int argc, char** argv) {
             }
 
             ImGui::Separator();
-            if (ImGui::CollapsingHeader("Lights", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader("Lights")) {
                 ImGui::Text("Area lights: %zu", areaLights.size());
                 if (areaLights.empty()) {
                     ImGui::TextWrapped("No editable mesh area lights in the scene");
@@ -1425,6 +1462,22 @@ int main(int argc, char** argv) {
                                     "Removed surfel " + std::to_string(selectedPowerIndex) + " from lights";
                             }
                             ImGui::Checkbox("Show surfel gizmo", &showSurfelGizmo);
+                            if (showSurfelGizmo) {
+                                if (ImGui::RadioButton("Move##surfel_gizmo", surfelGizmoOperation == ImGuizmo::TRANSLATE)) {
+                                    surfelGizmoOperation = ImGuizmo::TRANSLATE;
+                                }
+                                ImGui::SameLine();
+                                if (ImGui::RadioButton("Rotate##surfel_gizmo", surfelGizmoOperation == ImGuizmo::ROTATE)) {
+                                    surfelGizmoOperation = ImGuizmo::ROTATE;
+                                }
+                                if (ImGui::RadioButton("Local##surfel_gizmo", surfelGizmoMode == ImGuizmo::LOCAL)) {
+                                    surfelGizmoMode = ImGuizmo::LOCAL;
+                                }
+                                ImGui::SameLine();
+                                if (ImGui::RadioButton("World##surfel_gizmo", surfelGizmoMode == ImGuizmo::WORLD)) {
+                                    surfelGizmoMode = ImGuizmo::WORLD;
+                                }
+                            }
                         }
 
                         ImGui::Separator();
@@ -1517,10 +1570,10 @@ int main(int argc, char** argv) {
                 tracerDirty = true;
                 renderRequested = true;
             }
-            if (ImGui::DragFloat("Point radius", &settings.pointGeometrySupportRadius, 0.001f, 0.0001f, 1.0f, "%.4f")) {
+            if (ImGui::SliderFloat("Point radius", &settings.pointGeometrySupportRadius, 0.000f, 0.1f, "%.4f")) {
                 renderRequested = true;
             }
-            if (ImGui::DragFloat("Coverage", &settings.pointGeometryCoverageScale, 0.01f, 0.01f, 10.0f, "%.3f")) {
+            if (ImGui::DragFloat("Coverage", &settings.pointGeometryCoverageScale, 0.0f, 0.01f, 10.0f, "%.3f")) {
                 renderRequested = true;
             }
 
@@ -1558,7 +1611,8 @@ int main(int argc, char** argv) {
                 const bool imageHovered = ImGui::IsItemHovered();
                 const ImVec2 imageMin = ImGui::GetItemRectMin();
 
-                bool lightGizmoActive = false;
+                bool viewportGizmoHovered = false;
+                bool viewportGizmoUsing = false;
                 if (showLightGizmo && selectedLight && cameraSource == CameraSource::Viewport) {
                     auto& transform = selectedLight.getComponent<Pale::TransformComponent>();
                     glm::mat4 lightTransform = transform.getTransform();
@@ -1578,8 +1632,9 @@ int main(int argc, char** argv) {
                         transform.setTransform(lightTransform);
                         rebuildSceneGpu();
                     }
+                    viewportGizmoHovered = viewportGizmoHovered || ImGuizmo::IsOver();
+                    viewportGizmoUsing = viewportGizmoUsing || ImGuizmo::IsUsing() || ImGuizmo::IsUsingAny();
                     ImGuizmo::PopID();
-                    lightGizmoActive = ImGuizmo::IsOver() || ImGuizmo::IsUsing();
                 }
 
                 if (showSurfelGizmo && cameraSource == CameraSource::Viewport) {
@@ -1597,7 +1652,7 @@ int main(int argc, char** argv) {
                                 static_cast<int>(emittingSurfels.size() - 1u));
                             const std::size_t surfelIndex =
                                 emittingSurfels[static_cast<std::size_t>(selectedSurfelLightIndex)];
-                            if (surfelIndex < pointGeometry.positions.size()) {
+                            if (surfelIndex < pointGeometry.positions.size() && surfelIndex < pointGeometry.quat.size()) {
                                 Pale::Entity pointCloudEntity = firstPointCloudEntity(scene);
                                 glm::mat4 pointCloudTransform{1.0f};
                                 if (pointCloudEntity && pointCloudEntity.hasComponent<Pale::TransformComponent>()) {
@@ -1605,11 +1660,19 @@ int main(int argc, char** argv) {
                                         pointCloudEntity.getComponent<Pale::TransformComponent>().getTransform();
                                 }
 
-                                const glm::vec3 worldPosition =
-                                    glm::vec3(pointCloudTransform * glm::vec4(pointGeometry.positions[surfelIndex], 1.0f));
+                                const glm::vec2 surfelScale =
+                                    surfelIndex < pointGeometry.scales.size()
+                                        ? pointGeometry.scales[surfelIndex]
+                                        : glm::vec2(settings.pointGeometrySupportRadius);
+                                const float gizmoScale = std::max(
+                                    settings.pointGeometrySupportRadius,
+                                    std::max(surfelScale.x, surfelScale.y));
+                                const glm::mat4 localSurfelTransform =
+                                    glm::translate(glm::mat4(1.0f), pointGeometry.positions[surfelIndex]) *
+                                    glm::mat4_cast(normalizeQuaternionOrIdentity(pointGeometry.quat[surfelIndex])) *
+                                    glm::scale(glm::mat4(1.0f), glm::vec3(std::max(gizmoScale, 0.001f)));
                                 glm::mat4 surfelTransform =
-                                    glm::translate(glm::mat4(1.0f), worldPosition) *
-                                    glm::scale(glm::mat4(1.0f), glm::vec3(std::max(settings.pointGeometrySupportRadius, 0.001f)));
+                                    pointCloudTransform * localSurfelTransform;
                                 glm::mat4 view = orbit.viewMatrix();
                                 glm::mat4 projection = orbit.projectionMatrix(renderWidth, renderHeight);
 
@@ -1620,19 +1683,23 @@ int main(int argc, char** argv) {
                                 if (ImGuizmo::Manipulate(
                                         glm::value_ptr(view),
                                         glm::value_ptr(projection),
-                                        ImGuizmo::TRANSLATE,
-                                        ImGuizmo::WORLD,
+                                        surfelGizmoOperation,
+                                        surfelGizmoMode,
                                         glm::value_ptr(surfelTransform))) {
-                                    const glm::vec3 newWorldPosition = glm::vec3(surfelTransform[3]);
-                                    const glm::vec3 newLocalPosition =
-                                        glm::vec3(glm::inverse(pointCloudTransform) * glm::vec4(newWorldPosition, 1.0f));
-                                    pointGeometry.positions[surfelIndex] = newLocalPosition;
+                                    const glm::mat4 localEditedTransform =
+                                        glm::inverse(pointCloudTransform) * surfelTransform;
+                                    pointGeometry.positions[surfelIndex] = glm::vec3(localEditedTransform[3]);
+                                    if (surfelGizmoOperation == ImGuizmo::ROTATE) {
+                                        pointGeometry.quat[surfelIndex] = extractRotationQuaternion(localEditedTransform);
+                                    }
                                     surfelLightStatus =
-                                        "Moved surfel " + std::to_string(surfelIndex);
+                                        (surfelGizmoOperation == ImGuizmo::ROTATE ? "Rotated surfel " : "Moved surfel ") +
+                                        std::to_string(surfelIndex);
                                     rebuildSceneGpu();
                                 }
+                                viewportGizmoHovered = viewportGizmoHovered || ImGuizmo::IsOver();
+                                viewportGizmoUsing = viewportGizmoUsing || ImGuizmo::IsUsing() || ImGuizmo::IsUsingAny();
                                 ImGuizmo::PopID();
-                                lightGizmoActive = lightGizmoActive || ImGuizmo::IsOver() || ImGuizmo::IsUsing();
                             }
                         }
                     }
@@ -1659,13 +1726,26 @@ int main(int argc, char** argv) {
                             cameraDirty = true;
                         }
                     }
-                    lightGizmoActive =
-                        lightGizmoActive ||
-                        ImGuizmo::IsViewManipulateHovered() ||
-                        ImGuizmo::IsUsingViewManipulate();
+                    viewportGizmoHovered = viewportGizmoHovered || ImGuizmo::IsViewManipulateHovered();
+                    viewportGizmoUsing = viewportGizmoUsing || ImGuizmo::IsUsingViewManipulate();
                 }
 
-                if (cameraSource == CameraSource::Viewport && imageHovered && !lightGizmoActive) {
+                if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                    !ImGui::IsMouseDown(ImGuiMouseButton_Middle) &&
+                    !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+                    viewportGizmoMouseCapture = false;
+                }
+                if (viewportGizmoUsing ||
+                    (viewportGizmoHovered &&
+                     (ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                      ImGui::IsMouseClicked(ImGuiMouseButton_Middle) ||
+                      ImGui::IsMouseClicked(ImGuiMouseButton_Right)))) {
+                    viewportGizmoMouseCapture = true;
+                }
+
+                const bool viewportCameraInputBlocked =
+                    viewportGizmoHovered || viewportGizmoUsing || viewportGizmoMouseCapture;
+                if (cameraSource == CameraSource::Viewport && imageHovered && !viewportCameraInputBlocked) {
                     if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
                         orbit.orbit(io.MouseDelta);
                         cameraDirty = true;

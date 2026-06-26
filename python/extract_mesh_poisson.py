@@ -14,12 +14,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--input-path", type=Path, default=None)
 
-    parser.add_argument("--samples-per-surfel", type=int, default=1)
+    parser.add_argument("--samples-per-surfel", type=int, default=24)
     parser.add_argument("--area-weighted-sampling", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--area-sample-power", type=float, default=1.0)
+    parser.add_argument("--area-sample-power", type=float, default=0.5)
     parser.add_argument("--min-samples-per-surfel", type=int, default=1)
-    parser.add_argument("--max-samples-per-surfel", type=int, default=64)
-    parser.add_argument("--area-reference-quantile", type=float, default=0.50)
+    parser.add_argument("--max-samples-per-surfel", type=int, default=1024)
+    parser.add_argument("--area-reference-quantile", type=float, default=0.2)
+    parser.add_argument("--scale-multiplier", type=float, default=0.6)
+    parser.add_argument("--scale-clamp-quantile", type=float, default=0.98)
+    parser.add_argument("--min-scale", type=float, default=1.0e-8)
 
     parser.add_argument("--correct-normal-flips", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--normal-neighbor-count", type=int, default=16)
@@ -34,13 +37,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normal-smoothing-distance-sigma-factor", type=float, default=1.0)
     parser.add_argument("--normal-smoothing-iterations", type=int, default=2)
 
-    parser.add_argument("--poisson-depth", type=int, default=11)
-    parser.add_argument("--poisson-scale", type=float, default=1.1)
-    parser.add_argument("--density-quantile", type=float, default=0.1)
-    parser.add_argument("--bbox-padding-factor", type=float, default=0.05)
+    parser.add_argument("--poisson-depth", type=int, default=10)
+    parser.add_argument("--poisson-scale", type=float, default=1.0)
+    parser.add_argument("--density-quantile", type=float, default=0.05)
+    parser.add_argument("--bbox-padding-factor", type=float, default=0.01)
+    parser.add_argument("--max-vertex-sample-distance-factor", type=float, default=4.0)
+    parser.add_argument("--vertex-sample-spacing-quantile", type=float, default=0.90)
 
     parser.add_argument("--num-cluster", type=int, default=50)
-    parser.add_argument("--split-components", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--split-components", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--component-eps", type=float, default=0.05)
     parser.add_argument("--component-min-points", type=int, default=50)
 
@@ -50,6 +55,24 @@ def parse_args() -> argparse.Namespace:
 
     if args.samples_per_surfel <= 0:
         raise ValueError("--samples-per-surfel must be greater than 0")
+
+    if args.min_samples_per_surfel <= 0:
+        raise ValueError("--min-samples-per-surfel must be greater than 0")
+
+    if args.max_samples_per_surfel < args.min_samples_per_surfel:
+        raise ValueError("--max-samples-per-surfel must be >= --min-samples-per-surfel")
+
+    if not 0.0 <= args.area_reference_quantile <= 1.0:
+        raise ValueError("--area-reference-quantile must be in [0, 1]")
+
+    if args.scale_multiplier <= 0.0:
+        raise ValueError("--scale-multiplier must be > 0")
+
+    if args.scale_clamp_quantile != 0.0 and not 0.0 < args.scale_clamp_quantile <= 1.0:
+        raise ValueError("--scale-clamp-quantile must be 0 to disable, or in (0, 1]")
+
+    if args.min_scale <= 0.0:
+        raise ValueError("--min-scale must be > 0")
 
     if args.normal_neighbor_count < 0:
         raise ValueError("--normal-neighbor-count must be >= 0")
@@ -71,6 +94,12 @@ def parse_args() -> argparse.Namespace:
 
     if args.normal_smoothing_max_angle_deg <= 0.0 or args.normal_smoothing_max_angle_deg >= 180.0:
         raise ValueError("--normal-smoothing-max-angle-deg must be in the range (0, 180)")
+
+    if args.max_vertex_sample_distance_factor < 0.0:
+        raise ValueError("--max-vertex-sample-distance-factor must be >= 0")
+
+    if not 0.0 < args.vertex_sample_spacing_quantile <= 1.0:
+        raise ValueError("--vertex-sample-spacing-quantile must be in (0, 1]")
 
     return args
 
@@ -194,6 +223,30 @@ def optional_property(properties: dict[str, np.ndarray], names: Iterable[str], d
     return np.full(count, default_value, dtype=np.float32)
 
 
+def preprocess_scales(scales: np.ndarray, args: argparse.Namespace) -> np.ndarray:
+    processed_scales = np.asarray(scales, dtype=np.float32).copy()
+    processed_scales *= float(args.scale_multiplier)
+
+    if args.scale_clamp_quantile > 0.0:
+        finite_positive_mask = (
+            np.isfinite(processed_scales).all(axis=1)
+            & (processed_scales[:, 0] > 0.0)
+            & (processed_scales[:, 1] > 0.0)
+        )
+        finite_positive_scales = processed_scales[finite_positive_mask]
+
+        if finite_positive_scales.size == 0:
+            return processed_scales
+
+        scale_upper_bounds = np.quantile(finite_positive_scales, float(args.scale_clamp_quantile), axis=0)
+        scale_upper_bounds = np.maximum(scale_upper_bounds, float(args.min_scale))
+        processed_scales = np.minimum(processed_scales, scale_upper_bounds[None, :]).astype(np.float32)
+
+    processed_scales = np.maximum(processed_scales, float(args.min_scale)).astype(np.float32)
+
+    return processed_scales
+
+
 def normalize_vectors(vectors: np.ndarray, fallback: np.ndarray | None = None) -> np.ndarray:
     vector_lengths = np.linalg.norm(vectors, axis=1, keepdims=True)
     valid_mask = vector_lengths[:, 0] > 1e-12
@@ -294,7 +347,10 @@ def sample_unit_disk(sample_count: int) -> np.ndarray:
     return samples
 
 
-def load_surfels(properties: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def load_surfels(
+    properties: dict[str, np.ndarray],
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     positions = np.stack(
         [
             require_property(properties, ["x"]),
@@ -348,7 +404,7 @@ def load_surfels(properties: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndar
         & (opacity > 0.0)
     )
 
-    scales = np.stack([scale_u, scale_v], axis=1).astype(np.float32)
+    scales = preprocess_scales(np.stack([scale_u, scale_v], axis=1), args)
 
     return (
         positions[valid_mask],
@@ -658,6 +714,87 @@ def filter_sample_components(point_cloud: o3d.geometry.PointCloud, args: argpars
     return point_cloud.select_by_index(kept_indices)
 
 
+def estimate_sample_spacing(
+    point_cloud: o3d.geometry.PointCloud,
+    spacing_quantile: float,
+) -> float:
+    sample_points = np.asarray(point_cloud.points)
+
+    if sample_points.shape[0] <= 1:
+        return 0.0
+
+    kdtree = o3d.geometry.KDTreeFlann(point_cloud)
+    nearest_distances = np.empty(sample_points.shape[0], dtype=np.float32)
+
+    for point_index in range(sample_points.shape[0]):
+        _, _, squared_distances = kdtree.search_knn_vector_3d(point_cloud.points[point_index], 2)
+        if len(squared_distances) < 2:
+            nearest_distances[point_index] = 0.0
+        else:
+            nearest_distances[point_index] = float(np.sqrt(max(float(squared_distances[1]), 0.0)))
+
+    positive_distances = nearest_distances[nearest_distances > 1.0e-12]
+
+    if positive_distances.size == 0:
+        return 0.0
+
+    return float(np.quantile(positive_distances, float(spacing_quantile)))
+
+
+def trim_mesh_by_sample_distance(
+    mesh: o3d.geometry.TriangleMesh,
+    point_cloud: o3d.geometry.PointCloud,
+    max_distance_factor: float,
+    spacing_quantile: float,
+) -> o3d.geometry.TriangleMesh:
+    if max_distance_factor <= 0.0:
+        return mesh
+
+    mesh_vertices = np.asarray(mesh.vertices)
+
+    if mesh_vertices.size == 0 or not point_cloud.has_points():
+        return mesh
+
+    sample_spacing = estimate_sample_spacing(point_cloud, spacing_quantile)
+
+    if sample_spacing <= 0.0:
+        return mesh
+
+    max_distance = float(max_distance_factor) * sample_spacing
+    kdtree = o3d.geometry.KDTreeFlann(point_cloud)
+    remove_mask = np.zeros(mesh_vertices.shape[0], dtype=bool)
+
+    for vertex_index, vertex in enumerate(mesh_vertices):
+        _, _, squared_distances = kdtree.search_knn_vector_3d(vertex.astype(np.float64), 1)
+
+        if not squared_distances:
+            remove_mask[vertex_index] = True
+            continue
+
+        remove_mask[vertex_index] = float(squared_distances[0]) > max_distance * max_distance
+
+    removed_vertices = int(np.count_nonzero(remove_mask))
+
+    if removed_vertices == 0:
+        print(
+            "Distance trim: removed 0 vertices "
+            f"| spacing_q{spacing_quantile:.2f}={sample_spacing:.6g} "
+            f"| max_distance={max_distance:.6g}"
+        )
+        return mesh
+
+    mesh.remove_vertices_by_mask(remove_mask)
+    mesh.remove_unreferenced_vertices()
+
+    print(
+        f"Distance trim: removed {removed_vertices} vertices "
+        f"| spacing_q{spacing_quantile:.2f}={sample_spacing:.6g} "
+        f"| max_distance={max_distance:.6g}"
+    )
+
+    return mesh
+
+
 def remove_low_density_vertices(
     mesh: o3d.geometry.TriangleMesh,
     densities: np.ndarray,
@@ -770,6 +907,16 @@ def clean_mesh(mesh: o3d.geometry.TriangleMesh) -> o3d.geometry.TriangleMesh:
     return mesh
 
 
+def print_scale_summary(scales: np.ndarray) -> None:
+    effective_radii = np.sqrt(np.maximum(scales[:, 0] * scales[:, 1], 1.0e-12))
+    print(
+        "Scale summary after preprocessing: "
+        f"median_radius={float(np.median(effective_radii)):.6g}, "
+        f"p95_radius={float(np.quantile(effective_radii, 0.95)):.6g}, "
+        f"max_radius={float(np.max(effective_radii)):.6g}"
+    )
+
+
 def main() -> None:
     args = parse_args()
 
@@ -783,10 +930,11 @@ def main() -> None:
     print(f"Using input PLY: {input_path}")
 
     properties = read_vertex_properties(input_path)
-    positions, tangent_u, tangent_v, normals, scales, colors = load_surfels(properties)
+    positions, tangent_u, tangent_v, normals, scales, colors = load_surfels(properties, args)
 
     print(f"Loaded surfels: {positions.shape[0]}")
-    print(f"Samples per surfel: {args.samples_per_surfel}")
+    print_scale_summary(scales)
+    print(f"Samples per surfel base value: {args.samples_per_surfel}")
 
     if args.correct_normal_flips:
         normals, normal_flip_mask = correct_isolated_normal_flips(
@@ -877,6 +1025,12 @@ def main() -> None:
 
     mesh = remove_low_density_vertices(mesh, np.asarray(densities), args.density_quantile)
     mesh = crop_to_source_bbox(mesh, positions, args.bbox_padding_factor)
+    mesh = trim_mesh_by_sample_distance(
+        mesh,
+        point_cloud,
+        args.max_vertex_sample_distance_factor,
+        args.vertex_sample_spacing_quantile,
+    )
     mesh = keep_largest_mesh_components(mesh, args.num_cluster, args.component_min_points)
     mesh = clean_mesh(mesh)
     mesh = transfer_point_cloud_colors_to_mesh(mesh, point_cloud)

@@ -689,7 +689,7 @@ namespace Pale {
 
         // Cylinder ray:
         // EGWR 2000 point-sampled geometry debug renderer.
-        float pointGeometrySupportRadius = 0.02f;
+        float pointGeometrySupportRadius = 0.002f;
         float pointGeometryReconstructionLength = 0.04f;
         float pointGeometryRayOffsetMultiplier = 2.0f;
         float pointGeometryCoverageScale = 1.1f;

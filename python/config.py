@@ -66,22 +66,21 @@ class OptimizationConfig:
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
     # Position-only exponential LR schedule.
-    use_position_lr_schedule: bool = True
+    use_position_lr_schedule: bool = False
     position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.5
     position_lr_max_steps: int = iterations
     # Global LR scheduling
-    use_global_lr_schedule: bool = True
+    use_global_lr_schedule: bool = False
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.25
     global_lr_start_iteration: int = 8_000
     global_lr_max_steps: int = iterations
 
-    # Regularizers
     depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.0025
-    visibility_weighted_opacity_weight: float = 0.01
+    normal_consistency_weight: float = 0.005
+    visibility_weighted_opacity_weight: float = 0.05
 
     # Density control / EV-splitting
     densification_interval: int = 500
@@ -92,11 +91,11 @@ class OptimizationConfig:
     densify_until_fraction: float = 0.9
 
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 6.0e-4
+    densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min_final: float = 4.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 3000
     densification_grad_abs_min_schedule_end_iteration: int = 3000
-    densification_scale_min: float = 1.0e-2
+    densification_scale_min: float = 1.25e-2
 
     # More densification on radiometrically darker primitives
     densify_bsdf_floor: float = 0.00
@@ -105,9 +104,9 @@ class OptimizationConfig:
     # Pruning
     opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = math.pi * 1.0e-7
+    min_surfel_area: float = math.pi * 5.0e-7
     min_points_to_keep_after_scale_prune: int = 1
-    inactive_gradient_prune_cycles: int = 10
+    inactive_gradient_prune_cycles: int = 2
 
     # Misc scheduling
     reset_opacity_interval: int = 0
@@ -150,8 +149,8 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
         factor_position = 0.0008
-        factor_rotation = 0.04
-        factor_scale = 0.0002
+        factor_rotation = 0.02
+        factor_scale = 0.0012
         factor_albedo = 0.005
         factor_opacity = 0.0009
         factor_beta = 0.008

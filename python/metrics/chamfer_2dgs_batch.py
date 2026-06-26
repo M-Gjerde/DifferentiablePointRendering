@@ -25,13 +25,14 @@ DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
     DatasetConfig("plant", "2dgs_plant_30", "plant.ply"),
     DatasetConfig("teapot", "2dgs_teapot_30", "teapot.ply"),
 )
-#DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
-#    DatasetConfig("dragon", "2dgs_dragon_10", "dragon.ply"),
-#    DatasetConfig("horse", "2dgs_horse_10", "horse.ply"),
-#    DatasetConfig("lego", "2dgs_lego_10", "lego.ply"),
-#    DatasetConfig("plant", "2dgs_plant_10", "plant.ply"),
-#    DatasetConfig("teapot", "2dgs_teapot_10", "teapot.ply"),
-#)
+
+DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
+    DatasetConfig("dragon", "2dgs_dragon_10", "dragon.ply"),
+    DatasetConfig("horse", "2dgs_horse_10", "horse.ply"),
+    DatasetConfig("lego", "2dgs_lego_10", "lego.ply"),
+    DatasetConfig("plant", "2dgs_plant_10", "plant.ply"),
+    DatasetConfig("teapot", "2dgs_teapot_10", "teapot.ply"),
+)
 
 
 def require_existing_path(path: Path, description: str) -> Path:
