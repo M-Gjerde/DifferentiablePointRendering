@@ -16,7 +16,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 5
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -54,7 +54,7 @@ class OptimizationConfig:
 
     device: str = "cpu"
 
-    iterations: int = int(120_000)
+    iterations: int = int(60_000)
     optimizer_type: str = "adam"
     # Learning rates
     learning_rate: float = 1.0
@@ -69,13 +69,13 @@ class OptimizationConfig:
     use_position_lr_schedule: bool = True
     position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.5
-    position_lr_max_steps: int = iterations / 2
+    position_lr_max_steps: int = iterations
     # Global LR scheduling
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.25
-    global_lr_start_iteration: int = 10_000
-    global_lr_max_steps: int = iterations / 2
+    global_lr_start_iteration: int = 8_000
+    global_lr_max_steps: int = iterations
 
     # Regularizers
     depth_distort_weight: float = 100
@@ -93,7 +93,7 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 3.0e-4
+    densification_grad_abs_min_final: float = 6.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 3000
     densification_grad_abs_min_schedule_end_iteration: int = 3000
     densification_scale_min: float = 1.0e-2
@@ -149,12 +149,12 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.0004
-        factor_rotation = 0.01
-        factor_scale = 0.006
-        factor_albedo = 0.0025
-        factor_opacity = 0.0004
-        factor_beta = 0.005
+        factor_position = 0.0008
+        factor_rotation = 0.04
+        factor_scale = 0.0002
+        factor_albedo = 0.005
+        factor_opacity = 0.0009
+        factor_beta = 0.008
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
