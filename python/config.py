@@ -16,7 +16,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
+    adjoint_passes: int = 6
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -92,7 +92,7 @@ class OptimizationConfig:
 
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 7.0e-4
+    densification_grad_abs_min_final: float = 6.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 3000
     densification_grad_abs_min_schedule_end_iteration: int = 3000
     densification_scale_min: float = 1.25e-2
@@ -125,7 +125,7 @@ class OptimizationConfig:
 
     # Logging
     log_interval: int = 1
-    save_interval: int = 10
+    save_interval: int = 100
     save_ply_files_interval: int = save_interval
     save_gradient_diagnostics: bool = True
     # Iteration snapshot content
@@ -153,7 +153,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_scale = 0.0012
         factor_albedo = 0.005
         factor_opacity = 0.0009
-        factor_beta = 0.000
+        factor_beta = 0.008
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 

@@ -18,11 +18,11 @@ class DatasetConfig:
 
 
 DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
-    DatasetConfig("dragon", "dragon_pbdr", "dragon.ply"),
-    DatasetConfig("horse", "horse_pbdr", "horse.ply"),
-    DatasetConfig("lego", "lego_pbdr", "lego.ply"),
-    DatasetConfig("plant", "plant_pbdr", "plant.ply"),
-    DatasetConfig("teapot", "teapot_pbdr", "teapot.ply"),
+    DatasetConfig("dragon", "dragon_10_pbdr", "dragon.ply"),
+    DatasetConfig("horse", "horse_10_pbdr", "horse.ply"),
+    DatasetConfig("lego", "lego_10_pbdr", "lego.ply"),
+    DatasetConfig("plant", "plant_10_pbdr", "plant.ply"),
+    DatasetConfig("teapot", "teapot_10_pbdr", "teapot.ply"),
 )
 
 
