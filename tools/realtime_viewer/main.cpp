@@ -712,7 +712,7 @@ namespace {
 
     Pale::PathTracerSettings makeDefaultSettings() {
         Pale::PathTracerSettings settings{};
-        settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
+        settings.integratorKind = Pale::IntegratorKind::photonMapping;
         settings.photonsPerLaunch = 65536u;
         settings.maxBounces = 0;
         settings.maxAdjointBounces = 0;

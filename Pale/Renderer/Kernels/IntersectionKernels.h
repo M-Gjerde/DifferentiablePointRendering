@@ -527,7 +527,6 @@ namespace Pale {
         const float3 &shadingNormalW,
         const float3 &lightPositionW) {
         constexpr uint32_t kMaxLocalSurfelHits = 8u;
-        constexpr float LocalLayerDepthEpsilon = 1.0e-1f;
         const float3 lightVector = lightPositionW - shadingPositionW;
         const float lightDistanceSquared = dot(lightVector, lightVector);
 

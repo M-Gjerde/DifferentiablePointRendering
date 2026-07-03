@@ -16,7 +16,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 6
+    adjoint_passes: int = 2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -77,9 +77,9 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 8_000
     global_lr_max_steps: int = iterations
 
-    depth_distort_weight: float = 100
+    depth_distort_weight: float = 20
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
+    normal_consistency_weight: float = 0.001
     visibility_weighted_opacity_weight: float = 0.05
 
     # Density control / EV-splitting
@@ -91,8 +91,8 @@ class OptimizationConfig:
     densify_until_fraction: float = 0.9
 
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 6.0e-4
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_schedule_start_iteration: int = 3000
     densification_grad_abs_min_schedule_end_iteration: int = 3000
     densification_scale_min: float = 1.25e-2
@@ -125,7 +125,7 @@ class OptimizationConfig:
 
     # Logging
     log_interval: int = 1
-    save_interval: int = 100
+    save_interval: int = 50
     save_ply_files_interval: int = save_interval
     save_gradient_diagnostics: bool = True
     # Iteration snapshot content
@@ -194,7 +194,7 @@ def parse_args() -> OptimizationConfig:
 
     parser.add_argument("--assets-root", type=Path)
     parser.add_argument("--scene", "--scene-xml", dest="scene_xml", type=str)
-    parser.add_argument("--pointcloud", dest="pointcloud_ply", type=str)
+    parser.add_argument("--pointcloud", "--ply", dest="pointcloud_ply", type=str)
     parser.add_argument("-s", "--dataset-path", type=Path)
     parser.add_argument("--output", "-o", "-m", "--output-dir", dest="output_dir", type=Path)
     parser.add_argument("--iterations", type=int)

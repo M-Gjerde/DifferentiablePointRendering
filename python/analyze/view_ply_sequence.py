@@ -521,6 +521,7 @@ def parse_arguments() -> argparse.Namespace:
         description="VTK viewer for cycling through optimization point-cloud checkpoints from the latest run's ./points folder."
     )
 
+    parser.add_argument("--ply", type=Path, default=None, help="Optional explicit PLY point cloud to view instead of a run's ./points sequence.")
     parser.add_argument("--output-root", type=Path, default=Path("OptimizationOutput"), help="Root folder containing timestamped optimization output folders.")
     parser.add_argument("--run-dir", type=Path, default=None, help="Optional explicit optimization run directory. If omitted, the latest run under --output-root is used.")
     parser.add_argument("--run-index", type=int, default=0, help="0 means latest run, 1 means second latest run, etc. Ignored when --run-dir is provided.")
@@ -552,13 +553,20 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     args = parse_arguments()
 
-    points_dir = find_points_sequence_dir(
-        output_root_path=args.output_root,
-        run_dir=args.run_dir,
-        run_index=args.run_index,
-    )
-
-    ply_paths = find_ply_sequence(points_dir)
+    use_explicit_ply = args.ply is not None
+    if use_explicit_ply:
+        explicit_ply_path = args.ply.expanduser().resolve()
+        if not explicit_ply_path.is_file():
+            raise FileNotFoundError(f"--ply is not an existing file: {explicit_ply_path}")
+        points_dir = explicit_ply_path.parent
+        ply_paths = [explicit_ply_path]
+    else:
+        points_dir = find_points_sequence_dir(
+            output_root_path=args.output_root,
+            run_dir=args.run_dir,
+            run_index=args.run_index,
+        )
+        ply_paths = find_ply_sequence(points_dir)
 
     if args.start_index < 0 or args.start_index >= len(ply_paths):
         raise IndexError(f"--start-index must be in [0, {len(ply_paths) - 1}], got {args.start_index}.")
@@ -586,7 +594,10 @@ def main() -> None:
     last_navigation_action_time = 0.0
     navigation_repeat_seconds = max(float(args.navigation_repeat_seconds), 0.01)
 
-    print(f"Using points folder: {points_dir}")
+    if use_explicit_ply:
+        print(f"Using PLY file: {ply_paths[0]}")
+    else:
+        print(f"Using points folder: {points_dir}")
     print(f"Found {len(ply_paths)} PLY files.")
     print(
         "Controls: Right/Left arrow = refresh + next/previous PLY, Home/End = refresh + first/last, "
@@ -860,6 +871,11 @@ def main() -> None:
     def refresh_ply_file_list_preserving_current() -> bool:
         nonlocal ply_paths
         nonlocal current_index
+
+        if use_explicit_ply:
+            if not ply_paths[current_index].is_file():
+                raise FileNotFoundError(f"Current PLY file no longer exists: {ply_paths[current_index]}")
+            return False
 
         current_ply_name = ply_paths[current_index].name if ply_paths else None
         updated_ply_paths = find_ply_sequence(points_dir)
