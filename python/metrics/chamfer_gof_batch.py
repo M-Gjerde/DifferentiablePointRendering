@@ -21,9 +21,9 @@ class ReconstructionCandidate:
 
 
 DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
-    #DatasetConfig("dragon_10", "gof_dragon_10", "dragon.ply"),
+    DatasetConfig("dragon_10", "gof_dragon_10", "dragon.ply"),
     DatasetConfig("horse_10", "gof_horse_10", "horse.ply"),
-    #DatasetConfig("lego_10", "gof_lego_10", "lego.ply"),
+    DatasetConfig("lego_10", "gof_lego_10", "lego.ply"),
     DatasetConfig("plant_10", "gof_plant_10", "plant.ply"),
     DatasetConfig("teapot_10", "gof_teapot_10", "teapot.ply"),
 )
