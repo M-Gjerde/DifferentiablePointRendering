@@ -514,7 +514,7 @@ namespace Pale {
                                 */
                                 const float3 directRadiance = estimateDirectPointSampledPointLights(
                                     scene,
-                                    worldHit.hitPositionW,
+                                    localHit.hitPositionW,
                                     normalW,
                                     surfel.alpha_r * surfel.albedo);
 
