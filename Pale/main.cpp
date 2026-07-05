@@ -988,7 +988,7 @@ int main(int argc, char** argv) {
         settings.numForwardPasses = 1;
         settings.numShadowRays = 1;
         settings.numAdjointShadowRays = 1;
-        settings.adjointSamplesPerPixel = 1;
+        settings.adjointSamplesPerPixel = 16;
         settings.numGatherPasses = 1;
 
         settings.renderDebugGradientImages = true;

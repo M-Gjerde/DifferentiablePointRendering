@@ -509,6 +509,11 @@ namespace Pale {
         bool useImplicitRayHitJacobian = false;
         bool isDirectLightSample = false;
         float3 directLightRadiance{FLT_MAX, FLT_MAX, FLT_MAX};
+
+        // Used only when isDirectLightSample == true.
+        float3 pointLightPositionW{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 pointLightRadiantIntensity{FLT_MAX, FLT_MAX, FLT_MAX};
+
     };
 
     struct MaterialVertexGradientEvent {
