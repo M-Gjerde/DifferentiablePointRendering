@@ -838,7 +838,7 @@ namespace Pale {
                                                   intermediates.maxMeasurementEventCount,
                                                   measurementEvent);
 
-                                //appendMeasurementDirectPointLightEvents();
+                                appendMeasurementDirectPointLightEvents();
                                 if (settings.maxAdjointBounces > 1)
                                     appendMeasurementAuxiliarySample();
                             }

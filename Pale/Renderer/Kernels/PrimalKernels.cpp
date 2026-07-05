@@ -291,7 +291,7 @@ namespace Pale {
     }
 
 
-    void launchCameraGatherKernel2(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPass) {
+    void launchCameraGatherKernel(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPass) {
         auto& queue = pkg.queue;
         auto& scene = pkg.scene;
         auto& settings = pkg.settings;
@@ -502,6 +502,7 @@ namespace Pale {
                                 float3 emittedRadiance =
                                     surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
 
+                                /*
                                 const float3 directRadiance =
                                     estimateDirectAreaLightAtDiffuseSurface(
                                         scene,
@@ -510,6 +511,12 @@ namespace Pale {
                                         surfel.alpha_r * surfel.albedo,
                                         settings,
                                         rng);
+                                */
+                                const float3 directRadiance = estimateDirectPointSampledPointLights(
+                                    scene,
+                                    worldHit.hitPositionW,
+                                    normalW,
+                                    surfel.alpha_r * surfel.albedo);
 
                                 const float3 outgoingRadiance = emittedRadiance + indirectRadiance + directRadiance;
                                 accumulatedRadianceRGB += compositeWeight * outgoingRadiance;
@@ -705,7 +712,7 @@ namespace Pale {
         queue.wait();
     }
 
-    void launchCameraGatherKernel(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPass) {
+    void launchCameraGatherKernelOld(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPass) {
         auto& queue = pkg.queue;
         auto& scene = pkg.scene;
         auto& settings = pkg.settings;
