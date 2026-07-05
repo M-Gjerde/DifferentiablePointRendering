@@ -71,6 +71,7 @@ namespace Pale {
     }
 
     void submitLightTracingKernelCylinderRay(RenderPackage& pkg) {
+        /*
         for (uint32_t cameraIndex = 0u;
              cameraIndex < pkg.numSensors;
              ++cameraIndex) {
@@ -83,6 +84,7 @@ namespace Pale {
                     sampleIndex);
             }
         }
+        */
 
         launchPostProcessKernel(pkg);
     }

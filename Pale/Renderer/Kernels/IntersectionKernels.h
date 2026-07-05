@@ -1,4 +1,4 @@
-// SplatIntersection.hpp
+// IntersectionKernels.h
 #pragma once
 
 #include <sycl/sycl.hpp>
@@ -170,12 +170,11 @@ namespace Pale {
 
                 float tHitLocal = 0.0f;
                 float alphaGeom = 0.0f;
-                float3 hitLocal{0.0f};
 
                 if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal, RayEpsilon2))
                     continue;
 
-                hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
+                float3 hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
                 const float2 uv = phiInverse(hitLocal, surfel);
                 if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
                     continue;
@@ -744,71 +743,72 @@ namespace Pale {
     }
     */
 
-    SYCL_EXTERNAL inline float3 estimateDirectPointLightsAtDiffuseSurface(
-        const GPUSceneBuffers &scene,
-        const float3 &shadingPositionW,
-        const float3 &shadingNormalW,
-        const float3 &diffuseAlbedo) {
-        float3 accumulatedDirectRadiance(0.0f);
+SYCL_EXTERNAL inline float3 estimateDirectPointSampledPointLights(
+    const GPUSceneBuffers &scene,
+    const float3 &surfacePositionW,
+    const float3 &surfaceNormalW,
+    const float3 &diffuseAlbedo) {
+    float3 accumulatedRadiance(0.0f);
 
-        for (uint32_t lightIndex = 0u;
-             lightIndex < scene.lightCount;
-             ++lightIndex) {
-            const GPULightRecord light = scene.lights[lightIndex];
+    const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
 
-            if (light.lightType != LightType::Surfel) {
-                continue;
-            }
-            const float3 lightPositionW = scene.points[light.primitiveIndex].position;
-            const float3 toLight = lightPositionW - shadingPositionW;
-            const float distanceSquared = dot(toLight, toLight);
+    for (uint32_t lightIndex = 0u;
+         lightIndex < scene.lightCount;
+         ++lightIndex) {
+        const GPULightRecord &light = scene.lights[lightIndex];
 
-            if (distanceSquared <= 1e-12f) {
-                continue;
-            }
-
-            const float distance = sycl::sqrt(distanceSquared);
-            const float3 wi = toLight / distance; // direction from surface to light
-
-            const float cosThetaX =
-                    sycl::fmax(0.0f, dot(shadingNormalW, wi));
-
-            if (cosThetaX <= 0.0f) {
-                continue;
-            }
-
-            // This should return either:
-            // - binary visibility: 0 or 1, for opaque scenes, or
-            // - accumulated transmittance in [0,1], for alpha/transparent blockers.
-            const float shadowTransmission =
-                    traceShadowTransmissionToPoint(
-                        scene,
-                        shadingPositionW,
-                        shadingNormalW,
-                        lightPositionW);
-
-            if (shadowTransmission <= 0.0f) {
-                continue;
-            }
-
-            const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
-
-            // If light.flux is total emitted radiant flux Phi [W],
-            // isotropic radiant intensity is I = Phi / (4*pi) [W/sr].
-            const float3 radiantIntensity =
-                    light.flux * light.color * (1.0f / (4.0f * M_PIf));
-
-            const float3 contribution =
-                    diffuseBrdf *
-                    radiantIntensity *
-                    shadowTransmission *
-                    (cosThetaX / distanceSquared);
-
-            accumulatedDirectRadiance += contribution;
+        // Your current light records appear to use emissive surfels as
+        // light-position carriers. We interpret each as an isotropic point light.
+        if (light.lightType != LightType::Surfel) {
+            continue;
         }
 
-        return accumulatedDirectRadiance;
+        const Point &lightSurfel = scene.points[light.primitiveIndex];
+        const float3 lightPositionW = lightSurfel.position;
+
+        const float3 toLight = lightPositionW - surfacePositionW;
+        const float distanceSquared = dot(toLight, toLight);
+
+        if (distanceSquared <= 1.0e-12f) {
+            continue;
+        }
+
+        const float distance = sycl::sqrt(distanceSquared);
+        const float3 lightDirection = toLight / distance;
+
+        const float surfaceCosine =
+            sycl::fmax(0.0f, dot(surfaceNormalW, lightDirection));
+
+        if (surfaceCosine <= 0.0f) {
+            continue;
+        }
+
+        const float shadowTransmission =
+            traceShadowTransmissionToPoint(
+                scene,
+                surfacePositionW,
+                surfaceNormalW,
+                lightPositionW);
+
+
+        if (shadowTransmission <= 0.0f) {
+            continue;
+        }
+
+        // Treat light.flux as total radiant flux Phi [W].
+        // An isotropic point light has radiant intensity I = Phi / (4 pi).
+        const float3 radiantIntensity =
+            light.flux * light.color * (1.0f / (4.0f * M_PIf));
+
+        accumulatedRadiance +=
+            diffuseBrdf *
+            radiantIntensity *
+            shadowTransmission *
+            (surfaceCosine / distanceSquared);
     }
+
+    return accumulatedRadiance;
+}
 
     SYCL_EXTERNAL inline float3 estimateDirectAreaLightAtDiffuseSurface(
         const GPUSceneBuffers &scene,
@@ -922,6 +922,7 @@ namespace Pale {
         return accumulatedDirectRadiance;
     }
 
+    /*
     struct PointSampledSceneHit {
         bool hit = false;
         bool isEmissive = false;
@@ -973,6 +974,7 @@ namespace Pale {
         return true;
     }
 
+    /*
     SYCL_EXTERNAL inline bool intersectBLASPointSampledGeometry(
         const Ray &rayWorld, const Ray &rayObject, uint32_t blasRangeIndex,
         const Transform &transform, const GPUSceneBuffers &scene,
@@ -1161,6 +1163,7 @@ namespace Pale {
         return true;
     }
 
+    /*
     SYCL_EXTERNAL inline bool intersectScenePointSampledGeometry(
         const Ray &rayWorld, const GPUSceneBuffers &scene,
         const PathTracerSettings &settings, PointSampledSceneHit &outHit) {
@@ -1279,6 +1282,7 @@ namespace Pale {
         return outHit.hit;
     }
 
+    /*
     SYCL_EXTERNAL inline float tracePointSampledShadowTransmissionToPoint(
         const GPUSceneBuffers &scene,
         const PathTracerSettings &settings,
@@ -1328,6 +1332,7 @@ namespace Pale {
         return transmission;
     }
 
+    /*
     SYCL_EXTERNAL inline float3 estimateDirectPointSampledAreaLight(
         const GPUSceneBuffers &scene,
         const PathTracerSettings &settings,
@@ -1382,4 +1387,5 @@ namespace Pale {
 
         return radiance;
     }
+    */
 } // namespace Pale

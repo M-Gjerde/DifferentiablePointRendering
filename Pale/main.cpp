@@ -927,7 +927,7 @@ int main(int argc, char** argv) {
     auto buildProducts = Pale::SceneBuild::build(scene, assetAccessor, options);
     auto sceneGpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector.getQueue());
 
-    bool renderCylinderRay = true;
+    bool renderCylinderRay = !true;
     bool renderPhotonMapping = true;
 
     if (renderCylinderRay) {

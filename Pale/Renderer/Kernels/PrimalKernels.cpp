@@ -291,7 +291,7 @@ namespace Pale {
     }
 
 
-    void launchCameraGatherKernel(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPass) {
+    void launchCameraGatherKernel2(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPass) {
         auto& queue = pkg.queue;
         auto& scene = pkg.scene;
         auto& settings = pkg.settings;
@@ -705,6 +705,141 @@ namespace Pale {
         queue.wait();
     }
 
+    void launchCameraGatherKernel(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPass) {
+        auto& queue = pkg.queue;
+        auto& scene = pkg.scene;
+        auto& settings = pkg.settings;
+        auto& photonMap = pkg.intermediates.map;
+        SensorGPU sensor = pkg.sensors[cameraIndex];
+        const std::uint32_t imageWidth = sensor.camera.width;
+        const std::uint32_t imageHeight = sensor.camera.height;
+        const std::uint32_t pixelCount = imageWidth * imageHeight;
+        queue.fill(sensor.framebuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
+        queue.fill(sensor.medianDepthBuffer, 0.0f, pixelCount).wait();
+        queue.fill(sensor.meanDepthBuffer, 0.0f, pixelCount).wait();
+        queue.fill(sensor.medianWorldPositionBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
+        queue.fill(sensor.visibleNormalBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
+        queue.fill(sensor.normalFromDepthBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
+        queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount).wait();
+        queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount).wait();
+        queue.fill(sensor.visibilityWeightedOpacityBuffer, 0.0f, pixelCount).wait();
+
+        // -------------------------------------------------------------------------
+        // Pass 1:
+        //   - RGB gather
+        //   - median depth
+        //   - median world position
+        //   - visible normal at median surface
+        // -------------------------------------------------------------------------
+        queue.submit([&](sycl::handler& cgh) {
+            const uint64_t renderSeed = pkg.random.seed;
+
+            cgh.parallel_for<class CameraGatherKernel>(
+                sycl::range<1>(pixelCount),
+                [=](sycl::id<1> tid) {
+                    const std::uint32_t pixelIndex = tid[0];
+                    const std::uint32_t pixelX = pixelIndex % imageWidth;
+                    const std::uint32_t pixelY = pixelIndex / imageWidth;
+                    const uint64_t directionSeed = rng::makeSeed(renderSeed, pixelIndex, cameraIndex,
+                                                                 rng::kStreamGather, 0u);
+                    rng::Xorshift128 rng(directionSeed);
+                    float3 accumulatedRadianceRGB(0.0f, 0.0f, 0.0f);
+                    // Center-of-pixel sample in your jitter convention
+                    Ray primaryRay = makePrimaryRayFromPixelJitteredFov(
+                        sensor.camera,
+                        static_cast<float>(pixelX),
+                        static_cast<float>(pixelY),
+                        0.0f,
+                        0.0f);
+                    float transmittance = 1.0f;
+                    for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
+                        WorldHit worldHit{};
+                        intersectScene(primaryRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                        if (!worldHit.hit) {
+                            break;
+                        }
+                        buildIntersectionNormal(scene, worldHit);
+                        const auto& instance = scene.instances[worldHit.instanceIndex];
+                        // -------------------------------------------------------------
+                        // Visible point-cloud layer
+                        // -------------------------------------------------------------
+                        if (instance.geometryType == GeometryType::PointCloud) {
+                            const Point& surfel = scene.points[worldHit.primitiveIndex];
+                            float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
+                            const bool hitBackside = dot(normalW, -primaryRay.direction) < 0.0f;
+                            if (hitBackside) {
+                                normalW = -normalW;
+                            }
+                            const float alphaEff = surfel.opacity * worldHit.alphaGeom;
+                            const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
+                                worldHit.hitPositionW, normalW, photonMap);
+                            const float3 indirectRadiance = indirectIrradiance * (surfel.alpha_r * surfel.albedo *
+                                M_1_PIf) * alphaEff;
+                            const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
+                            float3 emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * surfelArea)) * alphaEff;
+                            if (surfel.isEmissive() && hitBackside) {
+                                //emittedRadiance = float3(0.0f, 0.0f, 0.0f);
+                            }
+                            /*
+                            const float3 directRadiance =
+                                    estimateDirectAreaLightAtDiffuseSurface(scene, worldHit.hitPositionW, normalW,
+                                                                            surfel.alpha_r * surfel.albedo, settings,
+                                                                            rng) * alphaEff;
+                            */
+                            const float3 directRadiance = estimateDirectPointSampledPointLights(
+                                scene,
+                                worldHit.hitPositionW,
+                                worldHit.geometricNormalW,
+                                surfel.alpha_r * surfel.albedo) * alphaEff;
+
+                            const float3 outgoingRadiance = emittedRadiance + indirectRadiance + directRadiance;
+                            accumulatedRadianceRGB += transmittance * outgoingRadiance;
+
+                            transmittance *= (1.0f - alphaEff);
+                            primaryRay.origin = worldHit.hitPositionW + primaryRay.direction * RayEpsilon;
+                            continue;
+                        }
+                        // -------------------------------------------------------------
+                        // Terminal mesh hit
+                        // -------------------------------------------------------------
+                        if (instance.geometryType == GeometryType::Mesh) {
+                            const GPUMaterial& material = scene.materials[instance.materialIndex];
+                            const bool isBackfaceHit = dot(primaryRay.direction, worldHit.geometricNormalW) > 0.0f;
+                            const float3 normalW = isBackfaceHit
+                                                       ? -worldHit.geometricNormalW
+                                                       : worldHit.geometricNormalW;
+                            if (material.isEmissive()) {
+                                const float3 emittedRadiance = material.power * material.baseColor;
+                                accumulatedRadianceRGB +=
+                                    transmittance * min(emittedRadiance, 1.0f);
+                            }
+                            else {
+                                const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
+                                    worldHit.hitPositionW, normalW, photonMap);
+                                const float3 indirectRadiance = (material.baseColor * M_1_PIf) * indirectIrradiance;
+                                const float3 directRadiance =
+                                    estimateDirectAreaLightAtDiffuseSurface(
+                                        scene, worldHit.hitPositionW, normalW, material.baseColor, settings, rng);
+                                const float3 outgoingRadiance = indirectRadiance + directRadiance;
+                                accumulatedRadianceRGB += transmittance * outgoingRadiance;
+                            }
+                            transmittance = 0.0f;
+                            break;
+                        }
+                    }
+                    const std::uint32_t framebufferIndex = pixelY * imageWidth + pixelX;
+                    //accumulatedRadianceRGB *= cameraCosine;
+                    const float4 currentValue(accumulatedRadianceRGB.x(), accumulatedRadianceRGB.y(),
+                                              accumulatedRadianceRGB.z(), 1.0f);
+                    sensor.framebuffer[framebufferIndex] += currentValue;
+                });
+        });
+
+        queue.wait();
+    }
+
+
+    /*
     void launchPointSampledPathTracingCameraKernel(
         RenderPackage& pkg,
         uint32_t cameraIndex,
