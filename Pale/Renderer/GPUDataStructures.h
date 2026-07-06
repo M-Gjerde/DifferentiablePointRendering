@@ -238,7 +238,7 @@ namespace Pale {
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
     constexpr uint32_t kMaxLocalSurfelHits = 8;
-    constexpr float LocalLayerDepthEpsilon = 5.0e-2f;
+    constexpr float LocalLayerDepthEpsilon = 2.5e-2f;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {

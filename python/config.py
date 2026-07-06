@@ -77,15 +77,15 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 8_000
     global_lr_max_steps: int = iterations
 
-    depth_distort_weight: float = 20
+    depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.001
+    normal_consistency_weight: float = 0.005
     visibility_weighted_opacity_weight: float = 0.05
 
     # Density control / EV-splitting
-    densification_interval: int = 500
-    prune_interval: int = 200
-    densify_after: int = 500
+    densification_interval: int = 1e100
+    prune_interval: int = 0
+    densify_after: int = 0
     prune_after: int = 0
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.9
@@ -125,7 +125,7 @@ class OptimizationConfig:
 
     # Logging
     log_interval: int = 1
-    save_interval: int = 50
+    save_interval: int = 5
     save_ply_files_interval: int = save_interval
     save_gradient_diagnostics: bool = True
     # Iteration snapshot content
