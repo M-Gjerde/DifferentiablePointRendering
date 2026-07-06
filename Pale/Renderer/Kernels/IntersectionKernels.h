@@ -532,9 +532,17 @@ namespace Pale {
 
     SYCL_EXTERNAL inline float traceShadowTransmissionToPoint(
         const GPUSceneBuffers& scene,
+        const PathTracerSettings& settings,
         const float3& shadingPositionW,
         const float3& shadingNormalW,
-        const float3& lightPositionW) {
+        const float3& lightPositionW,
+        const float eps) {
+
+
+        const uint32_t maxSplatEventsPerRay =
+            rendererDebugMaxSplatEventsPerRay(settings);
+        const uint32_t maxLocalSurfelHits =
+            rendererDebugMaxLocalSurfelHits(settings);
         const float3 lightVector = lightPositionW - shadingPositionW;
         const float lightDistanceSquared = dot(lightVector, lightVector);
 
@@ -546,20 +554,20 @@ namespace Pale {
         const float3 lightDirection = lightVector / lightDistance;
 
         Ray shadowRay{};
-        shadowRay.origin = shadingPositionW + shadingNormalW * RayEpsilon2;
+        shadowRay.origin = shadingPositionW + shadingNormalW * eps;
         shadowRay.direction = lightDirection;
         shadowRay.normal = shadingNormalW;
 
         float shadowTransmission = 1.0f;
 
         for (uint32_t shadowTraversalIndex = 0u;
-             shadowTraversalIndex < kMaxSplatEventsPerRay;
+             shadowTraversalIndex < maxSplatEventsPerRay;
              ++shadowTraversalIndex) {
             const float remainingLightDistance = dot(
                 lightPositionW - shadowRay.origin,
                 shadowRay.direction);
 
-            if (remainingLightDistance <= RayEpsilon2) {
+            if (remainingLightDistance <= eps) {
                 break;
             }
 
@@ -575,7 +583,7 @@ namespace Pale {
             }
 
             // The nearest hit lies at or beyond the sampled light point.
-            if (shadowHit.t >= remainingLightDistance - RayEpsilon2) {
+            if (shadowHit.t >= remainingLightDistance - eps) {
                 break;
             }
 
@@ -596,10 +604,10 @@ namespace Pale {
             const Ray shadowRayObject =
                 toObjectSpace(shadowRay, transform);
 
-            constexpr float localLayerStartSlack = 4.0f * RayEpsilon2;
-            const float localTMin = sycl::fmax(RayEpsilon2, shadowHit.t - localLayerStartSlack);
-            const float localTMax = sycl::fmin(shadowHit.t + LocalLayerDepthEpsilon,
-                                               remainingLightDistance - RayEpsilon2);
+            const float localLayerStartSlack = 4.0f * eps;
+            const float localTMin = sycl::fmax(eps, shadowHit.t - localLayerStartSlack);
+            const float localTMax = sycl::fmin(shadowHit.t + eps,
+                                               remainingLightDistance - eps);
             LocalSurfelLayerHit localHits[kMaxLocalSurfelHits];
 
             uint32_t localHitCount =
@@ -611,7 +619,7 @@ namespace Pale {
                     localTMin,
                     localTMax,
                     localHits,
-                    kMaxLocalSurfelHits,
+                    maxLocalSurfelHits,
                     scene);
 
             // Preserve the already-found closest hit if local collection fails.
@@ -633,7 +641,7 @@ namespace Pale {
                     localHits[localHitIndex];
 
                 // Never let hits at or behind the light sample block it.
-                if (localHit.tWorld >= remainingLightDistance - RayEpsilon2) {
+                if (localHit.tWorld >= remainingLightDistance - eps) {
                     continue;
                 }
 
@@ -669,7 +677,7 @@ namespace Pale {
             // Advance past every surfel already absorbed in this local layer.
             shadowRay.origin +=
                 shadowRay.direction *
-                (furthestLayerT + RayEpsilon2);
+                (furthestLayerT + eps);
         }
 
         return shadowTransmission;
@@ -747,9 +755,11 @@ namespace Pale {
 
     SYCL_EXTERNAL inline float3 estimateDirectPointSampledPointLights(
         const GPUSceneBuffers& scene,
+        const PathTracerSettings& settings,
         const float3& surfacePositionW,
         const float3& surfaceNormalW,
-        const float3& diffuseAlbedo) {
+        const float3& diffuseAlbedo,
+        const float eps) {
         float3 accumulatedRadiance(0.0f);
 
         const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
@@ -788,9 +798,10 @@ namespace Pale {
             const float shadowTransmission =
                 traceShadowTransmissionToPoint(
                     scene,
+                    settings,
                     surfacePositionW,
                     surfaceNormalW,
-                    lightPositionW);
+                    lightPositionW, eps);
 
 
             if (shadowTransmission <= 0.0f) {
@@ -812,6 +823,7 @@ namespace Pale {
         return accumulatedRadiance;
     }
 
+    /*
     SYCL_EXTERNAL inline float3 estimateDirectAreaLightAtDiffuseSurface(
         const GPUSceneBuffers& scene,
         const float3& shadingPositionW,
@@ -876,7 +888,12 @@ namespace Pale {
                 }
                 // Accumulated transmittance to sampled emitter point.
                 const float shadowTransmission =
-                    traceShadowTransmissionToPoint(scene, shadingPositionW, shadingNormalW, lightSample.positionW);
+                    traceShadowTransmissionToPoint(
+                        scene,
+                        settings,
+                        shadingPositionW,
+                        shadingNormalW,
+                        lightSample.positionW);
 
                 if (shadowTransmission <= 0.0f) {
                     continue;

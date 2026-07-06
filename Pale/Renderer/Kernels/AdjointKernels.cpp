@@ -47,6 +47,7 @@ namespace Pale {
 
         const float3 directRadiance = estimateDirectPointSampledPointLights(
             scene,
+            settings,
             reconstructedState.position,
             reconstructedState.orientedNormal,
             surfel.alpha_r * surfel.albedo) * alpha;
@@ -93,6 +94,7 @@ namespace Pale {
         */
         const float3 directRadiance = estimateDirectPointSampledPointLights(
             scene,
+            settings,
             reconstructedState.position,
             reconstructedState.orientedNormal,
             surfel.alpha_r * surfel.albedo) * alpha;
@@ -127,6 +129,7 @@ namespace Pale {
         */
         const float3 directRadiance = estimateDirectPointSampledPointLights(
             scene,
+            settings,
             reconstructedState.position,
             reconstructedState.orientedNormal,
             surfel.alpha_r * surfel.albedo);
@@ -3452,7 +3455,7 @@ namespace Pale {
                         if (useVisibilityOpacity) {
                             const float visibilityOpacityAdjoint =
                                 visibilityOpacityLossWeight * visibilityOpacityLossNormalization;
-                            visibilityGradOpacity += visibilityOpacityAdjoint * 2.0f * hit.wi * (eta - 2.0f);
+                            visibilityGradOpacity += visibilityOpacityAdjoint * 2.0f * hit.wi * (eta - 1.0f);
                         }
 
                         if (useNormalConsistency && i == medianHitIndex) {

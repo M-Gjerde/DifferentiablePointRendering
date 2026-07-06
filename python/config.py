@@ -80,21 +80,21 @@ class OptimizationConfig:
     depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
-    visibility_weighted_opacity_weight: float = 0.05
+    visibility_weighted_opacity_weight: float = 0.1
 
     # Density control / EV-splitting
-    densification_interval: int = 1e100
-    prune_interval: int = 0
-    densify_after: int = 0
+    densification_interval: int = 300
+    prune_interval: int = 300
+    densify_after: int = densification_interval
     prune_after: int = 0
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.9
 
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 5.0e-4
-    densification_grad_abs_min_final: float = 5.0e-4
-    densification_grad_abs_min_schedule_start_iteration: int = 3000
-    densification_grad_abs_min_schedule_end_iteration: int = 3000
+    densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min_final: float = 8.5e-4
+    densification_grad_abs_min_schedule_start_iteration: int = 1000
+    densification_grad_abs_min_schedule_end_iteration: int = 1000
     densification_scale_min: float = 1.25e-2
 
     # More densification on radiometrically darker primitives
@@ -124,8 +124,8 @@ class OptimizationConfig:
     scale_single_camera_gradients: bool = False
 
     # Logging
-    log_interval: int = 1
-    save_interval: int = 5
+    log_interval: int = 25
+    save_interval: int = 25
     save_ply_files_interval: int = save_interval
     save_gradient_diagnostics: bool = True
     # Iteration snapshot content
@@ -150,7 +150,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
     elif config.optimizer_type == "adam":
         factor_position = 0.0008
         factor_rotation = 0.02
-        factor_scale = 0.0012
+        factor_scale = 0.0003
         factor_albedo = 0.005
         factor_opacity = 0.0009
         factor_beta = 0.008

@@ -143,10 +143,17 @@ namespace Pale {
 
             for (size_t gatherPass = 0; gatherPass < pkg.settings.numGatherPasses; ++gatherPass) {
                 for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                    const bool useCameraGatherKernel2 =
+                        pkg.settings.cameraGatherKernelKind == CameraGatherKernelKind::CameraGatherKernel2;
                     ScopedTimer timer(
-                        "launchCameraGatherKernel: " + std::to_string(cameraIndex) + "/" +
+                        std::string(useCameraGatherKernel2 ? "launchCameraGatherKernel2: " : "launchCameraGatherKernel: ") +
+                        std::to_string(cameraIndex) + "/" +
                         std::to_string(pkg.numSensors), spdlog::level::debug);
-                    launchCameraGatherKernel(pkg, cameraIndex, gatherPass); // generate image from photon map
+                    if (useCameraGatherKernel2) {
+                        launchCameraGatherKernel2(pkg, cameraIndex, gatherPass);
+                    } else {
+                        launchCameraGatherKernel(pkg, cameraIndex, gatherPass);
+                    }
                     pkg.queue.wait();
                 }
             }

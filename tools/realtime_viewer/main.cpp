@@ -51,6 +51,7 @@ import Pale.SceneSerializer;
 namespace {
     const glm::vec3 kWorldUp{0.0f, 0.0f, 1.0f};
     const glm::vec3 kDefaultLookAt{0.0f, 0.0f, 0.2f};
+    constexpr ImVec4 kBlenderViewportBackground{0.215f, 0.215f, 0.215f, 1.0f};
 
     struct AppArgs {
         std::filesystem::path assetsDir = PALE_DEFAULT_ASSET_DIR;
@@ -68,6 +69,60 @@ namespace {
     enum class CameraSource {
         Viewport,
         SceneXml,
+    };
+
+    enum class ViewImageMode {
+        Rendered,
+        MeanDepth,
+        MedianDepth,
+        VisibleNormal,
+        DepthNormal,
+        DepthDistortion,
+    };
+
+    enum class ScalarColorMap {
+        Viridis,
+        Jet,
+    };
+
+    struct DebugDisplayBuffers {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        bool meanDepthValid = false;
+        bool medianDepthValid = false;
+        bool visibleNormalValid = false;
+        bool depthNormalValid = false;
+        bool depthDistortionValid = false;
+        std::vector<float> meanDepth;
+        std::vector<float> medianDepth;
+        std::vector<float> visibleNormal;
+        std::vector<float> depthNormal;
+        std::vector<float> depthDistortion;
+
+        void invalidate() {
+            width = 0;
+            height = 0;
+            meanDepthValid = false;
+            medianDepthValid = false;
+            visibleNormalValid = false;
+            depthNormalValid = false;
+            depthDistortionValid = false;
+            meanDepth.clear();
+            medianDepth.clear();
+            visibleNormal.clear();
+            depthNormal.clear();
+            depthDistortion.clear();
+        }
+
+        void prepareFor(uint32_t nextWidth, uint32_t nextHeight) {
+            if (width == nextWidth && height == nextHeight) {
+                return;
+            }
+
+            invalidate();
+            width = nextWidth;
+            height = nextHeight;
+        }
     };
 
     struct OrbitCamera {
@@ -264,6 +319,12 @@ namespace {
         bool directory = false;
     };
 
+    struct PointCloudSnapshot {
+        std::filesystem::path path;
+        uint64_t iteration = 0u;
+        std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
+    };
+
     [[nodiscard]] bool isPlyPath(const std::filesystem::path& path) {
         std::string extension = path.extension().string();
         std::transform(
@@ -351,6 +412,135 @@ namespace {
             return lhs.path.filename().string() < rhs.path.filename().string();
         });
         return entries;
+    }
+
+    [[nodiscard]] std::filesystem::file_time_type lastWriteTimeOrMin(const std::filesystem::path& path) {
+        std::error_code error;
+        const std::filesystem::file_time_type time = std::filesystem::last_write_time(path, error);
+        return error ? std::filesystem::file_time_type::min() : time;
+    }
+
+    [[nodiscard]] bool equivalentPaths(const std::filesystem::path& lhs, const std::filesystem::path& rhs) {
+        std::error_code error;
+        if (std::filesystem::equivalent(lhs, rhs, error) && !error) {
+            return true;
+        }
+        return std::filesystem::absolute(lhs).lexically_normal() ==
+               std::filesystem::absolute(rhs).lexically_normal();
+    }
+
+    [[nodiscard]] std::optional<uint64_t> parseIterationPointCloudFilename(const std::filesystem::path& path) {
+        const std::string filename = path.filename().string();
+        const std::string prefix = "iter_";
+        const std::string suffix = "_points.ply";
+        if (filename.rfind(prefix, 0u) != 0u ||
+            filename.size() <= prefix.size() + suffix.size() ||
+            filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            return std::nullopt;
+        }
+
+        uint64_t iteration = 0u;
+        for (std::size_t index = prefix.size(); index < filename.size() - suffix.size(); ++index) {
+            const char c = filename[index];
+            if (c < '0' || c > '9') {
+                return std::nullopt;
+            }
+            iteration = iteration * 10u + static_cast<uint64_t>(c - '0');
+        }
+        return iteration;
+    }
+
+    [[nodiscard]] std::vector<PointCloudSnapshot> listOptimizationPointCloudSnapshots(
+        const std::filesystem::path& pointsDirectory) {
+        std::vector<PointCloudSnapshot> snapshots;
+        std::error_code error;
+        if (!std::filesystem::is_directory(pointsDirectory, error)) {
+            return snapshots;
+        }
+
+        for (const auto& pointEntry : std::filesystem::directory_iterator(pointsDirectory, error)) {
+            if (error) {
+                break;
+            }
+            if (!pointEntry.is_regular_file(error) || error || !isPlyPath(pointEntry.path())) {
+                error.clear();
+                continue;
+            }
+
+            const std::optional<uint64_t> iteration = parseIterationPointCloudFilename(pointEntry.path());
+            if (!iteration) {
+                continue;
+            }
+            snapshots.push_back({
+                .path = pointEntry.path(),
+                .iteration = *iteration,
+                .writeTime = lastWriteTimeOrMin(pointEntry.path()),
+            });
+        }
+
+        std::sort(snapshots.begin(), snapshots.end(), [](const PointCloudSnapshot& lhs, const PointCloudSnapshot& rhs) {
+            if (lhs.iteration != rhs.iteration) {
+                return lhs.iteration < rhs.iteration;
+            }
+            if (lhs.writeTime != rhs.writeTime) {
+                return lhs.writeTime < rhs.writeTime;
+            }
+            return lhs.path.filename().string() < rhs.path.filename().string();
+        });
+        return snapshots;
+    }
+
+    [[nodiscard]] std::optional<std::filesystem::path> findLatestOptimizationPointCloud(
+        const std::filesystem::path& optimizationOutputDirectory) {
+        struct RunCandidate {
+            PointCloudSnapshot pointCloud;
+            std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
+        };
+
+        std::error_code error;
+        if (!std::filesystem::is_directory(optimizationOutputDirectory, error)) {
+            return std::nullopt;
+        }
+
+        std::optional<RunCandidate> bestRun;
+        for (const auto& runEntry : std::filesystem::directory_iterator(optimizationOutputDirectory, error)) {
+            if (error) {
+                break;
+            }
+            if (!runEntry.is_directory(error) || error) {
+                error.clear();
+                continue;
+            }
+
+            const std::filesystem::path runDirectory = runEntry.path();
+            const std::filesystem::path pointsDirectory = runDirectory / "points";
+            if (!std::filesystem::is_directory(pointsDirectory, error)) {
+                error.clear();
+                continue;
+            }
+
+            const std::vector<PointCloudSnapshot> snapshots = listOptimizationPointCloudSnapshots(pointsDirectory);
+            if (snapshots.empty()) {
+                continue;
+            }
+            const PointCloudSnapshot& bestPointCloud = snapshots.back();
+
+            const std::filesystem::file_time_type runWriteTime = std::max(
+                std::max(lastWriteTimeOrMin(runDirectory), lastWriteTimeOrMin(pointsDirectory)),
+                bestPointCloud.writeTime);
+            RunCandidate candidate{.pointCloud = bestPointCloud, .writeTime = runWriteTime};
+            if (!bestRun ||
+                candidate.writeTime > bestRun->writeTime ||
+                (candidate.writeTime == bestRun->writeTime &&
+                 candidate.pointCloud.path.filename().string() > bestRun->pointCloud.path.filename().string())) {
+                bestRun = candidate;
+            }
+        }
+
+        if (!bestRun) {
+            return std::nullopt;
+        }
+        return bestRun->pointCloud.path;
     }
 
     bool drawPlyBrowser(
@@ -746,6 +936,372 @@ namespace {
         return ImVec2(std::max(drawWidth, 1.0f), std::max(drawHeight, 1.0f));
     }
 
+    [[nodiscard]] uint32_t renderExtentFromAvailable(float available) {
+        return static_cast<uint32_t>(std::clamp(
+            static_cast<int>(std::lround(std::max(available, 1.0f))),
+            16,
+            4096));
+    }
+
+    [[nodiscard]] float chooseGridSpacing(float extent) {
+        const float rawSpacing = std::max(extent / 80.0f, 0.001f);
+        const float magnitude = std::pow(10.0f, std::floor(std::log10(rawSpacing)));
+        const float normalized = rawSpacing / magnitude;
+        if (normalized <= 1.0f) {
+            return magnitude;
+        }
+        if (normalized <= 2.0f) {
+            return 2.0f * magnitude;
+        }
+        if (normalized <= 5.0f) {
+            return 5.0f * magnitude;
+        }
+        return 10.0f * magnitude;
+    }
+
+    struct GridLineStyle {
+        glm::vec3 color{1.0f};
+        float alpha = 1.0f;
+        float thickness = 1.0f;
+    };
+
+    [[nodiscard]] uint8_t channelToByte(float value) {
+        return static_cast<uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    }
+
+    void blendPixel(std::vector<uint8_t>& rgba, std::size_t pixelIndex, const GridLineStyle& style, float coverage) {
+        const float alpha = std::clamp(style.alpha * coverage, 0.0f, 1.0f);
+        if (alpha <= 0.0f) {
+            return;
+        }
+
+        const std::size_t baseIndex = pixelIndex * 4u;
+        const float invAlpha = 1.0f - alpha;
+        rgba[baseIndex + 0u] = channelToByte(
+            static_cast<float>(rgba[baseIndex + 0u]) / 255.0f * invAlpha + style.color.r * alpha);
+        rgba[baseIndex + 1u] = channelToByte(
+            static_cast<float>(rgba[baseIndex + 1u]) / 255.0f * invAlpha + style.color.g * alpha);
+        rgba[baseIndex + 2u] = channelToByte(
+            static_cast<float>(rgba[baseIndex + 2u]) / 255.0f * invAlpha + style.color.b * alpha);
+        rgba[baseIndex + 3u] = 255u;
+    }
+
+    void blendGridSample(
+        std::vector<uint8_t>& rgba,
+        std::size_t pixelIndex,
+        float distanceToLine,
+        float worldPerPixel,
+        const GridLineStyle& style) {
+        const float antialiasWidth = std::max(worldPerPixel, 1.0e-6f);
+        const float halfWidth = std::max(style.thickness * 0.5f, 0.5f) * antialiasWidth;
+        const float coverage = std::clamp((halfWidth + antialiasWidth - distanceToLine) / antialiasWidth, 0.0f, 1.0f);
+        blendPixel(rgba, pixelIndex, style, coverage);
+    }
+
+    [[nodiscard]] const GridLineStyle& gridLineStyleForIndex(
+        int index,
+        const GridLineStyle& axisLine,
+        const GridLineStyle& majorLine,
+        const GridLineStyle& minorLine) {
+        if (index == 0) {
+            return axisLine;
+        }
+        if (index % 10 == 0) {
+            return majorLine;
+        }
+        return minorLine;
+    }
+
+    void shadeViewportBackground(
+        std::vector<uint8_t>& rgba,
+        const OrbitCamera& orbit,
+        const SceneBounds& bounds,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        bool showViewportGrid) {
+        const float extent = std::max(
+            10.0f,
+            std::max(bounds.radius * 2.5f, orbit.distance * 2.5f));
+        const float spacing = chooseGridSpacing(extent);
+        const GridLineStyle minorLine{{0.29f, 0.29f, 0.29f}, 0.42f, 1.0f};
+        const GridLineStyle majorLine{{0.38f, 0.38f, 0.38f}, 0.57f, 1.15f};
+        const GridLineStyle xAxisLine{{0.75f, 0.29f, 0.29f}, 0.82f, 1.8f};
+        const GridLineStyle yAxisLine{{0.32f, 0.59f, 0.32f}, 0.82f, 1.8f};
+        const glm::mat4 cameraFromWorld = glm::inverse(orbit.viewMatrix());
+        const glm::mat3 worldFromCameraDirection{cameraFromWorld};
+        const glm::vec3 cameraPosition = glm::vec3(cameraFromWorld[3]);
+        const glm::vec3 cameraForward = glm::normalize(orbit.target - cameraPosition);
+        const float width = static_cast<float>(std::max(renderWidth, 1u));
+        const float height = static_cast<float>(std::max(renderHeight, 1u));
+        const float fy = 0.5f * height / std::tan(0.5f * glm::radians(orbit.fovyDegrees));
+        const float fx = fy * (width / height);
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        const uint8_t backgroundR = channelToByte(kBlenderViewportBackground.x);
+        const uint8_t backgroundG = channelToByte(kBlenderViewportBackground.y);
+        const uint8_t backgroundB = channelToByte(kBlenderViewportBackground.z);
+
+        for (int y = 0; y < static_cast<int>(renderHeight); ++y) {
+            for (uint32_t x = 0; x < renderWidth; ++x) {
+                const std::size_t pixelIndex =
+                    static_cast<std::size_t>(y) * static_cast<std::size_t>(renderWidth) + static_cast<std::size_t>(x);
+                if (pixelIndex >= pixelCount) {
+                    continue;
+                }
+
+                const std::size_t baseIndex = pixelIndex * 4u;
+                rgba[baseIndex + 0u] = backgroundR;
+                rgba[baseIndex + 1u] = backgroundG;
+                rgba[baseIndex + 2u] = backgroundB;
+                rgba[baseIndex + 3u] = 255u;
+                if (!showViewportGrid) {
+                    continue;
+                }
+
+                const float u = static_cast<float>(x) + 0.5f;
+                const float v = static_cast<float>(y) + 0.5f;
+                const float vFlipped = height - v;
+                const float ndcX = 2.0f * u / width - 1.0f;
+                const float ndcY = 2.0f * vFlipped / height - 1.0f;
+                const glm::vec3 cameraDirection = glm::normalize(glm::vec3{
+                    ndcX * (0.5f * width) / fx,
+                    ndcY * (0.5f * height) / fy,
+                    -1.0f,
+                });
+                const glm::vec3 rayDirection = glm::normalize(worldFromCameraDirection * cameraDirection);
+                if (std::abs(rayDirection.z) <= 1.0e-6f) {
+                    continue;
+                }
+
+                const float t = -cameraPosition.z / rayDirection.z;
+                if (t <= orbit.nearClip) {
+                    continue;
+                }
+
+                const glm::vec3 hit = cameraPosition + rayDirection * t;
+                const float forwardDepth = glm::dot(hit - cameraPosition, cameraForward);
+                if (forwardDepth <= orbit.nearClip) {
+                    continue;
+                }
+
+                const float worldPerPixel =
+                    std::max(2.0f * std::tan(0.5f * glm::radians(orbit.fovyDegrees)) * forwardDepth / height, 1.0e-6f);
+                const int xIndex = static_cast<int>(std::round(hit.x / spacing));
+                const int yIndex = static_cast<int>(std::round(hit.y / spacing));
+                const float xDistance = std::abs(hit.x - static_cast<float>(xIndex) * spacing);
+                const float yDistance = std::abs(hit.y - static_cast<float>(yIndex) * spacing);
+
+                blendGridSample(
+                    rgba,
+                    pixelIndex,
+                    xDistance,
+                    worldPerPixel,
+                    gridLineStyleForIndex(xIndex, yAxisLine, majorLine, minorLine));
+                blendGridSample(
+                    rgba,
+                    pixelIndex,
+                    yDistance,
+                    worldPerPixel,
+                    gridLineStyleForIndex(yIndex, xAxisLine, majorLine, minorLine));
+            }
+        }
+    }
+
+    void composeViewportPixels(
+        const std::vector<uint8_t>& renderPixels,
+        const OrbitCamera& orbit,
+        const SceneBounds& bounds,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        bool showViewportGrid,
+        bool forceRenderOpacity,
+        std::vector<uint8_t>& displayPixels) {
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        if (renderPixels.size() < pixelCount * 4u) {
+            return;
+        }
+
+        displayPixels.assign(pixelCount * 4u, 0u);
+        shadeViewportBackground(
+            displayPixels,
+            orbit,
+            bounds,
+            renderWidth,
+            renderHeight,
+            showViewportGrid);
+
+        for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4u;
+            const bool hasRenderContribution =
+                renderPixels[baseIndex + 3u] > 0u ||
+                renderPixels[baseIndex + 0u] > 0u ||
+                renderPixels[baseIndex + 1u] > 0u ||
+                renderPixels[baseIndex + 2u] > 0u;
+            if (!hasRenderContribution) {
+                continue;
+            }
+
+            const float alpha =
+                forceRenderOpacity ? 1.0f : static_cast<float>(renderPixels[baseIndex + 3u]) / 255.0f;
+            const float invAlpha = 1.0f - alpha;
+            displayPixels[baseIndex + 0u] = channelToByte(
+                static_cast<float>(renderPixels[baseIndex + 0u]) / 255.0f * alpha +
+                static_cast<float>(displayPixels[baseIndex + 0u]) / 255.0f * invAlpha);
+            displayPixels[baseIndex + 1u] = channelToByte(
+                static_cast<float>(renderPixels[baseIndex + 1u]) / 255.0f * alpha +
+                static_cast<float>(displayPixels[baseIndex + 1u]) / 255.0f * invAlpha);
+            displayPixels[baseIndex + 2u] = channelToByte(
+                static_cast<float>(renderPixels[baseIndex + 2u]) / 255.0f * alpha +
+                static_cast<float>(displayPixels[baseIndex + 2u]) / 255.0f * invAlpha);
+            displayPixels[baseIndex + 3u] = 255u;
+        }
+    }
+
+    [[nodiscard]] glm::vec3 lerpColor(const glm::vec3& a, const glm::vec3& b, float t) {
+        return a * (1.0f - t) + b * t;
+    }
+
+    [[nodiscard]] glm::vec3 viridisColor(float value) {
+        const float t = std::clamp(value, 0.0f, 1.0f);
+
+        static const std::array<glm::vec3, 6> stops{{
+            {0.267004f, 0.004874f, 0.329415f},
+            {0.253935f, 0.265254f, 0.529983f},
+            {0.163625f, 0.471133f, 0.558148f},
+            {0.134692f, 0.658636f, 0.517649f},
+            {0.477504f, 0.821444f, 0.318195f},
+            {0.993248f, 0.906157f, 0.143936f},
+        }};
+        const float scaled = t * static_cast<float>(stops.size() - 1u);
+        const std::size_t lowerIndex =
+            std::min(static_cast<std::size_t>(scaled), stops.size() - 2u);
+        const float localT = scaled - static_cast<float>(lowerIndex);
+        return lerpColor(stops[lowerIndex], stops[lowerIndex + 1u], localT);
+    }
+
+    [[nodiscard]] glm::vec3 jetColor(float value) {
+        const float t = std::clamp(value, 0.0f, 1.0f);
+        return {
+            std::clamp(1.5f - std::abs(4.0f * t - 3.0f), 0.0f, 1.0f),
+            std::clamp(1.5f - std::abs(4.0f * t - 2.0f), 0.0f, 1.0f),
+            std::clamp(1.5f - std::abs(4.0f * t - 1.0f), 0.0f, 1.0f),
+        };
+    }
+
+    [[nodiscard]] glm::vec3 scalarColor(float value, ScalarColorMap colorMap) {
+        switch (colorMap) {
+            case ScalarColorMap::Viridis:
+                return viridisColor(value);
+            case ScalarColorMap::Jet:
+                return jetColor(value);
+        }
+        return viridisColor(value);
+    }
+
+    void colorizeScalarBuffer(
+        const std::vector<float>& values,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        bool invert,
+        bool logScale,
+        ScalarColorMap colorMap,
+        std::vector<uint8_t>& displayPixels) {
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        displayPixels.assign(pixelCount * 4u, 0u);
+        if (values.size() < pixelCount) {
+            return;
+        }
+
+        float minValue = 0.0f;
+        float maxValue = 0.0f;
+        bool hasValue = false;
+        for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+            const float value = values[pixelIndex];
+            if (!std::isfinite(value) || value <= 0.0f) {
+                continue;
+            }
+
+            const float mappedValue = logScale ? std::log1p(value) : value;
+            if (!hasValue) {
+                minValue = mappedValue;
+                maxValue = mappedValue;
+                hasValue = true;
+            } else {
+                minValue = std::min(minValue, mappedValue);
+                maxValue = std::max(maxValue, mappedValue);
+            }
+        }
+
+        if (!hasValue) {
+            for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+                displayPixels[pixelIndex * 4u + 3u] = 255u;
+            }
+            return;
+        }
+
+        const float range = maxValue - minValue;
+        const float inverseRange = range > 1.0e-12f ? 1.0f / range : 0.0f;
+        for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4u;
+            const float value = values[pixelIndex];
+            displayPixels[baseIndex + 3u] = 255u;
+            if (!std::isfinite(value) || value <= 0.0f) {
+                continue;
+            }
+
+            const float mappedValue = logScale ? std::log1p(value) : value;
+            float normalized = range > 1.0e-12f ? (mappedValue - minValue) * inverseRange : 1.0f;
+            normalized = std::clamp(normalized, 0.0f, 1.0f);
+            if (invert) {
+                normalized = 1.0f - normalized;
+            }
+
+            const glm::vec3 color = scalarColor(normalized, colorMap);
+            displayPixels[baseIndex + 0u] = channelToByte(color.r);
+            displayPixels[baseIndex + 1u] = channelToByte(color.g);
+            displayPixels[baseIndex + 2u] = channelToByte(color.b);
+        }
+    }
+
+    void colorizeNormalBuffer(
+        const std::vector<float>& values,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        std::vector<uint8_t>& displayPixels) {
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        displayPixels.assign(pixelCount * 4u, 0u);
+        if (values.size() < pixelCount * 4u) {
+            return;
+        }
+
+        for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t normalIndex = pixelIndex * 4u;
+            const std::size_t baseIndex = pixelIndex * 4u;
+            const float nx = values[normalIndex + 0u];
+            const float ny = values[normalIndex + 1u];
+            const float nz = values[normalIndex + 2u];
+            const float validity = values[normalIndex + 3u];
+            displayPixels[baseIndex + 3u] = 255u;
+            if (!std::isfinite(nx) || !std::isfinite(ny) || !std::isfinite(nz) ||
+                !std::isfinite(validity) || validity <= 0.0f) {
+                continue;
+            }
+
+            const float lengthSquared = nx * nx + ny * ny + nz * nz;
+            if (lengthSquared <= 1.0e-12f) {
+                continue;
+            }
+
+            const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+            displayPixels[baseIndex + 0u] = channelToByte(nx * inverseLength * 0.5f + 0.5f);
+            displayPixels[baseIndex + 1u] = channelToByte(ny * inverseLength * 0.5f + 0.5f);
+            displayPixels[baseIndex + 2u] = channelToByte(nz * inverseLength * 0.5f + 0.5f);
+        }
+    }
+
     void glfwErrorCallback(int error, const char* description) {
         Pale::Log::PA_ERROR("GLFW error {}: {}", error, description);
     }
@@ -774,7 +1330,12 @@ namespace {
 int main(int argc, char** argv) {
     try {
         const AppArgs args = parseArgs(argc, argv);
-        std::filesystem::current_path(args.assetsDir);
+        const std::filesystem::path assetsDirectory =
+            std::filesystem::absolute(args.assetsDir).lexically_normal();
+        const std::filesystem::path repositoryRoot = assetsDirectory.parent_path();
+        const std::filesystem::path optimizationOutputDirectory =
+            repositoryRoot / "python" / "OptimizationOutput";
+        std::filesystem::current_path(assetsDirectory);
 
         Pale::Log::init(spdlog::level::level_enum::info);
         glfwSetErrorCallback(glfwErrorCallback);
@@ -804,6 +1365,10 @@ int main(int argc, char** argv) {
         copyPathToBuffer(currentPointCloudPath, pointCloudPathBuffer);
         std::string pointCloudStatus =
             "Loaded " + std::to_string(buildProducts.points.size()) + " surfels";
+        bool latestOptimizationMode = false;
+        std::filesystem::path latestOptimizationPointsDirectory;
+        std::vector<PointCloudSnapshot> latestOptimizationSnapshots;
+        std::size_t latestOptimizationSnapshotIndex = 0u;
         bool plyBrowserOpen = false;
         std::filesystem::path plyBrowserDirectory =
             currentPointCloudPath.has_parent_path() ? currentPointCloudPath.parent_path()
@@ -841,6 +1406,10 @@ int main(int argc, char** argv) {
         bool renderRequested = true;
         CameraSource cameraSource = CameraSource::Viewport;
         int selectedSceneCameraIndex = 0;
+        bool forceRenderOpacity = false;
+        bool showViewportGrid = false;
+        ViewImageMode viewImageMode = ViewImageMode::Rendered;
+        ScalarColorMap scalarColorMap = ScalarColorMap::Viridis;
         int selectedLightIndex = 0;
         bool showLightGizmo = true;
         ImGuizmo::OPERATION lightGizmoOperation = ImGuizmo::TRANSLATE;
@@ -856,7 +1425,14 @@ int main(int argc, char** argv) {
         float exposure = 1.0f;
         float gamma = 1.0f;
         double lastRenderMs = 0.0;
+        std::vector<uint8_t> renderPixels;
         std::vector<uint8_t> pixels;
+        DebugDisplayBuffers debugDisplayBuffers;
+        OrbitCamera displayedOrbit = orbit;
+        SceneBounds displayedBounds = bounds;
+        CameraSource displayedCameraSource = cameraSource;
+        uint32_t displayedRenderWidth = renderWidth;
+        uint32_t displayedRenderHeight = renderHeight;
         Texture2D texture;
 
         if (!glfwInit()) {
@@ -866,7 +1442,7 @@ int main(int argc, char** argv) {
         const char* glslVersion = "#version 130";
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-        GLFWwindow* window = glfwCreateWindow(1280, 800, "Pale Realtime Viewer", nullptr, nullptr);
+        GLFWwindow* window = glfwCreateWindow(1280, 720, "Pale Realtime Viewer", nullptr, nullptr);
         if (!window) {
             glfwTerminate();
             throw std::runtime_error("Failed to create GLFW window");
@@ -881,6 +1457,8 @@ int main(int argc, char** argv) {
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         ImGui::StyleColorsDark();
+        ImGui::GetStyle().Colors[ImGuiCol_WindowBg] = kBlenderViewportBackground;
+        ImGui::GetStyle().Colors[ImGuiCol_ChildBg] = kBlenderViewportBackground;
         ImGui_ImplGlfw_InitForOpenGL(window, true);
         ImGui_ImplOpenGL3_Init(glslVersion);
 
@@ -895,20 +1473,20 @@ int main(int argc, char** argv) {
             renderRequested = true;
         };
 
-        auto replacePointCloud = [&](const std::filesystem::path& requestedPath) {
+        auto replacePointCloud = [&](const std::filesystem::path& requestedPath, bool keepLatestOptimizationMode = false) -> bool {
             if (requestedPath.empty()) {
                 pointCloudStatus = "No PLY path selected";
-                return;
+                return false;
             }
             if (!isPlyPath(requestedPath)) {
                 pointCloudStatus = "Selected file is not a .ply file";
-                return;
+                return false;
             }
 
             std::error_code error;
             if (!std::filesystem::exists(requestedPath, error) || error) {
                 pointCloudStatus = "PLY file does not exist: " + requestedPath.string();
-                return;
+                return false;
             }
 
             const Pale::AssetHandle pointCloudAssetHandle =
@@ -916,13 +1494,13 @@ int main(int argc, char** argv) {
             const auto pointCloudAsset = assetAccessor.getPointCloud(pointCloudAssetHandle);
             if (!pointCloudAsset) {
                 pointCloudStatus = "Failed to load PLY: " + requestedPath.string();
-                return;
+                return false;
             }
 
             const std::size_t surfelCount = countSurfels(*pointCloudAsset);
             if (surfelCount == 0) {
                 pointCloudStatus = "PLY contained no surfels: " + requestedPath.string();
-                return;
+                return false;
             }
 
             std::vector<Pale::Entity> pointCloudEntities;
@@ -947,6 +1525,101 @@ int main(int argc, char** argv) {
 
             pointCloudStatus = "Loaded " + std::to_string(surfelCount) + " surfels";
             cameraDirty = true;
+            if (!keepLatestOptimizationMode) {
+                latestOptimizationMode = false;
+                latestOptimizationPointsDirectory.clear();
+                latestOptimizationSnapshots.clear();
+                latestOptimizationSnapshotIndex = 0u;
+            }
+            return true;
+        };
+
+        auto refreshLatestOptimizationPointCloud = [&]() {
+            const std::optional<std::filesystem::path> latestPointCloud =
+                findLatestOptimizationPointCloud(optimizationOutputDirectory);
+            if (!latestPointCloud) {
+                pointCloudStatus =
+                    "No optimization point snapshot found in " + optimizationOutputDirectory.string();
+                return;
+            }
+
+            std::filesystem::path pointsDirectory = latestPointCloud->parent_path();
+            std::vector<PointCloudSnapshot> snapshots = listOptimizationPointCloudSnapshots(pointsDirectory);
+            const auto snapshotIterator = std::find_if(
+                snapshots.begin(),
+                snapshots.end(),
+                [&](const PointCloudSnapshot& snapshot) {
+                    return equivalentPaths(snapshot.path, *latestPointCloud);
+                });
+            if (snapshotIterator == snapshots.end()) {
+                pointCloudStatus = "Latest optimization snapshot disappeared: " + latestPointCloud->string();
+                return;
+            }
+            const std::size_t latestSnapshotIndex =
+                static_cast<std::size_t>(std::distance(snapshots.begin(), snapshotIterator));
+
+            if (replacePointCloud(*latestPointCloud, true)) {
+                latestOptimizationMode = true;
+                latestOptimizationPointsDirectory = pointsDirectory;
+                latestOptimizationSnapshots = std::move(snapshots);
+                latestOptimizationSnapshotIndex = latestSnapshotIndex;
+                pointCloudStatus =
+                    "Latest optimization snapshot " +
+                    std::to_string(latestOptimizationSnapshotIndex + 1u) + "/" +
+                    std::to_string(latestOptimizationSnapshots.size()) + ": " +
+                    latestPointCloud->filename().string();
+            }
+        };
+
+        auto stepLatestOptimizationSnapshot = [&](int direction) {
+            if (!latestOptimizationMode || latestOptimizationPointsDirectory.empty()) {
+                pointCloudStatus = "Press R or Load latest run PLY before using left/right snapshot navigation";
+                return;
+            }
+
+            std::vector<PointCloudSnapshot> snapshots =
+                listOptimizationPointCloudSnapshots(latestOptimizationPointsDirectory);
+            if (snapshots.empty()) {
+                pointCloudStatus = "No optimization snapshots found in " + latestOptimizationPointsDirectory.string();
+                return;
+            }
+
+            auto currentIterator = std::find_if(
+                snapshots.begin(),
+                snapshots.end(),
+                [&](const PointCloudSnapshot& snapshot) {
+                    return equivalentPaths(snapshot.path, currentPointCloudPath);
+                });
+            std::size_t currentIndex = currentIterator == snapshots.end()
+                                           ? std::min(latestOptimizationSnapshotIndex, snapshots.size() - 1u)
+                                           : static_cast<std::size_t>(std::distance(snapshots.begin(), currentIterator));
+
+            if (direction < 0 && currentIndex == 0u) {
+                latestOptimizationSnapshots = std::move(snapshots);
+                latestOptimizationSnapshotIndex = 0u;
+                pointCloudStatus = "Already at earliest optimization snapshot";
+                return;
+            }
+            if (direction > 0 && currentIndex + 1u >= snapshots.size()) {
+                latestOptimizationSnapshots = std::move(snapshots);
+                latestOptimizationSnapshotIndex = snapshots.size() - 1u;
+                pointCloudStatus = "Already at latest optimization snapshot";
+                return;
+            }
+
+            const std::size_t nextIndex =
+                direction < 0 ? currentIndex - 1u : currentIndex + 1u;
+            const std::filesystem::path nextPath = snapshots[nextIndex].path;
+            if (replacePointCloud(nextPath, true)) {
+                latestOptimizationMode = true;
+                latestOptimizationSnapshots = std::move(snapshots);
+                latestOptimizationSnapshotIndex = nextIndex;
+                pointCloudStatus =
+                    "Optimization snapshot " +
+                    std::to_string(latestOptimizationSnapshotIndex + 1u) + "/" +
+                    std::to_string(latestOptimizationSnapshots.size()) + ": " +
+                    nextPath.filename().string();
+            }
         };
 
         auto removeRuntimeMeshes = [&]() {
@@ -1042,6 +1715,139 @@ int main(int argc, char** argv) {
             pointCloudStatus = meshStatus;
         };
 
+        auto ensureDebugDisplayBuffer = [&](ViewImageMode mode) -> bool {
+            if (!hasSensor || displayedRenderWidth == 0u || displayedRenderHeight == 0u) {
+                return false;
+            }
+            if (sensor.width != displayedRenderWidth || sensor.height != displayedRenderHeight) {
+                return false;
+            }
+
+            debugDisplayBuffers.prepareFor(displayedRenderWidth, displayedRenderHeight);
+            const std::size_t pixelCount =
+                static_cast<std::size_t>(displayedRenderWidth) * static_cast<std::size_t>(displayedRenderHeight);
+
+            switch (mode) {
+                case ViewImageMode::MeanDepth:
+                    if (!debugDisplayBuffers.meanDepthValid) {
+                        debugDisplayBuffers.meanDepth =
+                            Pale::downloadFloatBuffer(queue, sensor.meanDepthBuffer, pixelCount);
+                        debugDisplayBuffers.meanDepthValid = true;
+                    }
+                    return true;
+                case ViewImageMode::MedianDepth:
+                    if (!debugDisplayBuffers.medianDepthValid) {
+                        debugDisplayBuffers.medianDepth =
+                            Pale::downloadFloatBuffer(queue, sensor.medianDepthBuffer, pixelCount);
+                        debugDisplayBuffers.medianDepthValid = true;
+                    }
+                    return true;
+                case ViewImageMode::VisibleNormal:
+                    if (!debugDisplayBuffers.visibleNormalValid) {
+                        debugDisplayBuffers.visibleNormal =
+                            Pale::downloadFloat4Buffer(queue, sensor.visibleNormalBuffer, pixelCount);
+                        debugDisplayBuffers.visibleNormalValid = true;
+                    }
+                    return true;
+                case ViewImageMode::DepthNormal:
+                    if (!debugDisplayBuffers.depthNormalValid) {
+                        debugDisplayBuffers.depthNormal =
+                            Pale::downloadFloat4Buffer(queue, sensor.normalFromDepthBuffer, pixelCount);
+                        debugDisplayBuffers.depthNormalValid = true;
+                    }
+                    return true;
+                case ViewImageMode::DepthDistortion:
+                    if (!debugDisplayBuffers.depthDistortionValid) {
+                        debugDisplayBuffers.depthDistortion =
+                            Pale::downloadFloatBuffer(queue, sensor.depthDistortionBuffer, pixelCount);
+                        debugDisplayBuffers.depthDistortionValid = true;
+                    }
+                    return true;
+                case ViewImageMode::Rendered:
+                    return true;
+            }
+
+            return false;
+        };
+
+        auto updateDisplayTexture = [&]() {
+            if (renderPixels.empty()) {
+                return;
+            }
+
+            if (viewImageMode != ViewImageMode::Rendered) {
+                if (!ensureDebugDisplayBuffer(viewImageMode)) {
+                    return;
+                }
+
+                switch (viewImageMode) {
+                    case ViewImageMode::MeanDepth:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.meanDepth,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            true,
+                            false,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::MedianDepth:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.medianDepth,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            true,
+                            false,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::VisibleNormal:
+                        colorizeNormalBuffer(
+                            debugDisplayBuffers.visibleNormal,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            pixels);
+                        break;
+                    case ViewImageMode::DepthNormal:
+                        colorizeNormalBuffer(
+                            debugDisplayBuffers.depthNormal,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            pixels);
+                        break;
+                    case ViewImageMode::DepthDistortion:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.depthDistortion,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::Rendered:
+                        break;
+                }
+                texture.update(pixels, displayedRenderWidth, displayedRenderHeight);
+                return;
+            }
+
+            if (displayedCameraSource == CameraSource::Viewport) {
+                composeViewportPixels(
+                    renderPixels,
+                    displayedOrbit,
+                    displayedBounds,
+                    displayedRenderWidth,
+                    displayedRenderHeight,
+                    showViewportGrid,
+                    forceRenderOpacity,
+                    pixels);
+            } else {
+                pixels = renderPixels;
+            }
+            texture.update(pixels, displayedRenderWidth, displayedRenderHeight);
+        };
+
         auto renderNow = [&]() {
             renderWidth = std::clamp(renderWidth, 16u, 4096u);
             renderHeight = std::clamp(renderHeight, 16u, 4096u);
@@ -1100,14 +1906,23 @@ int main(int argc, char** argv) {
             lastRenderMs =
                 std::chrono::duration<double, std::milli>(stop - start).count();
 
-            pixels = Pale::downloadSensorRGBA(queue, sensor);
-            texture.update(pixels, renderWidth, renderHeight);
+            renderPixels = Pale::downloadSensorRGBA(queue, sensor);
+            debugDisplayBuffers.invalidate();
+            displayedOrbit = orbit;
+            displayedBounds = bounds;
+            displayedCameraSource = cameraSource;
+            displayedRenderWidth = renderWidth;
+            displayedRenderHeight = renderHeight;
+            updateDisplayTexture();
             cameraDirty = false;
             renderRequested = false;
         };
 
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
 
             if (dropState.hasPendingPlyPath) {
                 const std::filesystem::path droppedPath = dropState.pendingPlyPath;
@@ -1124,6 +1939,22 @@ int main(int argc, char** argv) {
             ImGui::NewFrame();
             ImGuizmo::BeginFrame();
 
+            if (!io.WantTextInput &&
+                !io.KeyCtrl &&
+                !io.KeyAlt &&
+                !io.KeySuper) {
+                if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+                    refreshLatestOptimizationPointCloud();
+                }
+
+                if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
+                    stepLatestOptimizationSnapshot(-1);
+                }
+
+                if (ImGui::IsKeyDown(ImGuiKey_RightArrow)) {
+                    stepLatestOptimizationSnapshot(1);
+                }
+            }
             std::vector<Pale::Entity> areaLights = collectAreaLights(scene);
             if (areaLights.empty()) {
                 selectedLightIndex = 0;
@@ -1151,6 +1982,9 @@ int main(int argc, char** argv) {
             ImGui::SameLine();
             if (ImGui::Button("Browse##PointCloud")) {
                 plyBrowserOpen = true;
+            }
+            if (ImGui::Button("Load latest run PLY")) {
+                refreshLatestOptimizationPointCloud();
             }
             if (!pointCloudStatus.empty()) {
                 ImGui::TextWrapped("%s", pointCloudStatus.c_str());
@@ -1251,25 +2085,43 @@ int main(int argc, char** argv) {
                 }
             }
 
-            int widthInt = static_cast<int>(renderWidth);
-            int heightInt = static_cast<int>(renderHeight);
-            if (cameraSource == CameraSource::Viewport) {
-                if (ImGui::InputInt("Width", &widthInt, 16, 128)) {
-                    renderWidth = static_cast<uint32_t>(std::clamp(widthInt, 16, 4096));
-                    cameraDirty = true;
-                    renderRequested = true;
+            ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
+            int viewImageModeIndex = static_cast<int>(viewImageMode);
+            const char* viewImageModes[] = {
+                "Rendered",
+                "Mean depth",
+                "Median depth",
+                "Visible normal",
+                "Depth normal",
+                "Depth distortion",
+            };
+            if (ImGui::Combo("Display", &viewImageModeIndex, viewImageModes, IM_ARRAYSIZE(viewImageModes))) {
+                viewImageMode = static_cast<ViewImageMode>(viewImageModeIndex);
+                updateDisplayTexture();
+            }
+            if (viewImageMode == ViewImageMode::MeanDepth ||
+                viewImageMode == ViewImageMode::MedianDepth ||
+                viewImageMode == ViewImageMode::DepthDistortion) {
+                int scalarColorMapIndex = static_cast<int>(scalarColorMap);
+                const char* scalarColorMaps[] = {"Viridis", "Jet"};
+                if (ImGui::Combo(
+                        "Scalar colormap",
+                        &scalarColorMapIndex,
+                        scalarColorMaps,
+                        IM_ARRAYSIZE(scalarColorMaps))) {
+                    scalarColorMap = static_cast<ScalarColorMap>(scalarColorMapIndex);
+                    updateDisplayTexture();
                 }
-                if (ImGui::InputInt("Height", &heightInt, 16, 128)) {
-                    renderHeight = static_cast<uint32_t>(std::clamp(heightInt, 16, 4096));
-                    cameraDirty = true;
-                    renderRequested = true;
-                }
-            } else {
-                ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
             }
             if (cameraSource == CameraSource::Viewport) {
                 if (ImGui::DragFloat("FOV", &orbit.fovyDegrees, 0.25f, 5.0f, 160.0f, "%.1f deg")) {
                     cameraDirty = true;
+                }
+                if (ImGui::Checkbox("Force opacity = 1", &forceRenderOpacity)) {
+                    updateDisplayTexture();
+                }
+                if (ImGui::Checkbox("Show grid", &showViewportGrid)) {
+                    updateDisplayTexture();
                 }
             }
             if (ImGui::DragFloat("Exposure", &exposure, 0.01f, 0.001f, 100.0f, "%.3f")) {
@@ -1548,37 +2400,71 @@ int main(int argc, char** argv) {
             }
 
             ImGui::Separator();
-            int photons = static_cast<int>(settings.photonsPerLaunch);
-            if (ImGui::InputInt("Photons", &photons, 1024, 65536)) {
-                settings.photonsPerLaunch = static_cast<uint32_t>(std::clamp(photons, 1, 100000000));
-                tracerDirty = true;
-                renderRequested = true;
-            }
-            int forwardPasses = static_cast<int>(settings.numForwardPasses);
-            if (ImGui::InputInt("Forward passes", &forwardPasses, 1, 4)) {
-                settings.numForwardPasses = static_cast<uint32_t>(std::clamp(forwardPasses, 1, 1024));
-                tracerDirty = true;
-                renderRequested = true;
-            }
-            int gatherPasses = static_cast<int>(settings.numGatherPasses);
-            if (ImGui::InputInt("Gather passes", &gatherPasses, 1, 4)) {
-                settings.numGatherPasses = static_cast<uint32_t>(std::clamp(gatherPasses, 1, 1024));
-                renderRequested = true;
-            }
-            int maxBounces = static_cast<int>(settings.maxBounces);
-            if (ImGui::InputInt("Max bounces", &maxBounces, 1, 4)) {
-                settings.maxBounces = static_cast<uint32_t>(std::clamp(maxBounces, 0, 64));
-                tracerDirty = true;
-                renderRequested = true;
-            }
-            if (ImGui::SliderFloat("Point radius", &settings.pointGeometrySupportRadius, 0.000f, 0.1f, "%.4f")) {
-                renderRequested = true;
-            }
-            if (ImGui::DragFloat("Coverage", &settings.pointGeometryCoverageScale, 0.0f, 0.01f, 10.0f, "%.3f")) {
-                renderRequested = true;
-            }
-            if (ImGui::Checkbox("Show point albedo", &settings.pointGeometryDebugShowAlbedo)) {
-                renderRequested = true;
+            if (ImGui::CollapsingHeader("Renderer debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+                int cameraGatherKernelIndex =
+                    settings.cameraGatherKernelKind == Pale::CameraGatherKernelKind::CameraGatherKernel2 ? 1 : 0;
+                const char* cameraGatherKernels[] = {
+                    "launchCameraGatherKernel",
+                    "launchCameraGatherKernel2",
+                };
+                if (ImGui::Combo(
+                        "Forward gather",
+                        &cameraGatherKernelIndex,
+                        cameraGatherKernels,
+                        IM_ARRAYSIZE(cameraGatherKernels))) {
+                    settings.cameraGatherKernelKind =
+                        cameraGatherKernelIndex == 1
+                            ? Pale::CameraGatherKernelKind::CameraGatherKernel2
+                            : Pale::CameraGatherKernelKind::CameraGatherKernel;
+                    renderRequested = true;
+                }
+
+                float localLayerDepthEpsilon = settings.rendererDebugLocalLayerDepthEpsilon;
+                if (ImGui::DragFloat(
+                        "LocalLayerDepthEpsilon",
+                        &localLayerDepthEpsilon,
+                        0.0005f,
+                        0.0f,
+                        10.0f,
+                        "%.6f")) {
+                    settings.rendererDebugLocalLayerDepthEpsilon =
+                        std::max(localLayerDepthEpsilon, 0.0f);
+                    renderRequested = true;
+                }
+
+                int maxSplatEventsPerRay =
+                    static_cast<int>(settings.rendererDebugMaxSplatEventsPerRay);
+                if (ImGui::SliderInt(
+                        "kMaxSplatEventsPerRay",
+                        &maxSplatEventsPerRay,
+                        1,
+                        static_cast<int>(Pale::kMaxSplatEventsPerRay))) {
+                    settings.rendererDebugMaxSplatEventsPerRay =
+                        static_cast<uint32_t>(std::clamp(
+                            maxSplatEventsPerRay,
+                            1,
+                            static_cast<int>(Pale::kMaxSplatEventsPerRay)));
+                    renderRequested = true;
+                }
+
+                int maxLocalSurfelHits =
+                    static_cast<int>(settings.rendererDebugMaxLocalSurfelHits);
+                if (ImGui::SliderInt(
+                        "kMaxLocalSurfelHits",
+                        &maxLocalSurfelHits,
+                        1,
+                        static_cast<int>(Pale::kMaxLocalSurfelHits))) {
+                    settings.rendererDebugMaxLocalSurfelHits =
+                        static_cast<uint32_t>(std::clamp(
+                            maxLocalSurfelHits,
+                            1,
+                            static_cast<int>(Pale::kMaxLocalSurfelHits)));
+                    renderRequested = true;
+                }
+
+                if (ImGui::Checkbox("Show point albedo", &settings.pointGeometryDebugShowAlbedo)) {
+                    renderRequested = true;
+                }
             }
 
             ImGui::Separator();
@@ -1609,8 +2495,23 @@ int main(int argc, char** argv) {
                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
             const ImVec2 available = ImGui::GetContentRegionAvail();
+            if (cameraSource == CameraSource::Viewport) {
+                const uint32_t targetRenderWidth = renderExtentFromAvailable(available.x);
+                const uint32_t targetRenderHeight = renderExtentFromAvailable(available.y);
+                if (renderWidth != targetRenderWidth || renderHeight != targetRenderHeight) {
+                    renderWidth = targetRenderWidth;
+                    renderHeight = targetRenderHeight;
+                    cameraDirty = true;
+                    renderRequested = true;
+                }
+            }
             if (texture.id != 0) {
-                const ImVec2 imageSize = fitImageSize(available, texture.width, texture.height);
+                const ImVec2 imageSize =
+                    cameraSource == CameraSource::Viewport
+                        ? ImVec2(
+                              std::max(available.x, 1.0f),
+                              std::max(available.y, 1.0f))
+                        : fitImageSize(available, texture.width, texture.height);
                 ImGui::Image(toImTextureId(texture.id), imageSize);
                 const bool imageHovered = ImGui::IsItemHovered();
                 const ImVec2 imageMin = ImGui::GetItemRectMin();
@@ -1774,7 +2675,11 @@ int main(int argc, char** argv) {
             int displayH = 0;
             glfwGetFramebufferSize(window, &displayW, &displayH);
             glViewport(0, 0, displayW, displayH);
-            glClearColor(0.10f, 0.10f, 0.10f, 1.0f);
+            glClearColor(
+                kBlenderViewportBackground.x,
+                kBlenderViewportBackground.y,
+                kBlenderViewportBackground.z,
+                kBlenderViewportBackground.w);
             glClear(GL_COLOR_BUFFER_BIT);
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
             glfwSwapBuffers(window);

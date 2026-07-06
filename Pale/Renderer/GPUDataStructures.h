@@ -232,12 +232,12 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 24;
+    constexpr uint32_t kMaxSplatEventsPerRay = 32;
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-    constexpr uint32_t kMaxLocalSurfelHits = 8;
+    constexpr uint32_t kMaxLocalSurfelHits = 32;
     constexpr float LocalLayerDepthEpsilon = 2.5e-2f;
 
     /*************************  Ray & Hit *****************************/
@@ -658,6 +658,11 @@ namespace Pale {
         photonMapping = 0x0004
     };
 
+    enum class CameraGatherKernelKind : uint32_t {
+        CameraGatherKernel = 0u,
+        CameraGatherKernel2 = 1u,
+    };
+
     struct Random {
         uint64_t seed = 42; // should be more than maxBounces
         uint32_t number = 42; // should be more than maxBounces
@@ -682,6 +687,7 @@ namespace Pale {
         uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
         uint32_t numGatherPasses = 1;
+        CameraGatherKernelKind cameraGatherKernelKind = CameraGatherKernelKind::CameraGatherKernel;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
         uint32_t surfelIndexForDebugImages = 1;
@@ -700,7 +706,33 @@ namespace Pale {
         float pointGeometryCoverageScale = 1.1f;
         uint32_t pointGeometryMinimumContributors = 1u;
         bool pointGeometryDebugShowAlbedo = false;
+
+        // Renderer debug controls. These clamp to the compile-time stack capacities above.
+        float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
+        uint32_t rendererDebugMaxSplatEventsPerRay = 8;
+        uint32_t rendererDebugMaxLocalSurfelHits = 6;
     };
+
+    inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {
+        if (requested == 0u) {
+            return 1u;
+        }
+        return requested < hardMaximum ? requested : hardMaximum;
+    }
+
+    inline uint32_t rendererDebugMaxSplatEventsPerRay(const PathTracerSettings& settings) {
+        return clampRendererDebugLimit(settings.rendererDebugMaxSplatEventsPerRay, kMaxSplatEventsPerRay);
+    }
+
+    inline uint32_t rendererDebugMaxLocalSurfelHits(const PathTracerSettings& settings) {
+        return clampRendererDebugLimit(settings.rendererDebugMaxLocalSurfelHits, kMaxLocalSurfelHits);
+    }
+
+    inline float rendererDebugLocalLayerDepthEpsilon(const PathTracerSettings& settings) {
+        return settings.rendererDebugLocalLayerDepthEpsilon > RayEpsilon
+                   ? settings.rendererDebugLocalLayerDepthEpsilon
+                   : RayEpsilon;
+    }
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
     static_assert(sycl::is_device_copyable<PathTracerSettings>::value);
