@@ -2403,21 +2403,16 @@ int main(int argc, char** argv) {
             if (ImGui::CollapsingHeader("Renderer debug", ImGuiTreeNodeFlags_DefaultOpen)) {
                 int cameraGatherKernelIndex =
                     settings.cameraGatherKernelKind == Pale::CameraGatherKernelKind::CameraGatherKernel2 ? 1 : 0;
-                const char* cameraGatherKernels[] = {
-                    "launchCameraGatherKernel",
-                    "launchCameraGatherKernel2",
-                };
-                if (ImGui::Combo(
-                        "Forward gather",
-                        &cameraGatherKernelIndex,
-                        cameraGatherKernels,
-                        IM_ARRAYSIZE(cameraGatherKernels))) {
+
+                if (ImGui::RadioButton("launchCameraGatherKernel", &cameraGatherKernelIndex, 0) ||
+                    ImGui::RadioButton("launchCameraGatherKernel2", &cameraGatherKernelIndex, 1)) {
                     settings.cameraGatherKernelKind =
                         cameraGatherKernelIndex == 1
                             ? Pale::CameraGatherKernelKind::CameraGatherKernel2
                             : Pale::CameraGatherKernelKind::CameraGatherKernel;
+
                     renderRequested = true;
-                }
+                    }
 
                 float localLayerDepthEpsilon = settings.rendererDebugLocalLayerDepthEpsilon;
                 if (ImGui::DragFloat(

@@ -759,7 +759,7 @@ namespace Pale {
         const float3& surfacePositionW,
         const float3& surfaceNormalW,
         const float3& diffuseAlbedo,
-        const float eps) {
+        const float eps = RayEpsilon) {
         float3 accumulatedRadiance(0.0f);
 
         const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
