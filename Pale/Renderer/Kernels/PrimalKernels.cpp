@@ -180,9 +180,9 @@ namespace Pale {
                             // ---------------------------------------------------------------------
                             if (instance.geometryType == GeometryType::PointCloud) {
                                 const Point& surfel = scene.points[worldHit.primitiveIndex];
-                                const float effectiveOpacity = sycl::fmin(
-                                    1.0f, sycl::fmax(0.0f, worldHit.alphaGeom * surfel.opacity));
-                                const float scatterProbability = effectiveOpacity;
+                                const float effectiveOpacity = sycl::fmin( 1.0f, sycl::fmax(0.0f, worldHit.alphaGeom * surfel.opacity));
+
+                                const float scatterProbability = settings.sampling.qReflect;
                                 const float transmitProbability = 1.0f - scatterProbability;
                                 const float randomNumber = stepRng.nextFloat();
 
@@ -405,6 +405,7 @@ namespace Pale {
 
                             float furthestLayerT = worldHit.t;
                             float localAlphaEff[kMaxLocalSurfelHits];
+                            float localMembership[kMaxLocalSurfelHits];
                             float localLayerWeight[kMaxLocalSurfelHits];
                             float localLayerTransmission = 1.0f;
 

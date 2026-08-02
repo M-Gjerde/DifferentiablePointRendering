@@ -1417,11 +1417,13 @@ int main(int argc, char** argv) {
         int selectedSurfelLightIndex = 0;
         int candidateZeroPowerSurfelIndex = 0;
         float candidateSurfelPower = 1.0f;
+        int selectedSurfelEditorIndex = 0;
         bool showSurfelGizmo = true;
         ImGuizmo::OPERATION surfelGizmoOperation = ImGuizmo::TRANSLATE;
         ImGuizmo::MODE surfelGizmoMode = ImGuizmo::WORLD;
         bool viewportGizmoMouseCapture = false;
         std::string surfelLightStatus;
+        std::string surfelEditorStatus;
         float exposure = 1.0f;
         float gamma = 1.0f;
         double lastRenderMs = 0.0;
@@ -2459,6 +2461,161 @@ int main(int argc, char** argv) {
 
                 if (ImGui::Checkbox("Show point albedo", &settings.pointGeometryDebugShowAlbedo)) {
                     renderRequested = true;
+                }
+            }
+
+            ImGui::Separator();
+            if (ImGui::CollapsingHeader("Surfel editor")) {
+                const std::optional<Pale::AssetHandle> pointCloudHandle = firstPointCloudHandle(scene);
+                const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
+                    pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
+
+                if (!pointCloudAsset || countSurfels(*pointCloudAsset) == 0u) {
+                    ImGui::TextWrapped("No editable surfels are loaded");
+                    selectedSurfelEditorIndex = 0;
+                } else {
+                    const std::size_t surfelCount = countSurfels(*pointCloudAsset);
+                    selectedSurfelEditorIndex = std::clamp(
+                        selectedSurfelEditorIndex,
+                        0,
+                        static_cast<int>(surfelCount - 1u));
+
+                    ImGui::SetNextItemWidth(-1.0f);
+                    if (ImGui::InputInt("Surfel index", &selectedSurfelEditorIndex)) {
+                        selectedSurfelEditorIndex = std::clamp(
+                            selectedSurfelEditorIndex,
+                            0,
+                            static_cast<int>(surfelCount - 1u));
+                    }
+                    ImGui::Text("Valid range: 0 - %zu", surfelCount - 1u);
+
+                    std::size_t localSurfelIndex = static_cast<std::size_t>(selectedSurfelEditorIndex);
+                    Pale::PointGeometry* selectedPointGeometry = nullptr;
+                    for (Pale::PointGeometry& pointGeometry : pointCloudAsset->points) {
+                        if (localSurfelIndex < pointGeometry.positions.size()) {
+                            selectedPointGeometry = &pointGeometry;
+                            break;
+                        }
+                        localSurfelIndex -= pointGeometry.positions.size();
+                    }
+
+                    bool surfelChanged = false;
+                    if (!selectedPointGeometry) {
+                        ImGui::TextWrapped("The selected surfel could not be resolved");
+                    } else {
+                        Pale::PointGeometry& pointGeometry = *selectedPointGeometry;
+
+                        if (localSurfelIndex < pointGeometry.positions.size()) {
+                            glm::vec3& position = pointGeometry.positions[localSurfelIndex];
+                            surfelChanged |= ImGui::DragFloat3(
+                                "Position",
+                                &position.x,
+                                0.001f,
+                                -10000.0f,
+                                10000.0f,
+                                "%.6f");
+                        }
+
+                        if (localSurfelIndex < pointGeometry.quat.size()) {
+                            glm::quat& quaternion = pointGeometry.quat[localSurfelIndex];
+                            if (ImGui::DragFloat4(
+                                    "Rotation quaternion (x, y, z, w)",
+                                    &quaternion.x,
+                                    0.001f,
+                                    -1.0f,
+                                    1.0f,
+                                    "%.6f")) {
+                                quaternion = normalizeQuaternionOrIdentity(quaternion);
+                                surfelChanged = true;
+                            }
+                        }
+
+                        if (localSurfelIndex < pointGeometry.scales.size()) {
+                            glm::vec2& scale = pointGeometry.scales[localSurfelIndex];
+                            if (ImGui::DragFloat2(
+                                    "Scale (u, v)",
+                                    &scale.x,
+                                    0.001f,
+                                    0.000001f,
+                                    10000.0f,
+                                    "%.6f")) {
+                                scale = glm::max(scale, glm::vec2(0.000001f));
+                                surfelChanged = true;
+                            }
+                        }
+
+                        if (localSurfelIndex < pointGeometry.albedos.size()) {
+                            glm::vec3& albedo = pointGeometry.albedos[localSurfelIndex];
+                            if (ImGui::ColorEdit3("Albedo", &albedo.x, ImGuiColorEditFlags_Float)) {
+                                albedo = glm::clamp(albedo, glm::vec3(0.0f), glm::vec3(1.0f));
+                                surfelChanged = true;
+                            }
+                        }
+
+                        auto drawAdditionalSurfelProperties = [&]<typename PointGeometryType>(
+                                                                  PointGeometryType& editablePointGeometry) {
+                            if constexpr (requires { editablePointGeometry.opacities; }) {
+                                if (localSurfelIndex < editablePointGeometry.opacities.size()) {
+                                    float& opacity = editablePointGeometry.opacities[localSurfelIndex];
+                                    if (ImGui::DragFloat("Opacity", &opacity, 0.001f, 0.0f, 1.0f, "%.6f")) {
+                                        opacity = std::clamp(opacity, 0.0f, 1.0f);
+                                        surfelChanged = true;
+                                    }
+                                }
+                            } else if constexpr (requires { editablePointGeometry.opacity; }) {
+                                if (localSurfelIndex < editablePointGeometry.opacity.size()) {
+                                    float& opacity = editablePointGeometry.opacity[localSurfelIndex];
+                                    if (ImGui::DragFloat("Opacity", &opacity, 0.001f, 0.0f, 1.0f, "%.6f")) {
+                                        opacity = std::clamp(opacity, 0.0f, 1.0f);
+                                        surfelChanged = true;
+                                    }
+                                }
+                            }
+
+                            if constexpr (requires { editablePointGeometry.betas; }) {
+                                if (localSurfelIndex < editablePointGeometry.betas.size()) {
+                                    float& beta = editablePointGeometry.betas[localSurfelIndex];
+                                    surfelChanged |= ImGui::DragFloat(
+                                        "Beta",
+                                        &beta,
+                                        0.001f,
+                                        -100.0f,
+                                        100.0f,
+                                        "%.6f");
+                                }
+                            } else if constexpr (requires { editablePointGeometry.beta; }) {
+                                if (localSurfelIndex < editablePointGeometry.beta.size()) {
+                                    float& beta = editablePointGeometry.beta[localSurfelIndex];
+                                    surfelChanged |= ImGui::DragFloat(
+                                        "Beta",
+                                        &beta,
+                                        0.001f,
+                                        -100.0f,
+                                        100.0f,
+                                        "%.6f");
+                                }
+                            }
+                        };
+                        drawAdditionalSurfelProperties(pointGeometry);
+
+                        if (localSurfelIndex < pointGeometry.powers.size()) {
+                            float& power = pointGeometry.powers[localSurfelIndex];
+                            if (ImGui::DragFloat("Power", &power, 0.01f, 0.0f, 1000000.0f, "%.6f")) {
+                                power = std::max(power, 0.0f);
+                                surfelChanged = true;
+                            }
+                        }
+
+                        if (surfelChanged) {
+                            surfelEditorStatus =
+                                "Updated surfel " + std::to_string(selectedSurfelEditorIndex);
+                            rebuildSceneGpu();
+                        }
+                    }
+
+                    if (!surfelEditorStatus.empty()) {
+                        ImGui::TextWrapped("%s", surfelEditorStatus.c_str());
+                    }
                 }
             }
 
