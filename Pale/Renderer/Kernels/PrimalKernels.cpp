@@ -10,13 +10,13 @@
 #include "IntersectionKernels.h"
 
 namespace Pale {
-    void launchRayGenEmitterKernel(RenderPackage& pkg, uint32_t forwardPass) {
+    void launchRayGenEmitterKernel(RenderPackage &pkg, uint32_t forwardPass) {
         auto queue = pkg.queue;
         auto scene = pkg.scene;
         auto settings = pkg.settings;
 
-        auto* raysIn = pkg.intermediates.primaryRays;
-        auto* countPrimary = pkg.intermediates.countPrimary;
+        auto *raysIn = pkg.intermediates.primaryRays;
+        auto *countPrimary = pkg.intermediates.countPrimary;
 
         const uint32_t emittedCount = settings.photonsPerLaunch * settings.numForwardPasses;
         const float invEmittedCount = 1.0f / float(emittedCount);
@@ -25,7 +25,7 @@ namespace Pale {
         const uint64_t renderSeed = pkg.random.seed;
 
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
             const uint64_t forwardPassIndex = uint64_t(forwardPass);
 
             commandGroupHandler.parallel_for<struct RayGenEmitterKernelTag>(
@@ -34,7 +34,7 @@ namespace Pale {
                     const uint64_t photonIndex = uint64_t(globalId[0]);
                     const uint64_t pathId = forwardPassIndex * uint64_t(settings.photonsPerLaunch) + photonIndex;
                     const uint64_t seed =
-                        rng::makeSeed(renderSeed, pathId, 0u, rng::kStreamRayGen, 0u);
+                            rng::makeSeed(renderSeed, pathId, 0u, rng::kStreamRayGen, 0u);
                     rng::Xorshift128 rng128(seed);
 
                     if (scene.lightCount == 0) {
@@ -59,9 +59,9 @@ namespace Pale {
                     ray.pathId = pathId;
 
                     auto counter = sycl::atomic_ref<uint32_t,
-                                                    sycl::memory_order::relaxed,
-                                                    sycl::memory_scope::device,
-                                                    sycl::access::address_space::global_space>(*countPrimary);
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(*countPrimary);
 
                     const uint32_t slot = counter.fetch_add(1u);
                     raysIn[slot] = ray;
@@ -73,13 +73,13 @@ namespace Pale {
     }
 
 
-    void launchIntersectKernel(RenderPackage& pkg, uint32_t activeRayCount) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        auto& intermediates = pkg.intermediates;
+    void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        auto &intermediates = pkg.intermediates;
 
-        queue.submit([&](sycl::handler& commandGroupHandler) {
+        queue.submit([&](sycl::handler &commandGroupHandler) {
                 const uint64_t renderSeed = pkg.random.seed;
 
                 commandGroupHandler.parallel_for<class launchIntersectKernel>(
@@ -94,11 +94,11 @@ namespace Pale {
                         for (uint32_t inlineTraversalIndex = 0; inlineTraversalIndex < maxInlineNullTraversals;
                              ++inlineTraversalIndex) {
                             const uint64_t stepSeed =
-                                rng::makeSeed(renderSeed,
-                                              currentRayState.pathId,
-                                              currentRayState.traversalIndex,
-                                              rng::kStreamTraversal,
-                                              107u);
+                                    rng::makeSeed(renderSeed,
+                                                  currentRayState.pathId,
+                                                  currentRayState.traversalIndex,
+                                                  rng::kStreamTraversal,
+                                                  107u);
                             rng::Xorshift128 stepRng(stepSeed);
                             WorldHit worldHit{};
                             intersectScene(currentRayState.ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
@@ -107,13 +107,13 @@ namespace Pale {
                             }
                             bool isIndirect = currentRayState.bounceIndex > 0;
                             buildIntersectionNormal(scene, worldHit);
-                            const InstanceRecord& instance = scene.instances[worldHit.instanceIndex];
+                            const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
                             // ---------------------------------------------------------------------
                             // Mesh: this is a real scattering event, so it finishes this kernel call.
                             // ---------------------------------------------------------------------
                             if (instance.geometryType == GeometryType::Mesh) {
                                 bool isBackfaceHit =
-                                    dot(currentRayState.ray.direction, worldHit.geometricNormalW) > 0.0f;
+                                        dot(currentRayState.ray.direction, worldHit.geometricNormalW) > 0.0f;
                                 if (isBackfaceHit) {
                                     worldHit.geometricNormalW *= -1.0f;
                                 }
@@ -164,9 +164,9 @@ namespace Pale {
                                 }
 
                                 auto extensionCounter = sycl::atomic_ref<uint32_t,
-                                                                         sycl::memory_order::relaxed,
-                                                                         sycl::memory_scope::device,
-                                                                         sycl::access::address_space::global_space>(
+                                    sycl::memory_order::relaxed,
+                                    sycl::memory_scope::device,
+                                    sycl::access::address_space::global_space>(
                                     *intermediates.countExtensionOut);
 
                                 const uint32_t outIndex = extensionCounter.fetch_add(1u);
@@ -179,8 +179,9 @@ namespace Pale {
                             // Point cloud: alpha controls whether the ray transmits or scatters.
                             // ---------------------------------------------------------------------
                             if (instance.geometryType == GeometryType::PointCloud) {
-                                const Point& surfel = scene.points[worldHit.primitiveIndex];
-                                const float effectiveOpacity = sycl::fmin( 1.0f, sycl::fmax(0.0f, worldHit.alphaGeom * surfel.opacity));
+                                const Point &surfel = scene.points[worldHit.primitiveIndex];
+                                const float effectiveOpacity = sycl::fmin(
+                                    1.0f, sycl::fmax(0.0f, worldHit.alphaGeom * surfel.opacity));
 
                                 const float scatterProbability = settings.sampling.qReflect;
                                 const float transmitProbability = 1.0f - scatterProbability;
@@ -195,7 +196,7 @@ namespace Pale {
                                 // -----------------------------------------------------------------
                                 if (randomNumber < transmitProbability) {
                                     currentRayState.ray.origin =
-                                        worldHit.hitPositionW + currentRayState.ray.direction * RayEpsilon;
+                                            worldHit.hitPositionW + currentRayState.ray.direction * RayEpsilon;
                                     currentRayState.traversalIndex += 1;
                                     // No throughput attenuation here because this branch was sampled
                                     // with exactly the physical transmission probability.
@@ -218,7 +219,7 @@ namespace Pale {
                                 const float3 canonicalNormalW = normalize(cross(surfel.tanU, surfel.tanV));
 
                                 const float signedCosineIncident =
-                                    dot(canonicalNormalW, -currentRayState.ray.direction);
+                                        dot(canonicalNormalW, -currentRayState.ray.direction);
 
                                 const int sideSign = signNonZero(signedCosineIncident);
                                 const float3 orientedNormal = static_cast<float>(sideSign) * canonicalNormalW;
@@ -235,7 +236,7 @@ namespace Pale {
                                 sampleCosineHemisphere(stepRng, orientedNormal, sampledOutgoingDirectionW, sampledPdf);
                                 const float3 reflectanceMultiplier = surfel.alpha_r * surfel.albedo;
                                 const float3 nextPathThroughput =
-                                    currentRayState.pathThroughput * reflectanceMultiplier;
+                                        currentRayState.pathThroughput * reflectanceMultiplier;
                                 if (settings.integratorKind == IntegratorKind::lightTracing) {
                                     HitInfoContribution contribution{};
                                     contribution.hitPositionW = worldHit.hitPositionW;
@@ -267,9 +268,9 @@ namespace Pale {
                                     return;
                                 }
                                 auto extensionCounter = sycl::atomic_ref<uint32_t,
-                                                                         sycl::memory_order::relaxed,
-                                                                         sycl::memory_scope::device,
-                                                                         sycl::access::address_space::global_space>(
+                                    sycl::memory_order::relaxed,
+                                    sycl::memory_scope::device,
+                                    sycl::access::address_space::global_space>(
                                     *intermediates.countExtensionOut);
                                 const uint32_t outIndex = extensionCounter.fetch_add(1u);
                                 if (outIndex < intermediates.maxRayQueueCapacity) {
@@ -291,11 +292,11 @@ namespace Pale {
     }
 
 
-    void launchCameraGatherKernel2(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPass) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        auto& photonMap = pkg.intermediates.map;
+    void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPass) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        auto &photonMap = pkg.intermediates.map;
         SensorGPU sensor = pkg.sensors[cameraIndex];
         const std::uint32_t imageWidth = sensor.camera.width;
         const std::uint32_t imageHeight = sensor.camera.height;
@@ -317,7 +318,7 @@ namespace Pale {
         //   - median world position
         //   - visible normal at median surface
         // -------------------------------------------------------------------------
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             const uint64_t renderSeed = pkg.random.seed;
 
             cgh.parallel_for<class CameraGatherKernel>(
@@ -359,17 +360,18 @@ namespace Pale {
                     bool debug = false;
                     if (pixelX == 286 && pixelY == 240) {
                         debug = true;
-                    }
-                    else {
+                    } else {
                         //return;
                     }
 
                     const float localLayerDepthEpsilon =
-                        rendererDebugLocalLayerDepthEpsilon(settings);
+                            rendererDebugLocalLayerDepthEpsilon(settings);
                     const uint32_t maxSplatEventsPerRay =
-                        rendererDebugMaxSplatEventsPerRay(settings);
+                            rendererDebugMaxSplatEventsPerRay(settings);
                     const uint32_t maxLocalSurfelHits =
-                        rendererDebugMaxLocalSurfelHits(settings);
+                            rendererDebugMaxLocalSurfelHits(settings);
+                    const float localLayerNormalCosineThreshold =
+                            rendererDebugLocalLayerNormalCosineThreshold(settings);
 
                     for (uint32_t traversalIndex = 0u; traversalIndex < maxSplatEventsPerRay; ++traversalIndex) {
                         WorldHit worldHit{};
@@ -378,15 +380,20 @@ namespace Pale {
                             break;
                         }
                         buildIntersectionNormal(scene, worldHit);
-                        const auto& instance = scene.instances[worldHit.instanceIndex];
+                        const auto &instance = scene.instances[worldHit.instanceIndex];
                         // -------------------------------------------------------------
                         // Visible point-cloud layer
                         // -------------------------------------------------------------
                         if (instance.geometryType == GeometryType::PointCloud) {
-                            const Transform& transform = scene.transforms[instance.transformIndex];
+                            const Transform &transform = scene.transforms[instance.transformIndex];
                             // This should scale with surfel size, not be a global value such as 0.1.
-                            const float localTMin = worldHit.t - localLayerDepthEpsilon;
+                            const float localTMin = worldHit.t;
                             const float localTMax = worldHit.t + localLayerDepthEpsilon;
+                            const Point &referenceSurfel = scene.points[worldHit.primitiveIndex];
+                            float3 referenceNormalW = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
+                            if (dot(referenceNormalW, -primaryRay.direction) < 0.0f) {
+                                referenceNormalW = -referenceNormalW;
+                            }
 
                             LocalSurfelLayerHit localHits[kMaxLocalSurfelHits];
                             const Ray rayObject = toObjectSpace(primaryRay, transform);
@@ -405,17 +412,31 @@ namespace Pale {
 
                             float furthestLayerT = worldHit.t;
                             float localAlphaEff[kMaxLocalSurfelHits];
-                            float localMembership[kMaxLocalSurfelHits];
                             float localLayerWeight[kMaxLocalSurfelHits];
                             float localLayerTransmission = 1.0f;
 
                             for (uint32_t localHitIndex = 0u; localHitIndex < localHitCount; ++localHitIndex) {
-                                const LocalSurfelLayerHit& localHit = localHits[localHitIndex];
-                                const Point& surfel = scene.points[localHit.primitiveIndex];
-                                const float alphaEff = sycl::clamp(surfel.opacity * localHit.alphaGeom, 0.0f, 1.0f);
-                                localAlphaEff[localHitIndex] = alphaEff;
+                                const LocalSurfelLayerHit &localHit = localHits[localHitIndex];
+                                const Point &surfel = scene.points[localHit.primitiveIndex];
+
+                                localAlphaEff[localHitIndex] = 0.0f;
                                 localLayerWeight[localHitIndex] = 0.0f;
+
+                                float3 localNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+                                if (dot(localNormalW, -primaryRay.direction) < 0.0f) {
+                                    localNormalW = -localNormalW;
+                                }
+
+                                const float normalAgreement = dot(referenceNormalW, localNormalW);
+                                if (normalAgreement < localLayerNormalCosineThreshold) {
+                                    continue;
+                                }
+
                                 furthestLayerT = sycl::fmax(furthestLayerT, localHit.tWorld);
+
+                                const float alphaEff =
+                                        sycl::clamp(surfel.opacity * localHit.alphaGeom, 0.0f, 1.0f);
+                                localAlphaEff[localHitIndex] = alphaEff;
                                 localLayerTransmission *= sycl::fmax(0.0f, 1.0f - alphaEff);
                             }
 
@@ -431,7 +452,6 @@ namespace Pale {
                                     if (alphaEff <= 0.0f) {
                                         continue;
                                     }
-
                                     float transmittancePolynomial[kMaxLocalSurfelHits];
                                     for (uint32_t coefficientIndex = 0u;
                                          coefficientIndex < maxLocalSurfelHits;
@@ -439,7 +459,6 @@ namespace Pale {
                                         transmittancePolynomial[coefficientIndex] = 0.0f;
                                     }
                                     transmittancePolynomial[0] = 1.0f;
-
                                     uint32_t polynomialDegree = 0u;
                                     for (uint32_t otherHitIndex = 0u;
                                          otherHitIndex < localHitCount;
@@ -447,7 +466,6 @@ namespace Pale {
                                         if (otherHitIndex == localHitIndex) {
                                             continue;
                                         }
-
                                         const float otherAlphaEff = localAlphaEff[otherHitIndex];
                                         if (otherAlphaEff <= 0.0f) {
                                             continue;
@@ -457,7 +475,7 @@ namespace Pale {
                                              coefficientIndex >= 0;
                                              --coefficientIndex) {
                                             transmittancePolynomial[coefficientIndex + 1] -=
-                                                otherAlphaEff * transmittancePolynomial[coefficientIndex];
+                                                    otherAlphaEff * transmittancePolynomial[coefficientIndex];
                                         }
                                         ++polynomialDegree;
                                     }
@@ -467,14 +485,14 @@ namespace Pale {
                                          coefficientIndex <= polynomialDegree;
                                          ++coefficientIndex) {
                                         expectedPreviousTransmittance +=
-                                            transmittancePolynomial[coefficientIndex] /
-                                            static_cast<float>(coefficientIndex + 1u);
+                                                transmittancePolynomial[coefficientIndex] /
+                                                static_cast<float>(coefficientIndex + 1u);
                                     }
 
                                     const float layerWeight = alphaEff * sycl::clamp(
-                                        expectedPreviousTransmittance,
-                                        0.0f,
-                                        1.0f);
+                                                                  expectedPreviousTransmittance,
+                                                                  0.0f,
+                                                                  1.0f);
                                     localLayerWeight[localHitIndex] = layerWeight;
                                     localLayerWeightSum += layerWeight;
                                 }
@@ -490,8 +508,8 @@ namespace Pale {
                             const float3 directLightingPositionW = localHits[0].hitPositionW;
                             for (uint32_t localHitIndex = 0u; localHitIndex < localHitCount; ++localHitIndex) {
                                 const float layerWeight = localLayerWeight[localHitIndex];
-                                const LocalSurfelLayerHit& localHit = localHits[localHitIndex];
-                                const Point& surfel = scene.points[localHit.primitiveIndex];
+                                const LocalSurfelLayerHit &localHit = localHits[localHitIndex];
+                                const Point &surfel = scene.points[localHit.primitiveIndex];
                                 if (layerWeight <= 0.0f) {
                                     continue;
                                 }
@@ -504,11 +522,11 @@ namespace Pale {
                                 const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
                                     localHit.hitPositionW, normalW, photonMap);
                                 const float3 indirectRadiance =
-                                    indirectIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf);
+                                        indirectIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf);
 
                                 const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
                                 float3 emittedRadiance =
-                                    surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
+                                        surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
 
                                 /*
                                 const float3 directRadiance =
@@ -520,13 +538,19 @@ namespace Pale {
                                         settings,
                                         rng);
                                 */
+                                const float3 distanceFromLayerAnchorW =
+                                        localHit.hitPositionW - worldHit.hitPositionW;
+                                const float directLightingEpsilon = sycl::fmax(
+                                    RayEpsilon,
+                                    sycl::sqrt(dot(distanceFromLayerAnchorW, distanceFromLayerAnchorW)));
+
                                 const float3 directRadiance = estimateDirectPointSampledPointLights(
                                     scene,
                                     settings,
                                     localHit.hitPositionW,
                                     normalW,
                                     surfel.alpha_r * surfel.albedo,
-                                    localLayerDepthEpsilon);
+                                    directLightingEpsilon);
 
                                 const float3 outgoingRadiance = emittedRadiance + indirectRadiance + directRadiance;
                                 accumulatedRadianceRGB += compositeWeight * outgoingRadiance;
@@ -556,14 +580,14 @@ namespace Pale {
 
                             // Advance once past the whole local layer.
                             primaryRay.origin = primaryRay.origin + primaryRay.direction * (
-                                furthestLayerT + RayEpsilon);
+                                                    furthestLayerT + RayEpsilon);
                             continue;
                         }
                         // -------------------------------------------------------------
                         // Terminal mesh hit
                         // -------------------------------------------------------------
                         if (instance.geometryType == GeometryType::Mesh) {
-                            const GPUMaterial& material = scene.materials[instance.materialIndex];
+                            const GPUMaterial &material = scene.materials[instance.materialIndex];
                             const bool isBackfaceHit = dot(primaryRay.direction, worldHit.geometricNormalW) > 0.0f;
                             const float3 normalW = isBackfaceHit
                                                        ? -worldHit.geometricNormalW
@@ -585,8 +609,7 @@ namespace Pale {
                             if (material.isEmissive()) {
                                 const float3 emittedRadiance = material.power * material.baseColor;
                                 accumulatedRadianceRGB += transmittance * min(emittedRadiance, 1.0f);
-                            }
-                            else {
+                            } else {
                                 const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
                                     worldHit.hitPositionW, normalW, photonMap);
                                 const float3 indirectRadiance = (material.baseColor * M_1_PIf) * indirectIrradiance;
@@ -619,8 +642,7 @@ namespace Pale {
                     sensor.visibilityWeightedOpacityBuffer[pixelIndex] = visibilityWeightedOpacityLoss;
                     if (accumulatedMeanDepthWeight > 1.0e-6f) {
                         sensor.meanDepthBuffer[pixelIndex] = accumulatedMeanDepth / accumulatedMeanDepthWeight;
-                    }
-                    else {
+                    } else {
                         sensor.meanDepthBuffer[pixelIndex] = 0.0f;
                     }
 
@@ -632,8 +654,7 @@ namespace Pale {
                         sensor.visibleNormalBuffer[pixelIndex] = float4{
                             medianNormalW.x(), medianNormalW.y(), medianNormalW.z(), 1.0f
                         };
-                    }
-                    else {
+                    } else {
                         sensor.medianDepthBuffer[pixelIndex] = 0.0f;
                         sensor.medianWorldPositionBuffer[pixelIndex] = float4{0.0f};
                         sensor.visibleNormalBuffer[pixelIndex] = float4{0.0f};
@@ -648,7 +669,7 @@ namespace Pale {
         // Pass 2:
         //   Normal from 2DGS-style pseudo surface depth map
         // -------------------------------------------------------------------------
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for<class SurfaceDepthNormalKernel>(
                 sycl::range<1>(pixelCount),
                 [=](sycl::id<1> tid) {
@@ -658,7 +679,7 @@ namespace Pale {
 
                     if (x == 0u || y == 0u || x + 1u >= imageWidth || y + 1u >= imageHeight) {
                         sensor.normalFromDepthBuffer[pixelIndex] =
-                            float4{0.0f, 0.0f, 0.0f, 0.0f};
+                                float4{0.0f, 0.0f, 0.0f, 0.0f};
                         return;
                     }
                     const uint32_t idxL = y * imageWidth + (x - 1u);
@@ -716,7 +737,7 @@ namespace Pale {
                     const float tangentXLengthSquared = dot(tangentX, tangentX);
                     if (tangentYLengthSquared <= 1.0e-16f || tangentXLengthSquared <= 1.0e-16f) {
                         sensor.normalFromDepthBuffer[pixelIndex] =
-                            float4{0.0f, 0.0f, 0.0f, 0.0f};
+                                float4{0.0f, 0.0f, 0.0f, 0.0f};
                         return;
                     }
                     // Match 2DGS cross-product order exactly:
@@ -726,7 +747,7 @@ namespace Pale {
                     // Do not flip toward the camera if you want exact 2DGS behavior.
                     const float3 normalW = normalize(cross(tangentY, tangentX));
                     sensor.normalFromDepthBuffer[pixelIndex] =
-                        float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
+                            float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
                 });
         });
 
@@ -734,11 +755,11 @@ namespace Pale {
     }
 
 
-    void launchCameraGatherKernel(RenderPackage& pkg, uint32_t cameraIndex, uint32_t gatherPassIdx) {
-        auto& queue = pkg.queue;
-        auto& scene = pkg.scene;
-        auto& settings = pkg.settings;
-        auto& photonMap = pkg.intermediates.map;
+    void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPassIdx) {
+        auto &queue = pkg.queue;
+        auto &scene = pkg.scene;
+        auto &settings = pkg.settings;
+        auto &photonMap = pkg.intermediates.map;
         SensorGPU sensor = pkg.sensors[cameraIndex];
         const std::uint32_t imageWidth = sensor.camera.width;
         const std::uint32_t imageHeight = sensor.camera.height;
@@ -760,7 +781,7 @@ namespace Pale {
         //   - median world position
         //   - visible normal at median surface
         // -------------------------------------------------------------------------
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             const uint64_t renderSeed = pkg.random.seed;
 
             cgh.parallel_for<class CameraGatherKernel>(
@@ -805,12 +826,12 @@ namespace Pale {
                             break;
                         }
                         buildIntersectionNormal(scene, worldHit);
-                        const auto& instance = scene.instances[worldHit.instanceIndex];
+                        const auto &instance = scene.instances[worldHit.instanceIndex];
                         // -------------------------------------------------------------
                         // Visible point-cloud layer
                         // -------------------------------------------------------------
                         if (instance.geometryType == GeometryType::PointCloud) {
-                            const Point& surfel = scene.points[worldHit.primitiveIndex];
+                            const Point &surfel = scene.points[worldHit.primitiveIndex];
                             float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
                             const bool hitBackside = dot(normalW, -primaryRay.direction) < 0.0f;
                             if (hitBackside) {
@@ -820,7 +841,7 @@ namespace Pale {
                             const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
                                 worldHit.hitPositionW, normalW, photonMap);
                             const float3 indirectRadiance =
-                                indirectIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf) * alphaEff;
+                                    indirectIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf) * alphaEff;
                             const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
                             float3 emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * surfelArea)) * alphaEff;
                             if (surfel.isEmissive() && hitBackside) {
@@ -834,10 +855,11 @@ namespace Pale {
                             */
 
                             const float3 directRadiance = estimateDirectPointSampledPointLights(
-                                scene,
-                                settings,
-                                worldHit.hitPositionW,
-                                normalW, surfel.alpha_r * surfel.albedo, RayEpsilon) * alphaEff;
+                                                              scene,
+                                                              settings,
+                                                              worldHit.hitPositionW,
+                                                              normalW, surfel.alpha_r * surfel.albedo,
+                                                              RayEpsilon) * alphaEff;
 
                             const float3 outgoingRadiance = emittedRadiance + indirectRadiance + directRadiance;
                             accumulatedRadianceRGB += transmittance * outgoingRadiance;
@@ -859,7 +881,7 @@ namespace Pale {
                             // Depth distortion
                             const float mi = depthDistortionNdc01(zi);
                             distortion += wi * (mi * mi * prefixWeight + prefixWeightDepthSquared - 2.0f * mi *
-                                prefixWeightDepth);
+                                                prefixWeightDepth);
                             prefixWeight += wi;
                             prefixWeightDepth += wi * mi;
                             prefixWeightDepthSquared += wi * mi * mi;
@@ -871,7 +893,7 @@ namespace Pale {
                         // Terminal mesh hit
                         // -------------------------------------------------------------
                         if (instance.geometryType == GeometryType::Mesh) {
-                            const GPUMaterial& material = scene.materials[instance.materialIndex];
+                            const GPUMaterial &material = scene.materials[instance.materialIndex];
                             const bool isBackfaceHit = dot(primaryRay.direction, worldHit.geometricNormalW) > 0.0f;
                             const float3 normalW = isBackfaceHit
                                                        ? -worldHit.geometricNormalW
@@ -896,9 +918,8 @@ namespace Pale {
                             if (material.isEmissive()) {
                                 const float3 emittedRadiance = material.power * material.baseColor;
                                 accumulatedRadianceRGB +=
-                                    transmittance * min(emittedRadiance, 1.0f);
-                            }
-                            else {
+                                        transmittance * min(emittedRadiance, 1.0f);
+                            } else {
                                 const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(
                                     worldHit.hitPositionW, normalW, photonMap);
                                 const float3 indirectRadiance = (material.baseColor * M_1_PIf) * indirectIrradiance;
@@ -927,9 +948,8 @@ namespace Pale {
                     sensor.depthDistortionBuffer[pixelIndex] = distortion;
                     if (accumulatedMeanDepthWeight > 1.0e-6f) {
                         sensor.meanDepthBuffer[pixelIndex] =
-                            accumulatedMeanDepth / accumulatedMeanDepthWeight;
-                    }
-                    else {
+                                accumulatedMeanDepth / accumulatedMeanDepthWeight;
+                    } else {
                         sensor.meanDepthBuffer[pixelIndex] = 0.0f;
                     }
 
@@ -941,8 +961,7 @@ namespace Pale {
                         sensor.visibleNormalBuffer[pixelIndex] = float4{
                             medianNormalW.x(), medianNormalW.y(), medianNormalW.z(), 1.0f
                         };
-                    }
-                    else {
+                    } else {
                         sensor.medianDepthBuffer[pixelIndex] = 0.0f;
                         sensor.medianWorldPositionBuffer[pixelIndex] = float4{0.0f};
                         sensor.visibleNormalBuffer[pixelIndex] = float4{0.0f};
@@ -957,7 +976,7 @@ namespace Pale {
         //   Normal from 2DGS-style pseudo surface depth map
         // -------------------------------------------------------------------------
         if (settings.normalConsistencyWeight) {
-            queue.submit([&](sycl::handler& cgh) {
+            queue.submit([&](sycl::handler &cgh) {
                 cgh.parallel_for<class SurfaceDepthNormalKernel>(
                     sycl::range<1>(pixelCount),
                     [=](sycl::id<1> tid) {
@@ -967,7 +986,7 @@ namespace Pale {
 
                         if (x == 0u || y == 0u || x + 1u >= imageWidth || y + 1u >= imageHeight) {
                             sensor.normalFromDepthBuffer[pixelIndex] =
-                                float4{0.0f, 0.0f, 0.0f, 0.0f};
+                                    float4{0.0f, 0.0f, 0.0f, 0.0f};
                             return;
                         }
                         const uint32_t idxL = y * imageWidth + (x - 1u);
@@ -1025,7 +1044,7 @@ namespace Pale {
                         const float tangentXLengthSquared = dot(tangentX, tangentX);
                         if (tangentYLengthSquared <= 1.0e-16f || tangentXLengthSquared <= 1.0e-16f) {
                             sensor.normalFromDepthBuffer[pixelIndex] =
-                                float4{0.0f, 0.0f, 0.0f, 0.0f};
+                                    float4{0.0f, 0.0f, 0.0f, 0.0f};
                             return;
                         }
                         // Match 2DGS cross-product order exactly:
@@ -1035,7 +1054,7 @@ namespace Pale {
                         // Do not flip toward the camera if you want exact 2DGS behavior.
                         const float3 normalW = normalize(cross(tangentY, tangentX));
                         sensor.normalFromDepthBuffer[pixelIndex] =
-                            float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
+                                float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
                     });
             });
 
@@ -1351,10 +1370,10 @@ namespace Pale {
 
 
     void computePhotonCellIdsAndPermutation(
-        sycl::queue& queue,
+        sycl::queue &queue,
         DeviceSurfacePhotonMapGrid grid,
         std::uint32_t photonCount) {
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for(sycl::range<1>(photonCount), [=](sycl::id<1> idx) {
                 const std::uint32_t photonIndex = static_cast<std::uint32_t>(idx[0]);
                 const DevicePhotonSurface photon = grid.photons[photonIndex];
@@ -1373,11 +1392,11 @@ namespace Pale {
         }).wait();
     }
 
-    void clearCellArrays(sycl::queue& queue, DeviceSurfacePhotonMapGrid grid) {
+    void clearCellArrays(sycl::queue &queue, DeviceSurfacePhotonMapGrid grid) {
         static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
         const std::uint32_t cellCount = grid.totalCellCount;
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for(sycl::range<1>(cellCount), [=](sycl::id<1> idx) {
                 const std::uint32_t c = static_cast<std::uint32_t>(idx[0]);
                 grid.cellCount[c] = 0u;
@@ -1390,21 +1409,21 @@ namespace Pale {
 
 
     void countPhotonsPerCell(
-        sycl::queue& queue,
+        sycl::queue &queue,
         DeviceSurfacePhotonMapGrid grid,
         std::uint32_t photonCount) {
         static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for(sycl::range<1>(photonCount), [=](sycl::id<1> idx) {
                 const std::uint32_t i = static_cast<std::uint32_t>(idx[0]);
                 const std::uint32_t cellId = grid.photonCellId[i];
                 if (cellId == kInvalidIndex) return;
 
                 auto atomicCount = sycl::atomic_ref<std::uint32_t,
-                                                    sycl::memory_order::relaxed,
-                                                    sycl::memory_scope::device,
-                                                    sycl::access::address_space::global_space>(grid.cellCount[cellId]);
+                    sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(grid.cellCount[cellId]);
 
                 atomicCount.fetch_add(1u);
             });
@@ -1413,12 +1432,12 @@ namespace Pale {
 
 
     void scatterPhotonsIntoCells(
-        sycl::queue& queue,
+        sycl::queue &queue,
         DeviceSurfacePhotonMapGrid grid,
         std::uint32_t photonCount) {
         static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for(sycl::range<1>(photonCount), [=](sycl::id<1> idx) {
                 const std::uint32_t i = static_cast<std::uint32_t>(idx[0]);
                 const std::uint32_t cellId = grid.photonCellId[i];
@@ -1429,9 +1448,9 @@ namespace Pale {
                 if (start == kInvalidIndex) return;
 
                 auto atomicOffset = sycl::atomic_ref<std::uint32_t,
-                                                     sycl::memory_order::relaxed,
-                                                     sycl::memory_scope::device,
-                                                     sycl::access::address_space::global_space>(
+                    sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(
                     grid.cellWriteOffset[cellId]);
 
                 const std::uint32_t localOffset = atomicOffset.fetch_add(1u);
@@ -1447,19 +1466,19 @@ namespace Pale {
     static constexpr std::uint32_t kScanBlockSize = 1024;
 
     void exclusiveScanCellCountsToCellStart(
-        sycl::queue& queue,
+        sycl::queue &queue,
         DeviceSurfacePhotonMapGrid grid) {
         const std::uint32_t totalCellCount = grid.totalCellCount;
         const std::uint32_t blockSize = kScanBlockSize;
         const std::uint32_t blockCount = (totalCellCount + blockSize - 1u) / blockSize;
 
-        std::uint32_t* cellCount = grid.cellCount;
-        std::uint32_t* cellStart = grid.cellStart;
-        std::uint32_t* blockSums = grid.blockSums;
-        std::uint32_t* blockPrefix = grid.blockPrefix;
+        std::uint32_t *cellCount = grid.cellCount;
+        std::uint32_t *cellStart = grid.cellStart;
+        std::uint32_t *blockSums = grid.blockSums;
+        std::uint32_t *blockPrefix = grid.blockPrefix;
 
         // Pass 1: per-block exclusive scan into cellStart + write block sums
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             sycl::local_accessor<std::uint32_t, 1> localData(sycl::range<1>(blockSize), cgh);
 
             cgh.parallel_for(
@@ -1526,7 +1545,7 @@ namespace Pale {
         queue.memcpy(blockPrefix, blockPrefixHost.data(), sizeof(std::uint32_t) * blockCount).wait();
 
         // Pass 3: add block prefix to each element’s local prefix
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for(sycl::range<1>(totalCellCount), [=](sycl::id<1> idx) {
                 const std::uint32_t globalIndex = static_cast<std::uint32_t>(idx[0]);
                 const std::uint32_t blockIndex = globalIndex / blockSize;
@@ -1536,13 +1555,13 @@ namespace Pale {
     }
 
     void finalizeCellRanges(
-        sycl::queue& queue,
+        sycl::queue &queue,
         DeviceSurfacePhotonMapGrid grid) {
         static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
         const std::uint32_t totalCellCount = grid.totalCellCount;
 
-        queue.submit([&](sycl::handler& cgh) {
+        queue.submit([&](sycl::handler &cgh) {
             cgh.parallel_for(sycl::range<1>(totalCellCount), [=](sycl::id<1> idx) {
                 const std::uint32_t c = static_cast<std::uint32_t>(idx[0]);
                 const std::uint32_t count = grid.cellCount[c];
@@ -1552,8 +1571,7 @@ namespace Pale {
                 if (count == 0u) {
                     grid.cellStart[c] = kInvalidIndex;
                     grid.cellEnd[c] = kInvalidIndex;
-                }
-                else {
+                } else {
                     const std::uint32_t start = grid.cellStart[c];
                     grid.cellEnd[c] = start + count;
                 }
@@ -1563,7 +1581,7 @@ namespace Pale {
 
 
     void buildPhotonCellRangesAndOrdering(
-        sycl::queue& queue,
+        sycl::queue &queue,
         DeviceSurfacePhotonMapGrid grid,
         std::uint32_t photonCount) {
         clearCellArrays(queue, grid); // counts/start/end/offset=0/invalid

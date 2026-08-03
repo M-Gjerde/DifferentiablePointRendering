@@ -2429,6 +2429,19 @@ int main(int argc, char** argv) {
                     renderRequested = true;
                 }
 
+                float localLayerNormalCosineThreshold =
+                    settings.rendererDebugLocalLayerNormalCosineThreshold;
+                if (ImGui::SliderFloat(
+                        "LocalLayerNormalCosineThreshold",
+                        &localLayerNormalCosineThreshold,
+                        -1.0f,
+                        1.0f,
+                        "%.3f")) {
+                    settings.rendererDebugLocalLayerNormalCosineThreshold =
+                        std::clamp(localLayerNormalCosineThreshold, -1.0f, 1.0f);
+                    renderRequested = true;
+                }
+
                 int maxSplatEventsPerRay =
                     static_cast<int>(settings.rendererDebugMaxSplatEventsPerRay);
                 if (ImGui::SliderInt(

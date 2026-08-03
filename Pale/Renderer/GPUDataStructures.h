@@ -239,6 +239,7 @@ namespace Pale {
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
     constexpr uint32_t kMaxLocalSurfelHits = 32;
     constexpr float LocalLayerDepthEpsilon = 2.5e-2f;
+    constexpr float LocalLayerNormalCosineThreshold = 0.8f; // Bit more than 45 degrees mismatch to stop blending slabs
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -687,7 +688,7 @@ namespace Pale {
         uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
         uint32_t numGatherPasses = 1;
-        CameraGatherKernelKind cameraGatherKernelKind = CameraGatherKernelKind::CameraGatherKernel;
+        CameraGatherKernelKind cameraGatherKernelKind = CameraGatherKernelKind::CameraGatherKernel2;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
         uint32_t surfelIndexForDebugImages = 1;
@@ -709,8 +710,9 @@ namespace Pale {
 
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
-        uint32_t rendererDebugMaxSplatEventsPerRay = 8;
-        uint32_t rendererDebugMaxLocalSurfelHits = 6;
+        float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
+        uint32_t rendererDebugMaxSplatEventsPerRay = 10;
+        uint32_t rendererDebugMaxLocalSurfelHits = 10;
     };
 
     inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {
@@ -732,6 +734,16 @@ namespace Pale {
         return settings.rendererDebugLocalLayerDepthEpsilon > RayEpsilon
                    ? settings.rendererDebugLocalLayerDepthEpsilon
                    : RayEpsilon;
+    }
+
+    inline float rendererDebugLocalLayerNormalCosineThreshold(const PathTracerSettings& settings) {
+        if (settings.rendererDebugLocalLayerNormalCosineThreshold < -1.0f) {
+            return -1.0f;
+        }
+        if (settings.rendererDebugLocalLayerNormalCosineThreshold > 1.0f) {
+            return 1.0f;
+        }
+        return settings.rendererDebugLocalLayerNormalCosineThreshold;
     }
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
