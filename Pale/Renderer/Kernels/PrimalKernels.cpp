@@ -364,8 +364,7 @@ namespace Pale {
                         //return;
                     }
 
-                    const float localLayerDepthEpsilon =
-                            rendererDebugLocalLayerDepthEpsilon(settings);
+                    const float localLayerDepthEpsilon = LocalLayerDepthEpsilon;
                     const uint32_t maxSplatEventsPerRay =
                             rendererDebugMaxSplatEventsPerRay(settings);
                     const uint32_t maxLocalSurfelHits =
