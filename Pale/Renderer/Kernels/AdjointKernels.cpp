@@ -391,15 +391,15 @@ namespace Pale {
                 light.primitiveIndex == kInvalidIndex) {
                 continue;
             }
-            const Point &lightCarrier =                    scene.points[light.primitiveIndex];
-            const float3 lightPositionW =                    lightCarrier.position;
+            const Point &lightCarrier = scene.points[light.primitiveIndex];
+            const float3 lightPositionW = lightCarrier.position;
 
             // -------------------------------------------------------------
             // An XY event is only needed if at least one constituent of the
             // target slab has an opacity-bearing surfel on its shadow segment.
             // -------------------------------------------------------------
             bool hasLightOccluder = false;
-            for (uint32_t i = 0u;                 i < slabEvent.surfelSlabCount;                 ++i) {
+            for (uint32_t i = 0u; i < slabEvent.surfelSlabCount; ++i) {
                 if (slabEvent.layerWeights[i] <= 0.0f) {
                     continue;
                 }
@@ -1475,9 +1475,8 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline bool isPrimitiveInMeasurementSlab(
-    const MeasurementGradientEventXY &eventRecord,
-    uint32_t primitiveIndex) {
-
+        const MeasurementGradientEventXY &eventRecord,
+        uint32_t primitiveIndex) {
         for (uint32_t i = 0u; i < eventRecord.surfelSlabCount; ++i) {
             if (eventRecord.xSurface[i].primitiveIndex == primitiveIndex) {
                 return true;
@@ -1572,44 +1571,81 @@ namespace Pale {
                         // Match the forward shadow estimator: individual FirstHit
                         // transmission factors.
                         // -------------------------------------------------------------
+                        static constexpr uint32_t kMaxShadowOccluderRecords =
+                                kMaxSplatEventsPerRay * kMaxLocalSurfelHits;
+
                         for (uint32_t traversalIndex = 0u; traversalIndex < maxSplatEventsPerRay; ++traversalIndex) {
                             WorldHit shadowHit{};
                             intersectScene(ray, &shadowHit, scene, SurfelIntersectMode::FirstHit);
+
                             if (!shadowHit.hit) {
                                 break;
                             }
+
                             const float3 hitVector = shadowHit.hitPositionW - xState.position;
                             const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
+
                             if (hitDistance >= targetDistance - RayEpsilon) {
                                 break;
                             }
+
                             buildIntersectionNormal(scene, shadowHit);
+
                             const InstanceRecord &instance = scene.instances[shadowHit.instanceIndex];
                             if (instance.geometryType != GeometryType::PointCloud) {
                                 break;
                             }
 
-                            const uint32_t occluderPrimitiveIndex = shadowHit.primitiveIndex;
-                            if (isPrimitiveInMeasurementSlab(eventRecord, occluderPrimitiveIndex) ||
-                                occluderPrimitiveIndex == eventRecord.pointLightPrimitiveIndex) {
-                                ray.origin = shadowHit.hitPositionW + ray.direction * RayEpsilon;
-                                continue;
+                            const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
+                            const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
+                            const float localLayerNormalCosineThreshold =
+                                    rendererDebugLocalLayerNormalCosineThreshold(settings);
+                            // FirstHit gives us the anchor of the occluding slab. Gather all nearby constituent surfels so coincident surfels are not missed.
+                            const PointCloudLocalLayer occludingLayer = collectPointCloudLocalLayer(
+                                ray, shadowHit, instance, scene, localLayerDepthEpsilon, maxLocalSurfelHits,
+                                localLayerNormalCosineThreshold);
+
+                            float prefixWithinLayer = 1.0f;
+
+                            for (uint32_t hitIndex = 0u; hitIndex < occludingLayer.hitCount; ++hitIndex) {
+                                const LocalSurfelLayerHit &localHit = occludingLayer.hits[hitIndex];
+                                const uint32_t occluderPrimitiveIndex = localHit.primitiveIndex;
+
+                                if (occluderPrimitiveIndex == kInvalidIndex || occluderPrimitiveIndex >= pointCount) {
+                                    continue;
+                                }
+
+                                // The target slab belongs to the current interaction and must not contribute to its own outgoing shadow transmission.
+                                if (isPrimitiveInMeasurementSlab(eventRecord, occluderPrimitiveIndex) ||
+                                    occluderPrimitiveIndex == eventRecord.pointLightPrimitiveIndex) {
+                                    continue;
+                                }
+
+                                const Point &occluderSurfel = scene.points[occluderPrimitiveIndex];
+                                const float alphaGeom = localHit.alphaGeom;
+                                const float alphaEffective =
+                                        sycl::clamp(occluderSurfel.opacity * alphaGeom, 0.0f, 1.0f);
+                                const float oneMinusAlpha = sycl::fmax(0.0f, 1.0f - alphaEffective);
+
+                                if (storedOccluderCount < kMaxShadowOccluderRecords) {
+                                    OccluderDerivative &record = occluderDerivatives[storedOccluderCount];
+                                    record = OccluderDerivative{};
+                                    record.primitiveIndex = occluderPrimitiveIndex;
+                                    record.gradEta = alphaGeom;
+                                    record.prefixTransmittance = segmentTransmittance * prefixWithinLayer;
+                                    record.oneMinusAlpha = oneMinusAlpha;
+                                    ++storedOccluderCount;
+                                }
+
+                                prefixWithinLayer *= oneMinusAlpha;
                             }
-                            const Point &occluderSurfel = scene.points[occluderPrimitiveIndex];
-                            const float alphaGeom = shadowHit.alphaGeom;
-                            const float alphaEffective = sycl::clamp(occluderSurfel.opacity * alphaGeom, 0.0f, 1.0f);
-                            const float oneMinusAlpha = sycl::fmax(0.0f, 1.0f - alphaEffective);
-                            if (storedOccluderCount < kMaxSplatEventsPerRay) {
-                                OccluderDerivative &record = occluderDerivatives[storedOccluderCount];
-                                record = OccluderDerivative{};
-                                record.primitiveIndex = occluderPrimitiveIndex;
-                                record.gradEta = alphaGeom;
-                                record.prefixTransmittance = segmentTransmittance;
-                                record.oneMinusAlpha = oneMinusAlpha;
-                                ++storedOccluderCount;
-                            }
-                            segmentTransmittance *= oneMinusAlpha;
-                            ray.origin = shadowHit.hitPositionW + ray.direction * RayEpsilon;
+
+                            // Use the product of the constituents actually accepted above rather than occludingLayer.transmission,
+                            // since target-slab members and the light carrier may have been excluded.
+                            segmentTransmittance *= prefixWithinLayer;
+
+                            // Advance past the complete occluding slab, including coincident surfels.
+                            ray.origin += ray.direction * (occludingLayer.furthestT + RayEpsilon);
                         }
                         // -------------------------------------------------------------
                         // d tau_il / d eta_k for this constituent edge.
