@@ -678,17 +678,17 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline PointCloudSurfaceRecord makePointCloudSurfaceRecord(
-        const WorldHit &worldHit,
+        const LocalSurfelLayerHit &localHit,
         const RayState &rayState,
         const GPUSceneBuffers &scene) {
         PointCloudSurfaceRecord surfaceRecord{};
-        surfaceRecord.primitiveIndex = worldHit.primitiveIndex;
-        surfaceRecord.alphaGeom = worldHit.alphaGeom;
+        surfaceRecord.primitiveIndex = localHit.primitiveIndex;
+        surfaceRecord.alphaGeom = localHit.alphaGeom;
         surfaceRecord.pathId = rayState.pathId;
         surfaceRecord.incomingDirection = rayState.ray.direction;
 
-        const Point &surfel = scene.points[worldHit.primitiveIndex];
-        surfaceRecord.uv = phiInverse(worldHit.hitPositionW, surfel);
+        const Point &surfel = scene.points[localHit.primitiveIndex];
+        surfaceRecord.uv = phiInverse(localHit.hitPositionW, surfel);
 
         const float3 tangentUWorld = surfel.scale.x() * surfel.tanU;
         const float3 tangentVWorld = surfel.scale.y() * surfel.tanV;
@@ -1220,10 +1220,10 @@ namespace Pale {
         GradientRecordRanges ranges{};
 
         static constexpr uint32_t measurementRecordsPerEvent =
-                1u + kMaxSplatEventsPerRay;
+                1u + kMaxSplatEventsPerRay + kMaxLocalSurfelHits;
 
         static constexpr uint32_t measurementTwoPointRecordsPerEvent =
-                1u + kMaxSplatEventsPerRay;
+                1u + kMaxSplatEventsPerRay * kMaxLocalSurfelHits;
 
         static constexpr uint32_t materialVertexRecordsPerEvent =
                 1u;
@@ -1242,6 +1242,7 @@ namespace Pale {
 
         ranges.measurementTwoPointOffset =
                 ranges.measurementOffset + ranges.measurementCount;
+
         ranges.measurementTwoPointCount =
                 measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
 

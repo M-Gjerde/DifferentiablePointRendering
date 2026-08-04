@@ -412,7 +412,7 @@ namespace Pale {
         pkg.queue.fill(pkg.gradients.gradBeta, 0.0f, pkg.gradients.numPoints);
         pkg.queue.wait();
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-            launchDepthDistortionBackwardKernel(pkg, cameraIndex);
+            //launchDepthDistortionBackwardKernel(pkg, cameraIndex);
         }
     }
 
@@ -428,8 +428,8 @@ namespace Pale {
             auto& sensor = pkg.sensors[cameraIndex];
             const uint32_t pixelCount = sensor.width * sensor.height;
             pkg.queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount).wait();
-            launchNormalFromDepthAdjointKernel(pkg, cameraIndex);
-            launchNormalConsistencyBackwardKernel(pkg, cameraIndex);
+            //launchNormalFromDepthAdjointKernel(pkg, cameraIndex);
+            //launchNormalConsistencyBackwardKernel(pkg, cameraIndex);
         }
         pkg.queue.wait();
     }

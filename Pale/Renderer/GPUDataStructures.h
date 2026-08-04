@@ -232,12 +232,13 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 32;
+    constexpr uint32_t kMaxSplatEventsPerRay = 10;
+    constexpr uint32_t kMaxLocalSurfelHits = 10;
+
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-    constexpr uint32_t kMaxLocalSurfelHits = 32;
     constexpr float LocalLayerDepthEpsilon = 2.5e-2f;
     constexpr float LocalLayerNormalCosineThreshold = 0.8f; // Bit more than 45 degrees mismatch to stop blending slabs
 
@@ -477,7 +478,10 @@ namespace Pale {
     };
 
     struct MeasurementGradientEvent {
-        PointCloudSurfaceRecord xSurface;
+        PointCloudSurfaceRecord xSurface[kMaxLocalSurfelHits];
+        float layerWeights[kMaxLocalSurfelHits];
+        float directLightEps[kMaxLocalSurfelHits];
+        uint32_t surfelSlabCount = 0;
         float transmission{};
         float3 xPathThroughput;
         bool useImplicitRayHitJacobian = false;
@@ -500,21 +504,17 @@ namespace Pale {
     };
 
     struct MeasurementGradientEventXY {
-        PointCloudSurfaceRecord xSurface;
-        PointCloudSurfaceRecord ySurface;
-        float3 xPathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        float transmission = 1.0f;
-        float transmissionPreviousSegment = FLT_MAX;
-        float geometryPreviousSegment = FLT_MAX;
-        float cosinePreviousSegment = FLT_MAX;
-        bool useImplicitRayHitJacobian = false;
-        bool isDirectLightSample = false;
-        float3 directLightRadiance{FLT_MAX, FLT_MAX, FLT_MAX};
+        PointCloudSurfaceRecord xSurface[kMaxLocalSurfelHits];
+        float layerWeights[kMaxLocalSurfelHits];
+        float directLightEps[kMaxLocalSurfelHits];
 
-        // Used only when isDirectLightSample == true.
-        float3 pointLightPositionW{FLT_MAX, FLT_MAX, FLT_MAX};
-        float3 pointLightRadiantIntensity{FLT_MAX, FLT_MAX, FLT_MAX};
+        uint32_t surfelSlabCount = 0u;
 
+        float3 xPathThroughput{0.0f};
+        float3 pointLightPositionW{0.0f};
+        float3 pointLightRadiantIntensity{0.0f};
+
+        uint32_t pointLightPrimitiveIndex = kInvalidIndex;
     };
 
     struct MaterialVertexGradientEvent {

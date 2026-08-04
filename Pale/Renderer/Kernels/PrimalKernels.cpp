@@ -364,7 +364,7 @@ namespace Pale {
                         //return;
                     }
 
-                    const float localLayerDepthEpsilon = LocalLayerDepthEpsilon;
+                    const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
                     const uint32_t maxSplatEventsPerRay =
                             rendererDebugMaxSplatEventsPerRay(settings);
                     const uint32_t maxLocalSurfelHits =
@@ -384,130 +384,18 @@ namespace Pale {
                         // Visible point-cloud layer
                         // -------------------------------------------------------------
                         if (instance.geometryType == GeometryType::PointCloud) {
-                            const Transform &transform = scene.transforms[instance.transformIndex];
-                            // This should scale with surfel size, not be a global value such as 0.1.
-                            const float localTMin = worldHit.t;
-                            const float localTMax = worldHit.t + localLayerDepthEpsilon;
-                            const Point &referenceSurfel = scene.points[worldHit.primitiveIndex];
-                            float3 referenceNormalW = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
-                            if (dot(referenceNormalW, -primaryRay.direction) < 0.0f) {
-                                referenceNormalW = -referenceNormalW;
-                            }
+                            const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(
+                                primaryRay,
+                                worldHit,
+                                instance,
+                                scene,
+                                localLayerDepthEpsilon,
+                                maxLocalSurfelHits,
+                                localLayerNormalCosineThreshold);
 
-                            LocalSurfelLayerHit localHits[kMaxLocalSurfelHits];
-                            const Ray rayObject = toObjectSpace(primaryRay, transform);
-                            uint32_t localHitCount = collectBLASPointCloudLocalLayer(
-                                primaryRay, rayObject, instance.blasRangeIndex, transform, localTMin, localTMax,
-                                localHits, maxLocalSurfelHits, scene);
-
-                            // Numerical fallback: preserve the already found FirstHit.
-                            if (localHitCount == 0u) {
-                                localHits[0].tWorld = worldHit.t;
-                                localHits[0].primitiveIndex = worldHit.primitiveIndex;
-                                localHits[0].alphaGeom = worldHit.alphaGeom;
-                                localHits[0].hitPositionW = worldHit.hitPositionW;
-                                localHitCount = 1u;
-                            }
-
-                            float furthestLayerT = worldHit.t;
-                            float localAlphaEff[kMaxLocalSurfelHits];
-                            float localLayerWeight[kMaxLocalSurfelHits];
-                            float localLayerTransmission = 1.0f;
-
-                            for (uint32_t localHitIndex = 0u; localHitIndex < localHitCount; ++localHitIndex) {
-                                const LocalSurfelLayerHit &localHit = localHits[localHitIndex];
-                                const Point &surfel = scene.points[localHit.primitiveIndex];
-
-                                localAlphaEff[localHitIndex] = 0.0f;
-                                localLayerWeight[localHitIndex] = 0.0f;
-
-                                float3 localNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-                                if (dot(localNormalW, -primaryRay.direction) < 0.0f) {
-                                    localNormalW = -localNormalW;
-                                }
-
-                                const float normalAgreement = dot(referenceNormalW, localNormalW);
-                                if (normalAgreement < localLayerNormalCosineThreshold) {
-                                    continue;
-                                }
-
-                                furthestLayerT = sycl::fmax(furthestLayerT, localHit.tWorld);
-
-                                const float alphaEff =
-                                        sycl::clamp(surfel.opacity * localHit.alphaGeom, 0.0f, 1.0f);
-                                localAlphaEff[localHitIndex] = alphaEff;
-                                localLayerTransmission *= sycl::fmax(0.0f, 1.0f - alphaEff);
-                            }
-
-                            const float localLayerOpacity = 1.0f - localLayerTransmission;
-
-                            // Average over all unresolved depth orders in the local layer. Equal opaque
-                            // surfels therefore split the layer contribution evenly while the final
-                            // transmission remains the product of their transparencies.
-                            float localLayerWeightSum = 0.0f;
-                            if (localLayerOpacity > 0.0f) {
-                                for (uint32_t localHitIndex = 0u; localHitIndex < localHitCount; ++localHitIndex) {
-                                    const float alphaEff = localAlphaEff[localHitIndex];
-                                    if (alphaEff <= 0.0f) {
-                                        continue;
-                                    }
-                                    float transmittancePolynomial[kMaxLocalSurfelHits];
-                                    for (uint32_t coefficientIndex = 0u;
-                                         coefficientIndex < maxLocalSurfelHits;
-                                         ++coefficientIndex) {
-                                        transmittancePolynomial[coefficientIndex] = 0.0f;
-                                    }
-                                    transmittancePolynomial[0] = 1.0f;
-                                    uint32_t polynomialDegree = 0u;
-                                    for (uint32_t otherHitIndex = 0u;
-                                         otherHitIndex < localHitCount;
-                                         ++otherHitIndex) {
-                                        if (otherHitIndex == localHitIndex) {
-                                            continue;
-                                        }
-                                        const float otherAlphaEff = localAlphaEff[otherHitIndex];
-                                        if (otherAlphaEff <= 0.0f) {
-                                            continue;
-                                        }
-
-                                        for (int32_t coefficientIndex = static_cast<int32_t>(polynomialDegree);
-                                             coefficientIndex >= 0;
-                                             --coefficientIndex) {
-                                            transmittancePolynomial[coefficientIndex + 1] -=
-                                                    otherAlphaEff * transmittancePolynomial[coefficientIndex];
-                                        }
-                                        ++polynomialDegree;
-                                    }
-
-                                    float expectedPreviousTransmittance = 0.0f;
-                                    for (uint32_t coefficientIndex = 0u;
-                                         coefficientIndex <= polynomialDegree;
-                                         ++coefficientIndex) {
-                                        expectedPreviousTransmittance +=
-                                                transmittancePolynomial[coefficientIndex] /
-                                                static_cast<float>(coefficientIndex + 1u);
-                                    }
-
-                                    const float layerWeight = alphaEff * sycl::clamp(
-                                                                  expectedPreviousTransmittance,
-                                                                  0.0f,
-                                                                  1.0f);
-                                    localLayerWeight[localHitIndex] = layerWeight;
-                                    localLayerWeightSum += layerWeight;
-                                }
-                            }
-
-                            if (localLayerWeightSum > 1.0e-8f) {
-                                const float weightNormalization = localLayerOpacity / localLayerWeightSum;
-                                for (uint32_t localHitIndex = 0u; localHitIndex < localHitCount; ++localHitIndex) {
-                                    localLayerWeight[localHitIndex] *= weightNormalization;
-                                }
-                            }
-
-                            const float3 directLightingPositionW = localHits[0].hitPositionW;
-                            for (uint32_t localHitIndex = 0u; localHitIndex < localHitCount; ++localHitIndex) {
-                                const float layerWeight = localLayerWeight[localHitIndex];
-                                const LocalSurfelLayerHit &localHit = localHits[localHitIndex];
+                            for (uint32_t localHitIndex = 0u; localHitIndex < localLayer.hitCount; ++localHitIndex) {
+                                const float layerWeight = localLayer.weight[localHitIndex];
+                                const LocalSurfelLayerHit &localHit = localLayer.hits[localHitIndex];
                                 const Point &surfel = scene.points[localHit.primitiveIndex];
                                 if (layerWeight <= 0.0f) {
                                     continue;
@@ -537,11 +425,7 @@ namespace Pale {
                                         settings,
                                         rng);
                                 */
-                                const float3 distanceFromLayerAnchorW =
-                                        localHit.hitPositionW - worldHit.hitPositionW;
-                                const float directLightingEpsilon = sycl::fmax(
-                                    RayEpsilon,
-                                    sycl::sqrt(dot(distanceFromLayerAnchorW, distanceFromLayerAnchorW)));
+
 
                                 const float3 directRadiance = estimateDirectPointSampledPointLights(
                                     scene,
@@ -549,7 +433,7 @@ namespace Pale {
                                     localHit.hitPositionW,
                                     normalW,
                                     surfel.alpha_r * surfel.albedo,
-                                    directLightingEpsilon);
+                                    localLayer.directLightEpsilon[localHitIndex]);
 
                                 const float3 outgoingRadiance = emittedRadiance + indirectRadiance + directRadiance;
                                 accumulatedRadianceRGB += compositeWeight * outgoingRadiance;
@@ -575,11 +459,11 @@ namespace Pale {
                                 prefixWeightDepth += compositeWeight * normalizedDepth;
                                 prefixWeightDepthSquared += compositeWeight * normalizedDepth * normalizedDepth;
                             }
-                            transmittance *= localLayerTransmission;
+                            transmittance *= localLayer.transmission;
 
                             // Advance once past the whole local layer.
                             primaryRay.origin = primaryRay.origin + primaryRay.direction * (
-                                                    furthestLayerT + RayEpsilon);
+                                                    localLayer.furthestT + RayEpsilon);
                             continue;
                         }
                         // -------------------------------------------------------------
