@@ -45,7 +45,7 @@ namespace Pale {
             return;
         }
 
-        if (            selectedPrimitiveIndex == UINT32_MAX ||
+        if (selectedPrimitiveIndex == UINT32_MAX ||
             gradientRecord.primitiveIndex == UINT32_MAX) {
             return;
         }
@@ -116,6 +116,277 @@ namespace Pale {
         return numerator / denom;
     }
 
+    SYCL_EXTERNAL inline float integrateSlabPolynomial(
+        const float *alpha, uint32_t count, uint32_t excludeA, uint32_t excludeB, uint32_t leadingZetaPower) {
+        float coefficients[kMaxLocalSurfelHits];
+        for (uint32_t i = 0u; i < kMaxLocalSurfelHits; ++i) {
+            coefficients[i] = 0.0f;
+        }
+        coefficients[0] = 1.0f;
+        uint32_t degree = 0u;
+        for (uint32_t j = 0u; j < count; ++j) {
+            if (j == excludeA || j == excludeB) {
+                continue;
+            }
+            const float alphaJ = alpha[j];
+            for (int32_t d = static_cast<int32_t>(degree); d >= 0; --d) {
+                coefficients[d + 1] -= alphaJ * coefficients[d];
+            }
+            ++degree;
+        }
+        float integral = 0.0f;
+        for (uint32_t d = 0u; d <= degree; ++d) {
+            integral += coefficients[d] / static_cast<float>(d + leadingZetaPower + 1u);
+        }
+        return integral;
+    }
+
+    SYCL_EXTERNAL inline float computeRawSlabWeight(const float *alpha, uint32_t count, uint32_t surfelIndex) {
+        const float Ii = integrateSlabPolynomial(alpha, count, surfelIndex, kInvalidIndex, 0u);
+        return alpha[surfelIndex] * Ii;
+    }
+
+    SYCL_EXTERNAL inline float computeRawSlabWeightDerivativeWrtAlpha(const float *alpha, uint32_t count,
+                                                                      uint32_t contributionIndex,
+                                                                      uint32_t parameterIndex) {
+        // d w_k / d alpha_k = I_k
+        if (contributionIndex == parameterIndex) {
+            return integrateSlabPolynomial(alpha, count, contributionIndex, kInvalidIndex, 0u);
+        }
+        // d w_i / d alpha_k = -alpha_i J_ik
+        const float Jik = integrateSlabPolynomial(alpha, count, contributionIndex, parameterIndex, 1u);
+        return -alpha[contributionIndex] * Jik;
+    }
+
+    SYCL_EXTERNAL inline float computeNormalizedSlabWeightDerivativeWrtAlpha(
+        const float *alpha, uint32_t count, uint32_t contributionIndex, uint32_t parameterIndex) {
+        float rawWeights[kMaxLocalSurfelHits];
+        float rawWeightSum = 0.0f;
+        float layerTransmission = 1.0f;
+        for (uint32_t i = 0u; i < count; ++i) {
+            rawWeights[i] = computeRawSlabWeight(alpha, count, i);
+            rawWeightSum += rawWeights[i];
+            layerTransmission *= sycl::fmax(0.0f, 1.0f - alpha[i]);
+        }
+
+        if (rawWeightSum <= 1.0e-8f) {
+            return 0.0f;
+        }
+        const float layerOpacity = 1.0f - layerTransmission;
+        float dRawWeightSumDAlphaK = 0.0f;
+        for (uint32_t i = 0u; i < count; ++i) {
+            dRawWeightSumDAlphaK += computeRawSlabWeightDerivativeWrtAlpha(alpha, count, i, parameterIndex);
+        }
+        // d alpha_Q / d alpha_k
+        //
+        // alpha_Q = 1 - prod_j (1-alpha_j)
+        //
+        float dLayerOpacityDAlphaK = 1.0f;
+        for (uint32_t j = 0u; j < count; ++j) {
+            if (j == parameterIndex) {
+                continue;
+            }
+            dLayerOpacityDAlphaK *= sycl::fmax(0.0f, 1.0f - alpha[j]);
+        }
+        const float dRawWiDAlphaK = computeRawSlabWeightDerivativeWrtAlpha(
+            alpha, count, contributionIndex, parameterIndex);
+        const float normalization = layerOpacity / rawWeightSum;
+        const float dNormalizationDAlphaK = (dLayerOpacityDAlphaK * rawWeightSum - layerOpacity * dRawWeightSumDAlphaK)
+                                            / (rawWeightSum * rawWeightSum);
+        return normalization * dRawWiDAlphaK + rawWeights[contributionIndex] * dNormalizationDAlphaK;
+    }
+
+
+    struct PointLightGeometry {
+        float geometricTerm = 0.0f;
+        float3 gradientWrtSurfacePosition{0.0f, 0.0f, 0.0f};
+        float3 gradientWrtSurfaceNormal{0.0f, 0.0f, 0.0f};
+    };
+
+    SYCL_EXTERNAL inline bool computePointLightGeometry(
+        const float3 &surfacePositionW,
+        const float3 &surfaceNormalW,
+        const float3 &lightPositionW,
+        PointLightGeometry &result) {
+        const float3 vectorToLight = lightPositionW - surfacePositionW;
+        const float distanceSquared = dot(vectorToLight, vectorToLight);
+        if (distanceSquared <= 1.0e-12f) {
+            return false;
+        }
+        const float inverseDistance = 1.0f / sycl::sqrt(distanceSquared);
+        const float3 lightDirection = vectorToLight * inverseDistance;
+        const float cosineAtSurface = dot(surfaceNormalW, lightDirection);
+        // Same piecewise convention as max(0, n dot omega).
+        if (cosineAtSurface <= 0.0f) {
+            return false;
+        }
+        result.geometricTerm = cosineAtSurface / distanceSquared;
+        // d/dX [ (n dot omega) / ||L - X||^2 ]
+        result.gradientWrtSurfacePosition =
+                (-surfaceNormalW + 3.0f * cosineAtSurface * lightDirection) *
+                (inverseDistance / distanceSquared);
+        // d/dn [ (n dot omega) / ||L - X||^2 ]
+        result.gradientWrtSurfaceNormal =
+                lightDirection / distanceSquared;
+
+        return true;
+    }
+
+    SYCL_EXTERNAL inline bool isPrimitiveInMeasurementSlab(
+        const MeasurementGradientEventXY &eventRecord,
+        uint32_t primitiveIndex) {
+        for (uint32_t i = 0u; i < eventRecord.surfelSlabCount; ++i) {
+            if (eventRecord.xSurface[i].primitiveIndex == primitiveIndex) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    SYCL_EXTERNAL inline float3 computeAlphaEffectiveGradientWrtTranslation(
+        const Point &surfel, const PointCloudSurfaceRecord &surface, const ReconstructedSurfelState &state) {
+        const float u = surface.uv.x();
+        const float v = surface.uv.y();
+        const float r2 = u * u + v * v;
+        const float oneMinusR2 = 1.0f - r2;
+
+        if (oneMinusR2 <= 1.0e-8f || surfel.scale.x() <= 1.0e-12f || surfel.scale.y() <= 1.0e-12f) {
+            return float3{0.0f};
+        }
+
+        const float3 rayDirection = surface.incomingDirection;
+        const float3 normal = state.orientedNormal;
+
+        if (sycl::fabs(dot(rayDirection, normal)) <= 1.0e-8f) {
+            return float3{0.0f};
+        }
+
+        const float betaScale = 4.0f * sycl::exp(surfel.beta);
+        const float dAlphaGeomDu = -2.0f * betaScale * u * surface.alphaGeom / oneMinusR2;
+        const float dAlphaGeomDv = -2.0f * betaScale * v * surface.alphaGeom / oneMinusR2;
+
+        const float3x3 hitJacobian = planeHitPointIntersectionJacobian(rayDirection, normal);
+
+        // u = t_u . (x - p) / s_u, so du/dp = (dx/dp - I)^T t_u / s_u.
+        const float3 duDPosition = transpose(hitJacobian) * (surfel.tanU / surfel.scale.x()) - surfel.tanU / surfel.
+                                   scale.x();
+        const float3 dvDPosition = transpose(hitJacobian) * (surfel.tanV / surfel.scale.y()) - surfel.tanV / surfel.
+                                   scale.y();
+
+        return surfel.opacity * (dAlphaGeomDu * duDPosition + dAlphaGeomDv * dvDPosition);
+    }
+
+    SYCL_EXTERNAL inline float2 computeAlphaEffectiveGradientWrtScale(const Point &surfel,
+                                                                      const PointCloudSurfaceRecord &surface) {
+        const float u = surface.uv.x();
+        const float v = surface.uv.y();
+        const float oneMinusR2 = 1.0f - u * u - v * v;
+        const float scaleU = surfel.scale.x();
+        const float scaleV = surfel.scale.y();
+
+        if (oneMinusR2 <= 1.0e-8f || scaleU <= 1.0e-12f || scaleV <= 1.0e-12f) {
+            return float2{0.0f, 0.0f};
+        }
+
+        const float betaScale = 4.0f * sycl::exp(surfel.beta);
+        const float alphaEffective = surfel.opacity * surface.alphaGeom;
+
+        const float dAlphaDScaleU = 2.0f * betaScale * u * u * alphaEffective / (scaleU * oneMinusR2);
+        const float dAlphaDScaleV = 2.0f * betaScale * v * v * alphaEffective / (scaleV * oneMinusR2);
+
+        return float2{dAlphaDScaleU, dAlphaDScaleV};
+    }
+
+    SYCL_EXTERNAL inline float3x3 planeHitPointRotationJacobian(
+        const float3 &rayOrigin, const float3 &rayDirection, const float3 &planePosition, const float3 &planeNormal) {
+        const float nDotD = dot(planeNormal, rayDirection);
+        if (sycl::fabs(nDotD) <= 1.0e-8f) {
+            return float3x3{};
+        }
+
+        const float3 a = planePosition - rayOrigin;
+        const float nDotA = dot(planeNormal, a);
+        const float invNDotDSquared = 1.0f / (nDotD * nDotD);
+
+        const float3 dtDRotation =
+                (cross(planeNormal, a) * nDotD - nDotA * cross(planeNormal, rayDirection)) * invNDotDSquared;
+
+        return outerProduct(rayDirection, dtDRotation);
+    }
+
+    SYCL_EXTERNAL inline float3 computeAlphaEffectiveGradientWrtWorldRotation(
+        const Point &surfel, const PointCloudSurfaceRecord &surface, const ReconstructedSurfelState &state,
+        const float3 &rayOrigin) {
+        const float u = surface.uv.x();
+        const float v = surface.uv.y();
+        const float oneMinusR2 = 1.0f - u * u - v * v;
+        const float scaleU = surfel.scale.x();
+        const float scaleV = surfel.scale.y();
+
+        if (oneMinusR2 <= 1.0e-8f || scaleU <= 1.0e-12f || scaleV <= 1.0e-12f) {
+            return float3{0.0f};
+        }
+
+        const float3 rayDirection = surface.incomingDirection;
+        const float3 normal = state.orientedNormal;
+        const float nDotD = dot(normal, rayDirection);
+
+        if (sycl::fabs(nDotD) <= 1.0e-8f) {
+            return float3{0.0f};
+        }
+
+        const float betaScale = 4.0f * sycl::exp(surfel.beta);
+        const float dAlphaGeomDu = -2.0f * betaScale * u * surface.alphaGeom / oneMinusR2;
+        const float dAlphaGeomDv = -2.0f * betaScale * v * surface.alphaGeom / oneMinusR2;
+
+        const float3 xMinusP = state.position - surfel.position;
+        const float3 a = surfel.position - rayOrigin;
+        const float nDotA = dot(normal, a);
+        const float invNDotD = 1.0f / nDotD;
+        const float invNDotDSquared = invNDotD * invNDotD;
+
+        const float3 q = (cross(normal, a) * nDotD - nDotA * cross(normal, rayDirection)) * invNDotDSquared;
+
+        const float3 duDRotation = q * (dot(rayDirection, surfel.tanU) / scaleU) + cross(surfel.tanU, xMinusP) / scaleU;
+        const float3 dvDRotation = q * (dot(rayDirection, surfel.tanV) / scaleV) + cross(surfel.tanV, xMinusP) / scaleV;
+
+        return surfel.opacity * (dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
+    }
+    
+
+    SYCL_EXTERNAL inline float3 computeAlphaEffectiveGradientWrtSegmentStart(
+        const Point &surfel, const LocalSurfelLayerHit &hit, const float3 &segmentStart, const float3 &segmentEnd) {
+        float3 normal = normalize(cross(surfel.tanU, surfel.tanV));
+        const float3 segment = segmentEnd - segmentStart;
+        if (dot(normal, -segment) < 0.0f) normal = -normal;
+
+        const float nDotSegment = dot(normal, segment);
+        const float scaleU = surfel.scale.x();
+        const float scaleV = surfel.scale.y();
+        if (sycl::fabs(nDotSegment) <= 1.0e-8f || scaleU <= 1.0e-12f || scaleV <= 1.0e-12f) return float3{0.0f};
+
+        const float2 uv = phiInverse(hit.hitPositionW, surfel);
+        const float u = uv.x();
+        const float v = uv.y();
+        const float oneMinusR2 = 1.0f - u * u - v * v;
+        if (oneMinusR2 <= 1.0e-8f) return float3{0.0f};
+
+        const float lambda = dot(normal, surfel.position - segmentStart) / nDotSegment;
+        const float oneMinusLambda = 1.0f - lambda;
+
+        const float3 duDStart = oneMinusLambda * (surfel.tanU - normal * dot(segment, surfel.tanU) / nDotSegment) /
+                                scaleU;
+        const float3 dvDStart = oneMinusLambda * (surfel.tanV - normal * dot(segment, surfel.tanV) / nDotSegment) /
+                                scaleV;
+
+        const float betaScale = 4.0f * sycl::exp(surfel.beta);
+        const float dAlphaGeomDu = -2.0f * betaScale * u * hit.alphaGeom / oneMinusR2;
+        const float dAlphaGeomDv = -2.0f * betaScale * v * hit.alphaGeom / oneMinusR2;
+
+        return surfel.opacity * (dAlphaGeomDu * duDStart + dAlphaGeomDv * dvDStart);
+    }
+
     inline float3 computeGeometricTermGradientWrtStartpoint(
         const float3 &xPosition,
         const float3 &yPosition,
@@ -162,9 +433,9 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline float3 computeLocalRotationGradientFromWorldRotationGradient(
-    const float3 &tangentU,
-    const float3 &tangentV,
-    const float3 &worldRotationGradient) {
+        const float3 &tangentU,
+        const float3 &tangentV,
+        const float3 &worldRotationGradient) {
         const float3 tangentW = normalize(cross(tangentU, tangentV));
 
         return float3{
@@ -365,27 +636,27 @@ namespace Pale {
                 const float invNDotDSquared = invNDotD * invNDotD;
 
                 const float3 qOcc =
-                    (cross(occluderNormal, aOcc) * nDotD -
-                     nDotA * cross(occluderNormal, rayDirection)) *
-                    invNDotDSquared;
+                        (cross(occluderNormal, aOcc) * nDotD -
+                         nDotA * cross(occluderNormal, rayDirection)) *
+                        invNDotDSquared;
 
                 const float3 duDRotation =
-                    qOcc * (dot(rayDirection, tangentU) / occluderScaleU) +
-                    cross(tangentU, hitMinusSp) / occluderScaleU;
+                        qOcc * (dot(rayDirection, tangentU) / occluderScaleU) +
+                        cross(tangentU, hitMinusSp) / occluderScaleU;
 
                 const float3 dvDRotation =
-                    qOcc * (dot(rayDirection, tangentV) / occluderScaleV) +
-                    cross(tangentV, hitMinusSp) / occluderScaleV;
+                        qOcc * (dot(rayDirection, tangentV) / occluderScaleV) +
+                        cross(tangentV, hitMinusSp) / occluderScaleV;
 
                 const float3 worldRotationGradient =
-                    occluderSurfel.opacity *
-                    (dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
+                        occluderSurfel.opacity *
+                        (dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
 
                 localRotationGradientOcc =
-                    computeLocalRotationGradientFromWorldRotationGradient(
-                        occluderSurfel.tanU,
-                        occluderSurfel.tanV,
-                        worldRotationGradient);
+                        computeLocalRotationGradientFromWorldRotationGradient(
+                            occluderSurfel.tanU,
+                            occluderSurfel.tanV,
+                            worldRotationGradient);
             }
 
             if (result.storedOccluderCount < kMaxSplatEventsPerRay) {

@@ -3,6 +3,7 @@ import torch
 from typing import Optional, Any
 import math
 
+
 def normalize_quaternions_torch(q: torch.Tensor, eps: float = 1.0e-12) -> torch.Tensor:
     finite = torch.isfinite(q).all(dim=1, keepdim=True)
     n = torch.linalg.norm(q, dim=1, keepdim=True)
@@ -12,6 +13,7 @@ def normalize_quaternions_torch(q: torch.Tensor, eps: float = 1.0e-12) -> torch.
     qn = torch.where(finite & (n > eps), qn, fallback)
     qn = torch.where(qn[:, 0:1] < 0.0, -qn, qn)
     return qn
+
 
 def quaternion_to_tangent_frame_torch(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     q = normalize_quaternions_torch(q)
@@ -37,6 +39,7 @@ def quaternion_to_tangent_frame_torch(q: torch.Tensor) -> tuple[torch.Tensor, to
     tw = torch.nn.functional.normalize(torch.cross(tu, tv, dim=1), dim=1, eps=1.0e-8)
     return tu, tv, tw
 
+
 def quaternion_multiply_wxyz(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     aw, ax, ay, az = a[:, 0:1], a[:, 1:2], a[:, 2:3], a[:, 3:4]
     bw, bx, by, bz = b[:, 0:1], b[:, 1:2], b[:, 2:3], b[:, 3:4]
@@ -46,6 +49,7 @@ def quaternion_multiply_wxyz(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         aw * by - ax * bz + ay * bw + az * bx,
         aw * bz + ax * by - ay * bx + az * bw,
     ], dim=1)
+
 
 def quaternion_exp_from_local_delta(delta: torch.Tensor, eps: float = 1.0e-12) -> torch.Tensor:
     angle = torch.linalg.norm(delta, dim=1, keepdim=True)
@@ -57,6 +61,7 @@ def quaternion_exp_from_local_delta(delta: torch.Tensor, eps: float = 1.0e-12) -
     )
     dq = torch.cat([torch.cos(half_angle), delta * sin_half_over_angle], dim=1)
     return normalize_quaternions_torch(dq)
+
 
 def apply_local_rotation_update_to_quaternions_inplace(
         rotations: torch.Tensor,
@@ -86,6 +91,7 @@ def apply_local_rotation_update_to_quaternions_inplace(
             "max_quat_norm_error": float((torch.linalg.norm(rotations, dim=1) - 1.0).abs().max().item()),
             "max_delta_norm": float(torch.linalg.norm(delta, dim=1).max().item()) if delta.numel() else 0.0,
         }
+
 
 def quaternion_from_tangent_frame_torch(tangent_u: torch.Tensor, tangent_v: torch.Tensor) -> torch.Tensor:
     eps = 1.0e-12
@@ -128,6 +134,7 @@ def quaternion_from_tangent_frame_torch(tangent_u: torch.Tensor, tangent_v: torc
         q[mask_z, 3] = 0.25 * s
     return normalize_quaternions_torch(q)
 
+
 def project_gradient_to_surfel_tangent_plane_np(
         grad_position_np: np.ndarray,
         rotations: torch.Tensor,
@@ -140,6 +147,7 @@ def project_gradient_to_surfel_tangent_plane_np(
         projected = torch.sum(g * tu, dim=1, keepdim=True) * tu + torch.sum(g * tv, dim=1, keepdim=True) * tv
         return projected.detach().cpu().numpy().astype(np.float32)
 
+
 def make_under_reconstruction_clones(
         positions,
         rotations,
@@ -151,65 +159,44 @@ def make_under_reconstruction_clones(
         grad_position_np,
         trainable_surfel_mask,
         grad_threshold,
-        max_clone_fraction=1.0,
-        clone_offset_scale=0.40,
-        clone_scale_factor=2.2,
+        max_clone_fraction=1.00,
+        clone_offset_scale=0.3,
+        clone_scale_factor= math.sqrt(2.0),
         min_clone_scale=5.0e-2,
-        normal_perturbation_min=1.0e-5,
-        normal_perturbation_max=3.0e-5,
-        tangent_project_position_grad=False,
+        min_split_coherence=0.05,
+        normal_perturbation_min=0.0,
+        normal_perturbation_max=0.0,
+        tangent_project_position_grad=True,
         normal_shift_on_clone=False,
-        normal_shift_scale=0.25,
+        normal_shift_scale=0.0,
         max_normal_shift_fraction=0.50,
         selection_score_np=None,
-) -> dict[str, dict[str, Any] | Any] | None:
-    """
-    Conservative clone/split densification for under-reconstruction.
-
-    This turns one surfel into two children:
-
-        source child: existing surfel updated in-place
-        clone child : newly appended surfel
-
-    Both children:
-        - inherit material parameters
-        - receive the same tangent frame
-        - keep the current opacity behavior
-        - receive scale / clone_scale_factor
-
-    Position update:
-        - tangent component controls clone separation
-        - normal component optionally shifts both children together
-
-    This avoids using the normal gradient as clone separation, while still allowing
-    the reconstructed surface to move along the normal direction.
-    """
-
+):
     with torch.no_grad():
         device = positions.device
 
-        grad_pos = torch.as_tensor(
-            grad_position_np,
-            device=device,
-            dtype=torch.float32,
-        )
+        grad_pos = torch.as_tensor(grad_position_np, device=device, dtype=torch.float32)
 
         if selection_score_np is None:
             selection_score = torch.linalg.norm(grad_pos, dim=1)
         else:
-            selection_score = torch.as_tensor(
-                selection_score_np,
-                device=device,
-                dtype=torch.float32,
-            ).reshape(-1)
+            selection_score = torch.as_tensor(selection_score_np, device=device, dtype=torch.float32).reshape(-1)
+
+        safe_clone_scale_factor = max(float(clone_scale_factor), 1.0)
+        minimum_splittable_scale = float(min_clone_scale) * safe_clone_scale_factor * (1.0 + 1.0e-4)
 
         min_source_scale = torch.min(scales, dim=1).values
 
+        vector_score = torch.linalg.norm(grad_pos, dim=1)
+        coherence = vector_score / torch.clamp(selection_score, min=1.0e-12)
+
         selected = (
                 torch.isfinite(selection_score)
+                & torch.isfinite(coherence)
+                & (coherence >= min_split_coherence)
                 & (selection_score >= grad_threshold)
                 & trainable_surfel_mask
-                & (min_source_scale >= float(min_clone_scale))
+                & (min_source_scale >= minimum_splittable_scale)
         )
 
         selected_idx = torch.nonzero(selected, as_tuple=False).flatten()
@@ -237,127 +224,33 @@ def make_under_reconstruction_clones(
         pow_ = powers[selected_idx].detach().clone()
 
         g = grad_pos[selected_idx]
-
-        # For minimization, the optimizer moves along -grad.
         descent = -g
 
         tu_n = torch.nn.functional.normalize(tu, dim=1, eps=1.0e-12)
         tv_n = torch.nn.functional.normalize(tv, dim=1, eps=1.0e-12)
-
-        normal = torch.cross(tu_n, tv_n, dim=1)
-        normal_norm = torch.linalg.norm(normal, dim=1, keepdim=True)
-        valid_normal = normal_norm > 1.0e-12
-
-        normal_dir = torch.zeros_like(normal)
-        normal_dir[valid_normal[:, 0]] = (
-                normal[valid_normal[:, 0]] / normal_norm[valid_normal[:, 0]]
-        )
 
         tangent_descent = (
                 torch.sum(descent * tu_n, dim=1, keepdim=True) * tu_n
                 + torch.sum(descent * tv_n, dim=1, keepdim=True) * tv_n
         )
 
-        normal_descent = (
-                torch.sum(descent * normal_dir, dim=1, keepdim=True) * normal_dir
-        )
-
-        if tangent_project_position_grad:
-            split_descent = tangent_descent
-        else:
-            split_descent = descent
+        split_descent = tangent_descent if tangent_project_position_grad else descent
 
         split_descent_norm = torch.linalg.norm(split_descent, dim=1, keepdim=True)
-        valid_split_dir = split_descent_norm > 1.0e-12
-
-        split_direction = torch.zeros_like(split_descent)
-        split_direction[valid_split_dir[:, 0]] = (
-                split_descent[valid_split_dir[:, 0]]
-                / split_descent_norm[valid_split_dir[:, 0]]
-        )
+        split_direction = split_descent / torch.clamp(split_descent_norm, min=1.0e-12)
 
         local_radius = torch.min(sc, dim=1).values[:, None]
         tangent_offset = clone_offset_scale * local_radius * split_direction
 
-        normal_shift = torch.zeros_like(p)
+        # Conservative, centroid-preserving 1 -> 2 split.
+        source_positions = p - 0.5 * tangent_offset
+        clone_positions = p + 0.5 * tangent_offset
 
-        if normal_shift_on_clone:
-            normal_shift_scale = float(normal_shift_scale)
-            max_normal_shift_fraction = float(max_normal_shift_fraction)
-
-            if normal_shift_scale < 0.0:
-                raise ValueError("normal_shift_scale must be non-negative")
-
-            if max_normal_shift_fraction < 0.0:
-                raise ValueError("max_normal_shift_fraction must be non-negative")
-
-            descent_norm = torch.linalg.norm(descent, dim=1, keepdim=True)
-            normal_descent_norm = torch.linalg.norm(normal_descent, dim=1, keepdim=True)
-
-            normal_fraction = normal_descent_norm / torch.clamp(descent_norm, min=1.0e-12)
-            normal_fraction = torch.clamp(normal_fraction, min=0.0, max=1.0)
-
-            normal_shift_magnitude = normal_shift_scale * local_radius * normal_fraction
-            max_normal_shift = max_normal_shift_fraction * local_radius
-            normal_shift_magnitude = torch.minimum(normal_shift_magnitude, max_normal_shift)
-
-            normal_shift_direction = torch.zeros_like(normal_descent)
-            valid_normal_shift_dir = normal_descent_norm > 1.0e-12
-            normal_shift_direction[valid_normal_shift_dir[:, 0]] = (
-                    normal_descent[valid_normal_shift_dir[:, 0]]
-                    / normal_descent_norm[valid_normal_shift_dir[:, 0]]
-            )
-
-            normal_shift = normal_shift_magnitude * normal_shift_direction
-
-        # Asymmetric split.
-        # Parent keeps most opacity, so it moves less.
-        child_weight = 0.75
-        source_positions = p + normal_shift - (1.0 - child_weight) * tangent_offset
-        clone_positions = p + normal_shift + child_weight * tangent_offset
-
-        # Small normal perturbation only for the appended clone.
-        eps_min = float(normal_perturbation_min)
-        eps_max = float(normal_perturbation_max)
-
-        if eps_min < 0.0 or eps_max < 0.0:
-            raise ValueError("normal perturbation bounds must be non-negative")
-
-        if eps_max < eps_min:
-            raise ValueError(
-                f"normal_perturbation_max must be >= normal_perturbation_min, "
-                f"got {eps_max} < {eps_min}"
-            )
-
-        random_unit = torch.rand(
-            (selected_idx.numel(), 1),
-            device=device,
-            dtype=torch.float32,
-        )
-        random_magnitude = eps_min + (eps_max - eps_min) * random_unit
-
-        random_sign = torch.where(
-            torch.rand(
-                (selected_idx.numel(), 1),
-                device=device,
-                dtype=torch.float32,
-            ) < 0.5,
-            torch.full((selected_idx.numel(), 1), -1.0, device=device, dtype=torch.float32),
-            torch.full((selected_idx.numel(), 1), 1.0, device=device, dtype=torch.float32),
-        )
-
-        clone_positions = clone_positions + random_sign * random_magnitude * normal_dir
-
-        # Simple clone/split scale rule.
-        safe_clone_scale_factor = max(float(clone_scale_factor), 1.0)
         child_sc = sc / safe_clone_scale_factor
 
-        # Avoid producing surfels below the clone minimum.
-        child_sc = torch.clamp(child_sc, min=float(min_clone_scale))
-
-        # Keep current opacity behavior unchanged.
-        parent_opacity = torch.clamp(opa, min=0.2)
-        child_opacity = torch.clamp(opa, min=0.2)
+        # Do not modify opacity merely because the surfel was densified.
+        parent_opacity = torch.clamp(opa, 0.0, 1.0)
+        child_opacity = parent_opacity.clone()
 
         selected_idx_np = selected_idx.detach().cpu().numpy().astype(np.int64)
 
@@ -368,7 +261,6 @@ def make_under_reconstruction_clones(
                 "scale": child_sc.detach().cpu().numpy().astype(np.float32),
                 "opacity": parent_opacity.detach().cpu().numpy().reshape(-1).astype(np.float32),
             },
-
             "new": {
                 "position": clone_positions.detach().cpu().numpy().astype(np.float32),
                 "rotation": rot.detach().cpu().numpy().astype(np.float32),
@@ -378,11 +270,8 @@ def make_under_reconstruction_clones(
                 "beta": be.detach().cpu().numpy().reshape(-1).astype(np.float32),
                 "power": pow_.detach().cpu().numpy().reshape(-1).astype(np.float32),
             },
-
             "source_index": selected_idx_np,
-
             "grad_norm": selection_score[selected_idx].detach().cpu().numpy().astype(np.float32),
-
             "replace_source": False,
         }
 
@@ -532,15 +421,15 @@ def compute_prune_indices_by_degenerate_area(
     surfel_area = np.full((num_points,), np.nan, dtype=np.float32)
     valid_area_mask = finite_mask & positive_scale_mask
     surfel_area[valid_area_mask] = (
-        np.float32(math.pi)
-        * scale_u[valid_area_mask]
-        * scale_v[valid_area_mask]
+            np.float32(math.pi)
+            * scale_u[valid_area_mask]
+            * scale_v[valid_area_mask]
     )
 
     degenerate_mask = (
-        ~finite_mask
-        | ~positive_scale_mask
-        | (surfel_area <= float(min_area))
+            ~finite_mask
+            | ~positive_scale_mask
+            | (surfel_area <= float(min_area))
     )
 
     candidate_indices = np.nonzero(

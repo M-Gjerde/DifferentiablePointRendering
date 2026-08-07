@@ -5,7 +5,7 @@
     "--ply",
     "pointcloud",
     "--seed",
-    "42"
+    "666"
   ],
   "cases": [
     {
@@ -13,8 +13,23 @@
       "camera": "camera1",
       "parameter": "translation_x",
       "index": 1,
-      "min": -0.6,
-      "max": 0.6,
+      "min": -0.5,
+      "max": 0.5,
+      "fd_epsilon": 5e-3,
+      "forward_passes": 1,
+      "adjoint_passes": 8,
+      "bounces": 1,
+      "adjoint_bounces": 1,
+      "enable_adjoint_shadow_rays": true,
+      "target_mode": "filled"
+    },
+    {
+      "scene": "cornell",
+      "camera": "camera1",
+      "parameter": "translation_y",
+      "index": 1,
+      "min": 0.2,
+      "max": 1.5,
       "fd_epsilon": 5e-3,
       "forward_passes": 1,
       "adjoint_passes": 16,
@@ -26,25 +41,10 @@
     {
       "scene": "cornell",
       "camera": "camera1",
-      "parameter": "translation_y",
-      "index": 1,
-      "min": 0.0,
-      "max": 0.7,
-      "fd_epsilon": 5e-3,
-      "forward_passes": 1,
-      "adjoint_passes": 32,
-      "bounces": 1,
-      "adjoint_bounces": 1,
-      "enable_adjoint_shadow_rays": true,
-      "target_mode": "filled"
-    },
-    {
-      "scene": "cornell",
-      "camera": "camera1",
       "parameter": "translation_z",
       "index": 1,
-      "min": 0.20,
-      "max": 0.40,
+      "min": 0.0,
+      "max": 1.0,
       "fd_epsilon": 5e-3,
       "forward_passes": 1,
       "adjoint_passes": 1,
@@ -63,7 +63,7 @@
       "fd_epsilon": 1e-1,
       "forward_passes": 1,
       "bounces": 1,
-      "adjoint_passes": 16,
+      "adjoint_passes": 32,
       "adjoint_bounces": 1,
       "enable_adjoint_shadow_rays": true,
       "target_mode": "filled"

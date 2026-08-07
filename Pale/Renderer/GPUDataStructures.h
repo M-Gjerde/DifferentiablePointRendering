@@ -232,15 +232,15 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 10;
-    constexpr uint32_t kMaxLocalSurfelHits = 10;
+    constexpr uint32_t kMaxSplatEventsPerRay = 6;
+    constexpr uint32_t kMaxLocalSurfelHits = 12;
 
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
     constexpr float LocalLayerDepthEpsilon = 2.5e-2f;
-    constexpr float LocalLayerNormalCosineThreshold = 0.8f; // Bit more than 45 degrees mismatch to stop blending slabs
+    constexpr float LocalLayerNormalCosineThreshold = 0.7071f; // 45 degrees mismatch to stop blending slabs
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -495,6 +495,7 @@ namespace Pale {
         float gradBeta = 0.0f;
         float3 gradRotation{0.0f, 0.0f, 0.0f};
 
+        float3 gradAlphaWrtSegmentStart{0.0f, 0.0f, 0.0f};
         float3 gradAlphaWrtStartPoint{0.0f, 0.0f, 0.0f};
         float3 gradAlphaWrtEndPoint{0.0f, 0.0f, 0.0f};
 
@@ -711,8 +712,8 @@ namespace Pale {
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
-        uint32_t rendererDebugMaxSplatEventsPerRay = 10;
-        uint32_t rendererDebugMaxLocalSurfelHits = 10;
+        uint32_t rendererDebugMaxSplatEventsPerRay = 12;
+        uint32_t rendererDebugMaxLocalSurfelHits = 12;
     };
 
     inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {
@@ -832,6 +833,7 @@ namespace Pale {
         uint32_t *countMaterialVertexEvents = nullptr;
         uint32_t *countMaterialEndEdgeEvents = nullptr;
         uint32_t *countMaterialStartEdgeEvents = nullptr;
+        uint32_t *countGradientRecords = nullptr;
 
         // capacities
         uint32_t maxMeasurementEventCount = 0u;

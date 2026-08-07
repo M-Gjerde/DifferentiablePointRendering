@@ -329,8 +329,7 @@ namespace Pale {
                                                    materialVertexEventCount, materialEndEdgeEventCount,
                                                    materialStartEdgeEventCount, static_cast<uint32_t>(cameraIndex));
                     }
-                    pkg.queue.memset(pkg.intermediates.gradientRecords, 0x00,
-                                     pkg.intermediates.maxGradientRecordCount * sizeof(SurfelGradientRecord));
+
                     uint32_t nextRayCountRaw = 0u;
                     pkg.queue.memcpy(&nextRayCountRaw, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
                     const uint32_t nextRayCount = std::min(nextRayCountRaw, pkg.intermediates.maxRayQueueCapacity);

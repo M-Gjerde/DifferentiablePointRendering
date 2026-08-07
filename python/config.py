@@ -16,7 +16,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -77,36 +77,34 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 8_000
     global_lr_max_steps: int = iterations
 
-    depth_distort_weight: float = 100
+    depth_distort_weight: float = 0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
-    visibility_weighted_opacity_weight: float = 0.1
+    normal_consistency_weight: float = 0.05
+    visibility_weighted_opacity_weight: float = 0.001
 
     # Density control / EV-splitting
-    densification_interval: int = 300
-    prune_interval: int = 300
-    densify_after: int = densification_interval
+    densification_interval: int = 50
+    prune_interval: int = 50
+    densify_after: int = 0
     prune_after: int = 0
     densify_until_iteration: int = -1
     densify_until_fraction: float = 0.9
-
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 8.5e-4
-    densification_grad_abs_min_schedule_start_iteration: int = 1000
-    densification_grad_abs_min_schedule_end_iteration: int = 1000
-    densification_scale_min: float = 1.25e-2
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min_schedule_start_iteration: int = 3000
+    densification_grad_abs_min_schedule_end_iteration: int = 3000
+    densification_scale_min: float = 1.0e-2
 
     # More densification on radiometrically darker primitives
-    densify_bsdf_floor: float = 0.00
-    densify_bsdf_gamma: float = 0.0
-
+    densify_bsdf_floor = 0.2
+    densify_bsdf_gamma = 1.0
     # Pruning
     opacity_prune_threshold: float = 0.1
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 5.0e-7
     min_points_to_keep_after_scale_prune: int = 1
-    inactive_gradient_prune_cycles: int = 2
+    inactive_gradient_prune_cycles: int = 2 # One cycle is one loop through all training cameras
 
     # Misc scheduling
     reset_opacity_interval: int = 0
@@ -134,7 +132,7 @@ class OptimizationConfig:
     save_snapshot_depth_distortion: bool = False
     save_snapshot_visible_normal: bool = False
     save_snapshot_normal_from_depth: bool = False
-    save_snapshot_grad: bool = False
+    save_snapshot_grad: bool = True
     densification_verbose: bool = True
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
@@ -148,12 +146,12 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.0008
-        factor_rotation = 0.02
+        factor_position = 0.001
+        factor_rotation = 0.005
         factor_scale = 0.0003
-        factor_albedo = 0.005
-        factor_opacity = 0.0009
-        factor_beta = 0.008
+        factor_albedo = 0.01
+        factor_opacity = 0.001
+        factor_beta = 0.005
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -178,12 +176,6 @@ def scale_iteration_interval_by_learning_rate(base_interval: int, learning_rate:
         raise ValueError(f"learning_rate must be positive, got {learning_rate}")
     return max(1, math.ceil(float(base_interval) / learning_rate))
 
-
-def resolve_iteration_schedules(config: OptimizationConfig, cli_overrides: set[str], ) -> None:
-    if "densification_interval" not in cli_overrides:
-        config.densification_interval = scale_iteration_interval_by_learning_rate(config.densification_interval,
-                                                                                  config.learning_rate,
-                                                                                  )
 
 
 def parse_args() -> OptimizationConfig:
@@ -288,6 +280,5 @@ def parse_args() -> OptimizationConfig:
         print(f"[checkpoint] Starting a fresh optimization from: "            f"{checkpoint_points_path}")
 
     resolve_learning_rates(config)
-    resolve_iteration_schedules(config, cli_overrides)
 
     return config

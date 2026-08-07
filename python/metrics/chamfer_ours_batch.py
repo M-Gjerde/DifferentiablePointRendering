@@ -38,10 +38,10 @@ DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
 )
 
 DEFAULT_DATASETS: tuple[DatasetConfig, ...] = (
-    DatasetConfig("dragon_10", "dragon.ply"),
-    DatasetConfig("horse_10", "horse.ply"),
-    DatasetConfig("lego_10", "lego.ply"),
-    DatasetConfig("plant_10", "plant.ply"),
+    #DatasetConfig("dragon_10", "dragon.ply"),
+    #DatasetConfig("horse_10", "horse.ply"),
+    #DatasetConfig("lego_10", "lego.ply"),
+    #DatasetConfig("plant_10", "plant.ply"),
     DatasetConfig("teapot_10", "teapot.ply"),
 )
 

@@ -62,6 +62,10 @@ export namespace Pale {
             return std::static_pointer_cast<T>(asset);
         }
 
+        void invalidate(const AssetHandle& id) {
+            m_cache.erase(id);
+        }
+
         void prefetch(const AssetHandle& id) {
             if (m_futures.contains(id)) return;
             auto meta = m_registry.meta(id);

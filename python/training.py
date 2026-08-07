@@ -118,6 +118,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     total_start_time = time.perf_counter()
+    last_log_iteration = 0
+    last_log_time = total_start_time
     iteration = 0
     latest_loss_values_by_camera: Dict[str, Dict[str, float]] = {}
 
@@ -534,7 +536,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         config=config, old_optimizer=old_optimizer_for_migration,
                         old_params=old_params_for_optimizer, new_params=new_params_for_optimizer,
                         keep_mask_np=keep_mask_np, source_index_for_new_np=source_index_for_new_np,
-                        copy_source_state_to_new=True,
+                        copy_source_state_to_new=False,
                     )
 
                     active_learning_rates = update_optimizer_learning_rates(optimizer, learning_rate_schedules,
@@ -557,10 +559,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         save_interval > 0 and (iteration % save_interval == 0 or iteration == config.iterations))
 
                 if should_save_iteration_outputs:
-                    if config.one_camera_per_iteration:
+                    if config.one_camera_per_iteration or config.save_snapshot_grad:
                         save_forward_out = renderer.render_forward()
                     else:
                         save_forward_out = forward_out
+
+                    snapshot_adjoint_images = adjoint_images
+                    if config.save_snapshot_grad:
+                        snapshot_adjoint_images = compute_snapshot_adjoint_images(
+                            renderer=renderer,
+                            forward_out=save_forward_out,
+                            target_images=target_images,
+                            camera_ids=training_camera_ids,
+                        )
 
                     save_iteration_outputs(
                         output_dir=config.output_dir,
@@ -569,7 +580,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         final_iteration=config.iterations,
                         all_camera_ids=all_camera_ids,
                         forward_out=save_forward_out,
-                        adjoint_images=adjoint_images,
+                        adjoint_images=snapshot_adjoint_images,
                         renderer_settings=renderer_settings,
                         save_rgb=config.save_snapshot_rgb,
                         save_median_depth=config.save_snapshot_median_depth,
@@ -620,7 +631,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 csv_file.flush()
 
-                if iteration % config.log_interval == 0 or iteration == 1:
+                log_interval = int(config.log_interval)
+                if iteration == 1 or (log_interval > 0 and iteration % log_interval == 0):
+                    logged_iteration_count = iteration - last_log_iteration
+                    log_elapsed_time = iteration_end - last_log_time
+                    iteration_rate = float(logged_iteration_count) / max(log_elapsed_time, 1.0e-12)
+                    last_log_iteration = iteration
+                    last_log_time = iteration_end
+
                     grad_pos_rms = rms_point(grad_position_np)
                     grad_rotation_rms = rms_point(grad_rotation_np)
                     grad_scale_rms = rms_point(grad_scales_np)
@@ -641,6 +659,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             iteration=iteration,
                             total_iterations=config.iterations,
                             iteration_time=iteration_time,
+                            iteration_rate=iteration_rate,
                             total_time=total_time,
                             num_points=num_points,
                             loss_state=averaged_loss_state,

@@ -320,29 +320,91 @@ namespace Pale {
         layer.transmission = 1.0f;
         layer.opacity = 0.0f;
 
+        if (maxLocalSurfelHits == 0u) return layer;
+
         const Transform &transform = scene.transforms[instance.transformIndex];
-        const float localTMin = firstHit.t;
-        const float localTMax = firstHit.t + localLayerDepthEpsilon;
         const Point &referenceSurfel = scene.points[firstHit.primitiveIndex];
+
         layer.referenceNormalW = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
-        if (dot(layer.referenceNormalW, -rayWorld.direction) < 0.0f) {
-            layer.referenceNormalW = -layer.referenceNormalW;
-        }
+        if (dot(layer.referenceNormalW, -rayWorld.direction) < 0.0f) layer.referenceNormalW = -layer.referenceNormalW;
+
+        // localLayerDepthEpsilon now represents physical slab thickness along
+        // the anchor surface normal rather than distance along the viewing ray.
+        //
+        // For two parallel surfaces separated by normal distance delta:
+        //
+        //     delta = Delta_t * |n . d|
+        //
+        // hence:
+        //
+        //     Delta_t = delta / |n . d|.
+        //
+        // Clamp the denominator so a nearly tangent ray cannot generate an
+        // arbitrarily long search interval.
+        static constexpr float kMinLocalLayerViewCosine = 0.05f;
+
+        const float viewCosine = sycl::fabs(dot(layer.referenceNormalW, rayWorld.direction));
+        const float effectiveViewCosine = sycl::fmax(viewCosine, kMinLocalLayerViewCosine);
+        const float raySearchDepth = localLayerDepthEpsilon / effectiveViewCosine;
+
+        const float localTMin = firstHit.t;
+        const float localTMax = firstHit.t + raySearchDepth;
 
         const Ray rayObject = toObjectSpace(rayWorld, transform);
-        layer.hitCount = collectBLASPointCloudLocalLayer(
+
+        // First gather every ray intersection inside the conservative,
+        // view-angle-corrected search interval.
+        LocalSurfelLayerHit candidateHits[kMaxLocalSurfelHits];
+
+        const uint32_t candidateCount = collectBLASPointCloudLocalLayer(
             rayWorld,
             rayObject,
             instance.blasRangeIndex,
             transform,
             localTMin,
             localTMax,
-            layer.hits,
+            candidateHits,
             maxLocalSurfelHits,
             scene);
 
-        // Numerical fallback: preserve the already found FirstHit.
-        if (layer.hitCount == 0u && maxLocalSurfelHits > 0u) {
+        // Then determine actual slab membership using physical normal distance
+        // from the anchor rather than ray-depth distance.
+        for (uint32_t candidateIndex = 0u;
+             candidateIndex < candidateCount && layer.hitCount < maxLocalSurfelHits;
+             ++candidateIndex) {
+            const LocalSurfelLayerHit &candidate = candidateHits[candidateIndex];
+
+            if (candidate.primitiveIndex == kInvalidIndex) continue;
+
+            const Point &candidateSurfel = scene.points[candidate.primitiveIndex];
+
+            float3 candidateNormalW = normalize(cross(candidateSurfel.tanU, candidateSurfel.tanV));
+            if (dot(candidateNormalW, -rayWorld.direction) < 0.0f) candidateNormalW = -candidateNormalW;
+
+            // Keep the normal-consistency criterion. This prevents nearby but
+            // differently oriented surfaces from becoming one unresolved slab.
+            const float normalAgreement = dot(layer.referenceNormalW, candidateNormalW);
+            if (normalAgreement < localLayerNormalCosineThreshold) continue;
+
+            const float3 anchorToCandidate = candidate.hitPositionW - firstHit.hitPositionW;
+
+            // View-independent slab depth:
+            //
+            //     d_perp = |(x_i - x_1) . n_1|
+            //
+            // rather than:
+            //
+            //     d_ray = |t_i - t_1|.
+            const float normalDistance = sycl::fabs(dot(anchorToCandidate, layer.referenceNormalW));
+            if (normalDistance > localLayerDepthEpsilon) continue;
+
+            layer.hits[layer.hitCount] = candidate;
+            ++layer.hitCount;
+        }
+
+        // Numerical fallback: the already established FirstHit must always
+        // remain a constituent of its own slab.
+        if (layer.hitCount == 0u) {
             layer.hits[0].tWorld = firstHit.t;
             layer.hits[0].primitiveIndex = firstHit.primitiveIndex;
             layer.hits[0].alphaGeom = firstHit.alphaGeom;
@@ -350,6 +412,9 @@ namespace Pale {
             layer.hitCount = 1u;
         }
 
+        // -------------------------------------------------------------------------
+        // Construct opacity/transmission for accepted slab constituents only.
+        // -------------------------------------------------------------------------
         for (uint32_t localHitIndex = 0u; localHitIndex < layer.hitCount; ++localHitIndex) {
             const LocalSurfelLayerHit &localHit = layer.hits[localHitIndex];
             const Point &surfel = scene.points[localHit.primitiveIndex];
@@ -357,58 +422,51 @@ namespace Pale {
             layer.alphaEff[localHitIndex] = 0.0f;
             layer.weight[localHitIndex] = 0.0f;
 
-            float3 localNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-            if (dot(localNormalW, -rayWorld.direction) < 0.0f) {
-                localNormalW = -localNormalW;
-            }
+            const float3 distanceFromLayerAnchorW = localHit.hitPositionW - firstHit.hitPositionW;
 
-            const float normalAgreement = dot(layer.referenceNormalW, localNormalW);
-            if (normalAgreement < localLayerNormalCosineThreshold) {
-                continue;
-            }
-
-            const float3 distanceFromLayerAnchorW =
-            localHit.hitPositionW - firstHit.hitPositionW;
             const float directLightingEpsilon = sycl::fmax(
                 RayEpsilon,
                 sycl::sqrt(dot(distanceFromLayerAnchorW, distanceFromLayerAnchorW)));
 
-            layer.directLightEpsilon[localHitIndex] = directLightingEpsilon;
+            // Keep this per-constituent. At grazing incidence two constituents
+            // can now be far apart along the ray even though they are physically
+            // close in normal distance.
+            layer.directLightEpsilon[localHitIndex] = localLayerDepthEpsilon;
+
             layer.furthestT = sycl::fmax(layer.furthestT, localHit.tWorld);
 
             const float alphaEff = sycl::clamp(surfel.opacity * localHit.alphaGeom, 0.0f, 1.0f);
             layer.alphaEff[localHitIndex] = alphaEff;
+
             layer.transmission *= sycl::fmax(0.0f, 1.0f - alphaEff);
         }
 
         layer.opacity = 1.0f - layer.transmission;
 
-        // Average over all unresolved depth orders in the local layer. Equal opaque
-        // surfels split the layer contribution evenly while the final transmission
-        // remains the product of their transparencies.
+        // -------------------------------------------------------------------------
+        // Average over all unresolved depth orders.
+        // -------------------------------------------------------------------------
         float localLayerWeightSum = 0.0f;
+
         if (layer.opacity > 0.0f) {
             for (uint32_t localHitIndex = 0u; localHitIndex < layer.hitCount; ++localHitIndex) {
                 const float alphaEff = layer.alphaEff[localHitIndex];
-                if (alphaEff <= 0.0f) {
-                    continue;
-                }
+                if (alphaEff <= 0.0f) continue;
 
                 float transmittancePolynomial[kMaxLocalSurfelHits];
+
                 for (uint32_t coefficientIndex = 0u; coefficientIndex < maxLocalSurfelHits; ++coefficientIndex) {
                     transmittancePolynomial[coefficientIndex] = 0.0f;
                 }
-                transmittancePolynomial[0] = 1.0f;
 
+                transmittancePolynomial[0] = 1.0f;
                 uint32_t polynomialDegree = 0u;
+
                 for (uint32_t otherHitIndex = 0u; otherHitIndex < layer.hitCount; ++otherHitIndex) {
-                    if (otherHitIndex == localHitIndex) {
-                        continue;
-                    }
+                    if (otherHitIndex == localHitIndex) continue;
+
                     const float otherAlphaEff = layer.alphaEff[otherHitIndex];
-                    if (otherAlphaEff <= 0.0f) {
-                        continue;
-                    }
+                    if (otherAlphaEff <= 0.0f) continue;
 
                     for (int32_t coefficientIndex = static_cast<int32_t>(polynomialDegree);
                          coefficientIndex >= 0;
@@ -416,16 +474,20 @@ namespace Pale {
                         transmittancePolynomial[coefficientIndex + 1] -=
                                 otherAlphaEff * transmittancePolynomial[coefficientIndex];
                     }
+
                     ++polynomialDegree;
                 }
 
                 float expectedPreviousTransmittance = 0.0f;
+
                 for (uint32_t coefficientIndex = 0u; coefficientIndex <= polynomialDegree; ++coefficientIndex) {
                     expectedPreviousTransmittance +=
                             transmittancePolynomial[coefficientIndex] / static_cast<float>(coefficientIndex + 1u);
                 }
 
-                const float layerWeight = alphaEff * sycl::clamp(expectedPreviousTransmittance, 0.0f, 1.0f);
+                const float layerWeight =
+                        alphaEff * sycl::clamp(expectedPreviousTransmittance, 0.0f, 1.0f);
+
                 layer.weight[localHitIndex] = layerWeight;
                 localLayerWeightSum += layerWeight;
             }
@@ -433,6 +495,7 @@ namespace Pale {
 
         if (localLayerWeightSum > 1.0e-8f) {
             const float weightNormalization = layer.opacity / localLayerWeightSum;
+
             for (uint32_t localHitIndex = 0u; localHitIndex < layer.hitCount; ++localHitIndex) {
                 layer.weight[localHitIndex] *= weightNormalization;
             }

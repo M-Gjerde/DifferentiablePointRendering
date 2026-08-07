@@ -622,6 +622,7 @@ def format_training_iteration_log(
         iteration: int,
         total_iterations: int,
         iteration_time: float,
+        iteration_rate: float,
         total_time: float,
         num_points: int,
         loss_state: Dict[str, Any],
@@ -640,7 +641,6 @@ def format_training_iteration_log(
         grad_opacity_max: float,
         grad_beta_max: float,
 ) -> str:
-    iteration_rate = 1.0 / max(iteration_time, 1.0e-12)
     loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
     loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
 
@@ -1077,6 +1077,29 @@ def save_iteration_point_cloud_snapshot(
         shape_default=0.0,
     )
     print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
+
+
+def compute_snapshot_adjoint_images(
+        renderer: pale.Renderer,
+        forward_out: Dict[str, dict],
+        target_images: Dict[str, np.ndarray],
+        camera_ids: List[str],
+) -> Dict[str, Any]:
+    loss_grad_images: Dict[str, np.ndarray] = {}
+
+    for camera_name in camera_ids:
+        if camera_name not in target_images:
+            continue
+
+        current_rgb_np = get_forward_rgb(forward_out, camera_name)
+        target_rgb_np = target_images[camera_name]
+        loss_grad_images[camera_name] = compute_l2_grad(current_rgb_np, target_rgb_np)
+
+    if not loss_grad_images:
+        return {}
+
+    _, adjoint_images = renderer.render_backward(loss_grad_images)
+    return adjoint_images
 
 
 def load_target_images(

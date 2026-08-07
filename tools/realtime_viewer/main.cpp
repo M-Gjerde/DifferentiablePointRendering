@@ -80,6 +80,34 @@ namespace {
         DepthDistortion,
     };
 
+    constexpr std::array<ViewImageMode, 6> kViewImageModeShortcutOrder = {
+        ViewImageMode::Rendered,
+        ViewImageMode::MedianDepth,
+        ViewImageMode::DepthDistortion,
+        ViewImageMode::MeanDepth,
+        ViewImageMode::VisibleNormal,
+        ViewImageMode::DepthNormal,
+    };
+
+    constexpr std::array<const char*, 6> kViewImageModeLabels = {
+        "1 Rendered",
+        "2 Median depth",
+        "3 Depth distortion",
+        "4 Mean depth",
+        "5 Visible normal",
+        "6 Depth normal",
+    };
+
+    int viewImageModeShortcutIndex(ViewImageMode mode) {
+        for (std::size_t index = 0; index < kViewImageModeShortcutOrder.size(); ++index) {
+            if (kViewImageModeShortcutOrder[index] == mode) {
+                return static_cast<int>(index);
+            }
+        }
+
+        return 0;
+    }
+
     enum class ScalarColorMap {
         Viridis,
         Jet,
@@ -1493,6 +1521,7 @@ int main(int argc, char** argv) {
 
             const Pale::AssetHandle pointCloudAssetHandle =
                 importPathAsType(assetManager.registry(), requestedPath, Pale::AssetType::PointCloud);
+            assetManager.invalidate(pointCloudAssetHandle);
             const auto pointCloudAsset = assetAccessor.getPointCloud(pointCloudAssetHandle);
             if (!pointCloudAsset) {
                 pointCloudStatus = "Failed to load PLY: " + requestedPath.string();
@@ -1579,10 +1608,51 @@ int main(int argc, char** argv) {
                 return;
             }
 
+            bool switchedToNewLatestDirectory = false;
+            const std::optional<std::filesystem::path> latestPointCloud =
+                findLatestOptimizationPointCloud(optimizationOutputDirectory);
+            if (latestPointCloud) {
+                const std::filesystem::path latestPointsDirectory = latestPointCloud->parent_path();
+                if (!equivalentPaths(latestPointsDirectory, latestOptimizationPointsDirectory)) {
+                    latestOptimizationPointsDirectory = latestPointsDirectory;
+                    switchedToNewLatestDirectory = true;
+                }
+            }
+
             std::vector<PointCloudSnapshot> snapshots =
                 listOptimizationPointCloudSnapshots(latestOptimizationPointsDirectory);
             if (snapshots.empty()) {
                 pointCloudStatus = "No optimization snapshots found in " + latestOptimizationPointsDirectory.string();
+                return;
+            }
+
+            std::optional<std::size_t> newLatestSnapshotIndex;
+            if (switchedToNewLatestDirectory && latestPointCloud) {
+                const auto latestIterator = std::find_if(
+                    snapshots.begin(),
+                    snapshots.end(),
+                    [&](const PointCloudSnapshot& snapshot) {
+                        return equivalentPaths(snapshot.path, *latestPointCloud);
+                    });
+                newLatestSnapshotIndex = latestIterator == snapshots.end()
+                                             ? snapshots.size() - 1u
+                                             : static_cast<std::size_t>(
+                                                 std::distance(snapshots.begin(), latestIterator));
+                latestOptimizationSnapshotIndex = *newLatestSnapshotIndex;
+            }
+
+            if (switchedToNewLatestDirectory && direction > 0 && latestPointCloud) {
+                const std::size_t latestIndex = newLatestSnapshotIndex.value_or(snapshots.size() - 1u);
+                if (replacePointCloud(snapshots[latestIndex].path, true)) {
+                    latestOptimizationMode = true;
+                    latestOptimizationSnapshots = std::move(snapshots);
+                    latestOptimizationSnapshotIndex = latestIndex;
+                    pointCloudStatus =
+                        "Latest optimization snapshot " +
+                        std::to_string(latestOptimizationSnapshotIndex + 1u) + "/" +
+                        std::to_string(latestOptimizationSnapshots.size()) + ": " +
+                        currentPointCloudPath.filename().string();
+                }
                 return;
             }
 
@@ -1593,10 +1663,16 @@ int main(int argc, char** argv) {
                     return equivalentPaths(snapshot.path, currentPointCloudPath);
                 });
             std::size_t currentIndex = currentIterator == snapshots.end()
-                                           ? std::min(latestOptimizationSnapshotIndex, snapshots.size() - 1u)
+                                           ? std::min(
+                                               newLatestSnapshotIndex.value_or(latestOptimizationSnapshotIndex),
+                                               snapshots.size() - 1u)
                                            : static_cast<std::size_t>(std::distance(snapshots.begin(), currentIterator));
 
             if (direction < 0 && currentIndex == 0u) {
+                if (switchedToNewLatestDirectory && replacePointCloud(snapshots[currentIndex].path, true)) {
+                    latestOptimizationMode = true;
+                    pointCloudStatus = "Already at earliest optimization snapshot";
+                }
                 latestOptimizationSnapshots = std::move(snapshots);
                 latestOptimizationSnapshotIndex = 0u;
                 pointCloudStatus = "Already at earliest optimization snapshot";
@@ -1850,6 +1926,15 @@ int main(int argc, char** argv) {
             texture.update(pixels, displayedRenderWidth, displayedRenderHeight);
         };
 
+        auto setViewImageMode = [&](ViewImageMode nextMode) {
+            if (viewImageMode == nextMode) {
+                return;
+            }
+
+            viewImageMode = nextMode;
+            updateDisplayTexture();
+        };
+
         auto renderNow = [&]() {
             renderWidth = std::clamp(renderWidth, 16u, 4096u);
             renderHeight = std::clamp(renderHeight, 16u, 4096u);
@@ -1955,6 +2040,32 @@ int main(int argc, char** argv) {
 
                 if (ImGui::IsKeyDown(ImGuiKey_RightArrow)) {
                     stepLatestOptimizationSnapshot(1);
+                }
+
+                if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false)) {
+                    stepLatestOptimizationSnapshot(1);
+                }
+
+                if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, false)) {
+                    stepLatestOptimizationSnapshot(-1);
+                }
+
+                constexpr std::array<ImGuiKey, 6> viewImageModeShortcutKeys = {
+                    ImGuiKey_1,
+                    ImGuiKey_2,
+                    ImGuiKey_3,
+                    ImGuiKey_4,
+                    ImGuiKey_5,
+                    ImGuiKey_6,
+                };
+
+                for (std::size_t shortcutIndex = 0;
+                     shortcutIndex < viewImageModeShortcutKeys.size();
+                     ++shortcutIndex) {
+                    if (ImGui::IsKeyPressed(viewImageModeShortcutKeys[shortcutIndex], false)) {
+                        setViewImageMode(kViewImageModeShortcutOrder[shortcutIndex]);
+                        break;
+                    }
                 }
             }
             std::vector<Pale::Entity> areaLights = collectAreaLights(scene);
@@ -2088,18 +2199,13 @@ int main(int argc, char** argv) {
             }
 
             ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
-            int viewImageModeIndex = static_cast<int>(viewImageMode);
-            const char* viewImageModes[] = {
-                "Rendered",
-                "Mean depth",
-                "Median depth",
-                "Visible normal",
-                "Depth normal",
-                "Depth distortion",
-            };
-            if (ImGui::Combo("Display", &viewImageModeIndex, viewImageModes, IM_ARRAYSIZE(viewImageModes))) {
-                viewImageMode = static_cast<ViewImageMode>(viewImageModeIndex);
-                updateDisplayTexture();
+            int viewImageModeIndex = viewImageModeShortcutIndex(viewImageMode);
+            if (ImGui::Combo(
+                    "Display",
+                    &viewImageModeIndex,
+                    kViewImageModeLabels.data(),
+                    static_cast<int>(kViewImageModeLabels.size()))) {
+                setViewImageMode(kViewImageModeShortcutOrder[static_cast<std::size_t>(viewImageModeIndex)]);
             }
             if (viewImageMode == ViewImageMode::MeanDepth ||
                 viewImageMode == ViewImageMode::MedianDepth ||

@@ -376,8 +376,8 @@ def verify_beta_inplace(
     If trainable_surfel_mask is provided, only trainable surfels are verified.
     Frozen surfels are left untouched.
     """
-    min_beta_value = -2.0
-    max_beta_value = 2.0
+    min_beta_value = -5.0
+    max_beta_value = 5.0
     with torch.no_grad():
         beta_values = betas.data
 
@@ -385,7 +385,7 @@ def verify_beta_inplace(
         before_max = float(beta_values.max().item())
 
         if trainable_surfel_mask is None:
-            beta_values.clamp_(min=min_beta_value, max=5.0)
+            beta_values.clamp_(min=min_beta_value, max=max_beta_value)
         else:
             mask = trainable_surfel_mask.to(
                 device=beta_values.device,

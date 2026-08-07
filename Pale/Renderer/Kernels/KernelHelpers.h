@@ -119,10 +119,22 @@ namespace Pale::rng {
         s = hashCombine64(s, uint64_t(dimension) ^ 0x1D8E4E27C47D124Full);
         return s;
     }
-
 } // namespace pale::rng
 
 namespace Pale {
+
+    static constexpr uint32_t kMaxCameraOccluderRecords =
+        kMaxSplatEventsPerRay * kMaxLocalSurfelHits;
+
+    static constexpr uint32_t kMeasurementGradientRecordsPerEvent =
+        kMaxLocalSurfelHits + kMaxCameraOccluderRecords;
+
+    static constexpr uint32_t kMaxShadowOccluderRecords =
+        kMaxSplatEventsPerRay * kMaxLocalSurfelHits;
+
+    static constexpr uint32_t kMeasurementXYGradientRecordsPerEvent =
+        (1u + kMaxShadowOccluderRecords);
+
     struct DebugPixel {
         uint32_t pixelX;
         uint32_t pixelY;
@@ -449,7 +461,6 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL static bool opacityBeta(float u, float v, const Point &surfel, float *outOpacity) {
-
         const float r2 = u * u + v * v;
         if (r2 > 1.0f) {
             *outOpacity = 0.0f;
@@ -1162,6 +1173,7 @@ namespace Pale {
         return sample;
     }
 
+
     /*
     struct PointLightPhotonSample {
         bool valid;
@@ -1212,61 +1224,60 @@ namespace Pale {
     */
 
     SYCL_EXTERNAL inline GradientRecordRanges makeGradientRecordRanges(
-        uint32_t measurementEventCount,
-        uint32_t measurementTwoPointEventCount,
-        uint32_t materialVertexEventCount,
-        uint32_t materialEndEdgeEventCount,
-        uint32_t materialStartEdgeEventCount) {
-        GradientRecordRanges ranges{};
+    uint32_t measurementEventCount,
+    uint32_t measurementTwoPointEventCount,
+    uint32_t materialVertexEventCount,
+    uint32_t materialEndEdgeEventCount,
+    uint32_t materialStartEdgeEventCount) {
 
-        static constexpr uint32_t measurementRecordsPerEvent =
-                1u + kMaxSplatEventsPerRay + kMaxLocalSurfelHits;
+    GradientRecordRanges ranges{};
 
-        static constexpr uint32_t measurementTwoPointRecordsPerEvent =
-                1u + kMaxSplatEventsPerRay * kMaxLocalSurfelHits;
 
-        static constexpr uint32_t materialVertexRecordsPerEvent =
-                1u;
 
-        // One endpoint record plus optional occluder/transmittance records.
-        static constexpr uint32_t materialEndEdgeRecordsPerEvent =
-                1u + kMaxSplatEventsPerRay;
+    static constexpr uint32_t materialVertexRecordsPerEvent = 1u;
+    static constexpr uint32_t materialEndEdgeRecordsPerEvent = 1u + kMaxSplatEventsPerRay;
+    static constexpr uint32_t materialStartEdgeRecordsPerEvent = 1u + kMaxSplatEventsPerRay;
 
-        // One endpoint record plus optional occluder/transmittance records.
-        static constexpr uint32_t materialStartEdgeRecordsPerEvent =
-                1u + kMaxSplatEventsPerRay;
+    ranges.measurementOffset = 0u;
+    ranges.measurementCount = kMeasurementGradientRecordsPerEvent * measurementEventCount;
 
-        ranges.measurementOffset = 0u;
-        ranges.measurementCount =
-                measurementRecordsPerEvent * measurementEventCount;
+    ranges.measurementTwoPointOffset = ranges.measurementOffset + ranges.measurementCount;
+    ranges.measurementTwoPointCount = kMeasurementXYGradientRecordsPerEvent * measurementTwoPointEventCount;
 
-        ranges.measurementTwoPointOffset =
-                ranges.measurementOffset + ranges.measurementCount;
+    ranges.materialVertexOffset = ranges.measurementTwoPointOffset + ranges.measurementTwoPointCount;
+    ranges.materialVertexCount = materialVertexRecordsPerEvent * materialVertexEventCount;
 
-        ranges.measurementTwoPointCount =
-                measurementTwoPointRecordsPerEvent * measurementTwoPointEventCount;
+    ranges.materialEndEdgeOffset = ranges.materialVertexOffset + ranges.materialVertexCount;
+    ranges.materialEndEdgeCount = materialEndEdgeRecordsPerEvent * materialEndEdgeEventCount;
 
-        ranges.materialVertexOffset =
-                ranges.measurementTwoPointOffset + ranges.measurementTwoPointCount;
-        ranges.materialVertexCount =
-                materialVertexRecordsPerEvent * materialVertexEventCount;
+    ranges.materialStartEdgeOffset = ranges.materialEndEdgeOffset + ranges.materialEndEdgeCount;
+    ranges.materialStartEdgeCount = materialStartEdgeRecordsPerEvent * materialStartEdgeEventCount;
 
-        ranges.materialEndEdgeOffset =
-                ranges.materialVertexOffset + ranges.materialVertexCount;
-        ranges.materialEndEdgeCount =
-                materialEndEdgeRecordsPerEvent * materialEndEdgeEventCount;
+    ranges.totalCount = ranges.materialStartEdgeOffset + ranges.materialStartEdgeCount;
 
-        ranges.materialStartEdgeOffset =
-                ranges.materialEndEdgeOffset + ranges.materialEndEdgeCount;
-        ranges.materialStartEdgeCount =
-                materialStartEdgeRecordsPerEvent * materialStartEdgeEventCount;
+    return ranges;
+}
+    SYCL_EXTERNAL inline bool appendGradientRecordBounded(
+        uint32_t *gradientRecordCounter,
+        SurfelGradientRecord *gradientRecords,
+        uint32_t gradientRecordCapacity,
+        const SurfelGradientRecord &gradientRecord) {
 
-        ranges.totalCount =
-                ranges.materialStartEdgeOffset + ranges.materialStartEdgeCount;
+        auto atomicCounter = sycl::atomic_ref<
+            uint32_t,
+            sycl::memory_order::relaxed,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space>(*gradientRecordCounter);
 
-        return ranges;
+        const uint32_t recordIndex = atomicCounter.fetch_add(1u);
+
+        if (recordIndex >= gradientRecordCapacity) {
+            return false;
+        }
+
+        gradientRecords[recordIndex] = gradientRecord;
+        return true;
     }
-
     inline void clearPendingCameraSegment(PendingCameraSegment &pendingCameraSegment) {
         pendingCameraSegment.valid = false;
         pendingCameraSegment.pathId = 0u;
