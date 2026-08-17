@@ -155,6 +155,7 @@ export namespace Pale {
 
         if (numPoints > 0u) {
             out.gradPosition = sycl::malloc_device<float3>(numPoints, queue);
+            out.cloneSignal = sycl::malloc_device<float3>(numPoints, queue);
             out.gradRotation = sycl::malloc_device<float3>(numPoints, queue);
             out.gradScale = sycl::malloc_device<float2>(numPoints, queue);
             out.gradAlbedo = sycl::malloc_device<float3>(numPoints, queue);
@@ -167,6 +168,11 @@ export namespace Pale {
             out.gradPositionCoherence = sycl::malloc_device<float>(numPoints, queue);
             out.gradPositionDisagreement = sycl::malloc_device<float>(numPoints, queue);
             out.gradPositionActiveCameraCount = sycl::malloc_device<uint32_t>(numPoints, queue);
+            out.cloneSignalMeanNorm = sycl::malloc_device<float>(numPoints, queue);
+            out.cloneSignalStd = sycl::malloc_device<float>(numPoints, queue);
+            out.cloneSignalCoherence = sycl::malloc_device<float>(numPoints, queue);
+            out.cloneSignalDisagreement = sycl::malloc_device<float>(numPoints, queue);
+            out.cloneSignalActiveCameraCount = sycl::malloc_device<uint32_t>(numPoints, queue);
 
             const size_t primitiveCameraCount =
                     static_cast<size_t>(numPoints) * static_cast<size_t>(cameraSlotCount);
@@ -177,19 +183,31 @@ export namespace Pale {
 
                 out.gradPositionRecordCountPerPrimitivePerCamera =
                         sycl::malloc_device<uint32_t>(primitiveCameraCount, queue);
+
+                out.cloneSignalPerPrimitivePerCamera =
+                        sycl::malloc_device<float3>(primitiveCameraCount, queue);
+
+                out.cloneSignalRecordCountPerPrimitivePerCamera =
+                        sycl::malloc_device<uint32_t>(primitiveCameraCount, queue);
             }
 
-            if (!out.gradPosition || !out.gradRotation || !out.gradScale ||
+            if (!out.gradPosition || !out.cloneSignal || !out.gradRotation || !out.gradScale ||
                 !out.gradAlbedo || !out.gradOpacity || !out.gradBeta || !out.gradShape ||
                 !out.gradPositionMeanNorm || !out.gradPositionStd ||
                 !out.gradPositionCoherence || !out.gradPositionDisagreement ||
                 !out.gradPositionActiveCameraCount ||
+                !out.cloneSignalMeanNorm || !out.cloneSignalStd ||
+                !out.cloneSignalCoherence || !out.cloneSignalDisagreement ||
+                !out.cloneSignalActiveCameraCount ||
                 (cameraSlotCount > 0u && (!out.gradPositionPerPrimitivePerCamera ||
-                                          !out.gradPositionRecordCountPerPrimitivePerCamera))) {
+                                          !out.gradPositionRecordCountPerPrimitivePerCamera ||
+                                          !out.cloneSignalPerPrimitivePerCamera ||
+                                          !out.cloneSignalRecordCountPerPrimitivePerCamera))) {
                 throw std::runtime_error("makeGradientsForScene: failed to allocate one or more gradient buffers");
             }
 
             queue.fill(out.gradPosition, float3{0.0f, 0.0f, 0.0f}, numPoints);
+            queue.fill(out.cloneSignal, float3{0.0f, 0.0f, 0.0f}, numPoints);
             queue.fill(out.gradRotation, float3{0.0f, 0.0f, 0.0f}, numPoints);
             queue.fill(out.gradScale, float2{0.0f, 0.0f}, numPoints);
             queue.fill(out.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, numPoints);
@@ -202,10 +220,17 @@ export namespace Pale {
             queue.fill(out.gradPositionCoherence, 0.0f, numPoints);
             queue.fill(out.gradPositionDisagreement, 0.0f, numPoints);
             queue.fill(out.gradPositionActiveCameraCount, 0u, numPoints);
+            queue.fill(out.cloneSignalMeanNorm, 0.0f, numPoints);
+            queue.fill(out.cloneSignalStd, 0.0f, numPoints);
+            queue.fill(out.cloneSignalCoherence, 0.0f, numPoints);
+            queue.fill(out.cloneSignalDisagreement, 0.0f, numPoints);
+            queue.fill(out.cloneSignalActiveCameraCount, 0u, numPoints);
 
             if (cameraSlotCount > 0u) {
                 queue.fill(out.gradPositionPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
                 queue.fill(out.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
+                queue.fill(out.cloneSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
+                queue.fill(out.cloneSignalRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
             }
 
             Pale::Log::PA_INFO(
@@ -543,6 +568,7 @@ export namespace Pale {
         };
 
         freeDevicePtr(gradients.gradPosition);
+        freeDevicePtr(gradients.cloneSignal);
         freeDevicePtr(gradients.gradRotation);
         freeDevicePtr(gradients.gradScale);
         freeDevicePtr(gradients.gradAlbedo);
@@ -552,12 +578,19 @@ export namespace Pale {
 
         freeDevicePtr(gradients.gradPositionPerPrimitivePerCamera);
         freeDevicePtr(gradients.gradPositionRecordCountPerPrimitivePerCamera);
+        freeDevicePtr(gradients.cloneSignalPerPrimitivePerCamera);
+        freeDevicePtr(gradients.cloneSignalRecordCountPerPrimitivePerCamera);
 
         freeDevicePtr(gradients.gradPositionMeanNorm);
         freeDevicePtr(gradients.gradPositionStd);
         freeDevicePtr(gradients.gradPositionCoherence);
         freeDevicePtr(gradients.gradPositionDisagreement);
         freeDevicePtr(gradients.gradPositionActiveCameraCount);
+        freeDevicePtr(gradients.cloneSignalMeanNorm);
+        freeDevicePtr(gradients.cloneSignalStd);
+        freeDevicePtr(gradients.cloneSignalCoherence);
+        freeDevicePtr(gradients.cloneSignalDisagreement);
+        freeDevicePtr(gradients.cloneSignalActiveCameraCount);
 
         gradients.numPoints = 0;
         gradients.cameraSlotCount = 0;

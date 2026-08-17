@@ -4,16 +4,16 @@
         <float name="near_clip" value="0.01" />
         <float name="far_clip" value="100" />
         <float name="focus_distance" value="1000" />
-        <float name="fx" value="833.33326943280986" />
-        <float name="fy" value="833.33326943280986" />
-        <float name="cx" value="125" />
-        <float name="cy" value="125" />
+        <float name="fx" value="1111.1111739461417" />
+        <float name="fy" value="1111.1111739461417" />
+        <float name="cx" value="250" />
+        <float name="cy" value="250" />
         <transform name="to_world">
             <lookat origin="1.9120728969573975,-2.8356328010559082,0.84375005960464478" target="1.3657662868499756,-2.0254518985748291,0.63125026226043701" up="-0.11880338937044144,0.17618720233440399,0.97716110944747925" />
         </transform>
         <film type="hdrfilm">
-            <integer name="width" value="250" />
-            <integer name="height" value="250" />
+            <integer name="width" value="500" />
+            <integer name="height" value="500" />
             <rfilter type="tent" />
             <string name="pixel_format" value="rgb" />
         </film>
@@ -23,16 +23,16 @@
         <float name="near_clip" value="0.01" />
         <float name="far_clip" value="100" />
         <float name="focus_distance" value="1000" />
-        <float name="fx" value="833.33326943280986" />
-        <float name="fy" value="833.33326943280986" />
-        <float name="cx" value="125" />
-        <float name="cy" value="125" />
+        <float name="fx" value="1111.1111739461417" />
+        <float name="fy" value="1111.1111739461417" />
+        <float name="cx" value="250" />
+        <float name="cy" value="250" />
         <transform name="to_world">
             <lookat origin="-3.0601012706756592,0.73556339740753174,1.6312500238418579" target="-2.1857867240905762,0.52540236711502075,1.1937500238418579" up="0.42538344860076904,-0.10225044190883636,0.89921844005584717" />
         </transform>
         <film type="hdrfilm">
-            <integer name="width" value="250" />
-            <integer name="height" value="250" />
+            <integer name="width" value="500" />
+            <integer name="height" value="500" />
             <rfilter type="tent" />
             <string name="pixel_format" value="rgb" />
         </film>
@@ -42,16 +42,16 @@
         <float name="near_clip" value="0.01" />
         <float name="far_clip" value="100" />
         <float name="focus_distance" value="1000" />
-        <float name="fx" value="833.33326943280986" />
-        <float name="fy" value="833.33326943280986" />
-        <float name="cx" value="125" />
-        <float name="cy" value="125" />
+        <float name="fx" value="1111.1111739461417" />
+        <float name="fy" value="1111.1111739461417" />
+        <float name="cx" value="250" />
+        <float name="cy" value="250" />
         <transform name="to_world">
             <lookat origin="2.293529748916626,1.270086407661438,2.4187500476837158" target="1.6382355690002441,0.90720462799072266,1.7562499046325684" up="-0.57956820726394653,-0.32094705104827881,0.74906188249588013" />
         </transform>
         <film type="hdrfilm">
-            <integer name="width" value="250" />
-            <integer name="height" value="250" />
+            <integer name="width" value="500" />
+            <integer name="height" value="500" />
             <rfilter type="tent" />
             <string name="pixel_format" value="rgb" />
         </film>
@@ -61,16 +61,16 @@
         <float name="near_clip" value="0.01" />
         <float name="far_clip" value="100" />
         <float name="focus_distance" value="1000" />
-        <float name="fx" value="833.33326943280986" />
-        <float name="fy" value="833.33326943280986" />
-        <float name="cx" value="125" />
-        <float name="cy" value="125" />
+        <float name="fx" value="1111.1111739461417" />
+        <float name="fy" value="1111.1111739461417" />
+        <float name="cx" value="250" />
+        <float name="cy" value="250" />
         <transform name="to_world">
             <lookat origin="-0.51259630918502808,-1.5292010307312012,3.2062499523162842" target="-0.366140216588974,-1.0922863483428955,2.3187499046325684" up="0.28206944465637207,0.84148263931274414,0.46080774068832397" />
         </transform>
         <film type="hdrfilm">
-            <integer name="width" value="250" />
-            <integer name="height" value="250" />
+            <integer name="width" value="500" />
+            <integer name="height" value="500" />
             <rfilter type="tent" />
             <string name="pixel_format" value="rgb" />
         </film>

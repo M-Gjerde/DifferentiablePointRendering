@@ -37,6 +37,7 @@ namespace Pale {
     // WE use SoA for actual optimizer gradients since  pytorch likely consumes each parameter gradient as a contiguous array
     struct PointGradients {
         float3 *gradPosition = nullptr;
+        float3 *cloneSignal = nullptr;
         float3 *gradRotation = nullptr;
         float2 *gradScale = nullptr;
         float3 *gradAlbedo = nullptr;
@@ -47,6 +48,8 @@ namespace Pale {
         // Per-primitive/per-camera translation accumulation.
         float3 *gradPositionPerPrimitivePerCamera = nullptr;
         uint32_t *gradPositionRecordCountPerPrimitivePerCamera = nullptr;
+        float3 *cloneSignalPerPrimitivePerCamera = nullptr;
+        uint32_t *cloneSignalRecordCountPerPrimitivePerCamera = nullptr;
 
         // Final per-primitive translation-gradient stats.
         float *gradPositionMeanNorm = nullptr;
@@ -54,6 +57,11 @@ namespace Pale {
         float *gradPositionCoherence = nullptr;
         float *gradPositionDisagreement = nullptr;
         uint32_t *gradPositionActiveCameraCount = nullptr;
+        float *cloneSignalMeanNorm = nullptr;
+        float *cloneSignalStd = nullptr;
+        float *cloneSignalCoherence = nullptr;
+        float *cloneSignalDisagreement = nullptr;
+        uint32_t *cloneSignalActiveCameraCount = nullptr;
 
         size_t numPoints{0};
         size_t cameraSlotCount{0};

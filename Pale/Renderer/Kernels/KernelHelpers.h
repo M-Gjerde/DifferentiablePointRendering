@@ -471,6 +471,17 @@ namespace Pale {
         *outOpacity = std::pow(base, exp);
         return true;
     }
+    SYCL_EXTERNAL static bool opacityBeta(float2 uv, const Point &surfel, float *outOpacity) {
+        const float r2 = uv[0] * uv[0] + uv[1] * uv[1];
+        if (r2 > 1.0f) {
+            *outOpacity = 0.0f;
+            return false;
+        }
+        float base = 1 - r2;
+        float exp = 4 * std::exp(surfel.beta);
+        *outOpacity = std::pow(base, exp);
+        return true;
+    }
 
     SYCL_EXTERNAL inline void insertLocalSurfelLayerHit(LocalSurfelLayerHit *hits, uint32_t &hitCount,
                                                         uint32_t hitCapacity, const LocalSurfelLayerHit &candidateHit) {

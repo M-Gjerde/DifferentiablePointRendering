@@ -51,7 +51,7 @@ namespace Pale {
         }
 
         if (gradientRecord.primitiveIndex != selectedPrimitiveIndex) {
-            //return;
+            return;
         }
 
         constexpr float maxAbsGradientComponent = 1.0e3f;

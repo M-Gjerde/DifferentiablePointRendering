@@ -560,23 +560,23 @@ static void saveGradientSet(
     const std::filesystem::path pngPath = cameraDebugDir / (baseName + "_seismic.png");
     const std::filesystem::path pngQ99Path = cameraDebugDir / (baseName + "_seismic_q099.png");
 
-    Pale::Utils::saveRGBAFloatAsEXR(
-        exrPath,
-        rgbaBuffer,
-        imageWidth,
-        imageHeight);
-
-    if (Pale::Utils::saveGradientSignPNG(
-        pngPath,
-        rgbaBuffer,
-        imageWidth,
-        imageHeight,
-        adjointSamplesPerPixel,
-        1.0f,
-        false,
-        true)) {
-        Pale::Log::PA_INFO("Wrote PNG image to: {}", pngPath.string());
-    }
+    //Pale::Utils::saveRGBAFloatAsEXR(
+    //    exrPath,
+    //    rgbaBuffer,
+    //    imageWidth,
+    //    imageHeight);
+//
+    //if (Pale::Utils::saveGradientSignPNG(
+    //    pngPath,
+    //    rgbaBuffer,
+    //    imageWidth,
+    //    imageHeight,
+    //    adjointSamplesPerPixel,
+    //    1.0f,
+    //    false,
+    //    true)) {
+    //    Pale::Log::PA_INFO("Wrote PNG image to: {}", pngPath.string());
+    //}
 
     Pale::Utils::saveGradientSignPNG(
         pngQ99Path,
@@ -942,13 +942,14 @@ int main(int argc, char** argv) {
         settings.numForwardPasses = 1;
         settings.numShadowRays = 1;
         settings.numAdjointShadowRays = 1;
-        settings.adjointSamplesPerPixel = 1;
+        settings.adjointSamplesPerPixel = 4;
         settings.numGatherPasses = 1;
         settings.renderDebugGradientImages = true;
         settings.enableAdjointDirectLight = true;
-        settings.surfelIndexForDebugImages = 2;
+        settings.surfelIndexForDebugImages = 35;
         settings.depthDistortionWeight = depthDistortionWeight;
         settings.normalConsistencyWeight = normalConsistencyWeight;
+        settings.normalFromDepthUseMeanDepth = true;
         settings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
 
 
@@ -997,6 +998,7 @@ int main(int argc, char** argv) {
 
         settings.depthDistortionWeight = depthDistortionWeight;
         settings.normalConsistencyWeight = normalConsistencyWeight;
+        settings.normalFromDepthUseMeanDepth = true;
         settings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);

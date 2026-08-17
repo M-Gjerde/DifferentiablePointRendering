@@ -204,6 +204,31 @@ def find_run(output_root: Path, run_index: int) -> tuple[Path, Path]:
     return run_dir, run_dir / "points_final.ply"
 
 
+def find_run_dir_for_ply(points_path: Path) -> Path | None:
+    points_path = points_path.expanduser().resolve()
+
+    for parent in points_path.parents:
+        if (parent / "run_config.json").is_file():
+            return parent
+
+    return None
+
+
+def find_run_and_points(args: argparse.Namespace) -> tuple[Path, Path]:
+    if args.ply is None:
+        return find_run(args.output_root, args.index)
+
+    points_path = args.ply.expanduser().resolve()
+    if not points_path.is_file():
+        raise FileNotFoundError(f"PLY file does not exist: {points_path}")
+
+    run_dir = find_run_dir_for_ply(points_path)
+    if run_dir is None:
+        run_dir, _ = find_run(args.output_root, args.index)
+
+    return run_dir, points_path
+
+
 def path_relative_to_assets(path: Path, assets_root: Path) -> str:
     path = path.resolve()
     assets_root = assets_root.resolve()
@@ -655,6 +680,16 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--output-root", "-o", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
+    parser.add_argument(
+        "--ply",
+        type=Path,
+        default=None,
+        help=(
+            "Use this PLY instead of the selected run's points_final.ply. "
+            "If the PLY is inside a run folder, that run_config.json is used; "
+            "otherwise --output-root/--index provide the run context."
+        ),
+    )
     parser.add_argument("--camera-names", type=str, default=None)
 
     parser.add_argument("--skip_mesh", action="store_true")
@@ -686,7 +721,7 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
 
-    run_dir, points_path = find_run(args.output_root, args.index)
+    run_dir, points_path = find_run_and_points(args)
 
     mesh_dir = run_dir / "mesh"
     os.makedirs(mesh_dir, exist_ok=True)

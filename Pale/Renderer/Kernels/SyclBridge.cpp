@@ -208,6 +208,7 @@ namespace Pale {
             return;
         }
         queue.fill(gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        queue.fill(gradients.cloneSignal, float3{0.0f, 0.0f, 0.0f}, pointCount);
         queue.fill(gradients.gradRotation, float3{0.0f, 0.0f, 0.0f}, pointCount);
         queue.fill(gradients.gradScale, float2{0.0f, 0.0f}, pointCount);
         queue.fill(gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pointCount);
@@ -219,9 +220,16 @@ namespace Pale {
         queue.fill(gradients.gradPositionCoherence, 0.0f, pointCount);
         queue.fill(gradients.gradPositionDisagreement, 0.0f, pointCount);
         queue.fill(gradients.gradPositionActiveCameraCount, 0u, pointCount);
+        queue.fill(gradients.cloneSignalMeanNorm, 0.0f, pointCount);
+        queue.fill(gradients.cloneSignalStd, 0.0f, pointCount);
+        queue.fill(gradients.cloneSignalCoherence, 0.0f, pointCount);
+        queue.fill(gradients.cloneSignalDisagreement, 0.0f, pointCount);
+        queue.fill(gradients.cloneSignalActiveCameraCount, 0u, pointCount);
         if (cameraSlotCount > 0u) {
             queue.fill(gradients.gradPositionPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
             queue.fill(gradients.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
+            queue.fill(gradients.cloneSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
+            queue.fill(gradients.cloneSignalRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
         }
         queue.wait();
     }
@@ -360,6 +368,9 @@ namespace Pale {
         if (gradients.gradPosition) {
             queue.fill(gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pointCount);
         }
+        if (gradients.cloneSignal) {
+            queue.fill(gradients.cloneSignal, float3{0.0f, 0.0f, 0.0f}, pointCount);
+        }
         if (gradients.gradRotation) {
             queue.fill(gradients.gradRotation, float3{0.0f, 0.0f, 0.0f}, pointCount);
         }
@@ -404,6 +415,7 @@ namespace Pale {
 
     void submitDepthDistortionKernel(RenderPackage& pkg) {
         pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.cloneSignal, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradRotation, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradScale, float2{0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
@@ -417,6 +429,7 @@ namespace Pale {
 
     void submitNormalConsistencyKernel(RenderPackage& pkg) {
         pkg.queue.fill(pkg.gradients.gradPosition, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
+        pkg.queue.fill(pkg.gradients.cloneSignal, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradRotation, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradScale, float2{0.0f, 0.0f}, pkg.gradients.numPoints);
         pkg.queue.fill(pkg.gradients.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, pkg.gradients.numPoints);

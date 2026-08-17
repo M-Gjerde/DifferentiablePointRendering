@@ -88,7 +88,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     densification_interval = int(config.densification_interval)
     prune_interval = int(config.prune_interval)
-    densification_stats_warmup_iterations = max(densification_interval // 2, 0)
+    densification_stats_skip_iterations = (
+        max(densification_interval // 2, 0)
+        if bool(
+            getattr(
+                config,
+                "densification_stats_skip_interval_start",
+                getattr(config, "densification_stats_warmup", True),
+            )
+        )
+        else 0
+    )
     densify_after = config.densify_after if config.densify_after >= 0 else densification_interval
     prune_after = config.prune_after if config.prune_after >= 0 else prune_interval
     densify_until_iteration = int(config.densify_until_iteration) if config.densify_until_iteration >= 0 else int(
@@ -281,24 +291,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         f"Gradient shape mismatch for position: expected {tuple(positions.shape)}, got {grad_position_np.shape}")
 
                 photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
-                position_per_camera_np = photo_gradient_surfel_stats.get("position_per_camera", None)
-                position_record_count_per_camera_np = photo_gradient_surfel_stats.get(
-                    "position_record_count_per_camera",
+                clone_signal_per_camera_np = photo_gradient_surfel_stats.get("clone_signal_per_camera", None)
+                clone_signal_record_count_per_camera_np = photo_gradient_surfel_stats.get(
+                    "clone_signal_record_count_per_camera",
                     None,
                 )
                 if iteration == 1 or iteration % densification_interval == 0:
                     print(
                         "[densify-debug] "
                         f"gradient_stats_keys={list(photo_gradient_surfel_stats.keys())} "
-                        f"position_per_camera_shape={None if position_per_camera_np is None else np.asarray(position_per_camera_np).shape} "
-                        f"count_shape={None if position_record_count_per_camera_np is None else np.asarray(position_record_count_per_camera_np).shape}"
+                        f"clone_signal_per_camera_shape={None if clone_signal_per_camera_np is None else np.asarray(clone_signal_per_camera_np).shape} "
+                        f"count_shape={None if clone_signal_record_count_per_camera_np is None else np.asarray(clone_signal_record_count_per_camera_np).shape} "
                         f"grad_abs_min={active_densification_grad_abs_min:.3e}"
 
                     )
                 update_densification_statistics(
                     iteration=iteration,
                     densification_interval=densification_interval,
-                    densification_stats_warmup_iterations=densification_stats_warmup_iterations,
+                    densification_stats_skip_iterations=densification_stats_skip_iterations,
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
                     densify_position_grad_denom_np=densify_position_grad_denom_np,
                     densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
@@ -307,8 +317,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     trainable_surfel_mask=trainable_surfel_mask,
                     densify_bsdf_floor=densify_bsdf_floor,
                     densify_bsdf_gamma=densify_bsdf_gamma,
-                    densify_position_grad_per_camera_np=position_per_camera_np,
-                    densify_position_grad_per_camera_count_np=position_record_count_per_camera_np,
+                    densify_position_grad_per_camera_np=clone_signal_per_camera_np,
+                    densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
                 )
 
                 optimizer.zero_grad(set_to_none=True)

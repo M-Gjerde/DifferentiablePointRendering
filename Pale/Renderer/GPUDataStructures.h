@@ -239,7 +239,7 @@ namespace Pale {
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-    constexpr float LocalLayerDepthEpsilon = 2.5e-2f;
+    constexpr float LocalLayerDepthEpsilon = 1.25e-2f;
     constexpr float LocalLayerNormalCosineThreshold = 0.7071f; // 45 degrees mismatch to stop blending slabs
 
     /*************************  Ray & Hit *****************************/
@@ -566,6 +566,10 @@ namespace Pale {
         float gradPositionX = FLT_MAX;
         float gradPositionY = FLT_MAX;
         float gradPositionZ = FLT_MAX;
+        float cloneSignalX = 0.0f;
+        float cloneSignalY = 0.0f;
+        float cloneSignalZ = 0.0f;
+        uint32_t hasCloneSignal = 0u;
 
         float gradScaleU = FLT_MAX;
         float gradScaleV = FLT_MAX;
@@ -696,6 +700,7 @@ namespace Pale {
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
+        bool normalFromDepthUseMeanDepth = true;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
         uint32_t numAdjointPathShadowRays = 1;

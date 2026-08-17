@@ -48,6 +48,7 @@ LOSS_VALUE_KEYS = (
     "total_loss_value",
 )
 
+
 def make_zero_loss_values() -> Dict[str, float]:
     return {loss_key: 0.0 for loss_key in LOSS_VALUE_KEYS}
 
@@ -674,6 +675,7 @@ def format_training_iteration_log(
         f" beta={grad_beta_max:.2e}"
     )
 
+
 def format_gradient_source_balance(
         loss_gradients: Dict[str, np.ndarray],
         depth_regularizer_gradients: Dict[str, np.ndarray],
@@ -730,10 +732,10 @@ def format_gradient_source_balance(
         )
 
         component_denom = (
-            depth_norm
-            + normal_norm
-            + visibility_opacity_norm
-    )
+                depth_norm
+                + normal_norm
+                + visibility_opacity_norm
+        )
 
         depth_percent = (
             100.0 * depth_norm / component_denom
@@ -910,7 +912,7 @@ def scheduled_densification_grad_abs_min(config: OptimizationConfig, iteration: 
     initial_threshold = float(config.densification_grad_abs_min)
     final_threshold_value = getattr(config, "densification_grad_abs_min_final", None)
 
-    if final_threshold_value is None:
+    if final_threshold_value is None or final_threshold_value == 0:
         return initial_threshold
 
     final_threshold = float(final_threshold_value)
@@ -1404,7 +1406,7 @@ def extract_total_gradient_arrays(
 def update_densification_statistics(
         iteration: int,
         densification_interval: int,
-        densification_stats_warmup_iterations: int,
+        densification_stats_skip_iterations: int,
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
         densify_position_grad_vector_accum_np: np.ndarray,
@@ -1423,7 +1425,7 @@ def update_densification_statistics(
     should_accumulate = (
             densification_interval <= 1
             or (
-                    densification_phase >= densification_stats_warmup_iterations
+                    densification_phase >= densification_stats_skip_iterations
                     and densification_phase != 0
             )
     )
@@ -1434,14 +1436,14 @@ def update_densification_statistics(
         raise RuntimeError(
             "update_densification_statistics requires renderer gradient stats: "
             "densify_position_grad_per_camera_np is None. "
-            "Expected adjoint_images['gradient_stats']['position_per_camera']."
+            "Expected adjoint_images['gradient_stats']['clone_signal_per_camera']."
         )
 
     if densify_position_grad_per_camera_count_np is None:
         raise RuntimeError(
             "update_densification_statistics requires renderer gradient stats: "
             "densify_position_grad_per_camera_count_np is None. "
-            "Expected adjoint_images['gradient_stats']['position_record_count_per_camera']."
+            "Expected adjoint_images['gradient_stats']['clone_signal_record_count_per_camera']."
         )
 
     per_camera_grad_np = np.asarray(
@@ -1535,13 +1537,11 @@ def update_densification_statistics(
     density_grad_position_vector_np[active_camera_count_np[:, 0] == 0.0] = 0.0
     densify_position_signal_np[active_camera_count_np[:, 0] == 0.0] = 0.0
 
-    #linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
-    #bsdf_normalizer_np = (
-    #        np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma
-    #).astype(np.float32)
-
-    #densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
-    #density_grad_position_vector_np = density_grad_position_vector_np / bsdf_normalizer_np[:, None]
+    linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
+    bsdf_normalizer_np = (np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma).astype(
+        np.float32)
+    densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
+    density_grad_position_vector_np = density_grad_position_vector_np / bsdf_normalizer_np[:, None]
 
     densify_position_signal_np = np.nan_to_num(
         densify_position_signal_np,

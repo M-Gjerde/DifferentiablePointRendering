@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -674,6 +675,159 @@ namespace {
             }
         }
         return indices;
+    }
+
+    [[nodiscard]] glm::quat normalizeQuaternionOrIdentity(glm::quat quaternion);
+
+    struct PickRay {
+        glm::vec3 origin{0.0f};
+        glm::vec3 direction{0.0f, 0.0f, -1.0f};
+    };
+
+    struct PickResult {
+        int surfelIndex = -1;
+        float t = std::numeric_limits<float>::infinity();
+    };
+
+    struct EditableSurfelRef {
+        Pale::PointGeometry* pointGeometry = nullptr;
+        std::size_t localIndex = 0u;
+    };
+
+    [[nodiscard]] glm::mat4 syclMatrixToGlm(const Pale::float4x4& matrix) {
+        glm::mat4 result{1.0f};
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                result[c][r] = matrix.row[r][c];
+            }
+        }
+        return result;
+    }
+
+    [[nodiscard]] PickRay makePickRay(const Pale::CameraGPU& camera, float pixelX, float pixelY) {
+        const float width = static_cast<float>(std::max(camera.width, 1u));
+        const float height = static_cast<float>(std::max(camera.height, 1u));
+        const float vFlipped = height - pixelY;
+        const float ndcX = 2.0f * pixelX / width - 1.0f;
+        const float ndcY = 2.0f * vFlipped / height - 1.0f;
+        const float fy = 0.5f * height / std::tan(0.5f * glm::radians(camera.fovy));
+        const float fx = fy * (width / height);
+        const glm::vec3 cameraDirection = glm::normalize(glm::vec3{
+            ndcX * (0.5f * width) / fx,
+            ndcY * (0.5f * height) / fy,
+            -1.0f,
+        });
+        const glm::mat4 worldFromCamera = syclMatrixToGlm(camera.invView);
+        return {.origin = Pale::sycl2glm(camera.pos), .direction = glm::normalize(glm::mat3(worldFromCamera) * cameraDirection)};
+    }
+
+    [[nodiscard]] bool intersectSurfelForPick(
+        const PickRay& ray,
+        const glm::mat4& pointCloudTransform,
+        const Pale::PointGeometry& pointGeometry,
+        std::size_t localIndex,
+        int editorIndex,
+        PickResult& bestHit) {
+        if (localIndex >= pointGeometry.positions.size() || localIndex >= pointGeometry.quat.size() || localIndex >= pointGeometry.scales.size()) {
+            return false;
+        }
+        if (localIndex < pointGeometry.opacities.size() && pointGeometry.opacities[localIndex] <= 0.0f) {
+            return false;
+        }
+
+        glm::vec3 tangentU;
+        glm::vec3 tangentV;
+        const glm::mat3 rotation = glm::mat3_cast(normalizeQuaternionOrIdentity(pointGeometry.quat[localIndex]));
+        tangentU = glm::normalize(glm::vec3(rotation[0]));
+        tangentV = glm::normalize(glm::vec3(rotation[1]) - tangentU * glm::dot(glm::vec3(rotation[1]), tangentU));
+        const glm::mat3 pointCloudLinear{pointCloudTransform};
+        const glm::vec3 surfelCenter = glm::vec3(pointCloudTransform * glm::vec4(pointGeometry.positions[localIndex], 1.0f));
+        const glm::vec2 surfelScale = glm::max(pointGeometry.scales[localIndex], glm::vec2(1.0e-8f));
+        const glm::vec3 basisU = pointCloudLinear * (tangentU * surfelScale.x);
+        const glm::vec3 basisV = pointCloudLinear * (tangentV * surfelScale.y);
+        const glm::vec3 normal = glm::cross(basisU, basisV);
+        const float normalLengthSquared = glm::dot(normal, normal);
+        if (normalLengthSquared <= 1.0e-20f || !std::isfinite(normalLengthSquared)) {
+            return false;
+        }
+
+        const glm::vec3 unitNormal = normal / std::sqrt(normalLengthSquared);
+        const float denom = glm::dot(unitNormal, ray.direction);
+        if (std::abs(denom) <= 1.0e-8f) {
+            return false;
+        }
+        const float t = glm::dot(unitNormal, surfelCenter - ray.origin) / denom;
+        if (t <= 0.0f || t >= bestHit.t) {
+            return false;
+        }
+
+        const glm::vec3 rel = ray.origin + ray.direction * t - surfelCenter;
+        const float a = glm::dot(basisU, basisU);
+        const float b = glm::dot(basisU, basisV);
+        const float c = glm::dot(basisV, basisV);
+        const float d = glm::dot(rel, basisU);
+        const float e = glm::dot(rel, basisV);
+        const float determinant = a * c - b * b;
+        if (std::abs(determinant) <= 1.0e-20f) {
+            return false;
+        }
+
+        const float u = (d * c - e * b) / determinant;
+        const float v = (a * e - b * d) / determinant;
+        if (u * u + v * v > 1.0f) {
+            return false;
+        }
+
+        bestHit = {.surfelIndex = editorIndex, .t = t};
+        return true;
+    }
+
+    [[nodiscard]] std::optional<int> pickEditableSurfel(
+        const std::shared_ptr<Pale::Scene>& scene,
+        Pale::AssetAccessFromManager& assetAccessor,
+        const Pale::CameraGPU& camera,
+        float pixelX,
+        float pixelY) {
+        const std::optional<Pale::AssetHandle> pointCloudHandle = firstPointCloudHandle(scene);
+        const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
+            pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
+        if (!pointCloudAsset || countSurfels(*pointCloudAsset) == 0u) {
+            return std::nullopt;
+        }
+
+        const PickRay ray = makePickRay(camera, pixelX, pixelY);
+        Pale::Entity pointCloudEntity = firstPointCloudEntity(scene);
+        glm::mat4 pointCloudTransform{1.0f};
+        if (pointCloudEntity && pointCloudEntity.hasComponent<Pale::TransformComponent>()) {
+            pointCloudTransform = pointCloudEntity.getComponent<Pale::TransformComponent>().getTransform();
+        }
+
+        PickResult bestHit;
+        int editorIndex = 0;
+        for (const Pale::PointGeometry& pointGeometry : pointCloudAsset->points) {
+            for (std::size_t localIndex = 0; localIndex < pointGeometry.positions.size(); ++localIndex) {
+                (void)intersectSurfelForPick(ray, pointCloudTransform, pointGeometry, localIndex, editorIndex, bestHit);
+                ++editorIndex;
+            }
+        }
+        return bestHit.surfelIndex >= 0 ? std::optional<int>{bestHit.surfelIndex} : std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<EditableSurfelRef> resolveEditableSurfel(
+        Pale::PointAsset& pointAsset,
+        int editorIndex) {
+        if (editorIndex < 0) {
+            return std::nullopt;
+        }
+
+        std::size_t localIndex = static_cast<std::size_t>(editorIndex);
+        for (Pale::PointGeometry& pointGeometry : pointAsset.points) {
+            if (localIndex < pointGeometry.positions.size()) {
+                return EditableSurfelRef{.pointGeometry = &pointGeometry, .localIndex = localIndex};
+            }
+            localIndex -= pointGeometry.positions.size();
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] glm::quat normalizeQuaternionOrIdentity(glm::quat quaternion) {
@@ -1450,6 +1604,7 @@ int main(int argc, char** argv) {
         ImGuizmo::OPERATION surfelGizmoOperation = ImGuizmo::TRANSLATE;
         ImGuizmo::MODE surfelGizmoMode = ImGuizmo::WORLD;
         bool viewportGizmoMouseCapture = false;
+        bool viewportPickArmed = false;
         std::string surfelLightStatus;
         std::string surfelEditorStatus;
         float exposure = 1.0f;
@@ -1461,6 +1616,7 @@ int main(int argc, char** argv) {
         OrbitCamera displayedOrbit = orbit;
         SceneBounds displayedBounds = bounds;
         CameraSource displayedCameraSource = cameraSource;
+        Pale::CameraGPU displayedCamera = orbit.makeGpuCamera(renderWidth, renderHeight);
         uint32_t displayedRenderWidth = renderWidth;
         uint32_t displayedRenderHeight = renderHeight;
         Texture2D texture;
@@ -1998,6 +2154,7 @@ int main(int argc, char** argv) {
             displayedOrbit = orbit;
             displayedBounds = bounds;
             displayedCameraSource = cameraSource;
+            displayedCamera = camera;
             displayedRenderWidth = renderWidth;
             displayedRenderHeight = renderHeight;
             updateDisplayTexture();
@@ -2373,12 +2530,14 @@ int main(int argc, char** argv) {
                                     const std::size_t surfelIndex = emittingSurfels[listIndex];
                                     const bool selected =
                                         static_cast<int>(listIndex) == selectedSurfelLightIndex;
-                                    const std::string label =
-                                        "surfel " + std::to_string(surfelIndex) +
-                                        " power " + std::to_string(pointGeometry.powers[surfelIndex]);
-                                    if (ImGui::Selectable(label.c_str(), selected)) {
-                                        selectedSurfelLightIndex = static_cast<int>(listIndex);
-                                    }
+	                                    const std::string label =
+	                                        "surfel " + std::to_string(surfelIndex) +
+	                                        " power " + std::to_string(pointGeometry.powers[surfelIndex]);
+	                                    if (ImGui::Selectable(label.c_str(), selected)) {
+	                                        selectedSurfelLightIndex = static_cast<int>(listIndex);
+	                                        selectedSurfelEditorIndex = static_cast<int>(surfelIndex);
+	                                        surfelEditorStatus = "Selected surfel light " + std::to_string(selectedSurfelEditorIndex);
+	                                    }
                                     if (selected) {
                                         ImGui::SetItemDefaultFocus();
                                     }
@@ -2386,12 +2545,13 @@ int main(int argc, char** argv) {
                                 ImGui::EndCombo();
                             }
 
-                            if (selectedPowerIndex < pointGeometry.positions.size()) {
-                                glm::vec3& position = pointGeometry.positions[selectedPowerIndex];
-                                if (ImGui::DragFloat3("Surfel position", &position.x, 0.01f, -10000.0f, 10000.0f, "%.3f")) {
-                                    surfelChanged = true;
-                                    surfelLightStatus =
-                                        "Moved surfel " + std::to_string(selectedPowerIndex);
+	                            if (selectedPowerIndex < pointGeometry.positions.size()) {
+	                                glm::vec3& position = pointGeometry.positions[selectedPowerIndex];
+	                                if (ImGui::DragFloat3("Surfel position", &position.x, 0.01f, -10000.0f, 10000.0f, "%.3f")) {
+	                                    surfelChanged = true;
+	                                    selectedSurfelEditorIndex = static_cast<int>(selectedPowerIndex);
+	                                    surfelLightStatus =
+	                                        "Moved surfel " + std::to_string(selectedPowerIndex);
                                 }
                             }
                             if (selectedPowerIndex < pointGeometry.albedos.size()) {
@@ -2404,23 +2564,25 @@ int main(int argc, char** argv) {
                             }
 
                             float selectedPower = pointGeometry.powers[selectedPowerIndex];
-                            if (ImGui::DragFloat(
-                                    "Selected power",
+	                            if (ImGui::DragFloat(
+	                                    "Selected power",
                                     &selectedPower,
                                     0.1f,
                                     0.0f,
                                     1000000.0f,
                                     "%.3f")) {
-                                pointGeometry.powers[selectedPowerIndex] = std::max(selectedPower, 0.0f);
-                                surfelChanged = true;
-                                surfelLightStatus =
-                                    "Updated surfel " + std::to_string(selectedPowerIndex);
-                            }
-                            if (ImGui::Button("Remove surfel light")) {
-                                pointGeometry.powers[selectedPowerIndex] = 0.0f;
-                                surfelChanged = true;
-                                surfelLightStatus =
-                                    "Removed surfel " + std::to_string(selectedPowerIndex) + " from lights";
+	                                pointGeometry.powers[selectedPowerIndex] = std::max(selectedPower, 0.0f);
+	                                surfelChanged = true;
+	                                selectedSurfelEditorIndex = static_cast<int>(selectedPowerIndex);
+	                                surfelLightStatus =
+	                                    "Updated surfel " + std::to_string(selectedPowerIndex);
+	                            }
+	                            if (ImGui::Button("Remove surfel light")) {
+	                                pointGeometry.powers[selectedPowerIndex] = 0.0f;
+	                                surfelChanged = true;
+	                                selectedSurfelEditorIndex = static_cast<int>(selectedPowerIndex);
+	                                surfelLightStatus =
+	                                    "Removed surfel " + std::to_string(selectedPowerIndex) + " from lights";
                             }
                             ImGui::Checkbox("Show surfel gizmo", &showSurfelGizmo);
                             if (showSurfelGizmo) {
@@ -2488,10 +2650,11 @@ int main(int argc, char** argv) {
 
                             if (pointGeometry.powers[candidateIndex] > 0.0f) {
                                 ImGui::TextWrapped("Selected surfel already has non-zero power");
-                            } else if (ImGui::Button("Add surfel light")) {
-                                pointGeometry.powers[candidateIndex] = candidateSurfelPower;
-                                selectedSurfelLightIndex = static_cast<int>(emittingSurfels.size());
-                                surfelChanged = true;
+	                            } else if (ImGui::Button("Add surfel light")) {
+	                                pointGeometry.powers[candidateIndex] = candidateSurfelPower;
+	                                selectedSurfelLightIndex = static_cast<int>(emittingSurfels.size());
+	                                selectedSurfelEditorIndex = static_cast<int>(candidateIndex);
+	                                surfelChanged = true;
                                 surfelLightStatus =
                                     "Added surfel " + std::to_string(candidateIndex) + " as light";
                             }
@@ -2813,24 +2976,24 @@ int main(int argc, char** argv) {
                     ImGuizmo::PopID();
                 }
 
-                if (showSurfelGizmo && cameraSource == CameraSource::Viewport) {
-                    const std::optional<Pale::AssetHandle> pointCloudHandle = firstPointCloudHandle(scene);
-                    const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
-                        pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
-                    if (pointCloudAsset && !pointCloudAsset->points.empty()) {
-                        Pale::PointGeometry& pointGeometry = pointCloudAsset->points.front();
-                        const std::vector<std::size_t> emittingSurfels =
-                            collectSurfelPowerIndices(pointGeometry, true);
-                        if (!emittingSurfels.empty()) {
-                            selectedSurfelLightIndex = std::clamp(
-                                selectedSurfelLightIndex,
-                                0,
-                                static_cast<int>(emittingSurfels.size() - 1u));
-                            const std::size_t surfelIndex =
-                                emittingSurfels[static_cast<std::size_t>(selectedSurfelLightIndex)];
-                            if (surfelIndex < pointGeometry.positions.size() && surfelIndex < pointGeometry.quat.size()) {
-                                Pale::Entity pointCloudEntity = firstPointCloudEntity(scene);
-                                glm::mat4 pointCloudTransform{1.0f};
+	                if (showSurfelGizmo && cameraSource == CameraSource::Viewport) {
+	                    const std::optional<Pale::AssetHandle> pointCloudHandle = firstPointCloudHandle(scene);
+	                    const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
+	                        pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
+	                    const std::size_t editableSurfelCount = pointCloudAsset ? countSurfels(*pointCloudAsset) : 0u;
+	                    if (pointCloudAsset && editableSurfelCount > 0u) {
+	                        selectedSurfelEditorIndex = std::clamp(
+	                            selectedSurfelEditorIndex,
+	                            0,
+	                            static_cast<int>(editableSurfelCount - 1u));
+	                        const std::optional<EditableSurfelRef> editableSurfel =
+	                            resolveEditableSurfel(*pointCloudAsset, selectedSurfelEditorIndex);
+	                        if (editableSurfel && editableSurfel->pointGeometry) {
+	                            Pale::PointGeometry& pointGeometry = *editableSurfel->pointGeometry;
+	                            const std::size_t surfelIndex = editableSurfel->localIndex;
+	                            if (surfelIndex < pointGeometry.positions.size() && surfelIndex < pointGeometry.quat.size()) {
+	                                Pale::Entity pointCloudEntity = firstPointCloudEntity(scene);
+	                                glm::mat4 pointCloudTransform{1.0f};
                                 if (pointCloudEntity && pointCloudEntity.hasComponent<Pale::TransformComponent>()) {
                                     pointCloudTransform =
                                         pointCloudEntity.getComponent<Pale::TransformComponent>().getTransform();
@@ -2862,23 +3025,23 @@ int main(int argc, char** argv) {
                                         surfelGizmoOperation,
                                         surfelGizmoMode,
                                         glm::value_ptr(surfelTransform))) {
-                                    const glm::mat4 localEditedTransform =
-                                        glm::inverse(pointCloudTransform) * surfelTransform;
-                                    pointGeometry.positions[surfelIndex] = glm::vec3(localEditedTransform[3]);
-                                    if (surfelGizmoOperation == ImGuizmo::ROTATE) {
-                                        pointGeometry.quat[surfelIndex] = extractRotationQuaternion(localEditedTransform);
-                                    }
-                                    surfelLightStatus =
-                                        (surfelGizmoOperation == ImGuizmo::ROTATE ? "Rotated surfel " : "Moved surfel ") +
-                                        std::to_string(surfelIndex);
-                                    rebuildSceneGpu();
-                                }
+	                                    const glm::mat4 localEditedTransform =
+	                                        glm::inverse(pointCloudTransform) * surfelTransform;
+	                                    pointGeometry.positions[surfelIndex] = glm::vec3(localEditedTransform[3]);
+	                                    if (surfelGizmoOperation == ImGuizmo::ROTATE) {
+	                                        pointGeometry.quat[surfelIndex] = extractRotationQuaternion(localEditedTransform);
+	                                    }
+	                                    surfelEditorStatus =
+	                                        (surfelGizmoOperation == ImGuizmo::ROTATE ? "Rotated surfel " : "Moved surfel ") +
+	                                        std::to_string(selectedSurfelEditorIndex);
+	                                    rebuildSceneGpu();
+	                                }
                                 viewportGizmoHovered = viewportGizmoHovered || ImGuizmo::IsOver();
                                 viewportGizmoUsing = viewportGizmoUsing || ImGuizmo::IsUsing() || ImGuizmo::IsUsingAny();
                                 ImGuizmo::PopID();
-                            }
-                        }
-                    }
+	                        }
+	                    }
+	                }
                 }
 
                 if (cameraSource == CameraSource::Viewport) {
@@ -2919,10 +3082,34 @@ int main(int argc, char** argv) {
                     viewportGizmoMouseCapture = true;
                 }
 
-                const bool viewportCameraInputBlocked =
-                    viewportGizmoHovered || viewportGizmoUsing || viewportGizmoMouseCapture;
-                if (cameraSource == CameraSource::Viewport && imageHovered && !viewportCameraInputBlocked) {
-                    if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+	                const bool viewportCameraInputBlocked =
+	                    viewportGizmoHovered || viewportGizmoUsing || viewportGizmoMouseCapture;
+	                const ImVec2 imageMax{imageMin.x + imageSize.x, imageMin.y + imageSize.y};
+	                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+	                    viewportPickArmed = imageHovered && !viewportCameraInputBlocked;
+	                }
+	                if (viewportPickArmed && ImGui::IsMouseDragging(ImGuiMouseButton_Left, io.MouseDragThreshold)) {
+	                    viewportPickArmed = false;
+	                }
+	                if (viewportPickArmed && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+	                    const bool releaseInsideImage = ImGui::IsMouseHoveringRect(imageMin, imageMax, false);
+	                    if (releaseInsideImage && !viewportCameraInputBlocked && displayedRenderWidth > 0u && displayedRenderHeight > 0u) {
+	                        const ImVec2 mouse = ImGui::GetMousePos();
+	                        const float normalizedX = std::clamp((mouse.x - imageMin.x) / std::max(imageSize.x, 1.0f), 0.0f, 0.999999f);
+	                        const float normalizedY = std::clamp((mouse.y - imageMin.y) / std::max(imageSize.y, 1.0f), 0.0f, 0.999999f);
+	                        const float pixelX = normalizedX * static_cast<float>(displayedRenderWidth);
+	                        const float pixelY = normalizedY * static_cast<float>(displayedRenderHeight);
+	                        if (const std::optional<int> pickedSurfelIndex = pickEditableSurfel(scene, assetAccessor, displayedCamera, pixelX, pixelY)) {
+	                            selectedSurfelEditorIndex = *pickedSurfelIndex;
+	                            surfelEditorStatus = "Picked surfel " + std::to_string(selectedSurfelEditorIndex);
+	                        } else {
+	                            surfelEditorStatus = "No surfel under cursor";
+	                        }
+	                    }
+	                    viewportPickArmed = false;
+	                }
+	                if (cameraSource == CameraSource::Viewport && imageHovered && !viewportCameraInputBlocked) {
+	                    if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
                         orbit.orbit(io.MouseDelta);
                         cameraDirty = true;
                     }

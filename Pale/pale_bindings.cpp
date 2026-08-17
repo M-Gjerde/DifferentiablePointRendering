@@ -166,6 +166,8 @@ public:
 
             m_settings.normalConsistencyWeight =
                     get_f(settingsDict, "normal_consistency_weight", m_settings.normalConsistencyWeight);
+            m_settings.normalFromDepthUseMeanDepth =
+                    get_b(settingsDict, "normal_from_depth_use_mean_depth", m_settings.normalFromDepthUseMeanDepth);
 
             m_settings.visibilityWeightedOpacityRegularizerWeight =
                     get_f(settingsDict,
@@ -516,6 +518,7 @@ public:
         const std::size_t primitiveCameraCount = pointCount * cameraSlotCount;
 
         std::vector<Pale::float3> gradPositionHost(pointCount);
+        std::vector<Pale::float3> cloneSignalHost(pointCount);
         std::vector<Pale::float3> gradRotationHost(pointCount);
         std::vector<Pale::float2> gradScaleHost(pointCount);
         std::vector<Pale::float3> gradColorHost(pointCount);
@@ -529,15 +532,29 @@ public:
         std::vector<float> gradPositionCoherenceHost(pointCount);
         std::vector<float> gradPositionDisagreementHost(pointCount);
         std::vector<uint32_t> gradPositionActiveCameraCountHost(pointCount);
+        std::vector<float> cloneSignalMeanNormHost(pointCount);
+        std::vector<float> cloneSignalStdHost(pointCount);
+        std::vector<float> cloneSignalCoherenceHost(pointCount);
+        std::vector<float> cloneSignalDisagreementHost(pointCount);
+        std::vector<uint32_t> cloneSignalActiveCameraCountHost(pointCount);
 
         std::vector<Pale::float3> gradPositionPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<uint32_t> gradPositionRecordCountPerPrimitivePerCameraHost(primitiveCameraCount);
+        std::vector<Pale::float3> cloneSignalPerPrimitivePerCameraHost(primitiveCameraCount);
+        std::vector<uint32_t> cloneSignalRecordCountPerPrimitivePerCameraHost(primitiveCameraCount);
 
         if (pointCount > 0) {
             if (gradients.gradPosition) {
                 syclQueue.memcpy(
                     gradPositionHost.data(),
                     gradients.gradPosition,
+                    pointCount * sizeof(Pale::float3)
+                );
+            }
+            if (gradients.cloneSignal) {
+                syclQueue.memcpy(
+                    cloneSignalHost.data(),
+                    gradients.cloneSignal,
                     pointCount * sizeof(Pale::float3)
                 );
             }
@@ -620,6 +637,41 @@ public:
                     pointCount * sizeof(uint32_t));
             }
 
+            if (gradients.cloneSignalMeanNorm) {
+                syclQueue.memcpy(
+                    cloneSignalMeanNormHost.data(),
+                    gradients.cloneSignalMeanNorm,
+                    pointCount * sizeof(float));
+            }
+
+            if (gradients.cloneSignalStd) {
+                syclQueue.memcpy(
+                    cloneSignalStdHost.data(),
+                    gradients.cloneSignalStd,
+                    pointCount * sizeof(float));
+            }
+
+            if (gradients.cloneSignalCoherence) {
+                syclQueue.memcpy(
+                    cloneSignalCoherenceHost.data(),
+                    gradients.cloneSignalCoherence,
+                    pointCount * sizeof(float));
+            }
+
+            if (gradients.cloneSignalDisagreement) {
+                syclQueue.memcpy(
+                    cloneSignalDisagreementHost.data(),
+                    gradients.cloneSignalDisagreement,
+                    pointCount * sizeof(float));
+            }
+
+            if (gradients.cloneSignalActiveCameraCount) {
+                syclQueue.memcpy(
+                    cloneSignalActiveCameraCountHost.data(),
+                    gradients.cloneSignalActiveCameraCount,
+                    pointCount * sizeof(uint32_t));
+            }
+
             if (primitiveCameraCount > 0 &&
                 gradients.gradPositionPerPrimitivePerCamera) {
                 syclQueue.memcpy(
@@ -633,6 +685,22 @@ public:
                 syclQueue.memcpy(
                     gradPositionRecordCountPerPrimitivePerCameraHost.data(),
                     gradients.gradPositionRecordCountPerPrimitivePerCamera,
+                    primitiveCameraCount * sizeof(uint32_t));
+            }
+
+            if (primitiveCameraCount > 0 &&
+                gradients.cloneSignalPerPrimitivePerCamera) {
+                syclQueue.memcpy(
+                    cloneSignalPerPrimitivePerCameraHost.data(),
+                    gradients.cloneSignalPerPrimitivePerCamera,
+                    primitiveCameraCount * sizeof(Pale::float3));
+            }
+
+            if (primitiveCameraCount > 0 &&
+                gradients.cloneSignalRecordCountPerPrimitivePerCamera) {
+                syclQueue.memcpy(
+                    cloneSignalRecordCountPerPrimitivePerCameraHost.data(),
+                    gradients.cloneSignalRecordCountPerPrimitivePerCamera,
                     primitiveCameraCount * sizeof(uint32_t));
             }
 
@@ -831,6 +899,7 @@ public:
 
         py::dict gradientDictionary;
         gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
+        gradientDictionary["clone_signal"] = makeFloat3Array(cloneSignalHost, pointCount);
         gradientDictionary["rotation"] = makeFloat3Array(gradRotationHost, pointCount);
         gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
         gradientDictionary["albedo"] = makeFloat3Array(gradColorHost, pointCount);
@@ -1032,6 +1101,20 @@ public:
             gradPositionPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["position_record_count_per_camera"] = makeUintCameraArray(
             gradPositionRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["clone_signal_mean_norm"] =
+                makeFloat1Array(cloneSignalMeanNormHost, pointCount);
+        gradientStatsDictionary["clone_signal_std"] =
+                makeFloat1Array(cloneSignalStdHost, pointCount);
+        gradientStatsDictionary["clone_signal_coherence"] =
+                makeFloat1Array(cloneSignalCoherenceHost, pointCount);
+        gradientStatsDictionary["clone_signal_disagreement"] =
+                makeFloat1Array(cloneSignalDisagreementHost, pointCount);
+        gradientStatsDictionary["clone_signal_active_camera_count"] =
+                makeUint1Array(cloneSignalActiveCameraCountHost, pointCount);
+        gradientStatsDictionary["clone_signal_per_camera"] = makeFloat3CameraArray(
+            cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["clone_signal_record_count_per_camera"] = makeUintCameraArray(
+            cloneSignalRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         adjointImagesDictionary["gradient_stats"] = std::move(gradientStatsDictionary);
 
         return py::make_tuple(gradientDictionary, adjointImagesDictionary);
@@ -1609,6 +1692,7 @@ public:
         const std::size_t pointCount = sourceGradients.numPoints;
 
         std::vector<Pale::float3> gradPositionHost(pointCount);
+        std::vector<Pale::float3> cloneSignalHost(pointCount);
         std::vector<Pale::float3> gradRotationHost(pointCount);
         std::vector<Pale::float2> gradScaleHost(pointCount);
         std::vector<Pale::float3> gradAlbedoHost(pointCount);
@@ -1620,6 +1704,10 @@ public:
         if (pointCount > 0) {
             if (sourceGradients.gradPosition) {
                 syclQueue.memcpy(gradPositionHost.data(), sourceGradients.gradPosition,
+                                 pointCount * sizeof(Pale::float3));
+            }
+            if (sourceGradients.cloneSignal) {
+                syclQueue.memcpy(cloneSignalHost.data(), sourceGradients.cloneSignal,
                                  pointCount * sizeof(Pale::float3));
             }
             if (sourceGradients.gradRotation) {
@@ -1707,6 +1795,7 @@ public:
 
         py::dict gradientDictionary;
         gradientDictionary["position"] = makeFloat3Array(gradPositionHost, pointCount);
+        gradientDictionary["clone_signal"] = makeFloat3Array(cloneSignalHost, pointCount);
         gradientDictionary["rotation"] = makeFloat3Array(gradRotationHost, pointCount);
         gradientDictionary["scale"] = makeFloat2Array(gradScaleHost, pointCount);
         gradientDictionary["albedo"] = makeFloat3Array(gradAlbedoHost, pointCount);
