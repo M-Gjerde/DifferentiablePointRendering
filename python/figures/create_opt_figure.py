@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Create a 6-panel optimization GIF from the latest optimization run.\n"
-            "Panels: target | initial render | final render | optimization sequence | median depth | loss curve"
+            "Panels: target | rendered | final render | optimization loss | median depth | normal from depth"
         )
     )
     parser.add_argument(
@@ -270,7 +270,7 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
 
 
 def discover_camera_names(run_dir: Path) -> List[str]:
-    camera_names = []
+    camera_names = set()
 
     for child in sorted(run_dir.iterdir()):
         if not child.is_dir():
@@ -278,12 +278,30 @@ def discover_camera_names(run_dir: Path) -> List[str]:
 
         render_dir = child / "render"
         if render_dir.is_dir():
-            camera_names.append(child.name)
+            camera_names.add(child.name)
+
+    final_image_patterns = [
+        "render_target_*.png",
+        "render_final_*.png",
+        "median_depth_final_*.png",
+        "normal_from_depth_final_*.png",
+    ]
+
+    for pattern in final_image_patterns:
+        for image_path in run_dir.glob(pattern):
+            match = re.match(
+                r"^(?:render_target|render_final|median_depth_final|normal_from_depth_final)_(.+)\.png$",
+                image_path.name,
+            )
+            if match is not None:
+                camera_names.add(match.group(1))
 
     if not camera_names:
-        raise FileNotFoundError(f"No camera folders with a render/ subfolder found in: {run_dir}")
+        raise FileNotFoundError(
+            f"No camera folders or final camera images found in: {run_dir}"
+        )
 
-    return camera_names
+    return sorted(camera_names)
 
 
 def make_loss_curve_image(
@@ -329,6 +347,14 @@ def load_image_rgb(path: Path) -> Image.Image:
         raise FileNotFoundError(f"Missing image: {path}")
 
     return Image.open(path).convert("RGB")
+
+
+def load_optional_image_rgb(path: Path, label: str) -> Image.Image | None:
+    if not path.exists():
+        print(f"Skipping {label}: missing {path}")
+        return None
+
+    return load_image_rgb(path)
 
 
 def make_placeholder_image(
@@ -426,10 +452,25 @@ def make_panel(
     return draw_panel_title(fitted, title, panel_width, title_height, font)
 
 
+def make_optional_panel(
+    image: Image.Image | None,
+    title: str,
+    panel_width: int,
+    panel_height: int,
+    title_height: int,
+    font: ImageFont.ImageFont,
+) -> Image.Image | None:
+    if image is None:
+        return None
+
+    return make_panel(image, title, panel_width, panel_height, title_height, font)
+
+
 def compose_grid_panels(
     rows: List[List[Image.Image]],
     background_color: tuple[int, int, int] = (10, 10, 10),
 ) -> Image.Image:
+    rows = [row for row in rows if row]
     if not rows:
         raise ValueError("Cannot compose an empty panel grid")
 
@@ -463,7 +504,8 @@ def parse_frame_index_from_name(path: Path, suffix: str) -> int | None:
 
 def discover_render_frames(camera_render_dir: Path) -> List[Path]:
     if not camera_render_dir.exists():
-        raise FileNotFoundError(f"Missing render directory: {camera_render_dir}")
+        print(f"Skipping rendered frames: missing {camera_render_dir}")
+        return []
 
     frame_paths = sorted(
         camera_render_dir.glob("*_render.png"),
@@ -476,7 +518,8 @@ def discover_render_frames(camera_render_dir: Path) -> List[Path]:
     )
 
     if not frame_paths:
-        raise FileNotFoundError(f"No optimization render frames found in: {camera_render_dir}")
+        print(f"Skipping rendered frames: no optimization render frames found in {camera_render_dir}")
+        return []
 
     return frame_paths
 
@@ -520,31 +563,43 @@ def select_render_frames_for_gif(
     return selected_frame_paths
 
 def discover_median_depth_frames(camera_median_depth_dir: Path) -> dict[int, Path]:
-    if not camera_median_depth_dir.exists():
+    return discover_snapshot_frames(camera_median_depth_dir, "median_depth")
+
+
+def discover_snapshot_frames(camera_snapshot_dir: Path, suffix: str) -> dict[int, Path]:
+    if not camera_snapshot_dir.exists():
         return {}
 
-    median_depth_frame_paths = {}
+    frame_paths = {}
 
-    for median_depth_path in camera_median_depth_dir.glob("*_median_depth.png"):
-        frame_index = parse_frame_index_from_name(median_depth_path, "median_depth")
+    for snapshot_path in camera_snapshot_dir.glob(f"*_{suffix}.png"):
+        frame_index = parse_frame_index_from_name(snapshot_path, suffix)
         if frame_index is None:
             continue
 
-        median_depth_frame_paths[frame_index] = median_depth_path
+        frame_paths[frame_index] = snapshot_path
 
-    return median_depth_frame_paths
+    return frame_paths
 
 
 def get_matching_median_depth_path(
     render_frame_path: Path,
     median_depth_frame_paths: dict[int, Path],
 ) -> Path | None:
-    render_frame_index = parse_frame_index_from_name(render_frame_path, "render")
+    return get_matching_snapshot_path(render_frame_path, median_depth_frame_paths, "render")
+
+
+def get_matching_snapshot_path(
+    render_frame_path: Path,
+    snapshot_frame_paths: dict[int, Path],
+    render_suffix: str = "render",
+) -> Path | None:
+    render_frame_index = parse_frame_index_from_name(render_frame_path, render_suffix)
 
     if render_frame_index is None:
         return None
 
-    return median_depth_frame_paths.get(render_frame_index)
+    return snapshot_frame_paths.get(render_frame_index)
 
 
 def build_gif(
@@ -562,11 +617,13 @@ def build_gif(
     last_frame_hold_seconds: float,
 ) -> Path:
     target_path = run_dir / f"render_target_{camera_name}.png"
-    initial_path = run_dir / f"render_initial_{camera_name}.png"
     final_path = run_dir / f"render_final_{camera_name}.png"
+    final_median_depth_path = run_dir / f"median_depth_final_{camera_name}.png"
+    final_normal_from_depth_path = run_dir / f"normal_from_depth_final_{camera_name}.png"
 
     render_dir = run_dir / camera_name / "render"
     median_depth_dir = run_dir / camera_name / "median_depth"
+    normal_from_depth_dir = run_dir / camera_name / "normal_from_depth"
 
     metrics_csv_path = run_dir / "metrics.csv"
     loss_curve_path = run_dir / "loss_curve_for_gif.png"
@@ -576,42 +633,44 @@ def build_gif(
     except Exception:
         font = ImageFont.load_default()
 
-    target_img = load_image_rgb(target_path)
-    final_img = load_image_rgb(final_path)
-
-    if initial_path.exists():
-        initial_img = load_image_rgb(initial_path)
-    else:
-        initial_img = make_placeholder_image(
-            f"Missing initial render\n{initial_path.name}",
-            panel_width,
-            panel_height,
-            font,
-        )
+    target_img = load_optional_image_rgb(target_path, "target")
+    final_img = load_optional_image_rgb(final_path, "final render")
+    final_median_depth_img = load_optional_image_rgb(final_median_depth_path, "final median depth")
+    final_normal_from_depth_img = load_optional_image_rgb(final_normal_from_depth_path, "final normal from depth")
 
     all_render_frame_paths = discover_render_frames(render_dir)
     render_frame_paths = select_render_frames_for_gif(
         render_frame_paths=all_render_frame_paths,
         frame_stride=frame_stride,
         max_gif_frames=max_gif_frames,
-    )
+    ) if all_render_frame_paths else []
 
-    print(
-        f"GIF frame sampling: using {len(render_frame_paths)} / "
-        f"{len(all_render_frame_paths)} render frames"
-    )
+    if all_render_frame_paths:
+        print(
+            f"GIF frame sampling: using {len(render_frame_paths)} / "
+            f"{len(all_render_frame_paths)} render frames"
+        )
     median_depth_frame_paths = discover_median_depth_frames(median_depth_dir)
+    normal_from_depth_frame_paths = discover_snapshot_frames(normal_from_depth_dir, "normal_from_depth")
 
-    loss_curve_img_path, used_loss_column = make_loss_curve_image(
-        metrics_csv_path=metrics_csv_path,
-        output_png_path=loss_curve_path,
-        explicit_loss_column=loss_column,
-        width=panel_width,
-        height=panel_height,
-    )
-    loss_curve_img = load_image_rgb(loss_curve_img_path)
+    loss_curve_img = None
+    used_loss_column = None
+    if metrics_csv_path.exists():
+        try:
+            loss_curve_img_path, used_loss_column = make_loss_curve_image(
+                metrics_csv_path=metrics_csv_path,
+                output_png_path=loss_curve_path,
+                explicit_loss_column=loss_column,
+                width=panel_width,
+                height=panel_height,
+            )
+            loss_curve_img = load_image_rgb(loss_curve_img_path)
+        except Exception as exception:
+            print(f"Skipping optimization loss figure: {exception}")
+    else:
+        print(f"Skipping optimization loss figure: missing {metrics_csv_path}")
 
-    target_panel = make_panel(
+    target_panel = make_optional_panel(
         target_img,
         f"Target ({camera_name})",
         panel_width,
@@ -620,16 +679,7 @@ def build_gif(
         font,
     )
 
-    initial_panel = make_panel(
-        initial_img,
-        f"Initial render ({camera_name})",
-        panel_width,
-        panel_height,
-        title_height,
-        font,
-    )
-
-    final_panel = make_panel(
+    final_panel = make_optional_panel(
         final_img,
         f"Final render ({camera_name})",
         panel_width,
@@ -638,19 +688,17 @@ def build_gif(
         font,
     )
 
-    loss_panel = make_panel(
+    loss_title = (
+        f"Optimization loss ({used_loss_column})"
+        if used_loss_column is not None
+        else "Optimization loss"
+    )
+    loss_panel = make_optional_panel(
         loss_curve_img,
-        f"Loss curve ({used_loss_column})",
+        loss_title,
         panel_width,
         panel_height,
         title_height,
-        font,
-    )
-
-    no_median_depth_img = make_placeholder_image(
-        "Median depth unavailable",
-        panel_width,
-        panel_height,
         font,
     )
 
@@ -668,32 +716,48 @@ def build_gif(
 
     gif_frames: list[Image.Image] = []
     gif_durations_ms: list[int] = []
+    frame_paths_for_output: list[Path | None] = render_frame_paths if render_frame_paths else [None]
 
-    for frame_index, render_frame_path in enumerate(render_frame_paths):
-        render_img = load_image_rgb(render_frame_path)
+    for frame_index, render_frame_path in enumerate(frame_paths_for_output):
+        rendered_panel = None
+        if render_frame_path is not None:
+            render_img = load_image_rgb(render_frame_path)
+            rendered_panel = make_panel(
+                render_img,
+                f"Rendered ({render_frame_path.stem})",
+                panel_width,
+                panel_height,
+                title_height,
+                font,
+            )
 
-        optimization_panel = make_panel(
-            render_img,
-            f"Optimization ({render_frame_path.stem})",
-            panel_width,
-            panel_height,
-            title_height,
-            font,
-        )
+        median_depth_img = None
+        median_depth_title = f"Median depth ({camera_name})"
+        if render_frame_path is not None:
+            median_depth_path = get_matching_median_depth_path(
+                render_frame_path=render_frame_path,
+                median_depth_frame_paths=median_depth_frame_paths,
+            )
+            if median_depth_path is not None:
+                median_depth_img = load_image_rgb(median_depth_path)
+                median_depth_title = f"Median depth ({median_depth_path.stem})"
+        if median_depth_img is None:
+            median_depth_img = final_median_depth_img
 
-        median_depth_path = get_matching_median_depth_path(
-            render_frame_path=render_frame_path,
-            median_depth_frame_paths=median_depth_frame_paths,
-        )
+        normal_from_depth_img = None
+        normal_from_depth_title = f"Normal from depth ({camera_name})"
+        if render_frame_path is not None:
+            normal_from_depth_path = get_matching_snapshot_path(
+                render_frame_path=render_frame_path,
+                snapshot_frame_paths=normal_from_depth_frame_paths,
+            )
+            if normal_from_depth_path is not None:
+                normal_from_depth_img = load_image_rgb(normal_from_depth_path)
+                normal_from_depth_title = f"Normal from depth ({normal_from_depth_path.stem})"
+        if normal_from_depth_img is None:
+            normal_from_depth_img = final_normal_from_depth_img
 
-        if median_depth_path is not None:
-            median_depth_img = load_image_rgb(median_depth_path)
-            median_depth_title = f"Median depth ({median_depth_path.stem})"
-        else:
-            median_depth_img = no_median_depth_img
-            median_depth_title = "Median depth"
-
-        median_depth_panel = make_panel(
+        median_depth_panel = make_optional_panel(
             median_depth_img,
             median_depth_title,
             panel_width,
@@ -702,16 +766,25 @@ def build_gif(
             font,
         )
 
+        normal_from_depth_panel = make_optional_panel(
+            normal_from_depth_img,
+            normal_from_depth_title,
+            panel_width,
+            panel_height,
+            title_height,
+            font,
+        )
+
         grid = compose_grid_panels(
             [
-                [target_panel, initial_panel, final_panel],
-                [optimization_panel, median_depth_panel, loss_panel],
+                [panel for panel in [target_panel, rendered_panel, final_panel] if panel is not None],
+                [panel for panel in [loss_panel, median_depth_panel, normal_from_depth_panel] if panel is not None],
             ]
         )
 
         gif_frames.append(grid)
 
-        is_last_frame = frame_index == len(render_frame_paths) - 1
+        is_last_frame = frame_index == len(frame_paths_for_output) - 1
         gif_durations_ms.append(final_duration_ms if is_last_frame else base_duration_ms)
 
     if not gif_frames:
