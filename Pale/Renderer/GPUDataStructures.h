@@ -232,14 +232,14 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 6;
+    constexpr uint32_t kMaxSplatEventsPerRay = 10;
     constexpr uint32_t kMaxLocalSurfelHits = 12;
 
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-    constexpr float LocalLayerDepthEpsilon = 1.25e-2f;
+    constexpr float LocalLayerDepthEpsilon = 2.25e-2f;
     constexpr float LocalLayerNormalCosineThreshold = 0.7071f; // 45 degrees mismatch to stop blending slabs
 
     /*************************  Ray & Hit *****************************/
@@ -700,7 +700,7 @@ namespace Pale {
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
-        bool normalFromDepthUseMeanDepth = true;
+        bool normalFromDepthUseMeanDepth = false;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
         uint32_t numAdjointPathShadowRays = 1;

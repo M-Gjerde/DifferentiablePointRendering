@@ -1599,7 +1599,7 @@ int main(int argc, char** argv) {
         int selectedSurfelLightIndex = 0;
         int candidateZeroPowerSurfelIndex = 0;
         float candidateSurfelPower = 1.0f;
-        int selectedSurfelEditorIndex = 0;
+        int selectedSurfelEditorIndex = -1;
         bool showSurfelGizmo = true;
         ImGuizmo::OPERATION surfelGizmoOperation = ImGuizmo::TRANSLATE;
         ImGuizmo::MODE surfelGizmoMode = ImGuizmo::WORLD;
@@ -2754,24 +2754,24 @@ int main(int argc, char** argv) {
 
                 if (!pointCloudAsset || countSurfels(*pointCloudAsset) == 0u) {
                     ImGui::TextWrapped("No editable surfels are loaded");
-                    selectedSurfelEditorIndex = 0;
+                    selectedSurfelEditorIndex = -1;
                 } else {
                     const std::size_t surfelCount = countSurfels(*pointCloudAsset);
                     selectedSurfelEditorIndex = std::clamp(
                         selectedSurfelEditorIndex,
-                        0,
+                        -1,
                         static_cast<int>(surfelCount - 1u));
 
                     ImGui::SetNextItemWidth(-1.0f);
                     if (ImGui::InputInt("Surfel index", &selectedSurfelEditorIndex)) {
                         selectedSurfelEditorIndex = std::clamp(
                             selectedSurfelEditorIndex,
-                            0,
+                            -1,
                             static_cast<int>(surfelCount - 1u));
                     }
-                    ImGui::Text("Valid range: 0 - %zu", surfelCount - 1u);
+                    ImGui::Text("Valid range: -1 (none), 0 - %zu", surfelCount - 1u);
 
-                    std::size_t localSurfelIndex = static_cast<std::size_t>(selectedSurfelEditorIndex);
+                    std::size_t localSurfelIndex = selectedSurfelEditorIndex >= 0 ? static_cast<std::size_t>(selectedSurfelEditorIndex) : surfelCount;
                     Pale::PointGeometry* selectedPointGeometry = nullptr;
                     for (Pale::PointGeometry& pointGeometry : pointCloudAsset->points) {
                         if (localSurfelIndex < pointGeometry.positions.size()) {
@@ -2783,7 +2783,7 @@ int main(int argc, char** argv) {
 
                     bool surfelChanged = false;
                     if (!selectedPointGeometry) {
-                        ImGui::TextWrapped("The selected surfel could not be resolved");
+                        ImGui::TextWrapped(selectedSurfelEditorIndex < 0 ? "No surfel selected" : "The selected surfel could not be resolved");
                     } else {
                         Pale::PointGeometry& pointGeometry = *selectedPointGeometry;
 
@@ -2981,10 +2981,10 @@ int main(int argc, char** argv) {
 	                    const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
 	                        pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
 	                    const std::size_t editableSurfelCount = pointCloudAsset ? countSurfels(*pointCloudAsset) : 0u;
-	                    if (pointCloudAsset && editableSurfelCount > 0u) {
-	                        selectedSurfelEditorIndex = std::clamp(
-	                            selectedSurfelEditorIndex,
-	                            0,
+		                    if (pointCloudAsset && editableSurfelCount > 0u && selectedSurfelEditorIndex >= 0) {
+		                        selectedSurfelEditorIndex = std::clamp(
+		                            selectedSurfelEditorIndex,
+		                            0,
 	                            static_cast<int>(editableSurfelCount - 1u));
 	                        const std::optional<EditableSurfelRef> editableSurfel =
 	                            resolveEditableSurfel(*pointCloudAsset, selectedSurfelEditorIndex);
@@ -2999,17 +2999,9 @@ int main(int argc, char** argv) {
                                         pointCloudEntity.getComponent<Pale::TransformComponent>().getTransform();
                                 }
 
-                                const glm::vec2 surfelScale =
-                                    surfelIndex < pointGeometry.scales.size()
-                                        ? pointGeometry.scales[surfelIndex]
-                                        : glm::vec2(settings.pointGeometrySupportRadius);
-                                const float gizmoScale = std::max(
-                                    settings.pointGeometrySupportRadius,
-                                    std::max(surfelScale.x, surfelScale.y));
                                 const glm::mat4 localSurfelTransform =
                                     glm::translate(glm::mat4(1.0f), pointGeometry.positions[surfelIndex]) *
-                                    glm::mat4_cast(normalizeQuaternionOrIdentity(pointGeometry.quat[surfelIndex])) *
-                                    glm::scale(glm::mat4(1.0f), glm::vec3(std::max(gizmoScale, 0.001f)));
+                                    glm::mat4_cast(normalizeQuaternionOrIdentity(pointGeometry.quat[surfelIndex]));
                                 glm::mat4 surfelTransform =
                                     pointCloudTransform * localSurfelTransform;
                                 glm::mat4 view = orbit.viewMatrix();
@@ -3099,12 +3091,13 @@ int main(int argc, char** argv) {
 	                        const float normalizedY = std::clamp((mouse.y - imageMin.y) / std::max(imageSize.y, 1.0f), 0.0f, 0.999999f);
 	                        const float pixelX = normalizedX * static_cast<float>(displayedRenderWidth);
 	                        const float pixelY = normalizedY * static_cast<float>(displayedRenderHeight);
-	                        if (const std::optional<int> pickedSurfelIndex = pickEditableSurfel(scene, assetAccessor, displayedCamera, pixelX, pixelY)) {
-	                            selectedSurfelEditorIndex = *pickedSurfelIndex;
-	                            surfelEditorStatus = "Picked surfel " + std::to_string(selectedSurfelEditorIndex);
-	                        } else {
-	                            surfelEditorStatus = "No surfel under cursor";
-	                        }
+		                        if (const std::optional<int> pickedSurfelIndex = pickEditableSurfel(scene, assetAccessor, displayedCamera, pixelX, pixelY)) {
+		                            selectedSurfelEditorIndex = *pickedSurfelIndex;
+		                            surfelEditorStatus = "Picked surfel " + std::to_string(selectedSurfelEditorIndex);
+		                        } else {
+		                            selectedSurfelEditorIndex = -1;
+		                            surfelEditorStatus = "No surfel selected";
+		                        }
 	                    }
 	                    viewportPickArmed = false;
 	                }

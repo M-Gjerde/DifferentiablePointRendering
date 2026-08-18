@@ -56,10 +56,10 @@ class OptimizationConfig:
 
     device: str = "cpu"
 
-    iterations: int = int(50_000)
+    iterations: int = int(10000)
     optimizer_type: str = "adam"
     # Learning rates
-    learning_rate: float = 0.5
+    learning_rate: float = 1.0
     learning_rate_position: float | None = None
     learning_rate_rotation: float | None = None
     max_rotation_step_radians: float = 0.01
@@ -79,10 +79,10 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 1000
     global_lr_max_steps: int = iterations / 2
 
-    depth_distort_weight: float = 10000
+    depth_distort_weight: float = 0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
-    normal_from_depth_use_mean_depth: bool = True
+    normal_consistency_weight: float = 0.015
+    normal_from_depth_use_mean_depth: bool = False
     visibility_weighted_opacity_weight: float = 0.0
 
     # Density control / EV-splitting
@@ -93,9 +93,9 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densify_until_iteration: int = -1
-    densify_until_fraction: float = 0.9
+    densify_until_fraction: float = 1.0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 5.0e-3
+    densification_grad_abs_min: float = 5.0e-4
     densification_grad_abs_min_final: float = None
     densification_grad_abs_min_schedule_start_iteration: int = 0
     densification_grad_abs_min_schedule_end_iteration: int = 0
@@ -105,7 +105,7 @@ class OptimizationConfig:
     densify_bsdf_floor = 0.2
     densify_bsdf_gamma = 0.5
     # Pruning
-    opacity_prune_threshold: float = 0.1
+    opacity_prune_threshold: float = 0.15
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 5.0e-7
     min_points_to_keep_after_scale_prune: int = 1
@@ -113,7 +113,7 @@ class OptimizationConfig:
 
     # Misc scheduling
     reset_opacity_interval: int = 0
-    reset_opacity_value: float = 0
+    reset_opacity_value: float = 0.05
     reset_scale_interval: int = 0
     reset_scale_shrink_factor: float = 1.0
     reset_opacity_iterations: bool = False
@@ -127,8 +127,8 @@ class OptimizationConfig:
     scale_single_camera_gradients: bool = False
 
     # Logging
-    log_interval: int = densification_interval
-    save_interval: int = densification_interval
+    log_interval: int = 25
+    save_interval: int = 25
     save_ply_files_interval: int = save_interval
     save_gradient_diagnostics: bool = False
     # Iteration snapshot content
@@ -136,7 +136,7 @@ class OptimizationConfig:
     save_snapshot_median_depth: bool = True
     save_snapshot_depth_distortion: bool = False
     save_snapshot_visible_normal: bool = False
-    save_snapshot_normal_from_depth: bool = False
+    save_snapshot_normal_from_depth: bool = True
     save_snapshot_grad: bool = False
     densification_verbose: bool = True
 
@@ -151,11 +151,11 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.001
-        factor_rotation = 0.005
+        factor_position = 0.00075
+        factor_rotation = 0.01
         factor_scale = 0.0004
         factor_albedo = 0.001
-        factor_opacity = 0.005
+        factor_opacity = 0.008
         factor_beta = 0.005
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
