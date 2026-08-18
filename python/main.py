@@ -120,6 +120,7 @@ def main() -> None:
     print(f"  lr_opacity           : {config.learning_rate_opacity}")
     print(f"  lr_beta              : {config.learning_rate_beta}")
     print(f"  depth_distort_weight : {config.depth_distort_weight}")
+    print(f"  mesh_extraction_interval: {config.mesh_extraction_interval}")
     print(f"  optimizer            : {config.optimizer_type}")
     print(f"  run_output_dir       : {config.output_dir}")
     print(f"  cameras              : {camera_ids}")

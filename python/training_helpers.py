@@ -1063,7 +1063,7 @@ def save_iteration_point_cloud_snapshot(
         opacities: torch.Tensor,
         betas: torch.Tensor,
         powers: torch.Tensor,
-) -> None:
+) -> Path:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
     ply_path = points_dir / f"iter_{iteration:05d}_points.ply"
@@ -1079,6 +1079,7 @@ def save_iteration_point_cloud_snapshot(
         shape_default=0.0,
     )
     print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
+    return ply_path
 
 
 def compute_snapshot_adjoint_images(

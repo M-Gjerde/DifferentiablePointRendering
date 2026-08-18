@@ -232,8 +232,8 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 10;
-    constexpr uint32_t kMaxLocalSurfelHits = 12;
+    constexpr uint32_t kMaxSplatEventsPerRay = 8;
+    constexpr uint32_t kMaxLocalSurfelHits = 8;
 
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
@@ -717,8 +717,8 @@ namespace Pale {
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
-        uint32_t rendererDebugMaxSplatEventsPerRay = 12;
-        uint32_t rendererDebugMaxLocalSurfelHits = 12;
+        uint32_t rendererDebugMaxSplatEventsPerRay = 8;
+        uint32_t rendererDebugMaxLocalSurfelHits = 8;
     };
 
     inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {

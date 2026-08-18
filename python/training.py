@@ -1,9 +1,51 @@
 from __future__ import annotations
 
+import shlex
+import subprocess
+import sys
 import time
+from pathlib import Path
+
 from optimizers import (create_learning_rate_schedules, update_optimizer_learning_rates, )
 from training_helpers import *
 from density_control import *
+
+
+def extract_mesh_checkpoint(config: OptimizationConfig, iteration: int, points_path: Path) -> None:
+    extract_mesh_script = Path(__file__).resolve().with_name("extract_mesh.py")
+    mesh_output_subdir = Path("mesh_checkpoints") / f"iter_{iteration:05d}"
+
+    command = [
+        sys.executable,
+        str(extract_mesh_script),
+        "--ply",
+        str(points_path),
+        "--mesh-output-subdir",
+        str(mesh_output_subdir),
+        "--depth-key",
+        str(config.mesh_extraction_depth_key),
+        "--mesh-res",
+        str(int(config.mesh_extraction_mesh_res)),
+        "--num-cluster",
+        str(int(config.mesh_extraction_num_cluster)),
+    ]
+
+    print(
+        f"[Iter {iteration:04d}] Extracting mesh checkpoint to "
+        f"{config.output_dir / mesh_output_subdir}"
+    )
+
+    result = subprocess.run(
+        command,
+        cwd=extract_mesh_script.parent,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        print(
+            f"[Iter {iteration:04d}] Mesh checkpoint extraction failed "
+            f"with exit code {result.returncode}: {shlex.join(command)}"
+        )
 
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
@@ -15,7 +57,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
     visibility_weighted_opacity_weight = float(config.visibility_weighted_opacity_weight)
-    save_ply_files_interval = float(config.save_ply_files_interval)
+    save_ply_files_interval = int(config.save_ply_files_interval)
+    mesh_extraction_interval = int(getattr(config, "mesh_extraction_interval", 0))
+
+    if save_ply_files_interval < 0:
+        raise ValueError(f"save_ply_files_interval must be >= 0, got {save_ply_files_interval}")
+    if mesh_extraction_interval < 0:
+        raise ValueError(f"mesh_extraction_interval must be >= 0, got {mesh_extraction_interval}")
 
     use_depth_distortion = depth_distortion_base_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
@@ -600,9 +648,36 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         save_grad=config.save_snapshot_grad,
                     )
 
+                iteration_point_cloud_path = None
+
                 if save_ply_files_interval > 0 and iteration % save_ply_files_interval == 0:
-                    save_iteration_point_cloud_snapshot(config.output_dir, iteration, positions, rotations,
-                                                        scales, albedos, opacities, betas, powers)
+                    iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                        config.output_dir,
+                        iteration,
+                        positions,
+                        rotations,
+                        scales,
+                        albedos,
+                        opacities,
+                        betas,
+                        powers,
+                    )
+
+                if mesh_extraction_interval > 0 and iteration % mesh_extraction_interval == 0:
+                    if iteration_point_cloud_path is None:
+                        iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                            config.output_dir,
+                            iteration,
+                            positions,
+                            rotations,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            powers,
+                        )
+
+                    extract_mesh_checkpoint(config, iteration, iteration_point_cloud_path)
 
                 num_points = positions.shape[0]
                 iteration_end = time.perf_counter()

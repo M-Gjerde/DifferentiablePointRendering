@@ -694,6 +694,15 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--skip_mesh", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--mesh-output-subdir",
+        type=Path,
+        default=Path("mesh"),
+        help=(
+            "Mesh output folder. Relative paths are interpreted inside the run directory. "
+            "Use this for iteration checkpoints so they do not overwrite mesh/fuse_post.ply."
+        ),
+    )
 
     parser.add_argument("--voxel-size", default=-1.0, type=float)
     parser.add_argument("--depth-trunc", default=-1.0, type=float)
@@ -723,7 +732,9 @@ if __name__ == "__main__":
 
     run_dir, points_path = find_run_and_points(args)
 
-    mesh_dir = run_dir / "mesh"
+    mesh_dir = args.mesh_output_subdir
+    if not mesh_dir.is_absolute():
+        mesh_dir = run_dir / mesh_dir
     os.makedirs(mesh_dir, exist_ok=True)
 
     point_property_overrides: dict[str, float] = {}

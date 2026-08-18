@@ -56,7 +56,7 @@ class OptimizationConfig:
 
     device: str = "cpu"
 
-    iterations: int = int(10000)
+    iterations: int = int(1.3e4)
     optimizer_type: str = "adam"
     # Learning rates
     learning_rate: float = 1.0
@@ -71,17 +71,17 @@ class OptimizationConfig:
     use_position_lr_schedule: bool = False
     position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.2
-    position_lr_max_steps: int = iterations
+    position_lr_max_steps: int = int(1.0e4)
     # Global LR scheduling
-    use_global_lr_schedule: bool = False
+    use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.5
-    global_lr_start_iteration: int = 1000
-    global_lr_max_steps: int = iterations / 2
+    global_lr_scale_final: float = 0.2
+    global_lr_start_iteration: int = int(iterations * 0.8)
+    global_lr_max_steps: int = 1e4
 
     depth_distort_weight: float = 0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.015
+    normal_consistency_weight: float = 0.01
     normal_from_depth_use_mean_depth: bool = False
     visibility_weighted_opacity_weight: float = 0.0
 
@@ -102,18 +102,18 @@ class OptimizationConfig:
     densification_scale_min: float = 1.0e-2
 
     # More densification on radiometrically darker primitives
-    densify_bsdf_floor = 0.2
-    densify_bsdf_gamma = 0.5
+    densify_bsdf_floor = 0.3
+    densify_bsdf_gamma = 1.0
     # Pruning
-    opacity_prune_threshold: float = 0.15
+    opacity_prune_threshold: float = 0.10
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 5.0e-7
     min_points_to_keep_after_scale_prune: int = 1
-    inactive_gradient_prune_cycles: int = 1 # One cycle is one loop through all training cameras
+    inactive_gradient_prune_cycles: int = 2 # One cycle is one loop through all training cameras
 
     # Misc scheduling
     reset_opacity_interval: int = 0
-    reset_opacity_value: float = 0.05
+    reset_opacity_value: float = 0.025
     reset_scale_interval: int = 0
     reset_scale_shrink_factor: float = 1.0
     reset_opacity_iterations: bool = False
@@ -131,6 +131,12 @@ class OptimizationConfig:
     save_interval: int = 25
     save_ply_files_interval: int = save_interval
     save_gradient_diagnostics: bool = False
+
+    # Mesh Extraction
+    mesh_extraction_interval: int = 500
+    mesh_extraction_depth_key: str = "median_depth"
+    mesh_extraction_mesh_res: int = 1024
+    mesh_extraction_num_cluster: int = 50
     # Iteration snapshot content
     save_snapshot_rgb: bool = True
     save_snapshot_median_depth: bool = True
@@ -259,6 +265,11 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--optimizer", dest="optimizer_type", type=str, default="adam", choices=["adam", "sgd"])
     parser.add_argument("--log-interval", type=int)
     parser.add_argument("--save-interval", type=int)
+    parser.add_argument("--save-ply-files-interval", type=int)
+    parser.add_argument("--mesh-extraction-interval", "--mesh-checkpoint-interval", type=int)
+    parser.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
+    parser.add_argument("--mesh-extraction-mesh-res", type=int)
+    parser.add_argument("--mesh-extraction-num-cluster", type=int)
     parser.add_argument(
         "--checkpoint",
         type=Path,
