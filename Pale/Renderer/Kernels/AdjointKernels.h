@@ -19,7 +19,7 @@ namespace Pale {
         uint32_t materialStartEdgeEventCount,
         uint32_t cameraIndex);
 
-    void computePerPrimitiveTranslationGradientStats(RenderPackage &pkg);
+    void computePerPrimitiveCloneSignalStats(RenderPackage &pkg);
 
     void launchDepthDistortionBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
     void launchNormalConsistencyBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);

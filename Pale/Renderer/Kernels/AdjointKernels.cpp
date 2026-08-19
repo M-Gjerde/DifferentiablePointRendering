@@ -1158,6 +1158,7 @@ namespace Pale {
                                gradientRecord.gradPositionY);
                 atomicAddFloat(gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].z(),
                                gradientRecord.gradPositionZ);
+
                 atomicAddUint32(gradients.gradPositionRecordCountPerPrimitivePerCamera[primitiveCameraIndex], 1u);
                 if (gradientRecord.hasCloneSignal != 0u) {
                     atomicAddFloat(gradients.cloneSignal[primitiveIndex].x(), gradientRecord.cloneSignalX);
@@ -1185,60 +1186,14 @@ namespace Pale {
         kernelEvent5.wait();
     }
 
-    void computePerPrimitiveTranslationGradientStats(RenderPackage &pkg) {
+    void computePerPrimitiveCloneSignalStats(RenderPackage &pkg) {
         auto &queue = pkg.queue;
         auto gradients = pkg.gradients;
         const uint32_t pointCount = static_cast<uint32_t>(gradients.numPoints);
         const uint32_t cameraSlotCount = static_cast<uint32_t>(gradients.cameraSlotCount);
-        sycl::event kernelEvent6 = queue.parallel_for<class ComputePerPrimitiveTranslationGradientStatsKernel>(
+        sycl::event kernelEvent6 = queue.parallel_for<class ComputePerPrimitiveCloneSignalStatsKernel>(
             sycl::range<1>(pointCount), [=](sycl::id<1> globalId) {
                 const uint32_t primitiveIndex = static_cast<uint32_t>(globalId[0]);
-                float3 gradientSum{0.0f, 0.0f, 0.0f};
-                float gradientNormSum = 0.0f;
-                float gradientSquaredNormSum = 0.0f;
-                uint32_t activeCameraCount = 0u;
-                for (uint32_t cameraIndex = 0u; cameraIndex < cameraSlotCount; ++cameraIndex) {
-                    const uint32_t primitiveCameraIndex = primitiveIndex * cameraSlotCount + cameraIndex;
-                    if (gradients.gradPositionRecordCountPerPrimitivePerCamera[primitiveCameraIndex] == 0u) {
-                        continue;
-                    }
-                    const float3 cameraGradient = gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex];
-                    const float cameraGradientSquaredNorm =
-                            cameraGradient.x() * cameraGradient.x() + cameraGradient.y() * cameraGradient.y() +
-                            cameraGradient.z() * cameraGradient.z();
-                    const float cameraGradientNorm = sycl::sqrt(cameraGradientSquaredNorm);
-                    gradientSum += cameraGradient;
-                    gradientNormSum += cameraGradientNorm;
-                    gradientSquaredNormSum += cameraGradientSquaredNorm;
-                    activeCameraCount += 1u;
-                }
-                if (activeCameraCount == 0u) {
-                    gradients.gradPositionMeanNorm[primitiveIndex] = 0.0f;
-                    gradients.gradPositionStd[primitiveIndex] = 0.0f;
-                    gradients.gradPositionCoherence[primitiveIndex] = 0.0f;
-                    gradients.gradPositionDisagreement[primitiveIndex] = 0.0f;
-                    gradients.gradPositionActiveCameraCount[primitiveIndex] = 0u;
-                    return;
-                }
-                const float inverseActiveCameraCount = 1.0f / static_cast<float>(activeCameraCount);
-                const float3 meanGradient = gradientSum * inverseActiveCameraCount;
-                const float meanGradientSquaredNorm =
-                        meanGradient.x() * meanGradient.x() + meanGradient.y() * meanGradient.y() + meanGradient.z() *
-                        meanGradient.z();
-                const float meanGradientNorm = sycl::sqrt(meanGradientSquaredNorm);
-                const float meanPerCameraGradientNorm = gradientNormSum * inverseActiveCameraCount;
-                const float expectedSquaredNorm = gradientSquaredNormSum * inverseActiveCameraCount;
-                const float variance = sycl::fmax(0.0f, expectedSquaredNorm - meanGradientSquaredNorm);
-                const float translationStd = sycl::sqrt(variance);
-                constexpr float epsilon = 1.0e-12f;
-                const float coherence = meanGradientNorm / (meanPerCameraGradientNorm + epsilon);
-                const float clampedCoherence = sycl::fmin(1.0f, sycl::fmax(0.0f, coherence));
-                const float disagreement = meanPerCameraGradientNorm * (1.0f - clampedCoherence);
-                gradients.gradPositionMeanNorm[primitiveIndex] = meanPerCameraGradientNorm;
-                gradients.gradPositionStd[primitiveIndex] = translationStd;
-                gradients.gradPositionCoherence[primitiveIndex] = clampedCoherence;
-                gradients.gradPositionDisagreement[primitiveIndex] = disagreement;
-                gradients.gradPositionActiveCameraCount[primitiveIndex] = activeCameraCount;
                 float3 cloneSignalSum{0.0f, 0.0f, 0.0f};
                 float cloneSignalNormSum = 0.0f;
                 float cloneSignalSquaredNormSum = 0.0f;
@@ -1277,6 +1232,7 @@ namespace Pale {
                 const float cloneSignalVariance = sycl::fmax(
                     0.0f, expectedCloneSignalSquaredNorm - meanCloneSignalSquaredNorm);
                 const float cloneSignalStd = sycl::sqrt(cloneSignalVariance);
+                constexpr float epsilon = 1.0e-12f;
                 const float cloneSignalCoherence = meanCloneSignalNorm / (meanPerCameraCloneSignalNorm + epsilon);
                 const float clampedCloneSignalCoherence = sycl::fmin(1.0f, sycl::fmax(0.0f, cloneSignalCoherence));
                 const float cloneSignalDisagreement =

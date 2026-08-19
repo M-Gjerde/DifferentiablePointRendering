@@ -215,11 +215,6 @@ namespace Pale {
         queue.fill(gradients.gradOpacity, 0.0f, pointCount);
         queue.fill(gradients.gradBeta, 0.0f, pointCount);
         queue.fill(gradients.gradShape, 0.0f, pointCount);
-        queue.fill(gradients.gradPositionMeanNorm, 0.0f, pointCount);
-        queue.fill(gradients.gradPositionStd, 0.0f, pointCount);
-        queue.fill(gradients.gradPositionCoherence, 0.0f, pointCount);
-        queue.fill(gradients.gradPositionDisagreement, 0.0f, pointCount);
-        queue.fill(gradients.gradPositionActiveCameraCount, 0u, pointCount);
         queue.fill(gradients.cloneSignalMeanNorm, 0.0f, pointCount);
         queue.fill(gradients.cloneSignalStd, 0.0f, pointCount);
         queue.fill(gradients.cloneSignalCoherence, 0.0f, pointCount);
@@ -356,7 +351,7 @@ namespace Pale {
             }
         }
 
-        computePerPrimitiveTranslationGradientStats(pkg);
+        computePerPrimitiveCloneSignalStats(pkg);
     }
 
 

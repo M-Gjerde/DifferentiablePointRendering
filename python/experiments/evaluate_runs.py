@@ -52,7 +52,6 @@ LOSS_COLUMNS = [
 REGULARIZER_COLUMNS = [
     ("loss_depth_distortion_weighted_mean", "depth weighted"),
     ("loss_normal_consistency_weighted_mean", "normal weighted"),
-    ("loss_visibility_weighted_opacity_weighted_mean", "visibility opacity weighted"),
 ]
 
 

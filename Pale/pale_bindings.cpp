@@ -4,7 +4,12 @@
 #include <pybind11/stl.h>
 
 #include "Renderer/RenderPackage.h"
+#include "Renderer/Kernels/KernelHelpers.h"
 
+#include <algorithm>
+#include <array>
+#include <cfloat>
+#include <cstdint>
 #include <memory>
 #include <filesystem>
 #include <entt/entt.hpp>
@@ -12,6 +17,11 @@
 #include <cstring>
 #include <optional>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include "glm/gtx/string_cast.hpp"
@@ -60,6 +70,11 @@ static inline float get_f(const py::dict &d, const char *k, float def) {
     return def;
 }
 
+static inline std::string get_s(const py::dict &d, const char *k, const std::string &def) {
+    if (d.contains(k)) return py::cast<std::string>(d[k]);
+    return def;
+}
+
 static inline glm::quat normalizeQuaternionOrIdentity(glm::quat q) {
     const bool finite = std::isfinite(q.w) && std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z);
     const float lengthSquared = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
@@ -87,8 +102,84 @@ static inline void frameFromQuaternion(const glm::quat &inputQuaternion, Pale::f
     tangentVOut = tangentV;
 }
 
+static inline glm::quat quaternionFromFrame(const Pale::float3 &tangentUIn,
+                                            const Pale::float3 &tangentVIn) {
+    glm::vec3 tangentU(tangentUIn.x(), tangentUIn.y(), tangentUIn.z());
+    glm::vec3 tangentV(tangentVIn.x(), tangentVIn.y(), tangentVIn.z());
+
+    if (glmLengthSquared(tangentU) <= 1.0e-20f) {
+        tangentU = glm::vec3(1.0f, 0.0f, 0.0f);
+    }
+    tangentU = glm::normalize(tangentU);
+
+    tangentV -= glm::dot(tangentV, tangentU) * tangentU;
+    if (glmLengthSquared(tangentV) <= 1.0e-20f) {
+        const glm::vec3 fallback =
+                std::abs(tangentU.y) < 0.9f
+                    ? glm::vec3(0.0f, 1.0f, 0.0f)
+                    : glm::vec3(1.0f, 0.0f, 0.0f);
+        tangentV = fallback - glm::dot(fallback, tangentU) * tangentU;
+    }
+    tangentV = glm::normalize(tangentV);
+
+    const glm::vec3 normal = glm::normalize(glm::cross(tangentU, tangentV));
+    glm::mat3 frame(1.0f);
+    frame[0] = tangentU;
+    frame[1] = tangentV;
+    frame[2] = normal;
+
+    return normalizeQuaternionOrIdentity(glm::quat_cast(frame));
+}
+
 
 class PythonRenderer {
+    struct TrainingTargetDevice {
+        std::string cameraName;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        Pale::float4 *rgba = nullptr;
+        float *loss = nullptr;
+    };
+
+    struct DeviceTrainingStepOptions {
+        std::string optimizer = "adam";
+        float learningRatePosition = 0.0f;
+        float learningRateRotation = 0.0f;
+        float learningRateScale = 0.0f;
+        float learningRateAlbedo = 0.0f;
+        float learningRateOpacity = 0.0f;
+        float learningRateBeta = 0.0f;
+        float cameraBatchScale = 1.0f;
+        float beta1 = 0.9f;
+        float beta2 = 0.999f;
+        float epsilon = 1.0e-8f;
+        float maxRotationStepRadians = 0.01f;
+    };
+
+    struct DeviceAdamState {
+        std::size_t pointCount = 0;
+        std::uint32_t step = 0;
+
+        Pale::float3 *positionM = nullptr;
+        Pale::float3 *positionV = nullptr;
+        Pale::float3 *rotationM = nullptr;
+        Pale::float3 *rotationV = nullptr;
+        Pale::float2 *scaleM = nullptr;
+        Pale::float2 *scaleV = nullptr;
+        Pale::float3 *albedoM = nullptr;
+        Pale::float3 *albedoV = nullptr;
+        float *opacityM = nullptr;
+        float *opacityV = nullptr;
+        float *betaM = nullptr;
+        float *betaV = nullptr;
+    };
+
+    struct SelectedTrainingBatch {
+        std::vector<Pale::SensorGPU> sensors;
+        std::vector<Pale::DebugImages> debugImages;
+        std::vector<TrainingTargetDevice *> targets;
+    };
+
 public:
     PythonRenderer(const std::string &assetRootDir,
                    const std::string &sceneXml,
@@ -232,6 +323,8 @@ public:
             Pale::freeGradientsForScene(queue, visibilityOpacityGradients);
 
             Pale::freeDebugImagesForScene(queue, debugImages.data(), debugImages.size());
+            freeTrainingTargets(queue);
+            freeDeviceTrainingState(queue);
             queue.wait();
         }
 
@@ -396,6 +489,445 @@ public:
         return result;
     }
 
+    void upload_training_targets(const py::dict &targetImagesDictionary) {
+        auto syclQueue = deviceSelector->getQueue();
+
+        for (const auto &sensor: sensorsForward) {
+            const std::string cameraName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
+            if (!targetImagesDictionary.contains(py::str(cameraName))) {
+                continue;
+            }
+
+            py::array targetRgbArray = targetImagesDictionary[py::str(cameraName)].cast<py::array>();
+            py::buffer_info bufferInfo = targetRgbArray.request();
+            if (bufferInfo.ndim != 3 || bufferInfo.shape[2] != 3) {
+                throw std::runtime_error(
+                    "upload_training_targets: target image for camera '" + cameraName +
+                    "' must be HxWx3 float32");
+            }
+            if (bufferInfo.itemsize != sizeof(float)) {
+                throw std::runtime_error(
+                    "upload_training_targets: target image for camera '" + cameraName +
+                    "' must have dtype float32");
+            }
+
+            const std::uint32_t height = static_cast<std::uint32_t>(bufferInfo.shape[0]);
+            const std::uint32_t width = static_cast<std::uint32_t>(bufferInfo.shape[1]);
+            if (width != sensor.width || height != sensor.height) {
+                throw std::runtime_error(
+                    "upload_training_targets: resolution mismatch for camera '" + cameraName +
+                    "': target image is " + std::to_string(width) + "x" + std::to_string(height) +
+                    ", but sensor is " + std::to_string(sensor.width) + "x" +
+                    std::to_string(sensor.height));
+            }
+
+            const auto *rgbPointer = static_cast<const float *>(bufferInfo.ptr);
+            const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+            std::vector<Pale::float4> targetRgba(pixelCount);
+            for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+                const std::size_t rgbIndex = pixelIndex * 3u;
+                targetRgba[pixelIndex] = Pale::float4{
+                    rgbPointer[rgbIndex + 0u],
+                    rgbPointer[rgbIndex + 1u],
+                    rgbPointer[rgbIndex + 2u],
+                    1.0f
+                };
+            }
+
+            TrainingTargetDevice &target = trainingTargets[cameraName];
+            ensureTrainingTargetCapacity(target, cameraName, width, height, syclQueue);
+            syclQueue.memcpy(
+                target.rgba,
+                targetRgba.data(),
+                pixelCount * sizeof(Pale::float4));
+        }
+
+        syclQueue.wait_and_throw();
+    }
+
+    py::tuple render_rgb_loss_backward(const py::list &cameraNamesList) {
+        auto syclQueue = deviceSelector->getQueue();
+
+        SelectedTrainingBatch selectedBatch =
+                selectTrainingBatch(cameraNamesList, "render_rgb_loss_backward");
+
+        {
+            py::gil_scoped_release release;
+            pathTracer->renderForward(selectedBatch.sensors);
+
+            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+                launchRgbLossAdjointKernel(
+                    syclQueue,
+                    selectedBatch.sensors[cameraIndex],
+                    *selectedBatch.targets[cameraIndex]);
+            }
+            syclQueue.wait_and_throw();
+
+            pathTracer->renderBackward(
+                selectedBatch.sensors,
+                gradients,
+                selectedBatch.debugImages.data());
+        }
+
+        py::dict lossValues;
+        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+            float lossValue = 0.0f;
+            syclQueue.memcpy(&lossValue, selectedBatch.targets[cameraIndex]->loss, sizeof(float)).wait();
+            const std::string cameraName(
+                selectedBatch.sensors[cameraIndex].name,
+                strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
+            lossValues[py::str(cameraName)] = lossValue;
+        }
+
+        py::dict adjointImages;
+        adjointImages["loss_values"] = std::move(lossValues);
+        adjointImages["gradient_stats"] = makeGradientStatsDictionary(gradients);
+
+        return py::make_tuple(makeGradientDictionary(gradients), adjointImages);
+    }
+
+    py::dict render_rgb_training_step(const py::list &cameraNamesList,
+                                      const py::dict &optionsDictionary = py::dict()) {
+        auto syclQueue = deviceSelector->getQueue();
+
+        SelectedTrainingBatch selectedBatch =
+                selectTrainingBatch(cameraNamesList, "render_rgb_training_step");
+        DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
+        const bool returnGradientStats =
+                get_b(optionsDictionary, "return_gradient_stats", false);
+
+        {
+            py::gil_scoped_release release;
+
+            pathTracer->renderForward(selectedBatch.sensors);
+
+            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+                launchRgbLossAdjointKernel(
+                    syclQueue,
+                    selectedBatch.sensors[cameraIndex],
+                    *selectedBatch.targets[cameraIndex]);
+            }
+            syclQueue.wait_and_throw();
+
+            pathTracer->renderBackward(
+                selectedBatch.sensors,
+                gradients,
+                selectedBatch.debugImages.data());
+
+            ensureDeviceTrainingState(gradients.numPoints, syclQueue);
+            launchDeviceTrainingStepKernel(syclQueue, gradients, nullptr, nullptr, nullptr, options);
+            launchPointBvhRefitKernel(syclQueue);
+            syclQueue.wait_and_throw();
+            devicePointParametersDirty = true;
+        }
+
+        py::dict lossValues;
+        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+            float lossValue = 0.0f;
+            syclQueue.memcpy(&lossValue, selectedBatch.targets[cameraIndex]->loss, sizeof(float)).wait();
+            const std::string cameraName(
+                selectedBatch.sensors[cameraIndex].name,
+                strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
+            lossValues[py::str(cameraName)] = lossValue;
+        }
+
+        py::dict result;
+        result["loss_values"] = std::move(lossValues);
+        result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
+        result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
+        if (returnGradientStats) {
+            result["gradient_stats"] = makeGradientStatsDictionary(gradients);
+        }
+        return result;
+    }
+
+    py::dict render_rgb_backward_from_current_forward(const py::list &cameraNamesList,
+                                                      const py::dict &optionsDictionary = py::dict()) {
+        auto syclQueue = deviceSelector->getQueue();
+
+        SelectedTrainingBatch selectedBatch =
+                selectTrainingBatch(cameraNamesList, "render_rgb_backward_from_current_forward");
+        const bool returnGradientStats =
+                get_b(optionsDictionary, "return_gradient_stats", false);
+
+        {
+            py::gil_scoped_release release;
+
+            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+                launchRgbLossAdjointKernel(
+                    syclQueue,
+                    selectedBatch.sensors[cameraIndex],
+                    *selectedBatch.targets[cameraIndex]);
+            }
+            syclQueue.wait_and_throw();
+
+            pathTracer->renderBackward(
+                selectedBatch.sensors,
+                gradients,
+                selectedBatch.debugImages.data());
+        }
+
+        py::dict lossValues;
+        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+            float lossValue = 0.0f;
+            syclQueue.memcpy(&lossValue, selectedBatch.targets[cameraIndex]->loss, sizeof(float)).wait();
+            const std::string cameraName(
+                selectedBatch.sensors[cameraIndex].name,
+                strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
+            lossValues[py::str(cameraName)] = lossValue;
+        }
+
+        py::dict result;
+        result["loss_values"] = std::move(lossValues);
+        result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
+        if (returnGradientStats) {
+            result["gradient_stats"] = makeGradientStatsDictionary(gradients);
+        }
+        return result;
+    }
+
+    py::dict apply_device_training_step(const py::dict &optionsDictionary = py::dict()) {
+        auto syclQueue = deviceSelector->getQueue();
+        DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
+        const bool includeDepthDistortion =
+                get_b(optionsDictionary, "include_depth_distortion", false);
+        const bool includeNormalConsistency =
+                get_b(optionsDictionary, "include_normal_consistency", false);
+        const bool includeVisibilityWeightedOpacity =
+                get_b(optionsDictionary, "include_visibility_weighted_opacity", false);
+
+        const Pale::PointGradients *depthGradients =
+                includeDepthDistortion ? &depthDistortionGradients : nullptr;
+        const Pale::PointGradients *normalGradients =
+                includeNormalConsistency ? &normalConsistencyGradients : nullptr;
+        const Pale::PointGradients *visibilityGradients =
+                includeVisibilityWeightedOpacity ? &visibilityOpacityGradients : nullptr;
+
+        {
+            py::gil_scoped_release release;
+            ensureDeviceTrainingState(gradients.numPoints, syclQueue);
+            launchDeviceTrainingStepKernel(
+                syclQueue,
+                gradients,
+                depthGradients,
+                normalGradients,
+                visibilityGradients,
+                options);
+            launchPointBvhRefitKernel(syclQueue);
+            syclQueue.wait_and_throw();
+            devicePointParametersDirty = true;
+        }
+
+        py::dict result;
+        result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
+        result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
+        return result;
+    }
+
+    py::dict render_forward_surface_regularizer_loss_and_adjoint(
+        const py::list &cameraNamesList,
+        const py::dict &optionsDictionary = py::dict()) {
+        auto syclQueue = deviceSelector->getQueue();
+        SelectedTrainingBatch selectedBatch =
+                selectTrainingBatch(cameraNamesList, "render_forward_surface_regularizer_loss_and_adjoint");
+
+        const bool useDepthDistortion =
+                get_b(optionsDictionary, "use_depth_distortion", false);
+        const bool useNormalConsistency =
+                get_b(optionsDictionary, "use_normal_consistency", false);
+        const float depthDistortionWeight =
+                get_f(optionsDictionary, "depth_distortion_weight", 0.0f);
+        const float normalConsistencyWeight =
+                get_f(optionsDictionary, "normal_consistency_weight", 0.0f);
+
+        const std::size_t cameraCount = selectedBatch.sensors.size();
+        std::vector<float> depthDistortionSums(cameraCount, 0.0f);
+        std::vector<float> normalConsistencySums(cameraCount, 0.0f);
+        std::vector<std::uint32_t> normalConsistencyValidCounts(cameraCount, 0u);
+
+        float *depthDistortionSumsDevice = nullptr;
+        float *normalConsistencySumsDevice = nullptr;
+        std::uint32_t *normalConsistencyValidCountsDevice = nullptr;
+
+        auto freeTempBuffers = [&]() {
+            if (depthDistortionSumsDevice) {
+                sycl::free(depthDistortionSumsDevice, syclQueue);
+                depthDistortionSumsDevice = nullptr;
+            }
+            if (normalConsistencySumsDevice) {
+                sycl::free(normalConsistencySumsDevice, syclQueue);
+                normalConsistencySumsDevice = nullptr;
+            }
+            if (normalConsistencyValidCountsDevice) {
+                sycl::free(normalConsistencyValidCountsDevice, syclQueue);
+                normalConsistencyValidCountsDevice = nullptr;
+            }
+        };
+
+        try {
+            py::gil_scoped_release release;
+
+            pathTracer->renderForward(selectedBatch.sensors);
+
+            depthDistortionSumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
+            normalConsistencySumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
+            normalConsistencyValidCountsDevice =
+                    sycl::malloc_device<std::uint32_t>(cameraCount, syclQueue);
+            if (!depthDistortionSumsDevice ||
+                !normalConsistencySumsDevice ||
+                !normalConsistencyValidCountsDevice) {
+                throw std::runtime_error(
+                    "render_forward_surface_regularizer_loss_and_adjoint: failed to allocate temporary loss buffers");
+            }
+
+            syclQueue.fill(depthDistortionSumsDevice, 0.0f, cameraCount);
+            syclQueue.fill(normalConsistencySumsDevice, 0.0f, cameraCount);
+            syclQueue.fill(normalConsistencyValidCountsDevice, 0u, cameraCount);
+
+            for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
+                launchSurfaceRegularizerLossAccumulationKernel(
+                    syclQueue,
+                    selectedBatch.sensors[cameraIndex],
+                    depthDistortionSumsDevice + cameraIndex,
+                    normalConsistencySumsDevice + cameraIndex,
+                    normalConsistencyValidCountsDevice + cameraIndex,
+                    useDepthDistortion,
+                    useNormalConsistency);
+            }
+
+            syclQueue.memcpy(
+                depthDistortionSums.data(),
+                depthDistortionSumsDevice,
+                cameraCount * sizeof(float));
+            syclQueue.memcpy(
+                normalConsistencySums.data(),
+                normalConsistencySumsDevice,
+                cameraCount * sizeof(float));
+            syclQueue.memcpy(
+                normalConsistencyValidCounts.data(),
+                normalConsistencyValidCountsDevice,
+                cameraCount * sizeof(std::uint32_t));
+            syclQueue.wait_and_throw();
+
+            for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
+                launchSurfaceRegularizerAdjointFillKernel(
+                    syclQueue,
+                    selectedBatch.sensors[cameraIndex],
+                    depthDistortionWeight,
+                    normalConsistencyWeight,
+                    normalConsistencyValidCounts[cameraIndex],
+                    useDepthDistortion,
+                    useNormalConsistency);
+            }
+            syclQueue.wait_and_throw();
+        } catch (...) {
+            freeTempBuffers();
+            throw;
+        }
+        freeTempBuffers();
+
+        py::dict result = makeZeroLossValuesDictionary();
+        result["depth_distortion_grad_images"] = py::dict();
+        result["visible_normal_adjoints"] = py::dict();
+        result["depth_normal_adjoints"] = py::dict();
+        result["depth_distortion_maps_for_logging"] = py::dict();
+        py::dict perCameraLossValues;
+
+        float totalDepthRaw = 0.0f;
+        float totalDepthWeighted = 0.0f;
+        float totalNormalRaw = 0.0f;
+        float totalNormalWeighted = 0.0f;
+
+        for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
+            const Pale::SensorGPU &sensor = selectedBatch.sensors[cameraIndex];
+            const std::string cameraName(
+                sensor.name,
+                strnlen(sensor.name, sizeof(sensor.name)));
+            const float pixelCount =
+                    std::max(1.0f, static_cast<float>(sensor.width) * static_cast<float>(sensor.height));
+            const float validNormalCount =
+                    std::max(1.0f, static_cast<float>(normalConsistencyValidCounts[cameraIndex]));
+
+            const float depthRaw = useDepthDistortion
+                                       ? depthDistortionSums[cameraIndex] / pixelCount
+                                       : 0.0f;
+            const float depthWeighted = depthRaw * depthDistortionWeight;
+            const float normalRaw = useNormalConsistency
+                                        ? normalConsistencySums[cameraIndex] / validNormalCount
+                                        : 0.0f;
+            const float normalWeighted = normalRaw * normalConsistencyWeight;
+
+            py::dict cameraLossValues = makeZeroLossValuesDictionary();
+            cameraLossValues["total_depth_distortion_loss_raw"] = depthRaw;
+            cameraLossValues["total_depth_distortion_loss_weighted"] = depthWeighted;
+            cameraLossValues["total_normal_loss_raw"] = normalRaw;
+            cameraLossValues["total_normal_loss_weighted"] = normalWeighted;
+            cameraLossValues["total_loss_value"] = depthWeighted + normalWeighted;
+            perCameraLossValues[py::str(cameraName)] = cameraLossValues;
+
+            totalDepthRaw += depthRaw;
+            totalDepthWeighted += depthWeighted;
+            totalNormalRaw += normalRaw;
+            totalNormalWeighted += normalWeighted;
+        }
+
+        result["total_depth_distortion_loss_raw"] = totalDepthRaw;
+        result["total_depth_distortion_loss_weighted"] = totalDepthWeighted;
+        result["total_normal_loss_raw"] = totalNormalRaw;
+        result["total_normal_loss_weighted"] = totalNormalWeighted;
+        result["total_loss_value"] = totalDepthWeighted + totalNormalWeighted;
+        result["per_camera_loss_values"] = std::move(perCameraLossValues);
+        return result;
+    }
+
+    py::dict render_surface_regularizers_backward_from_current_adjoint(
+        const py::list &cameraNamesList,
+        bool returnGradients = false) {
+        SelectedTrainingBatch selectedBatch =
+                selectTrainingBatch(cameraNamesList, "render_surface_regularizers_backward_from_current_adjoint");
+
+        {
+            py::gil_scoped_release release;
+            pathTracer->renderSurfaceRegularizersBackward(
+                selectedBatch.sensors,
+                depthDistortionGradients,
+                normalConsistencyGradients,
+                visibilityOpacityGradients,
+                selectedBatch.debugImages.data());
+        }
+
+        if (!returnGradients) {
+            return py::dict{};
+        }
+
+        py::dict result;
+        result["depth_distortion"] = makeGradientDictionary(depthDistortionGradients);
+        result["normal_consistency"] = makeGradientDictionary(normalConsistencyGradients);
+        result["visibility_weighted_opacity"] = makeGradientDictionary(visibilityOpacityGradients);
+        return result;
+    }
+
+    void reset_trainable_opacity_on_gpu(float opacityValue) {
+        if (!sceneGpu.points || sceneGpu.pointCount == 0u) {
+            return;
+        }
+
+        auto syclQueue = deviceSelector->getQueue();
+        {
+            py::gil_scoped_release release;
+            syclQueue.parallel_for<class ResetTrainableOpacityKernelTag>(
+                sycl::range<1>(sceneGpu.pointCount),
+                [points = sceneGpu.points, opacityValue](sycl::id<1> itemId) {
+                    Pale::Point &point = points[static_cast<std::uint32_t>(itemId[0])];
+                    if (!point.isEmissive()) {
+                        point.opacity = sycl::fmin(sycl::fmax(opacityValue, 0.0f), 1.0f);
+                    }
+                });
+            syclQueue.wait_and_throw();
+            devicePointParametersDirty = true;
+        }
+    }
+
     py::tuple render_backward(const py::dict &targetImagesDictionary) {
         using std::int64_t;
         using std::size_t;
@@ -527,11 +1059,6 @@ public:
         std::vector<float> gradShapeHost(pointCount);
         std::vector<float> gradPowerHost(pointCount);
 
-        std::vector<float> gradPositionMeanNormHost(pointCount);
-        std::vector<float> gradPositionStdHost(pointCount);
-        std::vector<float> gradPositionCoherenceHost(pointCount);
-        std::vector<float> gradPositionDisagreementHost(pointCount);
-        std::vector<uint32_t> gradPositionActiveCameraCountHost(pointCount);
         std::vector<float> cloneSignalMeanNormHost(pointCount);
         std::vector<float> cloneSignalStdHost(pointCount);
         std::vector<float> cloneSignalCoherenceHost(pointCount);
@@ -600,41 +1127,6 @@ public:
                     gradients.gradShape,
                     pointCount * sizeof(float)
                 );
-            }
-
-            if (gradients.gradPositionMeanNorm) {
-                syclQueue.memcpy(
-                    gradPositionMeanNormHost.data(),
-                    gradients.gradPositionMeanNorm,
-                    pointCount * sizeof(float));
-            }
-
-            if (gradients.gradPositionStd) {
-                syclQueue.memcpy(
-                    gradPositionStdHost.data(),
-                    gradients.gradPositionStd,
-                    pointCount * sizeof(float));
-            }
-
-            if (gradients.gradPositionCoherence) {
-                syclQueue.memcpy(
-                    gradPositionCoherenceHost.data(),
-                    gradients.gradPositionCoherence,
-                    pointCount * sizeof(float));
-            }
-
-            if (gradients.gradPositionDisagreement) {
-                syclQueue.memcpy(
-                    gradPositionDisagreementHost.data(),
-                    gradients.gradPositionDisagreement,
-                    pointCount * sizeof(float));
-            }
-
-            if (gradients.gradPositionActiveCameraCount) {
-                syclQueue.memcpy(
-                    gradPositionActiveCameraCountHost.data(),
-                    gradients.gradPositionActiveCameraCount,
-                    pointCount * sizeof(uint32_t));
             }
 
             if (gradients.cloneSignalMeanNorm) {
@@ -1087,16 +1579,6 @@ public:
         }
 
         py::dict gradientStatsDictionary;
-        gradientStatsDictionary["position_mean_norm"] =
-                makeFloat1Array(gradPositionMeanNormHost, pointCount);
-        gradientStatsDictionary["position_std"] =
-                makeFloat1Array(gradPositionStdHost, pointCount);
-        gradientStatsDictionary["position_coherence"] =
-                makeFloat1Array(gradPositionCoherenceHost, pointCount);
-        gradientStatsDictionary["position_disagreement"] =
-                makeFloat1Array(gradPositionDisagreementHost, pointCount);
-        gradientStatsDictionary["position_active_camera_count"] =
-                makeUint1Array(gradPositionActiveCameraCountHost, pointCount);
         gradientStatsDictionary["position_per_camera"] = makeFloat3CameraArray(
             gradPositionPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["position_record_count_per_camera"] = makeUintCameraArray(
@@ -1806,11 +2288,160 @@ public:
         return gradientDictionary;
     }
 
-    py::dict render_surface_regularizers_backward(
+    py::dict makeGradientStatsDictionary(Pale::PointGradients &sourceGradients) {
+        auto syclQueue = deviceSelector->getQueue();
+        const std::size_t pointCount = sourceGradients.numPoints;
+        const std::size_t cameraSlotCount = sourceGradients.cameraSlotCount;
+        const std::size_t primitiveCameraCount = pointCount * cameraSlotCount;
+
+        std::vector<Pale::float3> gradPositionPerPrimitivePerCameraHost(primitiveCameraCount);
+        std::vector<uint32_t> gradPositionRecordCountPerPrimitivePerCameraHost(primitiveCameraCount, 0u);
+
+        std::vector<float> cloneSignalMeanNormHost(pointCount, 0.0f);
+        std::vector<float> cloneSignalStdHost(pointCount, 0.0f);
+        std::vector<float> cloneSignalCoherenceHost(pointCount, 0.0f);
+        std::vector<float> cloneSignalDisagreementHost(pointCount, 0.0f);
+        std::vector<uint32_t> cloneSignalActiveCameraCountHost(pointCount, 0u);
+        std::vector<Pale::float3> cloneSignalPerPrimitivePerCameraHost(primitiveCameraCount);
+        std::vector<uint32_t> cloneSignalRecordCountPerPrimitivePerCameraHost(primitiveCameraCount, 0u);
+
+        if (pointCount > 0) {
+            if (sourceGradients.cloneSignalMeanNorm) {
+                syclQueue.memcpy(cloneSignalMeanNormHost.data(), sourceGradients.cloneSignalMeanNorm,
+                                 pointCount * sizeof(float));
+            }
+            if (sourceGradients.cloneSignalStd) {
+                syclQueue.memcpy(cloneSignalStdHost.data(), sourceGradients.cloneSignalStd,
+                                 pointCount * sizeof(float));
+            }
+            if (sourceGradients.cloneSignalCoherence) {
+                syclQueue.memcpy(cloneSignalCoherenceHost.data(), sourceGradients.cloneSignalCoherence,
+                                 pointCount * sizeof(float));
+            }
+            if (sourceGradients.cloneSignalDisagreement) {
+                syclQueue.memcpy(cloneSignalDisagreementHost.data(), sourceGradients.cloneSignalDisagreement,
+                                 pointCount * sizeof(float));
+            }
+            if (sourceGradients.cloneSignalActiveCameraCount) {
+                syclQueue.memcpy(cloneSignalActiveCameraCountHost.data(), sourceGradients.cloneSignalActiveCameraCount,
+                                 pointCount * sizeof(uint32_t));
+            }
+        }
+
+        if (primitiveCameraCount > 0) {
+            if (sourceGradients.gradPositionPerPrimitivePerCamera) {
+                syclQueue.memcpy(gradPositionPerPrimitivePerCameraHost.data(),
+                                 sourceGradients.gradPositionPerPrimitivePerCamera,
+                                 primitiveCameraCount * sizeof(Pale::float3));
+            }
+            if (sourceGradients.gradPositionRecordCountPerPrimitivePerCamera) {
+                syclQueue.memcpy(gradPositionRecordCountPerPrimitivePerCameraHost.data(),
+                                 sourceGradients.gradPositionRecordCountPerPrimitivePerCamera,
+                                 primitiveCameraCount * sizeof(uint32_t));
+            }
+            if (sourceGradients.cloneSignalPerPrimitivePerCamera) {
+                syclQueue.memcpy(cloneSignalPerPrimitivePerCameraHost.data(),
+                                 sourceGradients.cloneSignalPerPrimitivePerCamera,
+                                 primitiveCameraCount * sizeof(Pale::float3));
+            }
+            if (sourceGradients.cloneSignalRecordCountPerPrimitivePerCamera) {
+                syclQueue.memcpy(cloneSignalRecordCountPerPrimitivePerCameraHost.data(),
+                                 sourceGradients.cloneSignalRecordCountPerPrimitivePerCamera,
+                                 primitiveCameraCount * sizeof(uint32_t));
+            }
+        }
+        syclQueue.wait_and_throw();
+
+        auto makeFloat1Array = [](std::vector<float> &hostVector, std::size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount)};
+            std::vector<ssize_t> arrayStrides{static_cast<ssize_t>(sizeof(float))};
+            return py::array(
+                py::buffer_info(ownedVector->data(), sizeof(float), py::format_descriptor<float>::format(), 1,
+                                arrayShape, arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<float> *>(pointer);
+                }));
+        };
+
+        auto makeUint1Array = [](std::vector<uint32_t> &hostVector, std::size_t elementCount) -> py::array {
+            auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount)};
+            std::vector<ssize_t> arrayStrides{static_cast<ssize_t>(sizeof(uint32_t))};
+            return py::array(
+                py::buffer_info(ownedVector->data(), sizeof(uint32_t), py::format_descriptor<uint32_t>::format(), 1,
+                                arrayShape, arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<uint32_t> *>(pointer);
+                }));
+        };
+
+        auto makeFloat3CameraArray =
+                [](std::vector<Pale::float3> &hostVector, std::size_t pointCount,
+                   std::size_t cameraSlotCount) -> py::array {
+            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(pointCount),
+                static_cast<ssize_t>(cameraSlotCount),
+                3
+            };
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(cameraSlotCount * sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(Pale::float3)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+            return py::array(
+                py::buffer_info(ownedVector->data(), sizeof(float), py::format_descriptor<float>::format(), 3,
+                                arrayShape, arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                }));
+        };
+
+        auto makeUintCameraArray =
+                [](std::vector<uint32_t> &hostVector, std::size_t pointCount,
+                   std::size_t cameraSlotCount) -> py::array {
+            auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(pointCount),
+                static_cast<ssize_t>(cameraSlotCount)
+            };
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(cameraSlotCount * sizeof(uint32_t)),
+                static_cast<ssize_t>(sizeof(uint32_t))
+            };
+            return py::array(
+                py::buffer_info(ownedVector->data(), sizeof(uint32_t), py::format_descriptor<uint32_t>::format(), 2,
+                                arrayShape, arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<uint32_t> *>(pointer);
+                }));
+        };
+
+        py::dict gradientStatsDictionary;
+        gradientStatsDictionary["position_per_camera"] =
+                makeFloat3CameraArray(gradPositionPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["position_record_count_per_camera"] =
+                makeUintCameraArray(gradPositionRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["clone_signal_mean_norm"] = makeFloat1Array(cloneSignalMeanNormHost, pointCount);
+        gradientStatsDictionary["clone_signal_std"] = makeFloat1Array(cloneSignalStdHost, pointCount);
+        gradientStatsDictionary["clone_signal_coherence"] = makeFloat1Array(cloneSignalCoherenceHost, pointCount);
+        gradientStatsDictionary["clone_signal_disagreement"] = makeFloat1Array(cloneSignalDisagreementHost, pointCount);
+        gradientStatsDictionary["clone_signal_active_camera_count"] =
+                makeUint1Array(cloneSignalActiveCameraCountHost, pointCount);
+        gradientStatsDictionary["clone_signal_per_camera"] =
+                makeFloat3CameraArray(cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["clone_signal_record_count_per_camera"] =
+                makeUintCameraArray(cloneSignalRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        return gradientStatsDictionary;
+    }
+
+    py::dict runSurfaceRegularizersBackward(
         const py::list &cameraNamesList,
         const py::dict &depthDistortionGradImagesDictionary,
         const py::dict &visibleNormalGradImagesDictionary,
-        const py::dict &normalFromDepthGradImagesDictionary) {
+        const py::dict &normalFromDepthGradImagesDictionary,
+        bool returnGradients) {
         using std::int64_t;
         using std::size_t;
 
@@ -2017,6 +2648,10 @@ public:
 
         py::gil_scoped_acquire gilAcquire;
 
+        if (!returnGradients) {
+            return py::dict{};
+        }
+
         py::dict result;
         result["depth_distortion"] = makeGradientDictionary(depthDistortionGradients);
         result["normal_consistency"] = makeGradientDictionary(normalConsistencyGradients);
@@ -2024,7 +2659,160 @@ public:
         return result;
     }
 
+    py::dict render_surface_regularizers_backward(
+        const py::list &cameraNamesList,
+        const py::dict &depthDistortionGradImagesDictionary,
+        const py::dict &visibleNormalGradImagesDictionary,
+        const py::dict &normalFromDepthGradImagesDictionary) {
+        return runSurfaceRegularizersBackward(
+            cameraNamesList,
+            depthDistortionGradImagesDictionary,
+            visibleNormalGradImagesDictionary,
+            normalFromDepthGradImagesDictionary,
+            true);
+    }
+
+    void render_surface_regularizers_backward_no_gradients(
+        const py::list &cameraNamesList,
+        const py::dict &depthDistortionGradImagesDictionary,
+        const py::dict &visibleNormalGradImagesDictionary,
+        const py::dict &normalFromDepthGradImagesDictionary) {
+        (void) runSurfaceRegularizersBackward(
+            cameraNamesList,
+            depthDistortionGradImagesDictionary,
+            visibleNormalGradImagesDictionary,
+            normalFromDepthGradImagesDictionary,
+            false);
+    }
+
+    bool sync_point_parameters_from_gpu() {
+        return syncPointParametersFromGpu(true);
+    }
+
+    py::dict capture_device_adam_state() {
+        py::dict state;
+        state["point_count"] = static_cast<std::uint64_t>(0u);
+        state["step"] = static_cast<std::uint64_t>(0u);
+
+        if (!isDeviceTrainingStateAllocated()) {
+            return state;
+        }
+
+        auto syclQueue = deviceSelector->getQueue();
+        const std::size_t pointCount = deviceTrainingState.pointCount;
+
+        std::vector<Pale::float3> positionM(pointCount);
+        std::vector<Pale::float3> positionV(pointCount);
+        std::vector<Pale::float3> rotationM(pointCount);
+        std::vector<Pale::float3> rotationV(pointCount);
+        std::vector<Pale::float2> scaleM(pointCount);
+        std::vector<Pale::float2> scaleV(pointCount);
+        std::vector<Pale::float3> albedoM(pointCount);
+        std::vector<Pale::float3> albedoV(pointCount);
+        std::vector<float> opacityM(pointCount);
+        std::vector<float> opacityV(pointCount);
+        std::vector<float> betaM(pointCount);
+        std::vector<float> betaV(pointCount);
+
+        {
+            py::gil_scoped_release release;
+            syclQueue.memcpy(positionM.data(), deviceTrainingState.positionM, pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(positionV.data(), deviceTrainingState.positionV, pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(rotationM.data(), deviceTrainingState.rotationM, pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(rotationV.data(), deviceTrainingState.rotationV, pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(scaleM.data(), deviceTrainingState.scaleM, pointCount * sizeof(Pale::float2));
+            syclQueue.memcpy(scaleV.data(), deviceTrainingState.scaleV, pointCount * sizeof(Pale::float2));
+            syclQueue.memcpy(albedoM.data(), deviceTrainingState.albedoM, pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(albedoV.data(), deviceTrainingState.albedoV, pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(opacityM.data(), deviceTrainingState.opacityM, pointCount * sizeof(float));
+            syclQueue.memcpy(opacityV.data(), deviceTrainingState.opacityV, pointCount * sizeof(float));
+            syclQueue.memcpy(betaM.data(), deviceTrainingState.betaM, pointCount * sizeof(float));
+            syclQueue.memcpy(betaV.data(), deviceTrainingState.betaV, pointCount * sizeof(float));
+            syclQueue.wait_and_throw();
+        }
+
+        state["point_count"] = static_cast<std::uint64_t>(pointCount);
+        state["step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
+        state["position_m"] = makeDeviceAdamFloat3Array(std::move(positionM), pointCount);
+        state["position_v"] = makeDeviceAdamFloat3Array(std::move(positionV), pointCount);
+        state["rotation_m"] = makeDeviceAdamFloat3Array(std::move(rotationM), pointCount);
+        state["rotation_v"] = makeDeviceAdamFloat3Array(std::move(rotationV), pointCount);
+        state["scale_m"] = makeDeviceAdamFloat2Array(std::move(scaleM), pointCount);
+        state["scale_v"] = makeDeviceAdamFloat2Array(std::move(scaleV), pointCount);
+        state["albedo_m"] = makeDeviceAdamFloat3Array(std::move(albedoM), pointCount);
+        state["albedo_v"] = makeDeviceAdamFloat3Array(std::move(albedoV), pointCount);
+        state["opacity_m"] = makeDeviceAdamFloat1Array(std::move(opacityM), pointCount);
+        state["opacity_v"] = makeDeviceAdamFloat1Array(std::move(opacityV), pointCount);
+        state["beta_m"] = makeDeviceAdamFloat1Array(std::move(betaM), pointCount);
+        state["beta_v"] = makeDeviceAdamFloat1Array(std::move(betaV), pointCount);
+        return state;
+    }
+
+    void upload_device_adam_state(const py::dict &state) {
+        auto syclQueue = deviceSelector->getQueue();
+        const std::size_t pointCount =
+                static_cast<std::size_t>(get_u64(state, "point_count", 0u));
+        const std::uint32_t step =
+                static_cast<std::uint32_t>(get_u64(state, "step", 0u));
+
+        if (pointCount == 0u) {
+            freeDeviceTrainingState(syclQueue);
+            return;
+        }
+
+        if (!sceneGpu.points || sceneGpu.pointCount != pointCount) {
+            throw std::runtime_error(
+                "upload_device_adam_state: state point count does not match current device scene");
+        }
+
+        std::vector<Pale::float3> positionM =
+                readDeviceAdamFloat3Array(state, "position_m", pointCount);
+        std::vector<Pale::float3> positionV =
+                readDeviceAdamFloat3Array(state, "position_v", pointCount);
+        std::vector<Pale::float3> rotationM =
+                readDeviceAdamFloat3Array(state, "rotation_m", pointCount);
+        std::vector<Pale::float3> rotationV =
+                readDeviceAdamFloat3Array(state, "rotation_v", pointCount);
+        std::vector<Pale::float2> scaleM =
+                readDeviceAdamFloat2Array(state, "scale_m", pointCount);
+        std::vector<Pale::float2> scaleV =
+                readDeviceAdamFloat2Array(state, "scale_v", pointCount);
+        std::vector<Pale::float3> albedoM =
+                readDeviceAdamFloat3Array(state, "albedo_m", pointCount);
+        std::vector<Pale::float3> albedoV =
+                readDeviceAdamFloat3Array(state, "albedo_v", pointCount);
+        std::vector<float> opacityM =
+                readDeviceAdamFloat1Array(state, "opacity_m", pointCount);
+        std::vector<float> opacityV =
+                readDeviceAdamFloat1Array(state, "opacity_v", pointCount);
+        std::vector<float> betaM =
+                readDeviceAdamFloat1Array(state, "beta_m", pointCount);
+        std::vector<float> betaV =
+                readDeviceAdamFloat1Array(state, "beta_v", pointCount);
+
+        {
+            py::gil_scoped_release release;
+            freeDeviceTrainingState(syclQueue);
+            ensureDeviceTrainingState(pointCount, syclQueue);
+            syclQueue.memcpy(deviceTrainingState.positionM, positionM.data(), pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(deviceTrainingState.positionV, positionV.data(), pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(deviceTrainingState.rotationM, rotationM.data(), pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(deviceTrainingState.rotationV, rotationV.data(), pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(deviceTrainingState.scaleM, scaleM.data(), pointCount * sizeof(Pale::float2));
+            syclQueue.memcpy(deviceTrainingState.scaleV, scaleV.data(), pointCount * sizeof(Pale::float2));
+            syclQueue.memcpy(deviceTrainingState.albedoM, albedoM.data(), pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(deviceTrainingState.albedoV, albedoV.data(), pointCount * sizeof(Pale::float3));
+            syclQueue.memcpy(deviceTrainingState.opacityM, opacityM.data(), pointCount * sizeof(float));
+            syclQueue.memcpy(deviceTrainingState.opacityV, opacityV.data(), pointCount * sizeof(float));
+            syclQueue.memcpy(deviceTrainingState.betaM, betaM.data(), pointCount * sizeof(float));
+            syclQueue.memcpy(deviceTrainingState.betaV, betaV.data(), pointCount * sizeof(float));
+            syclQueue.wait_and_throw();
+        }
+        deviceTrainingState.step = step;
+    }
+
     py::dict get_point_parameters() {
+        syncPointParametersFromGpuIfDirty();
         if (!assetManager) throw std::runtime_error("get_point_parameters: assetManager is null");
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
         if (!pointAssetSharedPtr) throw std::runtime_error("get_point_parameters: failed to get PointAsset for dynamic point cloud");
@@ -2097,6 +2885,7 @@ public:
 
     void apply_point_optimization(const py::dict &parameterDictionary) {
         if (!parameterDictionary.contains("position")) return;
+        devicePointParametersDirty = false;
         if (!parameterDictionary.contains("rotation")) throw std::runtime_error("apply_point_optimization: expected key 'rotation' with shape (N,4)");
         py::array positionArray = parameterDictionary["position"].cast<py::array>();
         py::buffer_info positionInfo = positionArray.request();
@@ -2107,6 +2896,9 @@ public:
         if (pointCount != currentPointCount) {
             Pale::Log::PA_ERROR("apply_point_optimization: incoming point count {} does not match current buildProducts.points size {}. This function does not handle topology changes.", pointCount, currentPointCount);
             throw std::runtime_error("apply_point_optimization expects consistent point count; use densification API for adding/removing points.");
+        }
+        if (deviceTrainingState.pointCount != 0u && deviceTrainingState.pointCount != pointCount) {
+            freeDeviceTrainingState(deviceSelector->getQueue());
         }
         auto requireArray = [&](const char *key) -> py::array {
             if (!parameterDictionary.contains(key)) throw std::runtime_error("apply_point_optimization: missing key: " + std::string(key));
@@ -2188,12 +2980,19 @@ public:
         }
         Pale::SceneUpload::upload(buildProducts, sceneGpu, deviceSelector->getQueue());
         pathTracer->setScene(sceneGpu, buildProducts);
+        devicePointParametersDirty = false;
     }
 
     void rebuild_bvh() {
+        syncPointParametersFromGpuIfDirty();
+        const std::size_t previousDeviceOptimizerPointCount = deviceTrainingState.pointCount;
         Pale::AssetAccessFromManager assetAccessor(*assetManager);
         buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
         Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, deviceSelector->getQueue());
+        if (previousDeviceOptimizerPointCount != 0u &&
+            previousDeviceOptimizerPointCount != buildProducts.points.size()) {
+            freeDeviceTrainingState(deviceSelector->getQueue());
+        }
         Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
         Pale::freeGradientsForScene(deviceSelector->getQueue(), depthDistortionGradients);
         Pale::freeGradientsForScene(deviceSelector->getQueue(), normalConsistencyGradients);
@@ -2206,9 +3005,11 @@ public:
         normalConsistencyGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         pathTracer->setScene(sceneGpu, buildProducts);
+        devicePointParametersDirty = false;
     }
 
     void remove_points(const py::dict &parameterDictionary) {
+        syncPointParametersFromGpuIfDirty();
         // -----------------------------------------------------------------
         // 0) Check required input
         // -----------------------------------------------------------------
@@ -2347,6 +3148,7 @@ public:
     }
 
     void add_new_points(const py::dict &parameterDictionary) {
+        syncPointParametersFromGpuIfDirty();
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
         if (!pointAssetSharedPtr) throw std::runtime_error("add_new_points: failed to get PointAsset for dynamic point cloud");
         Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
@@ -2449,6 +3251,7 @@ public:
     }
 
     void set_point_opacity(float newOpacity, int index) {
+        syncPointParametersFromGpuIfDirty();
         if (!assetManager) {
             throw std::runtime_error("set_gaussian_opacity: assetManager is null");
         }
@@ -2479,6 +3282,7 @@ public:
     }
 
     void set_point_translation(float newPosition, float axis, int index) {
+        syncPointParametersFromGpuIfDirty();
         if (!assetManager) {
             throw std::runtime_error("set_gaussian_opacity: assetManager is null");
         }
@@ -2509,6 +3313,7 @@ public:
     }
 
     void set_point_albedo(float newIntensity, float axis, int index) {
+        syncPointParametersFromGpuIfDirty();
         if (!assetManager) {
             throw std::runtime_error("set_point_albedo: assetManager is null");
         }
@@ -2557,6 +3362,7 @@ public:
     }
 
     void set_point_rotation_degrees(float angleDegrees, int axisIndex, int index) {
+        syncPointParametersFromGpuIfDirty();
         if (!assetManager) throw std::runtime_error("set_point_rotation_degrees: assetManager is null");
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
         if (!pointAssetSharedPtr) throw std::runtime_error("set_point_rotation_degrees: failed to get PointAsset");
@@ -2600,6 +3406,7 @@ public:
     }
 
     void set_point_scale(float newScale, float axis, int index) {
+        syncPointParametersFromGpuIfDirty();
         if (!assetManager) {
             throw std::runtime_error("set_gaussian_opacity: assetManager is null");
         }
@@ -2631,6 +3438,7 @@ public:
 
 
     void set_point_beta(float newBeta, int index) {
+        syncPointParametersFromGpuIfDirty();
         if (!assetManager) {
             throw std::runtime_error("set_point_beta: assetManager is null");
         }
@@ -2662,6 +3470,7 @@ public:
 
 
     void set_point_properties(py::tuple translation3, py::tuple rotationQuat4, py::tuple scale3, py::tuple albedo3, float opacity, float beta, int index = -1) {
+        syncPointParametersFromGpuIfDirty();
         if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3 || albedo3.size() != 3) throw std::runtime_error("Expected translation(3), rotation_quat_wxyz(4), scale(3), albedo(3)");
         const glm::vec3 newTranslation{py::cast<float>(translation3[0]), py::cast<float>(translation3[1]), py::cast<float>(translation3[2])};
         const glm::quat rotationDelta = normalizeQuaternionOrIdentity(glm::quat(py::cast<float>(rotationQuat4[0]), py::cast<float>(rotationQuat4[1]), py::cast<float>(rotationQuat4[2]), py::cast<float>(rotationQuat4[3])));
@@ -2694,6 +3503,1213 @@ public:
     }
 
 private:
+    SelectedTrainingBatch selectTrainingBatch(const py::list &cameraNamesList,
+                                              const char *callerName) {
+        SelectedTrainingBatch selectedBatch;
+        selectedBatch.sensors.reserve(py::len(cameraNamesList));
+        selectedBatch.debugImages.reserve(py::len(cameraNamesList));
+        selectedBatch.targets.reserve(py::len(cameraNamesList));
+
+        for (const auto &cameraNameObject: cameraNamesList) {
+            const std::string cameraName = py::cast<std::string>(cameraNameObject);
+            bool foundSensor = false;
+
+            for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex) {
+                const Pale::SensorGPU &sensor = sensorsForward[sensorIndex];
+                const std::string sensorName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
+                if (sensorName != cameraName) {
+                    continue;
+                }
+
+                auto targetIt = trainingTargets.find(cameraName);
+                if (targetIt == trainingTargets.end() || targetIt->second.rgba == nullptr) {
+                    throw std::runtime_error(
+                        std::string(callerName) + ": no uploaded target image for camera '" + cameraName + "'");
+                }
+
+                selectedBatch.sensors.push_back(sensor);
+                selectedBatch.debugImages.push_back(debugImages[sensorIndex]);
+                selectedBatch.targets.push_back(&targetIt->second);
+                foundSensor = true;
+                break;
+            }
+
+            if (!foundSensor) {
+                throw std::runtime_error(std::string(callerName) + ": camera not found: " + cameraName);
+            }
+        }
+
+        if (selectedBatch.sensors.empty()) {
+            throw std::runtime_error(std::string(callerName) + ": camera list is empty");
+        }
+
+        return selectedBatch;
+    }
+
+    static DeviceTrainingStepOptions parseDeviceTrainingStepOptions(const py::dict &optionsDictionary) {
+        DeviceTrainingStepOptions options;
+        options.optimizer = get_s(optionsDictionary, "optimizer", options.optimizer);
+        if (options.optimizer != "adam" && options.optimizer != "sgd") {
+            throw std::runtime_error(
+                "render_rgb_training_step: expected optimizer to be 'adam' or 'sgd', got '" +
+                options.optimizer + "'");
+        }
+
+        options.learningRatePosition =
+                get_f(optionsDictionary, "learning_rate_position", options.learningRatePosition);
+        options.learningRateRotation =
+                get_f(optionsDictionary, "learning_rate_rotation", options.learningRateRotation);
+        options.learningRateScale =
+                get_f(optionsDictionary, "learning_rate_scale", options.learningRateScale);
+        options.learningRateAlbedo =
+                get_f(optionsDictionary, "learning_rate_albedo", options.learningRateAlbedo);
+        options.learningRateOpacity =
+                get_f(optionsDictionary, "learning_rate_opacity", options.learningRateOpacity);
+        options.learningRateBeta =
+                get_f(optionsDictionary, "learning_rate_beta", options.learningRateBeta);
+        options.cameraBatchScale =
+                get_f(optionsDictionary, "camera_batch_scale", options.cameraBatchScale);
+        options.beta1 = get_f(optionsDictionary, "adam_beta1", options.beta1);
+        options.beta2 = get_f(optionsDictionary, "adam_beta2", options.beta2);
+        options.epsilon = get_f(optionsDictionary, "adam_epsilon", options.epsilon);
+        options.maxRotationStepRadians =
+                get_f(optionsDictionary, "max_rotation_step_radians", options.maxRotationStepRadians);
+        return options;
+    }
+
+    bool isDeviceTrainingStateAllocated() const {
+        return deviceTrainingState.pointCount != 0u &&
+               deviceTrainingState.positionM != nullptr &&
+               deviceTrainingState.positionV != nullptr &&
+               deviceTrainingState.rotationM != nullptr &&
+               deviceTrainingState.rotationV != nullptr &&
+               deviceTrainingState.scaleM != nullptr &&
+               deviceTrainingState.scaleV != nullptr &&
+               deviceTrainingState.albedoM != nullptr &&
+               deviceTrainingState.albedoV != nullptr &&
+               deviceTrainingState.opacityM != nullptr &&
+               deviceTrainingState.opacityV != nullptr &&
+               deviceTrainingState.betaM != nullptr &&
+               deviceTrainingState.betaV != nullptr;
+    }
+
+    static py::array makeDeviceAdamFloat3Array(
+        std::vector<Pale::float3> &&hostVector,
+        std::size_t elementCount) {
+        auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+        std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount), 3};
+        std::vector<ssize_t> arrayStrides{
+            static_cast<ssize_t>(sizeof(Pale::float3)),
+            static_cast<ssize_t>(sizeof(float))
+        };
+
+        return py::array(
+            py::buffer_info(
+                ownedVector->data(),
+                sizeof(float),
+                py::format_descriptor<float>::format(),
+                2,
+                arrayShape,
+                arrayStrides),
+            py::capsule(ownedVector, [](void *pointer) {
+                delete static_cast<std::vector<Pale::float3> *>(pointer);
+            }));
+    }
+
+    static py::array makeDeviceAdamFloat2Array(
+        std::vector<Pale::float2> &&hostVector,
+        std::size_t elementCount) {
+        auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+        std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount), 2};
+        std::vector<ssize_t> arrayStrides{
+            static_cast<ssize_t>(sizeof(Pale::float2)),
+            static_cast<ssize_t>(sizeof(float))
+        };
+
+        return py::array(
+            py::buffer_info(
+                ownedVector->data(),
+                sizeof(float),
+                py::format_descriptor<float>::format(),
+                2,
+                arrayShape,
+                arrayStrides),
+            py::capsule(ownedVector, [](void *pointer) {
+                delete static_cast<std::vector<Pale::float2> *>(pointer);
+            }));
+    }
+
+    static py::array makeDeviceAdamFloat1Array(
+        std::vector<float> &&hostVector,
+        std::size_t elementCount) {
+        auto *ownedVector = new std::vector<float>(std::move(hostVector));
+        std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount)};
+        std::vector<ssize_t> arrayStrides{static_cast<ssize_t>(sizeof(float))};
+
+        return py::array(
+            py::buffer_info(
+                ownedVector->data(),
+                sizeof(float),
+                py::format_descriptor<float>::format(),
+                1,
+                arrayShape,
+                arrayStrides),
+            py::capsule(ownedVector, [](void *pointer) {
+                delete static_cast<std::vector<float> *>(pointer);
+            }));
+    }
+
+    static std::vector<Pale::float3> readDeviceAdamFloat3Array(
+        const py::dict &state,
+        const char *key,
+        std::size_t pointCount) {
+        if (!state.contains(key)) {
+            throw std::runtime_error(
+                std::string("upload_device_adam_state: missing key '") + key + "'");
+        }
+
+        py::array_t<float, py::array::c_style | py::array::forcecast> array =
+                state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+        py::buffer_info info = array.request();
+        if (info.ndim != 2 ||
+            info.shape[0] != static_cast<ssize_t>(pointCount) ||
+            info.shape[1] != 3) {
+            throw std::runtime_error(
+                std::string("upload_device_adam_state: expected '") +
+                key +
+                "' to have shape (N,3)");
+        }
+
+        const float *data = static_cast<const float *>(info.ptr);
+        std::vector<Pale::float3> result(pointCount);
+        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+            const std::size_t base = pointIndex * 3u;
+            result[pointIndex] = Pale::float3{
+                data[base + 0u],
+                data[base + 1u],
+                data[base + 2u]
+            };
+        }
+        return result;
+    }
+
+    static std::vector<Pale::float2> readDeviceAdamFloat2Array(
+        const py::dict &state,
+        const char *key,
+        std::size_t pointCount) {
+        if (!state.contains(key)) {
+            throw std::runtime_error(
+                std::string("upload_device_adam_state: missing key '") + key + "'");
+        }
+
+        py::array_t<float, py::array::c_style | py::array::forcecast> array =
+                state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+        py::buffer_info info = array.request();
+        if (info.ndim != 2 ||
+            info.shape[0] != static_cast<ssize_t>(pointCount) ||
+            info.shape[1] != 2) {
+            throw std::runtime_error(
+                std::string("upload_device_adam_state: expected '") +
+                key +
+                "' to have shape (N,2)");
+        }
+
+        const float *data = static_cast<const float *>(info.ptr);
+        std::vector<Pale::float2> result(pointCount);
+        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+            const std::size_t base = pointIndex * 2u;
+            result[pointIndex] = Pale::float2{data[base + 0u], data[base + 1u]};
+        }
+        return result;
+    }
+
+    static std::vector<float> readDeviceAdamFloat1Array(
+        const py::dict &state,
+        const char *key,
+        std::size_t pointCount) {
+        if (!state.contains(key)) {
+            throw std::runtime_error(
+                std::string("upload_device_adam_state: missing key '") + key + "'");
+        }
+
+        py::array_t<float, py::array::c_style | py::array::forcecast> array =
+                state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+        py::buffer_info info = array.request();
+        const bool isFlatVector =
+                info.ndim == 1 &&
+                info.shape[0] == static_cast<ssize_t>(pointCount);
+        const bool isColumnVector =
+                info.ndim == 2 &&
+                info.shape[0] == static_cast<ssize_t>(pointCount) &&
+                info.shape[1] == 1;
+        if (!isFlatVector && !isColumnVector) {
+            throw std::runtime_error(
+                std::string("upload_device_adam_state: expected '") +
+                key +
+                "' to have shape (N,) or (N,1)");
+        }
+
+        const float *data = static_cast<const float *>(info.ptr);
+        return std::vector<float>(data, data + pointCount);
+    }
+
+    void freeDeviceTrainingState(sycl::queue queue) {
+        auto releasePointer = [&queue](auto *&pointer) {
+            if (pointer) {
+                sycl::free(pointer, queue);
+                pointer = nullptr;
+            }
+        };
+
+        releasePointer(deviceTrainingState.positionM);
+        releasePointer(deviceTrainingState.positionV);
+        releasePointer(deviceTrainingState.rotationM);
+        releasePointer(deviceTrainingState.rotationV);
+        releasePointer(deviceTrainingState.scaleM);
+        releasePointer(deviceTrainingState.scaleV);
+        releasePointer(deviceTrainingState.albedoM);
+        releasePointer(deviceTrainingState.albedoV);
+        releasePointer(deviceTrainingState.opacityM);
+        releasePointer(deviceTrainingState.opacityV);
+        releasePointer(deviceTrainingState.betaM);
+        releasePointer(deviceTrainingState.betaV);
+        deviceTrainingState.pointCount = 0;
+        deviceTrainingState.step = 0;
+    }
+
+    void ensureDeviceTrainingState(std::size_t pointCount, sycl::queue queue) {
+        if (pointCount == 0u) {
+            throw std::runtime_error("ensureDeviceTrainingState: point count is zero");
+        }
+
+        const bool alreadyAllocated =
+                deviceTrainingState.pointCount == pointCount &&
+                deviceTrainingState.positionM != nullptr &&
+                deviceTrainingState.positionV != nullptr &&
+                deviceTrainingState.rotationM != nullptr &&
+                deviceTrainingState.rotationV != nullptr &&
+                deviceTrainingState.scaleM != nullptr &&
+                deviceTrainingState.scaleV != nullptr &&
+                deviceTrainingState.albedoM != nullptr &&
+                deviceTrainingState.albedoV != nullptr &&
+                deviceTrainingState.opacityM != nullptr &&
+                deviceTrainingState.opacityV != nullptr &&
+                deviceTrainingState.betaM != nullptr &&
+                deviceTrainingState.betaV != nullptr;
+
+        if (alreadyAllocated) {
+            return;
+        }
+
+        freeDeviceTrainingState(queue);
+        deviceTrainingState.pointCount = pointCount;
+
+        deviceTrainingState.positionM = sycl::malloc_device<Pale::float3>(pointCount, queue);
+        deviceTrainingState.positionV = sycl::malloc_device<Pale::float3>(pointCount, queue);
+        deviceTrainingState.rotationM = sycl::malloc_device<Pale::float3>(pointCount, queue);
+        deviceTrainingState.rotationV = sycl::malloc_device<Pale::float3>(pointCount, queue);
+        deviceTrainingState.scaleM = sycl::malloc_device<Pale::float2>(pointCount, queue);
+        deviceTrainingState.scaleV = sycl::malloc_device<Pale::float2>(pointCount, queue);
+        deviceTrainingState.albedoM = sycl::malloc_device<Pale::float3>(pointCount, queue);
+        deviceTrainingState.albedoV = sycl::malloc_device<Pale::float3>(pointCount, queue);
+        deviceTrainingState.opacityM = sycl::malloc_device<float>(pointCount, queue);
+        deviceTrainingState.opacityV = sycl::malloc_device<float>(pointCount, queue);
+        deviceTrainingState.betaM = sycl::malloc_device<float>(pointCount, queue);
+        deviceTrainingState.betaV = sycl::malloc_device<float>(pointCount, queue);
+
+        if (!deviceTrainingState.positionM || !deviceTrainingState.positionV ||
+            !deviceTrainingState.rotationM || !deviceTrainingState.rotationV ||
+            !deviceTrainingState.scaleM || !deviceTrainingState.scaleV ||
+            !deviceTrainingState.albedoM || !deviceTrainingState.albedoV ||
+            !deviceTrainingState.opacityM || !deviceTrainingState.opacityV ||
+            !deviceTrainingState.betaM || !deviceTrainingState.betaV) {
+            freeDeviceTrainingState(queue);
+            throw std::runtime_error("ensureDeviceTrainingState: failed to allocate Adam state on device");
+        }
+
+        queue.memset(deviceTrainingState.positionM, 0, pointCount * sizeof(Pale::float3));
+        queue.memset(deviceTrainingState.positionV, 0, pointCount * sizeof(Pale::float3));
+        queue.memset(deviceTrainingState.rotationM, 0, pointCount * sizeof(Pale::float3));
+        queue.memset(deviceTrainingState.rotationV, 0, pointCount * sizeof(Pale::float3));
+        queue.memset(deviceTrainingState.scaleM, 0, pointCount * sizeof(Pale::float2));
+        queue.memset(deviceTrainingState.scaleV, 0, pointCount * sizeof(Pale::float2));
+        queue.memset(deviceTrainingState.albedoM, 0, pointCount * sizeof(Pale::float3));
+        queue.memset(deviceTrainingState.albedoV, 0, pointCount * sizeof(Pale::float3));
+        queue.memset(deviceTrainingState.opacityM, 0, pointCount * sizeof(float));
+        queue.memset(deviceTrainingState.opacityV, 0, pointCount * sizeof(float));
+        queue.memset(deviceTrainingState.betaM, 0, pointCount * sizeof(float));
+        queue.memset(deviceTrainingState.betaV, 0, pointCount * sizeof(float));
+        queue.wait_and_throw();
+    }
+
+    void launchDeviceTrainingStepKernel(sycl::queue queue,
+                                        const Pale::PointGradients &pointGradients,
+                                        const Pale::PointGradients *depthGradients,
+                                        const Pale::PointGradients *normalGradients,
+                                        const Pale::PointGradients *visibilityGradients,
+                                        const DeviceTrainingStepOptions &options) {
+        if (!sceneGpu.points || sceneGpu.pointCount == 0u) {
+            throw std::runtime_error("launchDeviceTrainingStepKernel: scene has no device points");
+        }
+        if (pointGradients.numPoints != sceneGpu.pointCount ||
+            deviceTrainingState.pointCount != sceneGpu.pointCount) {
+            throw std::runtime_error("launchDeviceTrainingStepKernel: point count mismatch");
+        }
+        auto validateOptionalGradientSource = [&](const Pale::PointGradients *gradientSource,
+                                                  const char *sourceName) {
+            if (gradientSource && gradientSource->numPoints != sceneGpu.pointCount) {
+                throw std::runtime_error(
+                    std::string("launchDeviceTrainingStepKernel: ") +
+                    sourceName +
+                    " point count mismatch");
+            }
+        };
+        validateOptionalGradientSource(depthGradients, "depthDistortionGradients");
+        validateOptionalGradientSource(normalGradients, "normalConsistencyGradients");
+        validateOptionalGradientSource(visibilityGradients, "visibilityOpacityGradients");
+
+        const bool useAdam = options.optimizer == "adam";
+        const std::uint32_t adamStep = ++deviceTrainingState.step;
+        const float biasCorrection1 =
+                useAdam ? 1.0f - std::pow(options.beta1, static_cast<float>(adamStep)) : 1.0f;
+        const float biasCorrection2 =
+                useAdam ? 1.0f - std::pow(options.beta2, static_cast<float>(adamStep)) : 1.0f;
+
+        queue.parallel_for<class DeviceTrainingStepKernelTag>(
+            sycl::range<1>(sceneGpu.pointCount),
+            [points = sceneGpu.points,
+             gradPosition = pointGradients.gradPosition,
+             gradRotation = pointGradients.gradRotation,
+             gradScale = pointGradients.gradScale,
+             gradAlbedo = pointGradients.gradAlbedo,
+             gradOpacity = pointGradients.gradOpacity,
+             gradBeta = pointGradients.gradBeta,
+             depthGradPosition = depthGradients ? depthGradients->gradPosition : nullptr,
+             depthGradRotation = depthGradients ? depthGradients->gradRotation : nullptr,
+             depthGradScale = depthGradients ? depthGradients->gradScale : nullptr,
+             depthGradAlbedo = depthGradients ? depthGradients->gradAlbedo : nullptr,
+             depthGradOpacity = depthGradients ? depthGradients->gradOpacity : nullptr,
+             depthGradBeta = depthGradients ? depthGradients->gradBeta : nullptr,
+             normalGradPosition = normalGradients ? normalGradients->gradPosition : nullptr,
+             normalGradRotation = normalGradients ? normalGradients->gradRotation : nullptr,
+             normalGradScale = normalGradients ? normalGradients->gradScale : nullptr,
+             normalGradAlbedo = normalGradients ? normalGradients->gradAlbedo : nullptr,
+             normalGradOpacity = normalGradients ? normalGradients->gradOpacity : nullptr,
+             normalGradBeta = normalGradients ? normalGradients->gradBeta : nullptr,
+             visibilityGradPosition = visibilityGradients ? visibilityGradients->gradPosition : nullptr,
+             visibilityGradRotation = visibilityGradients ? visibilityGradients->gradRotation : nullptr,
+             visibilityGradScale = visibilityGradients ? visibilityGradients->gradScale : nullptr,
+             visibilityGradAlbedo = visibilityGradients ? visibilityGradients->gradAlbedo : nullptr,
+             visibilityGradOpacity = visibilityGradients ? visibilityGradients->gradOpacity : nullptr,
+             visibilityGradBeta = visibilityGradients ? visibilityGradients->gradBeta : nullptr,
+             positionM = deviceTrainingState.positionM,
+             positionV = deviceTrainingState.positionV,
+             rotationM = deviceTrainingState.rotationM,
+             rotationV = deviceTrainingState.rotationV,
+             scaleM = deviceTrainingState.scaleM,
+             scaleV = deviceTrainingState.scaleV,
+             albedoM = deviceTrainingState.albedoM,
+             albedoV = deviceTrainingState.albedoV,
+             opacityM = deviceTrainingState.opacityM,
+             opacityV = deviceTrainingState.opacityV,
+             betaM = deviceTrainingState.betaM,
+             betaV = deviceTrainingState.betaV,
+             useAdam,
+             beta1 = options.beta1,
+             beta2 = options.beta2,
+             epsilon = options.epsilon,
+             biasCorrection1,
+             biasCorrection2,
+             lrPosition = options.learningRatePosition,
+             lrRotation = options.learningRateRotation,
+             lrScale = options.learningRateScale,
+             lrAlbedo = options.learningRateAlbedo,
+             lrOpacity = options.learningRateOpacity,
+             lrBeta = options.learningRateBeta,
+             cameraBatchScale = options.cameraBatchScale,
+             maxRotationStepRadians = options.maxRotationStepRadians](sycl::id<1> itemId) {
+                const std::uint32_t primitiveIndex = static_cast<std::uint32_t>(itemId[0]);
+                Pale::Point &point = points[primitiveIndex];
+
+                if (point.isEmissive()) {
+                    return;
+                }
+
+                auto cleanGradient = [](float value) -> float {
+                    return sycl::isfinite(value) ? value : 0.0f;
+                };
+                auto clampValue = [](float value, float minValue, float maxValue) -> float {
+                    return sycl::fmin(sycl::fmax(value, minValue), maxValue);
+                };
+                auto adamUpdate = [&](float gradientValue, float &m, float &v, float learningRate) -> float {
+                    if (learningRate == 0.0f) {
+                        return 0.0f;
+                    }
+                    if (!useAdam) {
+                        return learningRate * gradientValue;
+                    }
+                    m = beta1 * m + (1.0f - beta1) * gradientValue;
+                    v = beta2 * v + (1.0f - beta2) * gradientValue * gradientValue;
+                    const float mHat = m / sycl::fmax(biasCorrection1, 1.0e-20f);
+                    const float vHat = v / sycl::fmax(biasCorrection2, 1.0e-20f);
+                    return learningRate * mHat / (sycl::sqrt(vHat) + epsilon);
+                };
+                auto dot3 = [](const Pale::float3 &a, const Pale::float3 &b) -> float {
+                    return a.x() * b.x() + a.y() * b.y() + a.z() * b.z();
+                };
+                auto cross3 = [](const Pale::float3 &a, const Pale::float3 &b) -> Pale::float3 {
+                    return Pale::float3{
+                        a.y() * b.z() - a.z() * b.y(),
+                        a.z() * b.x() - a.x() * b.z(),
+                        a.x() * b.y() - a.y() * b.x()
+                    };
+                };
+                auto normalizeOrFallback = [&](const Pale::float3 &value,
+                                               const Pale::float3 &fallback) -> Pale::float3 {
+                    const float lengthSquared = dot3(value, value);
+                    if (!sycl::isfinite(lengthSquared) || lengthSquared <= 1.0e-20f) {
+                        return fallback;
+                    }
+                    const float invLength = sycl::rsqrt(lengthSquared);
+                    return value * invLength;
+                };
+                auto sumFloat3Gradient = [&](Pale::float3 *depthPointer,
+                                             Pale::float3 *normalPointer,
+                                             Pale::float3 *visibilityPointer,
+                                             Pale::float3 baseGradient) -> Pale::float3 {
+                    Pale::float3 gradient = baseGradient;
+                    if (depthPointer) {
+                        gradient += depthPointer[primitiveIndex];
+                    }
+                    if (normalPointer) {
+                        gradient += normalPointer[primitiveIndex];
+                    }
+                    if (visibilityPointer) {
+                        gradient += visibilityPointer[primitiveIndex];
+                    }
+                    return gradient;
+                };
+                auto sumFloatGradient = [&](float *depthPointer,
+                                            float *normalPointer,
+                                            float *visibilityPointer,
+                                            float baseGradient) -> float {
+                    float gradient = baseGradient;
+                    if (depthPointer) {
+                        gradient += depthPointer[primitiveIndex];
+                    }
+                    if (normalPointer) {
+                        gradient += normalPointer[primitiveIndex];
+                    }
+                    if (visibilityPointer) {
+                        gradient += visibilityPointer[primitiveIndex];
+                    }
+                    return gradient;
+                };
+
+                const Pale::float3 positionGradient = sumFloat3Gradient(
+                    depthGradPosition,
+                    normalGradPosition,
+                    visibilityGradPosition,
+                    gradPosition[primitiveIndex]);
+                const Pale::float3 rotationGradient = sumFloat3Gradient(
+                    depthGradRotation,
+                    normalGradRotation,
+                    visibilityGradRotation,
+                    gradRotation[primitiveIndex]);
+                const Pale::float2 baseScaleGradient = gradScale[primitiveIndex];
+                float scaleGradientX = baseScaleGradient.x();
+                float scaleGradientY = baseScaleGradient.y();
+                if (depthGradScale) {
+                    scaleGradientX += depthGradScale[primitiveIndex].x();
+                    scaleGradientY += depthGradScale[primitiveIndex].y();
+                }
+                if (normalGradScale) {
+                    scaleGradientX += normalGradScale[primitiveIndex].x();
+                    scaleGradientY += normalGradScale[primitiveIndex].y();
+                }
+                if (visibilityGradScale) {
+                    scaleGradientX += visibilityGradScale[primitiveIndex].x();
+                    scaleGradientY += visibilityGradScale[primitiveIndex].y();
+                }
+                const Pale::float3 albedoGradient = sumFloat3Gradient(
+                    depthGradAlbedo,
+                    normalGradAlbedo,
+                    visibilityGradAlbedo,
+                    gradAlbedo[primitiveIndex]);
+                const float opacityGradient = sumFloatGradient(
+                    depthGradOpacity,
+                    normalGradOpacity,
+                    visibilityGradOpacity,
+                    gradOpacity[primitiveIndex]);
+                const float betaGradient = sumFloatGradient(
+                    depthGradBeta,
+                    normalGradBeta,
+                    visibilityGradBeta,
+                    gradBeta[primitiveIndex]);
+
+                const float positionUpdateX = adamUpdate(
+                    cleanGradient(positionGradient.x() * cameraBatchScale),
+                    positionM[primitiveIndex].x(),
+                    positionV[primitiveIndex].x(),
+                    lrPosition);
+                const float positionUpdateY = adamUpdate(
+                    cleanGradient(positionGradient.y() * cameraBatchScale),
+                    positionM[primitiveIndex].y(),
+                    positionV[primitiveIndex].y(),
+                    lrPosition);
+                const float positionUpdateZ = adamUpdate(
+                    cleanGradient(positionGradient.z() * cameraBatchScale),
+                    positionM[primitiveIndex].z(),
+                    positionV[primitiveIndex].z(),
+                    lrPosition);
+                point.position.x() = clampValue(point.position.x() - positionUpdateX, -5.0f, 5.0f);
+                point.position.y() = clampValue(point.position.y() - positionUpdateY, -5.0f, 5.0f);
+                point.position.z() = clampValue(point.position.z() - positionUpdateZ, -5.0f, 5.0f);
+
+                float rotationDeltaX = -adamUpdate(
+                    cleanGradient(rotationGradient.x() * cameraBatchScale),
+                    rotationM[primitiveIndex].x(),
+                    rotationV[primitiveIndex].x(),
+                    lrRotation);
+                float rotationDeltaY = -adamUpdate(
+                    cleanGradient(rotationGradient.y() * cameraBatchScale),
+                    rotationM[primitiveIndex].y(),
+                    rotationV[primitiveIndex].y(),
+                    lrRotation);
+                float rotationDeltaZ = -adamUpdate(
+                    cleanGradient(rotationGradient.z() * cameraBatchScale),
+                    rotationM[primitiveIndex].z(),
+                    rotationV[primitiveIndex].z(),
+                    lrRotation);
+
+                const float rotationLength = sycl::sqrt(
+                    rotationDeltaX * rotationDeltaX +
+                    rotationDeltaY * rotationDeltaY +
+                    rotationDeltaZ * rotationDeltaZ);
+                if (rotationLength > 1.0e-12f && sycl::isfinite(rotationLength)) {
+                    if (maxRotationStepRadians > 0.0f && rotationLength > maxRotationStepRadians) {
+                        const float clampScale = maxRotationStepRadians / rotationLength;
+                        rotationDeltaX *= clampScale;
+                        rotationDeltaY *= clampScale;
+                        rotationDeltaZ *= clampScale;
+                    }
+
+                    const float clampedRotationLength = sycl::sqrt(
+                        rotationDeltaX * rotationDeltaX +
+                        rotationDeltaY * rotationDeltaY +
+                        rotationDeltaZ * rotationDeltaZ);
+                    const float invRotationLength = 1.0f / sycl::fmax(clampedRotationLength, 1.0e-12f);
+                    const float axisX = rotationDeltaX * invRotationLength;
+                    const float axisY = rotationDeltaY * invRotationLength;
+                    const float axisZ = rotationDeltaZ * invRotationLength;
+
+                    const float c = sycl::cos(clampedRotationLength);
+                    const float s = sycl::sin(clampedRotationLength);
+                    const float t = 1.0f - c;
+
+                    const float r00 = t * axisX * axisX + c;
+                    const float r01 = t * axisX * axisY - s * axisZ;
+                    const float r10 = t * axisX * axisY + s * axisZ;
+                    const float r11 = t * axisY * axisY + c;
+                    const float r20 = t * axisX * axisZ - s * axisY;
+                    const float r21 = t * axisY * axisZ + s * axisX;
+
+                    Pale::float3 tangentU = normalizeOrFallback(point.tanU, Pale::float3{1.0f, 0.0f, 0.0f});
+                    Pale::float3 tangentV = point.tanV - tangentU * dot3(tangentU, point.tanV);
+                    const Pale::float3 fallbackV =
+                            sycl::fabs(tangentU.y()) < 0.9f
+                                ? Pale::float3{0.0f, 1.0f, 0.0f}
+                                : Pale::float3{1.0f, 0.0f, 0.0f};
+                    tangentV = normalizeOrFallback(tangentV, fallbackV - tangentU * dot3(tangentU, fallbackV));
+                    const Pale::float3 tangentW = normalizeOrFallback(
+                        cross3(tangentU, tangentV),
+                        Pale::float3{0.0f, 0.0f, 1.0f});
+
+                    Pale::float3 updatedTangentU =
+                            tangentU * r00 +
+                            tangentV * r10 +
+                            tangentW * r20;
+                    Pale::float3 updatedTangentV =
+                            tangentU * r01 +
+                            tangentV * r11 +
+                            tangentW * r21;
+
+                    updatedTangentU = normalizeOrFallback(updatedTangentU, tangentU);
+                    updatedTangentV = updatedTangentV - updatedTangentU * dot3(updatedTangentU, updatedTangentV);
+                    updatedTangentV = normalizeOrFallback(updatedTangentV, tangentV);
+
+                    point.tanU = updatedTangentU;
+                    point.tanV = updatedTangentV;
+                }
+
+                const float scaleUpdateX = adamUpdate(
+                    cleanGradient(scaleGradientX * cameraBatchScale),
+                    scaleM[primitiveIndex].x(),
+                    scaleV[primitiveIndex].x(),
+                    lrScale);
+                const float scaleUpdateY = adamUpdate(
+                    cleanGradient(scaleGradientY * cameraBatchScale),
+                    scaleM[primitiveIndex].y(),
+                    scaleV[primitiveIndex].y(),
+                    lrScale);
+                point.scale.x() = clampValue(point.scale.x() - scaleUpdateX, 0.0f, 1.0f);
+                point.scale.y() = clampValue(point.scale.y() - scaleUpdateY, 0.0f, 1.0f);
+
+                const float albedoUpdateX = adamUpdate(
+                    cleanGradient(albedoGradient.x() * cameraBatchScale),
+                    albedoM[primitiveIndex].x(),
+                    albedoV[primitiveIndex].x(),
+                    lrAlbedo);
+                const float albedoUpdateY = adamUpdate(
+                    cleanGradient(albedoGradient.y() * cameraBatchScale),
+                    albedoM[primitiveIndex].y(),
+                    albedoV[primitiveIndex].y(),
+                    lrAlbedo);
+                const float albedoUpdateZ = adamUpdate(
+                    cleanGradient(albedoGradient.z() * cameraBatchScale),
+                    albedoM[primitiveIndex].z(),
+                    albedoV[primitiveIndex].z(),
+                    lrAlbedo);
+                point.albedo.x() = clampValue(point.albedo.x() - albedoUpdateX, 0.0f, 1.0f);
+                point.albedo.y() = clampValue(point.albedo.y() - albedoUpdateY, 0.0f, 1.0f);
+                point.albedo.z() = clampValue(point.albedo.z() - albedoUpdateZ, 0.0f, 1.0f);
+
+                const float opacityUpdate = adamUpdate(
+                    cleanGradient(opacityGradient * cameraBatchScale),
+                    opacityM[primitiveIndex],
+                    opacityV[primitiveIndex],
+                    lrOpacity);
+                point.opacity = clampValue(point.opacity - opacityUpdate, 0.0f, 1.0f);
+
+                const float betaUpdate = adamUpdate(
+                    cleanGradient(betaGradient * cameraBatchScale),
+                    betaM[primitiveIndex],
+                    betaV[primitiveIndex],
+                    lrBeta);
+                point.beta = clampValue(point.beta - betaUpdate, -2.0f, 5.0f);
+            });
+    }
+
+    void launchPointBvhRefitKernel(sycl::queue queue) {
+        if (!sceneGpu.points || !sceneGpu.blasNodes || !sceneGpu.blasRanges ||
+            !sceneGpu.tlasNodes || !sceneGpu.instances || !sceneGpu.transforms ||
+            !sceneGpu.pointPermutation) {
+            return;
+        }
+
+        const std::uint32_t instanceCount =
+                static_cast<std::uint32_t>(buildProducts.instances.size());
+        if (instanceCount == 0u || sceneGpu.blasNodeCount == 0u || sceneGpu.tlasNodeCount == 0u) {
+            return;
+        }
+
+        queue.single_task<class PointBvhRefitKernelTag>(
+            [scene = sceneGpu, instanceCount]() {
+                auto dot3 = [](const Pale::float3 &a, const Pale::float3 &b) -> float {
+                    return a.x() * b.x() + a.y() * b.y() + a.z() * b.z();
+                };
+                auto cross3 = [](const Pale::float3 &a, const Pale::float3 &b) -> Pale::float3 {
+                    return Pale::float3{
+                        a.y() * b.z() - a.z() * b.y(),
+                        a.z() * b.x() - a.x() * b.z(),
+                        a.x() * b.y() - a.y() * b.x()
+                    };
+                };
+                auto normalizeOrFallback = [&](const Pale::float3 &value,
+                                               const Pale::float3 &fallback) -> Pale::float3 {
+                    const float lengthSquared = dot3(value, value);
+                    if (!sycl::isfinite(lengthSquared) || lengthSquared <= 1.0e-20f) {
+                        return fallback;
+                    }
+                    return value * sycl::rsqrt(lengthSquared);
+                };
+                auto min3 = [](const Pale::float3 &a, const Pale::float3 &b) -> Pale::float3 {
+                    return Pale::float3{
+                        sycl::fmin(a.x(), b.x()),
+                        sycl::fmin(a.y(), b.y()),
+                        sycl::fmin(a.z(), b.z())
+                    };
+                };
+                auto max3 = [](const Pale::float3 &a, const Pale::float3 &b) -> Pale::float3 {
+                    return Pale::float3{
+                        sycl::fmax(a.x(), b.x()),
+                        sycl::fmax(a.y(), b.y()),
+                        sycl::fmax(a.z(), b.z())
+                    };
+                };
+                auto makeSurfelAabbBeta = [&](const Pale::Point &surfel,
+                                               Pale::float3 &aabbMin,
+                                               Pale::float3 &aabbMax) {
+                    const Pale::float3 tangentU =
+                            normalizeOrFallback(surfel.tanU, Pale::float3{1.0f, 0.0f, 0.0f});
+                    const Pale::float3 tangentV =
+                            normalizeOrFallback(surfel.tanV, Pale::float3{0.0f, 1.0f, 0.0f});
+                    const Pale::float3 normalDirection =
+                            normalizeOrFallback(cross3(tangentU, tangentV), Pale::float3{0.0f, 0.0f, 1.0f});
+
+                    const float supportRadiusU = sycl::fmax(surfel.scale.x(), 0.0f);
+                    const float supportRadiusV = sycl::fmax(surfel.scale.y(), 0.0f);
+                    constexpr float normalThickness = 0.001f;
+
+                    auto computeAxisExtent = [&](int axisIndex) -> float {
+                        const float tangentUComponent =
+                                axisIndex == 0
+                                    ? tangentU.x()
+                                    : (axisIndex == 1 ? tangentU.y() : tangentU.z());
+                        const float tangentVComponent =
+                                axisIndex == 0
+                                    ? tangentV.x()
+                                    : (axisIndex == 1 ? tangentV.y() : tangentV.z());
+                        const float normalComponent =
+                                sycl::fabs(axisIndex == 0
+                                               ? normalDirection.x()
+                                               : (axisIndex == 1 ? normalDirection.y() : normalDirection.z()));
+                        const float projectedInPlane =
+                                sycl::sqrt((supportRadiusU * tangentUComponent) *
+                                           (supportRadiusU * tangentUComponent) +
+                                           (supportRadiusV * tangentVComponent) *
+                                           (supportRadiusV * tangentVComponent));
+                        return projectedInPlane + normalThickness * normalComponent;
+                    };
+
+                    const Pale::float3 halfExtent{
+                        computeAxisExtent(0),
+                        computeAxisExtent(1),
+                        computeAxisExtent(2)
+                    };
+                    aabbMin = surfel.position - halfExtent;
+                    aabbMax = surfel.position + halfExtent;
+                };
+
+                for (std::uint32_t instanceIndex = 0u; instanceIndex < instanceCount; ++instanceIndex) {
+                    const Pale::InstanceRecord &instance = scene.instances[instanceIndex];
+                    if (instance.geometryType != Pale::GeometryType::PointCloud) {
+                        continue;
+                    }
+
+                    const Pale::BLASRange blasRange = scene.blasRanges[instance.blasRangeIndex];
+                    if (blasRange.nodeCount == 0u) {
+                        continue;
+                    }
+
+                    Pale::BVHNode *nodes = scene.blasNodes + blasRange.firstNode;
+                    for (int localNodeIndex = static_cast<int>(blasRange.nodeCount) - 1;
+                         localNodeIndex >= 0;
+                         --localNodeIndex) {
+                        Pale::BVHNode &node = nodes[localNodeIndex];
+                        if (node.triCount > 0u) {
+                            Pale::float3 nodeMin{FLT_MAX, FLT_MAX, FLT_MAX};
+                            Pale::float3 nodeMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+                            for (std::uint32_t primitiveOffset = 0u;
+                                 primitiveOffset < node.triCount;
+                                 ++primitiveOffset) {
+                                const std::uint32_t primitiveIndex =
+                                        scene.pointPermutation[node.leftFirst + primitiveOffset];
+                                Pale::float3 surfelMin{0.0f};
+                                Pale::float3 surfelMax{0.0f};
+                                makeSurfelAabbBeta(scene.points[primitiveIndex], surfelMin, surfelMax);
+                                nodeMin = min3(nodeMin, surfelMin);
+                                nodeMax = max3(nodeMax, surfelMax);
+                            }
+                            node.aabbMin = nodeMin;
+                            node.aabbMax = nodeMax;
+                        } else {
+                            const Pale::BVHNode &leftNode = nodes[node.leftFirst];
+                            const Pale::BVHNode &rightNode = nodes[node.leftFirst + 1u];
+                            node.aabbMin = min3(leftNode.aabbMin, rightNode.aabbMin);
+                            node.aabbMax = max3(leftNode.aabbMax, rightNode.aabbMax);
+                        }
+                    }
+                }
+
+                for (int tlasNodeIndex = static_cast<int>(scene.tlasNodeCount) - 1;
+                     tlasNodeIndex >= 0;
+                     --tlasNodeIndex) {
+                    Pale::TLASNode &node = scene.tlasNodes[tlasNodeIndex];
+                    if (node.count > 0u) {
+                        const std::uint32_t instanceIndex = node.leftChild;
+                        if (instanceIndex >= instanceCount) {
+                            continue;
+                        }
+                        const Pale::InstanceRecord &instance = scene.instances[instanceIndex];
+                        const Pale::BLASRange blasRange = scene.blasRanges[instance.blasRangeIndex];
+                        if (blasRange.nodeCount == 0u) {
+                            continue;
+                        }
+                        const Pale::BVHNode &rootNode = scene.blasNodes[blasRange.firstNode];
+                        const Pale::Transform &transform = scene.transforms[instance.transformIndex];
+
+                        Pale::float3 worldMin{FLT_MAX, FLT_MAX, FLT_MAX};
+                        Pale::float3 worldMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+                        for (int cornerIndex = 0; cornerIndex < 8; ++cornerIndex) {
+                            const bool bx = (cornerIndex & 4) != 0;
+                            const bool by = (cornerIndex & 2) != 0;
+                            const bool bz = (cornerIndex & 1) != 0;
+                            const Pale::float3 pointObject{
+                                bx ? rootNode.aabbMax.x() : rootNode.aabbMin.x(),
+                                by ? rootNode.aabbMax.y() : rootNode.aabbMin.y(),
+                                bz ? rootNode.aabbMax.z() : rootNode.aabbMin.z()
+                            };
+                            const Pale::float3 pointWorld = Pale::toWorldPoint(pointObject, transform);
+                            worldMin = min3(worldMin, pointWorld);
+                            worldMax = max3(worldMax, pointWorld);
+                        }
+                        node.aabbMin = worldMin;
+                        node.aabbMax = worldMax;
+                    } else {
+                        const Pale::TLASNode &leftNode = scene.tlasNodes[node.leftChild];
+                        const Pale::TLASNode &rightNode = scene.tlasNodes[node.rightChild];
+                        node.aabbMin = min3(leftNode.aabbMin, rightNode.aabbMin);
+                        node.aabbMax = max3(leftNode.aabbMax, rightNode.aabbMax);
+                    }
+                }
+            });
+    }
+
+    static py::dict makeZeroLossValuesDictionary() {
+        py::dict result;
+        result["total_rgb_loss_value"] = 0.0f;
+        result["total_depth_distortion_loss_raw"] = 0.0f;
+        result["total_depth_distortion_loss_weighted"] = 0.0f;
+        result["total_normal_loss_raw"] = 0.0f;
+        result["total_normal_loss_weighted"] = 0.0f;
+        result["total_loss_value"] = 0.0f;
+        return result;
+    }
+
+    static void launchSurfaceRegularizerLossAccumulationKernel(
+        sycl::queue queue,
+        const Pale::SensorGPU &sensor,
+        float *depthDistortionSum,
+        float *normalConsistencySum,
+        std::uint32_t *normalConsistencyValidCount,
+        bool useDepthDistortion,
+        bool useNormalConsistency) {
+        const std::uint32_t pixelCount = sensor.width * sensor.height;
+        if (pixelCount == 0u) {
+            return;
+        }
+
+        if (useDepthDistortion && (!sensor.depthDistortionBuffer || !depthDistortionSum)) {
+            throw std::runtime_error(
+                "launchSurfaceRegularizerLossAccumulationKernel: missing depth distortion buffers");
+        }
+        if (useNormalConsistency &&
+            (!sensor.visibleNormalBuffer ||
+             !sensor.normalFromDepthBuffer ||
+             !normalConsistencySum ||
+             !normalConsistencyValidCount)) {
+            throw std::runtime_error(
+                "launchSurfaceRegularizerLossAccumulationKernel: missing normal consistency buffers");
+        }
+
+        queue.parallel_for<class SurfaceRegularizerLossAccumulationKernelTag>(
+            sycl::range<1>(pixelCount),
+            [depthDistortionBuffer = sensor.depthDistortionBuffer,
+             visibleNormalBuffer = sensor.visibleNormalBuffer,
+             normalFromDepthBuffer = sensor.normalFromDepthBuffer,
+             depthDistortionSum,
+             normalConsistencySum,
+             normalConsistencyValidCount,
+             useDepthDistortion,
+             useNormalConsistency](sycl::id<1> pixelId) {
+                const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
+
+                auto clean = [](float value) -> float {
+                    return sycl::isfinite(value) ? value : 0.0f;
+                };
+
+                if (useDepthDistortion) {
+                    const float depthValue = clean(depthDistortionBuffer[pixelIndex]);
+                    auto depthAtomic = sycl::atomic_ref<
+                        float,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(*depthDistortionSum);
+                    depthAtomic.fetch_add(depthValue);
+                }
+
+                if (useNormalConsistency) {
+                    const Pale::float4 visibleNormal = visibleNormalBuffer[pixelIndex];
+                    const Pale::float4 depthNormal = normalFromDepthBuffer[pixelIndex];
+
+                    const float visibleW = clean(visibleNormal.w());
+                    const float depthW = clean(depthNormal.w());
+                    if (visibleW > 0.0f && depthW > 0.0f) {
+                        const float visibleX = clean(visibleNormal.x());
+                        const float visibleY = clean(visibleNormal.y());
+                        const float visibleZ = clean(visibleNormal.z());
+                        const float depthX = clean(depthNormal.x());
+                        const float depthY = clean(depthNormal.y());
+                        const float depthZ = clean(depthNormal.z());
+                        const float dotNormal =
+                                visibleX * depthX + visibleY * depthY + visibleZ * depthZ;
+
+                        auto normalAtomic = sycl::atomic_ref<
+                            float,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(*normalConsistencySum);
+                        normalAtomic.fetch_add(1.0f - dotNormal);
+
+                        auto countAtomic = sycl::atomic_ref<
+                            std::uint32_t,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(*normalConsistencyValidCount);
+                        countAtomic.fetch_add(1u);
+                    }
+                }
+            });
+    }
+
+    static void launchSurfaceRegularizerAdjointFillKernel(
+        sycl::queue queue,
+        const Pale::SensorGPU &sensor,
+        float depthDistortionWeight,
+        float normalConsistencyWeight,
+        std::uint32_t normalConsistencyValidCount,
+        bool useDepthDistortion,
+        bool useNormalConsistency) {
+        const std::uint32_t pixelCount = sensor.width * sensor.height;
+        if (pixelCount == 0u) {
+            return;
+        }
+
+        if (!sensor.depthDistortionAdjointBuffer ||
+            !sensor.visibleNormalAdjointBuffer ||
+            !sensor.normalFromDepthAdjointBuffer ||
+            !sensor.medianDepthAdjointBuffer) {
+            throw std::runtime_error(
+                "launchSurfaceRegularizerAdjointFillKernel: missing surface regularizer adjoint buffers");
+        }
+        if (useNormalConsistency &&
+            (!sensor.visibleNormalBuffer || !sensor.normalFromDepthBuffer)) {
+            throw std::runtime_error(
+                "launchSurfaceRegularizerAdjointFillKernel: missing normal consistency forward buffers");
+        }
+
+        const float depthScale = useDepthDistortion
+                                     ? depthDistortionWeight / static_cast<float>(pixelCount)
+                                     : 0.0f;
+        const float normalScale = useNormalConsistency
+                                      ? normalConsistencyWeight /
+                                        static_cast<float>(std::max(normalConsistencyValidCount, 1u))
+                                      : 0.0f;
+
+        queue.parallel_for<class SurfaceRegularizerAdjointFillKernelTag>(
+            sycl::range<1>(pixelCount),
+            [visibleNormalBuffer = sensor.visibleNormalBuffer,
+             normalFromDepthBuffer = sensor.normalFromDepthBuffer,
+             depthDistortionAdjointBuffer = sensor.depthDistortionAdjointBuffer,
+             visibleNormalAdjointBuffer = sensor.visibleNormalAdjointBuffer,
+             normalFromDepthAdjointBuffer = sensor.normalFromDepthAdjointBuffer,
+             medianDepthAdjointBuffer = sensor.medianDepthAdjointBuffer,
+             depthScale,
+             normalScale,
+             useNormalConsistency](sycl::id<1> pixelId) {
+                const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
+
+                auto clean = [](float value) -> float {
+                    return sycl::isfinite(value) ? value : 0.0f;
+                };
+
+                depthDistortionAdjointBuffer[pixelIndex] = depthScale;
+                medianDepthAdjointBuffer[pixelIndex] = 0.0f;
+
+                Pale::float4 visibleAdjoint{0.0f, 0.0f, 0.0f, 0.0f};
+                Pale::float4 depthAdjoint{0.0f, 0.0f, 0.0f, 0.0f};
+
+                if (useNormalConsistency) {
+                    const Pale::float4 visibleNormal = visibleNormalBuffer[pixelIndex];
+                    const Pale::float4 depthNormal = normalFromDepthBuffer[pixelIndex];
+                    const float visibleW = clean(visibleNormal.w());
+                    const float depthW = clean(depthNormal.w());
+
+                    if (visibleW > 0.0f && depthW > 0.0f) {
+                        const float visibleX = clean(visibleNormal.x());
+                        const float visibleY = clean(visibleNormal.y());
+                        const float visibleZ = clean(visibleNormal.z());
+                        const float depthX = clean(depthNormal.x());
+                        const float depthY = clean(depthNormal.y());
+                        const float depthZ = clean(depthNormal.z());
+
+                        visibleAdjoint = Pale::float4{
+                            -normalScale * depthX,
+                            -normalScale * depthY,
+                            -normalScale * depthZ,
+                            0.0f
+                        };
+                        depthAdjoint = Pale::float4{
+                            -normalScale * visibleX,
+                            -normalScale * visibleY,
+                            -normalScale * visibleZ,
+                            0.0f
+                        };
+                    }
+                }
+
+                visibleNormalAdjointBuffer[pixelIndex] = visibleAdjoint;
+                normalFromDepthAdjointBuffer[pixelIndex] = depthAdjoint;
+            });
+    }
+
+    bool syncPointParametersFromGpuIfDirty() {
+        return syncPointParametersFromGpu(false);
+    }
+
+    bool syncPointParametersFromGpu(bool forceSync) {
+        if (!forceSync && !devicePointParametersDirty) {
+            return false;
+        }
+        if (!sceneGpu.points || sceneGpu.pointCount == 0u) {
+            devicePointParametersDirty = false;
+            return false;
+        }
+        if (!assetManager) {
+            throw std::runtime_error("sync_point_parameters_from_gpu: assetManager is null");
+        }
+
+        const std::size_t pointCount = sceneGpu.pointCount;
+        std::vector<Pale::Point> hostPoints(pointCount);
+        auto queue = deviceSelector->getQueue();
+        queue.memcpy(hostPoints.data(), sceneGpu.points, pointCount * sizeof(Pale::Point)).wait_and_throw();
+
+        buildProducts.points = hostPoints;
+
+        auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
+        if (!pointAssetSharedPtr) {
+            throw std::runtime_error("sync_point_parameters_from_gpu: failed to get PointAsset for dynamic point cloud");
+        }
+
+        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty()) {
+            throw std::runtime_error("sync_point_parameters_from_gpu: PointAsset has no PointGeometry blocks");
+        }
+
+        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        pointGeometry.positions.resize(pointCount);
+        pointGeometry.quat.resize(pointCount);
+        pointGeometry.scales.resize(pointCount);
+        pointGeometry.albedos.resize(pointCount);
+        pointGeometry.opacities.resize(pointCount);
+        pointGeometry.shapes.resize(pointCount);
+        pointGeometry.betas.resize(pointCount);
+        pointGeometry.powers.resize(pointCount);
+
+        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+            const Pale::Point &point = hostPoints[pointIndex];
+            pointGeometry.positions[pointIndex] =
+                    glm::vec3(point.position.x(), point.position.y(), point.position.z());
+            pointGeometry.quat[pointIndex] = quaternionFromFrame(point.tanU, point.tanV);
+            pointGeometry.scales[pointIndex] = glm::vec2(point.scale.x(), point.scale.y());
+            pointGeometry.albedos[pointIndex] =
+                    glm::vec3(point.albedo.x(), point.albedo.y(), point.albedo.z());
+            pointGeometry.opacities[pointIndex] = point.opacity;
+            pointGeometry.shapes[pointIndex] = point.shape;
+            pointGeometry.betas[pointIndex] = point.beta;
+            pointGeometry.powers[pointIndex] = point.flux;
+        }
+
+        devicePointParametersDirty = false;
+        return true;
+    }
+
+    static void freeTrainingTarget(TrainingTargetDevice &target, sycl::queue queue) {
+        if (target.rgba) {
+            sycl::free(target.rgba, queue);
+            target.rgba = nullptr;
+        }
+        if (target.loss) {
+            sycl::free(target.loss, queue);
+            target.loss = nullptr;
+        }
+        target.width = 0;
+        target.height = 0;
+    }
+
+    void freeTrainingTargets(sycl::queue queue) {
+        for (auto &[cameraName, target]: trainingTargets) {
+            freeTrainingTarget(target, queue);
+        }
+        trainingTargets.clear();
+    }
+
+    static void ensureTrainingTargetCapacity(TrainingTargetDevice &target,
+                                             const std::string &cameraName,
+                                             std::uint32_t width,
+                                             std::uint32_t height,
+                                             sycl::queue queue) {
+        const bool sameShape =
+                target.rgba != nullptr &&
+                target.loss != nullptr &&
+                target.width == width &&
+                target.height == height;
+        if (sameShape) {
+            return;
+        }
+
+        freeTrainingTarget(target, queue);
+        target.cameraName = cameraName;
+        target.width = width;
+        target.height = height;
+
+        const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        target.rgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+        target.loss = sycl::malloc_device<float>(1u, queue);
+        if (!target.rgba || !target.loss) {
+            throw std::runtime_error("ensureTrainingTargetCapacity: failed to allocate device target buffers");
+        }
+    }
+
+    static void launchRgbLossAdjointKernel(sycl::queue queue,
+                                           const Pale::SensorGPU &sensor,
+                                           TrainingTargetDevice &target) {
+        if (!sensor.framebuffer || !target.rgba || !target.loss) {
+            throw std::runtime_error("launchRgbLossAdjointKernel: missing framebuffer or target buffer");
+        }
+        if (sensor.width != target.width || sensor.height != target.height) {
+            throw std::runtime_error("launchRgbLossAdjointKernel: sensor/target resolution mismatch");
+        }
+
+        const std::uint32_t pixelCount = sensor.width * sensor.height;
+        const float invElementCount = pixelCount > 0u
+                                          ? 1.0f / (static_cast<float>(pixelCount) * 3.0f)
+                                          : 0.0f;
+
+        queue.fill(target.loss, 0.0f, 1u);
+        queue.parallel_for<class RgbLossAdjointKernelTag>(
+            sycl::range<1>(pixelCount),
+            [framebuffer = sensor.framebuffer,
+             targetRgba = target.rgba,
+             lossOut = target.loss,
+             invElementCount](sycl::id<1> pixelId) {
+                const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
+                const Pale::float4 rendered = framebuffer[pixelIndex];
+                const Pale::float4 target = targetRgba[pixelIndex];
+
+                const float diffR = rendered.x() - target.x();
+                const float diffG = rendered.y() - target.y();
+                const float diffB = rendered.z() - target.z();
+                const float lossContribution =
+                        0.5f * (diffR * diffR + diffG * diffG + diffB * diffB) * invElementCount;
+
+                auto lossAtomic = sycl::atomic_ref<
+                    float,
+                    sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(*lossOut);
+                lossAtomic.fetch_add(lossContribution);
+
+                framebuffer[pixelIndex] = Pale::float4{
+                    diffR * invElementCount,
+                    diffG * invElementCount,
+                    diffB * invElementCount,
+                    0.0f
+                };
+            });
+    }
+
     std::unique_ptr<Pale::AssetManager> assetManager{};
     std::shared_ptr<Pale::Scene> scene{};
     std::unique_ptr<Pale::DeviceSelector> deviceSelector{};
@@ -2711,6 +4727,9 @@ private:
     Pale::PointGradients depthDistortionGradients{};
     Pale::PointGradients normalConsistencyGradients{};
     Pale::PointGradients visibilityOpacityGradients{};
+    std::unordered_map<std::string, TrainingTargetDevice> trainingTargets{};
+    DeviceAdamState deviceTrainingState{};
+    bool devicePointParametersDirty{false};
 
     // Adjoint buffers
     bool adjointBuffersAllocated{false};
@@ -2734,6 +4753,34 @@ PYBIND11_MODULE(pale, m) {
                  py::arg("settings") = py::dict()
             )
             .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "")
+            .def("upload_training_targets",
+                 &PythonRenderer::upload_training_targets,
+                 py::arg("target_images"))
+            .def("render_rgb_loss_backward",
+                 &PythonRenderer::render_rgb_loss_backward,
+                 py::arg("camera_names"))
+            .def("render_rgb_training_step",
+                 &PythonRenderer::render_rgb_training_step,
+                 py::arg("camera_names"),
+                 py::arg("options") = py::dict())
+            .def("render_rgb_backward_from_current_forward",
+                 &PythonRenderer::render_rgb_backward_from_current_forward,
+                 py::arg("camera_names"),
+                 py::arg("options") = py::dict())
+            .def("render_forward_surface_regularizer_loss_and_adjoint",
+                 &PythonRenderer::render_forward_surface_regularizer_loss_and_adjoint,
+                 py::arg("camera_names"),
+                 py::arg("options") = py::dict())
+            .def("render_surface_regularizers_backward_from_current_adjoint",
+                 &PythonRenderer::render_surface_regularizers_backward_from_current_adjoint,
+                 py::arg("camera_names"),
+                 py::arg("return_gradients") = false)
+            .def("apply_device_training_step",
+                 &PythonRenderer::apply_device_training_step,
+                 py::arg("options") = py::dict())
+            .def("reset_trainable_opacity_on_gpu",
+                 &PythonRenderer::reset_trainable_opacity_on_gpu,
+                 py::arg("opacity"))
             .def("get_training_camera_names", &PythonRenderer::getTrainingCameras)
             .def("get_camera_names", &PythonRenderer::getCameraNames)
             .def("render_backward", &PythonRenderer::render_backward, py::arg("targetRgb32f"))
@@ -2745,6 +4792,11 @@ PYBIND11_MODULE(pale, m) {
                  py::arg("visibleNormalGrad32f"),
                  py::arg("normalFromDepthGrad32f"))
             .def("get_point_parameters", &PythonRenderer::get_point_parameters)
+            .def("sync_point_parameters_from_gpu", &PythonRenderer::sync_point_parameters_from_gpu)
+            .def("capture_device_adam_state", &PythonRenderer::capture_device_adam_state)
+            .def("upload_device_adam_state",
+                 &PythonRenderer::upload_device_adam_state,
+                 py::arg("state"))
             .def("apply_point_optimization", &PythonRenderer::apply_point_optimization, py::arg("parameters"))
             .def("add_points", &PythonRenderer::add_new_points, py::arg("parameters"))
             .def("remove_points", &PythonRenderer::remove_points, py::arg("parameters"))
@@ -2770,5 +4822,11 @@ PYBIND11_MODULE(pale, m) {
                 py::arg("camera_names"),
                 py::arg("depth_distortion_grad_images"),
                 py::arg("visible_normal_grad_images"),
-                py::arg("normal_from_depth_grad_images"));
+                py::arg("normal_from_depth_grad_images"))
+            .def("render_surface_regularizers_backward_no_gradients",
+                 &PythonRenderer::render_surface_regularizers_backward_no_gradients,
+                 py::arg("camera_names"),
+                 py::arg("depth_distortion_grad_images"),
+                 py::arg("visible_normal_grad_images"),
+                 py::arg("normal_from_depth_grad_images"));
 }

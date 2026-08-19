@@ -163,11 +163,6 @@ export namespace Pale {
             out.gradBeta = sycl::malloc_device<float>(numPoints, queue);
             out.gradShape = sycl::malloc_device<float>(numPoints, queue);
 
-            out.gradPositionMeanNorm = sycl::malloc_device<float>(numPoints, queue);
-            out.gradPositionStd = sycl::malloc_device<float>(numPoints, queue);
-            out.gradPositionCoherence = sycl::malloc_device<float>(numPoints, queue);
-            out.gradPositionDisagreement = sycl::malloc_device<float>(numPoints, queue);
-            out.gradPositionActiveCameraCount = sycl::malloc_device<uint32_t>(numPoints, queue);
             out.cloneSignalMeanNorm = sycl::malloc_device<float>(numPoints, queue);
             out.cloneSignalStd = sycl::malloc_device<float>(numPoints, queue);
             out.cloneSignalCoherence = sycl::malloc_device<float>(numPoints, queue);
@@ -193,9 +188,6 @@ export namespace Pale {
 
             if (!out.gradPosition || !out.cloneSignal || !out.gradRotation || !out.gradScale ||
                 !out.gradAlbedo || !out.gradOpacity || !out.gradBeta || !out.gradShape ||
-                !out.gradPositionMeanNorm || !out.gradPositionStd ||
-                !out.gradPositionCoherence || !out.gradPositionDisagreement ||
-                !out.gradPositionActiveCameraCount ||
                 !out.cloneSignalMeanNorm || !out.cloneSignalStd ||
                 !out.cloneSignalCoherence || !out.cloneSignalDisagreement ||
                 !out.cloneSignalActiveCameraCount ||
@@ -215,11 +207,6 @@ export namespace Pale {
             queue.fill(out.gradBeta, 0.0f, numPoints);
             queue.fill(out.gradShape, 0.0f, numPoints);
 
-            queue.fill(out.gradPositionMeanNorm, 0.0f, numPoints);
-            queue.fill(out.gradPositionStd, 0.0f, numPoints);
-            queue.fill(out.gradPositionCoherence, 0.0f, numPoints);
-            queue.fill(out.gradPositionDisagreement, 0.0f, numPoints);
-            queue.fill(out.gradPositionActiveCameraCount, 0u, numPoints);
             queue.fill(out.cloneSignalMeanNorm, 0.0f, numPoints);
             queue.fill(out.cloneSignalStd, 0.0f, numPoints);
             queue.fill(out.cloneSignalCoherence, 0.0f, numPoints);
@@ -581,11 +568,6 @@ export namespace Pale {
         freeDevicePtr(gradients.cloneSignalPerPrimitivePerCamera);
         freeDevicePtr(gradients.cloneSignalRecordCountPerPrimitivePerCamera);
 
-        freeDevicePtr(gradients.gradPositionMeanNorm);
-        freeDevicePtr(gradients.gradPositionStd);
-        freeDevicePtr(gradients.gradPositionCoherence);
-        freeDevicePtr(gradients.gradPositionDisagreement);
-        freeDevicePtr(gradients.gradPositionActiveCameraCount);
         freeDevicePtr(gradients.cloneSignalMeanNorm);
         freeDevicePtr(gradients.cloneSignalStd);
         freeDevicePtr(gradients.cloneSignalCoherence);

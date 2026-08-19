@@ -349,8 +349,6 @@ def select_loss_column(
         "loss_rgb_mean",
         "loss_bsdf_decay_weighted_mean",
         "loss_bsdf_decay_raw_mean",
-        "loss_visibility_weighted_opacity_weighted_mean",
-        "loss_visibility_weighted_opacity_raw_mean",
         "loss_normal_consistency_weighted_mean",
         "loss_depth_distortion_weighted_mean",
         "loss_normal_consistency_raw_mean",
@@ -359,8 +357,6 @@ def select_loss_column(
         "loss_rgb_sum",
         "loss_bsdf_decay_weighted_sum",
         "loss_bsdf_decay_raw_sum",
-        "loss_visibility_weighted_opacity_weighted_sum",
-        "loss_visibility_weighted_opacity_raw_sum",
         "loss_normal_consistency_weighted_sum",
         "loss_depth_distortion_weighted_sum",
         "loss_normal_consistency_raw_sum",
@@ -581,10 +577,6 @@ def draw_metrics_figure(
                 "loss_normal_consistency_weighted_sum",
             ),
             (
-                "loss_visibility_weighted_opacity_weighted_mean",
-                "loss_visibility_weighted_opacity_weighted_sum",
-            ),
-            (
                 "loss_bsdf_decay_weighted_mean",
                 "loss_bsdf_decay_weighted_sum",
             ),
@@ -601,10 +593,6 @@ def draw_metrics_figure(
             (
                 "loss_normal_consistency_raw_mean",
                 "loss_normal_consistency_raw_sum",
-            ),
-            (
-                "loss_visibility_weighted_opacity_raw_mean",
-                "loss_visibility_weighted_opacity_raw_sum",
             ),
             (
                 "loss_bsdf_decay_raw_mean",
@@ -647,11 +635,6 @@ def draw_metrics_figure(
             linewidth=1.8,
             alpha=0.95,
         ),
-        "loss_visibility_weighted_opacity_weighted_mean": dict(
-            color="tab:purple",
-            linewidth=1.8,
-            alpha=0.95,
-        ),
         "loss_bsdf_decay_weighted_mean": dict(
             color="tab:brown",
             linewidth=1.8,
@@ -666,12 +649,6 @@ def draw_metrics_figure(
         ),
         "loss_normal_consistency_raw_mean": dict(
             color="tab:green",
-            linewidth=1.2,
-            alpha=0.75,
-            linestyle="--",
-        ),
-        "loss_visibility_weighted_opacity_raw_mean": dict(
-            color="tab:purple",
             linewidth=1.2,
             alpha=0.75,
             linestyle="--",
@@ -696,11 +673,6 @@ def draw_metrics_figure(
             linewidth=1.8,
             alpha=0.95,
         ),
-        "loss_visibility_weighted_opacity_weighted_sum": dict(
-            color="tab:purple",
-            linewidth=1.8,
-            alpha=0.95,
-        ),
         "loss_bsdf_decay_weighted_sum": dict(
             color="tab:brown",
             linewidth=1.8,
@@ -715,12 +687,6 @@ def draw_metrics_figure(
         ),
         "loss_normal_consistency_raw_sum": dict(
             color="tab:green",
-            linewidth=1.2,
-            alpha=0.75,
-            linestyle="--",
-        ),
-        "loss_visibility_weighted_opacity_raw_sum": dict(
-            color="tab:purple",
             linewidth=1.2,
             alpha=0.75,
             linestyle="--",

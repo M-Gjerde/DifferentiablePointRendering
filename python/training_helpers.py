@@ -43,8 +43,6 @@ LOSS_VALUE_KEYS = (
     "total_depth_distortion_loss_weighted",
     "total_normal_loss_raw",
     "total_normal_loss_weighted",
-    "total_visibility_weighted_opacity_loss_raw",
-    "total_visibility_weighted_opacity_loss_weighted",
     "total_loss_value",
 )
 
@@ -295,6 +293,82 @@ def rebuild_optimizer_preserving_state(
                 new_state[key] = value.detach().clone().to(new_p.device)
 
     return new_optimizer
+
+
+DEVICE_ADAM_STATE_ARRAY_KEYS = (
+    "position_m",
+    "position_v",
+    "rotation_m",
+    "rotation_v",
+    "scale_m",
+    "scale_v",
+    "albedo_m",
+    "albedo_v",
+    "opacity_m",
+    "opacity_v",
+    "beta_m",
+    "beta_v",
+)
+
+
+def migrate_device_adam_state_snapshot(
+        snapshot: Optional[Dict[str, Any]],
+        keep_mask_np: np.ndarray,
+        new_point_count: int,
+        source_index_for_new_np: Optional[np.ndarray] = None,
+        copy_source_state_to_new: bool = False,
+) -> Optional[Dict[str, Any]]:
+    if not snapshot:
+        return None
+
+    old_n = int(snapshot.get("point_count", 0))
+    if old_n <= 0:
+        return None
+
+    keep_mask_np = np.asarray(keep_mask_np, dtype=bool).reshape(-1)
+    if keep_mask_np.shape[0] != old_n:
+        raise RuntimeError(
+            "Device Adam migration keep-mask size mismatch: "
+            f"{keep_mask_np.shape[0]} vs {old_n}"
+        )
+
+    keep_idx_np = np.nonzero(keep_mask_np)[0].astype(np.int64)
+    kept_n = int(keep_idx_np.shape[0])
+    new_n = int(new_point_count)
+    n_new = new_n - kept_n
+    if n_new < 0:
+        raise RuntimeError(f"Invalid device Adam migration sizes: new_n={new_n}, kept_n={kept_n}")
+
+    if source_index_for_new_np is not None:
+        source_index_for_new_np = np.asarray(source_index_for_new_np, dtype=np.int64).reshape(-1)
+        if source_index_for_new_np.shape[0] != n_new:
+            source_index_for_new_np = None
+
+    migrated: Dict[str, Any] = {
+        "point_count": new_n,
+        "step": int(snapshot.get("step", 0)),
+    }
+
+    for key in DEVICE_ADAM_STATE_ARRAY_KEYS:
+        if key not in snapshot:
+            raise RuntimeError(f"Device Adam snapshot is missing '{key}'")
+
+        values = np.asarray(snapshot[key], dtype=np.float32, order="C")
+        if values.ndim < 1 or values.shape[0] != old_n:
+            raise RuntimeError(
+                f"Device Adam snapshot '{key}' has incompatible shape: "
+                f"{values.shape}, expected first dimension {old_n}"
+            )
+
+        out = np.zeros((new_n,) + tuple(values.shape[1:]), dtype=np.float32)
+        out[:kept_n] = values[keep_idx_np]
+
+        if copy_source_state_to_new and source_index_for_new_np is not None and n_new > 0:
+            out[kept_n:kept_n + n_new] = values[source_index_for_new_np]
+
+        migrated[key] = out
+
+    return migrated
 
 
 def save_normal_map_snapshot(
@@ -563,18 +637,15 @@ def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
-    visibility_opacity_weighted = float(loss_state["total_visibility_weighted_opacity_loss_weighted"])
 
     after_depth = rgb_loss + depth_weighted
     after_normal = after_depth + normal_weighted
-    after_visibility_opacity = after_normal + visibility_opacity_weighted
-    regularizer_total = depth_weighted + normal_weighted + visibility_opacity_weighted
+    regularizer_total = depth_weighted + normal_weighted
 
     return {
         "before_regularizers": rgb_loss,
         "after_depth_distortion": after_depth,
         "after_normal_consistency": after_normal,
-        "after_visibility_opacity": after_visibility_opacity,
         "regularizer_total": regularizer_total,
         "total": float(loss_state["total_loss_value"]),
     }
@@ -584,13 +655,11 @@ def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
-    visibility_opacity_weighted = float(loss_state["total_visibility_weighted_opacity_loss_weighted"])
     total_loss = float(loss_state["total_loss_value"])
 
     after_depth = rgb_loss + depth_weighted
     after_normal = after_depth + normal_weighted
-    after_visibility_opacity = after_normal + visibility_opacity_weighted
-    regularizer_total = depth_weighted + normal_weighted + visibility_opacity_weighted
+    regularizer_total = depth_weighted + normal_weighted
     loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
     loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
 
@@ -603,8 +672,6 @@ def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
         f"(+{depth_weighted:.3e})\n"
         f"  {'+ normal consistency':<28} {after_normal:>12.3e}  "
         f"(+{normal_weighted:.3e})\n"
-        f"  {'+ visibility opacity':<28} {after_visibility_opacity:>12.3e}  "
-        f"(+{visibility_opacity_weighted:.3e})\n"
         f"  {'regularizer total':<28} {regularizer_total:>12.3e}\n"
         f"  {'total':<28} {total_loss:>12.3e}"
     )
@@ -656,8 +723,6 @@ def format_training_iteration_log(
         f" depth_active_w={active_depth_distortion_weight:.3e}"
         f" normal_raw={loss_state['total_normal_loss_raw']:.3e}"
         f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
-        f" vis_opacity_raw={loss_state['total_visibility_weighted_opacity_loss_raw']:.3e}"
-        f" vis_opacity_w={loss_state['total_visibility_weighted_opacity_loss_weighted']:.3e}"
         f" total={loss_state['total_loss_value']:.3e}\n"
         f"  grad_rms:"
         f" pos={grad_pos_rms:.2e}"
@@ -680,7 +745,6 @@ def format_gradient_source_balance(
         loss_gradients: Dict[str, np.ndarray],
         depth_regularizer_gradients: Dict[str, np.ndarray],
         normal_regularizer_gradients: Dict[str, np.ndarray],
-        visibility_opacity_gradients: Dict[str, np.ndarray],
         surface_regularizer_gradients: Dict[str, np.ndarray],
         total_gradients: Dict[str, np.ndarray],
 ) -> str:
@@ -703,7 +767,6 @@ def format_gradient_source_balance(
         f"{'prior%':>8}"
         f"{'depth%':>8}"
         f"{'normal%':>9}"
-        f"{'vis_eta%':>10}"
         f"   {'source norms'}",
     ]
 
@@ -712,10 +775,6 @@ def format_gradient_source_balance(
 
         depth_norm = gradient_norm_for_key(depth_regularizer_gradients, key)
         normal_norm = gradient_norm_for_key(normal_regularizer_gradients, key)
-        visibility_opacity_norm = gradient_norm_for_key(
-            visibility_opacity_gradients,
-            key,
-        )
 
         surface_regularizer_norm = gradient_norm_for_key(
             surface_regularizer_gradients,
@@ -734,7 +793,6 @@ def format_gradient_source_balance(
         component_denom = (
                 depth_norm
                 + normal_norm
-                + visibility_opacity_norm
         )
 
         depth_percent = (
@@ -744,11 +802,6 @@ def format_gradient_source_balance(
         )
         normal_percent = (
             100.0 * normal_norm / component_denom
-            if component_denom > 1.0e-20
-            else 0.0
-        )
-        visibility_opacity_percent = (
-            100.0 * visibility_opacity_norm / component_denom
             if component_denom > 1.0e-20
             else 0.0
         )
@@ -762,11 +815,9 @@ def format_gradient_source_balance(
             f"{prior_percent:>7.1f}%"
             f"{depth_percent:>7.1f}%"
             f"{normal_percent:>8.1f}%"
-            f"{visibility_opacity_percent:>9.1f}%"
             f"   "
             f"depth={depth_norm:.2e}, "
             f"normal={normal_norm:.2e}, "
-            f"vis_eta={visibility_opacity_norm:.2e}, "
         )
 
     return "\n".join(lines)
@@ -1171,11 +1222,9 @@ def compute_initial_losses_and_save_outputs(
         powers: torch.Tensor,
         depth_distortion_weight: float,
         normal_consistency_weight: float,
-        visibility_weighted_opacity_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
-        use_visibility_weighted_opacity: bool,
-) -> tuple[float, float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float]:
     initial_points_path = output_dir / "initial_points.ply"
     save_gaussians_to_ply(
         initial_points_path,
@@ -1193,7 +1242,6 @@ def compute_initial_losses_and_save_outputs(
     initial_rgb_loss = 0.0
     initial_depth_distortion_loss_raw = 0.0
     initial_normal_loss_raw = 0.0
-    initial_visibility_weighted_opacity_loss_raw = 0.0
 
     for camera_name in all_camera_ids:
         img_np = get_forward_rgb(initial_images, camera_name)
@@ -1221,21 +1269,13 @@ def compute_initial_losses_and_save_outputs(
             )
             initial_normal_loss_raw += raw_normal_loss_value
 
-        if use_visibility_weighted_opacity:
-            visibility_opacity = get_forward_visibility_weighted_opacity(initial_images, camera_name)
-            initial_visibility_weighted_opacity_loss_raw += float(visibility_opacity.mean())
-
     initial_depth_distortion_loss_weighted = depth_distortion_weight * initial_depth_distortion_loss_raw
     initial_normal_loss_weighted = normal_consistency_weight * initial_normal_loss_raw
-    initial_visibility_weighted_opacity_loss_weighted = (
-            visibility_weighted_opacity_weight * initial_visibility_weighted_opacity_loss_raw
-    )
 
     initial_total_loss = (
             initial_rgb_loss
             + initial_depth_distortion_loss_weighted
             + initial_normal_loss_weighted
-            + initial_visibility_weighted_opacity_loss_weighted
     )
 
     return (
@@ -1244,7 +1284,6 @@ def compute_initial_losses_and_save_outputs(
         initial_depth_distortion_loss_weighted,
         initial_normal_loss_raw,
         initial_normal_loss_weighted,
-        initial_visibility_weighted_opacity_loss_weighted,
         initial_total_loss,
     )
 
@@ -1256,7 +1295,6 @@ def print_loss_summary(
         depth_distortion_loss_weighted: float,
         normal_loss_raw: float,
         normal_loss_weighted: float,
-        visibility_weighted_opacity_loss_weighted: float,
         total_loss: float,
 ) -> None:
     print(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
@@ -1264,44 +1302,28 @@ def print_loss_summary(
     print(f"{prefix} depth distortion loss (weighted)       : {depth_distortion_loss_weighted:.6e}")
     print(f"{prefix} normal consistency loss (raw)          : {normal_loss_raw:.6e}")
     print(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
-    print(f"{prefix} visibility opacity loss (weighted)    : {visibility_weighted_opacity_loss_weighted:.6e}")
     print(f"{prefix} total loss                             : {total_loss:.6e}")
 
 
-def compute_iteration_losses_and_adjoints(
+def compute_surface_regularizer_losses_and_adjoints(
         forward_out: Dict[str, dict],
-        target_images: Dict[str, np.ndarray],
         training_camera_ids: List[str],
         depth_distortion_weight: float,
         normal_consistency_weight: float,
-        visibility_weighted_opacity_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
-        use_visibility_weighted_opacity: bool,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = make_zero_loss_values()
     result.update({
-        "loss_grad_images": {},
         "depth_distortion_grad_images": {},
         "visible_normal_adjoints": {},
         "depth_normal_adjoints": {},
         "depth_distortion_maps_for_logging": {},
-        "visibility_weighted_opacity_maps_for_logging": {},
         "per_camera_loss_values": {},
     })
 
     for camera_name in training_camera_ids:
         camera_loss_values = make_zero_loss_values()
-
-        current_rgb_np = get_forward_rgb(forward_out, camera_name)
-        target_rgb_np = target_images[camera_name]
-
-        rgb_grad = compute_l2_grad(current_rgb_np, target_rgb_np)
-        rgb_loss_value = float(compute_l2_loss(current_rgb_np, target_rgb_np))
-
-        camera_loss_values["total_rgb_loss_value"] = rgb_loss_value
-        camera_loss_values["total_loss_value"] += rgb_loss_value
-        result["loss_grad_images"][camera_name] = rgb_grad
 
         if use_depth_distortion:
             current_depth_distortion_np = get_forward_depth_distortion(forward_out, camera_name)
@@ -1343,23 +1365,6 @@ def compute_iteration_losses_and_adjoints(
             result["depth_normal_adjoints"][camera_name] = (
                     normal_consistency_weight * depth_normal_adjoint
             ).astype(np.float32, copy=False)
-
-        if use_visibility_weighted_opacity:
-            visibility_opacity_np = get_forward_visibility_weighted_opacity(forward_out, camera_name)
-            visibility_opacity_loss_raw = float(visibility_opacity_np.mean())
-            visibility_opacity_loss_weighted = (
-                    visibility_weighted_opacity_weight * visibility_opacity_loss_raw
-            )
-
-            camera_loss_values["total_visibility_weighted_opacity_loss_raw"] = (
-                visibility_opacity_loss_raw
-            )
-            camera_loss_values["total_visibility_weighted_opacity_loss_weighted"] = (
-                visibility_opacity_loss_weighted
-            )
-            camera_loss_values["total_loss_value"] += visibility_opacity_loss_weighted
-
-            result["visibility_weighted_opacity_maps_for_logging"][camera_name] = visibility_opacity_np
 
         for loss_key in LOSS_VALUE_KEYS:
             result[loss_key] += camera_loss_values[loss_key]
@@ -1765,213 +1770,6 @@ def maybe_make_prune_indices(
     return scale_prune_indices, opacity_prune_indices, indices_to_remove_list
 
 
-def robust_normalize_scalar(values_np: np.ndarray, lower_percentile: float = 1.0,
-                            upper_percentile: float = 99.0) -> np.ndarray:
-    values_np = np.nan_to_num(
-        np.asarray(values_np, dtype=np.float32).reshape(-1),
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
-
-    finite_values_np = values_np[np.isfinite(values_np)]
-    if finite_values_np.size == 0:
-        return np.zeros_like(values_np, dtype=np.float32)
-
-    value_min = float(np.percentile(finite_values_np, lower_percentile))
-    value_max = float(np.percentile(finite_values_np, upper_percentile))
-
-    if value_max <= value_min + 1.0e-12:
-        return np.zeros_like(values_np, dtype=np.float32)
-
-    return np.clip((values_np - value_min) / (value_max - value_min), 0.0, 1.0).astype(np.float32)
-
-
-def black_red_yellow_white_colormap(normalized_values_np: np.ndarray) -> np.ndarray:
-    t = np.clip(np.asarray(normalized_values_np, dtype=np.float32).reshape(-1, 1), 0.0, 1.0)
-
-    red = np.clip(3.0 * t, 0.0, 1.0)
-    green = np.clip(3.0 * t - 1.0, 0.0, 1.0)
-    blue = np.clip(3.0 * t - 2.0, 0.0, 1.0)
-
-    return np.clip(np.concatenate([red, green, blue], axis=1) * 255.0, 0.0, 255.0).astype(np.uint8)
-
-
-def tensor_to_numpy_float32(tensor: torch.Tensor) -> np.ndarray:
-    return tensor.detach().cpu().numpy().astype(np.float32)
-
-
-def save_scalar_colored_point_ply(
-        output_path: Path,
-        positions_np: np.ndarray,
-        scalar_values_np: np.ndarray,
-        scalar_name: str,
-        normalize_by_max_value: float | None = None,
-) -> None:
-    positions_np = np.asarray(positions_np, dtype=np.float32)
-    scalar_values_np = np.nan_to_num(
-        np.asarray(scalar_values_np, dtype=np.float32).reshape(-1),
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
-
-    if positions_np.ndim != 2 or positions_np.shape[1] != 3:
-        raise RuntimeError(f"positions_np must have shape (N, 3), got {positions_np.shape}")
-
-    if scalar_values_np.shape[0] != positions_np.shape[0]:
-        raise RuntimeError(
-            f"Scalar length mismatch for {scalar_name}: "
-            f"{scalar_values_np.shape[0]} vs positions {positions_np.shape[0]}"
-        )
-
-    if normalize_by_max_value is not None:
-        normalized_np = np.clip(scalar_values_np / max(float(normalize_by_max_value), 1.0e-12), 0.0, 1.0)
-    else:
-        normalized_np = robust_normalize_scalar(scalar_values_np)
-
-    colors_np = black_red_yellow_white_colormap(normalized_np)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with output_path.open("w", encoding="utf-8") as file:
-        file.write("ply\n")
-        file.write("format ascii 1.0\n")
-        file.write(f"element vertex {positions_np.shape[0]}\n")
-        file.write("property float x\n")
-        file.write("property float y\n")
-        file.write("property float z\n")
-        file.write("property uchar red\n")
-        file.write("property uchar green\n")
-        file.write("property uchar blue\n")
-        file.write(f"property float {scalar_name}\n")
-        file.write("end_header\n")
-
-        for position, color, scalar_value in zip(positions_np, colors_np, scalar_values_np):
-            file.write(
-                f"{position[0]:.9g} {position[1]:.9g} {position[2]:.9g} "
-                f"{int(color[0])} {int(color[1])} {int(color[2])} "
-                f"{float(scalar_value):.9g}\n"
-            )
-
-
-def average_densification_accumulators(
-        densify_position_grad_accum_np: np.ndarray,
-        densify_position_grad_denom_np: np.ndarray,
-        densify_position_grad_vector_accum_np: np.ndarray,
-        point_count: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
-
-    avg_density_grad_norm_np = np.zeros((point_count,), dtype=np.float32)
-    avg_density_grad_vector_np = np.zeros((point_count, 3), dtype=np.float32)
-
-    avg_density_grad_norm_np[valid_denom_np] = (
-            densify_position_grad_accum_np.reshape(-1)[valid_denom_np]
-            / densify_position_grad_denom_np.reshape(-1)[valid_denom_np]
-    )
-
-    avg_density_grad_vector_np[valid_denom_np] = (
-            densify_position_grad_vector_accum_np[valid_denom_np]
-            / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
-    )
-
-    avg_density_grad_vector_norm_np = np.linalg.norm(avg_density_grad_vector_np, axis=1).astype(np.float32)
-
-    avg_density_grad_norm_np = np.nan_to_num(avg_density_grad_norm_np, nan=0.0, posinf=0.0, neginf=0.0)
-    avg_density_grad_vector_norm_np = np.nan_to_num(avg_density_grad_vector_norm_np, nan=0.0, posinf=0.0, neginf=0.0)
-
-    return avg_density_grad_norm_np, avg_density_grad_vector_np, avg_density_grad_vector_norm_np
-
-
-def save_densification_gradient_diagnostics(
-        output_dir: Path,
-        iteration: int,
-        positions: torch.Tensor,
-        densify_position_grad_accum_np: np.ndarray,
-        densify_position_grad_denom_np: np.ndarray,
-        densify_position_grad_vector_accum_np: np.ndarray,
-        photo_gradient_surfel_stats: dict,
-        active_camera_count_max: int,
-) -> None:
-    positions_np = tensor_to_numpy_float32(positions)
-    point_count = positions_np.shape[0]
-
-    avg_density_grad_norm_np, _, avg_density_grad_vector_norm_np = average_densification_accumulators(
-        densify_position_grad_accum_np=densify_position_grad_accum_np,
-        densify_position_grad_denom_np=densify_position_grad_denom_np,
-        densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-        point_count=point_count,
-    )
-
-    diagnostic_dir = output_dir / "gradient_stats" / f"iter_{iteration:06d}"
-    diagnostic_dir.mkdir(parents=True, exist_ok=True)
-
-    save_scalar_colored_point_ply(
-        output_path=diagnostic_dir / "gradient_geometric_pressure.ply",
-        positions_np=positions_np,
-        scalar_values_np=avg_density_grad_norm_np,
-        scalar_name="gradient_geometric_pressure",
-    )
-
-    save_scalar_colored_point_ply(
-        output_path=diagnostic_dir / "gradient_position_norm.ply",
-        positions_np=positions_np,
-        scalar_values_np=avg_density_grad_vector_norm_np,
-        scalar_name="gradient_position_norm",
-    )
-
-    if "position_std" in photo_gradient_surfel_stats:
-        position_std_np = np.asarray(photo_gradient_surfel_stats["position_std"], dtype=np.float32).reshape(-1)
-        if position_std_np.shape[0] == point_count:
-            save_scalar_colored_point_ply(
-                output_path=diagnostic_dir / "gradient_position_std.ply",
-                positions_np=positions_np,
-                scalar_values_np=position_std_np,
-                scalar_name="gradient_position_std",
-            )
-
-    if "position_active_camera_count" in photo_gradient_surfel_stats:
-        active_camera_count_np = np.asarray(
-            photo_gradient_surfel_stats["position_active_camera_count"],
-            dtype=np.float32,
-        ).reshape(-1)
-
-        if active_camera_count_np.shape[0] == point_count:
-            save_scalar_colored_point_ply(
-                output_path=diagnostic_dir / "gradient_active_camera_count.ply",
-                positions_np=positions_np,
-                scalar_values_np=active_camera_count_np,
-                scalar_name="gradient_active_camera_count",
-                normalize_by_max_value=float(max(active_camera_count_max, 1)),
-            )
-
-    if "position_coherence" in photo_gradient_surfel_stats:
-        position_coherence_np = np.asarray(photo_gradient_surfel_stats["position_coherence"], dtype=np.float32).reshape(
-            -1)
-        if position_coherence_np.shape[0] == point_count:
-            save_scalar_colored_point_ply(
-                output_path=diagnostic_dir / "gradient_position_coherence.ply",
-                positions_np=positions_np,
-                scalar_values_np=position_coherence_np,
-                scalar_name="gradient_position_coherence",
-                normalize_by_max_value=1.0,
-            )
-
-    if "position_disagreement" in photo_gradient_surfel_stats:
-        position_disagreement_np = np.asarray(photo_gradient_surfel_stats["position_disagreement"],
-                                              dtype=np.float32).reshape(-1)
-        if position_disagreement_np.shape[0] == point_count:
-            save_scalar_colored_point_ply(
-                output_path=diagnostic_dir / "gradient_position_disagreement.ply",
-                positions_np=positions_np,
-                scalar_values_np=position_disagreement_np,
-                scalar_name="gradient_position_disagreement",
-            )
-
-    print(f"[Iter {iteration:04d}] Saved gradient diagnostics: {diagnostic_dir}")
-
-
 def save_iteration_outputs(
         output_dir: Path,
         iteration: int,
@@ -2092,8 +1890,6 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "loss_depth_distortion_weighted_mean",
             "loss_normal_consistency_raw_mean",
             "loss_normal_consistency_weighted_mean",
-            "loss_visibility_weighted_opacity_raw_mean",
-            "loss_visibility_weighted_opacity_weighted_mean",
             "loss_total_mean",
             "num_points",
             "iteration_time_sec",

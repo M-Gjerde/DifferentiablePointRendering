@@ -263,20 +263,16 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         # Current averaged metrics.csv format.
         "loss_total_mean",
         "loss_rgb_mean",
-        "loss_visibility_weighted_opacity_weighted_mean",
         "loss_normal_consistency_weighted_mean",
         "loss_depth_distortion_weighted_mean",
-        "loss_visibility_weighted_opacity_raw_mean",
         "loss_normal_consistency_raw_mean",
         "loss_depth_distortion_raw_mean",
 
         # Backward compatibility with previous metrics.csv formats.
         "loss_total_sum",
         "loss_rgb_sum",
-        "loss_visibility_weighted_opacity_weighted_sum",
         "loss_normal_consistency_weighted_sum",
         "loss_depth_distortion_weighted_sum",
-        "loss_visibility_weighted_opacity_raw_sum",
         "loss_normal_consistency_raw_sum",
         "loss_depth_distortion_raw_sum",
         "loss_depth_distortion_sum",

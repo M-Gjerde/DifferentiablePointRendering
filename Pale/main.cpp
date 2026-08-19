@@ -765,7 +765,7 @@ static void saveColoredGradientStatsPly(
 static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector& deviceSelector,
                                                 const Pale::PointGradients& gradients,
                                                 const Pale::PointGeometry& pointGeometry,
-                                                const std::filesystem::path& outputDir, uint32_t activeCameraCountMax) {
+                                                const std::filesystem::path& outputDir) {
     auto queue = deviceSelector.getQueue();
     const std::size_t pointCount = gradients.numPoints;
 
@@ -774,30 +774,22 @@ static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector& deviceSele
         return;
     }
 
-    if (!gradients.gradPosition || !gradients.gradPositionMeanNorm || !gradients.gradPositionStd || !gradients.
-        gradPositionActiveCameraCount) {
-        Pale::Log::PA_WARN("savePointGradientStatsAsColoredPlys: gradient stats buffers are missing");
+    if (!gradients.gradPosition) {
+        Pale::Log::PA_WARN("savePointGradientStatsAsColoredPlys: position gradient buffer is missing");
         return;
     }
 
     std::vector<Pale::float3> gradPositionHost(pointCount);
     std::vector<Pale::float3> gradRotationHost(pointCount);
-    std::vector<float> positionMeanNormHost(pointCount, 0.0f);
-    std::vector<float> positionStdHost(pointCount, 0.0f);
-    std::vector<uint32_t> activeCameraCountHost(pointCount, 0u);
 
     queue.memcpy(gradPositionHost.data(), gradients.gradPosition, pointCount * sizeof(Pale::float3));
     if (gradients.gradRotation)
         queue.memcpy(gradRotationHost.data(), gradients.gradRotation,
                      pointCount * sizeof(Pale::float3));
-    queue.memcpy(positionMeanNormHost.data(), gradients.gradPositionMeanNorm, pointCount * sizeof(float));
-    queue.memcpy(positionStdHost.data(), gradients.gradPositionStd, pointCount * sizeof(float));
-    queue.memcpy(activeCameraCountHost.data(), gradients.gradPositionActiveCameraCount, pointCount * sizeof(uint32_t));
     queue.wait();
 
     std::vector<float> gradientNormHost(pointCount, 0.0f);
     std::vector<float> rotationGradientNormHost(pointCount, 0.0f);
-    std::vector<float> activeCameraCountFloatHost(pointCount, 0.0f);
 
     for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
         const Pale::float3& positionGradient = gradPositionHost[pointIndex];
@@ -810,23 +802,14 @@ static void savePointGradientStatsAsColoredPlys(Pale::DeviceSelector& deviceSele
             rotationGradient.z() * rotationGradient.z();
         gradientNormHost[pointIndex] = std::sqrt(std::max(positionGradientSquaredNorm, 0.0f));
         rotationGradientNormHost[pointIndex] = std::sqrt(std::max(rotationGradientSquaredNorm, 0.0f));
-        activeCameraCountFloatHost[pointIndex] = static_cast<float>(activeCameraCountHost[pointIndex]);
     }
 
     std::filesystem::create_directories(outputDir);
-    saveColoredGradientStatsPly(pointGeometry, positionStdHost, robustNormalizeScalars(positionStdHost),
-                                outputDir / "gradient_position_std.ply", "gradient_position_std");
-    saveColoredGradientStatsPly(pointGeometry, positionMeanNormHost, robustNormalizeScalars(positionMeanNormHost),
-                                outputDir / "gradient_geometric_pressure.ply", "gradient_geometric_pressure");
     saveColoredGradientStatsPly(pointGeometry, gradientNormHost, robustNormalizeScalars(gradientNormHost),
                                 outputDir / "gradient_position_norm.ply", "gradient_position_norm");
     saveColoredGradientStatsPly(pointGeometry, rotationGradientNormHost,
                                 robustNormalizeScalars(rotationGradientNormHost),
                                 outputDir / "gradient_rotation_norm.ply", "gradient_rotation_norm");
-    saveColoredGradientStatsPly(pointGeometry, activeCameraCountFloatHost,
-                                normalizeByMaximumValue(activeCameraCountFloatHost,
-                                                        static_cast<float>(std::max(activeCameraCountMax, 1u))),
-                                outputDir / "gradient_active_camera_count.ply", "gradient_active_camera_count");
 }
 
 int main(int argc, char** argv) {
@@ -1186,8 +1169,7 @@ int main(int argc, char** argv) {
                     deviceSelector,
                     photoGradients,
                     pointGeometry,
-                    outputRoot / "gradient_stats",
-                    static_cast<uint32_t>(adjointSensors.size()));
+                    outputRoot / "gradient_stats");
             }
 
             std::vector<Pale::DebugImages> surfaceDebugImages(sensors.size());

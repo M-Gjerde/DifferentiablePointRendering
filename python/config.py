@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
+    adjoint_passes: int = 1
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -39,7 +39,6 @@ class RendererSettingsConfig:
             "depth_distort_weight": config.depth_distort_weight,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
-            "visibility_weighted_opacity_weight": config.visibility_weighted_opacity_weight,
         }
 
 
@@ -71,15 +70,14 @@ class OptimizationConfig:
     # Global LR scheduling
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.15
-    global_lr_start_iteration: int = int(iterations * 0.8)
-    global_lr_max_steps: int = 1e4
+    global_lr_scale_final: float = 0.2
+    global_lr_start_iteration: int = 2_000
+    global_lr_max_steps: int = 10_000
 
-    depth_distort_weight: float = 1000
+    depth_distort_weight: float = 0
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.01
     normal_from_depth_use_mean_depth: bool = False
-    visibility_weighted_opacity_weight: float = 0.0
 
     # Density control / EV-splitting
     # Ignore stats from the first half of each densification interval after cloning/pruning.
@@ -89,7 +87,7 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 8.0e-4
+    densification_grad_abs_min: float = 1.0e-3
     densification_scale_min: float = 1.0e-2
 
     # More densification on radiometrically darker primitives
@@ -99,13 +97,14 @@ class OptimizationConfig:
     opacity_prune_threshold: float = 0.10
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 5.0e-7
-    inactive_gradient_prune_cycles: int = 2 # One cycle is one loop through all training cameras
+    inactive_gradient_prune_cycles: int = 2  # One cycle is one loop through all training cameras
 
     # Misc scheduling
     reset_opacity_interval: int = 0
     reset_opacity_value: float = 0.025
     reset_opacity_iterations: bool = False
     rebuild_bvh_interval: int = 1
+    use_device_training_step: bool = True
 
     # Camera batching
     one_camera_per_iteration: bool = True
@@ -114,13 +113,14 @@ class OptimizationConfig:
     scale_single_camera_gradients: bool = False
 
     # Logging
-    log_interval: int = 25
-    save_interval: int = 25
+    log_interval: int = 5
+    save_interval: int = 50
     save_ply_files_interval: int = save_interval
-    save_gradient_diagnostics: bool = False
 
     # Mesh Extraction
-    mesh_extraction_iterations: list[int] = field(default_factory=lambda: [1_000, 5_000, 7_000, 10_000])
+    mesh_extraction_iterations: list[int] = field(
+        default_factory=lambda: [1_000, 3_000, 7_000, 10_000]
+    )
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 50
@@ -133,6 +133,7 @@ class OptimizationConfig:
     save_snapshot_normal_from_depth: bool = True
     save_snapshot_grad: bool = False
     densification_verbose: bool = True
+
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
     base_learning_rate = config.learning_rate
@@ -327,10 +328,10 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--global-lr-start-iteration", type=int)
     parser.add_argument("--global-lr-max-steps", type=int)
     parser.add_argument("--normal-consistency-weight", dest="normal_consistency_weight", type=float)
-    parser.add_argument("--normal-from-depth-use-mean-depth", dest="normal_from_depth_use_mean_depth", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
+    parser.add_argument("--normal-from-depth-use-mean-depth", dest="normal_from_depth_use_mean_depth",
+                        action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
     parser.add_argument("--depth-distort-weight", dest="depth_distort_weight", type=float)
     parser.add_argument("--depth-distort-start-iteration", type=int)
-    parser.add_argument("--visibility-weighted-opacity-weight", dest="visibility_weighted_opacity_weight", type=float, )
     # Density control / EV-splitting
     parser.add_argument("--densification-interval", type=int)
     parser.add_argument("--prune-interval", type=int)
@@ -351,8 +352,6 @@ def parse_args() -> OptimizationConfig:
             "spelling is accepted as an alias."
         ),
     )
-    parser.add_argument("--save-gradient-diagnostics", action=argparse.BooleanOptionalAction,
-                        default=argparse.SUPPRESS, )
     parser.add_argument("--densify-bsdf-floor", type=float)
     parser.add_argument("--densify-bsdf-gamma", type=float)
     # Pruning
@@ -362,6 +361,14 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--reset-opacity-interval", type=int)
     parser.add_argument("--reset-opacity-value", type=float)
     parser.add_argument("--rebuild-bvh-interval", type=int)
+    parser.add_argument("--inactive-gradient-prune-cycles", type=int)
+    parser.add_argument(
+        "--device-training-step",
+        dest="use_device_training_step",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Use the device-resident fixed-topology RGB optimizer path when compatible.",
+    )
 
     args = parser.parse_args()
     cli_overrides = set(vars(args).keys())

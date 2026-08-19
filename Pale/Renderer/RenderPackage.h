@@ -51,12 +51,7 @@ namespace Pale {
         float3 *cloneSignalPerPrimitivePerCamera = nullptr;
         uint32_t *cloneSignalRecordCountPerPrimitivePerCamera = nullptr;
 
-        // Final per-primitive translation-gradient stats.
-        float *gradPositionMeanNorm = nullptr;
-        float *gradPositionStd = nullptr;
-        float *gradPositionCoherence = nullptr;
-        float *gradPositionDisagreement = nullptr;
-        uint32_t *gradPositionActiveCameraCount = nullptr;
+        // Final per-primitive clone-signal stats.
         float *cloneSignalMeanNorm = nullptr;
         float *cloneSignalStd = nullptr;
         float *cloneSignalCoherence = nullptr;
