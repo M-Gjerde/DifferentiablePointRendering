@@ -342,20 +342,10 @@ def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, obje
     else:
         global_lr_scale_func = make_constant_scale_func()
 
-    parameter_lr_scale_funcs: dict[str, Callable[[int], float]] = {}
-
-    if bool(getattr(config, "use_position_lr_schedule", False)):
-        parameter_lr_scale_funcs["position"] = make_exponential_scale_func(
-            scale_init=float(getattr(config, "position_lr_scale_init", 1.0)),
-            scale_final=float(getattr(config, "position_lr_scale_final", 1.0)),
-            start_iteration=0,
-            max_steps=int(getattr(config, "position_lr_max_steps", 0)),
-        )
-
     return {
         "base_learning_rates": base_learning_rates,
         "global_lr_scale_func": global_lr_scale_func,
-        "parameter_lr_scale_funcs": parameter_lr_scale_funcs,
+        "parameter_lr_scale_funcs": {},
     }
 
 

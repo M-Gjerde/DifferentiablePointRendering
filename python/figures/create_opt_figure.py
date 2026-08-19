@@ -109,6 +109,32 @@ def parse_args() -> argparse.Namespace:
         default=10.0,
         help="Hold the final GIF frame for this many seconds before looping.",
     )
+    parser.add_argument(
+        "--slow-start-until-iteration",
+        type=int,
+        default=1000,
+        help=(
+            "Use denser GIF frame sampling up to and including this render iteration. "
+            "Set to 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--slow-start-frame-density",
+        "--slow-start-duration-scale",
+        dest="slow_start_frame_density",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--slow-start-frame-stride",
+        type=int,
+        default=1,
+        help=(
+            "Use every N-th render frame during the slow-start segment. "
+            "Example: 1 keeps every early frame, while --frame-stride controls the later frames."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -527,11 +553,32 @@ def select_render_frames_for_gif(
     render_frame_paths: List[Path],
     frame_stride: int,
     max_gif_frames: int | None,
+    slow_start_until_iteration: int,
+    slow_start_frame_stride: int,
 ) -> List[Path]:
     if frame_stride < 1:
         raise ValueError(f"--frame-stride must be >= 1, got {frame_stride}")
+    if slow_start_until_iteration < 0:
+        raise ValueError(
+            f"--slow-start-until-iteration must be >= 0, got {slow_start_until_iteration}"
+        )
+    if slow_start_frame_stride < 1:
+        raise ValueError(
+            f"--slow-start-frame-stride must be >= 1, got {slow_start_frame_stride}"
+        )
 
-    selected_frame_paths = render_frame_paths[::frame_stride]
+    selected_frame_paths = []
+    for frame_index, render_frame_path in enumerate(render_frame_paths):
+        render_iteration = parse_frame_index_from_name(render_frame_path, "render")
+        use_slow_start_stride = (
+            slow_start_until_iteration > 0
+            and render_iteration is not None
+            and render_iteration <= slow_start_until_iteration
+        )
+        active_stride = slow_start_frame_stride if use_slow_start_stride else frame_stride
+
+        if frame_index % active_stride == 0:
+            selected_frame_paths.append(render_frame_path)
 
     if render_frame_paths[-1] not in selected_frame_paths:
         selected_frame_paths.append(render_frame_paths[-1])
@@ -615,6 +662,8 @@ def build_gif(
     frame_stride: int,
     max_gif_frames: int | None,
     last_frame_hold_seconds: float,
+    slow_start_until_iteration: int,
+    slow_start_frame_stride: int,
 ) -> Path:
     target_path = run_dir / f"render_target_{camera_name}.png"
     final_path = run_dir / f"render_final_{camera_name}.png"
@@ -643,6 +692,8 @@ def build_gif(
         render_frame_paths=all_render_frame_paths,
         frame_stride=frame_stride,
         max_gif_frames=max_gif_frames,
+        slow_start_until_iteration=slow_start_until_iteration,
+        slow_start_frame_stride=slow_start_frame_stride,
     ) if all_render_frame_paths else []
 
     if all_render_frame_paths:
@@ -785,7 +836,12 @@ def build_gif(
         gif_frames.append(grid)
 
         is_last_frame = frame_index == len(frame_paths_for_output) - 1
-        gif_durations_ms.append(final_duration_ms if is_last_frame else base_duration_ms)
+        if is_last_frame:
+            gif_durations_ms.append(final_duration_ms)
+            continue
+
+        frame_duration_ms = base_duration_ms
+        gif_durations_ms.append(frame_duration_ms)
 
     if not gif_frames:
         raise RuntimeError("No GIF frames were generated")
@@ -804,6 +860,16 @@ def build_gif(
 
 def main() -> None:
     args = parse_args()
+    slow_start_frame_stride = args.slow_start_frame_stride
+    if args.slow_start_frame_density is not None:
+        if args.slow_start_frame_density <= 0.0:
+            raise ValueError(
+                f"--slow-start-frame-density must be > 0, got {args.slow_start_frame_density}"
+            )
+        slow_start_frame_stride = max(
+            1,
+            int(round(args.frame_stride / max(1.0, args.slow_start_frame_density))),
+        )
 
     if args.run_dir is not None:
         run_dir = args.run_dir.resolve()
@@ -839,6 +905,8 @@ def main() -> None:
         frame_stride=args.frame_stride,
         max_gif_frames=args.max_gif_frames,
         last_frame_hold_seconds=args.last_frame_hold_seconds,
+        slow_start_until_iteration=args.slow_start_until_iteration,
+        slow_start_frame_stride=slow_start_frame_stride,
     )
 
     print()
@@ -848,6 +916,14 @@ def main() -> None:
     print(f"Available cameras: {camera_names}")
     print(f"Selected camera  : [{args.camera_index}] {camera_name}")
     print(f"FPS              : {args.fps}")
+    if args.slow_start_until_iteration > 0:
+        print(
+            "Slow start       : "
+            f"<= iter {args.slow_start_until_iteration}, "
+            f"frame stride {slow_start_frame_stride}"
+        )
+    else:
+        print("Slow start       : disabled")
     print(f"Output GIF       : {output_path}")
 
 

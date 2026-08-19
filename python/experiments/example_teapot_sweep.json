@@ -1,31 +1,24 @@
 {
   "dataset_path": "~/phd/datasets/teapot_10_pbdr/",
+  "ground_truth": "~/phd/models/teapot.ply",
   "output_root": "OptimizationOutput/sweeps/teapot_10",
   "base_args": {
-    "iterations": 7000,
-    "log_interval": 25,
-    "save_interval": 500,
-    "save_ply_files_interval": 500,
-    "mesh_extraction_interval": 500,
+    "iterations": 15000,
+    "log_interval": 50,
+    "save_interval": 1000,
+    "save_ply_files_interval": 1000,
+    "mesh_extraction_iterations": [1000, 7000, 10000],
     "mesh_extraction_depth_key": "median_depth",
     "mesh_extraction_mesh_res": 1024,
     "mesh_extraction_num_cluster": 50,
     "densification_stats_skip_interval_start": true
   },
   "search_space": {
-    "densification_interval": [25, 50, 100],
-    "use_global_lr_schedule": [false, true],
-    "global_lr_scale_final": [0.2, 0.5, 1.0],
-    "learning_rate_position": [0.000375, 0.00075, 0.0015],
-    "learning_rate_rotation": [0.005, 0.01, 0.02],
-    "learning_rate_scale": [0.0002, 0.0004, 0.0008],
-    "learning_rate_albedo": [0.0005, 0.001, 0.002],
-    "learning_rate_opacity": [0.004, 0.008, 0.016],
-    "learning_rate_beta": [0.0025, 0.005, 0.01],
-    "densify_bsdf_gamma": [0.0, 0.5, 1.0],
-    "densify_bsdf_floor": [0.2, 0.3, 0.5],
-    "densification_grad_abs_min": [0.00025, 0.0005, 0.001],
+    "learning_rate": [0.5, 1.0, 2.0],
+    "densification_interval": [25, 100],
+    "densify_bsdf_gamma": [0.0, 1.0],
+    "densification_grad_abs_min": [0.0008, 0.0005],
     "normal_consistency_weight": [0.0, 0.005, 0.01, 0.02],
-    "depth_distort_weight": [0.0, 10.0, 50.0, 100.0]
+    "depth_distort_weight": [0.0, 10.0, 1000.0]
   }
 }

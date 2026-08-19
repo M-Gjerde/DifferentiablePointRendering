@@ -10,6 +10,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
 import open3d as o3d
+import imageio.v3 as iio
 
 import pale
 from render_hooks import get_training_camera_names
@@ -552,11 +553,42 @@ def sanitize_color(image: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(image.astype(np.uint8))
 
 
-def sanitize_depth(depth: np.ndarray, depth_trunc: float) -> np.ndarray:
-    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
-    valid = (depth > 1.0e-6) & (depth < depth_trunc)
-    depth[~valid] = 0.0
-    return np.ascontiguousarray(depth)
+def depth_to_visualization(depth: np.ndarray) -> np.ndarray:
+    depth = np.asarray(depth, dtype=np.float32)
+    valid = np.isfinite(depth) & (depth > 0.0)
+    depth_u8 = np.zeros(depth.shape, dtype=np.uint8)
+
+    if not np.any(valid):
+        return depth_u8
+
+    valid_depth = depth[valid]
+    lower = float(valid_depth.min(initial=0.0))
+    upper = float(valid_depth.max(initial=lower))
+
+    if upper <= lower:
+        depth_u8[valid] = 255
+        return depth_u8
+
+    normalized = np.clip((depth - lower) / (upper - lower), 0.0, 1.0)
+    depth_u8[valid] = (255.0 * normalized[valid]).astype(np.uint8)
+    return depth_u8
+
+
+def save_extraction_render_images(
+    output_dir: Path,
+    camera_name: str,
+    color: np.ndarray,
+    depth: np.ndarray,
+    depth_key: str,
+    name_suffix: str,
+) -> None:
+    suffix = f"{name_suffix}_" if name_suffix else ""
+    color_path = output_dir / f"render_{suffix}{camera_name}.png"
+    depth_path = output_dir / f"{depth_key}_{suffix}{camera_name}.png"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    iio.imwrite(color_path.as_posix(), color)
+    iio.imwrite(depth_path.as_posix(), depth_to_visualization(depth))
 
 
 def post_process_mesh(mesh: o3d.geometry.TriangleMesh, cluster_to_keep: int) -> o3d.geometry.TriangleMesh:
@@ -604,11 +636,36 @@ class PaleExtractor:
     def reconstruction(self) -> None:
         self.forward_out = self.renderer.render_forward()
 
+    def infer_depth_trunc(self, margin: float = 1.05) -> float:
+        if self.forward_out is None:
+            raise RuntimeError("Call reconstruction() before infer_depth_trunc().")
+
+        max_depth = 0.0
+
+        for camera_name in self.camera_names:
+            camera_output = self.forward_out.get(camera_name)
+            if camera_output is None or self.depth_key not in camera_output:
+                continue
+
+            depth = as_numpy(camera_output[self.depth_key])
+            valid_depth = depth[np.isfinite(depth) & (depth > 0.0)]
+            if valid_depth.size == 0:
+                continue
+
+            max_depth = max(max_depth, float(valid_depth.max(initial=max_depth)))
+
+        if max_depth <= 0.0:
+            raise RuntimeError(f"Could not infer depth_trunc: no positive finite {self.depth_key} values.")
+
+        return margin * max_depth
+
     def extract_mesh_bounded(
         self,
         voxel_size: float,
         sdf_trunc: float,
         depth_trunc: float,
+        render_output_dir: Path | None = None,
+        render_name_suffix: str = "",
     ) -> o3d.geometry.TriangleMesh:
         if self.forward_out is None:
             raise RuntimeError("Call reconstruction() before extract_mesh_bounded().")
@@ -643,7 +700,17 @@ class PaleExtractor:
                 )
 
             color = sanitize_color(color)
-            depth = sanitize_depth(depth, depth_trunc)
+            depth = np.ascontiguousarray(depth, dtype=np.float32)
+
+            if render_output_dir is not None:
+                save_extraction_render_images(
+                    output_dir=render_output_dir / "renders",
+                    camera_name=camera_name,
+                    color=color,
+                    depth=depth,
+                    depth_key=self.depth_key,
+                    name_suffix=render_name_suffix,
+                )
 
             if np.count_nonzero(depth) == 0:
                 print(f"Skipping {camera_name}: no valid depth")
@@ -788,14 +855,20 @@ if __name__ == "__main__":
 
         pale_extractor.reconstruction()
 
-        depth_trunc = pale_extractor.radius * 2.0 if args.depth_trunc < 0 else args.depth_trunc
-        voxel_size = depth_trunc / args.mesh_res if args.voxel_size < 0 else args.voxel_size
+        depth_trunc = pale_extractor.infer_depth_trunc() if args.depth_trunc < 0 else args.depth_trunc
+        voxel_size = (2.0 * pale_extractor.radius) / args.mesh_res if args.voxel_size < 0 else args.voxel_size
         sdf_trunc = 10.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
+        print(
+            f"TSDF settings: depth_trunc={depth_trunc:.6g}, "
+            f"voxel_size={voxel_size:.6g}, sdf_trunc={sdf_trunc:.6g}"
+        )
 
         mesh = pale_extractor.extract_mesh_bounded(
             voxel_size=voxel_size,
             sdf_trunc=sdf_trunc,
             depth_trunc=depth_trunc,
+            render_output_dir=mesh_dir,
+            render_name_suffix=mesh_name_suffix.lstrip("_"),
         )
 
         mesh_path = mesh_dir / f"fuse{mesh_name_suffix}.ply"

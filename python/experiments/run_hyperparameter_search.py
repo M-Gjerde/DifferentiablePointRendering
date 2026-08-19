@@ -21,10 +21,11 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "log_interval": "--log-interval",
     "save_interval": "--save-interval",
     "save_ply_files_interval": "--save-ply-files-interval",
-    "mesh_extraction_interval": "--mesh-extraction-interval",
+    "mesh_extraction_iterations": "--mesh-extraction-iterations",
     "mesh_extraction_depth_key": "--mesh-extraction-depth-key",
     "mesh_extraction_mesh_res": "--mesh-extraction-mesh-res",
     "mesh_extraction_num_cluster": "--mesh-extraction-num-cluster",
+    "save_final_mesh": ("--save-final-mesh", "--no-save-final-mesh"),
     "learning_rate": "--lr",
     "learning_rate_position": "--lr-pos",
     "learning_rate_rotation": "--lr-rot",
@@ -32,10 +33,6 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "learning_rate_albedo": "--lr-albedo",
     "learning_rate_opacity": "--lr-opacity",
     "learning_rate_beta": "--lr-beta",
-    "use_position_lr_schedule": ("--position-lr-schedule", "--no-position-lr-schedule"),
-    "position_lr_scale_init": "--position-lr-scale-init",
-    "position_lr_scale_final": "--position-lr-scale-final",
-    "position_lr_max_steps": "--position-lr-max-steps",
     "use_global_lr_schedule": ("--global-lr-schedule", "--no-global-lr-schedule"),
     "global_lr_scale_init": "--global-lr-scale-init",
     "global_lr_scale_final": "--global-lr-scale-final",
@@ -53,18 +50,9 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "prune_interval": "--prune-interval",
     "densify_after": "--densify-after",
     "prune_after": "--prune-after",
-    "densify_until_iteration": "--densify-until-iteration",
-    "densify_until_fraction": "--densify-until-fraction",
     "densification_verbose": ("--densification-verbose", "--no-densification-verbose"),
     "densification_grad_quantile": "--densification-grad-quantile",
     "densification_grad_abs_min": "--densification-grad-abs-min",
-    "densification_grad_abs_min_final": "--densification-grad-abs-min-final",
-    "densification_grad_abs_min_schedule_start_iteration": (
-        "--densification-grad-abs-min-schedule-start-iteration"
-    ),
-    "densification_grad_abs_min_schedule_end_iteration": (
-        "--densification-grad-abs-min-schedule-end-iteration"
-    ),
     "densification_stats_skip_interval_start": (
         "--densification-stats-skip-interval-start",
         "--no-densification-stats-skip-interval-start",
@@ -72,20 +60,10 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "save_gradient_diagnostics": ("--save-gradient-diagnostics", "--no-save-gradient-diagnostics"),
     "densify_bsdf_floor": "--densify-bsdf-floor",
     "densify_bsdf_gamma": "--densify-bsdf-gamma",
-    "max_split_fraction": "--max-split-fraction",
-    "evsplit_preserve_integrated_opacity": (
-        "--evsplit-preserve-integrated-opacity",
-        "--no-evsplit-preserve-integrated-opacity",
-    ),
-    "evsplit_min_scale": "--evsplit-min-scale",
     "opacity_prune_threshold": "--opacity-prune-threshold",
     "max_prune_fraction": "--max-prune-fraction",
-    "scale_prune_min_scale": "--scale-prune-min-scale",
-    "min_points_to_keep_after_scale_prune": "--min-points-to-keep-after-scale-prune",
     "reset_opacity_interval": "--reset-opacity-interval",
     "reset_opacity_value": "--reset-opacity-value",
-    "reset_scale_interval": "--reset-scale-interval",
-    "reset_scale_factor": "--reset-scale-factor",
     "rebuild_bvh_interval": "--rebuild-bvh-interval",
 }
 
@@ -103,7 +81,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--search-mode", choices=["random", "grid"], default="random")
     parser.add_argument("--max-trials", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--ground-truth", type=Path, default="~/phd/models/teapot.ply", help="Optional GT PLY for offline geometry plots.")
+    parser.add_argument(
+        "--ground-truth",
+        type=Path,
+        default=None,
+        help="Optional GT PLY override for offline geometry plots. Defaults to ground_truth in the sweep JSON.",
+    )
     parser.add_argument("--samples", type=int, default=50_000)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--force", action="store_true", help="Allow main.py to clear and rerun existing trial dirs.")
@@ -178,7 +161,7 @@ def trial_run_name(index: int, parameters: dict[str, Any]) -> str:
         f"thr{slug_value(parameters.get('densification_grad_abs_min', 'x'))}",
         f"n{slug_value(parameters.get('normal_consistency_weight', 'x'))}",
         f"d{slug_value(parameters.get('depth_distort_weight', 'x'))}",
-        f"glr{int(bool(parameters.get('use_global_lr_schedule', False)))}",
+        f"glr{slug_value(parameters.get('use_global_lr_schedule', 'default'))}",
         parameter_digest(parameters),
     ]
     return "_".join(parts)[:180]
@@ -198,6 +181,9 @@ def cli_args_for_parameter(name: str, value: Any) -> list[str]:
 
     if isinstance(flag, tuple):
         raise TypeError(f"Parameter {name} uses boolean CLI flags but value is {value!r}.")
+
+    if isinstance(value, (list, tuple)):
+        return [flag, *[str(item) for item in value]]
 
     return [flag, str(value)]
 
@@ -281,7 +267,7 @@ def run_trial(
     return True
 
 
-def run_evaluation(output_root: Path, args: argparse.Namespace) -> None:
+def run_evaluation(output_root: Path, args: argparse.Namespace, ground_truth: Path | None) -> None:
     command = [
         sys.executable,
         str(PROJECT_ROOT / "experiments/evaluate_runs.py"),
@@ -293,9 +279,10 @@ def run_evaluation(output_root: Path, args: argparse.Namespace) -> None:
         str(args.samples),
         "--device",
         args.device,
+        "--full",
     ]
-    if args.ground_truth is not None:
-        command.extend(["--ground-truth", str(resolve_path(args.ground_truth))])
+    if ground_truth is not None:
+        command.extend(["--ground-truth", str(ground_truth)])
 
     print("\nRunning evaluation:")
     print(" ".join(command))
@@ -308,6 +295,8 @@ def main() -> None:
 
     dataset_path = spec.get("dataset_path")
     resolved_dataset_path = resolve_path(Path(dataset_path)) if dataset_path else None
+    ground_truth_value = args.ground_truth if args.ground_truth is not None else spec.get("ground_truth")
+    resolved_ground_truth = resolve_path(Path(ground_truth_value)) if ground_truth_value else None
     output_root = resolve_path(Path(spec["output_root"]))
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -357,7 +346,7 @@ def main() -> None:
                 raise RuntimeError(f"Trial failed: {run_name}")
 
     if not args.dry_run and not args.skip_evaluation:
-        run_evaluation(output_root, args)
+        run_evaluation(output_root, args, resolved_ground_truth)
 
     if failed_runs:
         print("Failed runs:")

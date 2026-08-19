@@ -41,7 +41,7 @@ RUN_CONFIG_PARAMETERS = [
     "learning_rate_beta",
     "densify_bsdf_floor",
     "densify_bsdf_gamma",
-    "mesh_extraction_interval",
+    "mesh_extraction_iterations",
 ]
 
 LOSS_COLUMNS = [
@@ -65,7 +65,7 @@ class MeshCheckpoint:
 @dataclass
 class RunEvaluation:
     run_dir: Path
-    analysis_dir: Path
+    evaluation_dir: Path
     loss_rows: list[dict[str, str]]
     geometry_rows: list[dict[str, Any]]
     summary: dict[str, Any]
@@ -127,10 +127,18 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Aggregate evaluation output directory. Defaults to <common-run-parent>/evaluation.",
+        help=(
+            "Aggregate evaluation output directory. Defaults to <run-dir>/evaluation for one run, "
+            "or <common-run-parent>/evaluation for multiple runs."
+        ),
     )
     parser.add_argument("--max-summary-runs", type=int, default=20)
-    parser.add_argument("--force", action="store_true", help="Recompute existing geometry CSVs.")
+    parser.add_argument(
+        "--force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Recompute geometry CSVs instead of reusing cached results.",
+    )
     return parser.parse_args()
 
 
@@ -165,6 +173,13 @@ def format_number(value: Any) -> str:
     if number is None:
         return "" if value is None else str(value)
     return f"{number:.12g}"
+
+
+def format_metric(value: Any, digits: int = 5) -> str:
+    number = safe_float(value)
+    if number is None:
+        return ""
+    return f"{number:.{digits}f}"
 
 
 def read_csv_dicts(csv_path: Path) -> list[dict[str, str]]:
@@ -535,22 +550,22 @@ def make_summary(
 
 def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
     run_dir = resolve_path(run_dir)
-    analysis_dir = run_dir / "analysis"
-    analysis_dir.mkdir(parents=True, exist_ok=True)
+    evaluation_dir = run_dir / "evaluation"
+    evaluation_dir.mkdir(parents=True, exist_ok=True)
 
     loss_rows = read_csv_dicts(run_dir / "metrics.csv")
     plot_loss_curve(
         run_dir=run_dir,
         rows=loss_rows,
-        output_path=analysis_dir / "loss_curve.png",
+        output_path=evaluation_dir / "loss_curve.png",
         complete_only=args.complete_loss_only,
         log_y=not args.linear_loss_y,
     )
 
     geometry_rows: list[dict[str, Any]] = []
     geometry_mode = "full" if args.full else "latest"
-    geometry_csv_path = analysis_dir / f"mesh_checkpoint_metrics_{geometry_mode}.csv"
-    geometry_plot_path = analysis_dir / f"geometry_curve_{geometry_mode}.png"
+    geometry_csv_path = evaluation_dir / f"mesh_checkpoint_metrics_{geometry_mode}.csv"
+    geometry_plot_path = evaluation_dir / f"geometry_curve_{geometry_mode}.png"
 
     if args.ground_truth is not None:
         if geometry_csv_path.exists() and not args.force:
@@ -576,12 +591,12 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
 
     run_config = load_run_config(run_dir)
     summary = make_summary(run_dir, loss_rows, geometry_rows, run_config)
-    with (analysis_dir / "run_summary.json").open("w", encoding="utf-8") as summary_file:
+    with (evaluation_dir / "run_summary.json").open("w", encoding="utf-8") as summary_file:
         json.dump(summary, summary_file, indent=2)
 
     return RunEvaluation(
         run_dir=run_dir,
-        analysis_dir=analysis_dir,
+        evaluation_dir=evaluation_dir,
         loss_rows=loss_rows,
         geometry_rows=geometry_rows,
         summary=summary,
@@ -653,6 +668,68 @@ def plot_loss_comparison(evaluations: list[RunEvaluation], output_path: Path, ma
     plt.close(fig)
 
 
+def representative_geometry_row(evaluation: RunEvaluation) -> dict[str, Any] | None:
+    if not evaluation.geometry_rows:
+        return None
+    rows = sorted(evaluation.geometry_rows, key=lambda row: int(row["iteration"]))
+    return rows[-1]
+
+
+def print_geometry_table(evaluations: list[RunEvaluation], full: bool) -> None:
+    geometry_evaluations = [evaluation for evaluation in evaluations if evaluation.geometry_rows]
+    if not geometry_evaluations:
+        return
+
+    print()
+    print("| Run | Iteration | CD ↓ | Accuracy ↓ | Completion ↓ |")
+    print("|---|---:|---:|---:|---:|")
+
+    table_rows: list[tuple[str, dict[str, Any]]] = []
+
+    if full:
+        for evaluation in sorted(geometry_evaluations, key=summary_sort_key):
+            for row in sorted(evaluation.geometry_rows, key=lambda item: int(item["iteration"])):
+                table_rows.append((evaluation.run_dir.name, row))
+    else:
+        for evaluation in sorted(geometry_evaluations, key=summary_sort_key):
+            row = representative_geometry_row(evaluation)
+            if row is not None:
+                table_rows.append((evaluation.run_dir.name, row))
+
+    for run_name, row in table_rows:
+        print(
+            f"| {run_name} "
+            f"| {int(row['iteration'])} "
+            f"| {format_metric(row['cd'])} "
+            f"| {format_metric(row['accuracy'])} "
+            f"| {format_metric(row['completion'])} |"
+        )
+
+    if table_rows and not full:
+        mean_cd = sum(float(row["cd"]) for _, row in table_rows) / len(table_rows)
+        mean_accuracy = sum(float(row["accuracy"]) for _, row in table_rows) / len(table_rows)
+        mean_completion = sum(float(row["completion"]) for _, row in table_rows) / len(table_rows)
+        print(
+            f"| **Mean** "
+            f"|  "
+            f"| **{format_metric(mean_cd)}** "
+            f"| **{format_metric(mean_accuracy)}** "
+            f"| **{format_metric(mean_completion)}** |"
+        )
+
+    best_evaluation = min(geometry_evaluations, key=summary_sort_key)
+    best_cd = safe_float(best_evaluation.summary.get("best_cd"))
+    best_iteration = best_evaluation.summary.get("best_cd_iteration", "")
+    if best_cd is not None:
+        print()
+        print(
+            "Best geometry: "
+            f"{best_evaluation.run_dir.name} "
+            f"iter={best_iteration} "
+            f"CD={format_metric(best_cd)}"
+        )
+
+
 def main() -> None:
     args = parse_args()
     run_dirs = find_run_dirs(args.run_dir, args.run_root, args.recursive)
@@ -664,7 +741,12 @@ def main() -> None:
         print(f"Evaluating run: {run_dir}")
         evaluations.append(evaluate_run(run_dir, args))
 
-    aggregate_dir = resolve_path(args.output_dir) if args.output_dir is not None else common_parent(run_dirs) / "evaluation"
+    if args.output_dir is not None:
+        aggregate_dir = resolve_path(args.output_dir)
+    elif len(evaluations) == 1:
+        aggregate_dir = evaluations[0].evaluation_dir
+    else:
+        aggregate_dir = common_parent(run_dirs) / "evaluation"
     aggregate_dir.mkdir(parents=True, exist_ok=True)
 
     summary_rows = [evaluation.summary for evaluation in sorted(evaluations, key=summary_sort_key)]
@@ -685,6 +767,7 @@ def main() -> None:
     write_dict_csv(aggregate_dir / "summary.csv", summary_rows, fieldnames=summary_fields)
     plot_geometry_comparison(evaluations, aggregate_dir / "geometry_comparison.png", args.max_summary_runs)
     plot_loss_comparison(evaluations, aggregate_dir / "loss_comparison.png", args.max_summary_runs)
+    print_geometry_table(evaluations, full=args.full)
 
     print(f"Saved evaluation summary: {aggregate_dir / 'summary.csv'}")
 

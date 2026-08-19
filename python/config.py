@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict
 import math
@@ -67,19 +68,14 @@ class OptimizationConfig:
     learning_rate_albedo: float | None = None
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
-    # Position-only exponential LR schedule.
-    use_position_lr_schedule: bool = False
-    position_lr_scale_init: float = 2.0
-    position_lr_scale_final: float = 0.2
-    position_lr_max_steps: int = int(1.0e4)
     # Global LR scheduling
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.2
+    global_lr_scale_final: float = 0.15
     global_lr_start_iteration: int = int(iterations * 0.8)
     global_lr_max_steps: int = 1e4
 
-    depth_distort_weight: float = 0
+    depth_distort_weight: float = 1000
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.01
     normal_from_depth_use_mean_depth: bool = False
@@ -92,13 +88,8 @@ class OptimizationConfig:
     prune_interval: int = 25
     densify_after: int = 0
     prune_after: int = 0
-    densify_until_iteration: int = -1
-    densify_until_fraction: float = 1.0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 5.0e-4
-    densification_grad_abs_min_final: float = None
-    densification_grad_abs_min_schedule_start_iteration: int = 0
-    densification_grad_abs_min_schedule_end_iteration: int = 0
+    densification_grad_abs_min: float = 8.0e-4
     densification_scale_min: float = 1.0e-2
 
     # More densification on radiometrically darker primitives
@@ -108,16 +99,12 @@ class OptimizationConfig:
     opacity_prune_threshold: float = 0.10
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 5.0e-7
-    min_points_to_keep_after_scale_prune: int = 1
     inactive_gradient_prune_cycles: int = 2 # One cycle is one loop through all training cameras
 
     # Misc scheduling
     reset_opacity_interval: int = 0
     reset_opacity_value: float = 0.025
-    reset_scale_interval: int = 0
-    reset_scale_shrink_factor: float = 1.0
     reset_opacity_iterations: bool = False
-    reset_scale_iterations: bool = False
     rebuild_bvh_interval: int = 1
 
     # Camera batching
@@ -133,10 +120,11 @@ class OptimizationConfig:
     save_gradient_diagnostics: bool = False
 
     # Mesh Extraction
-    mesh_extraction_interval: int = 500
+    mesh_extraction_iterations: list[int] = field(default_factory=lambda: [1_000, 5_000, 7_000, 10_000])
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 50
+    save_final_mesh: bool = True
     # Iteration snapshot content
     save_snapshot_rgb: bool = True
     save_snapshot_median_depth: bool = True
@@ -186,6 +174,39 @@ def scale_iteration_interval_by_learning_rate(base_interval: int, learning_rate:
     if learning_rate <= 0.0:
         raise ValueError(f"learning_rate must be positive, got {learning_rate}")
     return max(1, math.ceil(float(base_interval) / learning_rate))
+
+
+def parse_iteration_list(values) -> list[int]:
+    if values is None:
+        return []
+    if isinstance(values, int):
+        values = [values]
+    if isinstance(values, str):
+        text = values.strip()
+        if text.startswith("[") or text.startswith("("):
+            values = ast.literal_eval(text)
+        else:
+            values = [values]
+
+    parsed_iterations: list[int] = []
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("[") or text.startswith("("):
+                parsed_iterations.extend(parse_iteration_list(ast.literal_eval(text)))
+                continue
+
+        for token in str(value).split(","):
+            token = token.strip()
+            if not token:
+                continue
+
+            iteration = int(token)
+            if iteration <= 0:
+                raise ValueError(f"Mesh extraction iterations must be > 0, got {iteration}")
+            parsed_iterations.append(iteration)
+
+    return sorted(set(parsed_iterations))
 
 
 def _load_checkpoint_run_config(checkpoint_dir: Path) -> dict:
@@ -266,10 +287,21 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--log-interval", type=int)
     parser.add_argument("--save-interval", type=int)
     parser.add_argument("--save-ply-files-interval", type=int)
-    parser.add_argument("--mesh-extraction-interval", "--mesh-checkpoint-interval", type=int)
+    parser.add_argument(
+        "--mesh-extraction-iterations",
+        "--mesh-checkpoint-iterations",
+        nargs="*",
+        type=str,
+        help=(
+            "Explicit mesh checkpoint iterations. Prefer a list in config/JSON, "
+            "e.g. [1000, 7000, 10000]. CLI also accepts 1000 7000 10000 "
+            "or 1000,7000,10000."
+        ),
+    )
     parser.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
     parser.add_argument("--mesh-extraction-mesh-res", type=int)
     parser.add_argument("--mesh-extraction-num-cluster", type=int)
+    parser.add_argument("--save-final-mesh", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
     parser.add_argument(
         "--checkpoint",
         type=Path,
@@ -288,11 +320,6 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--lr-albedo", dest="learning_rate_albedo", type=float)
     parser.add_argument("--lr-opacity", dest="learning_rate_opacity", type=float)
     parser.add_argument("--lr-beta", dest="learning_rate_beta", type=float)
-    parser.add_argument("--position-lr-schedule", dest="use_position_lr_schedule",
-                        action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
-    parser.add_argument("--position-lr-scale-init", type=float)
-    parser.add_argument("--position-lr-scale-final", type=float)
-    parser.add_argument("--position-lr-max-steps", type=int)
     parser.add_argument("--global-lr-schedule", dest="use_global_lr_schedule",
                         action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
     parser.add_argument("--global-lr-scale-init", type=float)
@@ -309,14 +336,9 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--prune-interval", type=int)
     parser.add_argument("--densify-after", type=int)
     parser.add_argument("--prune-after", type=int)
-    parser.add_argument("--densify-until-iteration", type=int)
-    parser.add_argument("--densify-until-fraction", type=float)
     parser.add_argument("--densification-verbose", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS, )
     parser.add_argument("--densification-grad-quantile", type=float)
     parser.add_argument("--densification-grad-abs-min", type=float)
-    parser.add_argument("--densification-grad-abs-min-final", type=float)
-    parser.add_argument("--densification-grad-abs-min-schedule-start-iteration", type=int)
-    parser.add_argument("--densification-grad-abs-min-schedule-end-iteration", type=int)
     parser.add_argument(
         "--densification-stats-skip-interval-start",
         "--densification-stats-warmup",
@@ -333,21 +355,13 @@ def parse_args() -> OptimizationConfig:
                         default=argparse.SUPPRESS, )
     parser.add_argument("--densify-bsdf-floor", type=float)
     parser.add_argument("--densify-bsdf-gamma", type=float)
-    parser.add_argument("--max-split-fraction", type=float)
-    parser.add_argument("--evsplit-preserve-integrated-opacity", action=argparse.BooleanOptionalAction,
-                        default=argparse.SUPPRESS, )
-    parser.add_argument("--evsplit-min-scale", type=float)
     # Pruning
     parser.add_argument("--opacity-prune-threshold", type=float)
     parser.add_argument("--max-prune-fraction", type=float)
-    parser.add_argument("--scale-prune-min-scale", type=float)
-    parser.add_argument("--min-points-to-keep-after-scale-prune", type=int)
     # Misc scheduling
     parser.add_argument("--reset-opacity-interval", type=int)
     parser.add_argument("--reset-opacity-value", type=float)
     parser.add_argument("--rebuild-bvh-interval", type=int)
-    parser.add_argument("--reset-scale-interval", type=int)
-    parser.add_argument("--reset-scale-factor", type=float)
 
     args = parser.parse_args()
     cli_overrides = set(vars(args).keys())
@@ -358,6 +372,8 @@ def parse_args() -> OptimizationConfig:
         if not hasattr(config, parameter_name):
             raise RuntimeError(f"CLI argument produced unknown config field: {parameter_name}")
         setattr(config, parameter_name, parameter_value)
+
+    config.mesh_extraction_iterations = parse_iteration_list(config.mesh_extraction_iterations)
 
     config.output_dir_is_explicit = "output_dir" in cli_overrides
     config.scene_xml_is_explicit = "scene_xml" in cli_overrides
