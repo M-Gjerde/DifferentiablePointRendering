@@ -52,6 +52,11 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "densification_verbose": ("--densification-verbose", "--no-densification-verbose"),
     "densification_grad_quantile": "--densification-grad-quantile",
     "densification_grad_abs_min": "--densification-grad-abs-min",
+    "densification_grad_abs_min_final": "--densification-grad-abs-min-final",
+    "densification_grad_abs_min_decay_start_iteration": "--densification-grad-abs-min-decay-start-iteration",
+    "densification_grad_abs_min_decay_end_iteration": "--densification-grad-abs-min-decay-end-iteration",
+    "densification_grad_abs_min_iter_start": "--densification-grad-abs-min-iter-start",
+    "densification_grad_abs_min_iter_end": "--densification-grad-abs-min-iter-end",
     "densification_stats_skip_interval_start": (
         "--densification-stats-skip-interval-start",
         "--no-densification-stats-skip-interval-start",

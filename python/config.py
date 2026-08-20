@@ -56,7 +56,7 @@ class OptimizationConfig:
 
     device: str = "cpu"
 
-    iterations: int = int(1.3e4)
+    iterations: int = int(1.5e4)
     optimizer_type: str = "adam"
     # Learning rates
     learning_rate: float = 1.0
@@ -71,12 +71,12 @@ class OptimizationConfig:
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.2
-    global_lr_start_iteration: int = 2_000
-    global_lr_max_steps: int = 10_000
+    global_lr_start_iteration: int = 10_000
+    global_lr_max_steps: int = int(iterations * 0.85)
 
-    depth_distort_weight: float = 0
+    depth_distort_weight: float = 750
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
+    normal_consistency_weight: float = 0.015
     normal_from_depth_use_mean_depth: bool = False
 
     # Density control / EV-splitting
@@ -88,6 +88,9 @@ class OptimizationConfig:
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min_final: float = 3.0e-4
+    densification_grad_abs_min_decay_start_iteration: int = 0_000
+    densification_grad_abs_min_decay_end_iteration: int = 3_000
     densification_scale_min: float = 1.0e-2
 
     # More densification on radiometrically darker primitives
@@ -119,7 +122,7 @@ class OptimizationConfig:
 
     # Mesh Extraction
     mesh_extraction_iterations: list[int] = field(
-        default_factory=lambda: [1_000, 3_000, 7_000, 10_000]
+        default_factory=lambda: [3_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000, 12_000, 13_000, 14_000]
     )
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
@@ -146,7 +149,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.00075
+        factor_position = 0.001
         factor_rotation = 0.01
         factor_scale = 0.0004
         factor_albedo = 0.001
@@ -340,6 +343,19 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--densification-verbose", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS, )
     parser.add_argument("--densification-grad-quantile", type=float)
     parser.add_argument("--densification-grad-abs-min", type=float)
+    parser.add_argument("--densification-grad-abs-min-final", type=float)
+    parser.add_argument(
+        "--densification-grad-abs-min-decay-start-iteration",
+        "--densification-grad-abs-min-iter-start",
+        dest="densification_grad_abs_min_decay_start_iteration",
+        type=int,
+    )
+    parser.add_argument(
+        "--densification-grad-abs-min-decay-end-iteration",
+        "--densification-grad-abs-min-iter-end",
+        dest="densification_grad_abs_min_decay_end_iteration",
+        type=int,
+    )
     parser.add_argument(
         "--densification-stats-skip-interval-start",
         "--densification-stats-warmup",

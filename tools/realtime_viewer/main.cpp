@@ -7,9 +7,11 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -31,6 +33,7 @@
 
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/RenderPackage.h"
+#include "Core/ScopedTimer.h"
 #include "spdlog/spdlog.h"
 
 import Pale.Assets;
@@ -195,7 +198,7 @@ namespace {
 
         void orbit(const ImVec2 delta) {
             yaw -= delta.x * 0.005f;
-            pitch -= delta.y * 0.005f;
+            pitch += delta.y * 0.005f;
             pitch = std::clamp(pitch, -1.50f, 1.50f);
         }
 
@@ -353,6 +356,327 @@ namespace {
         uint64_t iteration = 0u;
         std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
     };
+
+    struct TimerAggregate {
+        std::string name;
+        uint32_t count = 0u;
+        double totalMs = 0.0;
+        double lastMs = 0.0;
+        double maxMs = 0.0;
+    };
+
+    [[nodiscard]] std::vector<TimerAggregate> aggregateTimerRecords(
+        const std::vector<Pale::ScopedTimerRecord>& records) {
+        std::vector<TimerAggregate> aggregates;
+        aggregates.reserve(records.size());
+        for (const Pale::ScopedTimerRecord& record : records) {
+            auto aggregateIterator = std::find_if(
+                aggregates.begin(),
+                aggregates.end(),
+                [&](const TimerAggregate& aggregate) {
+                    return aggregate.name == record.name;
+                });
+            if (aggregateIterator == aggregates.end()) {
+                TimerAggregate aggregate{};
+                aggregate.name = record.name;
+                aggregate.count = 1u;
+                aggregate.totalMs = record.durationMs;
+                aggregate.lastMs = record.durationMs;
+                aggregate.maxMs = record.durationMs;
+                aggregates.push_back(std::move(aggregate));
+            } else {
+                aggregateIterator->count += 1u;
+                aggregateIterator->totalMs += record.durationMs;
+                aggregateIterator->lastMs = record.durationMs;
+                aggregateIterator->maxMs = std::max(aggregateIterator->maxMs, record.durationMs);
+            }
+        }
+
+        std::sort(aggregates.begin(), aggregates.end(), [](const TimerAggregate& lhs, const TimerAggregate& rhs) {
+            return lhs.totalMs > rhs.totalMs;
+        });
+        return aggregates;
+    }
+
+    [[nodiscard]] double percent(uint64_t numerator, uint64_t denominator) {
+        if (denominator == 0u) {
+            return 0.0;
+        }
+        return 100.0 * static_cast<double>(numerator) / static_cast<double>(denominator);
+    }
+
+    void drawCounterRow(const char* label, uint64_t value, double pixelCount) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(label);
+        ImGui::TableNextColumn();
+        ImGui::Text("%llu", static_cast<unsigned long long>(value));
+        ImGui::TableNextColumn();
+        const double perPixel = pixelCount > 0.0 ? static_cast<double>(value) / pixelCount : 0.0;
+        ImGui::Text("%.3f", perPixel);
+    }
+
+    void appendCounterTextRow(
+        std::ostringstream& stream,
+        const char* label,
+        uint64_t value,
+        double pixelCount) {
+        const double perPixel = pixelCount > 0.0 ? static_cast<double>(value) / pixelCount : 0.0;
+        stream << label << '\t' << value << '\t' << perPixel << '\n';
+    }
+
+    [[nodiscard]] std::string buildTimerProfilingText(
+        double lastRenderMs,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        const Pale::GPUSceneBuffers& sceneGpu,
+        const std::vector<Pale::ScopedTimerRecord>& timerRecords) {
+        std::ostringstream stream;
+        stream << std::fixed << std::setprecision(3);
+        const double renderFps = lastRenderMs > 0.0 ? 1000.0 / lastRenderMs : 0.0;
+
+        stream << "Render timing summary\n";
+        stream << "Last render ms\t" << lastRenderMs << '\n';
+        stream << "Last render FPS\t" << renderFps << '\n';
+        stream << "Resolution\t" << renderWidth << 'x' << renderHeight << '\n';
+        stream << "Surfels\t" << sceneGpu.pointCount << '\n';
+        stream << "Triangles\t" << sceneGpu.triangleCount << '\n';
+        stream << "BLAS nodes\t" << sceneGpu.blasNodeCount << '\n';
+        stream << "TLAS nodes\t" << sceneGpu.tlasNodeCount << "\n\n";
+
+        stream << "Render stages\n";
+        stream << "Stage\tCount\tTotal ms\tLast ms\tMax ms\n";
+        for (const TimerAggregate& aggregate : aggregateTimerRecords(timerRecords)) {
+            stream << aggregate.name << '\t'
+                   << aggregate.count << '\t'
+                   << aggregate.totalMs << '\t'
+                   << aggregate.lastMs << '\t'
+                   << aggregate.maxMs << '\n';
+        }
+
+        stream << "\nRaw timer events\n";
+        stream << "Sequence\tName\tms\n";
+        for (const Pale::ScopedTimerRecord& record : timerRecords) {
+            stream << record.sequence << '\t'
+                   << record.name << '\t'
+                   << record.durationMs << '\n';
+        }
+        return stream.str();
+    }
+
+    [[nodiscard]] std::string buildBvhCounterProfilingText(
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        const Pale::RenderProfilingCounters& counters) {
+        std::ostringstream stream;
+        stream << std::fixed << std::setprecision(3);
+        const double pixelCount = static_cast<double>(renderWidth) * static_cast<double>(renderHeight);
+
+        stream << "BVH and primitive tests\n";
+        stream << "Counter\tTotal\tPer pixel\n";
+        appendCounterTextRow(stream, "Scene ray queries", counters.sceneRayQueries, pixelCount);
+        appendCounterTextRow(stream, "TLAS AABB tests", counters.tlasNodeTests, pixelCount);
+        appendCounterTextRow(stream, "TLAS AABB hits", counters.tlasNodeHits, pixelCount);
+        appendCounterTextRow(stream, "TLAS leaf instances", counters.tlasLeafInstances, pixelCount);
+        appendCounterTextRow(stream, "Point BLAS AABB tests", counters.blasPointNodeTests, pixelCount);
+        appendCounterTextRow(stream, "Point BLAS AABB hits", counters.blasPointNodeHits, pixelCount);
+        appendCounterTextRow(stream, "Point leaf primitive tests", counters.pointLeafPrimitiveTests, pixelCount);
+        appendCounterTextRow(stream, "Surfel plane tests", counters.surfelPlaneTests, pixelCount);
+        appendCounterTextRow(stream, "Surfel profile tests", counters.surfelProfileTests, pixelCount);
+        appendCounterTextRow(stream, "Accepted surfel candidates", counters.surfelAcceptedHits, pixelCount);
+        appendCounterTextRow(stream, "Mesh BLAS AABB tests", counters.blasMeshNodeTests, pixelCount);
+        appendCounterTextRow(stream, "Mesh BLAS AABB hits", counters.blasMeshNodeHits, pixelCount);
+        appendCounterTextRow(stream, "Triangle tests", counters.triangleTests, pixelCount);
+        appendCounterTextRow(stream, "Triangle hits", counters.triangleHits, pixelCount);
+
+        stream << "\nRates\n";
+        stream << "Metric\tPercent\n";
+        stream << "TLAS hit rate\t" << percent(counters.tlasNodeHits, counters.tlasNodeTests) << '\n';
+        stream << "Point BLAS hit rate\t"
+               << percent(counters.blasPointNodeHits, counters.blasPointNodeTests) << '\n';
+        stream << "Point primitive acceptance\t"
+               << percent(counters.surfelAcceptedHits, counters.pointLeafPrimitiveTests) << '\n';
+        return stream.str();
+    }
+
+    [[nodiscard]] std::string buildProfilingClipboardText(
+        double lastRenderMs,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        const Pale::GPUSceneBuffers& sceneGpu,
+        const Pale::RenderProfilingCounters& counters,
+        const std::vector<Pale::ScopedTimerRecord>& timerRecords) {
+        return buildTimerProfilingText(lastRenderMs, renderWidth, renderHeight, sceneGpu, timerRecords) +
+               "\n" +
+               buildBvhCounterProfilingText(renderWidth, renderHeight, counters);
+    }
+
+    bool drawProfilingWindow(
+        bool& open,
+        bool& timerProfilingEnabled,
+        bool& gpuCounterProfilingEnabled,
+        double lastRenderMs,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        const Pale::GPUSceneBuffers& sceneGpu,
+        const Pale::RenderProfilingCounters& counters,
+        const std::vector<Pale::ScopedTimerRecord>& timerRecords,
+        ImVec2 renderAreaMin,
+        ImVec2 renderAreaSize) {
+        if (!open) {
+            return false;
+        }
+
+        bool settingsChanged = false;
+        const float windowWidth = std::clamp(renderAreaSize.x - 24.0f, 360.0f, 620.0f);
+        const float windowHeight = std::clamp(renderAreaSize.y - 24.0f, 360.0f, 720.0f);
+        ImGui::SetNextWindowPos(ImVec2(renderAreaMin.x + 12.0f, renderAreaMin.y + 12.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(windowWidth, windowHeight), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin(
+                "Profiling",
+                &open,
+                ImGuiWindowFlags_NoCollapse)) {
+            settingsChanged |= ImGui::Checkbox("Timers", &timerProfilingEnabled);
+            ImGui::SameLine();
+            settingsChanged |= ImGui::Checkbox("GPU counters", &gpuCounterProfilingEnabled);
+            ImGui::Separator();
+
+            const double renderFps = lastRenderMs > 0.0 ? 1000.0 / lastRenderMs : 0.0;
+            ImGui::Text("Last render: %.3f ms  %.2f FPS", lastRenderMs, renderFps);
+            ImGui::Text("Viewer frame: %.2f FPS", static_cast<double>(ImGui::GetIO().Framerate));
+            ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
+            ImGui::Text(
+                "Scene: %u surfels, %u triangles, %u BLAS nodes, %u TLAS nodes",
+                sceneGpu.pointCount,
+                sceneGpu.triangleCount,
+                sceneGpu.blasNodeCount,
+                sceneGpu.tlasNodeCount);
+
+            if (ImGui::Button("Copy timers")) {
+                const std::string text =
+                    buildTimerProfilingText(lastRenderMs, renderWidth, renderHeight, sceneGpu, timerRecords);
+                ImGui::SetClipboardText(text.c_str());
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Copy BVH tests")) {
+                const std::string text =
+                    buildBvhCounterProfilingText(renderWidth, renderHeight, counters);
+                ImGui::SetClipboardText(text.c_str());
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Copy all")) {
+                const std::string text =
+                    buildProfilingClipboardText(
+                        lastRenderMs,
+                        renderWidth,
+                        renderHeight,
+                        sceneGpu,
+                        counters,
+                        timerRecords);
+                ImGui::SetClipboardText(text.c_str());
+            }
+
+            ImGui::Separator();
+            if (ImGui::CollapsingHeader("Render stages", ImGuiTreeNodeFlags_DefaultOpen)) {
+                const std::vector<TimerAggregate> timerAggregates = aggregateTimerRecords(timerRecords);
+                if (timerAggregates.empty()) {
+                    ImGui::TextUnformatted("No timer data for the last render");
+                } else if (ImGui::BeginTable(
+                               "TimerAggregateTable",
+                               5,
+                               ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                    ImGui::TableSetupColumn("Stage");
+                    ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+                    ImGui::TableSetupColumn("Total ms", ImGuiTableColumnFlags_WidthFixed, 86.0f);
+                    ImGui::TableSetupColumn("Last ms", ImGuiTableColumnFlags_WidthFixed, 86.0f);
+                    ImGui::TableSetupColumn("Max ms", ImGuiTableColumnFlags_WidthFixed, 86.0f);
+                    ImGui::TableHeadersRow();
+
+                    for (const TimerAggregate& aggregate : timerAggregates) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(aggregate.name.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%u", aggregate.count);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.3f", aggregate.totalMs);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.3f", aggregate.lastMs);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.3f", aggregate.maxMs);
+                    }
+                    ImGui::EndTable();
+                }
+            }
+
+            if (ImGui::CollapsingHeader("BVH and primitive tests", ImGuiTreeNodeFlags_DefaultOpen)) {
+                const double pixelCount =
+                    static_cast<double>(renderWidth) * static_cast<double>(renderHeight);
+                if (ImGui::BeginTable(
+                        "BvhCounterTable",
+                        3,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                    ImGui::TableSetupColumn("Counter");
+                    ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_WidthFixed, 132.0f);
+                    ImGui::TableSetupColumn("Per pixel", ImGuiTableColumnFlags_WidthFixed, 92.0f);
+                    ImGui::TableHeadersRow();
+                    drawCounterRow("Scene ray queries", counters.sceneRayQueries, pixelCount);
+                    drawCounterRow("TLAS AABB tests", counters.tlasNodeTests, pixelCount);
+                    drawCounterRow("TLAS AABB hits", counters.tlasNodeHits, pixelCount);
+                    drawCounterRow("TLAS leaf instances", counters.tlasLeafInstances, pixelCount);
+                    drawCounterRow("Point BLAS AABB tests", counters.blasPointNodeTests, pixelCount);
+                    drawCounterRow("Point BLAS AABB hits", counters.blasPointNodeHits, pixelCount);
+                    drawCounterRow("Point leaf primitive tests", counters.pointLeafPrimitiveTests, pixelCount);
+                    drawCounterRow("Surfel plane tests", counters.surfelPlaneTests, pixelCount);
+                    drawCounterRow("Surfel profile tests", counters.surfelProfileTests, pixelCount);
+                    drawCounterRow("Accepted surfel candidates", counters.surfelAcceptedHits, pixelCount);
+                    drawCounterRow("Mesh BLAS AABB tests", counters.blasMeshNodeTests, pixelCount);
+                    drawCounterRow("Mesh BLAS AABB hits", counters.blasMeshNodeHits, pixelCount);
+                    drawCounterRow("Triangle tests", counters.triangleTests, pixelCount);
+                    drawCounterRow("Triangle hits", counters.triangleHits, pixelCount);
+                    ImGui::EndTable();
+                }
+
+                ImGui::Text(
+                    "TLAS hit rate: %.2f%%",
+                    percent(counters.tlasNodeHits, counters.tlasNodeTests));
+                ImGui::Text(
+                    "Point BLAS hit rate: %.2f%%",
+                    percent(counters.blasPointNodeHits, counters.blasPointNodeTests));
+                ImGui::Text(
+                    "Point primitive acceptance: %.2f%%",
+                    percent(counters.surfelAcceptedHits, counters.pointLeafPrimitiveTests));
+            }
+
+            if (ImGui::CollapsingHeader("Raw timer events")) {
+                if (timerRecords.empty()) {
+                    ImGui::TextUnformatted("No timer events");
+                } else if (ImGui::BeginTable(
+                               "TimerEventTable",
+                               3,
+                               ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 44.0f);
+                    ImGui::TableSetupColumn("Name");
+                    ImGui::TableSetupColumn("ms", ImGuiTableColumnFlags_WidthFixed, 86.0f);
+                    ImGui::TableHeadersRow();
+
+                    for (const Pale::ScopedTimerRecord& record : timerRecords) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%llu", static_cast<unsigned long long>(record.sequence));
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(record.name.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.3f", record.durationMs);
+                    }
+                    ImGui::EndTable();
+                }
+            }
+        }
+        ImGui::End();
+
+        return settingsChanged;
+    }
 
     [[nodiscard]] bool isPlyPath(const std::filesystem::path& path) {
         std::string extension = path.extension().string();
@@ -1534,6 +1858,9 @@ int main(int argc, char** argv) {
 
         Pale::SceneBuild::BuildOptions buildOptions{};
         buildOptions.bvhMaxLeafPoints = 4u;
+        buildOptions.pointBvhUseBinnedSah = true;
+        buildOptions.pointBvhEffectiveAlphaMin = 0.01f;
+        buildOptions.pointBvhMinRadiusScale = 0.10f;
 
         Pale::SceneBuild::BuildProducts buildProducts =
             Pale::SceneBuild::build(scene, assetAccessor, buildOptions);
@@ -1620,6 +1947,17 @@ int main(int argc, char** argv) {
         uint32_t displayedRenderWidth = renderWidth;
         uint32_t displayedRenderHeight = renderHeight;
         Texture2D texture;
+        bool showProfilingWindow = true;
+        bool timerProfilingEnabled = true;
+        bool gpuCounterProfilingEnabled = false;
+        Pale::RenderProfilingCounters lastProfilingCounters{};
+        std::vector<Pale::ScopedTimerRecord> lastTimerRecords;
+        Pale::RenderProfilingCounters* deviceProfilingCounters =
+            sycl::malloc_device<Pale::RenderProfilingCounters>(1, queue);
+        if (deviceProfilingCounters == nullptr) {
+            throw std::runtime_error("Failed to allocate render profiling counters");
+        }
+        queue.memset(deviceProfilingCounters, 0, sizeof(Pale::RenderProfilingCounters)).wait();
 
         if (!glfwInit()) {
             throw std::runtime_error("Failed to initialize GLFW");
@@ -1642,6 +1980,7 @@ int main(int argc, char** argv) {
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
         ImGui::StyleColorsDark();
         ImGui::GetStyle().Colors[ImGuiCol_WindowBg] = kBlenderViewportBackground;
         ImGui::GetStyle().Colors[ImGuiCol_ChildBg] = kBlenderViewportBackground;
@@ -1651,6 +1990,8 @@ int main(int argc, char** argv) {
         auto rebuildSceneGpu = [&]() {
             buildProducts = Pale::SceneBuild::build(scene, assetAccessor, buildOptions);
             Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, queue);
+            sceneGpu.profileCounters =
+                gpuCounterProfilingEnabled ? deviceProfilingCounters : nullptr;
             renderBuildProducts = buildProducts;
             renderBuildProducts.cameraGPUs.clear();
             bounds = computeSceneBounds(buildProducts);
@@ -2134,6 +2475,22 @@ int main(int argc, char** argv) {
             sensor.gammaCorrection = gamma;
             clearSensor(queue, sensor);
 
+            Pale::ScopedTimerDetail::setProfilingEnabled(timerProfilingEnabled);
+            Pale::ScopedTimerDetail::clearProfilingRecords();
+
+            Pale::RenderProfilingCounters* desiredProfilingCounters =
+                gpuCounterProfilingEnabled ? deviceProfilingCounters : nullptr;
+            if (sceneGpu.profileCounters != desiredProfilingCounters) {
+                sceneGpu.profileCounters = desiredProfilingCounters;
+                tracerDirty = true;
+            }
+            if (desiredProfilingCounters != nullptr) {
+                queue.memset(
+                    desiredProfilingCounters,
+                    0,
+                    sizeof(Pale::RenderProfilingCounters)).wait();
+            }
+
             if (tracerDirty) {
                 tracer.getSettings() = settings;
                 tracer.setScene(sceneGpu, renderBuildProducts);
@@ -2148,6 +2505,15 @@ int main(int argc, char** argv) {
             const auto stop = std::chrono::steady_clock::now();
             lastRenderMs =
                 std::chrono::duration<double, std::milli>(stop - start).count();
+            lastTimerRecords = Pale::ScopedTimerDetail::snapshotProfilingRecords();
+            if (desiredProfilingCounters != nullptr) {
+                queue.memcpy(
+                    &lastProfilingCounters,
+                    desiredProfilingCounters,
+                    sizeof(Pale::RenderProfilingCounters)).wait();
+            } else {
+                lastProfilingCounters = {};
+            }
 
             renderPixels = Pale::downloadSensorRGBA(queue, sensor);
             debugDisplayBuffers.invalidate();
@@ -2181,6 +2547,10 @@ int main(int argc, char** argv) {
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
+            ImGui::DockSpaceOverViewport(
+                0,
+                ImGui::GetMainViewport(),
+                ImGuiDockNodeFlags_PassthruCentralNode);
             ImGuizmo::BeginFrame();
 
             if (!io.WantTextInput &&
@@ -2237,9 +2607,23 @@ int main(int argc, char** argv) {
             Pale::Entity selectedLight =
                 areaLights.empty() ? Pale::Entity{} : areaLights[static_cast<std::size_t>(selectedLightIndex)];
 
-            ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(330.0f, static_cast<float>(io.DisplaySize.y)), ImGuiCond_Always);
-            ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+            float mainMenuBarHeight = 0.0f;
+            if (ImGui::BeginMainMenuBar()) {
+                mainMenuBarHeight = ImGui::GetFrameHeight();
+                if (ImGui::BeginMenu("View")) {
+                    ImGui::MenuItem("Profiling", nullptr, &showProfilingWindow);
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMainMenuBar();
+            }
+
+            const float contentY = mainMenuBarHeight;
+            const float contentHeight = std::max(1.0f, static_cast<float>(io.DisplaySize.y) - contentY);
+            const ImVec2 renderAreaMin{330.0f, contentY};
+            const ImVec2 renderAreaSize{std::max(1.0f, io.DisplaySize.x - 330.0f), contentHeight};
+            ImGui::SetNextWindowPos(ImVec2(0.0f, contentY), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(330.0f, contentHeight), ImGuiCond_FirstUseEver);
+            ImGui::Begin("Controls");
             ImGui::TextWrapped("Scene: %s", args.scenePath.string().c_str());
             ImGui::TextWrapped("Point cloud: %s", currentPointCloudPath.string().c_str());
             ImGui::Text("Point cloud PLY path");
@@ -2685,60 +3069,129 @@ int main(int argc, char** argv) {
                     renderRequested = true;
                     }
 
-                float localLayerDepthEpsilon = settings.rendererDebugLocalLayerDepthEpsilon;
-                if (ImGui::DragFloat(
-                        "LocalLayerDepthEpsilon",
-                        &localLayerDepthEpsilon,
-                        0.0005f,
-                        0.0f,
-                        10.0f,
-                        "%.6f")) {
-                    settings.rendererDebugLocalLayerDepthEpsilon =
-                        std::max(localLayerDepthEpsilon, 0.0f);
-                    renderRequested = true;
+                if (ImGui::CollapsingHeader("Point BVH", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    bool pointBvhBuildChanged = false;
+
+                    int pointBvhMaxLeafPoints = static_cast<int>(buildOptions.bvhMaxLeafPoints);
+                    if (ImGui::SliderInt("Leaf size", &pointBvhMaxLeafPoints, 1, 32)) {
+                        buildOptions.bvhMaxLeafPoints =
+                            static_cast<uint32_t>(std::clamp(pointBvhMaxLeafPoints, 1, 32));
+                        pointBvhBuildChanged = true;
+                    }
+
+                    pointBvhBuildChanged |= ImGui::Checkbox(
+                        "Binned SAH",
+                        &buildOptions.pointBvhUseBinnedSah);
+
+                    float pointBvhAlphaMin = buildOptions.pointBvhEffectiveAlphaMin;
+                    if (ImGui::DragFloat(
+                            "Alpha cutoff",
+                            &pointBvhAlphaMin,
+                            0.001f,
+                            0.0f,
+                            0.10f,
+                            "%.4f")) {
+                        buildOptions.pointBvhEffectiveAlphaMin =
+                            std::clamp(pointBvhAlphaMin, 0.0f, 0.10f);
+                        pointBvhBuildChanged = true;
+                    }
+
+                    float pointBvhMinRadiusScale = buildOptions.pointBvhMinRadiusScale;
+                    if (ImGui::DragFloat(
+                            "Min radius",
+                            &pointBvhMinRadiusScale,
+                            0.005f,
+                            0.0f,
+                            1.0f,
+                            "%.3f")) {
+                        buildOptions.pointBvhMinRadiusScale =
+                            std::clamp(pointBvhMinRadiusScale, 0.0f, 1.0f);
+                        pointBvhBuildChanged = true;
+                    }
+
+                    if (pointBvhBuildChanged) {
+                        rebuildSceneGpu();
+                        renderRequested = true;
+                    }
                 }
 
-                float localLayerNormalCosineThreshold =
-                    settings.rendererDebugLocalLayerNormalCosineThreshold;
-                if (ImGui::SliderFloat(
-                        "LocalLayerNormalCosineThreshold",
-                        &localLayerNormalCosineThreshold,
-                        -1.0f,
-                        1.0f,
-                        "%.3f")) {
-                    settings.rendererDebugLocalLayerNormalCosineThreshold =
-                        std::clamp(localLayerNormalCosineThreshold, -1.0f, 1.0f);
-                    renderRequested = true;
-                }
+                if (ImGui::CollapsingHeader("Surfel traversal", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    float localLayerDepthEpsilon = settings.rendererDebugLocalLayerDepthEpsilon;
+                    if (ImGui::DragFloat(
+                            "Local layer depth epsilon",
+                            &localLayerDepthEpsilon,
+                            0.0005f,
+                            0.0f,
+                            10.0f,
+                            "%.6f")) {
+                        settings.rendererDebugLocalLayerDepthEpsilon =
+                            std::max(localLayerDepthEpsilon, 0.0f);
+                        renderRequested = true;
+                    }
 
-                int maxSplatEventsPerRay =
-                    static_cast<int>(settings.rendererDebugMaxSplatEventsPerRay);
-                if (ImGui::SliderInt(
-                        "kMaxSplatEventsPerRay",
-                        &maxSplatEventsPerRay,
-                        1,
-                        static_cast<int>(Pale::kMaxSplatEventsPerRay))) {
-                    settings.rendererDebugMaxSplatEventsPerRay =
-                        static_cast<uint32_t>(std::clamp(
-                            maxSplatEventsPerRay,
+                    float localLayerNormalCosineThreshold =
+                        settings.rendererDebugLocalLayerNormalCosineThreshold;
+                    if (ImGui::SliderFloat(
+                            "Local layer normal cosine",
+                            &localLayerNormalCosineThreshold,
+                            -1.0f,
+                            1.0f,
+                            "%.3f")) {
+                        settings.rendererDebugLocalLayerNormalCosineThreshold =
+                            std::clamp(localLayerNormalCosineThreshold, -1.0f, 1.0f);
+                        renderRequested = true;
+                    }
+
+                    int maxSplatEventsPerRay =
+                        static_cast<int>(settings.rendererDebugMaxSplatEventsPerRay);
+                    if (ImGui::SliderInt(
+                            "Max splat events",
+                            &maxSplatEventsPerRay,
                             1,
-                            static_cast<int>(Pale::kMaxSplatEventsPerRay)));
-                    renderRequested = true;
-                }
+                            static_cast<int>(Pale::kMaxSplatEventsPerRay))) {
+                        settings.rendererDebugMaxSplatEventsPerRay =
+                            static_cast<uint32_t>(std::clamp(
+                                maxSplatEventsPerRay,
+                                1,
+                                static_cast<int>(Pale::kMaxSplatEventsPerRay)));
+                        renderRequested = true;
+                    }
 
-                int maxLocalSurfelHits =
-                    static_cast<int>(settings.rendererDebugMaxLocalSurfelHits);
-                if (ImGui::SliderInt(
-                        "kMaxLocalSurfelHits",
-                        &maxLocalSurfelHits,
-                        1,
-                        static_cast<int>(Pale::kMaxLocalSurfelHits))) {
-                    settings.rendererDebugMaxLocalSurfelHits =
-                        static_cast<uint32_t>(std::clamp(
-                            maxLocalSurfelHits,
+                    int maxLocalSurfelHits =
+                        static_cast<int>(settings.rendererDebugMaxLocalSurfelHits);
+                    if (ImGui::SliderInt(
+                            "Max local surfel hits",
+                            &maxLocalSurfelHits,
                             1,
-                            static_cast<int>(Pale::kMaxLocalSurfelHits)));
-                    renderRequested = true;
+                            static_cast<int>(Pale::kMaxLocalSurfelHits))) {
+                        settings.rendererDebugMaxLocalSurfelHits =
+                            static_cast<uint32_t>(std::clamp(
+                                maxLocalSurfelHits,
+                                1,
+                                static_cast<int>(Pale::kMaxLocalSurfelHits)));
+                        renderRequested = true;
+                    }
+
+                    int pointHitBatchSize =
+                        static_cast<int>(settings.rendererDebugPointHitBatchSize);
+                    if (ImGui::SliderInt(
+                            "Point hit batch size",
+                            &pointHitBatchSize,
+                            1,
+                            static_cast<int>(Pale::kMaxPointHitBatch))) {
+                        settings.rendererDebugPointHitBatchSize =
+                            static_cast<uint32_t>(std::clamp(
+                                pointHitBatchSize,
+                                1,
+                                static_cast<int>(Pale::kMaxPointHitBatch)));
+                        renderRequested = true;
+                    }
+
+                    if (ImGui::Checkbox(
+                            "Point hit batch look-ahead",
+                            &settings.rendererDebugPointHitBatchLookahead)) {
+                        renderRequested = true;
+                    }
                 }
 
                 if (ImGui::Checkbox("Show point albedo", &settings.pointGeometryDebugShowAlbedo)) {
@@ -2919,14 +3372,12 @@ int main(int argc, char** argv) {
                         orbit.position().z);
             ImGui::End();
 
-            ImGui::SetNextWindowPos(ImVec2(330.0f, 0.0f), ImGuiCond_Always);
-            ImGui::SetNextWindowSize(
-                ImVec2(std::max(1.0f, io.DisplaySize.x - 330.0f), static_cast<float>(io.DisplaySize.y)),
-                ImGuiCond_Always);
+            ImGui::SetNextWindowPos(renderAreaMin, ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(renderAreaSize, ImGuiCond_FirstUseEver);
             ImGui::Begin(
                 "Render",
                 nullptr,
-                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+                ImGuiWindowFlags_NoCollapse);
 
             const ImVec2 available = ImGui::GetContentRegionAvail();
             if (cameraSource == CameraSource::Viewport) {
@@ -3121,6 +3572,26 @@ int main(int argc, char** argv) {
             }
             ImGui::End();
 
+            const bool previousGpuCounterProfilingEnabled = gpuCounterProfilingEnabled;
+            const bool profilingSettingsChanged = drawProfilingWindow(
+                showProfilingWindow,
+                timerProfilingEnabled,
+                gpuCounterProfilingEnabled,
+                lastRenderMs,
+                displayedRenderWidth,
+                displayedRenderHeight,
+                sceneGpu,
+                lastProfilingCounters,
+                lastTimerRecords,
+                renderAreaMin,
+                renderAreaSize);
+            if (profilingSettingsChanged) {
+                if (previousGpuCounterProfilingEnabled != gpuCounterProfilingEnabled) {
+                    tracerDirty = true;
+                }
+                renderRequested = true;
+            }
+
             ImGui::Render();
             int displayW = 0;
             int displayH = 0;
@@ -3140,6 +3611,10 @@ int main(int argc, char** argv) {
             destroySensor(queue, sensor);
         }
         Pale::SceneUpload::freeBuffers(sceneGpu, queue);
+        if (deviceProfilingCounters != nullptr) {
+            sycl::free(deviceProfilingCounters, queue);
+            deviceProfilingCounters = nullptr;
+        }
         texture.destroy();
 
         ImGui_ImplOpenGL3_Shutdown();

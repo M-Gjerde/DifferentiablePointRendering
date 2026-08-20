@@ -438,6 +438,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     densification_verbose = bool(config.densification_verbose)
     densification_grad_quantile = as_config_float(config.densification_grad_quantile)
     densification_grad_abs_min = float(config.densification_grad_abs_min)
+    densification_grad_abs_min_final = float(config.densification_grad_abs_min_final)
+    densification_grad_abs_min_decay_start_iteration = int(config.densification_grad_abs_min_decay_start_iteration)
+    densification_grad_abs_min_decay_end_iteration = int(config.densification_grad_abs_min_decay_end_iteration)
     densify_bsdf_floor = float(config.densify_bsdf_floor)
     densify_bsdf_gamma = float(config.densify_bsdf_gamma)
     rebuild_bvh_interval = max(int(config.rebuild_bvh_interval), 1)
@@ -477,6 +480,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     densify_position_grad_accum_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
+    # Stores local tangent coordinates (u, v, 0); converted to world space at clone time.
     densify_position_grad_vector_accum_np = np.zeros(tuple(positions.shape), dtype=np.float32)
     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool)
     inactive_gradient_cycle_count_np = np.zeros((positions.shape[0],), dtype=np.uint32, )
@@ -507,6 +511,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     depth_distortion_base_weight,
                     iteration=iteration,
                     start_iteration=depth_distortion_start_iteration,
+                )
+                active_densification_grad_abs_min = scheduled_densification_grad_abs_min(
+                    initial_threshold=densification_grad_abs_min,
+                    final_threshold=densification_grad_abs_min_final,
+                    iteration=iteration,
+                    start_iteration=densification_grad_abs_min_decay_start_iteration,
+                    end_iteration=densification_grad_abs_min_decay_end_iteration,
                 )
 
                 use_depth_distortion_gradients = active_depth_distortion_weight != 0.0
@@ -691,7 +702,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densification_interval=densification_interval,
                                 densification_verbose=densification_verbose,
                                 densification_grad_quantile=densification_grad_quantile,
-                                densification_grad_abs_min=densification_grad_abs_min,
+                                densification_grad_abs_min=active_densification_grad_abs_min,
                             )
 
                         if should_check_prune:
@@ -1218,7 +1229,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_after=densify_after,
                         densification_interval=densification_interval, densification_verbose=densification_verbose,
                         densification_grad_quantile=densification_grad_quantile,
-                        densification_grad_abs_min=densification_grad_abs_min,
+                        densification_grad_abs_min=active_densification_grad_abs_min,
                     )
 
                     scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(

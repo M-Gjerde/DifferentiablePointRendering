@@ -633,6 +633,29 @@ def scheduled_regularizer_weight(
     return float(base_weight) if int(iteration) >= int(start_iteration) else 0.0
 
 
+def scheduled_densification_grad_abs_min(
+        initial_threshold: float,
+        final_threshold: float,
+        iteration: int,
+        start_iteration: int,
+        end_iteration: int,
+) -> float:
+    initial_threshold = float(initial_threshold)
+    final_threshold = float(final_threshold)
+    start_iteration = int(start_iteration)
+    end_iteration = int(end_iteration)
+
+    if end_iteration <= start_iteration:
+        return final_threshold if int(iteration) >= start_iteration else initial_threshold
+    if int(iteration) <= start_iteration:
+        return initial_threshold
+    if int(iteration) >= end_iteration:
+        return final_threshold
+
+    t = float(int(iteration) - start_iteration) / float(end_iteration - start_iteration)
+    return initial_threshold + t * (final_threshold - initial_threshold)
+
+
 def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
@@ -1463,9 +1486,10 @@ def update_densification_statistics(
         )
 
     with torch.no_grad():
-        tangent_u, tangent_v, _ = quaternion_to_tangent_frame_torch(rotations.detach())
+        tangent_u, tangent_v, tangent_w = quaternion_to_tangent_frame_torch(rotations.detach())
         tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
         tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
+        tangent_w_np = tangent_w.detach().cpu().numpy().astype(np.float32)
         albedo_np = albedos.detach().cpu().numpy().astype(np.float32)
         trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
 
@@ -1473,48 +1497,76 @@ def update_densification_statistics(
         raise RuntimeError(f"tangent_u shape mismatch: expected {(point_count, 3)}, got {tangent_u_np.shape}")
     if tangent_v_np.shape != (point_count, 3):
         raise RuntimeError(f"tangent_v shape mismatch: expected {(point_count, 3)}, got {tangent_v_np.shape}")
+    if tangent_w_np.shape != (point_count, 3):
+        raise RuntimeError(f"tangent_w shape mismatch: expected {(point_count, 3)}, got {tangent_w_np.shape}")
     if trainable_np.shape[0] != point_count:
         raise RuntimeError(f"trainable mask length mismatch: expected {point_count}, got {trainable_np.shape[0]}")
 
     tangent_u_norm_np = np.linalg.norm(tangent_u_np, axis=1, keepdims=True)
     tangent_v_norm_np = np.linalg.norm(tangent_v_np, axis=1, keepdims=True)
+    tangent_w_norm_np = np.linalg.norm(tangent_w_np, axis=1, keepdims=True)
 
     tangent_u_unit_np = tangent_u_np / np.maximum(tangent_u_norm_np, 1.0e-8)
     tangent_v_unit_np = tangent_v_np / np.maximum(tangent_v_norm_np, 1.0e-8)
+    tangent_w_unit_np = tangent_w_np / np.maximum(tangent_w_norm_np, 1.0e-8)
 
     dot_u_np = np.sum(per_camera_grad_np * tangent_u_unit_np[:, None, :], axis=2, keepdims=True)
     dot_v_np = np.sum(per_camera_grad_np * tangent_v_unit_np[:, None, :], axis=2, keepdims=True)
+    dot_w_np = np.sum(per_camera_grad_np * tangent_w_unit_np[:, None, :], axis=2)
 
-    per_camera_tangent_grad_np = (
-            dot_u_np * tangent_u_unit_np[:, None, :]
-            + dot_v_np * tangent_v_unit_np[:, None, :]
+    per_camera_local_tangent_grad_np = np.concatenate(
+        [
+            dot_u_np,
+            dot_v_np,
+            np.zeros_like(dot_u_np),
+        ],
+        axis=2,
     )
 
     visible_camera_mask_np = per_camera_count_np > 0
     active_camera_count_np = visible_camera_mask_np.sum(axis=1, keepdims=True).astype(np.float32)
 
-    per_camera_tangent_grad_norm_np = np.linalg.norm(per_camera_tangent_grad_np, axis=2)
+    per_camera_tangent_grad_norm_np = np.sqrt(
+        np.square(dot_u_np[:, :, 0]) + np.square(dot_v_np[:, :, 0])
+    ).astype(np.float32)
+    per_camera_normal_grad_abs_np = np.abs(dot_w_np).astype(np.float32)
+    per_camera_local_grad_norm_np = np.sqrt(
+        np.square(per_camera_tangent_grad_norm_np) + np.square(per_camera_normal_grad_abs_np)
+    ).astype(np.float32)
+    normal_direction_downweight_np = (
+            per_camera_tangent_grad_norm_np
+            / np.maximum(per_camera_local_grad_norm_np, 1.0e-12)
+    ).astype(np.float32)
     per_camera_tangent_grad_norm_np = np.nan_to_num(
         per_camera_tangent_grad_norm_np,
         nan=0.0,
         posinf=0.0,
         neginf=0.0,
     )
+    normal_direction_downweight_np = np.nan_to_num(
+        normal_direction_downweight_np,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
 
     visible_mask_float_np = visible_camera_mask_np.astype(np.float32)
+    visible_downweight_np = visible_mask_float_np * normal_direction_downweight_np
 
     safe_active_camera_count_np = np.maximum(active_camera_count_np, 1.0)
 
     # Scalar score:
-    #     mean_visible(||project_tangent(g_camera)||)
+    #     mean_visible(||project_tangent(g_camera)|| * tangent_fraction(g_camera))
+    # where tangent_fraction suppresses clone pressure from mostly-normal motion.
     densify_position_signal_np = (
-                                         per_camera_tangent_grad_norm_np * visible_mask_float_np
+                                         per_camera_tangent_grad_norm_np * visible_downweight_np
                                  ).sum(axis=1, keepdims=True) / safe_active_camera_count_np
 
     # Signed vector direction:
-    #     mean_visible(project_tangent(g_camera))
+    #     mean_visible((dot_u, dot_v, 0) * tangent_fraction(g_camera))
+    # Accumulating local tangent coordinates keeps the direction stable if the surfel rotates.
     density_grad_position_vector_np = (
-                                              per_camera_tangent_grad_np * visible_mask_float_np[:, :, None]
+                                              per_camera_local_tangent_grad_np * visible_downweight_np[:, :, None]
                                       ).sum(axis=1) / safe_active_camera_count_np
 
     density_grad_position_vector_np[active_camera_count_np[:, 0] == 0.0] = 0.0
@@ -1596,17 +1648,25 @@ def maybe_make_densification_result(
     with torch.no_grad():
         valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
         avg_density_grad_norm_np = np.zeros((positions.shape[0],), dtype=np.float32)
-        avg_density_grad_vector_np = np.zeros(tuple(positions.shape), dtype=np.float32)
+        avg_density_grad_vector_local_np = np.zeros(tuple(positions.shape), dtype=np.float32)
 
         avg_density_grad_norm_np[valid_denom_np] = (
                 densify_position_grad_accum_np.reshape(-1)[valid_denom_np]
                 / densify_position_grad_denom_np.reshape(-1)[valid_denom_np]
         )
 
-        avg_density_grad_vector_np[valid_denom_np] = (
+        avg_density_grad_vector_local_np[valid_denom_np] = (
                 densify_position_grad_vector_accum_np[valid_denom_np]
                 / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
         )
+
+        tangent_u, tangent_v, _ = quaternion_to_tangent_frame_torch(rotations.detach())
+        tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
+        tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
+        avg_density_grad_vector_np = (
+                avg_density_grad_vector_local_np[:, 0:1] * tangent_u_np
+                + avg_density_grad_vector_local_np[:, 1:2] * tangent_v_np
+        ).astype(np.float32)
 
         grad_pos_norm_np = np.nan_to_num(
             avg_density_grad_norm_np,

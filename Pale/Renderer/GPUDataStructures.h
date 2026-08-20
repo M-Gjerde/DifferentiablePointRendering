@@ -175,6 +175,28 @@ namespace Pale {
         float cdf; // inclusive CDF in [0,1] within its light’s triangle range
     };
 
+    struct alignas(16) RenderProfilingCounters {
+        uint64_t sceneRayQueries = 0u;
+
+        uint64_t tlasNodeTests = 0u;
+        uint64_t tlasNodeHits = 0u;
+        uint64_t tlasLeafInstances = 0u;
+
+        uint64_t blasMeshNodeTests = 0u;
+        uint64_t blasMeshNodeHits = 0u;
+        uint64_t triangleTests = 0u;
+        uint64_t triangleHits = 0u;
+
+        uint64_t blasPointNodeTests = 0u;
+        uint64_t blasPointNodeHits = 0u;
+        uint64_t pointLeafPrimitiveTests = 0u;
+        uint64_t surfelPlaneTests = 0u;
+        uint64_t surfelProfileTests = 0u;
+        uint64_t surfelAcceptedHits = 0u;
+    };
+
+    CHECK_16(RenderProfilingCounters);
+
     struct InstanceRecord {
         GeometryType geometryType{GeometryType::InvalidType};
         uint32_t geometryIndex{0}; // meshRanges index or pointRanges index
@@ -216,6 +238,9 @@ namespace Pale {
         GPUEmissiveTriangle *emissiveTriangles{nullptr};
         uint32_t lightCount{0};
         uint32_t emissiveTriangleCount{0};
+
+        // Optional device-owned profiling counters. Null means no instrumentation.
+        RenderProfilingCounters *profileCounters{nullptr};
     };
 
     static_assert(std::is_trivially_copyable_v<GPUSceneBuffers>);
@@ -234,13 +259,16 @@ namespace Pale {
     // Must be compile-time constant for stack arrays in SYCL device code.
     constexpr uint32_t kMaxSplatEventsPerRay = 8;
     constexpr uint32_t kMaxLocalSurfelHits = 8;
+    constexpr uint32_t kMaxPointHitBatch = 16;
+    constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;
 
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-    constexpr float LocalLayerDepthEpsilon = 2.25e-2f;
+    constexpr float LocalLayerDepthEpsilon = 1.00e-2f;
     constexpr float LocalLayerNormalCosineThreshold = 0.7071f; // 45 degrees mismatch to stop blending slabs
+    constexpr float DepthDistortionMaxPairDepthSeparation = LocalLayerDepthEpsilon * 20.0f;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -719,6 +747,8 @@ namespace Pale {
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
         uint32_t rendererDebugMaxSplatEventsPerRay = 8;
         uint32_t rendererDebugMaxLocalSurfelHits = 8;
+        uint32_t rendererDebugPointHitBatchSize = 8;
+        bool rendererDebugPointHitBatchLookahead = false;
     };
 
     inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {
@@ -736,6 +766,29 @@ namespace Pale {
         return clampRendererDebugLimit(settings.rendererDebugMaxLocalSurfelHits, kMaxLocalSurfelHits);
     }
 
+    inline uint32_t rendererDebugPointHitBatchSize(const PathTracerSettings& settings) {
+        return clampRendererDebugLimit(settings.rendererDebugPointHitBatchSize, kMaxPointHitBatch);
+    }
+
+    inline uint32_t rendererDebugPointHitBatchLookaheadCapacity(const PathTracerSettings& settings) {
+        const uint32_t coreBatchSize = rendererDebugPointHitBatchSize(settings);
+        if (!settings.rendererDebugPointHitBatchLookahead) {
+            return coreBatchSize;
+        }
+
+        const uint32_t localCandidateCount = rendererDebugMaxLocalSurfelHits(settings);
+        const uint32_t requestedCapacity = coreBatchSize + localCandidateCount - 1u;
+        return requestedCapacity < kMaxPointHitBatchWithLookahead
+                   ? requestedCapacity
+                   : kMaxPointHitBatchWithLookahead;
+    }
+
+    inline uint32_t rendererDebugPointLayerCandidateCapacity(const PathTracerSettings& settings) {
+        return settings.rendererDebugPointHitBatchLookahead
+                   ? rendererDebugMaxLocalSurfelHits(settings)
+                   : rendererDebugPointHitBatchSize(settings);
+    }
+
     inline float rendererDebugLocalLayerDepthEpsilon(const PathTracerSettings& settings) {
         return settings.rendererDebugLocalLayerDepthEpsilon > RayEpsilon
                    ? settings.rendererDebugLocalLayerDepthEpsilon
@@ -750,6 +803,37 @@ namespace Pale {
             return 1.0f;
         }
         return settings.rendererDebugLocalLayerNormalCosineThreshold;
+    }
+
+    inline float depthDistortionPairSeparationWeight(float depthA, float depthB) {
+        if constexpr (DepthDistortionMaxPairDepthSeparation <= 0.0f) {
+            return 1.0f;
+        }
+
+        const float separation = sycl::fabs(depthB - depthA);
+        if (separation >= DepthDistortionMaxPairDepthSeparation) {
+            return 0.0f;
+        }
+
+        const float t = separation / DepthDistortionMaxPairDepthSeparation;
+        const float smoothstep = t * t * (3.0f - 2.0f * t);
+        return 1.0f - smoothstep;
+    }
+
+    inline float depthDistortionPairSeparationWeightDerivativeWrtDelta(float depthDelta) {
+        if constexpr (DepthDistortionMaxPairDepthSeparation <= 0.0f) {
+            return 0.0f;
+        }
+
+        const float separation = sycl::fabs(depthDelta);
+        if (separation <= 0.0f || separation >= DepthDistortionMaxPairDepthSeparation) {
+            return 0.0f;
+        }
+
+        const float t = separation / DepthDistortionMaxPairDepthSeparation;
+        const float derivativeWrtSeparation =
+                -(6.0f * t * (1.0f - t)) / DepthDistortionMaxPairDepthSeparation;
+        return derivativeWrtSeparation * (depthDelta >= 0.0f ? 1.0f : -1.0f);
     }
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

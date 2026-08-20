@@ -13,10 +13,97 @@ namespace Pale {
     // Utilities
     // -----------------------------------------------------------------------------
 
+    SYCL_EXTERNAL inline void addRenderProfileCounter(uint64_t *counter, uint64_t amount) {
+        if (amount == 0u) {
+            return;
+        }
+
+        sycl::atomic_ref<
+            uint64_t,
+            sycl::memory_order::relaxed,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space> atomicCounter(*counter);
+        atomicCounter.fetch_add(amount);
+    }
+
+    SYCL_EXTERNAL inline void flushMeshBvhProfile(
+        const GPUSceneBuffers &scene,
+        uint64_t nodeTests,
+        uint64_t nodeHits,
+        uint64_t triangleTests,
+        uint64_t triangleHits) {
+        RenderProfilingCounters *counters = scene.profileCounters;
+        if (counters == nullptr) {
+            return;
+        }
+
+        addRenderProfileCounter(&counters->blasMeshNodeTests, nodeTests);
+        addRenderProfileCounter(&counters->blasMeshNodeHits, nodeHits);
+        addRenderProfileCounter(&counters->triangleTests, triangleTests);
+        addRenderProfileCounter(&counters->triangleHits, triangleHits);
+    }
+
+    SYCL_EXTERNAL inline void flushPointBvhProfile(
+        const GPUSceneBuffers &scene,
+        uint64_t nodeTests,
+        uint64_t nodeHits,
+        uint64_t primitiveTests,
+        uint64_t planeTests,
+        uint64_t profileTests,
+        uint64_t acceptedHits) {
+        RenderProfilingCounters *counters = scene.profileCounters;
+        if (counters == nullptr) {
+            return;
+        }
+
+        addRenderProfileCounter(&counters->blasPointNodeTests, nodeTests);
+        addRenderProfileCounter(&counters->blasPointNodeHits, nodeHits);
+        addRenderProfileCounter(&counters->pointLeafPrimitiveTests, primitiveTests);
+        addRenderProfileCounter(&counters->surfelPlaneTests, planeTests);
+        addRenderProfileCounter(&counters->surfelProfileTests, profileTests);
+        addRenderProfileCounter(&counters->surfelAcceptedHits, acceptedHits);
+    }
+
+    SYCL_EXTERNAL inline void flushTlasProfile(
+        const GPUSceneBuffers &scene,
+        uint64_t rayQueries,
+        uint64_t nodeTests,
+        uint64_t nodeHits,
+        uint64_t leafInstances) {
+        RenderProfilingCounters *counters = scene.profileCounters;
+        if (counters == nullptr) {
+            return;
+        }
+
+        addRenderProfileCounter(&counters->sceneRayQueries, rayQueries);
+        addRenderProfileCounter(&counters->tlasNodeTests, nodeTests);
+        addRenderProfileCounter(&counters->tlasNodeHits, nodeHits);
+        addRenderProfileCounter(&counters->tlasLeafInstances, leafInstances);
+    }
+
 
     struct ChildEntry {
-        int nodeIndex;
+        uint32_t nodeIndex;
         float tEntry;
+    };
+
+    template<int MaxN = 256>
+    struct TraversalEntryStack {
+        ChildEntry data[MaxN];
+        int sp = 0;
+
+        bool push(uint32_t nodeIndex, float tEntry) {
+            if (sp >= MaxN) return false;
+            data[sp++] = ChildEntry{nodeIndex, tEntry};
+            return true;
+        }
+
+        ChildEntry pop() {
+            if (sp <= 0) return ChildEntry{0u, 0.0f};
+            return data[--sp];
+        }
+
+        bool empty() const { return sp == 0; }
     };
 
     template<typename StackT>
@@ -30,6 +117,40 @@ namespace Pale {
             traversalStack.push(leftIndex);
             traversalStack.push(rightIndex);
         }
+    }
+
+    template<int MaxN>
+    SYCL_EXTERNAL inline void pushNearFarEntries(TraversalEntryStack<MaxN> &traversalStack,
+                                                 uint32_t leftIndex, float leftTEntry,
+                                                 uint32_t rightIndex, float rightTEntry) {
+        if (leftTEntry <= rightTEntry) {
+            traversalStack.push(rightIndex, rightTEntry);
+            traversalStack.push(leftIndex, leftTEntry);
+        } else {
+            traversalStack.push(leftIndex, leftTEntry);
+            traversalStack.push(rightIndex, rightTEntry);
+        }
+    }
+
+    SYCL_EXTERNAL inline bool tryGetSinglePointCloudInstance(
+        const GPUSceneBuffers &scene,
+        uint32_t &instanceIndexOut) {
+        if (scene.triangleCount != 0u || scene.tlasNodeCount != 1u) {
+            return false;
+        }
+
+        const TLASNode &root = scene.tlasNodes[0];
+        if (root.count != 1u) {
+            return false;
+        }
+
+        const uint32_t instanceIndex = root.leftChild;
+        if (scene.instances[instanceIndex].geometryType != GeometryType::PointCloud) {
+            return false;
+        }
+
+        instanceIndexOut = instanceIndex;
+        return true;
     }
 
     // -----------------------------------------------------------------------------
@@ -49,34 +170,52 @@ namespace Pale {
         float bestTHit = std::numeric_limits<float>::infinity();
         bool hitAnyTriangle = false;
         const float3 inverseDirection = safeInvDir(rayObject.direction);
+        const bool profileEnabled = scene.profileCounters != nullptr;
+        uint64_t profileNodeTests = 0u;
+        uint64_t profileNodeHits = 0u;
+        uint64_t profileTriangleTests = 0u;
+        uint64_t profileTriangleHits = 0u;
 
-        SmallStack<256> traversalStack;
-        traversalStack.push(0); // root
+        TraversalEntryStack<64> traversalStack;
+        float rootTEntry = 0.0f;
+        if (profileEnabled) ++profileNodeTests;
+        if (slabIntersectAABB(rayObject, bvhNodes[0], inverseDirection, bestTHit, rootTEntry)) {
+            if (profileEnabled) ++profileNodeHits;
+            traversalStack.push(0u, rootTEntry);
+        }
 
         while (!traversalStack.empty()) {
-            const int nodeIndex = traversalStack.pop();
-            const BVHNode &node = bvhNodes[nodeIndex];
-
-            float nodeTEntry = 0.0f;
-            if (!slabIntersectAABB(rayObject, node, inverseDirection, bestTHit, nodeTEntry))
+            const ChildEntry stackEntry = traversalStack.pop();
+            if (stackEntry.tEntry > bestTHit) {
                 continue;
+            }
+            const uint32_t nodeIndex = stackEntry.nodeIndex;
+            const BVHNode &node = bvhNodes[nodeIndex];
 
             if (node.triCount == 0) {
                 // Internal: left child is node.leftFirst, right child is node.leftFirst + 1
-                const int leftIndex = node.leftFirst;
-                const int rightIndex = node.leftFirst + 1;
+                const uint32_t leftIndex = node.leftFirst;
+                const uint32_t rightIndex = node.leftFirst + 1;
 
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
 
+                if (profileEnabled) profileNodeTests += 2u;
                 const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
                                                        leftTEntry);
                 const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
                                                         rightTEntry);
+                if (profileEnabled) {
+                    profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
+                }
 
-                if (hitLeft && hitRight) pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                else if (hitLeft) traversalStack.push(leftIndex);
-                else if (hitRight) traversalStack.push(rightIndex);
+                if (hitLeft && hitRight) {
+                    pushNearFarEntries(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                } else if (hitLeft) {
+                    traversalStack.push(leftIndex, leftTEntry);
+                } else if (hitRight) {
+                    traversalStack.push(rightIndex, rightTEntry);
+                }
                 continue;
             }
 
@@ -90,7 +229,9 @@ namespace Pale {
                 const float3 C = vertices[tri.v2].pos;
 
                 float t = FLT_MAX, u = 0.0f, v = 0.0f;
+                if (profileEnabled) ++profileTriangleTests;
                 if (intersectTriangle(rayObject, A, B, C, t, u, v, 1e-4f) && t < bestTHit && t > tMin) {
+                    if (profileEnabled) ++profileTriangleHits;
                     bestTHit = t;
                     hitAnyTriangle = true;
                     localHitOut.t = t;
@@ -102,6 +243,7 @@ namespace Pale {
             }
         }
 
+        flushMeshBvhProfile(scene, profileNodeTests, profileNodeHits, profileTriangleTests, profileTriangleHits);
         return hitAnyTriangle;
     }
 
@@ -127,36 +269,52 @@ namespace Pale {
         float3 bestHitLocal{0.0f};
 
         const float3 inverseDirection = safeInvDir(rayObject.direction);
+        const bool profileEnabled = scene.profileCounters != nullptr;
+        uint64_t profileNodeTests = 0u;
+        uint64_t profileNodeHits = 0u;
+        uint64_t profilePrimitiveTests = 0u;
+        uint64_t profilePlaneTests = 0u;
+        uint64_t profileProfileTests = 0u;
+        uint64_t profileAcceptedHits = 0u;
 
-        SmallStack<256> traversalStack;
-        traversalStack.push(0);
+        TraversalEntryStack<64> traversalStack;
+        float rootTEntry = 0.0f;
+        if (profileEnabled) ++profileNodeTests;
+        if (slabIntersectAABB(rayObject, bvhNodes[0], inverseDirection, bestTHit, rootTEntry)) {
+            if (profileEnabled) ++profileNodeHits;
+            traversalStack.push(0u, rootTEntry);
+        }
 
         while (!traversalStack.empty()) {
-            const int nodeIndex = traversalStack.pop();
+            const ChildEntry stackEntry = traversalStack.pop();
+            if (stackEntry.tEntry > bestTHit) {
+                continue;
+            }
+            const uint32_t nodeIndex = stackEntry.nodeIndex;
             const BVHNode &node = bvhNodes[nodeIndex];
 
-            float nodeTEntry = 0.0f;
-            if (!slabIntersectAABB(rayObject, node, inverseDirection, bestTHit, nodeTEntry))
-                continue;
-
             if (node.triCount == 0) {
-                const int leftIndex = node.leftFirst;
-                const int rightIndex = node.leftFirst + 1;
+                const uint32_t leftIndex = node.leftFirst;
+                const uint32_t rightIndex = node.leftFirst + 1;
 
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
 
+                if (profileEnabled) profileNodeTests += 2u;
                 const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
                                                        leftTEntry);
                 const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
                                                         rightTEntry);
+                if (profileEnabled) {
+                    profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
+                }
 
                 if (hitLeft && hitRight) {
-                    pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                    pushNearFarEntries(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
                 } else if (hitLeft) {
-                    traversalStack.push(leftIndex);
+                    traversalStack.push(leftIndex, leftTEntry);
                 } else if (hitRight) {
-                    traversalStack.push(rightIndex);
+                    traversalStack.push(rightIndex, rightTEntry);
                 }
                 continue;
             }
@@ -166,22 +324,28 @@ namespace Pale {
                 const uint32_t primitiveIndex =
                         scene.pointPermutation[node.leftFirst + primitiveOffset];
 
+                if (profileEnabled) ++profilePrimitiveTests;
                 const Point &surfel = scene.points[primitiveIndex];
 
                 float tHitLocal = 0.0f;
                 float alphaGeom = 0.0f;
 
+                if (profileEnabled && !surfel.isEmissive()) {
+                    ++profilePlaneTests;
+                }
                 if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
                                                             RayEpsilon2))
                     continue;
 
                 float3 hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
                 const float2 uv = phiInverse(hitLocal, surfel);
+                if (profileEnabled) ++profileProfileTests;
                 if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
                     continue;
                 }
 
                 // Keep closest
+                if (profileEnabled) ++profileAcceptedHits;
                 hitAny = true;
                 bestTHit = tHitLocal;
                 bestSurfelIndex = primitiveIndex;
@@ -190,8 +354,17 @@ namespace Pale {
             }
         }
 
-        if (!hitAny)
+        if (!hitAny) {
+            flushPointBvhProfile(
+                scene,
+                profileNodeTests,
+                profileNodeHits,
+                profilePrimitiveTests,
+                profilePlaneTests,
+                profileProfileTests,
+                profileAcceptedHits);
             return false;
+        }
 
         // Populate output hit.
         // Note: exact field names depend on your LocalHit definition.
@@ -206,6 +379,14 @@ namespace Pale {
         localHitOut.worldHit = bestHitLocal;
 
 
+        flushPointBvhProfile(
+            scene,
+            profileNodeTests,
+            profileNodeHits,
+            profilePrimitiveTests,
+            profilePlaneTests,
+            profileProfileTests,
+            profileAcceptedHits);
         return true;
     }
 
@@ -219,41 +400,74 @@ namespace Pale {
         LocalSurfelLayerHit *localHits,
         uint32_t maxLocalHitCount,
         const GPUSceneBuffers &scene) {
+        if (maxLocalHitCount == 0u) {
+            return 0u;
+        }
+
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
         const float3 inverseDirectionObject = safeInvDir(rayObject.direction);
+        const float4 objectDirection4 = transform.worldToObject * float4{rayWorld.direction, 0.0f};
+        const float3 objectDirection{objectDirection4.x(), objectDirection4.y(), objectDirection4.z()};
+        const float objectTPerWorldT = sycl::fmax(
+            sycl::sqrt(dot(objectDirection, objectDirection)),
+            RayEpsilon);
+        const float infinity = std::numeric_limits<float>::infinity();
+        const bool hasFiniteWorldTMax = tMaxWorld < infinity;
+        float objectTMaxLimit = hasFiniteWorldTMax ? tMaxWorld * objectTPerWorldT : infinity;
         uint32_t localHitCount = 0u;
-        SmallStack<256> traversalStack;
-        traversalStack.push(0);
+        const bool profileEnabled = scene.profileCounters != nullptr;
+        uint64_t profileNodeTests = 0u;
+        uint64_t profileNodeHits = 0u;
+        uint64_t profilePrimitiveTests = 0u;
+        uint64_t profilePlaneTests = 0u;
+        uint64_t profileProfileTests = 0u;
+        uint64_t profileAcceptedHits = 0u;
+        TraversalEntryStack<64> traversalStack;
+        float rootTEntry = 0.0f;
+        if (profileEnabled) ++profileNodeTests;
+        if (slabIntersectAABB(
+                rayObject,
+                bvhNodes[0],
+                inverseDirectionObject,
+                objectTMaxLimit,
+                rootTEntry)) {
+            if (profileEnabled) ++profileNodeHits;
+            traversalStack.push(0u, rootTEntry);
+        }
         while (!traversalStack.empty()) {
-            const int nodeIndex = traversalStack.pop();
-            const BVHNode &node = bvhNodes[nodeIndex];
-            float nodeTEntry = 0.0f;
-            if (!slabIntersectAABB(rayObject, node, inverseDirectionObject, std::numeric_limits<float>::infinity(),
-                                   nodeTEntry)) {
+            const ChildEntry stackEntry = traversalStack.pop();
+            if (stackEntry.tEntry > objectTMaxLimit) {
                 continue;
             }
+            const uint32_t nodeIndex = stackEntry.nodeIndex;
+            const BVHNode &node = bvhNodes[nodeIndex];
             if (node.triCount == 0u) {
-                const int leftIndex = node.leftFirst;
-                const int rightIndex = node.leftFirst + 1;
+                const uint32_t leftIndex = node.leftFirst;
+                const uint32_t rightIndex = node.leftFirst + 1;
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
+                if (profileEnabled) profileNodeTests += 2u;
                 const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirectionObject,
-                                                       std::numeric_limits<float>::infinity(), leftTEntry);
+                                                       objectTMaxLimit, leftTEntry);
                 const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirectionObject,
-                                                        std::numeric_limits<float>::infinity(), rightTEntry);
+                                                        objectTMaxLimit, rightTEntry);
+                if (profileEnabled) {
+                    profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
+                }
                 if (hitLeft && hitRight) {
-                    pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                    pushNearFarEntries(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
                 } else if (hitLeft) {
-                    traversalStack.push(leftIndex);
+                    traversalStack.push(leftIndex, leftTEntry);
                 } else if (hitRight) {
-                    traversalStack.push(rightIndex);
+                    traversalStack.push(rightIndex, rightTEntry);
                 }
                 continue;
             }
 
             for (uint32_t primitiveOffset = 0u; primitiveOffset < node.triCount; ++primitiveOffset) {
                 const uint32_t primitiveIndex = scene.pointPermutation[node.leftFirst + primitiveOffset];
+                if (profileEnabled) ++profilePrimitiveTests;
                 const Point &surfel = scene.points[primitiveIndex];
                 // Preserve your current FirstHit behavior.
                 if (surfel.isEmissive()) {
@@ -262,13 +476,15 @@ namespace Pale {
                 float tHitObject = 0.0f;
                 float alphaGeom = 0.0f;
                 float3 hitPositionObject(0.0f);
-                if (!intersectSurfel(rayObject, surfel, RayEpsilon2, std::numeric_limits<float>::infinity(), tHitObject,
+                if (profileEnabled) ++profilePlaneTests;
+                if (!intersectSurfel(rayObject, surfel, RayEpsilon2, objectTMaxLimit, tHitObject,
                                      RayEpsilon2)) {
                     continue;
                 }
 
                 hitPositionObject = rayObject.origin + tHitObject * rayObject.direction;
                 const float2 uv = phiInverse(hitPositionObject, surfel);
+                if (profileEnabled) ++profileProfileTests;
                 if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
                     continue;
                 }
@@ -283,15 +499,60 @@ namespace Pale {
                 candidateHit.primitiveIndex = primitiveIndex;
                 candidateHit.alphaGeom = alphaGeom;
                 candidateHit.hitPositionW = hitPositionW;
+                if (profileEnabled) ++profileAcceptedHits;
                 insertLocalSurfelLayerHit(
                     localHits,
                     localHitCount,
                     maxLocalHitCount,
                     candidateHit);
+
+                if (localHitCount == maxLocalHitCount) {
+                    const float farthestBufferedTWorld =
+                        sycl::fmin(tMaxWorld, localHits[maxLocalHitCount - 1u].tWorld);
+                    objectTMaxLimit = sycl::fmin(
+                        objectTMaxLimit,
+                        farthestBufferedTWorld * objectTPerWorldT);
+                }
             }
         }
 
+        flushPointBvhProfile(
+            scene,
+            profileNodeTests,
+            profileNodeHits,
+            profilePrimitiveTests,
+            profilePlaneTests,
+            profileProfileTests,
+            profileAcceptedHits);
         return localHitCount;
+    }
+
+    SYCL_EXTERNAL static uint32_t collectScenePointHitsDirect(
+        const Ray &rayWorld,
+        const GPUSceneBuffers &scene,
+        float tMinWorld,
+        float tMaxWorld,
+        LocalSurfelLayerHit *hits,
+        uint32_t maxHitCount,
+        uint32_t &instanceIndexOut) {
+        flushTlasProfile(scene, 1u, 0u, 0u, 0u);
+        if (!tryGetSinglePointCloudInstance(scene, instanceIndexOut)) {
+            return 0u;
+        }
+
+        const InstanceRecord &instance = scene.instances[instanceIndexOut];
+        const Transform &transform = scene.transforms[instance.transformIndex];
+        const Ray rayObject = toObjectSpace(rayWorld, transform);
+        return collectBLASPointCloudLocalLayer(
+            rayWorld,
+            rayObject,
+            instance.blasRangeIndex,
+            transform,
+            tMinWorld,
+            tMaxWorld,
+            hits,
+            maxHitCount,
+            scene);
     }
 
     struct PointCloudLocalLayer {
@@ -306,23 +567,24 @@ namespace Pale {
         float directLightEpsilon[kMaxLocalSurfelHits] = {RayEpsilon};
     };
 
-    SYCL_EXTERNAL static PointCloudLocalLayer collectPointCloudLocalLayer(
+    SYCL_EXTERNAL static PointCloudLocalLayer buildPointCloudLocalLayerFromHits(
         const Ray &rayWorld,
-        const WorldHit &firstHit,
-        const InstanceRecord &instance,
+        const LocalSurfelLayerHit &firstHit,
+        const LocalSurfelLayerHit *candidateHits,
+        uint32_t candidateCount,
         const GPUSceneBuffers &scene,
         float localLayerDepthEpsilon,
         uint32_t maxLocalSurfelHits,
         float localLayerNormalCosineThreshold) {
         PointCloudLocalLayer layer{};
         layer.hitCount = 0u;
-        layer.furthestT = firstHit.t;
+        layer.furthestT = firstHit.tWorld;
         layer.transmission = 1.0f;
         layer.opacity = 0.0f;
 
         if (maxLocalSurfelHits == 0u) return layer;
+        if (firstHit.primitiveIndex == kInvalidIndex) return layer;
 
-        const Transform &transform = scene.transforms[instance.transformIndex];
         const Point &referenceSurfel = scene.points[firstHit.primitiveIndex];
 
         layer.referenceNormalW = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
@@ -346,26 +608,7 @@ namespace Pale {
         const float viewCosine = sycl::fabs(dot(layer.referenceNormalW, rayWorld.direction));
         const float effectiveViewCosine = sycl::fmax(viewCosine, kMinLocalLayerViewCosine);
         const float raySearchDepth = localLayerDepthEpsilon / effectiveViewCosine;
-
-        const float localTMin = firstHit.t;
-        const float localTMax = firstHit.t + raySearchDepth;
-
-        const Ray rayObject = toObjectSpace(rayWorld, transform);
-
-        // First gather every ray intersection inside the conservative,
-        // view-angle-corrected search interval.
-        LocalSurfelLayerHit candidateHits[kMaxLocalSurfelHits];
-
-        const uint32_t candidateCount = collectBLASPointCloudLocalLayer(
-            rayWorld,
-            rayObject,
-            instance.blasRangeIndex,
-            transform,
-            localTMin,
-            localTMax,
-            candidateHits,
-            maxLocalSurfelHits,
-            scene);
+        const float localTMax = firstHit.tWorld + raySearchDepth;
 
         // Then determine actual slab membership using physical normal distance
         // from the anchor rather than ray-depth distance.
@@ -375,6 +618,8 @@ namespace Pale {
             const LocalSurfelLayerHit &candidate = candidateHits[candidateIndex];
 
             if (candidate.primitiveIndex == kInvalidIndex) continue;
+            if (candidate.tWorld + RayEpsilon < firstHit.tWorld) continue;
+            if (candidate.tWorld > localTMax) continue;
 
             const Point &candidateSurfel = scene.points[candidate.primitiveIndex];
 
@@ -405,7 +650,7 @@ namespace Pale {
         // Numerical fallback: the already established FirstHit must always
         // remain a constituent of its own slab.
         if (layer.hitCount == 0u) {
-            layer.hits[0].tWorld = firstHit.t;
+            layer.hits[0].tWorld = firstHit.tWorld;
             layer.hits[0].primitiveIndex = firstHit.primitiveIndex;
             layer.hits[0].alphaGeom = firstHit.alphaGeom;
             layer.hits[0].hitPositionW = firstHit.hitPositionW;
@@ -504,6 +749,63 @@ namespace Pale {
         return layer;
     }
 
+    SYCL_EXTERNAL static PointCloudLocalLayer collectPointCloudLocalLayer(
+        const Ray &rayWorld,
+        const WorldHit &firstHit,
+        const InstanceRecord &instance,
+        const GPUSceneBuffers &scene,
+        float localLayerDepthEpsilon,
+        uint32_t maxLocalSurfelHits,
+        float localLayerNormalCosineThreshold) {
+        if (maxLocalSurfelHits == 0u) {
+            return PointCloudLocalLayer{};
+        }
+
+        const Transform &transform = scene.transforms[instance.transformIndex];
+        const Point &referenceSurfel = scene.points[firstHit.primitiveIndex];
+        float3 referenceNormalW = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
+        if (dot(referenceNormalW, -rayWorld.direction) < 0.0f) referenceNormalW = -referenceNormalW;
+
+        static constexpr float kMinLocalLayerViewCosine = 0.05f;
+        const float viewCosine = sycl::fabs(dot(referenceNormalW, rayWorld.direction));
+        const float effectiveViewCosine = sycl::fmax(viewCosine, kMinLocalLayerViewCosine);
+        const float raySearchDepth = localLayerDepthEpsilon / effectiveViewCosine;
+
+        const float localTMin = firstHit.t;
+        const float localTMax = firstHit.t + raySearchDepth;
+
+        const Ray rayObject = toObjectSpace(rayWorld, transform);
+
+        LocalSurfelLayerHit candidateHits[kMaxLocalSurfelHits];
+
+        const uint32_t candidateCount = collectBLASPointCloudLocalLayer(
+            rayWorld,
+            rayObject,
+            instance.blasRangeIndex,
+            transform,
+            localTMin,
+            localTMax,
+            candidateHits,
+            maxLocalSurfelHits,
+            scene);
+
+        LocalSurfelLayerHit firstLocalHit{};
+        firstLocalHit.tWorld = firstHit.t;
+        firstLocalHit.primitiveIndex = firstHit.primitiveIndex;
+        firstLocalHit.alphaGeom = firstHit.alphaGeom;
+        firstLocalHit.hitPositionW = firstHit.hitPositionW;
+
+        return buildPointCloudLocalLayerFromHits(
+            rayWorld,
+            firstLocalHit,
+            candidateHits,
+            candidateCount,
+            scene,
+            localLayerDepthEpsilon,
+            maxLocalSurfelHits,
+            localLayerNormalCosineThreshold);
+    }
+
     // Transmit and only attenuate the ray.
     SYCL_EXTERNAL static bool intersectBLASPointCloudTransmit(
         const Ray &rayObject,
@@ -525,34 +827,50 @@ namespace Pale {
             float bestTHit = tMax;
 
             const float3 inverseDirection = safeInvDir(rayObject.direction);
+            const bool profileEnabled = scene.profileCounters != nullptr;
+            uint64_t profileNodeTests = 0u;
+            uint64_t profileNodeHits = 0u;
+            uint64_t profilePrimitiveTests = 0u;
+            uint64_t profilePlaneTests = 0u;
+            uint64_t profileProfileTests = 0u;
+            uint64_t profileAcceptedHits = 0u;
 
-            SmallStack<256> traversalStack;
-            traversalStack.push(0);
+            TraversalEntryStack<64> traversalStack;
+            float rootTEntry = 0.0f;
+            if (profileEnabled) ++profileNodeTests;
+            if (slabIntersectAABB(rayObject, bvhNodes[0], inverseDirection, bestTHit, rootTEntry)) {
+                if (profileEnabled) ++profileNodeHits;
+                traversalStack.push(0u, rootTEntry);
+            }
 
             while (!traversalStack.empty()) {
-                const int nodeIndex = traversalStack.pop();
+                const ChildEntry stackEntry = traversalStack.pop();
+                if (stackEntry.tEntry > bestTHit) {
+                    continue;
+                }
+                const uint32_t nodeIndex = stackEntry.nodeIndex;
                 const BVHNode &node = bvhNodes[nodeIndex];
 
-                float nodeTEntry = 0.0f;
-                if (!slabIntersectAABB(rayObject, node, inverseDirection, bestTHit, nodeTEntry))
-                    continue;
-
                 if (node.triCount == 0) {
-                    const int leftIndex = node.leftFirst;
-                    const int rightIndex = node.leftFirst + 1;
+                    const uint32_t leftIndex = node.leftFirst;
+                    const uint32_t rightIndex = node.leftFirst + 1;
 
                     float leftTEntry = std::numeric_limits<float>::infinity();
                     float rightTEntry = std::numeric_limits<float>::infinity();
 
+                    if (profileEnabled) profileNodeTests += 2u;
                     const bool hitLeft = slabIntersectAABB(rayObject, bvhNodes[leftIndex], inverseDirection, bestTHit,
                                                            leftTEntry);
                     const bool hitRight = slabIntersectAABB(rayObject, bvhNodes[rightIndex], inverseDirection, bestTHit,
                                                             rightTEntry);
+                    if (profileEnabled) {
+                        profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
+                    }
 
                     if (hitLeft && hitRight)
-                        pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
-                    else if (hitLeft) traversalStack.push(leftIndex);
-                    else if (hitRight) traversalStack.push(rightIndex);
+                        pushNearFarEntries(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                    else if (hitLeft) traversalStack.push(leftIndex, leftTEntry);
+                    else if (hitRight) traversalStack.push(rightIndex, rightTEntry);
                     continue;
                 }
 
@@ -561,17 +879,20 @@ namespace Pale {
                     const uint32_t primitiveIndex =
                             scene.pointPermutation[node.leftFirst + primitiveOffset];
 
+                    if (profileEnabled) ++profilePrimitiveTests;
                     const Point &surfel = scene.points[primitiveIndex];
 
                     float tHitLocal = 0.0f;
                     float alphaGeom = 0.0f;
                     float3 hitLocal{};
+                    if (profileEnabled) ++profilePlaneTests;
                     if (!intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
                                          RayEpsilon2))
                         continue;
 
                     hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
                     const float2 uv = phiInverse(hitLocal, surfel);
+                    if (profileEnabled) ++profileProfileTests;
                     if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
                         continue;
                     }
@@ -580,12 +901,22 @@ namespace Pale {
                         continue;
 
                     // Keep closest
+                    if (profileEnabled) ++profileAcceptedHits;
                     bestTHit = tHitLocal;
                     outSurfelIndex = primitiveIndex;
                     outAlphaGeomAtHit = alphaGeom;
                     hitAny = true;
                 }
             }
+
+            flushPointBvhProfile(
+                scene,
+                profileNodeTests,
+                profileNodeHits,
+                profilePrimitiveTests,
+                profilePlaneTests,
+                profileProfileTests,
+                profileAcceptedHits);
 
             if (!hitAny)
                 return false;
@@ -641,39 +972,54 @@ namespace Pale {
 
         worldHitOut->t = FLT_MAX;
 
-        SmallStack<256> traversalStack;
-        traversalStack.push(0); // root
-
         float bestWorldTHit = std::numeric_limits<float>::infinity();
         float transmittanceProduct = 1.0f; // accumulate product over visited splat instances in front of the first hit
+        const bool profileEnabled = scene.profileCounters != nullptr;
+        uint64_t profileNodeTests = 0u;
+        uint64_t profileNodeHits = 0u;
+        uint64_t profileLeafInstances = 0u;
+
+        TraversalEntryStack<64> traversalStack;
+        float rootTEntry = 0.0f;
+        if (profileEnabled) ++profileNodeTests;
+        if (slabIntersectAABB(rayWorld, tlasNodes[0], inverseDirectionWorld, bestWorldTHit, rootTEntry)) {
+            if (profileEnabled) ++profileNodeHits;
+            traversalStack.push(0u, rootTEntry);
+        }
 
         while (!traversalStack.empty()) {
-            const uint32_t nodeIndex = traversalStack.pop();
-            const TLASNode &node = tlasNodes[nodeIndex];
-            float nodeTEntry = 0.0f;
-            if (!slabIntersectAABB(rayWorld, node, inverseDirectionWorld, bestWorldTHit, nodeTEntry))
+            const ChildEntry stackEntry = traversalStack.pop();
+            if (stackEntry.tEntry > bestWorldTHit) {
                 continue;
+            }
+            const uint32_t nodeIndex = stackEntry.nodeIndex;
+            const TLASNode &node = tlasNodes[nodeIndex];
             if (node.count == 0) {
                 // Internal TLAS node: near-to-far push
                 const uint32_t leftIndex = node.leftChild;
                 const uint32_t rightIndex = node.rightChild;
                 float leftTEntry = std::numeric_limits<float>::infinity();
                 float rightTEntry = std::numeric_limits<float>::infinity();
+                if (profileEnabled) profileNodeTests += 2u;
                 const bool hitLeft = slabIntersectAABB(rayWorld, tlasNodes[leftIndex], inverseDirectionWorld,
                                                        bestWorldTHit, leftTEntry);
                 const bool hitRight = slabIntersectAABB(rayWorld, tlasNodes[rightIndex], inverseDirectionWorld,
                                                         bestWorldTHit, rightTEntry);
+                if (profileEnabled) {
+                    profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
+                }
                 if (hitLeft && hitRight) {
-                    pushNearFar(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
+                    pushNearFarEntries(traversalStack, leftIndex, leftTEntry, rightIndex, rightTEntry);
                 } else if (hitLeft) {
-                    traversalStack.push(leftIndex);
+                    traversalStack.push(leftIndex, leftTEntry);
                 } else if (hitRight) {
-                    traversalStack.push(rightIndex);
+                    traversalStack.push(rightIndex, rightTEntry);
                 }
                 continue;
             }
 
             // Leaf: exactly one instance
+            if (profileEnabled) ++profileLeafInstances;
             const uint32_t instanceIndex = node.leftChild;
             const InstanceRecord &instance = instanceRecords[instanceIndex];
             const Transform &transform = transforms[instance.transformIndex];
@@ -729,6 +1075,7 @@ namespace Pale {
             worldHitOut->hit = false;
         }
         worldHitOut->transmissivity = transmittanceProduct;
+        flushTlasProfile(scene, 1u, profileNodeTests, profileNodeHits, profileLeafInstances);
         return foundAnySurfaceHit;
     }
 
@@ -759,6 +1106,74 @@ namespace Pale {
         shadowRay.normal = shadingNormalW;
 
         float shadowTransmission = 1.0f;
+        const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
+        uint32_t directPointInstanceIndex = kInvalidIndex;
+
+        if (pointHitBatchSize > 1u &&
+            tryGetSinglePointCloudInstance(scene, directPointInstanceIndex)) {
+            for (uint32_t hitIndex = 0u; hitIndex < maxSplatEventsPerRay;) {
+                const float remainingLightDistance = dot(
+                    lightPositionW - shadowRay.origin,
+                    shadowRay.direction);
+
+                if (remainingLightDistance <= eps) {
+                    break;
+                }
+
+                LocalSurfelLayerHit pointHits[kMaxPointHitBatch];
+                uint32_t pointInstanceIndex = kInvalidIndex;
+                const uint32_t remainingHitBudget = maxSplatEventsPerRay - hitIndex;
+                const uint32_t batchCapacity =
+                    pointHitBatchSize < remainingHitBudget ? pointHitBatchSize : remainingHitBudget;
+                const uint32_t hitCount = collectScenePointHitsDirect(
+                    shadowRay,
+                    scene,
+                    eps,
+                    remainingLightDistance - eps,
+                    pointHits,
+                    batchCapacity,
+                    pointInstanceIndex);
+
+                if (hitCount == 0u) {
+                    break;
+                }
+
+                float furthestConsumedT = 0.0f;
+                for (uint32_t batchIndex = 0u; batchIndex < hitCount; ++batchIndex) {
+                    const LocalSurfelLayerHit &pointHit = pointHits[batchIndex];
+                    if (pointHit.tWorld >= remainingLightDistance - eps) {
+                        break;
+                    }
+
+                    furthestConsumedT = sycl::fmax(furthestConsumedT, pointHit.tWorld);
+                    const Point &surfel = scene.points[pointHit.primitiveIndex];
+                    const float alphaEff = sycl::clamp(
+                        surfel.opacity * pointHit.alphaGeom,
+                        0.0f,
+                        1.0f - 1.0e-6f);
+
+                    if (alphaEff > 0.0f) {
+                        shadowTransmission *= sycl::fmax(0.0f, 1.0f - alphaEff);
+                    }
+
+                    ++hitIndex;
+                    if (shadowTransmission <= 1.0e-6f) {
+                        return shadowTransmission;
+                    }
+                }
+
+                if (furthestConsumedT <= 0.0f) {
+                    break;
+                }
+
+                shadowRay.origin += shadowRay.direction * (furthestConsumedT + eps);
+                if (hitCount < batchCapacity) {
+                    break;
+                }
+            }
+
+            return shadowTransmission;
+        }
 
         for (uint32_t shadowTraversalIndex = 0u;
              shadowTraversalIndex < maxSplatEventsPerRay;

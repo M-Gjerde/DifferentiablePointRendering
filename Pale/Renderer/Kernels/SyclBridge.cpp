@@ -135,8 +135,8 @@ namespace Pale {
 
         const uint32_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity);
         {
-            ScopedTimer timer("buildPhotonCellRangesAndOrdering", spdlog::level::debug);
-            buildPhotonCellRangesAndOrdering(pkg.queue, pkg.intermediates.map, photonCount);
+            //ScopedTimer timer("buildPhotonCellRangesAndOrdering", spdlog::level::debug);
+            //buildPhotonCellRangesAndOrdering(pkg.queue, pkg.intermediates.map, photonCount);
         }
         {
             ScopedTimer timer("Camera Gather for " + std::to_string(pkg.numSensors) + " cameras", spdlog::level::debug);

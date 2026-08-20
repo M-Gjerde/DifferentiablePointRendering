@@ -461,6 +461,16 @@ namespace Pale {
                 }
                 RayState nextRayState{};
                 bool shouldEnqueueNextRayState = false;
+                const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
+                const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
+                const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
+                const uint32_t pointLayerCandidateCapacity =
+                    rendererDebugPointLayerCandidateCapacity(settings);
+                const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
+                uint32_t directPointInstanceIndex = kInvalidIndex;
+                const bool canUsePointHitBatches =
+                    pointHitBatchSize > 1u &&
+                    tryGetSinglePointCloudInstance(scene, directPointInstanceIndex);
                 for (uint32_t inlineTraversalIndex = 0u; inlineTraversalIndex < kMaxSplatEventsPerRay; ++
                      inlineTraversalIndex) {
                     (void) inlineTraversalIndex;
@@ -468,21 +478,62 @@ namespace Pale {
                                                             rng::kStreamTraversal, currentRayState.traversalIndex);
                     rng::Xorshift128 rng(stepSeed);
                     WorldHit worldHit{};
-                    intersectScene(currentRayState.ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                    PointCloudLocalLayer prebuiltPointLayer{};
+                    bool hasPrebuiltPointLayer = false;
+                    if (canUsePointHitBatches) {
+                        LocalSurfelLayerHit pointHits[kMaxPointHitBatch];
+                        uint32_t pointInstanceIndex = kInvalidIndex;
+                        const uint32_t hitCount = collectScenePointHitsDirect(
+                            currentRayState.ray,
+                            scene,
+                            RayEpsilon,
+                            std::numeric_limits<float>::infinity(),
+                            pointHits,
+                            pointLayerCandidateCapacity,
+                            pointInstanceIndex);
+
+                        if (hitCount > 0u) {
+                            const LocalSurfelLayerHit &anchorHit = pointHits[0];
+                            worldHit.hit = true;
+                            worldHit.t = anchorHit.tWorld;
+                            worldHit.instanceIndex = pointInstanceIndex;
+                            worldHit.primitiveIndex = anchorHit.primitiveIndex;
+                            worldHit.alphaGeom = anchorHit.alphaGeom;
+                            worldHit.hitPositionW = anchorHit.hitPositionW;
+                            prebuiltPointLayer = buildPointCloudLocalLayerFromHits(
+                                currentRayState.ray,
+                                anchorHit,
+                                pointHits,
+                                hitCount,
+                                scene,
+                                localLayerDepthEpsilon,
+                                maxLocalSurfelHits,
+                                localLayerNormalCosineThreshold);
+                            hasPrebuiltPointLayer = true;
+                        }
+                    } else {
+                        intersectScene(currentRayState.ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                    }
                     if (!worldHit.hit) {
                         clearAdjointLocalPendingState(pendingCameraSegment, pendingAdjointStage);
                         break;
                     }
-                    buildIntersectionNormal(scene, worldHit);
+                    if (!hasPrebuiltPointLayer) {
+                        buildIntersectionNormal(scene, worldHit);
+                    }
                     const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
                     if (instance.geometryType == GeometryType::PointCloud) {
-                        const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
-                        const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
-                        const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(
-                            settings);
-                        const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(
-                            currentRayState.ray, worldHit, instance, scene, localLayerDepthEpsilon, maxLocalSurfelHits,
-                            localLayerNormalCosineThreshold);
+                        const PointCloudLocalLayer localLayer =
+                            hasPrebuiltPointLayer
+                                ? prebuiltPointLayer
+                                : collectPointCloudLocalLayer(
+                                    currentRayState.ray,
+                                    worldHit,
+                                    instance,
+                                    scene,
+                                    localLayerDepthEpsilon,
+                                    maxLocalSurfelHits,
+                                    localLayerNormalCosineThreshold);
                         const float qNull = settings.sampling.qNull;
                         const float qReflect = settings.sampling.qReflect;
                         float3 sampledOutgoingDirectionWorld{0.0f};
@@ -703,7 +754,14 @@ namespace Pale {
             const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
             const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
             const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
+            const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
+            const uint32_t pointLayerCandidateCapacity =
+                    rendererDebugPointLayerCandidateCapacity(settings);
             const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
+            uint32_t directPointInstanceIndex = kInvalidIndex;
+            const bool canUsePointHitBatches =
+                    pointHitBatchSize > 1u &&
+                    tryGetSinglePointCloudInstance(scene, directPointInstanceIndex);
             const float3 cameraToTarget = targetAnchorPosition - sensor.camera.pos;
             const float3 rayDirection = normalize(cameraToTarget);
             Ray ray{};
@@ -712,17 +770,65 @@ namespace Pale {
             float segmentTransmittance = 1.0f;
             for (uint32_t traversalIndex = 0u; traversalIndex < maxSplatEventsPerRay; ++traversalIndex) {
                 WorldHit worldHit{};
-                intersectScene(ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                PointCloudLocalLayer prebuiltPointLayer{};
+                bool hasPrebuiltPointLayer = false;
+                if (canUsePointHitBatches) {
+                    const float remainingTargetDistance = dot(targetAnchorPosition - ray.origin, ray.direction);
+                    if (remainingTargetDistance <= RayEpsilon) break;
+
+                    LocalSurfelLayerHit pointHits[kMaxPointHitBatch];
+                    uint32_t pointInstanceIndex = kInvalidIndex;
+                    const uint32_t hitCount = collectScenePointHitsDirect(
+                        ray,
+                        scene,
+                        RayEpsilon,
+                        remainingTargetDistance - RayEpsilon,
+                        pointHits,
+                        pointLayerCandidateCapacity,
+                        pointInstanceIndex);
+
+                    if (hitCount > 0u) {
+                        const LocalSurfelLayerHit &anchorHit = pointHits[0];
+                        worldHit.hit = true;
+                        worldHit.t = anchorHit.tWorld;
+                        worldHit.instanceIndex = pointInstanceIndex;
+                        worldHit.primitiveIndex = anchorHit.primitiveIndex;
+                        worldHit.alphaGeom = anchorHit.alphaGeom;
+                        worldHit.hitPositionW = anchorHit.hitPositionW;
+                        prebuiltPointLayer = buildPointCloudLocalLayerFromHits(
+                            ray,
+                            anchorHit,
+                            pointHits,
+                            hitCount,
+                            scene,
+                            localLayerDepthEpsilon,
+                            maxLocalSurfelHits,
+                            localLayerNormalCosineThreshold);
+                        hasPrebuiltPointLayer = true;
+                    }
+                } else {
+                    intersectScene(ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                }
                 if (!worldHit.hit) break;
                 const float3 cameraToHit = worldHit.hitPositionW - sensor.camera.pos;
                 const float hitDistance = sycl::sqrt(dot(cameraToHit, cameraToHit));
                 if (hitDistance >= targetDistance - RayEpsilon) break;
-                buildIntersectionNormal(scene, worldHit);
+                if (!hasPrebuiltPointLayer) {
+                    buildIntersectionNormal(scene, worldHit);
+                }
                 const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
                 if (instance.geometryType != GeometryType::PointCloud) break;
-                const PointCloudLocalLayer occludingLayer = collectPointCloudLocalLayer(
-                    ray, worldHit, instance, scene, localLayerDepthEpsilon, maxLocalSurfelHits,
-                    localLayerNormalCosineThreshold);
+                const PointCloudLocalLayer occludingLayer =
+                        hasPrebuiltPointLayer
+                            ? prebuiltPointLayer
+                            : collectPointCloudLocalLayer(
+                                ray,
+                                worldHit,
+                                instance,
+                                scene,
+                                localLayerDepthEpsilon,
+                                maxLocalSurfelHits,
+                                localLayerNormalCosineThreshold);
                 const Point &referenceSurfel = scene.points[worldHit.primitiveIndex];
                 float3 referenceNormal = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
                 if (dot(referenceNormal, -rayDirection) < 0.0f) referenceNormal = -referenceNormal;
@@ -905,12 +1011,19 @@ namespace Pale {
         const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
         const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
         const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
+        const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
+        const uint32_t pointLayerCandidateCapacity =
+                rendererDebugPointLayerCandidateCapacity(settings);
         const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
         sycl::event kernelEvent4 = queue.parallel_for(sycl::range<1>(eventCount), [=](sycl::id<1> globalId) {
             const uint32_t eventIndex = static_cast<uint32_t>(globalId[0]);
             const MeasurementGradientEventXY eventRecord = measurementEvents[eventIndex];
             const uint32_t slabCount = eventRecord.surfelSlabCount;
             if (slabCount == 0u || slabCount > kMaxLocalSurfelHits) return;
+            uint32_t directPointInstanceIndex = kInvalidIndex;
+            const bool canUsePointHitBatches =
+                    pointHitBatchSize > 1u &&
+                    tryGetSinglePointCloudInstance(scene, directPointInstanceIndex);
             const float3 lightPositionW = eventRecord.pointLightPositionW;
             const float3 pointLightIntensity = eventRecord.pointLightRadiantIntensity;
             const float3 pathWeight = eventRecord.xPathThroughput;
@@ -943,17 +1056,65 @@ namespace Pale {
                 float segmentTransmittance = 1.0f;
                 for (uint32_t traversalIndex = 0u; traversalIndex < maxSplatEventsPerRay; ++traversalIndex) {
                     WorldHit shadowHit{};
-                    intersectScene(ray, &shadowHit, scene, SurfelIntersectMode::FirstHit);
+                    PointCloudLocalLayer prebuiltPointLayer{};
+                    bool hasPrebuiltPointLayer = false;
+                    if (canUsePointHitBatches) {
+                        const float remainingTargetDistance = dot(lightPositionW - ray.origin, ray.direction);
+                        if (remainingTargetDistance <= RayEpsilon) break;
+
+                        LocalSurfelLayerHit pointHits[kMaxPointHitBatch];
+                        uint32_t pointInstanceIndex = kInvalidIndex;
+                        const uint32_t hitCount = collectScenePointHitsDirect(
+                            ray,
+                            scene,
+                            RayEpsilon,
+                            remainingTargetDistance - RayEpsilon,
+                            pointHits,
+                            pointLayerCandidateCapacity,
+                            pointInstanceIndex);
+
+                        if (hitCount > 0u) {
+                            const LocalSurfelLayerHit &anchorHit = pointHits[0];
+                            shadowHit.hit = true;
+                            shadowHit.t = anchorHit.tWorld;
+                            shadowHit.instanceIndex = pointInstanceIndex;
+                            shadowHit.primitiveIndex = anchorHit.primitiveIndex;
+                            shadowHit.alphaGeom = anchorHit.alphaGeom;
+                            shadowHit.hitPositionW = anchorHit.hitPositionW;
+                            prebuiltPointLayer = buildPointCloudLocalLayerFromHits(
+                                ray,
+                                anchorHit,
+                                pointHits,
+                                hitCount,
+                                scene,
+                                localLayerDepthEpsilon,
+                                maxLocalSurfelHits,
+                                localLayerNormalCosineThreshold);
+                            hasPrebuiltPointLayer = true;
+                        }
+                    } else {
+                        intersectScene(ray, &shadowHit, scene, SurfelIntersectMode::FirstHit);
+                    }
                     if (!shadowHit.hit) break;
                     const float3 hitVector = shadowHit.hitPositionW - xState.position;
                     const float hitDistance = sycl::sqrt(dot(hitVector, hitVector));
                     if (hitDistance >= targetDistance - RayEpsilon) break;
-                    buildIntersectionNormal(scene, shadowHit);
+                    if (!hasPrebuiltPointLayer) {
+                        buildIntersectionNormal(scene, shadowHit);
+                    }
                     const InstanceRecord &instance = scene.instances[shadowHit.instanceIndex];
                     if (instance.geometryType != GeometryType::PointCloud) break;
-                    const PointCloudLocalLayer occludingLayer = collectPointCloudLocalLayer(
-                        ray, shadowHit, instance, scene, localLayerDepthEpsilon, maxLocalSurfelHits,
-                        localLayerNormalCosineThreshold);
+                    const PointCloudLocalLayer occludingLayer =
+                            hasPrebuiltPointLayer
+                                ? prebuiltPointLayer
+                                : collectPointCloudLocalLayer(
+                                    ray,
+                                    shadowHit,
+                                    instance,
+                                    scene,
+                                    localLayerDepthEpsilon,
+                                    maxLocalSurfelHits,
+                                    localLayerNormalCosineThreshold);
                     float prefixWithinLayer = 1.0f;
                     for (uint32_t hitIndex = 0u; hitIndex < occludingLayer.hitCount; ++hitIndex) {
                         const LocalSurfelLayerHit &localHit = occludingLayer.hits[hitIndex];
@@ -1463,17 +1624,10 @@ namespace Pale {
         const bool enableNormalConsistencyRegularizer = settings.normalConsistencyWeight != 0.0f;
         const bool normalFromDepthUseMeanDepth = settings.normalFromDepthUseMeanDepth;
         const uint32_t maxSurfaceHits = rendererDebugMaxSplatEventsPerRay(settings);
+        const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
         sycl::event kernelEvent8 = queue.parallel_for<class SurfaceRegularizersBackwardKernel>(
             sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
                 constexpr float kAlphaEpsilon = 1.0e-8f;
-                // Toggle this here.
-                //
-                // true:
-                //   stop-gradient through w_i = T_i alpha_i for depth distortion.
-                //   Distortion only changes intersection depth -> position/orientation.
-                //
-                // false:
-                //   full 2DGS depth-distortion derivative through both m_i and w_i.
                 constexpr bool kDetachDepthDistortionWeights = true;
                 const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
                 const uint32_t pixelX = pixelIndex % imageWidth;
@@ -1506,32 +1660,22 @@ namespace Pale {
                 uint32_t hitCount = 0u;
                 uint32_t medianHitIndex = kInvalidIndex;
                 float transmittance = 1.0f;
-                // Final moments:
-                //
-                // A  = sum_i w_i
-                // D  = sum_i w_i m_i
-                // D2 = sum_i w_i m_i^2
                 float accumulatedWeight = 0.0f;
                 float accumulatedWeightedDepth = 0.0f;
-                float accumulatedWeightedNdcDepth = 0.0f;
-                float accumulatedWeightedNdcDepthSquared = 0.0f;
                 Ray regularizerRay = originalRay;
-                for (uint32_t traversalIndex = 0u; traversalIndex < maxSurfaceHits && hitCount < kMaxSplatEventsPerRay;
-                     ++traversalIndex) {
-                    WorldHit worldHit{};
-                    intersectScene(regularizerRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
-                    if (!worldHit.hit) { break; }
-                    buildIntersectionNormal(scene, worldHit);
-                    const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
-                    // Meshes terminate the surfel stream but are not regularized.
-                    if (instance.geometryType != GeometryType::PointCloud) { break; }
-                    const uint32_t primitiveIndex = worldHit.primitiveIndex;
+                uint32_t directPointInstanceIndex = kInvalidIndex;
+                const bool canUsePointHitBatches =
+                        pointHitBatchSize > 1u &&
+                        tryGetSinglePointCloudInstance(scene, directPointInstanceIndex);
+
+                auto recordRegularizerHit =
+                    [&](const LocalSurfelLayerHit &surfaceHit) -> bool {
+                    const uint32_t primitiveIndex = surfaceHit.primitiveIndex;
                     if (primitiveIndex == kInvalidIndex || primitiveIndex >= pointCount) {
-                        regularizerRay.origin = worldHit.hitPositionW + regularizerRay.direction * RayEpsilon;
-                        continue;
+                        return true;
                     }
                     const Point &surfel = scene.points[primitiveIndex];
-                    const float2 uv = phiInverse(worldHit.hitPositionW, surfel);
+                    const float2 uv = phiInverse(surfaceHit.hitPositionW, surfel);
                     // ---------------------------------------------------------
                     // alpha_i = eta_i * alphaGeom_i
                     //
@@ -1542,19 +1686,17 @@ namespace Pale {
                     opacityBeta(uv, surfel, &alphaGeom);
                     const float alphaEffective = alphaGeom * surfel.opacity;
                     if (alphaEffective <= kAlphaEpsilon) {
-                        regularizerRay.origin = worldHit.hitPositionW + regularizerRay.direction * RayEpsilon;
-                        continue;
+                        return true;
                     }
-                    const float depth = dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+                    const float depth = dot(surfaceHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
                     if (depth <= 0.0f) {
-                        regularizerRay.origin = worldHit.hitPositionW + regularizerRay.direction * RayEpsilon;
-                        continue;
+                        return true;
                     }
                     const float ndcDepth = depthDistortionNdc01(depth);
                     const float compositeWeight = transmittance * alphaEffective;
                     SurfaceRegularizerHitRecord &record = hits[hitCount];
                     record.primitiveIndex = primitiveIndex;
-                    record.hitPositionW = worldHit.hitPositionW;
+                    record.hitPositionW = surfaceHit.hitPositionW;
                     record.alphaGeom = alphaGeom;
                     record.alphaEffective = alphaEffective;
                     record.transmittanceBefore = transmittance;
@@ -1573,12 +1715,81 @@ namespace Pale {
                     if (transmittance > 0.5f) { medianHitIndex = hitCount; }
                     accumulatedWeight += compositeWeight;
                     accumulatedWeightedDepth += compositeWeight * depth;
-                    accumulatedWeightedNdcDepth += compositeWeight * ndcDepth;
-                    accumulatedWeightedNdcDepthSquared += compositeWeight * ndcDepth * ndcDepth;
                     ++hitCount;
                     transmittance *= 1.0f - alphaEffective;
-                    regularizerRay.origin = worldHit.hitPositionW + regularizerRay.direction * RayEpsilon;
-                    if (transmittance <= kAlphaEpsilon) { break; }
+                    return transmittance > kAlphaEpsilon;
+                };
+
+                if (canUsePointHitBatches) {
+                    for (uint32_t traversalIndex = 0u;
+                         traversalIndex < maxSurfaceHits && hitCount < kMaxSplatEventsPerRay;) {
+                        LocalSurfelLayerHit pointHits[kMaxPointHitBatch];
+                        uint32_t pointInstanceIndex = kInvalidIndex;
+                        const uint32_t remainingTraversalBudget = maxSurfaceHits - traversalIndex;
+                        const uint32_t batchCapacity =
+                                pointHitBatchSize < remainingTraversalBudget
+                                    ? pointHitBatchSize
+                                    : remainingTraversalBudget;
+                        const uint32_t batchHitCount = collectScenePointHitsDirect(
+                            regularizerRay,
+                            scene,
+                            RayEpsilon,
+                            std::numeric_limits<float>::infinity(),
+                            pointHits,
+                            batchCapacity,
+                            pointInstanceIndex);
+
+                        if (batchHitCount == 0u) {
+                            break;
+                        }
+
+                        float furthestConsumedT = 0.0f;
+                        bool keepTracingRegularizer = true;
+                        for (uint32_t batchIndex = 0u;
+                             batchIndex < batchHitCount &&
+                             traversalIndex < maxSurfaceHits &&
+                             hitCount < kMaxSplatEventsPerRay;
+                             ++batchIndex) {
+                            const LocalSurfelLayerHit &surfaceHit = pointHits[batchIndex];
+                            furthestConsumedT = sycl::fmax(furthestConsumedT, surfaceHit.tWorld);
+                            keepTracingRegularizer = recordRegularizerHit(surfaceHit);
+                            ++traversalIndex;
+                            if (!keepTracingRegularizer) {
+                                break;
+                            }
+                        }
+
+                        if (furthestConsumedT <= 0.0f) {
+                            break;
+                        }
+
+                        regularizerRay.origin += regularizerRay.direction * (furthestConsumedT + RayEpsilon);
+                        if (!keepTracingRegularizer || batchHitCount < batchCapacity) {
+                            break;
+                        }
+                    }
+                } else {
+                    for (uint32_t traversalIndex = 0u;
+                         traversalIndex < maxSurfaceHits && hitCount < kMaxSplatEventsPerRay;
+                         ++traversalIndex) {
+                        WorldHit worldHit{};
+                        intersectScene(regularizerRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                        if (!worldHit.hit) { break; }
+                        buildIntersectionNormal(scene, worldHit);
+                        const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+                        // Meshes terminate the surfel stream but are not regularized.
+                        if (instance.geometryType != GeometryType::PointCloud) { break; }
+
+                        LocalSurfelLayerHit surfaceHit{};
+                        surfaceHit.tWorld = worldHit.t;
+                        surfaceHit.primitiveIndex = worldHit.primitiveIndex;
+                        surfaceHit.alphaGeom = worldHit.alphaGeom;
+                        surfaceHit.hitPositionW = worldHit.hitPositionW;
+
+                        const bool keepTracingRegularizer = recordRegularizerHit(surfaceHit);
+                        regularizerRay.origin = worldHit.hitPositionW + regularizerRay.direction * RayEpsilon;
+                        if (!keepTracingRegularizer) { break; }
+                    }
                 }
                 if (hitCount == 0u) { return; }
                 const float selectedMeanDepth = accumulatedWeight > kAlphaEpsilon
@@ -1589,17 +1800,12 @@ namespace Pale {
                 //
                 // Reverse through the ordered individual-surface stream.
                 //
-                // Distortion:
+                // Depth distortion:
                 //
-                //   Gamma = sum_{i<j} w_i w_j (m_i-m_j)^2
+                //   Gamma = sum_{i<j} f(z_j-z_i) w_i w_j (m_i-m_j)^2
                 //
-                // gives:
-                //
-                //   dGamma/dm_i =
-                //       2 w_i (m_i A - D)
-                //
-                //   dGamma/dw_i =
-                //       m_i^2 A + D2 - 2 m_i D
+                // where f smoothly fades distant camera-forward depth pairs
+                // out before they can couple separate objects/backgrounds.
                 //
                 // Normal:
                 //
@@ -1622,15 +1828,42 @@ namespace Pale {
                     float barWeightDepth = 0.0f;
                     float barDepthDepth = 0.0f;
                     if (useDepthDistortion) {
-                        const float barNdcDepth =
-                                2.0f * hit.compositeWeight * (
-                                    hit.ndcDepth * accumulatedWeight - accumulatedWeightedNdcDepth) *
-                                depthDistortionAdjoint;
-                        barDepthDepth = barNdcDepth * depthDistortionDndc01Ddepth(hit.depth);
-                        if (!kDetachDepthDistortionWeights) {
-                            barWeightDepth = (hit.ndcDepth * hit.ndcDepth * accumulatedWeight +
-                                              accumulatedWeightedNdcDepthSquared - 2.0f * hit.ndcDepth *
-                                              accumulatedWeightedNdcDepth) * depthDistortionAdjoint;
+                        const float depthToNdcDerivative = depthDistortionDndc01Ddepth(hit.depth);
+                        for (uint32_t otherIndex = 0u; otherIndex < hitCount; ++otherIndex) {
+                            if (otherIndex == hitIndex) { continue; }
+
+                            const bool hitIsUpper = otherIndex < hitIndex;
+                            const SurfaceRegularizerHitRecord &lowerHit = hitIsUpper ? hits[otherIndex] : hit;
+                            const SurfaceRegularizerHitRecord &upperHit = hitIsUpper ? hit : hits[otherIndex];
+                            const float depthDelta = upperHit.depth - lowerHit.depth;
+                            const float pairWeight =
+                                    depthDistortionPairSeparationWeight(lowerHit.depth, upperHit.depth);
+                            if (pairWeight <= 0.0f) { continue; }
+
+                            const float ndcDepthDelta = upperHit.ndcDepth - lowerHit.ndcDepth;
+                            const float ndcDepthDeltaSquared = ndcDepthDelta * ndcDepthDelta;
+                            const float depthPairWeight =
+                                    lowerHit.compositeWeight * upperHit.compositeWeight * depthDistortionAdjoint;
+                            const float pairWeightDerivative =
+                                    depthDistortionPairSeparationWeightDerivativeWrtDelta(depthDelta);
+
+                            if (hitIsUpper) {
+                                barDepthDepth += depthPairWeight *
+                                                 (pairWeight * 2.0f * ndcDepthDelta * depthToNdcDerivative +
+                                                  ndcDepthDeltaSquared * pairWeightDerivative);
+                                if (!kDetachDepthDistortionWeights) {
+                                    barWeightDepth += lowerHit.compositeWeight * pairWeight *
+                                                      ndcDepthDeltaSquared * depthDistortionAdjoint;
+                                }
+                            } else {
+                                barDepthDepth += depthPairWeight *
+                                                 (-pairWeight * 2.0f * ndcDepthDelta * depthToNdcDerivative -
+                                                  ndcDepthDeltaSquared * pairWeightDerivative);
+                                if (!kDetachDepthDistortionWeights) {
+                                    barWeightDepth += upperHit.compositeWeight * pairWeight *
+                                                      ndcDepthDeltaSquared * depthDistortionAdjoint;
+                                }
+                            }
                         }
                     }
                     // =========================================================

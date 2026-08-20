@@ -27,6 +27,9 @@ RUN_CONFIG_PARAMETERS = [
     "iterations",
     "densification_interval",
     "densification_grad_abs_min",
+    "densification_grad_abs_min_final",
+    "densification_grad_abs_min_decay_start_iteration",
+    "densification_grad_abs_min_decay_end_iteration",
     "normal_consistency_weight",
     "depth_distort_weight",
     "use_global_lr_schedule",
@@ -386,6 +389,7 @@ def compute_geometry_rows(
     seed: int,
     scale: float,
     use_vertices: bool,
+    print_each_score: bool,
 ) -> list[dict[str, Any]]:
     if not checkpoints:
         return []
@@ -406,8 +410,9 @@ def compute_geometry_rows(
     )
 
     rows: list[dict[str, Any]] = []
+    best_row: dict[str, Any] | None = None
     for checkpoint in checkpoints:
-        print(f"Evaluating geometry: {run_dir.name} iter {checkpoint.iteration}")
+        print(f"Evaluating geometry: {run_dir.name} iter {checkpoint.iteration}", flush=True)
         set_random_seed(seed)
         reconstruction_points, reconstruction_sampling = load_points_from_ply(
             ply_path=checkpoint.mesh_path,
@@ -420,25 +425,43 @@ def compute_geometry_rows(
             device=device,
             scale=scale,
         )
-        rows.append(
-            {
-                "run_name": run_dir.name,
-                "iteration": checkpoint.iteration,
-                "cd": metrics["cd"],
-                "accuracy": metrics["accuracy"],
-                "completion": metrics["completion"],
-                "median_reconstruction_to_gt": metrics["median_reconstruction_to_gt"],
-                "median_gt_to_reconstruction": metrics["median_gt_to_reconstruction"],
-                "p95_reconstruction_to_gt": metrics["p95_reconstruction_to_gt"],
-                "p95_gt_to_reconstruction": metrics["p95_gt_to_reconstruction"],
-                "reconstruction_points": len(reconstruction_points),
-                "ground_truth_points": len(ground_truth_points),
-                "reconstruction_sampling": reconstruction_sampling,
-                "ground_truth_sampling": ground_truth_sampling,
-                "reconstruction": str(checkpoint.mesh_path),
-                "ground_truth": str(ground_truth_path),
-            }
-        )
+        row = {
+            "run_name": run_dir.name,
+            "iteration": checkpoint.iteration,
+            "cd": metrics["cd"],
+            "accuracy": metrics["accuracy"],
+            "completion": metrics["completion"],
+            "median_reconstruction_to_gt": metrics["median_reconstruction_to_gt"],
+            "median_gt_to_reconstruction": metrics["median_gt_to_reconstruction"],
+            "p95_reconstruction_to_gt": metrics["p95_reconstruction_to_gt"],
+            "p95_gt_to_reconstruction": metrics["p95_gt_to_reconstruction"],
+            "reconstruction_points": len(reconstruction_points),
+            "ground_truth_points": len(ground_truth_points),
+            "reconstruction_sampling": reconstruction_sampling,
+            "ground_truth_sampling": ground_truth_sampling,
+            "reconstruction": str(checkpoint.mesh_path),
+            "ground_truth": str(ground_truth_path),
+        }
+        rows.append(row)
+
+        if best_row is None or float(row["cd"]) < float(best_row["cd"]):
+            best_row = row
+
+        if print_each_score:
+            best_text = ""
+            if best_row is not None:
+                best_text = (
+                    f" | best_so_far iter={int(best_row['iteration'])} "
+                    f"CD={format_metric(best_row['cd'])}"
+                )
+            print(
+                f"Geometry score: {run_dir.name} iter {checkpoint.iteration} "
+                f"CD={format_metric(row['cd'])} "
+                f"Accuracy={format_metric(row['accuracy'])} "
+                f"Completion={format_metric(row['completion'])}"
+                f"{best_text}",
+                flush=True,
+            )
 
     return rows
 
@@ -583,6 +606,7 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
                 seed=args.seed,
                 scale=args.scale,
                 use_vertices=args.use_vertices,
+                print_each_score=args.full,
             )
             write_dict_csv(geometry_csv_path, geometry_rows)
 
