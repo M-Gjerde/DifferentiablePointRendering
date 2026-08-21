@@ -784,10 +784,10 @@ def format_gradient_source_balance(
         "Gradient source balance:",
         "  "
         f"{'param':<8}"
-        f"{'loss':>11}"
-        f"{'surface':>11}"
-        f"{'total':>11}"
-        f"{'prior%':>8}"
+        f"{'loss_grad':>11}"
+        f"{'reg_grad':>11}"
+        f"{'total_grad':>11}"
+        f"{'reg_weight%':>8}"
         f"{'depth%':>8}"
         f"{'normal%':>9}"
         f"   {'source norms'}",
@@ -1129,7 +1129,7 @@ def save_iteration_point_cloud_snapshot(
         powers,
         shape_default=0.0,
     )
-    print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
+    #print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
     return ply_path
 
 
@@ -1770,13 +1770,14 @@ def maybe_make_densification_result(
                 f"abs_thr={densification_grad_abs_min:.3e}"
             )
         elif n_new_from_densification > 0:
-            print(
-                f"[Iter {iteration:04d}] Clone densification: "
-                f"adding {n_new_from_densification} surfels | "
-                f"grad_thr={grad_threshold:.3e}, "
-                f"abs_thr={densification_grad_abs_min:.3e}, "
-                f"pts={positions.shape[0]}"
-            )
+            if config.densification_verbose:
+                print(
+                    f"[Iter {iteration:04d}] Clone densification: "
+                    f"adding {n_new_from_densification} surfels | "
+                    f"grad_thr={grad_threshold:.3e}, "
+                    f"abs_thr={densification_grad_abs_min:.3e}, "
+                    f"pts={positions.shape[0]}"
+                )
 
         return densification_result
 

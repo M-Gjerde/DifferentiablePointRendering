@@ -778,16 +778,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                             inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
 
-                            print(
-                                f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
-                                f"scale={len(scale_prune_set)}, "
-                                f"opacity={len(opacity_prune_set)}, "
-                                f"inactive_gradient={len(inactive_cycle_prune_set)} "
-                                f"(threshold={inactive_gradient_prune_cycles} cycles), "
-                                f"both_scale_opacity={len(overlap_set)}, "
-                                f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
-                                f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
-                            )
+                            if config.densification_verbose:
+                                print(
+                                    f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
+                                    f"scale={len(scale_prune_set)}, "
+                                    f"opacity={len(opacity_prune_set)}, "
+                                    f"inactive_gradient={len(inactive_cycle_prune_set)} "
+                                    f"(threshold={inactive_gradient_prune_cycles} cycles), "
+                                    f"both_scale_opacity={len(overlap_set)}, "
+                                    f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
+                                    f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
+                                )
 
                             keep_mask_np[indices_to_remove] = False
                             remove_points(renderer, indices_to_remove)
@@ -847,7 +848,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             positions, rotations, scales, albedos, opacities, betas,
                             trainable_surfel_mask=trainable_surfel_mask,
                         )
-                        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
+                        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
+                                               powers)
                         rebuild_bvh(renderer)
 
                         migrated_device_adam_state = migrate_device_adam_state_snapshot(
@@ -877,7 +879,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
                         trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
                         frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
-                        print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
+                        #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
                     if camera_cycle_complete:
                         active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
@@ -1052,7 +1054,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             )
                         )
                         print(format_loss_breakdown(averaged_loss_state))
-                        #print("[device-training-step] Host gradient arrays skipped in fixed-topology path.")
+                        # print("[device-training-step] Host gradient arrays skipped in fixed-topology path.")
 
                         hotkey = poll_hotkey()
                         if hotkey == "s":
@@ -1078,7 +1080,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             )
                             extract_mesh_checkpoint(config, iteration, manual_points_path)
                         elif hotkey == "g":
-                            print("[device-training-step] Gradient snapshot skipped; host gradients were not downloaded.")
+                            print(
+                                "[device-training-step] Gradient snapshot skipped; host gradients were not downloaded.")
 
                     continue
 
@@ -1207,7 +1210,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     print(f"[Iter {iteration:04d}] Resetting all opacities to {reset_opacity_value}")
                     config.reset_opacity_iterations = False
 
-                verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas, trainable_surfel_mask=trainable_surfel_mask)
+                verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                                          trainable_surfel_mask=trainable_surfel_mask)
                 apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
 
                 if iteration % rebuild_bvh_interval == 0:
@@ -1293,17 +1297,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
 
                         inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
-
-                        print(
-                            f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
-                            f"scale={len(scale_prune_set)}, "
-                            f"opacity={len(opacity_prune_set)}, "
-                            f"inactive_gradient={len(inactive_cycle_prune_set)} "
-                            f"(threshold={inactive_gradient_prune_cycles} cycles), "
-                            f"both_scale_opacity={len(overlap_set)}, "
-                            f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
-                            f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
-                        )
+                        if config.densification_verbose:
+                            print(
+                                f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
+                                f"scale={len(scale_prune_set)}, "
+                                f"opacity={len(opacity_prune_set)}, "
+                                f"inactive_gradient={len(inactive_cycle_prune_set)} "
+                                f"(threshold={inactive_gradient_prune_cycles} cycles), "
+                                f"both_scale_opacity={len(overlap_set)}, "
+                                f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
+                                f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
+                            )
 
                         keep_mask_np[indices_to_remove] = False
                         remove_points(renderer, indices_to_remove)
@@ -1377,7 +1381,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                                                             iteration)
                     trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
                     frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
-                    print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
+                    #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
                 if camera_cycle_complete:
                     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )

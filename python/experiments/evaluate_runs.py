@@ -73,6 +73,9 @@ class RunEvaluation:
     summary: dict[str, Any]
 
 
+GROUND_TRUTH_SAMPLE_CACHE: dict[tuple[str, int, bool, int], tuple[Any, str]] = {}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -402,12 +405,22 @@ def compute_geometry_rows(
     ) = lazy_chamfer_imports()
 
     device = resolve_device(device_name)
-    set_random_seed(seed)
-    ground_truth_points, ground_truth_sampling = load_points_from_ply(
-        ply_path=ground_truth_path,
-        sample_count=samples,
-        use_vertices=use_vertices,
+    ground_truth_cache_key = (
+        str(ground_truth_path.resolve()),
+        int(samples),
+        bool(use_vertices),
+        int(seed),
     )
+    if ground_truth_cache_key in GROUND_TRUTH_SAMPLE_CACHE:
+        ground_truth_points, ground_truth_sampling = GROUND_TRUTH_SAMPLE_CACHE[ground_truth_cache_key]
+    else:
+        set_random_seed(seed)
+        ground_truth_points, ground_truth_sampling = load_points_from_ply(
+            ply_path=ground_truth_path,
+            sample_count=samples,
+            use_vertices=use_vertices,
+        )
+        GROUND_TRUTH_SAMPLE_CACHE[ground_truth_cache_key] = (ground_truth_points, ground_truth_sampling)
 
     rows: list[dict[str, Any]] = []
     best_row: dict[str, Any] | None = None
@@ -524,6 +537,80 @@ def plot_geometry_curve(run_dir: Path, rows: list[dict[str, Any]], output_path: 
     plt.close(fig)
 
 
+def plot_loss_geometry_curve(
+    run_dir: Path,
+    loss_rows: list[dict[str, str]],
+    geometry_rows: list[dict[str, Any]],
+    output_path: Path,
+    complete_only: bool,
+    log_loss_y: bool,
+) -> None:
+    plot_loss_rows = filtered_loss_rows(loss_rows, complete_only)
+    if not plot_loss_rows or not geometry_rows:
+        return
+
+    rgb_xs, rgb_ys = numeric_series(plot_loss_rows, "iteration", "loss_rgb_mean")
+    total_xs, total_ys = numeric_series(plot_loss_rows, "iteration", "loss_total_mean")
+    if not rgb_xs and not total_xs:
+        return
+
+    sorted_geometry_rows = sorted(geometry_rows, key=lambda row: int(row["iteration"]))
+    geometry_iterations = [int(row["iteration"]) for row in sorted_geometry_rows]
+    cds = [float(row["cd"]) for row in sorted_geometry_rows]
+
+    fig, loss_axis = plt.subplots(figsize=(9.5, 5.4), dpi=130)
+    geometry_axis = loss_axis.twinx()
+
+    loss_lines = []
+    if rgb_xs:
+        loss_lines.extend(
+            loss_axis.plot(
+                rgb_xs,
+                rgb_ys,
+                color="tab:blue",
+                linewidth=1.6,
+                label="RGB image loss",
+            )
+        )
+    if total_xs:
+        loss_lines.extend(
+            loss_axis.plot(
+                total_xs,
+                total_ys,
+                color="tab:cyan",
+                linewidth=1.2,
+                alpha=0.65,
+                label="total loss",
+            )
+        )
+
+    geometry_lines = geometry_axis.plot(
+        geometry_iterations,
+        cds,
+        color="tab:red",
+        marker="o",
+        linewidth=1.5,
+        label="CD",
+    )
+
+    loss_axis.set_title(f"Image Loss vs Geometry - {run_dir.name}")
+    loss_axis.set_xlabel("Iteration")
+    loss_axis.set_ylabel("Image loss")
+    geometry_axis.set_ylabel("Chamfer distance")
+    loss_axis.grid(True, alpha=0.25)
+    if log_loss_y:
+        apply_log_scale_if_possible(loss_axis, plot_loss_rows, ["loss_rgb_mean", "loss_total_mean"], enabled=True)
+
+    lines = loss_lines + geometry_lines
+    labels = [line.get_label() for line in lines]
+    loss_axis.legend(lines, labels, loc="best")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
 def last_numeric_value(rows: list[dict[str, str]], column: str) -> float | None:
     for row in reversed(rows):
         value = safe_float(row.get(column))
@@ -588,6 +675,7 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
     geometry_mode = "full" if args.full else "latest"
     geometry_csv_path = evaluation_dir / f"mesh_checkpoint_metrics_{geometry_mode}.csv"
     geometry_plot_path = evaluation_dir / f"geometry_curve_{geometry_mode}.png"
+    loss_geometry_plot_path = evaluation_dir / f"loss_geometry_curve_{geometry_mode}.png"
 
     if args.ground_truth is not None:
         if geometry_csv_path.exists() and not args.force:
@@ -611,6 +699,14 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
             write_dict_csv(geometry_csv_path, geometry_rows)
 
         plot_geometry_curve(run_dir, geometry_rows, geometry_plot_path)
+        plot_loss_geometry_curve(
+            run_dir=run_dir,
+            loss_rows=loss_rows,
+            geometry_rows=geometry_rows,
+            output_path=loss_geometry_plot_path,
+            complete_only=args.complete_loss_only,
+            log_loss_y=not args.linear_loss_y,
+        )
 
     run_config = load_run_config(run_dir)
     summary = make_summary(run_dir, loss_rows, geometry_rows, run_config)

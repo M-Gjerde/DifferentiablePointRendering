@@ -311,13 +311,9 @@ def compute_paper_ready_chamfer(
     completion = torch.mean(gt_to_reconstruction)
     cd = 0.5 * (accuracy + completion)
 
-    squared_loss, _ = chamfer_distance(
-        x=reconstruction_tensor,
-        y=ground_truth_tensor,
-        batch_reduction="mean",
-        point_reduction="mean",
-        norm=2,
-        single_directional=False,
+    pytorch3d_squared_loss = (
+            torch.mean(reconstruction_to_gt_squared)
+            + torch.mean(gt_to_reconstruction_squared)
     )
 
     return {
@@ -333,7 +329,7 @@ def compute_paper_ready_chamfer(
         "p95_gt_to_reconstruction": float((torch.quantile(gt_to_reconstruction, 0.95) * scale).item()),
         "max_reconstruction_to_gt": float((torch.max(reconstruction_to_gt) * scale).item()),
         "max_gt_to_reconstruction": float((torch.max(gt_to_reconstruction) * scale).item()),
-        "pytorch3d_squared_loss_raw": float(squared_loss.item()),
+        "pytorch3d_squared_loss_raw": float(pytorch3d_squared_loss.item()),
     }
 
 

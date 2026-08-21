@@ -1,13 +1,17 @@
-name: pale
+name: dpr
 channels:
   - conda-forge
+  - nodefaults
 dependencies:
   - python=3.12
   - pip
   - numpy
-  - pytorch
-  - torchvision
-  - torchaudio
-  - pip:
-      - opencv-python
-      - open3d
+  - imageio
+  - matplotlib
+  - pandas
+  - pillow
+  - opencv
+  - open3d
+  - vtk
+  - openexr-python
+  # Install PyTorch/PyTorch3D after activation with install_torch_cu128.sh.

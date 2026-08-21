@@ -268,7 +268,7 @@ namespace Pale {
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
     constexpr float LocalLayerDepthEpsilon = 1.00e-2f;
     constexpr float LocalLayerNormalCosineThreshold = 0.7071f; // 45 degrees mismatch to stop blending slabs
-    constexpr float DepthDistortionMaxPairDepthSeparation = LocalLayerDepthEpsilon * 20.0f;
+    constexpr float DepthDistortionMaxPairDepthSeparation = LocalLayerDepthEpsilon * 00.0f;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -748,7 +748,7 @@ namespace Pale {
         uint32_t rendererDebugMaxSplatEventsPerRay = 8;
         uint32_t rendererDebugMaxLocalSurfelHits = 8;
         uint32_t rendererDebugPointHitBatchSize = 8;
-        bool rendererDebugPointHitBatchLookahead = false;
+        bool rendererDebugPointHitBatchLookahead = true;
     };
 
     inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {

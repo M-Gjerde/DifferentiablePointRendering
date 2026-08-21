@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 1
+    adjoint_passes: int = 2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -71,25 +71,25 @@ class OptimizationConfig:
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.2
-    global_lr_start_iteration: int = 10_000
+    global_lr_start_iteration: int = 8_000
     global_lr_max_steps: int = int(iterations * 0.85)
 
-    depth_distort_weight: float = 750
+    depth_distort_weight: float = 5e5
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.015
+    normal_consistency_weight: float = 0.01
     normal_from_depth_use_mean_depth: bool = False
 
     # Density control / EV-splitting
     # Ignore stats from the first half of each densification interval after cloning/pruning.
     densification_stats_skip_interval_start: bool = True
-    densification_interval: int = 25
-    prune_interval: int = 25
+    densification_interval: int = 30
+    prune_interval: int = 30
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 3.0e-4
-    densification_grad_abs_min_decay_start_iteration: int = 0_000
+    densification_grad_abs_min_final: float = 2.0e-4
+    densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 3_000
     densification_scale_min: float = 1.0e-2
 
@@ -122,7 +122,8 @@ class OptimizationConfig:
 
     # Mesh Extraction
     mesh_extraction_iterations: list[int] = field(
-        default_factory=lambda: [3_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000, 12_000, 13_000, 14_000]
+        default_factory=lambda: [1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000, 12_000,
+                                 13_000, 14_000]
     )
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
@@ -135,7 +136,7 @@ class OptimizationConfig:
     save_snapshot_visible_normal: bool = False
     save_snapshot_normal_from_depth: bool = True
     save_snapshot_grad: bool = False
-    densification_verbose: bool = True
+    densification_verbose: bool = False
 
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
@@ -152,9 +153,9 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_position = 0.001
         factor_rotation = 0.01
         factor_scale = 0.0004
-        factor_albedo = 0.001
+        factor_albedo = 0.005
         factor_opacity = 0.008
-        factor_beta = 0.005
+        factor_beta = 0.0025
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
