@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 3
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -59,7 +59,7 @@ class OptimizationConfig:
     iterations: int = int(10.0e4)
     optimizer_type: str = "adam"
     # Learning rates
-    learning_rate: float = 1.5
+    learning_rate: float = 1.0
     learning_rate_position: float | None = None
     learning_rate_rotation: float | None = None
     max_rotation_step_radians: float = 0.01
@@ -76,7 +76,7 @@ class OptimizationConfig:
 
     depth_distort_weight: float = 1.0e5
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.0075
+    normal_consistency_weight: float = 0.015
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
 
@@ -88,14 +88,14 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-4
-    densification_grad_abs_min_final: float = 1.0e-4
+    densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min_final: float = 3.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 6_000
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.3
     densification_split_scale_factor: float = math.sqrt(2.0)
-    densification_exact_clone_percent_dense: float = 0.0025
+    densification_exact_clone_percent_dense: float = 0.003
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 

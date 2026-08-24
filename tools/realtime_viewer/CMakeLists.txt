@@ -18,6 +18,13 @@ find_package(OpenEXR REQUIRED)
 find_package(OpenGL REQUIRED)
 
 include(FetchContent)
+# Show download progress and avoid update checks on subsequent runs to reduce stalls
+set(FETCHCONTENT_QUIET OFF)
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+# Allow using FetchContent_Populate(imgui/imguizmo) with declared details under CMake 4.0+
+if(POLICY CMP0169)
+  cmake_policy(SET CMP0169 OLD)
+endif()
 
 set(SPDLOG_USE_STD_FORMAT ON)
 
@@ -58,8 +65,15 @@ if (NOT IMGUI_SOURCE_DIR)
     endif ()
     FetchContent_Declare(imgui
             GIT_REPOSITORY https://github.com/ocornut/imgui.git
-            GIT_TAG docking)
-    FetchContent_Populate(imgui)
+            GIT_TAG docking
+            GIT_SHALLOW TRUE
+            GIT_PROGRESS TRUE
+            GIT_SUBMODULES "")
+    # Populate only if not already fetched to avoid repeated network calls
+    FetchContent_GetProperties(imgui)
+    if (NOT imgui_POPULATED)
+        FetchContent_Populate(imgui)
+    endif ()
     set(IMGUI_SOURCE_DIR "${imgui_SOURCE_DIR}")
 endif ()
 
@@ -96,7 +110,9 @@ else ()
         set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
         FetchContent_Declare(glfw
                 GIT_REPOSITORY https://github.com/glfw/glfw.git
-                GIT_TAG 3.4)
+                GIT_TAG 3.4
+                GIT_SHALLOW TRUE
+                GIT_PROGRESS TRUE)
         FetchContent_MakeAvailable(glfw)
         set(PALE_REALTIME_GLFW_TARGET glfw)
     endif ()
@@ -121,8 +137,15 @@ if (NOT IMGUIZMO_SOURCE_DIR)
     endif ()
     FetchContent_Declare(imguizmo
             GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
-            GIT_TAG master)
-    FetchContent_Populate(imguizmo)
+            GIT_TAG master
+            GIT_SHALLOW TRUE
+            GIT_PROGRESS TRUE
+            GIT_SUBMODULES "")
+    # Populate only if not already fetched to avoid repeated network calls
+    FetchContent_GetProperties(imguizmo)
+    if (NOT imguizmo_POPULATED)
+        FetchContent_Populate(imguizmo)
+    endif ()
     set(IMGUIZMO_SOURCE_DIR "${imguizmo_SOURCE_DIR}")
 endif ()
 
