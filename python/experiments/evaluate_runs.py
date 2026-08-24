@@ -17,7 +17,9 @@ os.environ.setdefault("MPLCONFIGDIR", str(Path("/tmp") / "matplotlib-cache"))
 import matplotlib
 
 matplotlib.use("Agg")
+import imageio.v3 as iio
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -30,8 +32,15 @@ RUN_CONFIG_PARAMETERS = [
     "densification_grad_abs_min_final",
     "densification_grad_abs_min_decay_start_iteration",
     "densification_grad_abs_min_decay_end_iteration",
+    "densification_scale_min",
+    "densification_split_offset_scale",
+    "densification_split_scale_factor",
+    "densification_exact_clone_percent_dense",
+    "densification_scene_extent",
+    "densification_max_new_fraction",
     "normal_consistency_weight",
     "depth_distort_weight",
+    "opacity_prior_weight",
     "use_global_lr_schedule",
     "global_lr_scale_final",
     "global_lr_start_iteration",
@@ -44,7 +53,7 @@ RUN_CONFIG_PARAMETERS = [
     "learning_rate_beta",
     "densify_bsdf_floor",
     "densify_bsdf_gamma",
-    "mesh_extraction_iterations",
+    "mesh_extraction_interval",
 ]
 
 LOSS_COLUMNS = [
@@ -55,6 +64,7 @@ LOSS_COLUMNS = [
 REGULARIZER_COLUMNS = [
     ("loss_depth_distortion_weighted_mean", "depth weighted"),
     ("loss_normal_consistency_weighted_mean", "normal weighted"),
+    ("loss_opacity_prior_weighted_mean", "opacity prior weighted"),
 ]
 
 
@@ -70,6 +80,7 @@ class RunEvaluation:
     evaluation_dir: Path
     loss_rows: list[dict[str, str]]
     geometry_rows: list[dict[str, Any]]
+    psnr_rows: list[dict[str, Any]]
     summary: dict[str, Any]
 
 
@@ -182,6 +193,13 @@ def format_number(value: Any) -> str:
 
 def format_metric(value: Any, digits: int = 5) -> str:
     number = safe_float(value)
+    if number is None and value not in {None, ""}:
+        try:
+            fallback_number = float(value)
+        except (TypeError, ValueError):
+            fallback_number = math.nan
+        if math.isinf(fallback_number):
+            return "inf" if fallback_number > 0.0 else "-inf"
     if number is None:
         return ""
     return f"{number:.{digits}f}"
@@ -222,6 +240,118 @@ def optimization_config_from_run_config(run_config: dict[str, Any]) -> dict[str,
     return optimization_config if isinstance(optimization_config, dict) else {}
 
 
+def default_run_root() -> Path:
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from config import OptimizationConfig
+
+    output_dir = Path(OptimizationConfig().output_dir).expanduser()
+    if output_dir.is_absolute():
+        return output_dir.resolve()
+    return (PROJECT_ROOT / output_dir).resolve()
+
+
+def load_rgb_image(path: Path) -> np.ndarray:
+    image = iio.imread(path.as_posix())
+    image = np.asarray(image, dtype=np.float32)
+
+    if image.ndim == 2:
+        image = np.stack([image, image, image], axis=-1)
+    elif image.ndim == 3 and image.shape[2] > 3:
+        image = image[..., :3]
+
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise RuntimeError(f"RGB image must be HxWx3, got shape {image.shape}: {path}")
+
+    if image.size and float(image.max()) > 1.0:
+        image = image / 255.0
+
+    return np.ascontiguousarray(image, dtype=np.float32)
+
+
+def compute_3dgs_psnr(render_image: np.ndarray, target_image: np.ndarray) -> tuple[float, float]:
+    if render_image.shape != target_image.shape:
+        raise RuntimeError(
+            "Cannot compute PSNR for images with different shapes: "
+            f"render={render_image.shape}, target={target_image.shape}"
+        )
+
+    difference = render_image.astype(np.float64) - target_image.astype(np.float64)
+    mse = float(np.mean(np.square(difference)))
+    if mse <= 0.0:
+        return math.inf, mse
+    return -10.0 * math.log10(mse), mse
+
+
+def camera_name_from_final_render(render_path: Path) -> str | None:
+    match = re.fullmatch(r"render_final_(.+)\.png", render_path.name)
+    return match.group(1) if match is not None else None
+
+
+def resolve_dataset_path(run_dir: Path, run_config: dict[str, Any]) -> Path | None:
+    optimization_config = optimization_config_from_run_config(run_config)
+    dataset_path_value = run_config.get("dataset_path", optimization_config.get("dataset_path"))
+    if not dataset_path_value:
+        return None
+
+    dataset_path = Path(str(dataset_path_value)).expanduser()
+    if dataset_path.is_absolute():
+        return dataset_path
+
+    project_relative = (PROJECT_ROOT / dataset_path).resolve()
+    if project_relative.exists():
+        return project_relative
+
+    return (run_dir / dataset_path).resolve()
+
+
+def find_target_image_for_camera(run_dir: Path, dataset_path: Path | None, camera_name: str) -> Path | None:
+    saved_target_path = run_dir / f"render_target_{camera_name}.png"
+    if saved_target_path.is_file():
+        return saved_target_path
+
+    if dataset_path is not None:
+        dataset_target_path = dataset_path / "images" / f"{camera_name}.png"
+        if dataset_target_path.is_file():
+            return dataset_target_path
+
+    return None
+
+
+def compute_final_psnr_rows(run_dir: Path, run_config: dict[str, Any]) -> list[dict[str, Any]]:
+    dataset_path = resolve_dataset_path(run_dir, run_config)
+    rows: list[dict[str, Any]] = []
+
+    for render_path in sorted(run_dir.glob("render_final_*.png")):
+        camera_name = camera_name_from_final_render(render_path)
+        if camera_name is None:
+            continue
+
+        target_path = find_target_image_for_camera(run_dir, dataset_path, camera_name)
+        if target_path is None:
+            print(f"Warning: no target image found for final render '{render_path.name}', skipping PSNR.")
+            continue
+
+        render_image = load_rgb_image(render_path)
+        target_image = load_rgb_image(target_path)
+        psnr_value, mse_value = compute_3dgs_psnr(render_image, target_image)
+
+        rows.append(
+            {
+                "run_name": run_dir.name,
+                "camera": camera_name,
+                "psnr_3dgs": psnr_value,
+                "mse": mse_value,
+                "width": render_image.shape[1],
+                "height": render_image.shape[0],
+                "render": str(render_path.resolve()),
+                "target": str(target_path.resolve()),
+            }
+        )
+
+    return rows
+
+
 def find_run_dirs(run_dirs: list[Path], run_roots: list[Path], recursive: bool) -> list[Path]:
     discovered: list[Path] = []
 
@@ -248,6 +378,18 @@ def find_run_dirs(run_dirs: list[Path], run_roots: list[Path], recursive: bool) 
         unique[run_dir] = run_dir
 
     return sorted(unique.values(), key=lambda path: str(path))
+
+
+def find_latest_run_dir_by_metrics_timestamp(run_root: Path) -> Path | None:
+    if not run_root.is_dir():
+        return None
+
+    metrics_paths = [path for path in run_root.rglob("metrics.csv") if path.is_file()]
+    if not metrics_paths:
+        return None
+
+    latest_metrics_path = max(metrics_paths, key=lambda path: (path.stat().st_mtime, str(path)))
+    return latest_metrics_path.parent.resolve()
 
 
 def common_parent(paths: list[Path]) -> Path:
@@ -623,9 +765,15 @@ def make_summary(
     run_dir: Path,
     loss_rows: list[dict[str, str]],
     geometry_rows: list[dict[str, Any]],
+    psnr_rows: list[dict[str, Any]],
     run_config: dict[str, Any],
 ) -> dict[str, Any]:
     optimization_config = optimization_config_from_run_config(run_config)
+    psnr_values = [
+        float(row["psnr_3dgs"])
+        for row in psnr_rows
+        if row.get("psnr_3dgs") not in {None, ""}
+    ]
 
     summary: dict[str, Any] = {
         "run_name": run_dir.name,
@@ -635,6 +783,8 @@ def make_summary(
         "final_loss_rgb": last_numeric_value(loss_rows, "loss_rgb_mean"),
         "final_num_points": last_numeric_value(loss_rows, "num_points"),
         "mesh_checkpoint_count": len(geometry_rows),
+        "final_psnr_3dgs": sum(psnr_values) / len(psnr_values) if psnr_values else "",
+        "psnr_camera_count": len(psnr_values),
     }
 
     if geometry_rows:
@@ -661,6 +811,7 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
     run_dir = resolve_path(run_dir)
     evaluation_dir = run_dir / "evaluation"
     evaluation_dir.mkdir(parents=True, exist_ok=True)
+    run_config = load_run_config(run_dir)
 
     loss_rows = read_csv_dicts(run_dir / "metrics.csv")
     plot_loss_curve(
@@ -708,8 +859,14 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
             log_loss_y=not args.linear_loss_y,
         )
 
-    run_config = load_run_config(run_dir)
-    summary = make_summary(run_dir, loss_rows, geometry_rows, run_config)
+    psnr_rows = compute_final_psnr_rows(run_dir, run_config)
+    write_dict_csv(
+        evaluation_dir / "final_image_psnr.csv",
+        psnr_rows,
+        fieldnames=["run_name", "camera", "psnr_3dgs", "mse", "width", "height", "render", "target"],
+    )
+
+    summary = make_summary(run_dir, loss_rows, geometry_rows, psnr_rows, run_config)
     with (evaluation_dir / "run_summary.json").open("w", encoding="utf-8") as summary_file:
         json.dump(summary, summary_file, indent=2)
 
@@ -718,6 +875,7 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
         evaluation_dir=evaluation_dir,
         loss_rows=loss_rows,
         geometry_rows=geometry_rows,
+        psnr_rows=psnr_rows,
         summary=summary,
     )
 
@@ -849,9 +1007,53 @@ def print_geometry_table(evaluations: list[RunEvaluation], full: bool) -> None:
         )
 
 
+def print_psnr_table(evaluations: list[RunEvaluation]) -> None:
+    psnr_evaluations = [evaluation for evaluation in evaluations if evaluation.psnr_rows]
+    if not psnr_evaluations:
+        return
+
+    def psnr_sort_value(evaluation: RunEvaluation) -> float:
+        try:
+            value = float(evaluation.summary.get("final_psnr_3dgs", -math.inf))
+        except (TypeError, ValueError):
+            return -math.inf
+        return value if not math.isnan(value) else -math.inf
+
+    print()
+    print("| Run | Final PSNR ↑ | Cameras |")
+    print("|---|---:|---:|")
+
+    table_rows = sorted(
+        psnr_evaluations,
+        key=lambda evaluation: (-psnr_sort_value(evaluation), evaluation.run_dir.name),
+    )
+    for evaluation in table_rows:
+        print(
+            f"| {evaluation.run_dir.name} "
+            f"| {format_metric(evaluation.summary.get('final_psnr_3dgs'))} "
+            f"| {int(evaluation.summary.get('psnr_camera_count', 0))} |"
+        )
+
+    psnr_values = [
+        float(evaluation.summary["final_psnr_3dgs"])
+        for evaluation in table_rows
+        if evaluation.summary.get("final_psnr_3dgs") not in {None, ""}
+    ]
+    if psnr_values:
+        print(f"| **Mean** | **{format_metric(sum(psnr_values) / len(psnr_values))}** |  |")
+
+
 def main() -> None:
     args = parse_args()
     run_dirs = find_run_dirs(args.run_dir, args.run_root, args.recursive)
+    if not run_dirs and not args.run_dir and not args.run_root:
+        run_root = default_run_root()
+        latest_run_dir = find_latest_run_dir_by_metrics_timestamp(run_root)
+        if latest_run_dir is None:
+            raise SystemExit(f"No run directories with metrics.csv found under default output dir: {run_root}")
+        run_dirs = [latest_run_dir]
+        print(f"Using latest run by metrics.csv timestamp: {latest_run_dir}")
+
     if not run_dirs:
         raise SystemExit("No run directories found. Pass --run-dir or --run-root.")
 
@@ -876,6 +1078,8 @@ def main() -> None:
         "final_cd",
         "final_accuracy",
         "final_completion",
+        "final_psnr_3dgs",
+        "psnr_camera_count",
         "final_loss_total",
         "final_loss_rgb",
         "final_num_points",
@@ -887,6 +1091,7 @@ def main() -> None:
     plot_geometry_comparison(evaluations, aggregate_dir / "geometry_comparison.png", args.max_summary_runs)
     plot_loss_comparison(evaluations, aggregate_dir / "loss_comparison.png", args.max_summary_runs)
     print_geometry_table(evaluations, full=args.full)
+    print_psnr_table(evaluations)
 
     print(f"Saved evaluation summary: {aggregate_dir / 'summary.csv'}")
 

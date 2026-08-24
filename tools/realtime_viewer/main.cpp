@@ -19,6 +19,7 @@
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <ImGuizmo.h>
@@ -56,6 +57,9 @@ namespace {
     const glm::vec3 kWorldUp{0.0f, 0.0f, 1.0f};
     const glm::vec3 kDefaultLookAt{0.0f, 0.0f, 0.2f};
     constexpr ImVec4 kBlenderViewportBackground{0.215f, 0.215f, 0.215f, 1.0f};
+    constexpr uint32_t kDefaultViewportImageExtent = 500u;
+    constexpr float kSidebarDockFraction = 0.50f;
+    constexpr std::size_t kFrameTimeHistoryCapacity = 240u;
 
     struct AppArgs {
         std::filesystem::path assetsDir = PALE_DEFAULT_ASSET_DIR;
@@ -516,22 +520,17 @@ namespace {
         bool& timerProfilingEnabled,
         bool& gpuCounterProfilingEnabled,
         double lastRenderMs,
+        const std::vector<float>& frameTimeHistory,
         uint32_t renderWidth,
         uint32_t renderHeight,
         const Pale::GPUSceneBuffers& sceneGpu,
         const Pale::RenderProfilingCounters& counters,
-        const std::vector<Pale::ScopedTimerRecord>& timerRecords,
-        ImVec2 renderAreaMin,
-        ImVec2 renderAreaSize) {
+        const std::vector<Pale::ScopedTimerRecord>& timerRecords) {
         if (!open) {
             return false;
         }
 
         bool settingsChanged = false;
-        const float windowWidth = std::clamp(renderAreaSize.x - 24.0f, 360.0f, 620.0f);
-        const float windowHeight = std::clamp(renderAreaSize.y - 24.0f, 360.0f, 720.0f);
-        ImGui::SetNextWindowPos(ImVec2(renderAreaMin.x + 12.0f, renderAreaMin.y + 12.0f), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(windowWidth, windowHeight), ImGuiCond_FirstUseEver);
         if (ImGui::Begin(
                 "Profiling",
                 &open,
@@ -551,6 +550,30 @@ namespace {
                 sceneGpu.triangleCount,
                 sceneGpu.blasNodeCount,
                 sceneGpu.tlasNodeCount);
+
+            if (!frameTimeHistory.empty()) {
+                float maxFrameTimeMs = 1.0f;
+                float totalFrameTimeMs = 0.0f;
+                for (const float frameTimeMs : frameTimeHistory) {
+                    maxFrameTimeMs = std::max(maxFrameTimeMs, frameTimeMs);
+                    totalFrameTimeMs += frameTimeMs;
+                }
+                const float averageFrameTimeMs =
+                    totalFrameTimeMs / static_cast<float>(frameTimeHistory.size());
+                ImGui::Text(
+                    "Total render time history: avg %.3f ms  max %.3f ms",
+                    averageFrameTimeMs,
+                    maxFrameTimeMs);
+                ImGui::PlotLines(
+                    "##TotalRenderTimeHistory",
+                    frameTimeHistory.data(),
+                    static_cast<int>(frameTimeHistory.size()),
+                    0,
+                    nullptr,
+                    0.0f,
+                    maxFrameTimeMs * 1.05f,
+                    ImVec2(-1.0f, 96.0f));
+            }
 
             if (ImGui::Button("Copy timers")) {
                 const std::string text =
@@ -1406,6 +1429,36 @@ namespace {
         queue.wait();
     }
 
+    void prepareRealtimeViewerRgbLossAdjointSource(
+        sycl::queue queue,
+        const Pale::SensorGPU& sensor,
+        float& lossOut) {
+        if (!sensor.framebuffer) {
+            throw std::runtime_error("prepareRealtimeViewerRgbLossAdjointSource: missing framebuffer");
+        }
+
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(sensor.width) * static_cast<std::size_t>(sensor.height);
+        const float invElementCount =
+            pixelCount > 0u ? 1.0f / (static_cast<float>(pixelCount) * 3.0f) : 0.0f;
+
+        std::vector<float> framebuffer = Pale::downloadSensorRGBARAW(queue, sensor);
+        lossOut = 0.0f;
+        for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t rgbaIndex = pixelIndex * 4u;
+            const float diffR = framebuffer[rgbaIndex + 0u];
+            const float diffG = framebuffer[rgbaIndex + 1u];
+            const float diffB = framebuffer[rgbaIndex + 2u];
+            lossOut += 0.5f * (diffR * diffR + diffG * diffG + diffB * diffB) * invElementCount;
+
+            framebuffer[rgbaIndex + 0u] = diffR * invElementCount;
+            framebuffer[rgbaIndex + 1u] = diffG * invElementCount;
+            framebuffer[rgbaIndex + 2u] = diffB * invElementCount;
+            framebuffer[rgbaIndex + 3u] = 0.0f;
+        }
+        Pale::uploadSensorRGBA(queue, sensor, std::move(framebuffer));
+    }
+
     Pale::PathTracerSettings makeDefaultSettings() {
         Pale::PathTracerSettings settings{};
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
@@ -1444,9 +1497,26 @@ namespace {
 
     [[nodiscard]] uint32_t renderExtentFromAvailable(float available) {
         return static_cast<uint32_t>(std::clamp(
-            static_cast<int>(std::lround(std::max(available, 1.0f))),
+            static_cast<int>(std::floor(std::max(available, 1.0f))),
             16,
             4096));
+    }
+
+    [[nodiscard]] std::array<int, 2> initialViewerWindowSize(
+        uint32_t targetRenderWidth,
+        uint32_t targetRenderHeight) {
+        constexpr float renderDockFraction = 1.0f - kSidebarDockFraction;
+        constexpr float renderDockHorizontalChrome = 17.0f;
+        constexpr int renderDockVerticalChrome = 54;
+        const int windowWidth = static_cast<int>(std::ceil(
+            (static_cast<float>(targetRenderWidth) + renderDockHorizontalChrome) /
+            renderDockFraction));
+        const int windowHeight =
+            static_cast<int>(targetRenderHeight) + renderDockVerticalChrome;
+        return {
+            std::clamp(windowWidth, 640, 1920),
+            std::clamp(windowHeight, 480, 1200),
+        };
     }
 
     [[nodiscard]] float chooseGridSpacing(float extent) {
@@ -1894,12 +1964,15 @@ int main(int argc, char** argv) {
         uint32_t renderWidth = args.width;
         uint32_t renderHeight = args.height;
         if (renderWidth == 0 || renderHeight == 0) {
-            if (!buildProducts.cameraGPUs.empty()) {
+            if (args.width == 0 && args.height == 0) {
+                renderWidth = kDefaultViewportImageExtent;
+                renderHeight = kDefaultViewportImageExtent;
+            } else if (!buildProducts.cameraGPUs.empty()) {
                 renderWidth = buildProducts.cameraGPUs.front().width;
                 renderHeight = buildProducts.cameraGPUs.front().height;
             } else {
-                renderWidth = 800u;
-                renderHeight = 600u;
+                renderWidth = args.width == 0 ? kDefaultViewportImageExtent : args.width;
+                renderHeight = args.height == 0 ? kDefaultViewportImageExtent : args.height;
             }
         }
 
@@ -1937,6 +2010,16 @@ int main(int argc, char** argv) {
         float exposure = 1.0f;
         float gamma = 1.0f;
         double lastRenderMs = 0.0;
+        std::vector<float> renderFrameTimeHistory;
+        renderFrameTimeHistory.reserve(kFrameTimeHistoryCapacity);
+        bool runAdjointEveryRender = false;
+        bool runAdjointNextRender = false;
+        bool viewerAdjointDirectLight = true;
+        int viewerAdjointSamplesPerPixel = 1;
+        int viewerAdjointBounces = 1;
+        double lastViewerAdjointMs = 0.0;
+        float lastViewerAdjointLoss = 0.0f;
+        std::string viewerAdjointStatus = "Adjoint profiling is off";
         std::vector<uint8_t> renderPixels;
         std::vector<uint8_t> pixels;
         DebugDisplayBuffers debugDisplayBuffers;
@@ -1950,6 +2033,7 @@ int main(int argc, char** argv) {
         bool showProfilingWindow = true;
         bool timerProfilingEnabled = true;
         bool gpuCounterProfilingEnabled = false;
+        bool dockLayoutInitialized = false;
         Pale::RenderProfilingCounters lastProfilingCounters{};
         std::vector<Pale::ScopedTimerRecord> lastTimerRecords;
         Pale::RenderProfilingCounters* deviceProfilingCounters =
@@ -1958,6 +2042,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Failed to allocate render profiling counters");
         }
         queue.memset(deviceProfilingCounters, 0, sizeof(Pale::RenderProfilingCounters)).wait();
+        Pale::PointGradients viewerAdjointGradients{};
 
         if (!glfwInit()) {
             throw std::runtime_error("Failed to initialize GLFW");
@@ -1966,7 +2051,14 @@ int main(int argc, char** argv) {
         const char* glslVersion = "#version 130";
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-        GLFWwindow* window = glfwCreateWindow(1280, 720, "Pale Realtime Viewer", nullptr, nullptr);
+        const std::array<int, 2> initialWindowSize =
+            initialViewerWindowSize(renderWidth, renderHeight);
+        GLFWwindow* window = glfwCreateWindow(
+            initialWindowSize[0],
+            initialWindowSize[1],
+            "Pale Realtime Viewer",
+            nullptr,
+            nullptr);
         if (!window) {
             glfwTerminate();
             throw std::runtime_error("Failed to create GLFW window");
@@ -2194,6 +2286,45 @@ int main(int argc, char** argv) {
                     std::to_string(latestOptimizationSnapshotIndex + 1u) + "/" +
                     std::to_string(latestOptimizationSnapshots.size()) + ": " +
                     nextPath.filename().string();
+            }
+        };
+
+        auto jumpToOptimizationSnapshotBoundary = [&](bool latestSnapshot) {
+            std::filesystem::path pointsDirectory;
+            if (latestOptimizationMode && !latestOptimizationPointsDirectory.empty()) {
+                pointsDirectory = latestOptimizationPointsDirectory;
+            } else if (currentPointCloudPath.has_parent_path()) {
+                const std::filesystem::path candidateDirectory = currentPointCloudPath.parent_path();
+                if (!listOptimizationPointCloudSnapshots(candidateDirectory).empty()) {
+                    pointsDirectory = candidateDirectory;
+                }
+            }
+
+            if (pointsDirectory.empty()) {
+                pointCloudStatus =
+                    "Press R, Load latest run PLY, or load an iter_*_points.ply from an optimization points folder first";
+                return;
+            }
+
+            std::vector<PointCloudSnapshot> snapshots = listOptimizationPointCloudSnapshots(pointsDirectory);
+            if (snapshots.empty()) {
+                pointCloudStatus = "No optimization snapshots found in " + pointsDirectory.string();
+                return;
+            }
+
+            const std::size_t targetIndex = latestSnapshot ? snapshots.size() - 1u : 0u;
+            const std::filesystem::path targetPath = snapshots[targetIndex].path;
+            if (replacePointCloud(targetPath, true)) {
+                latestOptimizationMode = true;
+                latestOptimizationPointsDirectory = pointsDirectory;
+                latestOptimizationSnapshots = std::move(snapshots);
+                latestOptimizationSnapshotIndex = targetIndex;
+                pointCloudStatus =
+                    std::string(latestSnapshot ? "Latest" : "Earliest") +
+                    " optimization snapshot " +
+                    std::to_string(latestOptimizationSnapshotIndex + 1u) + "/" +
+                    std::to_string(latestOptimizationSnapshots.size()) + ": " +
+                    targetPath.filename().string();
             }
         };
 
@@ -2432,6 +2563,77 @@ int main(int argc, char** argv) {
             updateDisplayTexture();
         };
 
+        auto ensureViewerAdjointGradients = [&]() {
+            const bool hasUsableGradients =
+                viewerAdjointGradients.gradPosition != nullptr &&
+                viewerAdjointGradients.numPoints == sceneGpu.pointCount &&
+                viewerAdjointGradients.cameraSlotCount == 1u;
+            if (hasUsableGradients) {
+                return;
+            }
+
+            if (viewerAdjointGradients.gradPosition != nullptr ||
+                viewerAdjointGradients.numPoints != 0u) {
+                Pale::freeGradientsForScene(queue, viewerAdjointGradients);
+            }
+
+            Pale::SceneBuild::BuildProducts adjointBuildProducts = renderBuildProducts;
+            adjointBuildProducts.cameraGPUs.clear();
+            adjointBuildProducts.cameraGPUs.push_back(sensor.camera);
+            viewerAdjointGradients =
+                Pale::makeGradientsForScene(queue, adjointBuildProducts, nullptr);
+        };
+
+        auto runViewerAdjointPass = [&](std::vector<Pale::SensorGPU>& renderSensors) {
+            if (!runAdjointEveryRender && !runAdjointNextRender) {
+                return;
+            }
+            runAdjointNextRender = false;
+
+            if (!hasSensor || sceneGpu.pointCount == 0u) {
+                viewerAdjointStatus = "Adjoint skipped: no active sensor or surfels";
+                lastViewerAdjointMs = 0.0;
+                lastViewerAdjointLoss = 0.0f;
+                return;
+            }
+
+            viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 64);
+            viewerAdjointBounces = std::clamp(viewerAdjointBounces, 1, 8);
+
+            const auto start = std::chrono::steady_clock::now();
+            {
+                Pale::ScopedTimer timer("Viewer adjoint source setup", spdlog::level::debug);
+                prepareRealtimeViewerRgbLossAdjointSource(queue, sensor, lastViewerAdjointLoss);
+            }
+            {
+                Pale::ScopedTimer timer("Viewer adjoint gradient buffer setup", spdlog::level::debug);
+                ensureViewerAdjointGradients();
+            }
+
+            Pale::PathTracerSettings adjointSettings = settings;
+            adjointSettings.maxAdjointBounces = static_cast<uint32_t>(viewerAdjointBounces);
+            adjointSettings.adjointSamplesPerPixel =
+                static_cast<uint32_t>(viewerAdjointSamplesPerPixel);
+            adjointSettings.enableAdjointDirectLight = viewerAdjointDirectLight;
+            adjointSettings.numAdjointPathShadowRays =
+                std::max(adjointSettings.numAdjointPathShadowRays, 1u);
+
+            tracer.getSettings() = adjointSettings;
+            {
+                Pale::ScopedTimer timer("Viewer adjoint pass total", spdlog::level::debug);
+                tracer.renderBackward(renderSensors, viewerAdjointGradients, nullptr);
+            }
+            tracer.getSettings() = settings;
+            queue.wait();
+
+            const auto stop = std::chrono::steady_clock::now();
+            lastViewerAdjointMs =
+                std::chrono::duration<double, std::milli>(stop - start).count();
+            viewerAdjointStatus =
+                "Last adjoint: " + std::to_string(lastViewerAdjointMs) +
+                " ms, loss " + std::to_string(lastViewerAdjointLoss);
+        };
+
         auto renderNow = [&]() {
             renderWidth = std::clamp(renderWidth, 16u, 4096u);
             renderHeight = std::clamp(renderHeight, 16u, 4096u);
@@ -2491,20 +2693,38 @@ int main(int argc, char** argv) {
                     sizeof(Pale::RenderProfilingCounters)).wait();
             }
 
+            Pale::PathTracerSettings activeTracerSettings = settings;
+            if (runAdjointEveryRender || runAdjointNextRender) {
+                viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 64);
+                viewerAdjointBounces = std::clamp(viewerAdjointBounces, 1, 8);
+                activeTracerSettings.maxAdjointBounces =
+                    static_cast<uint32_t>(viewerAdjointBounces);
+                activeTracerSettings.adjointSamplesPerPixel =
+                    static_cast<uint32_t>(viewerAdjointSamplesPerPixel);
+                activeTracerSettings.enableAdjointDirectLight = viewerAdjointDirectLight;
+                activeTracerSettings.numAdjointPathShadowRays =
+                    std::max(activeTracerSettings.numAdjointPathShadowRays, 1u);
+            }
+
             if (tracerDirty) {
-                tracer.getSettings() = settings;
+                tracer.getSettings() = activeTracerSettings;
                 tracer.setScene(sceneGpu, renderBuildProducts);
                 tracerDirty = false;
             } else {
-                tracer.getSettings() = settings;
+                tracer.getSettings() = activeTracerSettings;
             }
 
             std::vector<Pale::SensorGPU> renderSensors{sensor};
             const auto start = std::chrono::steady_clock::now();
             tracer.renderForward(renderSensors);
+            runViewerAdjointPass(renderSensors);
             const auto stop = std::chrono::steady_clock::now();
             lastRenderMs =
                 std::chrono::duration<double, std::milli>(stop - start).count();
+            renderFrameTimeHistory.push_back(static_cast<float>(lastRenderMs));
+            if (renderFrameTimeHistory.size() > kFrameTimeHistoryCapacity) {
+                renderFrameTimeHistory.erase(renderFrameTimeHistory.begin());
+            }
             lastTimerRecords = Pale::ScopedTimerDetail::snapshotProfilingRecords();
             if (desiredProfilingCounters != nullptr) {
                 queue.memcpy(
@@ -2547,9 +2767,50 @@ int main(int argc, char** argv) {
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
+
+            if (ImGui::BeginMainMenuBar()) {
+                if (ImGui::BeginMenu("View")) {
+                    ImGui::MenuItem("Profiling", nullptr, &showProfilingWindow);
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMainMenuBar();
+            }
+
+            ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+            const ImGuiID dockspaceId = ImHashStr("PaleRealtimeViewerDockSpace");
+            if (!dockLayoutInitialized) {
+                dockLayoutInitialized = true;
+                ImGui::DockBuilderRemoveNode(dockspaceId);
+                ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+                ImGui::DockBuilderSetNodePos(dockspaceId, mainViewport->WorkPos);
+                ImGui::DockBuilderSetNodeSize(dockspaceId, mainViewport->WorkSize);
+
+                ImGuiID leftDockId = 0;
+                ImGuiID renderDockId = 0;
+                ImGui::DockBuilderSplitNode(
+                    dockspaceId,
+                    ImGuiDir_Left,
+                    kSidebarDockFraction,
+                    &leftDockId,
+                    &renderDockId);
+
+                ImGuiID profilingDockId = 0;
+                ImGuiID rendererSettingsDockId = 0;
+                ImGui::DockBuilderSplitNode(
+                    leftDockId,
+                    ImGuiDir_Down,
+                    0.40f,
+                    &profilingDockId,
+                    &rendererSettingsDockId);
+
+                ImGui::DockBuilderDockWindow("Renderer settings", rendererSettingsDockId);
+                ImGui::DockBuilderDockWindow("Profiling", profilingDockId);
+                ImGui::DockBuilderDockWindow("Render", renderDockId);
+                ImGui::DockBuilderFinish(dockspaceId);
+            }
             ImGui::DockSpaceOverViewport(
-                0,
-                ImGui::GetMainViewport(),
+                dockspaceId,
+                mainViewport,
                 ImGuiDockNodeFlags_PassthruCentralNode);
             ImGuizmo::BeginFrame();
 
@@ -2559,6 +2820,14 @@ int main(int argc, char** argv) {
                 !io.KeySuper) {
                 if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
                     refreshLatestOptimizationPointCloud();
+                }
+
+                if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+                    jumpToOptimizationSnapshotBoundary(false);
+                }
+
+                if (ImGui::IsKeyPressed(ImGuiKey_L, false)) {
+                    jumpToOptimizationSnapshotBoundary(true);
                 }
 
                 if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
@@ -2607,23 +2876,7 @@ int main(int argc, char** argv) {
             Pale::Entity selectedLight =
                 areaLights.empty() ? Pale::Entity{} : areaLights[static_cast<std::size_t>(selectedLightIndex)];
 
-            float mainMenuBarHeight = 0.0f;
-            if (ImGui::BeginMainMenuBar()) {
-                mainMenuBarHeight = ImGui::GetFrameHeight();
-                if (ImGui::BeginMenu("View")) {
-                    ImGui::MenuItem("Profiling", nullptr, &showProfilingWindow);
-                    ImGui::EndMenu();
-                }
-                ImGui::EndMainMenuBar();
-            }
-
-            const float contentY = mainMenuBarHeight;
-            const float contentHeight = std::max(1.0f, static_cast<float>(io.DisplaySize.y) - contentY);
-            const ImVec2 renderAreaMin{330.0f, contentY};
-            const ImVec2 renderAreaSize{std::max(1.0f, io.DisplaySize.x - 330.0f), contentHeight};
-            ImGui::SetNextWindowPos(ImVec2(0.0f, contentY), ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(330.0f, contentHeight), ImGuiCond_FirstUseEver);
-            ImGui::Begin("Controls");
+            ImGui::Begin("Renderer settings");
             ImGui::TextWrapped("Scene: %s", args.scenePath.string().c_str());
             ImGui::TextWrapped("Point cloud: %s", currentPointCloudPath.string().c_str());
             ImGui::Text("Point cloud PLY path");
@@ -2639,6 +2892,14 @@ int main(int argc, char** argv) {
             }
             if (ImGui::Button("Load latest run PLY")) {
                 refreshLatestOptimizationPointCloud();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("First")) {
+                jumpToOptimizationSnapshotBoundary(false);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Last")) {
+                jumpToOptimizationSnapshotBoundary(true);
             }
             if (!pointCloudStatus.empty()) {
                 ImGui::TextWrapped("%s", pointCloudStatus.c_str());
@@ -3069,6 +3330,41 @@ int main(int argc, char** argv) {
                     renderRequested = true;
                     }
 
+                if (ImGui::CollapsingHeader("Adjoint profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (ImGui::Button("Run adjoint once")) {
+                        runAdjointNextRender = true;
+                        tracerDirty = true;
+                        renderRequested = true;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Checkbox("Every render", &runAdjointEveryRender)) {
+                        tracerDirty = true;
+                        renderRequested = true;
+                    }
+
+                    if (ImGui::DragInt("Adjoint SPP", &viewerAdjointSamplesPerPixel, 0.1f, 1, 64)) {
+                        viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 64);
+                        tracerDirty = true;
+                        if (runAdjointEveryRender) {
+                            renderRequested = true;
+                        }
+                    }
+                    if (ImGui::DragInt("Adjoint bounces", &viewerAdjointBounces, 0.1f, 1, 8)) {
+                        viewerAdjointBounces = std::clamp(viewerAdjointBounces, 1, 8);
+                        tracerDirty = true;
+                        if (runAdjointEveryRender) {
+                            renderRequested = true;
+                        }
+                    }
+                    if (ImGui::Checkbox("Adjoint direct light", &viewerAdjointDirectLight) && runAdjointEveryRender) {
+                        tracerDirty = true;
+                        renderRequested = true;
+                    }
+                    ImGui::Text("Last adjoint: %.3f ms", lastViewerAdjointMs);
+                    ImGui::Text("RGB loss to black: %.6g", static_cast<double>(lastViewerAdjointLoss));
+                    ImGui::TextWrapped("%s", viewerAdjointStatus.c_str());
+                }
+
                 if (ImGui::CollapsingHeader("Point BVH", ImGuiTreeNodeFlags_DefaultOpen)) {
                     bool pointBvhBuildChanged = false;
 
@@ -3372,8 +3668,6 @@ int main(int argc, char** argv) {
                         orbit.position().z);
             ImGui::End();
 
-            ImGui::SetNextWindowPos(renderAreaMin, ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(renderAreaSize, ImGuiCond_FirstUseEver);
             ImGui::Begin(
                 "Render",
                 nullptr,
@@ -3578,13 +3872,12 @@ int main(int argc, char** argv) {
                 timerProfilingEnabled,
                 gpuCounterProfilingEnabled,
                 lastRenderMs,
+                renderFrameTimeHistory,
                 displayedRenderWidth,
                 displayedRenderHeight,
                 sceneGpu,
                 lastProfilingCounters,
-                lastTimerRecords,
-                renderAreaMin,
-                renderAreaSize);
+                lastTimerRecords);
             if (profilingSettingsChanged) {
                 if (previousGpuCounterProfilingEnabled != gpuCounterProfilingEnabled) {
                     tracerDirty = true;
@@ -3615,6 +3908,7 @@ int main(int argc, char** argv) {
             sycl::free(deviceProfilingCounters, queue);
             deviceProfilingCounters = nullptr;
         }
+        Pale::freeGradientsForScene(queue, viewerAdjointGradients);
         texture.destroy();
 
         ImGui_ImplOpenGL3_Shutdown();

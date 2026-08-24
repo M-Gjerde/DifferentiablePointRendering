@@ -33,6 +33,16 @@ def get_forward_depth_distortion(forward_out: Dict[str, dict], camera_name: str)
     return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def get_forward_opacity_prior(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "opacity_prior" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+
+    opacity_prior = np.asarray(camera_out["opacity_prior"], dtype=np.float32, order="C")
+    return np.nan_to_num(opacity_prior, nan=0.0, posinf=0.0, neginf=0.0)
+
+
 def get_forward_visible_normal(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "visible_normal" not in camera_out:

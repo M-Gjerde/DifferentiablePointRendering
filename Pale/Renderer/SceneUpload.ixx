@@ -74,6 +74,11 @@ export namespace Pale {
             freeDeviceArray(gpuSceneBuffers.vertices, queue);
             freeDeviceArray(gpuSceneBuffers.triangles, queue);
             freeDeviceArray(gpuSceneBuffers.points, queue);
+            freeDeviceArray(gpuSceneBuffers.pointTraversalData, queue);
+            freeDeviceArray(gpuSceneBuffers.pointPackedBvhNodes, queue);
+            freeDeviceArray(gpuSceneBuffers.pointPackedBvhRanges, queue);
+            freeDeviceArray(gpuSceneBuffers.pointQbvhNodes, queue);
+            freeDeviceArray(gpuSceneBuffers.pointQbvhRanges, queue);
             freeDeviceArray(gpuSceneBuffers.blasNodes, queue);
             freeDeviceArray(gpuSceneBuffers.blasRanges, queue);
             freeDeviceArray(gpuSceneBuffers.tlasNodes, queue);
@@ -88,6 +93,11 @@ export namespace Pale {
             // reset counts
             gpuSceneBuffers.vertexCount = 0;
             gpuSceneBuffers.pointCount = 0;
+            gpuSceneBuffers.pointTraversalDataCount = 0;
+            gpuSceneBuffers.pointPackedBvhNodeCount = 0;
+            gpuSceneBuffers.pointPackedBvhRangeCount = 0;
+            gpuSceneBuffers.pointQbvhNodeCount = 0;
+            gpuSceneBuffers.pointQbvhRangeCount = 0;
             gpuSceneBuffers.triangleCount = 0;
             gpuSceneBuffers.blasNodeCount = 0;
             gpuSceneBuffers.tlasNodeCount = 0;
@@ -108,6 +118,14 @@ export namespace Pale {
             gpuSceneBuffers.pointCount = static_cast<std::uint32_t>(buildProducts.points.size());
             gpuSceneBuffers.triangleCount = static_cast<std::uint32_t>(buildProducts.triangles.size());
             gpuSceneBuffers.blasNodeCount = static_cast<std::uint32_t>(buildProducts.bottomLevelNodes.size());
+            gpuSceneBuffers.pointPackedBvhNodeCount =
+                    static_cast<std::uint32_t>(buildProducts.pointPackedBvhNodes.size());
+            gpuSceneBuffers.pointPackedBvhRangeCount =
+                    static_cast<std::uint32_t>(buildProducts.pointPackedBvhRanges.size());
+            gpuSceneBuffers.pointQbvhNodeCount =
+                    static_cast<std::uint32_t>(buildProducts.pointQbvhNodes.size());
+            gpuSceneBuffers.pointQbvhRangeCount =
+                    static_cast<std::uint32_t>(buildProducts.pointQbvhRanges.size());
             gpuSceneBuffers.tlasNodeCount = static_cast<std::uint32_t>(buildProducts.topLevelNodes.size());
 
             // light sizes
@@ -135,11 +153,46 @@ export namespace Pale {
                 gpuSceneBuffers.points =
                         static_cast<Point *>(sycl::malloc_device(bytes, queue));
             }
+            gpuSceneBuffers.pointTraversalDataCount =
+                    static_cast<std::uint32_t>(buildProducts.pointTraversalData.size());
+            if (gpuSceneBuffers.pointTraversalDataCount > 0) {
+                const std::size_t bytes =
+                        static_cast<std::size_t>(gpuSceneBuffers.pointTraversalDataCount) *
+                        sizeof(SurfelTraversalData);
+                gpuSceneBuffers.pointTraversalData =
+                        static_cast<SurfelTraversalData *>(sycl::malloc_device(bytes, queue));
+            }
             if (gpuSceneBuffers.blasNodeCount > 0) {
                 const std::size_t bytes =
                         static_cast<std::size_t>(gpuSceneBuffers.blasNodeCount) * sizeof(BVHNode);
                 gpuSceneBuffers.blasNodes =
                         static_cast<BVHNode *>(sycl::malloc_device(bytes, queue));
+            }
+            if (gpuSceneBuffers.pointPackedBvhNodeCount > 0) {
+                const std::size_t bytes =
+                        static_cast<std::size_t>(gpuSceneBuffers.pointPackedBvhNodeCount) *
+                        sizeof(PackedPointBVHNode);
+                gpuSceneBuffers.pointPackedBvhNodes =
+                        static_cast<PackedPointBVHNode *>(sycl::malloc_device(bytes, queue));
+            }
+            if (gpuSceneBuffers.pointPackedBvhRangeCount > 0) {
+                const std::size_t bytes =
+                        static_cast<std::size_t>(gpuSceneBuffers.pointPackedBvhRangeCount) * sizeof(BLASRange);
+                gpuSceneBuffers.pointPackedBvhRanges =
+                        static_cast<BLASRange *>(sycl::malloc_device(bytes, queue));
+            }
+            if (gpuSceneBuffers.pointQbvhNodeCount > 0) {
+                const std::size_t bytes =
+                        static_cast<std::size_t>(gpuSceneBuffers.pointQbvhNodeCount) *
+                        sizeof(PackedPointQBVHNode);
+                gpuSceneBuffers.pointQbvhNodes =
+                        static_cast<PackedPointQBVHNode *>(sycl::malloc_device(bytes, queue));
+            }
+            if (gpuSceneBuffers.pointQbvhRangeCount > 0) {
+                const std::size_t bytes =
+                        static_cast<std::size_t>(gpuSceneBuffers.pointQbvhRangeCount) * sizeof(BLASRange);
+                gpuSceneBuffers.pointQbvhRanges =
+                        static_cast<BLASRange *>(sycl::malloc_device(bytes, queue));
             }
             if (!buildProducts.bottomLevelRanges.empty()) {
                 const std::size_t bytes =
@@ -214,6 +267,14 @@ export namespace Pale {
                     static_cast<std::uint32_t>(buildProducts.triangles.size());
             const std::uint32_t newBlasNodeCount =
                     static_cast<std::uint32_t>(buildProducts.bottomLevelNodes.size());
+            const std::uint32_t newPointPackedBvhNodeCount =
+                    static_cast<std::uint32_t>(buildProducts.pointPackedBvhNodes.size());
+            const std::uint32_t newPointPackedBvhRangeCount =
+                    static_cast<std::uint32_t>(buildProducts.pointPackedBvhRanges.size());
+            const std::uint32_t newPointQbvhNodeCount =
+                    static_cast<std::uint32_t>(buildProducts.pointQbvhNodes.size());
+            const std::uint32_t newPointQbvhRangeCount =
+                    static_cast<std::uint32_t>(buildProducts.pointQbvhRanges.size());
             const std::uint32_t newTlasNodeCount =
                     static_cast<std::uint32_t>(buildProducts.topLevelNodes.size());
 
@@ -252,6 +313,16 @@ export namespace Pale {
                                       newPointCount,
                                       queue);
 
+            const std::uint32_t newPointTraversalDataCount =
+                    static_cast<std::uint32_t>(buildProducts.pointTraversalData.size());
+            logReallocCounted("pointTraversalData",
+                              gpuSceneBuffers.pointTraversalDataCount,
+                              newPointTraversalDataCount);
+            reallocCountedDeviceArray(gpuSceneBuffers.pointTraversalData,
+                                      gpuSceneBuffers.pointTraversalDataCount,
+                                      newPointTraversalDataCount,
+                                      queue);
+
             logReallocCounted("triangles", gpuSceneBuffers.triangleCount, newTriangleCount);
             reallocCountedDeviceArray(gpuSceneBuffers.triangles,
                                       gpuSceneBuffers.triangleCount,
@@ -262,6 +333,38 @@ export namespace Pale {
             reallocCountedDeviceArray(gpuSceneBuffers.blasNodes,
                                       gpuSceneBuffers.blasNodeCount,
                                       newBlasNodeCount,
+                                      queue);
+
+            logReallocCounted("pointPackedBvhNodes",
+                              gpuSceneBuffers.pointPackedBvhNodeCount,
+                              newPointPackedBvhNodeCount);
+            reallocCountedDeviceArray(gpuSceneBuffers.pointPackedBvhNodes,
+                                      gpuSceneBuffers.pointPackedBvhNodeCount,
+                                      newPointPackedBvhNodeCount,
+                                      queue);
+
+            logReallocCounted("pointPackedBvhRanges",
+                              gpuSceneBuffers.pointPackedBvhRangeCount,
+                              newPointPackedBvhRangeCount);
+            reallocCountedDeviceArray(gpuSceneBuffers.pointPackedBvhRanges,
+                                      gpuSceneBuffers.pointPackedBvhRangeCount,
+                                      newPointPackedBvhRangeCount,
+                                      queue);
+
+            logReallocCounted("pointQbvhNodes",
+                              gpuSceneBuffers.pointQbvhNodeCount,
+                              newPointQbvhNodeCount);
+            reallocCountedDeviceArray(gpuSceneBuffers.pointQbvhNodes,
+                                      gpuSceneBuffers.pointQbvhNodeCount,
+                                      newPointQbvhNodeCount,
+                                      queue);
+
+            logReallocCounted("pointQbvhRanges",
+                              gpuSceneBuffers.pointQbvhRangeCount,
+                              newPointQbvhRangeCount);
+            reallocCountedDeviceArray(gpuSceneBuffers.pointQbvhRanges,
+                                      gpuSceneBuffers.pointQbvhRangeCount,
+                                      newPointQbvhRangeCount,
                                       queue);
 
             logReallocCounted("tlasNodes", gpuSceneBuffers.tlasNodeCount, newTlasNodeCount);
@@ -343,8 +446,13 @@ export namespace Pale {
             // Optional: sanity checks – you can tighten/relax as you wish
             if (gpuSceneBuffers.vertexCount != buildProducts.vertices.size() ||
                 gpuSceneBuffers.pointCount != buildProducts.points.size() ||
+                gpuSceneBuffers.pointTraversalDataCount != buildProducts.pointTraversalData.size() ||
                 gpuSceneBuffers.triangleCount != buildProducts.triangles.size() ||
                 gpuSceneBuffers.blasNodeCount != buildProducts.bottomLevelNodes.size() ||
+                gpuSceneBuffers.pointPackedBvhNodeCount != buildProducts.pointPackedBvhNodes.size() ||
+                gpuSceneBuffers.pointPackedBvhRangeCount != buildProducts.pointPackedBvhRanges.size() ||
+                gpuSceneBuffers.pointQbvhNodeCount != buildProducts.pointQbvhNodes.size() ||
+                gpuSceneBuffers.pointQbvhRangeCount != buildProducts.pointQbvhRanges.size() ||
                 gpuSceneBuffers.tlasNodeCount != buildProducts.topLevelNodes.size()) {
                 throw std::runtime_error(
                     "SceneUpload::upload: GPU buffer sizes do not match BuildProducts sizes");
@@ -385,6 +493,15 @@ export namespace Pale {
                 }
             }
 
+            if (gpuSceneBuffers.pointTraversalDataCount > 0 &&
+                gpuSceneBuffers.pointTraversalData != nullptr &&
+                !buildProducts.pointTraversalData.empty()) {
+                queue.memcpy(
+                    gpuSceneBuffers.pointTraversalData,
+                    buildProducts.pointTraversalData.data(),
+                    gpuSceneBuffers.pointTraversalDataCount * sizeof(SurfelTraversalData));
+            }
+
             if (gpuSceneBuffers.blasNodeCount > 0 &&
                 gpuSceneBuffers.blasNodes != nullptr &&
                 !buildProducts.bottomLevelNodes.empty()) {
@@ -392,6 +509,42 @@ export namespace Pale {
                     gpuSceneBuffers.blasNodes,
                     buildProducts.bottomLevelNodes.data(),
                     gpuSceneBuffers.blasNodeCount * sizeof(BVHNode));
+            }
+
+            if (gpuSceneBuffers.pointPackedBvhNodeCount > 0 &&
+                gpuSceneBuffers.pointPackedBvhNodes != nullptr &&
+                !buildProducts.pointPackedBvhNodes.empty()) {
+                queue.memcpy(
+                    gpuSceneBuffers.pointPackedBvhNodes,
+                    buildProducts.pointPackedBvhNodes.data(),
+                    gpuSceneBuffers.pointPackedBvhNodeCount * sizeof(PackedPointBVHNode));
+            }
+
+            if (gpuSceneBuffers.pointPackedBvhRangeCount > 0 &&
+                gpuSceneBuffers.pointPackedBvhRanges != nullptr &&
+                !buildProducts.pointPackedBvhRanges.empty()) {
+                queue.memcpy(
+                    gpuSceneBuffers.pointPackedBvhRanges,
+                    buildProducts.pointPackedBvhRanges.data(),
+                    gpuSceneBuffers.pointPackedBvhRangeCount * sizeof(BLASRange));
+            }
+
+            if (gpuSceneBuffers.pointQbvhNodeCount > 0 &&
+                gpuSceneBuffers.pointQbvhNodes != nullptr &&
+                !buildProducts.pointQbvhNodes.empty()) {
+                queue.memcpy(
+                    gpuSceneBuffers.pointQbvhNodes,
+                    buildProducts.pointQbvhNodes.data(),
+                    gpuSceneBuffers.pointQbvhNodeCount * sizeof(PackedPointQBVHNode));
+            }
+
+            if (gpuSceneBuffers.pointQbvhRangeCount > 0 &&
+                gpuSceneBuffers.pointQbvhRanges != nullptr &&
+                !buildProducts.pointQbvhRanges.empty()) {
+                queue.memcpy(
+                    gpuSceneBuffers.pointQbvhRanges,
+                    buildProducts.pointQbvhRanges.data(),
+                    gpuSceneBuffers.pointQbvhRangeCount * sizeof(BLASRange));
             }
 
             if (gpuSceneBuffers.blasRanges != nullptr &&
@@ -480,6 +633,11 @@ export namespace Pale {
                 gpuSceneBuffers.triangleCount == buildProducts.triangles.size() &&
                 gpuSceneBuffers.blasNodeCount == buildProducts.bottomLevelNodes.size() &&
                 gpuSceneBuffers.tlasNodeCount == buildProducts.topLevelNodes.size() &&
+                gpuSceneBuffers.pointTraversalDataCount == buildProducts.pointTraversalData.size() &&
+                gpuSceneBuffers.pointPackedBvhNodeCount == buildProducts.pointPackedBvhNodes.size() &&
+                gpuSceneBuffers.pointPackedBvhRangeCount == buildProducts.pointPackedBvhRanges.size() &&
+                gpuSceneBuffers.pointQbvhNodeCount == buildProducts.pointQbvhNodes.size() &&
+                gpuSceneBuffers.pointQbvhRangeCount == buildProducts.pointQbvhRanges.size() &&
                 gpuSceneBuffers.pointPermutationCount == buildProducts.pointPermutation.size() &&
                 gpuSceneBuffers.lightCount == buildProducts.lights.size() &&
                 gpuSceneBuffers.emissiveTriangleCount == buildProducts.emissiveTriangles.size();

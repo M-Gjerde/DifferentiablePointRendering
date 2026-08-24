@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,19 +16,35 @@ import pandas as pd
 from matplotlib.ticker import StrMethodFormatter
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+METRICS_DIR = PROJECT_ROOT / "metrics"
+GROUND_TRUTH_SAMPLE_CACHE: dict[tuple[str, int, bool, int], tuple[Any, str]] = {}
+LEGEND_KWARGS = {
+    "fontsize": "small",
+    "framealpha": 0.85,
+}
+
+
+@dataclass
+class GeometryEvaluationState:
+    run_dir: Path | None = None
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    evaluated_iterations: set[int] = field(default_factory=set)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Live plot metrics.csv while an optimization run is writing to it. "
-            "By default, the newest run folder under OptimizationOutput is used."
+            "By default, the run with the newest metrics.csv under the configured output dir is used."
         )
     )
     parser.add_argument(
         "--optimization-output-root",
         type=Path,
         required=False,
-        default=Path("OptimizationOutput"),
-        help="Path to the OptimizationOutput directory.",
+        default=None,
+        help="Path to the OptimizationOutput directory. Defaults to OptimizationConfig.output_dir.",
     )
     parser.add_argument(
         "--run-dir",
@@ -54,6 +72,54 @@ def parse_args() -> argparse.Namespace:
             "Optional explicit loss column for the single-loss plot. "
             "If omitted, defaults to loss_total_mean, then loss_rgb_mean."
         ),
+    )
+    parser.add_argument(
+        "--ground-truth",
+        "--gt",
+        type=Path,
+        default=None,
+        help="Optional GT PLY. When provided, live symmetric CD is evaluated from mesh checkpoints.",
+    )
+    parser.add_argument(
+        "--geometry-every",
+        type=int,
+        default=500,
+        help="Evaluate available mesh checkpoints whose iteration is a multiple of this value.",
+    )
+    parser.add_argument(
+        "--geometry-samples",
+        type=int,
+        default=50_000,
+        help="Surface samples for live Chamfer evaluation.",
+    )
+    parser.add_argument(
+        "--geometry-device",
+        type=str,
+        default="auto",
+        help="Chamfer device for live CD: auto, cpu, cuda, cuda:0, ...",
+    )
+    parser.add_argument(
+        "--geometry-seed",
+        type=int,
+        default=0,
+        help="Sampling seed for live Chamfer evaluation.",
+    )
+    parser.add_argument(
+        "--geometry-scale",
+        type=float,
+        default=1.0,
+        help="Scale applied to live Chamfer metrics.",
+    )
+    parser.add_argument(
+        "--geometry-use-vertices",
+        action="store_true",
+        help="Use mesh vertices instead of surface samples for live Chamfer.",
+    )
+    parser.add_argument(
+        "--reconstruction-name",
+        type=str,
+        default="fuse_post.ply",
+        help="Mesh filename inside each mesh checkpoint folder.",
     )
     parser.add_argument(
         "--plot-all-losses",
@@ -157,6 +223,17 @@ def parse_run_timestamp(run_dir_name: str) -> datetime | None:
         return None
 
 
+def default_optimization_output_root() -> Path:
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from config import OptimizationConfig
+
+    output_dir = Path(OptimizationConfig().output_dir).expanduser()
+    if output_dir.is_absolute():
+        return output_dir.resolve()
+    return (PROJECT_ROOT / output_dir).resolve()
+
+
 def find_latest_run_dir(
         optimization_output_root: Path,
         metrics_name: str,
@@ -172,23 +249,14 @@ def find_latest_run_dir(
 
     candidate_run_dirs: list[dict[str, Any]] = []
 
-    for child in optimization_output_root.iterdir():
-        if not child.is_dir():
+    for metrics_csv_path in optimization_output_root.rglob(metrics_name):
+        if not metrics_csv_path.is_file():
             continue
-
-        metrics_csv_path = child / metrics_name
-        if not metrics_csv_path.exists():
-            continue
-
-        # Deliberately use run-folder age, not metrics.csv modification time.
-        # Updating a file inside a directory does not normally update the
-        # directory mtime on Linux.
-        run_dir_modified_time_ns = child.stat().st_mtime_ns
 
         candidate_run_dirs.append(
             {
-                "run_dir": child,
-                "run_dir_modified_time_ns": run_dir_modified_time_ns,
+                "run_dir": metrics_csv_path.parent,
+                "metrics_modified_time_ns": metrics_csv_path.stat().st_mtime_ns,
             }
         )
 
@@ -199,7 +267,7 @@ def find_latest_run_dir(
         )
 
     candidate_run_dirs.sort(
-        key=lambda item: item["run_dir_modified_time_ns"],
+        key=lambda item: (item["metrics_modified_time_ns"], str(item["run_dir"])),
         reverse=True,
     )
 
@@ -210,6 +278,157 @@ def find_latest_run_dir(
         )
 
     return candidate_run_dirs[index]["run_dir"]
+
+
+def lazy_chamfer_imports():
+    if str(METRICS_DIR) not in sys.path:
+        sys.path.insert(0, str(METRICS_DIR))
+    try:
+        from chamfer_ours import (
+            compute_paper_ready_chamfer,
+            load_points_from_ply,
+            resolve_device,
+            set_random_seed,
+        )
+    except ModuleNotFoundError as exception:
+        raise RuntimeError(
+            "Live CD evaluation requires the dependencies used by metrics/chamfer_ours.py "
+            "(notably open3d and pytorch3d). Run without --gt for loss-only live plotting."
+        ) from exception
+
+    return compute_paper_ready_chamfer, load_points_from_ply, resolve_device, set_random_seed
+
+
+def find_mesh_checkpoints(run_dir: Path, reconstruction_name: str) -> list[tuple[int, Path]]:
+    checkpoint_root = run_dir / "mesh_checkpoints"
+    if not checkpoint_root.is_dir():
+        return []
+
+    checkpoints: list[tuple[int, Path]] = []
+    for mesh_path in checkpoint_root.glob(f"iter_*/{reconstruction_name}"):
+        match = re.search(r"iter_(\d+)", mesh_path.parent.name)
+        if match is None:
+            continue
+        checkpoints.append((int(match.group(1)), mesh_path.resolve()))
+
+    return sorted(checkpoints, key=lambda item: item[0])
+
+
+def get_ground_truth_points(
+        ground_truth_path: Path,
+        samples: int,
+        use_vertices: bool,
+        seed: int,
+        load_points_from_ply,
+        set_random_seed,
+):
+    cache_key = (
+        str(ground_truth_path.resolve()),
+        int(samples),
+        bool(use_vertices),
+        int(seed),
+    )
+    if cache_key not in GROUND_TRUTH_SAMPLE_CACHE:
+        set_random_seed(seed)
+        GROUND_TRUTH_SAMPLE_CACHE[cache_key] = load_points_from_ply(
+            ply_path=ground_truth_path,
+            sample_count=samples,
+            use_vertices=use_vertices,
+        )
+    return GROUND_TRUTH_SAMPLE_CACHE[cache_key]
+
+
+def update_geometry_evaluation_state(
+        state: GeometryEvaluationState,
+        run_dir: Path,
+        latest_iteration: int,
+        ground_truth_path: Path | None,
+        geometry_every: int,
+        reconstruction_name: str,
+        samples: int,
+        device_name: str,
+        seed: int,
+        scale: float,
+        use_vertices: bool,
+) -> bool:
+    if state.run_dir != run_dir:
+        state.run_dir = run_dir
+        state.rows = []
+        state.evaluated_iterations = set()
+
+    if ground_truth_path is None:
+        return False
+    if geometry_every <= 0:
+        raise ValueError(f"--geometry-every must be positive, got: {geometry_every}")
+
+    eligible_checkpoints = [
+        (iteration, mesh_path)
+        for iteration, mesh_path in find_mesh_checkpoints(run_dir, reconstruction_name)
+        if (
+                iteration <= latest_iteration
+                and iteration % geometry_every == 0
+                and iteration not in state.evaluated_iterations
+        )
+    ]
+    if not eligible_checkpoints:
+        return False
+
+    (
+        compute_paper_ready_chamfer,
+        load_points_from_ply,
+        resolve_device,
+        set_random_seed,
+    ) = lazy_chamfer_imports()
+
+    device = resolve_device(device_name)
+    ground_truth_points, ground_truth_sampling = get_ground_truth_points(
+        ground_truth_path=ground_truth_path.expanduser().resolve(),
+        samples=samples,
+        use_vertices=use_vertices,
+        seed=seed,
+        load_points_from_ply=load_points_from_ply,
+        set_random_seed=set_random_seed,
+    )
+
+    for iteration, mesh_path in eligible_checkpoints:
+        print()
+        print(f"Evaluating live CD: {run_dir.name} iter {iteration}", flush=True)
+        set_random_seed(seed)
+        reconstruction_points, reconstruction_sampling = load_points_from_ply(
+            ply_path=mesh_path,
+            sample_count=samples,
+            use_vertices=use_vertices,
+        )
+        metrics = compute_paper_ready_chamfer(
+            reconstruction_points=reconstruction_points,
+            ground_truth_points=ground_truth_points,
+            device=device,
+            scale=scale,
+        )
+        state.rows.append(
+            {
+                "iteration": iteration,
+                "cd": metrics["cd"],
+                "accuracy": metrics["accuracy"],
+                "completion": metrics["completion"],
+                "reconstruction_points": len(reconstruction_points),
+                "ground_truth_points": len(ground_truth_points),
+                "reconstruction_sampling": reconstruction_sampling,
+                "ground_truth_sampling": ground_truth_sampling,
+                "reconstruction": str(mesh_path),
+                "ground_truth": str(ground_truth_path.expanduser().resolve()),
+            }
+        )
+        state.evaluated_iterations.add(iteration)
+        print(
+            f"Live CD: iter={iteration} CD={float(metrics['cd']):.6g} "
+            f"Accuracy={float(metrics['accuracy']):.6g} "
+            f"Completion={float(metrics['completion']):.6g}",
+            flush=True,
+        )
+
+    state.rows.sort(key=lambda row: int(row["iteration"]))
+    return True
 
 
 def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -348,19 +567,15 @@ def select_loss_column(
         "loss_total_mean",
         "loss_rgb_mean",
         "loss_bsdf_decay_weighted_mean",
-        "loss_bsdf_decay_raw_mean",
+        "loss_opacity_prior_weighted_mean",
         "loss_normal_consistency_weighted_mean",
         "loss_depth_distortion_weighted_mean",
-        "loss_normal_consistency_raw_mean",
-        "loss_depth_distortion_raw_mean",
         "loss_total_sum",
         "loss_rgb_sum",
         "loss_bsdf_decay_weighted_sum",
-        "loss_bsdf_decay_raw_sum",
+        "loss_opacity_prior_weighted_sum",
         "loss_normal_consistency_weighted_sum",
         "loss_depth_distortion_weighted_sum",
-        "loss_normal_consistency_raw_sum",
-        "loss_depth_distortion_raw_sum",
     ]
 
     for column_name in preferred_columns:
@@ -463,6 +678,19 @@ def plot_top_loss_columns_with_dual_axis(
     return right_axis
 
 
+def place_legend_inside(
+        axis,
+        handles=None,
+        labels=None,
+        loc: str = "upper right",
+) -> None:
+    if handles is None or labels is None:
+        handles, labels = axis.get_legend_handles_labels()
+
+    if handles:
+        axis.legend(handles, labels, loc=loc, **LEGEND_KWARGS)
+
+
 def set_combined_legend(left_axis, right_axis=None) -> None:
     left_handles, left_labels = left_axis.get_legend_handles_labels()
 
@@ -474,8 +702,7 @@ def set_combined_legend(left_axis, right_axis=None) -> None:
     handles = left_handles + right_handles
     labels = left_labels + right_labels
 
-    if handles:
-        left_axis.legend(handles, labels, loc="lower left")
+    place_legend_inside(left_axis, handles, labels, loc="best")
 
 
 def plot_positive_log_columns(
@@ -503,6 +730,114 @@ def plot_positive_log_columns(
     return plotted_any_positive_values
 
 
+def latest_numeric_value(dataframe: pd.DataFrame, column_name: str) -> float | None:
+    if column_name not in dataframe.columns or dataframe.empty:
+        return None
+
+    values = pd.to_numeric(dataframe[column_name], errors="coerce")
+    values = values[np.isfinite(values)]
+    if values.empty:
+        return None
+
+    return float(values.iloc[-1])
+
+
+def format_duration(seconds: float | None) -> str:
+    if seconds is None or not np.isfinite(seconds):
+        return "unknown"
+
+    total_seconds = int(round(max(0.0, seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}h {minutes:02d}m {seconds_part:02d}s"
+    if minutes:
+        return f"{minutes:d}m {seconds_part:02d}s"
+    return f"{seconds_part:d}s"
+
+
+def optimization_status_text(dataframe: pd.DataFrame, latest_iteration: int) -> str:
+    total_time_sec = latest_numeric_value(dataframe, "total_time_sec")
+    iteration_time_sec = latest_numeric_value(dataframe, "iteration_time_sec")
+
+    parts = [f"time={format_duration(total_time_sec)}"]
+
+    average_iterations_per_second = None
+    if total_time_sec is not None and total_time_sec > 0.0:
+        average_iterations_per_second = float(latest_iteration) / total_time_sec
+
+    if average_iterations_per_second is not None and np.isfinite(average_iterations_per_second):
+        parts.append(f"avg={average_iterations_per_second:.2f} it/s")
+
+    if iteration_time_sec is not None and iteration_time_sec > 0.0:
+        parts.append(f"last={1.0 / iteration_time_sec:.2f} it/s")
+
+    return " | ".join(parts)
+
+
+def compact_point_count_label(point_count_windowed: bool, point_count_row_count: int) -> str:
+    if point_count_windowed:
+        return "windowed"
+    return f"aligned ({point_count_row_count} rows loaded)"
+
+
+def shorten_middle(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+
+    if max_chars <= 3:
+        return text[:max_chars]
+
+    left_chars = (max_chars - 3) // 2
+    right_chars = max_chars - 3 - left_chars
+    return f"{text[:left_chars]}...{text[-right_chars:]}"
+
+
+def dataframe_iteration_bounds(dataframe: pd.DataFrame) -> tuple[int, int]:
+    return int(dataframe["iteration"].iloc[0]), int(dataframe["iteration"].iloc[-1])
+
+
+def filter_geometry_rows_to_iteration_bounds(
+        geometry_rows: list[dict[str, Any]],
+        iteration_min: int,
+        iteration_max: int,
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in geometry_rows
+        if iteration_min <= int(row["iteration"]) <= iteration_max
+    ]
+
+
+def set_iteration_x_limits(axes, iteration_min: int, iteration_max: int) -> None:
+    if iteration_min == iteration_max:
+        padding = max(1.0, abs(float(iteration_min)) * 0.01)
+        x_min = float(iteration_min) - padding
+        x_max = float(iteration_max) + padding
+    else:
+        x_min = float(iteration_min)
+        x_max = float(iteration_max)
+
+    for axis in np.atleast_1d(axes):
+        if axis is not None:
+            axis.set_xlim(x_min, x_max)
+
+
+def plot_geometry_rows(axis, geometry_rows: list[dict[str, Any]]) -> None:
+    sorted_rows = sorted(geometry_rows, key=lambda row: int(row["iteration"]))
+    iterations = [int(row["iteration"]) for row in sorted_rows]
+    cds = [float(row["cd"]) for row in sorted_rows]
+    accuracies = [float(row["accuracy"]) for row in sorted_rows]
+    completions = [float(row["completion"]) for row in sorted_rows]
+
+    axis.plot(iterations, cds, marker="o", linewidth=1.8, label="symmetric CD")
+    axis.plot(iterations, accuracies, marker="o", linewidth=1.1, alpha=0.8, label="accuracy")
+    axis.plot(iterations, completions, marker="o", linewidth=1.1, alpha=0.8, label="completion")
+    axis.set_ylabel("Chamfer")
+    axis.grid(True)
+    place_legend_inside(axis, loc="best")
+
+
 def draw_metrics_figure(
         figure,
         dataframe: pd.DataFrame,
@@ -514,6 +849,7 @@ def draw_metrics_figure(
         skip_opacity_reset_noise: int,
         point_count_windowed: bool,
         loss_y_scale: str,
+        geometry_rows: list[dict[str, Any]],
 ) -> str:
     loss_dataframe = prepare_metrics_dataframe(
         dataframe=dataframe,
@@ -532,11 +868,26 @@ def draw_metrics_figure(
     if loss_dataframe.empty:
         raise ValueError("No valid loss rows to plot yet.")
 
+    iteration_min, iteration_max = dataframe_iteration_bounds(loss_dataframe)
+    visible_geometry_rows = filter_geometry_rows_to_iteration_bounds(
+        geometry_rows=geometry_rows,
+        iteration_min=iteration_min,
+        iteration_max=iteration_max,
+    )
+
     figure.clear()
 
     if not plot_all_losses:
         loss_column_name = select_loss_column(loss_dataframe, explicit_loss_column)
-        axis = figure.subplots(1, 1)
+        include_geometry_panel = len(visible_geometry_rows) > 0
+        axes = figure.subplots(
+            2 if include_geometry_panel else 1,
+            1,
+            sharex=include_geometry_panel,
+            gridspec_kw={"height_ratios": [1.4, 1.0]} if include_geometry_panel else None,
+        )
+        axes = np.atleast_1d(axes).tolist()
+        axis = axes[0]
 
         axis.plot(
             loss_dataframe["iteration"],
@@ -547,13 +898,25 @@ def draw_metrics_figure(
 
         apply_loss_y_scale(axis, loss_y_scale)
 
+        latest_iteration = int(loss_dataframe["iteration"].iloc[-1])
+        title_run_name = shorten_middle(metrics_csv_path.parent.name, max_chars=80)
         axis.set_xlabel("Iteration")
         axis.set_ylabel(loss_column_name)
         axis.set_title(
-            f"{loss_column_name} over iterations\n{metrics_csv_path.parent.name}"
+            f"{loss_column_name} over iterations\n"
+            f"{title_run_name}\n"
+            f"iter={latest_iteration} | "
+            f"{optimization_status_text(loss_dataframe, latest_iteration)}"
         )
         axis.grid(True)
 
+        if include_geometry_panel:
+            axis.set_xlabel("")
+            geometry_axis = axes[1]
+            plot_geometry_rows(geometry_axis, visible_geometry_rows)
+            geometry_axis.set_xlabel("Iteration")
+
+        set_iteration_x_limits(axes, iteration_min, iteration_max)
         figure.tight_layout()
         return loss_column_name
 
@@ -577,29 +940,17 @@ def draw_metrics_figure(
                 "loss_normal_consistency_weighted_sum",
             ),
             (
+                "loss_opacity_prior_weighted_mean",
+                "loss_opacity_prior_weighted_sum",
+            ),
+            (
                 "loss_bsdf_decay_weighted_mean",
                 "loss_bsdf_decay_weighted_sum",
             ),
         ],
     )
 
-    raw_diagnostic_columns = get_first_available_columns(
-        loss_dataframe,
-        [
-            (
-                "loss_depth_distortion_raw_mean",
-                "loss_depth_distortion_raw_sum",
-            ),
-            (
-                "loss_normal_consistency_raw_mean",
-                "loss_normal_consistency_raw_sum",
-            ),
-            (
-                "loss_bsdf_decay_raw_mean",
-                "loss_bsdf_decay_raw_sum",
-            ),
-        ],
-    )
+    raw_diagnostic_columns: list[str] = []
 
     point_count_columns = get_available_columns(
         point_count_dataframe,
@@ -608,12 +959,36 @@ def draw_metrics_figure(
             "point_count",
         ],
     )
+    point_growth_active_columns = get_available_columns(
+        point_count_dataframe,
+        [
+            "densification_clone_points_active",
+            "densification_split_points_active",
+        ],
+    )
+    point_growth_total_columns = get_available_columns(
+        point_count_dataframe,
+        [
+            "densification_clone_points_total",
+            "densification_split_points_total",
+        ],
+    )
+    point_growth_event_columns = get_available_columns(
+        point_count_dataframe,
+        [
+            "densification_clone_points",
+            "densification_split_points",
+        ],
+    )
 
     if (
             not top_columns
             and not weighted_regularizer_columns
             and not raw_diagnostic_columns
             and not point_count_columns
+            and not point_growth_active_columns
+            and not point_growth_total_columns
+            and not point_growth_event_columns
     ):
         selected_loss_column = select_loss_column(
             loss_dataframe,
@@ -635,29 +1010,15 @@ def draw_metrics_figure(
             linewidth=1.8,
             alpha=0.95,
         ),
+        "loss_opacity_prior_weighted_mean": dict(
+            color="tab:purple",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
         "loss_bsdf_decay_weighted_mean": dict(
             color="tab:brown",
             linewidth=1.8,
             alpha=0.95,
-        ),
-
-        "loss_depth_distortion_raw_mean": dict(
-            color="tab:red",
-            linewidth=1.2,
-            alpha=0.75,
-            linestyle="--",
-        ),
-        "loss_normal_consistency_raw_mean": dict(
-            color="tab:green",
-            linewidth=1.2,
-            alpha=0.75,
-            linestyle="--",
-        ),
-        "loss_bsdf_decay_raw_mean": dict(
-            color="tab:brown",
-            linewidth=1.2,
-            alpha=0.75,
-            linestyle="--",
         ),
 
         "loss_rgb_sum": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
@@ -673,56 +1034,81 @@ def draw_metrics_figure(
             linewidth=1.8,
             alpha=0.95,
         ),
+        "loss_opacity_prior_weighted_sum": dict(
+            color="tab:purple",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
         "loss_bsdf_decay_weighted_sum": dict(
             color="tab:brown",
             linewidth=1.8,
             alpha=0.95,
         ),
 
-        "loss_depth_distortion_raw_sum": dict(
-            color="tab:red",
-            linewidth=1.2,
-            alpha=0.75,
-            linestyle="--",
-        ),
-        "loss_normal_consistency_raw_sum": dict(
-            color="tab:green",
-            linewidth=1.2,
-            alpha=0.75,
-            linestyle="--",
-        ),
-        "loss_bsdf_decay_raw_sum": dict(
-            color="tab:brown",
-            linewidth=1.2,
-            alpha=0.75,
-            linestyle="--",
-        ),
-
         "num_points": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
         "point_count": dict(color="tab:brown", linewidth=2.0, alpha=0.95),
+        "densification_clone_points_active": dict(
+            color="tab:green",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
+        "densification_split_points_active": dict(
+            color="tab:purple",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
+        "densification_clone_points_total": dict(
+            color="tab:green",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
+        "densification_split_points_total": dict(
+            color="tab:purple",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
     }
 
-    include_point_count_panel = len(point_count_columns) > 0
-    num_panels = 3 + int(include_point_count_panel)
+    include_geometry_panel = len(visible_geometry_rows) > 0
+    include_raw_panel = len(raw_diagnostic_columns) > 0
+    include_point_count_panel = (
+            len(point_count_columns) > 0
+            or len(point_growth_active_columns) > 0
+            or len(point_growth_total_columns) > 0
+            or len(point_growth_event_columns) > 0
+    )
+    num_panels = 2 + int(include_raw_panel) + int(include_geometry_panel) + int(include_point_count_panel)
 
-    height_ratios = [1.2, 1.0, 1.0]
+    height_ratios = [1.2, 1.0]
+    if include_raw_panel:
+        height_ratios.append(1.0)
+    if include_geometry_panel:
+        height_ratios.append(1.0)
     if include_point_count_panel:
         height_ratios.append(0.8)
-
-    share_x_axis = not include_point_count_panel or point_count_windowed
 
     axes = figure.subplots(
         num_panels,
         1,
-        sharex=share_x_axis,
+        sharex=True,
         gridspec_kw={"height_ratios": height_ratios},
     )
     axes = np.atleast_1d(axes).tolist()
 
     ax_top = axes[0]
     ax_weighted = axes[1]
-    ax_raw = axes[2]
-    ax_point_count = axes[3] if include_point_count_panel else None
+    next_axis_index = 2
+    ax_raw = axes[next_axis_index] if include_raw_panel else None
+    if include_raw_panel:
+        next_axis_index += 1
+    ax_geometry = axes[next_axis_index] if include_geometry_panel else None
+    if include_geometry_panel:
+        next_axis_index += 1
+    ax_point_count = axes[next_axis_index] if include_point_count_panel else None
 
     ax_top_right = plot_top_loss_columns_with_dual_axis(
         ax_top,
@@ -738,12 +1124,14 @@ def draw_metrics_figure(
         style_map,
     )
 
-    raw_has_positive_values = plot_positive_log_columns(
-        ax_raw,
-        loss_dataframe,
-        raw_diagnostic_columns,
-        style_map,
-    )
+    raw_has_positive_values = False
+    if ax_raw is not None:
+        raw_has_positive_values = plot_positive_log_columns(
+            ax_raw,
+            loss_dataframe,
+            raw_diagnostic_columns,
+            style_map,
+        )
 
     apply_loss_y_scale(ax_top, loss_y_scale)
     apply_loss_y_scale(ax_weighted, loss_y_scale)
@@ -766,7 +1154,7 @@ def draw_metrics_figure(
     loss_row_count = len(loss_dataframe)
     point_count_row_count = len(point_count_dataframe)
 
-    loss_average_coverage = ""
+    loss_average_text = ""
 
     if (
             "loss_average_camera_count" in loss_dataframe.columns
@@ -788,22 +1176,22 @@ def draw_metrics_figure(
                 np.isfinite(latest_averaged_camera_count)
                 and np.isfinite(latest_expected_camera_count)
         ):
-            loss_average_coverage = (
-                f" | loss average={int(latest_averaged_camera_count)}"
-                f"/{int(latest_expected_camera_count)} cameras"
+            loss_average_text = (
+                f" | avg cams={int(latest_averaged_camera_count)}"
+                f"/{int(latest_expected_camera_count)}"
             )
 
-    point_count_history_label = (
-        "windowed"
-        if point_count_windowed
-        else f"full history ({point_count_row_count} rows)"
+    point_count_history_label = compact_point_count_label(
+        point_count_windowed=point_count_windowed,
+        point_count_row_count=point_count_row_count,
     )
 
     ax_top.set_title(
         f"Live optimization metrics\n"
-        f"{metrics_csv_path.parent.name} | loss rows={loss_row_count} | "
-        f"point count={point_count_history_label} | "
-        f"latest iteration={latest_iteration}{loss_average_coverage}"
+        f"{shorten_middle(metrics_csv_path.parent.name, max_chars=80)}\n"
+        f"iter={latest_iteration} | loss rows={loss_row_count}{loss_average_text} | "
+        f"{optimization_status_text(loss_dataframe, latest_iteration)}"
+        f"\npoints={point_count_history_label}"
     )
 
     ax_top.grid(True)
@@ -812,45 +1200,91 @@ def draw_metrics_figure(
     ax_weighted.set_ylabel(f"Mean weighted regularizers ({loss_y_scale})")
     ax_weighted.grid(True)
     if weighted_regularizer_columns:
-        ax_weighted.legend(loc="upper left")
+        place_legend_inside(ax_weighted, loc="best")
 
-    ax_raw.set_ylabel("Mean raw diagnostics")
-    if raw_has_positive_values:
-        ax_raw.set_yscale("log")
-    ax_raw.grid(True)
-    if raw_diagnostic_columns:
-        ax_raw.legend(loc="upper left")
+    if ax_raw is not None:
+        ax_raw.set_ylabel("Mean raw diagnostics")
+        if raw_has_positive_values:
+            ax_raw.set_yscale("log")
+        ax_raw.grid(True)
+        place_legend_inside(ax_raw, loc="best")
+
+    if ax_geometry is not None:
+        plot_geometry_rows(ax_geometry, visible_geometry_rows)
 
     if ax_point_count is not None:
-        point_count_column = point_count_columns[0]
-        point_values = dataframe_column_as_float_array(
-            point_count_dataframe,
-            point_count_column,
-        )
+        if point_count_columns:
+            point_count_column = point_count_columns[0]
+            point_values = dataframe_column_as_float_array(
+                point_count_dataframe,
+                point_count_column,
+            )
 
-        ax_point_count.step(
-            point_count_dataframe["iteration"],
-            point_values,
-            where="post",
-            label=point_count_column,
-            **style_map.get(point_count_column, {}),
-        )
+            ax_point_count.step(
+                point_count_dataframe["iteration"],
+                point_values,
+                where="post",
+                label=point_count_column,
+                **style_map.get(point_count_column, {}),
+            )
 
-        ax_point_count.set_ylabel("Point count")
+        if point_growth_active_columns:
+            point_growth_columns = point_growth_active_columns
+            point_growth_labels = {
+                "densification_clone_points_active": "clone-created active",
+                "densification_split_points_active": "split-created active",
+            }
+        else:
+            point_growth_columns = point_growth_total_columns
+            point_growth_labels = {
+                "densification_clone_points_total": "clone additions total",
+                "densification_split_points_total": "split additions total",
+            }
+
+        for column_name in point_growth_columns:
+            values = dataframe_column_as_float_array(point_count_dataframe, column_name)
+            label = point_growth_labels.get(column_name, column_name)
+            ax_point_count.step(
+                point_count_dataframe["iteration"],
+                values,
+                where="post",
+                label=label,
+                **style_map.get(column_name, {}),
+            )
+
+        if not point_growth_active_columns and not point_growth_total_columns:
+            for column_name in point_growth_event_columns:
+                values = np.nancumsum(
+                    np.nan_to_num(
+                        dataframe_column_as_float_array(point_count_dataframe, column_name),
+                        nan=0.0,
+                    )
+                )
+                label = {
+                    "densification_clone_points": "clone additions total",
+                    "densification_split_points": "split additions total",
+                }.get(column_name, f"{column_name} total")
+                ax_point_count.step(
+                    point_count_dataframe["iteration"],
+                    values,
+                    where="post",
+                    label=label,
+                    **style_map.get(f"{column_name}_total", {}),
+                )
+
+        ax_point_count.set_ylabel("Points")
         ax_point_count.yaxis.set_major_formatter(StrMethodFormatter("{x:.0f}"))
         ax_point_count.grid(True)
-        ax_point_count.legend(loc="upper left")
+        place_legend_inside(ax_point_count, loc="best")
 
-    if ax_point_count is None:
-        ax_raw.set_xlabel("Iteration")
-    elif point_count_windowed:
-        ax_point_count.set_xlabel("Iteration")
-    else:
-        ax_top.tick_params(axis="x", labelbottom=False)
-        ax_weighted.tick_params(axis="x", labelbottom=False)
-        ax_raw.set_xlabel("Iteration (loss window)")
-        ax_point_count.set_xlabel("Iteration (full point-count history)")
+    for axis in (ax_top, ax_weighted, ax_raw, ax_geometry, ax_point_count):
+        if axis is not None:
+            axis.set_xlabel("")
 
+    bottom_axis = ax_point_count or ax_geometry or ax_raw or ax_weighted
+    bottom_axis.set_xlabel("Iteration")
+
+    set_iteration_x_limits(axes, iteration_min, iteration_max)
     figure.tight_layout()
 
     plotted_columns = (
@@ -858,6 +1292,9 @@ def draw_metrics_figure(
         + weighted_regularizer_columns
         + raw_diagnostic_columns
         + point_count_columns
+        + point_growth_active_columns
+        + point_growth_total_columns
+        + ([] if point_growth_active_columns or point_growth_total_columns else point_growth_event_columns)
     )
 
     return ", ".join(plotted_columns)
@@ -878,8 +1315,14 @@ def resolve_run_dir(args: argparse.Namespace) -> Path:
             raise FileNotFoundError(f"--run-dir does not exist: {run_dir}")
         return run_dir
 
+    optimization_output_root = (
+        args.optimization_output_root.expanduser().resolve()
+        if args.optimization_output_root is not None
+        else default_optimization_output_root()
+    )
+
     return find_latest_run_dir(
-        optimization_output_root=args.optimization_output_root.resolve(),
+        optimization_output_root=optimization_output_root,
         metrics_name=args.metrics_name,
         index=args.index,
     )
@@ -892,6 +1335,10 @@ def main() -> None:
         raise ValueError(
             f"--refresh-seconds must be positive, got: {args.refresh_seconds}"
         )
+    if args.geometry_every <= 0:
+        raise ValueError(f"--geometry-every must be positive, got: {args.geometry_every}")
+    if args.ground_truth is not None and not args.ground_truth.expanduser().is_file():
+        raise FileNotFoundError(f"--gt does not exist: {args.ground_truth.expanduser()}")
 
     plt.ion()
     plt.rcParams["figure.raise_window"] = False
@@ -900,6 +1347,7 @@ def main() -> None:
     previous_dataframe: pd.DataFrame | None = None
     previous_file_state: tuple[float, int] | None = None
     previous_run_dir: Path | None = None
+    geometry_state = GeometryEvaluationState()
 
     print("Starting live metrics viewer. Press Ctrl+C in the terminal to stop.")
     print(f"Refresh interval   : {args.refresh_seconds:.3f}s")
@@ -908,6 +1356,9 @@ def main() -> None:
     print(f"Skip reset noise   : {args.skip}")
     print(f"Loss y-scale       : {args.loss_y_scale}")
     print(f"Point count window : {args.point_count_windowed}")
+    if args.ground_truth is not None:
+        print(f"Live CD GT         : {args.ground_truth.expanduser().resolve()}")
+        print(f"Live CD interval   : {args.geometry_every} iterations")
 
     try:
         while plt.fignum_exists(figure.number):
@@ -930,6 +1381,7 @@ def main() -> None:
                 continue
 
             file_changed = file_state != previous_file_state
+            geometry_changed = False
 
             if file_changed:
                 dataframe = read_metrics_csv_safely(
@@ -941,9 +1393,36 @@ def main() -> None:
                     previous_dataframe = dataframe
                     previous_file_state = file_state
 
-                    plotted_columns = draw_metrics_figure(
+            if previous_dataframe is not None:
+                try:
+                    geometry_dataframe = prepare_metrics_dataframe(
+                        dataframe=previous_dataframe,
+                        from_iteration=None,
+                        last_iterations=None,
+                        skip_opacity_reset_noise=0,
+                    )
+                    if not geometry_dataframe.empty:
+                        geometry_latest_iteration = int(geometry_dataframe["iteration"].iloc[-1])
+                        geometry_changed = update_geometry_evaluation_state(
+                            state=geometry_state,
+                            run_dir=run_dir,
+                            latest_iteration=geometry_latest_iteration,
+                            ground_truth_path=args.ground_truth,
+                            geometry_every=args.geometry_every,
+                            reconstruction_name=args.reconstruction_name,
+                            samples=args.geometry_samples,
+                            device_name=args.geometry_device,
+                            seed=args.geometry_seed,
+                            scale=args.geometry_scale,
+                            use_vertices=args.geometry_use_vertices,
+                        )
+                except ValueError:
+                    pass
+
+            if previous_dataframe is not None and (file_changed or geometry_changed):
+                plotted_columns = draw_metrics_figure(
                         figure=figure,
-                        dataframe=dataframe,
+                        dataframe=previous_dataframe,
                         metrics_csv_path=metrics_csv_path,
                         explicit_loss_column=args.loss_column,
                         plot_all_losses=args.plot_all_losses,
@@ -952,38 +1431,40 @@ def main() -> None:
                         skip_opacity_reset_noise=args.skip,
                         point_count_windowed=args.point_count_windowed,
                         loss_y_scale=args.loss_y_scale,
+                        geometry_rows=geometry_state.rows,
+                )
+
+                figure.canvas.draw_idle()
+                figure.canvas.flush_events()
+
+                if args.save_plot:
+                    output_png_path = run_dir / args.loss_output_name
+                    figure.savefig(output_png_path, dpi=200)
+
+                latest_iteration = "unknown"
+
+                try:
+                    prepared_dataframe = prepare_metrics_dataframe(
+                        dataframe=previous_dataframe,
+                        from_iteration=args.from_iteration,
+                        last_iterations=args.iterations,
+                        skip_opacity_reset_noise=args.skip,
                     )
 
-                    figure.canvas.draw_idle()
-                    figure.canvas.flush_events()
-
-                    if args.save_plot:
-                        output_png_path = run_dir / args.loss_output_name
-                        figure.savefig(output_png_path, dpi=200)
-
-                    latest_iteration = "unknown"
-
-                    try:
-                        prepared_dataframe = prepare_metrics_dataframe(
-                            dataframe=dataframe,
-                            from_iteration=args.from_iteration,
-                            last_iterations=args.iterations,
-                            skip_opacity_reset_noise=args.skip,
+                    if not prepared_dataframe.empty:
+                        latest_iteration = str(
+                            int(prepared_dataframe["iteration"].iloc[-1])
                         )
+                except Exception:
+                    pass
 
-                        if not prepared_dataframe.empty:
-                            latest_iteration = str(
-                                int(prepared_dataframe["iteration"].iloc[-1])
-                            )
-                    except Exception:
-                        pass
-
-                    print(
-                        f"\rUpdated live plot | iteration={latest_iteration} | "
-                        f"columns={plotted_columns}",
-                        end="",
-                        flush=True,
-                    )
+                print(
+                    f"\rUpdated live plot | iteration={latest_iteration} | "
+                    f"CD points={len(geometry_state.rows)} | "
+                    f"columns={plotted_columns}",
+                    end="",
+                    flush=True,
+                )
 
             plt.pause(args.refresh_seconds)
 

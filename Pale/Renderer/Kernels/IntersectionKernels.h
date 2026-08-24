@@ -153,6 +153,122 @@ namespace Pale {
         return true;
     }
 
+    SYCL_EXTERNAL inline bool tryGetPackedPointBvhRange(
+        const GPUSceneBuffers &scene,
+        uint32_t blasRangeIndex,
+        BLASRange &packedRangeOut) {
+        if (scene.pointPackedBvhNodes == nullptr || scene.pointPackedBvhRanges == nullptr) {
+            return false;
+        }
+        if (blasRangeIndex >= scene.pointPackedBvhRangeCount) {
+            return false;
+        }
+
+        const BLASRange packedRange = scene.pointPackedBvhRanges[blasRangeIndex];
+        if (packedRange.nodeCount == 0u) {
+            return false;
+        }
+        if (packedRange.firstNode + packedRange.nodeCount > scene.pointPackedBvhNodeCount) {
+            return false;
+        }
+
+        packedRangeOut = packedRange;
+        return true;
+    }
+
+    SYCL_EXTERNAL inline bool packedPointBvhSideValid(uint32_t childIndex, uint32_t childCount) {
+        return childIndex != UINT32_MAX || childCount > 0u;
+    }
+
+    SYCL_EXTERNAL inline bool tryGetPointQbvhRange(
+        const GPUSceneBuffers &scene,
+        uint32_t blasRangeIndex,
+        BLASRange &qbvhRangeOut) {
+        if (scene.pointQbvhNodes == nullptr || scene.pointQbvhRanges == nullptr) {
+            return false;
+        }
+        if (blasRangeIndex >= scene.pointQbvhRangeCount) {
+            return false;
+        }
+
+        const BLASRange qbvhRange = scene.pointQbvhRanges[blasRangeIndex];
+        if (qbvhRange.nodeCount == 0u) {
+            return false;
+        }
+        if (qbvhRange.firstNode + qbvhRange.nodeCount > scene.pointQbvhNodeCount) {
+            return false;
+        }
+
+        qbvhRangeOut = qbvhRange;
+        return true;
+    }
+
+    SYCL_EXTERNAL inline bool pointQbvhChildValid(const PackedPointQBVHNode &node, uint32_t slot) {
+        return node.childSourceNodeIndex[slot] != UINT32_MAX;
+    }
+
+    struct PointQBVHTraversalEntry {
+        uint32_t childIndex;
+        uint32_t childCount;
+        float tEntry;
+    };
+
+    template<int MaxN = 64>
+    struct PointQBVHTraversalStack {
+        PointQBVHTraversalEntry data[MaxN];
+        int sp = 0;
+
+        bool push(uint32_t childIndex, uint32_t childCount, float tEntry) {
+            if (sp >= MaxN) return false;
+            data[sp++] = PointQBVHTraversalEntry{childIndex, childCount, tEntry};
+            return true;
+        }
+
+        PointQBVHTraversalEntry pop() {
+            if (sp <= 0) return PointQBVHTraversalEntry{0u, 0u, 0.0f};
+            return data[--sp];
+        }
+
+        bool empty() const { return sp == 0; }
+    };
+
+    SYCL_EXTERNAL inline void insertPointQbvhHitSorted(
+        uint32_t *hitChildIndices,
+        uint32_t *hitChildCounts,
+        float *hitTEntries,
+        uint32_t &hitCount,
+        uint32_t childIndex,
+        uint32_t childCount,
+        float tEntry) {
+        uint32_t insertIndex = hitCount;
+        while (insertIndex > 0u && tEntry < hitTEntries[insertIndex - 1u]) {
+            hitChildIndices[insertIndex] = hitChildIndices[insertIndex - 1u];
+            hitChildCounts[insertIndex] = hitChildCounts[insertIndex - 1u];
+            hitTEntries[insertIndex] = hitTEntries[insertIndex - 1u];
+            --insertIndex;
+        }
+
+        hitChildIndices[insertIndex] = childIndex;
+        hitChildCounts[insertIndex] = childCount;
+        hitTEntries[insertIndex] = tEntry;
+        ++hitCount;
+    }
+
+    template<int MaxN>
+    SYCL_EXTERNAL inline void pushPointQbvhHitsNearFirst(
+        PointQBVHTraversalStack<MaxN> &traversalStack,
+        const uint32_t *hitChildIndices,
+        const uint32_t *hitChildCounts,
+        const float *hitTEntries,
+        uint32_t hitCount) {
+        for (int hitIndex = static_cast<int>(hitCount) - 1; hitIndex >= 0; --hitIndex) {
+            traversalStack.push(
+                hitChildIndices[hitIndex],
+                hitChildCounts[hitIndex],
+                hitTEntries[hitIndex]);
+        }
+    }
+
     // -----------------------------------------------------------------------------
     // Triangle BLAS (unchanged except near-to-far child push)
     // -----------------------------------------------------------------------------
@@ -259,6 +375,9 @@ namespace Pale {
         const GPUSceneBuffers &scene) {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
+        if (scene.pointTraversalData == nullptr) {
+            return false;
+        }
 
 
         bool hitAny = false;
@@ -276,6 +395,249 @@ namespace Pale {
         uint64_t profilePlaneTests = 0u;
         uint64_t profileProfileTests = 0u;
         uint64_t profileAcceptedHits = 0u;
+
+        BLASRange qbvhRange{};
+        if (tryGetPointQbvhRange(scene, blasRangeIndex, qbvhRange)) {
+            const PackedPointQBVHNode *qbvhNodes = scene.pointQbvhNodes + qbvhRange.firstNode;
+
+            auto processQbvhLeaf = [&](uint32_t firstTraversalIndex, uint32_t traversalCount) {
+                for (uint32_t primitiveOffset = 0; primitiveOffset < traversalCount; ++primitiveOffset) {
+                    const uint32_t traversalIndex = firstTraversalIndex + primitiveOffset;
+                    const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                    const uint32_t primitiveIndex = surfel.primitiveIndex;
+                    if (profileEnabled) ++profilePrimitiveTests;
+
+                    float tHitLocal = 0.0f;
+                    float alphaGeom = 0.0f;
+
+                    if (profileEnabled && !surfel.isEmissive()) {
+                        ++profilePlaneTests;
+                    }
+                    if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
+                                                                RayEpsilon2)) {
+                        continue;
+                    }
+
+                    const float3 hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
+                    const float2 uv = phiInverse(hitLocal, surfel);
+                    if (profileEnabled) ++profileProfileTests;
+                    if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                        continue;
+                    }
+
+                    if (profileEnabled) ++profileAcceptedHits;
+                    hitAny = true;
+                    bestTHit = tHitLocal;
+                    bestSurfelIndex = primitiveIndex;
+                    bestHitLocal = hitLocal;
+                    bestAlphaGeomAtHit = alphaGeom;
+                }
+            };
+
+            PointQBVHTraversalStack<64> traversalStack;
+            traversalStack.push(0u, 0u, 0.0f);
+
+            while (!traversalStack.empty()) {
+                const PointQBVHTraversalEntry stackEntry = traversalStack.pop();
+                if (stackEntry.tEntry > bestTHit) {
+                    continue;
+                }
+
+                if (stackEntry.childCount > 0u) {
+                    processQbvhLeaf(stackEntry.childIndex, stackEntry.childCount);
+                    continue;
+                }
+
+                const PackedPointQBVHNode &node = qbvhNodes[stackEntry.childIndex];
+                uint32_t hitChildIndices[4]{0u, 0u, 0u, 0u};
+                uint32_t hitChildCounts[4]{0u, 0u, 0u, 0u};
+                float hitTEntries[4]{
+                    std::numeric_limits<float>::infinity(),
+                    std::numeric_limits<float>::infinity(),
+                    std::numeric_limits<float>::infinity(),
+                    std::numeric_limits<float>::infinity()
+                };
+                uint32_t hitCount = 0u;
+
+                for (uint32_t slot = 0u; slot < 4u; ++slot) {
+                    if (!pointQbvhChildValid(node, slot)) {
+                        continue;
+                    }
+                    if (profileEnabled) ++profileNodeTests;
+
+                    float childTEntry = std::numeric_limits<float>::infinity();
+                    const bool hitChild = slabIntersectAABB(
+                        rayObject,
+                        float3{node.minX[slot], node.minY[slot], node.minZ[slot]},
+                        float3{node.maxX[slot], node.maxY[slot], node.maxZ[slot]},
+                        inverseDirection,
+                        bestTHit,
+                        childTEntry);
+
+                    if (!hitChild) {
+                        continue;
+                    }
+
+                    if (profileEnabled) ++profileNodeHits;
+                    insertPointQbvhHitSorted(
+                        hitChildIndices,
+                        hitChildCounts,
+                        hitTEntries,
+                        hitCount,
+                        node.childIndex[slot],
+                        node.childCount[slot],
+                        childTEntry);
+                }
+
+                pushPointQbvhHitsNearFirst(
+                    traversalStack,
+                    hitChildIndices,
+                    hitChildCounts,
+                    hitTEntries,
+                    hitCount);
+            }
+
+            if (!hitAny) {
+                flushPointBvhProfile(
+                    scene,
+                    profileNodeTests,
+                    profileNodeHits,
+                    profilePrimitiveTests,
+                    profilePlaneTests,
+                    profileProfileTests,
+                    profileAcceptedHits);
+                return false;
+            }
+
+            localHitOut.t = bestTHit;
+            localHitOut.primitiveIndex = bestSurfelIndex;
+            localHitOut.transmissivity = 1.0f;
+            localHitOut.alpha = bestAlphaGeomAtHit;
+            localHitOut.worldHit = bestHitLocal;
+
+            flushPointBvhProfile(
+                scene,
+                profileNodeTests,
+                profileNodeHits,
+                profilePrimitiveTests,
+                profilePlaneTests,
+                profileProfileTests,
+                profileAcceptedHits);
+            return true;
+        }
+
+        BLASRange packedRange{};
+        if (tryGetPackedPointBvhRange(scene, blasRangeIndex, packedRange)) {
+            const PackedPointBVHNode *packedNodes = scene.pointPackedBvhNodes + packedRange.firstNode;
+
+            auto processPackedLeaf = [&](uint32_t firstTraversalIndex, uint32_t traversalCount) {
+                for (uint32_t primitiveOffset = 0; primitiveOffset < traversalCount; ++primitiveOffset) {
+                    const uint32_t traversalIndex = firstTraversalIndex + primitiveOffset;
+                    const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                    const uint32_t primitiveIndex = surfel.primitiveIndex;
+                    if (profileEnabled) ++profilePrimitiveTests;
+
+                    float tHitLocal = 0.0f;
+                    float alphaGeom = 0.0f;
+
+                    if (profileEnabled && !surfel.isEmissive()) {
+                        ++profilePlaneTests;
+                    }
+                    if (surfel.isEmissive() || !intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
+                                                                RayEpsilon2)) {
+                        continue;
+                    }
+
+                    const float3 hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
+                    const float2 uv = phiInverse(hitLocal, surfel);
+                    if (profileEnabled) ++profileProfileTests;
+                    if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                        continue;
+                    }
+
+                    if (profileEnabled) ++profileAcceptedHits;
+                    hitAny = true;
+                    bestTHit = tHitLocal;
+                    bestSurfelIndex = primitiveIndex;
+                    bestHitLocal = hitLocal;
+                    bestAlphaGeomAtHit = alphaGeom;
+                }
+            };
+
+            TraversalEntryStack<64> traversalStack;
+            traversalStack.push(0u, 0.0f);
+
+            while (!traversalStack.empty()) {
+                const ChildEntry stackEntry = traversalStack.pop();
+                if (stackEntry.tEntry > bestTHit) {
+                    continue;
+                }
+
+                const PackedPointBVHNode &node = packedNodes[stackEntry.nodeIndex];
+                const bool leftValid = packedPointBvhSideValid(node.leftIndex, node.leftCount);
+                const bool rightValid = packedPointBvhSideValid(node.rightIndex, node.rightCount);
+
+                float leftTEntry = std::numeric_limits<float>::infinity();
+                float rightTEntry = std::numeric_limits<float>::infinity();
+                if (profileEnabled) {
+                    profileNodeTests += static_cast<uint64_t>(leftValid) + static_cast<uint64_t>(rightValid);
+                }
+
+                const bool hitLeft = leftValid && slabIntersectAABB(
+                    rayObject, node.leftAabbMin, node.leftAabbMax, inverseDirection, bestTHit, leftTEntry);
+                const bool hitRight = rightValid && slabIntersectAABB(
+                    rayObject, node.rightAabbMin, node.rightAabbMax, inverseDirection, bestTHit, rightTEntry);
+
+                if (profileEnabled) {
+                    profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
+                }
+
+                if (hitLeft && node.leftCount > 0u) {
+                    processPackedLeaf(node.leftIndex, node.leftCount);
+                }
+                if (hitRight && node.rightCount > 0u) {
+                    processPackedLeaf(node.rightIndex, node.rightCount);
+                }
+
+                const bool pushLeft = hitLeft && node.leftCount == 0u;
+                const bool pushRight = hitRight && node.rightCount == 0u;
+                if (pushLeft && pushRight) {
+                    pushNearFarEntries(traversalStack, node.leftIndex, leftTEntry, node.rightIndex, rightTEntry);
+                } else if (pushLeft) {
+                    traversalStack.push(node.leftIndex, leftTEntry);
+                } else if (pushRight) {
+                    traversalStack.push(node.rightIndex, rightTEntry);
+                }
+            }
+
+            if (!hitAny) {
+                flushPointBvhProfile(
+                    scene,
+                    profileNodeTests,
+                    profileNodeHits,
+                    profilePrimitiveTests,
+                    profilePlaneTests,
+                    profileProfileTests,
+                    profileAcceptedHits);
+                return false;
+            }
+
+            localHitOut.t = bestTHit;
+            localHitOut.primitiveIndex = bestSurfelIndex;
+            localHitOut.transmissivity = 1.0f;
+            localHitOut.alpha = bestAlphaGeomAtHit;
+            localHitOut.worldHit = bestHitLocal;
+
+            flushPointBvhProfile(
+                scene,
+                profileNodeTests,
+                profileNodeHits,
+                profilePrimitiveTests,
+                profilePlaneTests,
+                profileProfileTests,
+                profileAcceptedHits);
+            return true;
+        }
 
         TraversalEntryStack<64> traversalStack;
         float rootTEntry = 0.0f;
@@ -321,11 +683,10 @@ namespace Pale {
 
             // Leaf: test surfels
             for (uint32_t primitiveOffset = 0; primitiveOffset < node.triCount; ++primitiveOffset) {
-                const uint32_t primitiveIndex =
-                        scene.pointPermutation[node.leftFirst + primitiveOffset];
-
+                const uint32_t traversalIndex = node.leftFirst + primitiveOffset;
+                const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                const uint32_t primitiveIndex = surfel.primitiveIndex;
                 if (profileEnabled) ++profilePrimitiveTests;
-                const Point &surfel = scene.points[primitiveIndex];
 
                 float tHitLocal = 0.0f;
                 float alphaGeom = 0.0f;
@@ -403,6 +764,9 @@ namespace Pale {
         if (maxLocalHitCount == 0u) {
             return 0u;
         }
+        if (scene.pointTraversalData == nullptr) {
+            return 0u;
+        }
 
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
@@ -423,6 +787,256 @@ namespace Pale {
         uint64_t profilePlaneTests = 0u;
         uint64_t profileProfileTests = 0u;
         uint64_t profileAcceptedHits = 0u;
+
+        BLASRange qbvhRange{};
+        if (tryGetPointQbvhRange(scene, blasRangeIndex, qbvhRange)) {
+            const PackedPointQBVHNode *qbvhNodes = scene.pointQbvhNodes + qbvhRange.firstNode;
+
+            auto processQbvhLeaf = [&](uint32_t firstTraversalIndex, uint32_t traversalCount) {
+                for (uint32_t primitiveOffset = 0u; primitiveOffset < traversalCount; ++primitiveOffset) {
+                    const uint32_t traversalIndex = firstTraversalIndex + primitiveOffset;
+                    const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                    const uint32_t primitiveIndex = surfel.primitiveIndex;
+                    if (profileEnabled) ++profilePrimitiveTests;
+
+                    if (surfel.isEmissive()) {
+                        continue;
+                    }
+
+                    float tHitObject = 0.0f;
+                    float alphaGeom = 0.0f;
+                    if (profileEnabled) ++profilePlaneTests;
+                    if (!intersectSurfel(rayObject, surfel, RayEpsilon2, objectTMaxLimit, tHitObject,
+                                         RayEpsilon2)) {
+                        continue;
+                    }
+
+                    const float3 hitPositionObject = rayObject.origin + tHitObject * rayObject.direction;
+                    const float2 uv = phiInverse(hitPositionObject, surfel);
+                    if (profileEnabled) ++profileProfileTests;
+                    if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                        continue;
+                    }
+
+                    const float3 hitPositionW = toWorldPoint(hitPositionObject, transform);
+                    const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
+                    if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
+                        continue;
+                    }
+
+                    LocalSurfelLayerHit candidateHit{};
+                    candidateHit.tWorld = tHitWorld;
+                    candidateHit.primitiveIndex = primitiveIndex;
+                    candidateHit.alphaGeom = alphaGeom;
+                    candidateHit.hitPositionW = hitPositionW;
+                    if (profileEnabled) ++profileAcceptedHits;
+                    insertLocalSurfelLayerHit(
+                        localHits,
+                        localHitCount,
+                        maxLocalHitCount,
+                        candidateHit);
+
+                    if (localHitCount == maxLocalHitCount) {
+                        const float farthestBufferedTWorld =
+                            sycl::fmin(tMaxWorld, localHits[maxLocalHitCount - 1u].tWorld);
+                        objectTMaxLimit = sycl::fmin(
+                            objectTMaxLimit,
+                            farthestBufferedTWorld * objectTPerWorldT);
+                    }
+                }
+            };
+
+            PointQBVHTraversalStack<64> traversalStack;
+            traversalStack.push(0u, 0u, 0.0f);
+
+            while (!traversalStack.empty()) {
+                const PointQBVHTraversalEntry stackEntry = traversalStack.pop();
+                if (stackEntry.tEntry > objectTMaxLimit) {
+                    continue;
+                }
+
+                if (stackEntry.childCount > 0u) {
+                    processQbvhLeaf(stackEntry.childIndex, stackEntry.childCount);
+                    continue;
+                }
+
+                const PackedPointQBVHNode &node = qbvhNodes[stackEntry.childIndex];
+                uint32_t hitChildIndices[4]{0u, 0u, 0u, 0u};
+                uint32_t hitChildCounts[4]{0u, 0u, 0u, 0u};
+                float hitTEntries[4]{
+                    std::numeric_limits<float>::infinity(),
+                    std::numeric_limits<float>::infinity(),
+                    std::numeric_limits<float>::infinity(),
+                    std::numeric_limits<float>::infinity()
+                };
+                uint32_t hitCount = 0u;
+
+                for (uint32_t slot = 0u; slot < 4u; ++slot) {
+                    if (!pointQbvhChildValid(node, slot)) {
+                        continue;
+                    }
+                    if (profileEnabled) ++profileNodeTests;
+
+                    float childTEntry = std::numeric_limits<float>::infinity();
+                    const bool hitChild = slabIntersectAABB(
+                        rayObject,
+                        float3{node.minX[slot], node.minY[slot], node.minZ[slot]},
+                        float3{node.maxX[slot], node.maxY[slot], node.maxZ[slot]},
+                        inverseDirectionObject,
+                        objectTMaxLimit,
+                        childTEntry);
+
+                    if (!hitChild) {
+                        continue;
+                    }
+
+                    if (profileEnabled) ++profileNodeHits;
+                    insertPointQbvhHitSorted(
+                        hitChildIndices,
+                        hitChildCounts,
+                        hitTEntries,
+                        hitCount,
+                        node.childIndex[slot],
+                        node.childCount[slot],
+                        childTEntry);
+                }
+
+                pushPointQbvhHitsNearFirst(
+                    traversalStack,
+                    hitChildIndices,
+                    hitChildCounts,
+                    hitTEntries,
+                    hitCount);
+            }
+
+            flushPointBvhProfile(
+                scene,
+                profileNodeTests,
+                profileNodeHits,
+                profilePrimitiveTests,
+                profilePlaneTests,
+                profileProfileTests,
+                profileAcceptedHits);
+            return localHitCount;
+        }
+
+        BLASRange packedRange{};
+        if (tryGetPackedPointBvhRange(scene, blasRangeIndex, packedRange)) {
+            const PackedPointBVHNode *packedNodes = scene.pointPackedBvhNodes + packedRange.firstNode;
+
+            auto processPackedLeaf = [&](uint32_t firstTraversalIndex, uint32_t traversalCount) {
+                for (uint32_t primitiveOffset = 0u; primitiveOffset < traversalCount; ++primitiveOffset) {
+                    const uint32_t traversalIndex = firstTraversalIndex + primitiveOffset;
+                    const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                    const uint32_t primitiveIndex = surfel.primitiveIndex;
+                    if (profileEnabled) ++profilePrimitiveTests;
+
+                    if (surfel.isEmissive()) {
+                        continue;
+                    }
+
+                    float tHitObject = 0.0f;
+                    float alphaGeom = 0.0f;
+                    if (profileEnabled) ++profilePlaneTests;
+                    if (!intersectSurfel(rayObject, surfel, RayEpsilon2, objectTMaxLimit, tHitObject,
+                                         RayEpsilon2)) {
+                        continue;
+                    }
+
+                    const float3 hitPositionObject = rayObject.origin + tHitObject * rayObject.direction;
+                    const float2 uv = phiInverse(hitPositionObject, surfel);
+                    if (profileEnabled) ++profileProfileTests;
+                    if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                        continue;
+                    }
+
+                    const float3 hitPositionW = toWorldPoint(hitPositionObject, transform);
+                    const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
+                    if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
+                        continue;
+                    }
+
+                    LocalSurfelLayerHit candidateHit{};
+                    candidateHit.tWorld = tHitWorld;
+                    candidateHit.primitiveIndex = primitiveIndex;
+                    candidateHit.alphaGeom = alphaGeom;
+                    candidateHit.hitPositionW = hitPositionW;
+                    if (profileEnabled) ++profileAcceptedHits;
+                    insertLocalSurfelLayerHit(
+                        localHits,
+                        localHitCount,
+                        maxLocalHitCount,
+                        candidateHit);
+
+                    if (localHitCount == maxLocalHitCount) {
+                        const float farthestBufferedTWorld =
+                            sycl::fmin(tMaxWorld, localHits[maxLocalHitCount - 1u].tWorld);
+                        objectTMaxLimit = sycl::fmin(
+                            objectTMaxLimit,
+                            farthestBufferedTWorld * objectTPerWorldT);
+                    }
+                }
+            };
+
+            TraversalEntryStack<64> traversalStack;
+            traversalStack.push(0u, 0.0f);
+
+            while (!traversalStack.empty()) {
+                const ChildEntry stackEntry = traversalStack.pop();
+                if (stackEntry.tEntry > objectTMaxLimit) {
+                    continue;
+                }
+
+                const PackedPointBVHNode &node = packedNodes[stackEntry.nodeIndex];
+                const bool leftValid = packedPointBvhSideValid(node.leftIndex, node.leftCount);
+                const bool rightValid = packedPointBvhSideValid(node.rightIndex, node.rightCount);
+
+                float leftTEntry = std::numeric_limits<float>::infinity();
+                float rightTEntry = std::numeric_limits<float>::infinity();
+                if (profileEnabled) {
+                    profileNodeTests += static_cast<uint64_t>(leftValid) + static_cast<uint64_t>(rightValid);
+                }
+
+                const bool hitLeft = leftValid && slabIntersectAABB(
+                    rayObject, node.leftAabbMin, node.leftAabbMax, inverseDirectionObject, objectTMaxLimit,
+                    leftTEntry);
+                const bool hitRight = rightValid && slabIntersectAABB(
+                    rayObject, node.rightAabbMin, node.rightAabbMax, inverseDirectionObject, objectTMaxLimit,
+                    rightTEntry);
+
+                if (profileEnabled) {
+                    profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
+                }
+
+                if (hitLeft && node.leftCount > 0u) {
+                    processPackedLeaf(node.leftIndex, node.leftCount);
+                }
+                if (hitRight && node.rightCount > 0u) {
+                    processPackedLeaf(node.rightIndex, node.rightCount);
+                }
+
+                const bool pushLeft = hitLeft && node.leftCount == 0u;
+                const bool pushRight = hitRight && node.rightCount == 0u;
+                if (pushLeft && pushRight) {
+                    pushNearFarEntries(traversalStack, node.leftIndex, leftTEntry, node.rightIndex, rightTEntry);
+                } else if (pushLeft) {
+                    traversalStack.push(node.leftIndex, leftTEntry);
+                } else if (pushRight) {
+                    traversalStack.push(node.rightIndex, rightTEntry);
+                }
+            }
+
+            flushPointBvhProfile(
+                scene,
+                profileNodeTests,
+                profileNodeHits,
+                profilePrimitiveTests,
+                profilePlaneTests,
+                profileProfileTests,
+                profileAcceptedHits);
+            return localHitCount;
+        }
+
         TraversalEntryStack<64> traversalStack;
         float rootTEntry = 0.0f;
         if (profileEnabled) ++profileNodeTests;
@@ -466,9 +1080,10 @@ namespace Pale {
             }
 
             for (uint32_t primitiveOffset = 0u; primitiveOffset < node.triCount; ++primitiveOffset) {
-                const uint32_t primitiveIndex = scene.pointPermutation[node.leftFirst + primitiveOffset];
+                const uint32_t traversalIndex = node.leftFirst + primitiveOffset;
+                const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                const uint32_t primitiveIndex = surfel.primitiveIndex;
                 if (profileEnabled) ++profilePrimitiveTests;
-                const Point &surfel = scene.points[primitiveIndex];
                 // Preserve your current FirstHit behavior.
                 if (surfel.isEmissive()) {
                     continue;
@@ -814,6 +1429,9 @@ namespace Pale {
         const GPUSceneBuffers &scene) {
         const BLASRange &blasRange = scene.blasRanges[blasRangeIndex];
         const BVHNode *bvhNodes = scene.blasNodes + blasRange.firstNode;
+        if (scene.pointTraversalData == nullptr) {
+            return false;
+        }
 
         float cumulativeTransmittance = 1.0f;
 
@@ -834,6 +1452,227 @@ namespace Pale {
             uint64_t profilePlaneTests = 0u;
             uint64_t profileProfileTests = 0u;
             uint64_t profileAcceptedHits = 0u;
+
+            BLASRange qbvhRange{};
+            if (tryGetPointQbvhRange(scene, blasRangeIndex, qbvhRange)) {
+                const PackedPointQBVHNode *qbvhNodes = scene.pointQbvhNodes + qbvhRange.firstNode;
+
+                auto processQbvhLeaf = [&](uint32_t firstTraversalIndex, uint32_t traversalCount) {
+                    for (uint32_t primitiveOffset = 0; primitiveOffset < traversalCount; ++primitiveOffset) {
+                        const uint32_t traversalIndex = firstTraversalIndex + primitiveOffset;
+                        const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                        const uint32_t primitiveIndex = surfel.primitiveIndex;
+
+                        if (profileEnabled) ++profilePrimitiveTests;
+
+                        float tHitLocal = 0.0f;
+                        float alphaGeom = 0.0f;
+                        if (profileEnabled) ++profilePlaneTests;
+                        if (!intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
+                                             RayEpsilon2)) {
+                            continue;
+                        }
+
+                        const float3 hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
+                        const float2 uv = phiInverse(hitLocal, surfel);
+                        if (profileEnabled) ++profileProfileTests;
+                        if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                            continue;
+                        }
+
+                        if (tHitLocal <= tMin) {
+                            continue;
+                        }
+
+                        if (profileEnabled) ++profileAcceptedHits;
+                        bestTHit = tHitLocal;
+                        outSurfelIndex = primitiveIndex;
+                        outAlphaGeomAtHit = alphaGeom;
+                        hitAny = true;
+                    }
+                };
+
+                PointQBVHTraversalStack<64> traversalStack;
+                traversalStack.push(0u, 0u, 0.0f);
+
+                while (!traversalStack.empty()) {
+                    const PointQBVHTraversalEntry stackEntry = traversalStack.pop();
+                    if (stackEntry.tEntry > bestTHit) {
+                        continue;
+                    }
+
+                    if (stackEntry.childCount > 0u) {
+                        processQbvhLeaf(stackEntry.childIndex, stackEntry.childCount);
+                        continue;
+                    }
+
+                    const PackedPointQBVHNode &node = qbvhNodes[stackEntry.childIndex];
+                    uint32_t hitChildIndices[4]{0u, 0u, 0u, 0u};
+                    uint32_t hitChildCounts[4]{0u, 0u, 0u, 0u};
+                    float hitTEntries[4]{
+                        std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::infinity()
+                    };
+                    uint32_t hitCount = 0u;
+
+                    for (uint32_t slot = 0u; slot < 4u; ++slot) {
+                        if (!pointQbvhChildValid(node, slot)) {
+                            continue;
+                        }
+                        if (profileEnabled) ++profileNodeTests;
+
+                        float childTEntry = std::numeric_limits<float>::infinity();
+                        const bool hitChild = slabIntersectAABB(
+                            rayObject,
+                            float3{node.minX[slot], node.minY[slot], node.minZ[slot]},
+                            float3{node.maxX[slot], node.maxY[slot], node.maxZ[slot]},
+                            inverseDirection,
+                            bestTHit,
+                            childTEntry);
+
+                        if (!hitChild) {
+                            continue;
+                        }
+
+                        if (profileEnabled) ++profileNodeHits;
+                        insertPointQbvhHitSorted(
+                            hitChildIndices,
+                            hitChildCounts,
+                            hitTEntries,
+                            hitCount,
+                            node.childIndex[slot],
+                            node.childCount[slot],
+                            childTEntry);
+                    }
+
+                    pushPointQbvhHitsNearFirst(
+                        traversalStack,
+                        hitChildIndices,
+                        hitChildCounts,
+                        hitTEntries,
+                        hitCount);
+                }
+
+                flushPointBvhProfile(
+                    scene,
+                    profileNodeTests,
+                    profileNodeHits,
+                    profilePrimitiveTests,
+                    profilePlaneTests,
+                    profileProfileTests,
+                    profileAcceptedHits);
+
+                if (!hitAny) {
+                    return false;
+                }
+
+                outTHit = bestTHit;
+                return true;
+            }
+
+            BLASRange packedRange{};
+            if (tryGetPackedPointBvhRange(scene, blasRangeIndex, packedRange)) {
+                const PackedPointBVHNode *packedNodes = scene.pointPackedBvhNodes + packedRange.firstNode;
+
+                auto processPackedLeaf = [&](uint32_t firstTraversalIndex, uint32_t traversalCount) {
+                    for (uint32_t primitiveOffset = 0; primitiveOffset < traversalCount; ++primitiveOffset) {
+                        const uint32_t traversalIndex = firstTraversalIndex + primitiveOffset;
+                        const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                        const uint32_t primitiveIndex = surfel.primitiveIndex;
+
+                        if (profileEnabled) ++profilePrimitiveTests;
+
+                        float tHitLocal = 0.0f;
+                        float alphaGeom = 0.0f;
+                        if (profileEnabled) ++profilePlaneTests;
+                        if (!intersectSurfel(rayObject, surfel, RayEpsilon2, bestTHit, tHitLocal,
+                                             RayEpsilon2)) {
+                            continue;
+                        }
+
+                        const float3 hitLocal = rayObject.origin + tHitLocal * rayObject.direction;
+                        const float2 uv = phiInverse(hitLocal, surfel);
+                        if (profileEnabled) ++profileProfileTests;
+                        if (!opacityBeta(uv[0], uv[1], surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                            continue;
+                        }
+
+                        if (tHitLocal <= tMin) {
+                            continue;
+                        }
+
+                        if (profileEnabled) ++profileAcceptedHits;
+                        bestTHit = tHitLocal;
+                        outSurfelIndex = primitiveIndex;
+                        outAlphaGeomAtHit = alphaGeom;
+                        hitAny = true;
+                    }
+                };
+
+                TraversalEntryStack<64> traversalStack;
+                traversalStack.push(0u, 0.0f);
+
+                while (!traversalStack.empty()) {
+                    const ChildEntry stackEntry = traversalStack.pop();
+                    if (stackEntry.tEntry > bestTHit) {
+                        continue;
+                    }
+
+                    const PackedPointBVHNode &node = packedNodes[stackEntry.nodeIndex];
+                    const bool leftValid = packedPointBvhSideValid(node.leftIndex, node.leftCount);
+                    const bool rightValid = packedPointBvhSideValid(node.rightIndex, node.rightCount);
+
+                    float leftTEntry = std::numeric_limits<float>::infinity();
+                    float rightTEntry = std::numeric_limits<float>::infinity();
+                    if (profileEnabled) {
+                        profileNodeTests += static_cast<uint64_t>(leftValid) + static_cast<uint64_t>(rightValid);
+                    }
+
+                    const bool hitLeft = leftValid && slabIntersectAABB(
+                        rayObject, node.leftAabbMin, node.leftAabbMax, inverseDirection, bestTHit, leftTEntry);
+                    const bool hitRight = rightValid && slabIntersectAABB(
+                        rayObject, node.rightAabbMin, node.rightAabbMax, inverseDirection, bestTHit, rightTEntry);
+
+                    if (profileEnabled) {
+                        profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
+                    }
+
+                    if (hitLeft && node.leftCount > 0u) {
+                        processPackedLeaf(node.leftIndex, node.leftCount);
+                    }
+                    if (hitRight && node.rightCount > 0u) {
+                        processPackedLeaf(node.rightIndex, node.rightCount);
+                    }
+
+                    const bool pushLeft = hitLeft && node.leftCount == 0u;
+                    const bool pushRight = hitRight && node.rightCount == 0u;
+                    if (pushLeft && pushRight) {
+                        pushNearFarEntries(traversalStack, node.leftIndex, leftTEntry, node.rightIndex, rightTEntry);
+                    } else if (pushLeft) {
+                        traversalStack.push(node.leftIndex, leftTEntry);
+                    } else if (pushRight) {
+                        traversalStack.push(node.rightIndex, rightTEntry);
+                    }
+                }
+
+                flushPointBvhProfile(
+                    scene,
+                    profileNodeTests,
+                    profileNodeHits,
+                    profilePrimitiveTests,
+                    profilePlaneTests,
+                    profileProfileTests,
+                    profileAcceptedHits);
+
+                if (!hitAny) {
+                    return false;
+                }
+
+                outTHit = bestTHit;
+                return true;
+            }
 
             TraversalEntryStack<64> traversalStack;
             float rootTEntry = 0.0f;
@@ -876,11 +1715,11 @@ namespace Pale {
 
                 // Leaf: test surfels
                 for (uint32_t primitiveOffset = 0; primitiveOffset < node.triCount; ++primitiveOffset) {
-                    const uint32_t primitiveIndex =
-                            scene.pointPermutation[node.leftFirst + primitiveOffset];
+                    const uint32_t traversalIndex = node.leftFirst + primitiveOffset;
+                    const SurfelTraversalData &surfel = scene.pointTraversalData[traversalIndex];
+                    const uint32_t primitiveIndex = surfel.primitiveIndex;
 
                     if (profileEnabled) ++profilePrimitiveTests;
-                    const Point &surfel = scene.points[primitiveIndex];
 
                     float tHitLocal = 0.0f;
                     float alphaGeom = 0.0f;

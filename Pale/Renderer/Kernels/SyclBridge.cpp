@@ -226,18 +226,19 @@ namespace Pale {
             queue.fill(gradients.cloneSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
             queue.fill(gradients.cloneSignalRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
         }
-        queue.wait();
     }
 
     // ---- Orchestrator -------------------------------------------------------
     void submitAdjointKernel(RenderPackage& pkg) {
-        uint32_t pointCount = pkg.gradients.numPoints;
-        pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
-        clearAdjointPointGradients(pkg);
+        {
+            ScopedTimer timer("Adjoint setup: clear point gradients", spdlog::level::debug);
+            clearAdjointPointGradients(pkg);
+        }
 
         const bool enableAdjointDirectLight = pkg.settings.enableAdjointDirectLight;
         for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-            if (pkg.settings.renderDebugGradientImages) {
+            if (pkg.settings.renderDebugGradientImages && pkg.debugImages != nullptr) {
+                ScopedTimer timer("Adjoint setup: clear debug gradient images", spdlog::level::debug);
                 pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosX, 0.0f,
                                pkg.debugImages[cameraIndex].numPixels).wait();
                 pkg.queue.fill(pkg.debugImages[cameraIndex].framebufferPosY, 0.0f,
@@ -270,27 +271,26 @@ namespace Pale {
 
             for (uint32_t spp = 0; spp < samplesPerPixel; ++spp) {
                 ScopedTimer forwardTimer("Traced adjoint pass", spdlog::level::debug);
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
                 const uint32_t raysPerFrame = pkg.sensors[cameraIndex].width * pkg.sensors[cameraIndex].height;
-                pkg.queue.fill(pkg.intermediates.pendingCameraSegments, PendingCameraSegment{}, raysPerFrame).wait();
                 {
-                    ScopedTimer timer("launchRayGenAdjointKernel");
+                    ScopedTimer timer("launchRayGenAdjointKernel", spdlog::level::debug);
                     Log::PA_TRACE("Generating adjoint rays");
                     launchRayGenAdjointKernel(pkg, spp, static_cast<uint32_t>(cameraIndex));
                 }
                 uint32_t activeRayCount = raysPerFrame;
-                pkg.queue.fill(pkg.intermediates.pendingStageX, PendingAdjointStageX{}, raysPerFrame).wait();
                 for (uint32_t adjointBounceIndex = 0;
                      adjointBounceIndex < pkg.settings.maxAdjointBounces && activeRayCount > 0;
                      ++adjointBounceIndex) {
-                    pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countMeasurementEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countMeasurementTwoPointEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countMaterialVertexEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countMaterialEndEdgeEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.countMaterialStartEdgeEvents, static_cast<uint32_t>(0), 1);
-                    pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit{}, activeRayCount);
-                    pkg.queue.wait();
+                    {
+                        ScopedTimer timer("Adjoint bounce setup", spdlog::level::debug);
+                        pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
+                        pkg.queue.fill(pkg.intermediates.countMeasurementEvents, static_cast<uint32_t>(0), 1);
+                        pkg.queue.fill(pkg.intermediates.countMeasurementTwoPointEvents, static_cast<uint32_t>(0), 1);
+                        pkg.queue.fill(pkg.intermediates.countMaterialVertexEvents, static_cast<uint32_t>(0), 1);
+                        pkg.queue.fill(pkg.intermediates.countMaterialEndEdgeEvents, static_cast<uint32_t>(0), 1);
+                        pkg.queue.fill(pkg.intermediates.countMaterialStartEdgeEvents, static_cast<uint32_t>(0), 1);
+                        pkg.queue.fill(pkg.intermediates.countGradientRecords, static_cast<uint32_t>(0), 1);
+                    }
                     {
                         Log::PA_TRACE("Launching adjoint intersect kernel");
                         ScopedTimer timer("launchAdjointIntersectKernel", spdlog::level::debug);
@@ -301,16 +301,19 @@ namespace Pale {
                     uint32_t materialVertexEventCount = 0u;
                     uint32_t materialEndEdgeEventCount = 0u;
                     uint32_t materialStartEdgeEventCount = 0u;
-                    pkg.queue.memcpy(&measurementEventCount, pkg.intermediates.countMeasurementEvents,
-                                     sizeof(uint32_t)).wait();
-                    pkg.queue.memcpy(&measurementTwoPointEventCount, pkg.intermediates.countMeasurementTwoPointEvents,
-                                     sizeof(uint32_t)).wait();
-                    pkg.queue.memcpy(&materialVertexEventCount, pkg.intermediates.countMaterialVertexEvents,
-                                     sizeof(uint32_t)).wait();
-                    pkg.queue.memcpy(&materialEndEdgeEventCount, pkg.intermediates.countMaterialEndEdgeEvents,
-                                     sizeof(uint32_t)).wait();
-                    pkg.queue.memcpy(&materialStartEdgeEventCount, pkg.intermediates.countMaterialStartEdgeEvents,
-                                     sizeof(uint32_t)).wait();
+                    {
+                        ScopedTimer timer("Adjoint read event counters", spdlog::level::debug);
+                        pkg.queue.memcpy(&measurementEventCount, pkg.intermediates.countMeasurementEvents,
+                                         sizeof(uint32_t)).wait();
+                        pkg.queue.memcpy(&measurementTwoPointEventCount, pkg.intermediates.countMeasurementTwoPointEvents,
+                                         sizeof(uint32_t)).wait();
+                        pkg.queue.memcpy(&materialVertexEventCount, pkg.intermediates.countMaterialVertexEvents,
+                                         sizeof(uint32_t)).wait();
+                        pkg.queue.memcpy(&materialEndEdgeEventCount, pkg.intermediates.countMaterialEndEdgeEvents,
+                                         sizeof(uint32_t)).wait();
+                        pkg.queue.memcpy(&materialStartEdgeEventCount, pkg.intermediates.countMaterialStartEdgeEvents,
+                                         sizeof(uint32_t)).wait();
+                    }
                     measurementEventCount = std::min(measurementEventCount, pkg.intermediates.maxMeasurementEventCount);
                     measurementTwoPointEventCount = std::min(measurementTwoPointEventCount,
                                                              pkg.intermediates.maxMeasurementTwoPointEventCount);
@@ -320,6 +323,14 @@ namespace Pale {
                                                          pkg.intermediates.maxMaterialEndEdgeEventCount);
                     materialStartEdgeEventCount = std::min(materialStartEdgeEventCount,
                                                            pkg.intermediates.maxMaterialStartEdgeEventCount);
+                    {
+                        ScopedTimer timer(
+                            "reduceFusedFirstBounceMeasurementGradientRecords",
+                            spdlog::level::debug);
+                        reduceFusedFirstBounceMeasurementGradientRecords(
+                            pkg,
+                            static_cast<uint32_t>(cameraIndex));
+                    }
                     if (measurementEventCount > 0u ||
                         measurementTwoPointEventCount > 0u ||
                         materialVertexEventCount > 0u ||
@@ -334,13 +345,17 @@ namespace Pale {
                     }
 
                     uint32_t nextRayCountRaw = 0u;
-                    pkg.queue.memcpy(&nextRayCountRaw, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
+                    {
+                        ScopedTimer timer("Adjoint read next ray count", spdlog::level::debug);
+                        pkg.queue.memcpy(&nextRayCountRaw, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
+                    }
                     const uint32_t nextRayCount = std::min(nextRayCountRaw, pkg.intermediates.maxRayQueueCapacity);
                     if (nextRayCountRaw > pkg.intermediates.maxRayQueueCapacity) {
                         Log::PA_ERROR("Overflow: nextRayCount={} max={}", nextRayCountRaw,
                                       pkg.intermediates.maxRayQueueCapacity);
                     }
                     if (nextRayCount > 0u) {
+                        ScopedTimer timer("Adjoint copy extension rays", spdlog::level::debug);
                         pkg.queue.memcpy(pkg.intermediates.primaryRays,
                                          pkg.intermediates.extensionRaysA,
                                          nextRayCount * sizeof(RayState)).wait();
@@ -351,7 +366,10 @@ namespace Pale {
             }
         }
 
-        computePerPrimitiveCloneSignalStats(pkg);
+        {
+            ScopedTimer timer("Adjoint compute clone signal stats", spdlog::level::debug);
+            computePerPrimitiveCloneSignalStats(pkg);
+        }
     }
 
 
@@ -387,25 +405,38 @@ namespace Pale {
     }
 
     void submitSurfaceRegularizersKernel(RenderPackage& pkg) {
-        clearPointGradients(pkg.queue, pkg.depthDistortionGradients);
-        clearPointGradients(pkg.queue, pkg.normalConsistencyGradients);
-        clearPointGradients(pkg.queue, pkg.visibilityOpacityGradients);
-        pkg.queue.wait();
+        {
+            ScopedTimer timer("Surface regularizer clear gradients", spdlog::level::debug);
+            clearPointGradients(pkg.queue, pkg.depthDistortionGradients);
+            clearPointGradients(pkg.queue, pkg.normalConsistencyGradients);
+            clearPointGradients(pkg.queue, pkg.visibilityOpacityGradients);
+            pkg.queue.wait();
+        }
 
         for (uint32_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
             auto& sensor = pkg.sensors[cameraIndex];
             const uint32_t pixelCount = sensor.width * sensor.height;
 
-            pkg.queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount).wait();
+            {
+                ScopedTimer timer("Surface regularizer clear median depth adjoint", spdlog::level::debug);
+                pkg.queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount).wait();
+            }
 
             if (pkg.settings.normalConsistencyWeight != 0.0f) {
+                ScopedTimer timer("launchNormalFromDepthAdjointKernel", spdlog::level::debug);
                 launchNormalFromDepthAdjointKernel(pkg, cameraIndex);
             }
 
-            launchSurfaceRegularizersBackwardKernel(pkg, cameraIndex);
+            {
+                ScopedTimer timer("launchSurfaceRegularizersBackwardKernel", spdlog::level::debug);
+                launchSurfaceRegularizersBackwardKernel(pkg, cameraIndex);
+            }
         }
 
-        pkg.queue.wait();
+        {
+            ScopedTimer timer("Surface regularizer final wait", spdlog::level::debug);
+            pkg.queue.wait();
+        }
     }
 
     void submitDepthDistortionKernel(RenderPackage& pkg) {

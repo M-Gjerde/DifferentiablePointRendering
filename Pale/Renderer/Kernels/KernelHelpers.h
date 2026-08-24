@@ -220,6 +220,32 @@ namespace Pale {
         return true;
     }
 
+    SYCL_EXTERNAL inline bool slabIntersectAABB(const Ray &ray,
+                                                const float3 &aabbMin,
+                                                const float3 &aabbMax,
+                                                const float3 &invDir,
+                                                float tMaxLimit,
+                                                float &tEntry) {
+        float3 t0 = (aabbMin - ray.origin) * invDir;
+        float3 t1 = (aabbMax - ray.origin) * invDir;
+
+        float txmin = sycl::fmin(t0.x(), t1.x());
+        float txmax = sycl::fmax(t0.x(), t1.x());
+        float tymin = sycl::fmin(t0.y(), t1.y());
+        float tymax = sycl::fmax(t0.y(), t1.y());
+        float tzmin = sycl::fmin(t0.z(), t1.z());
+        float tzmax = sycl::fmax(t0.z(), t1.z());
+        float tmin = sycl::fmax(sycl::fmax(txmin, tymin), tzmin);
+        float tmax = sycl::fmin(sycl::fmin(txmax, tymax), tzmax);
+        if (tmin > tmax) {
+            return false;
+        }
+        if (tmax <= 0.0f) return false;
+        if (tmin > tMaxLimit) return false;
+        tEntry = max(tmin, RayEpsilon);
+        return true;
+    }
+
     //──────────────── world → object and back ────────────────────────────────
     SYCL_EXTERNAL inline Ray toObjectSpace(const Ray &rayW, const Transform &xf) {
         Ray r;
@@ -379,6 +405,46 @@ namespace Pale {
         return uv;
     }
 
+    SYCL_EXTERNAL inline float3 normalizeOrFallback(const float3 &value, const float3 &fallback) {
+        const float lengthSquared = dot(value, value);
+        if (!sycl::isfinite(lengthSquared) || lengthSquared <= 1.0e-20f) {
+            return fallback;
+        }
+        return value * sycl::rsqrt(lengthSquared);
+    }
+
+    SYCL_EXTERNAL inline SurfelTraversalData makeSurfelTraversalData(
+        const Point &surfel,
+        uint32_t primitiveIndex) {
+        SurfelTraversalData traversal{};
+        traversal.position = surfel.position;
+        traversal.primitiveIndex = primitiveIndex;
+        traversal.flags = surfel.isEmissive() ? 1u : 0u;
+        traversal.opacity = surfel.opacity;
+        traversal.betaExponent = 4.0f * sycl::exp(surfel.beta);
+
+        const float3 unitTangentU = normalizeOrFallback(surfel.tanU, float3{1.0f, 0.0f, 0.0f});
+        const float3 orthogonalizedTangentV =
+                surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV);
+        const float3 unitTangentV =
+                normalizeOrFallback(orthogonalizedTangentV, float3{0.0f, 1.0f, 0.0f});
+        traversal.normal = normalizeOrFallback(cross(unitTangentU, unitTangentV), float3{0.0f, 0.0f, 1.0f});
+
+        const float scaleU = sycl::fabs(surfel.scale.x()) > 1.0e-12f ? surfel.scale.x() : 1.0e-12f;
+        const float scaleV = sycl::fabs(surfel.scale.y()) > 1.0e-12f ? surfel.scale.y() : 1.0e-12f;
+        traversal.invScaleTanU = surfel.tanU / scaleU;
+        traversal.invScaleTanV = surfel.tanV / scaleV;
+        return traversal;
+    }
+
+    SYCL_EXTERNAL inline float2 phiInverse(const float3 &hitWorld, const SurfelTraversalData &surfel) {
+        const float3 r = hitWorld - surfel.position;
+        float2 uv;
+        uv[0] = dot(surfel.invScaleTanU, r);
+        uv[1] = dot(surfel.invScaleTanV, r);
+        return uv;
+    }
+
     SYCL_EXTERNAL inline void buildOrthonormalBasisFromNormal(
         const float3 &unitNormal,
         float3 &outTangent,
@@ -483,6 +549,21 @@ namespace Pale {
         return true;
     }
 
+    SYCL_EXTERNAL static bool opacityBeta(float u, float v, const SurfelTraversalData &surfel, float *outOpacity) {
+        const float r2 = u * u + v * v;
+        if (r2 > 1.0f) {
+            *outOpacity = 0.0f;
+            return false;
+        }
+        const float base = 1.0f - r2;
+        *outOpacity = sycl::pow(base, surfel.betaExponent);
+        return true;
+    }
+
+    SYCL_EXTERNAL static bool opacityBeta(float2 uv, const SurfelTraversalData &surfel, float *outOpacity) {
+        return opacityBeta(uv[0], uv[1], surfel, outOpacity);
+    }
+
     SYCL_EXTERNAL inline void insertLocalSurfelLayerHit(LocalSurfelLayerHit *hits, uint32_t &hitCount,
                                                         uint32_t hitCapacity, const LocalSurfelLayerHit &candidateHit) {
         if (hitCapacity == 0u) {
@@ -528,6 +609,25 @@ namespace Pale {
         //if (!opacityGaussian(scaledU, scaledV, &outOpacity)) {
         //    return false;
         //}
+        outTHit = tHit;
+        return true;
+    }
+
+    SYCL_EXTERNAL static bool intersectSurfel(
+        const Ray &rayObject,
+        const SurfelTraversalData &surfel,
+        float tMin,
+        float tMax,
+        float &outTHit,
+        const float &eps) {
+        const float normalDirectionDot = dot(surfel.normal, rayObject.direction);
+        if (sycl::fabs(normalDirectionDot) <= eps) {
+            return false;
+        }
+        const float tHit = dot(surfel.normal, surfel.position - rayObject.origin) / normalDirectionDot;
+        if (tHit <= tMin || tHit >= tMax) {
+            return false;
+        }
         outTHit = tHit;
         return true;
     }

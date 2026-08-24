@@ -262,7 +262,7 @@ public:
 
             m_settings.visibilityWeightedOpacityRegularizerWeight =
                     get_f(settingsDict,
-                          "visibility_weighted_opacity_weight",
+                          "opacity_prior_weight",
                           m_settings.visibilityWeightedOpacityRegularizerWeight);
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
@@ -467,7 +467,7 @@ public:
             cameraResult[py::str("depth_distortion")] =
                     makeScalarArray(hostImage.depthDistortionData);
 
-            cameraResult[py::str("visibility_weighted_opacity")] =
+            cameraResult[py::str("opacity_prior")] =
                     makeScalarArray(hostImage.visibilityWeightedOpacityData);
 
             cameraResult[py::str("median_depth")] =
@@ -694,7 +694,7 @@ public:
         const bool includeNormalConsistency =
                 get_b(optionsDictionary, "include_normal_consistency", false);
         const bool includeVisibilityWeightedOpacity =
-                get_b(optionsDictionary, "include_visibility_weighted_opacity", false);
+                get_b(optionsDictionary, "include_opacity_prior", false);
 
         const Pale::PointGradients *depthGradients =
                 includeDepthDistortion ? &depthDistortionGradients : nullptr;
@@ -735,18 +735,24 @@ public:
                 get_b(optionsDictionary, "use_depth_distortion", false);
         const bool useNormalConsistency =
                 get_b(optionsDictionary, "use_normal_consistency", false);
+        const bool useVisibilityWeightedOpacity =
+                get_b(optionsDictionary, "use_opacity_prior", false);
         const float depthDistortionWeight =
                 get_f(optionsDictionary, "depth_distortion_weight", 0.0f);
         const float normalConsistencyWeight =
                 get_f(optionsDictionary, "normal_consistency_weight", 0.0f);
+        const float visibilityWeightedOpacityWeight =
+                get_f(optionsDictionary, "opacity_prior_weight", 0.0f);
 
         const std::size_t cameraCount = selectedBatch.sensors.size();
         std::vector<float> depthDistortionSums(cameraCount, 0.0f);
         std::vector<float> normalConsistencySums(cameraCount, 0.0f);
+        std::vector<float> visibilityWeightedOpacitySums(cameraCount, 0.0f);
         std::vector<std::uint32_t> normalConsistencyValidCounts(cameraCount, 0u);
 
         float *depthDistortionSumsDevice = nullptr;
         float *normalConsistencySumsDevice = nullptr;
+        float *visibilityWeightedOpacitySumsDevice = nullptr;
         std::uint32_t *normalConsistencyValidCountsDevice = nullptr;
 
         auto freeTempBuffers = [&]() {
@@ -758,6 +764,10 @@ public:
                 sycl::free(normalConsistencySumsDevice, syclQueue);
                 normalConsistencySumsDevice = nullptr;
             }
+            if (visibilityWeightedOpacitySumsDevice) {
+                sycl::free(visibilityWeightedOpacitySumsDevice, syclQueue);
+                visibilityWeightedOpacitySumsDevice = nullptr;
+            }
             if (normalConsistencyValidCountsDevice) {
                 sycl::free(normalConsistencyValidCountsDevice, syclQueue);
                 normalConsistencyValidCountsDevice = nullptr;
@@ -767,14 +777,24 @@ public:
         try {
             py::gil_scoped_release release;
 
+            m_settings.depthDistortionWeight = depthDistortionWeight;
+            m_settings.normalConsistencyWeight = normalConsistencyWeight;
+            m_settings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
+            auto &pathSettings = pathTracer->getSettings();
+            pathSettings.depthDistortionWeight = depthDistortionWeight;
+            pathSettings.normalConsistencyWeight = normalConsistencyWeight;
+            pathSettings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
+
             pathTracer->renderForward(selectedBatch.sensors);
 
             depthDistortionSumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
             normalConsistencySumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
+            visibilityWeightedOpacitySumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
             normalConsistencyValidCountsDevice =
                     sycl::malloc_device<std::uint32_t>(cameraCount, syclQueue);
             if (!depthDistortionSumsDevice ||
                 !normalConsistencySumsDevice ||
+                !visibilityWeightedOpacitySumsDevice ||
                 !normalConsistencyValidCountsDevice) {
                 throw std::runtime_error(
                     "render_forward_surface_regularizer_loss_and_adjoint: failed to allocate temporary loss buffers");
@@ -782,6 +802,7 @@ public:
 
             syclQueue.fill(depthDistortionSumsDevice, 0.0f, cameraCount);
             syclQueue.fill(normalConsistencySumsDevice, 0.0f, cameraCount);
+            syclQueue.fill(visibilityWeightedOpacitySumsDevice, 0.0f, cameraCount);
             syclQueue.fill(normalConsistencyValidCountsDevice, 0u, cameraCount);
 
             for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
@@ -790,9 +811,11 @@ public:
                     selectedBatch.sensors[cameraIndex],
                     depthDistortionSumsDevice + cameraIndex,
                     normalConsistencySumsDevice + cameraIndex,
+                    visibilityWeightedOpacitySumsDevice + cameraIndex,
                     normalConsistencyValidCountsDevice + cameraIndex,
                     useDepthDistortion,
-                    useNormalConsistency);
+                    useNormalConsistency,
+                    useVisibilityWeightedOpacity);
             }
 
             syclQueue.memcpy(
@@ -802,6 +825,10 @@ public:
             syclQueue.memcpy(
                 normalConsistencySums.data(),
                 normalConsistencySumsDevice,
+                cameraCount * sizeof(float));
+            syclQueue.memcpy(
+                visibilityWeightedOpacitySums.data(),
+                visibilityWeightedOpacitySumsDevice,
                 cameraCount * sizeof(float));
             syclQueue.memcpy(
                 normalConsistencyValidCounts.data(),
@@ -837,6 +864,8 @@ public:
         float totalDepthWeighted = 0.0f;
         float totalNormalRaw = 0.0f;
         float totalNormalWeighted = 0.0f;
+        float totalVisibilityOpacityRaw = 0.0f;
+        float totalVisibilityOpacityWeighted = 0.0f;
 
         for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
             const Pale::SensorGPU &sensor = selectedBatch.sensors[cameraIndex];
@@ -856,26 +885,36 @@ public:
                                         ? normalConsistencySums[cameraIndex] / validNormalCount
                                         : 0.0f;
             const float normalWeighted = normalRaw * normalConsistencyWeight;
+            const float visibilityOpacityRaw = useVisibilityWeightedOpacity
+                                                   ? visibilityWeightedOpacitySums[cameraIndex] / pixelCount
+                                                   : 0.0f;
+            const float visibilityOpacityWeighted = visibilityOpacityRaw * visibilityWeightedOpacityWeight;
 
             py::dict cameraLossValues = makeZeroLossValuesDictionary();
             cameraLossValues["total_depth_distortion_loss_raw"] = depthRaw;
             cameraLossValues["total_depth_distortion_loss_weighted"] = depthWeighted;
             cameraLossValues["total_normal_loss_raw"] = normalRaw;
             cameraLossValues["total_normal_loss_weighted"] = normalWeighted;
-            cameraLossValues["total_loss_value"] = depthWeighted + normalWeighted;
+            cameraLossValues["total_opacity_prior_loss_raw"] = visibilityOpacityRaw;
+            cameraLossValues["total_opacity_prior_loss_weighted"] = visibilityOpacityWeighted;
+            cameraLossValues["total_loss_value"] = depthWeighted + normalWeighted + visibilityOpacityWeighted;
             perCameraLossValues[py::str(cameraName)] = cameraLossValues;
 
             totalDepthRaw += depthRaw;
             totalDepthWeighted += depthWeighted;
             totalNormalRaw += normalRaw;
             totalNormalWeighted += normalWeighted;
+            totalVisibilityOpacityRaw += visibilityOpacityRaw;
+            totalVisibilityOpacityWeighted += visibilityOpacityWeighted;
         }
 
         result["total_depth_distortion_loss_raw"] = totalDepthRaw;
         result["total_depth_distortion_loss_weighted"] = totalDepthWeighted;
         result["total_normal_loss_raw"] = totalNormalRaw;
         result["total_normal_loss_weighted"] = totalNormalWeighted;
-        result["total_loss_value"] = totalDepthWeighted + totalNormalWeighted;
+        result["total_opacity_prior_loss_raw"] = totalVisibilityOpacityRaw;
+        result["total_opacity_prior_loss_weighted"] = totalVisibilityOpacityWeighted;
+        result["total_loss_value"] = totalDepthWeighted + totalNormalWeighted + totalVisibilityOpacityWeighted;
         result["per_camera_loss_values"] = std::move(perCameraLossValues);
         return result;
     }
@@ -903,7 +942,7 @@ public:
         py::dict result;
         result["depth_distortion"] = makeGradientDictionary(depthDistortionGradients);
         result["normal_consistency"] = makeGradientDictionary(normalConsistencyGradients);
-        result["visibility_weighted_opacity"] = makeGradientDictionary(visibilityOpacityGradients);
+        result["opacity_prior"] = makeGradientDictionary(visibilityOpacityGradients);
         return result;
     }
 
@@ -2655,7 +2694,7 @@ public:
         py::dict result;
         result["depth_distortion"] = makeGradientDictionary(depthDistortionGradients);
         result["normal_consistency"] = makeGradientDictionary(normalConsistencyGradients);
-        result["visibility_weighted_opacity"] = makeGradientDictionary(visibilityOpacityGradients);
+        result["opacity_prior"] = makeGradientDictionary(visibilityOpacityGradients);
         return result;
     }
 
@@ -4193,7 +4232,7 @@ private:
     void launchPointBvhRefitKernel(sycl::queue queue) {
         if (!sceneGpu.points || !sceneGpu.blasNodes || !sceneGpu.blasRanges ||
             !sceneGpu.tlasNodes || !sceneGpu.instances || !sceneGpu.transforms ||
-            !sceneGpu.pointPermutation) {
+            !sceneGpu.pointPermutation || !sceneGpu.pointTraversalData) {
             return;
         }
 
@@ -4280,6 +4319,65 @@ private:
                     aabbMin = surfel.position - halfExtent;
                     aabbMax = surfel.position + halfExtent;
                 };
+                auto writePackedPointBvhChild = [](Pale::PackedPointBVHNode &packedNode,
+                                                   bool writeLeftChild,
+                                                   const Pale::BVHNode *nodes,
+                                                   std::uint32_t childNodeIndex) {
+                    const Pale::BVHNode &childNode = nodes[childNodeIndex];
+                    const std::uint32_t childIndex =
+                            childNode.triCount > 0u ? childNode.leftFirst : childNodeIndex;
+                    const std::uint32_t childCount =
+                            childNode.triCount > 0u ? childNode.triCount : 0u;
+
+                    if (writeLeftChild) {
+                        packedNode.leftAabbMin = childNode.aabbMin;
+                        packedNode.leftAabbMax = childNode.aabbMax;
+                        packedNode.leftIndex = childIndex;
+                        packedNode.leftCount = childCount;
+                    } else {
+                        packedNode.rightAabbMin = childNode.aabbMin;
+                        packedNode.rightAabbMax = childNode.aabbMax;
+                        packedNode.rightIndex = childIndex;
+                        packedNode.rightCount = childCount;
+                    }
+                };
+                auto writePackedPointBvhNode = [&](Pale::PackedPointBVHNode *packedNodes,
+                                                   const Pale::BVHNode *nodes,
+                                                   std::uint32_t localNodeIndex) {
+                    const Pale::BVHNode &node = nodes[localNodeIndex];
+                    Pale::PackedPointBVHNode packedNode{};
+                    if (node.triCount > 0u) {
+                        writePackedPointBvhChild(packedNode, true, nodes, localNodeIndex);
+                    } else {
+                        writePackedPointBvhChild(packedNode, true, nodes, node.leftFirst);
+                        writePackedPointBvhChild(packedNode, false, nodes, node.leftFirst + 1u);
+                    }
+                    packedNodes[localNodeIndex] = packedNode;
+                };
+                auto updatePackedPointQbvhNode = [](Pale::PackedPointQBVHNode &qbvhNode,
+                                                    const Pale::BVHNode *nodes) {
+                    for (std::uint32_t slot = 0u; slot < 4u; ++slot) {
+                        const std::uint32_t sourceNodeIndex = qbvhNode.childSourceNodeIndex[slot];
+                        if (sourceNodeIndex == UINT32_MAX) {
+                            continue;
+                        }
+
+                        const Pale::BVHNode &sourceNode = nodes[sourceNodeIndex];
+                        qbvhNode.minX[slot] = sourceNode.aabbMin.x();
+                        qbvhNode.minY[slot] = sourceNode.aabbMin.y();
+                        qbvhNode.minZ[slot] = sourceNode.aabbMin.z();
+                        qbvhNode.maxX[slot] = sourceNode.aabbMax.x();
+                        qbvhNode.maxY[slot] = sourceNode.aabbMax.y();
+                        qbvhNode.maxZ[slot] = sourceNode.aabbMax.z();
+
+                        if (sourceNode.triCount > 0u) {
+                            qbvhNode.childIndex[slot] = sourceNode.leftFirst;
+                            qbvhNode.childCount[slot] = sourceNode.triCount;
+                        } else {
+                            qbvhNode.childCount[slot] = 0u;
+                        }
+                    }
+                };
 
                 for (std::uint32_t instanceIndex = 0u; instanceIndex < instanceCount; ++instanceIndex) {
                     const Pale::InstanceRecord &instance = scene.instances[instanceIndex];
@@ -4293,6 +4391,29 @@ private:
                     }
 
                     Pale::BVHNode *nodes = scene.blasNodes + blasRange.firstNode;
+                    Pale::PackedPointBVHNode *packedNodes = nullptr;
+                    if (scene.pointPackedBvhNodes != nullptr &&
+                        scene.pointPackedBvhRanges != nullptr &&
+                        instance.blasRangeIndex < scene.pointPackedBvhRangeCount) {
+                        const Pale::BLASRange packedRange = scene.pointPackedBvhRanges[instance.blasRangeIndex];
+                        if (packedRange.nodeCount >= blasRange.nodeCount &&
+                            packedRange.firstNode + packedRange.nodeCount <= scene.pointPackedBvhNodeCount) {
+                            packedNodes = scene.pointPackedBvhNodes + packedRange.firstNode;
+                        }
+                    }
+                    Pale::PackedPointQBVHNode *qbvhNodes = nullptr;
+                    std::uint32_t qbvhNodeCount = 0u;
+                    if (scene.pointQbvhNodes != nullptr &&
+                        scene.pointQbvhRanges != nullptr &&
+                        instance.blasRangeIndex < scene.pointQbvhRangeCount) {
+                        const Pale::BLASRange qbvhRange = scene.pointQbvhRanges[instance.blasRangeIndex];
+                        if (qbvhRange.nodeCount > 0u &&
+                            qbvhRange.firstNode + qbvhRange.nodeCount <= scene.pointQbvhNodeCount) {
+                            qbvhNodes = scene.pointQbvhNodes + qbvhRange.firstNode;
+                            qbvhNodeCount = qbvhRange.nodeCount;
+                        }
+                    }
+
                     for (int localNodeIndex = static_cast<int>(blasRange.nodeCount) - 1;
                          localNodeIndex >= 0;
                          --localNodeIndex) {
@@ -4305,6 +4426,8 @@ private:
                                  ++primitiveOffset) {
                                 const std::uint32_t primitiveIndex =
                                         scene.pointPermutation[node.leftFirst + primitiveOffset];
+                                scene.pointTraversalData[node.leftFirst + primitiveOffset] =
+                                        Pale::makeSurfelTraversalData(scene.points[primitiveIndex], primitiveIndex);
                                 Pale::float3 surfelMin{0.0f};
                                 Pale::float3 surfelMax{0.0f};
                                 makeSurfelAabbBeta(scene.points[primitiveIndex], surfelMin, surfelMax);
@@ -4318,6 +4441,21 @@ private:
                             const Pale::BVHNode &rightNode = nodes[node.leftFirst + 1u];
                             node.aabbMin = min3(leftNode.aabbMin, rightNode.aabbMin);
                             node.aabbMax = max3(leftNode.aabbMax, rightNode.aabbMax);
+                        }
+
+                        if (packedNodes != nullptr) {
+                            writePackedPointBvhNode(
+                                packedNodes,
+                                nodes,
+                                static_cast<std::uint32_t>(localNodeIndex));
+                        }
+                    }
+
+                    if (qbvhNodes != nullptr) {
+                        for (std::uint32_t qbvhNodeIndex = 0u;
+                             qbvhNodeIndex < qbvhNodeCount;
+                             ++qbvhNodeIndex) {
+                            updatePackedPointQbvhNode(qbvhNodes[qbvhNodeIndex], nodes);
                         }
                     }
                 }
@@ -4373,6 +4511,8 @@ private:
         result["total_depth_distortion_loss_weighted"] = 0.0f;
         result["total_normal_loss_raw"] = 0.0f;
         result["total_normal_loss_weighted"] = 0.0f;
+        result["total_opacity_prior_loss_raw"] = 0.0f;
+        result["total_opacity_prior_loss_weighted"] = 0.0f;
         result["total_loss_value"] = 0.0f;
         return result;
     }
@@ -4382,9 +4522,11 @@ private:
         const Pale::SensorGPU &sensor,
         float *depthDistortionSum,
         float *normalConsistencySum,
+        float *visibilityWeightedOpacitySum,
         std::uint32_t *normalConsistencyValidCount,
         bool useDepthDistortion,
-        bool useNormalConsistency) {
+        bool useNormalConsistency,
+        bool useVisibilityWeightedOpacity) {
         const std::uint32_t pixelCount = sensor.width * sensor.height;
         if (pixelCount == 0u) {
             return;
@@ -4402,17 +4544,25 @@ private:
             throw std::runtime_error(
                 "launchSurfaceRegularizerLossAccumulationKernel: missing normal consistency buffers");
         }
+        if (useVisibilityWeightedOpacity &&
+            (!sensor.visibilityWeightedOpacityBuffer || !visibilityWeightedOpacitySum)) {
+            throw std::runtime_error(
+                "launchSurfaceRegularizerLossAccumulationKernel: missing visibility-weighted opacity buffers");
+        }
 
         queue.parallel_for<class SurfaceRegularizerLossAccumulationKernelTag>(
             sycl::range<1>(pixelCount),
             [depthDistortionBuffer = sensor.depthDistortionBuffer,
              visibleNormalBuffer = sensor.visibleNormalBuffer,
              normalFromDepthBuffer = sensor.normalFromDepthBuffer,
+             visibilityWeightedOpacityBuffer = sensor.visibilityWeightedOpacityBuffer,
              depthDistortionSum,
              normalConsistencySum,
+             visibilityWeightedOpacitySum,
              normalConsistencyValidCount,
              useDepthDistortion,
-             useNormalConsistency](sycl::id<1> pixelId) {
+             useNormalConsistency,
+             useVisibilityWeightedOpacity](sycl::id<1> pixelId) {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
 
                 auto clean = [](float value) -> float {
@@ -4427,6 +4577,16 @@ private:
                         sycl::memory_scope::device,
                         sycl::access::address_space::global_space>(*depthDistortionSum);
                     depthAtomic.fetch_add(depthValue);
+                }
+
+                if (useVisibilityWeightedOpacity) {
+                    const float opacityValue = clean(visibilityWeightedOpacityBuffer[pixelIndex]);
+                    auto opacityAtomic = sycl::atomic_ref<
+                        float,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(*visibilityWeightedOpacitySum);
+                    opacityAtomic.fetch_add(opacityValue);
                 }
 
                 if (useNormalConsistency) {

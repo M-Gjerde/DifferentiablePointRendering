@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import math
 import select
 import sys
 from pathlib import Path
@@ -43,6 +44,8 @@ LOSS_VALUE_KEYS = (
     "total_depth_distortion_loss_weighted",
     "total_normal_loss_raw",
     "total_normal_loss_weighted",
+    "total_opacity_prior_loss_raw",
+    "total_opacity_prior_loss_weighted",
     "total_loss_value",
 )
 
@@ -660,15 +663,18 @@ def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
+    opacity_weighted = float(loss_state["total_opacity_prior_loss_weighted"])
 
     after_depth = rgb_loss + depth_weighted
     after_normal = after_depth + normal_weighted
-    regularizer_total = depth_weighted + normal_weighted
+    after_opacity = after_normal + opacity_weighted
+    regularizer_total = depth_weighted + normal_weighted + opacity_weighted
 
     return {
         "before_regularizers": rgb_loss,
         "after_depth_distortion": after_depth,
         "after_normal_consistency": after_normal,
+        "after_opacity_prior": after_opacity,
         "regularizer_total": regularizer_total,
         "total": float(loss_state["total_loss_value"]),
     }
@@ -678,11 +684,13 @@ def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
+    opacity_weighted = float(loss_state["total_opacity_prior_loss_weighted"])
     total_loss = float(loss_state["total_loss_value"])
 
     after_depth = rgb_loss + depth_weighted
     after_normal = after_depth + normal_weighted
-    regularizer_total = depth_weighted + normal_weighted
+    after_opacity = after_normal + opacity_weighted
+    regularizer_total = depth_weighted + normal_weighted + opacity_weighted
     loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
     loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
 
@@ -695,6 +703,8 @@ def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
         f"(+{depth_weighted:.3e})\n"
         f"  {'+ normal consistency':<28} {after_normal:>12.3e}  "
         f"(+{normal_weighted:.3e})\n"
+        f"  {'+ opacity prior':<28} {after_opacity:>12.3e}  "
+        f"(+{opacity_weighted:.3e})\n"
         f"  {'regularizer total':<28} {regularizer_total:>12.3e}\n"
         f"  {'total':<28} {total_loss:>12.3e}"
     )
@@ -718,7 +728,9 @@ def format_training_iteration_log(
         num_points: int,
         loss_state: Dict[str, Any],
         lr_position: float,
+        active_densification_grad_abs_min: float,
         active_depth_distortion_weight: float,
+        active_opacity_prior_weight: float,
         grad_pos_rms: float,
         grad_rotation_rms: float,
         grad_scale_rms: float,
@@ -738,7 +750,8 @@ def format_training_iteration_log(
     return (
         f"\n[Iter {iteration:04d}/{total_iterations}] "
         f"time={iteration_time:.3f}s total={total_time:.1f}s "
-        f"it/s={iteration_rate:.2f} pts={num_points} adaptive_lr_pos={lr_position}\n"
+        f"it/s={iteration_rate:.2f} pts={num_points} "
+        f"adaptive_lr_pos={lr_position} densify_thr={active_densification_grad_abs_min:.3e}\n"
         f"  losses_mean[{loss_camera_count}/{loss_camera_expected_count} cameras]:"
         f" rgb={loss_state['total_rgb_loss_value']:.3e}"
         f" depth_raw={loss_state['total_depth_distortion_loss_raw']:.3e}"
@@ -746,6 +759,9 @@ def format_training_iteration_log(
         f" depth_active_w={active_depth_distortion_weight:.3e}"
         f" normal_raw={loss_state['total_normal_loss_raw']:.3e}"
         f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
+        f" opacity_raw={loss_state['total_opacity_prior_loss_raw']:.3e}"
+        f" opacity_w={loss_state['total_opacity_prior_loss_weighted']:.3e}"
+        f" opacity_active_w={active_opacity_prior_weight:.3e}"
         f" total={loss_state['total_loss_value']:.3e}\n"
         f"  grad_rms:"
         f" pos={grad_pos_rms:.2e}"
@@ -768,6 +784,7 @@ def format_gradient_source_balance(
         loss_gradients: Dict[str, np.ndarray],
         depth_regularizer_gradients: Dict[str, np.ndarray],
         normal_regularizer_gradients: Dict[str, np.ndarray],
+        opacity_prior_gradients: Dict[str, np.ndarray],
         surface_regularizer_gradients: Dict[str, np.ndarray],
         total_gradients: Dict[str, np.ndarray],
 ) -> str:
@@ -790,6 +807,7 @@ def format_gradient_source_balance(
         f"{'reg_weight%':>8}"
         f"{'depth%':>8}"
         f"{'normal%':>9}"
+        f"{'opacity%':>10}"
         f"   {'source norms'}",
     ]
 
@@ -798,6 +816,7 @@ def format_gradient_source_balance(
 
         depth_norm = gradient_norm_for_key(depth_regularizer_gradients, key)
         normal_norm = gradient_norm_for_key(normal_regularizer_gradients, key)
+        opacity_norm = gradient_norm_for_key(opacity_prior_gradients, key)
 
         surface_regularizer_norm = gradient_norm_for_key(
             surface_regularizer_gradients,
@@ -816,6 +835,7 @@ def format_gradient_source_balance(
         component_denom = (
                 depth_norm
                 + normal_norm
+                + opacity_norm
         )
 
         depth_percent = (
@@ -825,6 +845,11 @@ def format_gradient_source_balance(
         )
         normal_percent = (
             100.0 * normal_norm / component_denom
+            if component_denom > 1.0e-20
+            else 0.0
+        )
+        opacity_percent = (
+            100.0 * opacity_norm / component_denom
             if component_denom > 1.0e-20
             else 0.0
         )
@@ -838,9 +863,11 @@ def format_gradient_source_balance(
             f"{prior_percent:>7.1f}%"
             f"{depth_percent:>7.1f}%"
             f"{normal_percent:>8.1f}%"
+            f"{opacity_percent:>9.1f}%"
             f"   "
             f"depth={depth_norm:.2e}, "
             f"normal={normal_norm:.2e}, "
+            f"opacity={opacity_norm:.2e}, "
         )
 
     return "\n".join(lines)
@@ -1245,9 +1272,11 @@ def compute_initial_losses_and_save_outputs(
         powers: torch.Tensor,
         depth_distortion_weight: float,
         normal_consistency_weight: float,
+        opacity_prior_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
-) -> tuple[float, float, float, float, float, float]:
+        use_opacity_prior: bool,
+) -> tuple[float, float, float, float, float, float, float, float]:
     initial_points_path = output_dir / "initial_points.ply"
     save_gaussians_to_ply(
         initial_points_path,
@@ -1265,6 +1294,7 @@ def compute_initial_losses_and_save_outputs(
     initial_rgb_loss = 0.0
     initial_depth_distortion_loss_raw = 0.0
     initial_normal_loss_raw = 0.0
+    initial_opacity_prior_loss_raw = 0.0
 
     for camera_name in all_camera_ids:
         img_np = get_forward_rgb(initial_images, camera_name)
@@ -1292,13 +1322,18 @@ def compute_initial_losses_and_save_outputs(
             )
             initial_normal_loss_raw += raw_normal_loss_value
 
+        if use_opacity_prior:
+            initial_opacity_prior_loss_raw += float(get_forward_opacity_prior(initial_images, camera_name).mean())
+
     initial_depth_distortion_loss_weighted = depth_distortion_weight * initial_depth_distortion_loss_raw
     initial_normal_loss_weighted = normal_consistency_weight * initial_normal_loss_raw
+    initial_opacity_prior_loss_weighted = opacity_prior_weight * initial_opacity_prior_loss_raw
 
     initial_total_loss = (
             initial_rgb_loss
             + initial_depth_distortion_loss_weighted
             + initial_normal_loss_weighted
+            + initial_opacity_prior_loss_weighted
     )
 
     return (
@@ -1307,6 +1342,8 @@ def compute_initial_losses_and_save_outputs(
         initial_depth_distortion_loss_weighted,
         initial_normal_loss_raw,
         initial_normal_loss_weighted,
+        initial_opacity_prior_loss_raw,
+        initial_opacity_prior_loss_weighted,
         initial_total_loss,
     )
 
@@ -1318,6 +1355,8 @@ def print_loss_summary(
         depth_distortion_loss_weighted: float,
         normal_loss_raw: float,
         normal_loss_weighted: float,
+        opacity_prior_loss_raw: float,
+        opacity_prior_loss_weighted: float,
         total_loss: float,
 ) -> None:
     print(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
@@ -1325,6 +1364,8 @@ def print_loss_summary(
     print(f"{prefix} depth distortion loss (weighted)       : {depth_distortion_loss_weighted:.6e}")
     print(f"{prefix} normal consistency loss (raw)          : {normal_loss_raw:.6e}")
     print(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
+    print(f"{prefix} opacity prior loss (raw)               : {opacity_prior_loss_raw:.6e}")
+    print(f"{prefix} opacity prior loss (weighted)          : {opacity_prior_loss_weighted:.6e}")
     print(f"{prefix} total loss                             : {total_loss:.6e}")
 
 
@@ -1333,8 +1374,10 @@ def compute_surface_regularizer_losses_and_adjoints(
         training_camera_ids: List[str],
         depth_distortion_weight: float,
         normal_consistency_weight: float,
+        opacity_prior_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
+        use_opacity_prior: bool,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = make_zero_loss_values()
     result.update({
@@ -1388,6 +1431,15 @@ def compute_surface_regularizer_losses_and_adjoints(
             result["depth_normal_adjoints"][camera_name] = (
                     normal_consistency_weight * depth_normal_adjoint
             ).astype(np.float32, copy=False)
+
+        if use_opacity_prior:
+            opacity_prior_np = get_forward_opacity_prior(forward_out, camera_name)
+            opacity_prior_loss_raw = float(opacity_prior_np.mean())
+            opacity_prior_loss_weighted = opacity_prior_weight * opacity_prior_loss_raw
+
+            camera_loss_values["total_opacity_prior_loss_raw"] = opacity_prior_loss_raw
+            camera_loss_values["total_opacity_prior_loss_weighted"] = opacity_prior_loss_weighted
+            camera_loss_values["total_loss_value"] += opacity_prior_loss_weighted
 
         for loss_key in LOSS_VALUE_KEYS:
             result[loss_key] += camera_loss_values[loss_key]
@@ -1696,6 +1748,21 @@ def maybe_make_densification_result(
 
         grad_threshold = float("nan")
         grad_quantile_threshold = float("nan")
+        scene_extent = float(getattr(config, "densification_scene_extent", 0.0))
+        if scene_extent <= 0.0:
+            positions_np = positions.detach().cpu().numpy()
+            if positions_np.size > 0:
+                scene_extent = float(np.max(np.ptp(positions_np, axis=0)))
+            else:
+                scene_extent = 1.0
+            scene_extent = max(scene_extent, 1.0e-6)
+        exact_clone_percent_dense = float(getattr(config, "densification_exact_clone_percent_dense", 0.0))
+        exact_clone_scale_threshold = (
+            exact_clone_percent_dense * scene_extent
+            if exact_clone_percent_dense > 0.0
+            else 0.0
+        )
+        split_offset_scale = float(getattr(config, "densification_split_offset_scale", 0.3))
 
         finite_signal_np = (
             grad_pos_norm_np[np.isfinite(grad_pos_norm_np)]
@@ -1735,18 +1802,24 @@ def maybe_make_densification_result(
                 selection_score_np=grad_pos_norm_np,
                 trainable_surfel_mask=densify_mask_torch,
                 grad_threshold=grad_threshold,
-                min_clone_scale=config.densification_scale_min,
+                max_clone_fraction=float(getattr(config, "densification_max_new_fraction", 1.0)),
+                clone_offset_scale=split_offset_scale,
+                clone_scale_factor=float(getattr(config, "densification_split_scale_factor", math.sqrt(2.0))),
+                min_clone_scale=float(getattr(config, "densification_scale_min", 8.0e-3)),
+                exact_clone_scale_threshold=exact_clone_scale_threshold,
             )
 
             if densification_result is not None:
                 new_block = densification_result.get("new", None)
                 if new_block is not None:
                     n_new_from_densification = int(new_block["position"].shape[0])
-                    densify_reason = "clone_added"
+                    clone_count = int(densification_result.get("clone_count", 0))
+                    split_count = int(densification_result.get("split_count", 0))
+                    densify_reason = f"densified_clone={clone_count}_split={split_count}"
                 else:
-                    densify_reason = "clone_result_without_new_block"
+                    densify_reason = "densification_result_without_new_block"
             else:
-                densify_reason = "selected_candidates_but_clone_filter_rejected_all"
+                densify_reason = "selected_candidates_but_densification_rejected_all"
 
         if densification_verbose:
             print(
@@ -1767,14 +1840,22 @@ def maybe_make_densification_result(
                 f"signal_max={signal_max:.3e}, "
                 f"grad_q_thr={grad_quantile_threshold:.3e}, "
                 f"grad_thr={grad_threshold:.3e}, "
-                f"abs_thr={densification_grad_abs_min:.3e}"
+                f"abs_thr={densification_grad_abs_min:.3e}, "
+                f"scene_extent={scene_extent:.3e}, "
+                f"exact_clone_scale_thr={exact_clone_scale_threshold:.3e}, "
+                f"split_offset={split_offset_scale:.3e}"
             )
         elif n_new_from_densification > 0:
             if config.densification_verbose:
+                clone_count = int(densification_result.get("clone_count", 0)) if densification_result is not None else 0
+                split_count = int(densification_result.get("split_count", 0)) if densification_result is not None else 0
                 print(
-                    f"[Iter {iteration:04d}] Clone densification: "
-                    f"adding {n_new_from_densification} surfels | "
+                    f"[Iter {iteration:04d}] Tangent split densification: "
+                    f"adding {n_new_from_densification} surfels "
+                    f"(clone={clone_count}, split={split_count}) | "
                     f"grad_thr={grad_threshold:.3e}, "
+                    f"exact_clone_scale_thr={exact_clone_scale_threshold:.3e}, "
+                    f"split_offset={split_offset_scale:.3e}, "
                     f"abs_thr={densification_grad_abs_min:.3e}, "
                     f"pts={positions.shape[0]}"
                 )
@@ -1951,8 +2032,17 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "loss_depth_distortion_weighted_mean",
             "loss_normal_consistency_raw_mean",
             "loss_normal_consistency_weighted_mean",
+            "loss_opacity_prior_raw_mean",
+            "loss_opacity_prior_weighted_mean",
             "loss_total_mean",
             "num_points",
+            "densification_new_points",
+            "densification_clone_points",
+            "densification_split_points",
+            "densification_clone_points_total",
+            "densification_split_points_total",
+            "densification_clone_points_active",
+            "densification_split_points_active",
             "iteration_time_sec",
             "total_time_sec",
             "grad_position_renderer_norm",

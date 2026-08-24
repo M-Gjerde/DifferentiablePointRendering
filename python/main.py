@@ -120,6 +120,7 @@ def main() -> None:
     print(f"  lr_opacity           : {config.learning_rate_opacity}")
     print(f"  lr_beta              : {config.learning_rate_beta}")
     print(f"  depth_distort_weight : {config.depth_distort_weight}")
+    print(f"  opacity_prior_weight : {config.opacity_prior_weight}")
     print(f"  densify_grad_abs_min : {config.densification_grad_abs_min}")
     print(f"  densify_grad_abs_min_final: {config.densification_grad_abs_min_final}")
     print(
@@ -127,7 +128,7 @@ def main() -> None:
         f"{config.densification_grad_abs_min_decay_start_iteration} -> "
         f"{config.densification_grad_abs_min_decay_end_iteration}"
     )
-    print(f"  mesh_extraction_iterations: {config.mesh_extraction_iterations}")
+    print(f"  mesh_extraction_interval: {config.mesh_extraction_interval}")
     print(f"  save_final_mesh      : {config.save_final_mesh}")
     print(f"  optimizer            : {config.optimizer_type}")
     print(f"  run_output_dir       : {config.output_dir}")

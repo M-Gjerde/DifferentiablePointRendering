@@ -44,3 +44,7 @@ Controls:
 - Mouse wheel: zoom
 - `Render`: force a render
 - `Auto render`: render after camera/control changes
+- `R`: load the latest optimization run PLY
+- `F`: load the first `iter_*_points.ply` in the active optimization `points` folder
+- `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
+- Left/right or down/up arrows: step through optimization point snapshots

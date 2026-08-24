@@ -56,6 +56,26 @@ namespace Pale {
 
     CHECK_16(Point);
 
+    struct alignas(16) SurfelTraversalData {
+        float3 position{0.0f};
+        uint32_t primitiveIndex{UINT32_MAX};
+
+        float3 normal{0.0f, 0.0f, 1.0f};
+        uint32_t flags{0u};
+
+        float3 invScaleTanU{0.0f};
+        float opacity{0.0f};
+
+        float3 invScaleTanV{0.0f};
+        float betaExponent{4.0f};
+
+        bool isEmissive() const {
+            return (flags & 1u) != 0u;
+        }
+    };
+
+    CHECK_16(SurfelTraversalData);
+
     struct alignas(16) BVHNode {
         float3 aabbMin; // 16
         float3 aabbMax; // 32
@@ -67,6 +87,38 @@ namespace Pale {
     };
 
     CHECK_16(BVHNode);
+
+    struct alignas(16) PackedPointBVHNode {
+        float3 leftAabbMin{0.0f};
+        uint32_t leftIndex{UINT32_MAX};
+
+        float3 leftAabbMax{0.0f};
+        uint32_t leftCount{0u};
+
+        float3 rightAabbMin{0.0f};
+        uint32_t rightIndex{UINT32_MAX};
+
+        float3 rightAabbMax{0.0f};
+        uint32_t rightCount{0u};
+    };
+
+    CHECK_16(PackedPointBVHNode);
+
+    struct alignas(16) PackedPointQBVHNode {
+        float minX[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float minY[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float minZ[4]{0.0f, 0.0f, 0.0f, 0.0f};
+
+        float maxX[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float maxY[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float maxZ[4]{0.0f, 0.0f, 0.0f, 0.0f};
+
+        uint32_t childIndex[4]{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+        uint32_t childCount[4]{0u, 0u, 0u, 0u};
+        uint32_t childSourceNodeIndex[4]{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    };
+
+    CHECK_16(PackedPointQBVHNode);
 
     struct alignas(16) BLASRange {
         uint32_t firstNode{};
@@ -224,6 +276,11 @@ namespace Pale {
         Transform *transforms{nullptr};
         GPUMaterial *materials{nullptr};
         Point *points{nullptr};
+        SurfelTraversalData *pointTraversalData{nullptr};
+        PackedPointBVHNode *pointPackedBvhNodes{nullptr};
+        BLASRange *pointPackedBvhRanges{nullptr};
+        PackedPointQBVHNode *pointQbvhNodes{nullptr};
+        BLASRange *pointQbvhRanges{nullptr};
         InstanceRecord *instances{nullptr};
         uint32_t *pointPermutation{nullptr};
 
@@ -232,6 +289,11 @@ namespace Pale {
         uint32_t triangleCount{0};
         uint32_t vertexCount{0};
         uint32_t pointCount{0};
+        uint32_t pointTraversalDataCount{0};
+        uint32_t pointPackedBvhNodeCount{0};
+        uint32_t pointPackedBvhRangeCount{0};
+        uint32_t pointQbvhNodeCount{0};
+        uint32_t pointQbvhRangeCount{0};
         uint32_t pointPermutationCount{0};
 
         GPULightRecord *lights{nullptr};
@@ -259,14 +321,14 @@ namespace Pale {
     // Must be compile-time constant for stack arrays in SYCL device code.
     constexpr uint32_t kMaxSplatEventsPerRay = 8;
     constexpr uint32_t kMaxLocalSurfelHits = 8;
-    constexpr uint32_t kMaxPointHitBatch = 16;
+    constexpr uint32_t kMaxPointHitBatch = 8;
     constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;
 
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-    constexpr float LocalLayerDepthEpsilon = 1.00e-2f;
+    constexpr float LocalLayerDepthEpsilon = 7.50e-3f;
     constexpr float LocalLayerNormalCosineThreshold = 0.7071f; // 45 degrees mismatch to stop blending slabs
     constexpr float DepthDistortionMaxPairDepthSeparation = LocalLayerDepthEpsilon * 00.0f;
 
@@ -544,6 +606,7 @@ namespace Pale {
         float3 pointLightRadiantIntensity{0.0f};
 
         uint32_t pointLightPrimitiveIndex = kInvalidIndex;
+        uint32_t surfaceLightGeometryMask = 0u;
     };
 
     struct MaterialVertexGradientEvent {

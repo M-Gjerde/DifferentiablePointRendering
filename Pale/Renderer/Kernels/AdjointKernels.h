@@ -21,6 +21,8 @@ namespace Pale {
 
     void computePerPrimitiveCloneSignalStats(RenderPackage &pkg);
 
+    void reduceFusedFirstBounceMeasurementGradientRecords(RenderPackage &pkg, uint32_t cameraIndex);
+
     void launchDepthDistortionBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
     void launchNormalConsistencyBackwardKernel(RenderPackage& pkg, uint32_t cameraIndex);
     void launchNormalFromDepthAdjointKernel(RenderPackage& pkg, uint32_t cameraIndex);

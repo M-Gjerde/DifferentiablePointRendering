@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 import math
@@ -39,6 +38,7 @@ class RendererSettingsConfig:
             "depth_distort_weight": config.depth_distort_weight,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
+            "opacity_prior_weight": config.opacity_prior_weight,
         }
 
 
@@ -56,10 +56,10 @@ class OptimizationConfig:
 
     device: str = "cpu"
 
-    iterations: int = int(1.5e4)
+    iterations: int = int(10.0e4)
     optimizer_type: str = "adam"
     # Learning rates
-    learning_rate: float = 1.0
+    learning_rate: float = 1.5
     learning_rate_position: float | None = None
     learning_rate_rotation: float | None = None
     max_rotation_step_radians: float = 0.01
@@ -69,38 +69,44 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Global LR scheduling
     use_global_lr_schedule: bool = True
-    global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.2
-    global_lr_start_iteration: int = 8_000
-    global_lr_max_steps: int = int(iterations * 0.85)
+    global_lr_scale_init: float = 10.0
+    global_lr_scale_final: float = 1.0
+    global_lr_start_iteration: int = 0
+    global_lr_max_steps: int = int(1.0e4)
 
-    depth_distort_weight: float = 5e5
+    depth_distort_weight: float = 1.0e5
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
+    normal_consistency_weight: float = 0.0075
     normal_from_depth_use_mean_depth: bool = False
+    opacity_prior_weight: float = 0.01
 
     # Density control / EV-splitting
     # Ignore stats from the first half of each densification interval after cloning/pruning.
     densification_stats_skip_interval_start: bool = True
-    densification_interval: int = 30
-    prune_interval: int = 30
+    densification_interval: int = 20
+    prune_interval: int = 20
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
     densification_grad_abs_min_final: float = 2.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 3_000
-    densification_scale_min: float = 1.0e-2
+    densification_grad_abs_min_decay_end_iteration: int = 10_000
+    densification_scale_min: float = 6.0e-3
+    densification_split_offset_scale: float = 0.3
+    densification_split_scale_factor: float = math.sqrt(2.0)
+    densification_exact_clone_percent_dense: float = 0.01
+    densification_scene_extent: float = 0.0
+    densification_max_new_fraction: float = 1.0
 
     # More densification on radiometrically darker primitives
-    densify_bsdf_floor = 0.3
+    densify_bsdf_floor = 0.1
     densify_bsdf_gamma = 1.0
     # Pruning
     opacity_prune_threshold: float = 0.10
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 5.0e-7
-    inactive_gradient_prune_cycles: int = 2  # One cycle is one loop through all training cameras
+    inactive_gradient_prune_cycles: int = 1  # One cycle is one loop through all training cameras
 
     # Misc scheduling
     reset_opacity_interval: int = 0
@@ -117,14 +123,11 @@ class OptimizationConfig:
 
     # Logging
     log_interval: int = 5
-    save_interval: int = 50
+    save_interval: int = densification_interval
     save_ply_files_interval: int = save_interval
 
     # Mesh Extraction
-    mesh_extraction_iterations: list[int] = field(
-        default_factory=lambda: [1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000, 12_000,
-                                 13_000, 14_000]
-    )
+    mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 50
@@ -150,12 +153,12 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.001
-        factor_rotation = 0.01
-        factor_scale = 0.0004
-        factor_albedo = 0.005
-        factor_opacity = 0.008
-        factor_beta = 0.0025
+        factor_position = 0.0001
+        factor_rotation = 0.001
+        factor_scale = 0.00008
+        factor_albedo = 0.0015
+        factor_opacity = 0.0005
+        factor_beta = 0.002
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -179,39 +182,6 @@ def scale_iteration_interval_by_learning_rate(base_interval: int, learning_rate:
     if learning_rate <= 0.0:
         raise ValueError(f"learning_rate must be positive, got {learning_rate}")
     return max(1, math.ceil(float(base_interval) / learning_rate))
-
-
-def parse_iteration_list(values) -> list[int]:
-    if values is None:
-        return []
-    if isinstance(values, int):
-        values = [values]
-    if isinstance(values, str):
-        text = values.strip()
-        if text.startswith("[") or text.startswith("("):
-            values = ast.literal_eval(text)
-        else:
-            values = [values]
-
-    parsed_iterations: list[int] = []
-    for value in values:
-        if isinstance(value, str):
-            text = value.strip()
-            if text.startswith("[") or text.startswith("("):
-                parsed_iterations.extend(parse_iteration_list(ast.literal_eval(text)))
-                continue
-
-        for token in str(value).split(","):
-            token = token.strip()
-            if not token:
-                continue
-
-            iteration = int(token)
-            if iteration <= 0:
-                raise ValueError(f"Mesh extraction iterations must be > 0, got {iteration}")
-            parsed_iterations.append(iteration)
-
-    return sorted(set(parsed_iterations))
 
 
 def _load_checkpoint_run_config(checkpoint_dir: Path) -> dict:
@@ -293,15 +263,14 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--save-interval", type=int)
     parser.add_argument("--save-ply-files-interval", type=int)
     parser.add_argument(
-        "--mesh-extraction-iterations",
-        "--mesh-checkpoint-iterations",
-        nargs="*",
-        type=str,
-        help=(
-            "Explicit mesh checkpoint iterations. Prefer a list in config/JSON, "
-            "e.g. [1000, 7000, 10000]. CLI also accepts 1000 7000 10000 "
-            "or 1000,7000,10000."
-        ),
+        "--mesh-extraction-interval",
+        "--mesh-checkpoint-interval",
+        "--mesh-save-interval",
+        "--mesh-interval",
+        "--mesh-interval-save",
+        dest="mesh_extraction_interval",
+        type=int,
+        help="Save a mesh checkpoint every N iterations. Use 0 to disable intermediate mesh checkpoints.",
     )
     parser.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
     parser.add_argument("--mesh-extraction-mesh-res", type=int)
@@ -336,6 +305,11 @@ def parse_args() -> OptimizationConfig:
                         action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
     parser.add_argument("--depth-distort-weight", dest="depth_distort_weight", type=float)
     parser.add_argument("--depth-distort-start-iteration", type=int)
+    parser.add_argument(
+        "--opacity-prior-weight",
+        dest="opacity_prior_weight",
+        type=float,
+    )
     # Density control / EV-splitting
     parser.add_argument("--densification-interval", type=int)
     parser.add_argument("--prune-interval", type=int)
@@ -345,6 +319,17 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--densification-grad-quantile", type=float)
     parser.add_argument("--densification-grad-abs-min", type=float)
     parser.add_argument("--densification-grad-abs-min-final", type=float)
+    parser.add_argument("--densification-scale-min", type=float)
+    parser.add_argument("--densification-split-offset-scale", type=float)
+    parser.add_argument("--densification-split-scale-factor", type=float)
+    parser.add_argument(
+        "--densification-exact-clone-percent-dense",
+        "--densification-percent-dense",
+        dest="densification_exact_clone_percent_dense",
+        type=float,
+    )
+    parser.add_argument("--densification-scene-extent", type=float)
+    parser.add_argument("--densification-max-new-fraction", type=float)
     parser.add_argument(
         "--densification-grad-abs-min-decay-start-iteration",
         "--densification-grad-abs-min-iter-start",
@@ -396,8 +381,6 @@ def parse_args() -> OptimizationConfig:
         if not hasattr(config, parameter_name):
             raise RuntimeError(f"CLI argument produced unknown config field: {parameter_name}")
         setattr(config, parameter_name, parameter_value)
-
-    config.mesh_extraction_iterations = parse_iteration_list(config.mesh_extraction_iterations)
 
     config.output_dir_is_explicit = "output_dir" in cli_overrides
     config.scene_xml_is_explicit = "scene_xml" in cli_overrides

@@ -161,7 +161,7 @@ def make_under_reconstruction_clones(
         grad_threshold,
         max_clone_fraction=1.00,
         clone_offset_scale=0.3,
-        clone_scale_factor= math.sqrt(2.0),
+        clone_scale_factor=math.sqrt(2.0),
         min_clone_scale=5.0e-2,
         min_split_coherence=0.05,
         normal_perturbation_min=0.0,
@@ -170,6 +170,7 @@ def make_under_reconstruction_clones(
         normal_shift_on_clone=False,
         normal_shift_scale=0.0,
         max_normal_shift_fraction=0.50,
+        exact_clone_scale_threshold=0.0,
         selection_score_np=None,
 ):
     with torch.no_grad():
@@ -187,13 +188,8 @@ def make_under_reconstruction_clones(
 
         min_source_scale = torch.min(scales, dim=1).values
 
-        vector_score = torch.linalg.norm(grad_pos, dim=1)
-        coherence = vector_score / torch.clamp(selection_score, min=1.0e-12)
-
         selected = (
                 torch.isfinite(selection_score)
-                # & torch.isfinite(coherence)
-                # & (coherence >= min_split_coherence)
                 & (selection_score >= grad_threshold)
                 & trainable_surfel_mask
                 & (min_source_scale >= minimum_splittable_scale)
@@ -204,7 +200,9 @@ def make_under_reconstruction_clones(
             return None
 
         n_points = positions.shape[0]
-        max_new = max(1, int(max_clone_fraction * float(n_points)))
+        max_new = max(1, int(max(float(max_clone_fraction), 0.0) * float(n_points)))
+        if max_new <= 0:
+            return None
 
         if selected_idx.numel() > max_new:
             selected_grad = selection_score[selected_idx]
@@ -213,67 +211,125 @@ def make_under_reconstruction_clones(
 
         tu_all, tv_all, _ = quaternion_to_tangent_frame_torch(rotations.detach())
 
-        p = positions[selected_idx].detach().clone()
-        rot = rotations[selected_idx].detach().clone()
-        tu = tu_all[selected_idx].detach().clone()
-        tv = tv_all[selected_idx].detach().clone()
-        sc = scales[selected_idx].detach().clone()
-        alb = albedos[selected_idx].detach().clone()
-        opa = opacities[selected_idx].detach().clone()
-        be = betas[selected_idx].detach().clone()
-        pow_ = powers[selected_idx].detach().clone()
+        selected_scale_max = torch.max(scales[selected_idx].detach(), dim=1).values
+        exact_clone_scale_threshold_value = float(exact_clone_scale_threshold)
+        if exact_clone_scale_threshold_value > 0.0:
+            clone_mask = selected_scale_max <= exact_clone_scale_threshold_value
+        else:
+            clone_mask = torch.zeros_like(selected_scale_max, dtype=torch.bool)
+        split_mask = ~clone_mask
 
-        g = grad_pos[selected_idx]
-        descent = -g
+        clone_idx = selected_idx[clone_mask]
+        split_idx = selected_idx[split_mask]
 
-        tu_n = torch.nn.functional.normalize(tu, dim=1, eps=1.0e-12)
-        tv_n = torch.nn.functional.normalize(tv, dim=1, eps=1.0e-12)
+        new_positions = []
+        new_rotations = []
+        new_scales = []
+        new_albedos = []
+        new_opacities = []
+        new_betas = []
+        new_powers = []
+        source_index_chunks = []
+        grad_norm_chunks = []
+        update_source = None
 
-        tangent_descent = (
-                torch.sum(descent * tu_n, dim=1, keepdim=True) * tu_n
-                + torch.sum(descent * tv_n, dim=1, keepdim=True) * tv_n
-        )
+        if clone_idx.numel() > 0:
+            # 3DGS-style exact clone. Disabled by default; enable with exact_clone_scale_threshold.
+            new_positions.append(positions[clone_idx].detach().clone())
+            new_rotations.append(rotations[clone_idx].detach().clone())
+            new_scales.append(scales[clone_idx].detach().clone())
+            new_albedos.append(albedos[clone_idx].detach().clone())
+            new_opacities.append(torch.clamp(opacities[clone_idx].detach().clone(), 0.0, 1.0))
+            new_betas.append(betas[clone_idx].detach().clone())
+            new_powers.append(powers[clone_idx].detach().clone())
+            source_index_chunks.append(clone_idx)
+            grad_norm_chunks.append(selection_score[clone_idx])
 
-        split_descent = tangent_descent if tangent_project_position_grad else descent
+        if split_idx.numel() > 0:
+            p = positions[split_idx].detach().clone()
+            sc = scales[split_idx].detach().clone()
+            tu = tu_all[split_idx].detach().clone()
+            tv = tv_all[split_idx].detach().clone()
 
-        split_descent_norm = torch.linalg.norm(split_descent, dim=1, keepdim=True)
-        split_direction = split_descent / torch.clamp(split_descent_norm, min=1.0e-12)
+            g = grad_pos[split_idx]
+            descent = -g
 
-        local_radius = torch.min(sc, dim=1).values[:, None]
-        tangent_offset = clone_offset_scale * local_radius * split_direction
+            tu_n = torch.nn.functional.normalize(tu, dim=1, eps=1.0e-12)
+            tv_n = torch.nn.functional.normalize(tv, dim=1, eps=1.0e-12)
 
-        # Conservative, centroid-preserving 1 -> 2 split.
-        source_positions = p - 0.5 * tangent_offset
-        clone_positions = p + 0.5 * tangent_offset
+            tangent_descent = (
+                    torch.sum(descent * tu_n, dim=1, keepdim=True) * tu_n
+                    + torch.sum(descent * tv_n, dim=1, keepdim=True) * tv_n
+            )
 
-        child_sc = sc / safe_clone_scale_factor
+            split_descent = tangent_descent if tangent_project_position_grad else descent
 
-        # Do not modify opacity merely because the surfel was densified.
-        parent_opacity = torch.clamp(opa, 0.0, 1.0)
-        child_opacity = parent_opacity.clone()
+            split_descent_norm = torch.linalg.norm(split_descent, dim=1, keepdim=True)
+            split_direction = split_descent / torch.clamp(split_descent_norm, min=1.0e-12)
 
-        selected_idx_np = selected_idx.detach().cpu().numpy().astype(np.int64)
+            local_radius = torch.min(sc, dim=1).values[:, None]
+            tangent_offset = float(clone_offset_scale) * local_radius * split_direction
 
-        return {
-            "update_source": {
-                "index": selected_idx_np,
+            source_positions = p - 0.5 * tangent_offset
+            child_positions = p + 0.5 * tangent_offset
+
+            child_sc = sc / safe_clone_scale_factor
+
+            parent_opacity = torch.clamp(opacities[split_idx].detach().clone(), 0.0, 1.0)
+            update_source = {
+                "index": split_idx.detach().cpu().numpy().astype(np.int64),
                 "position": source_positions.detach().cpu().numpy().astype(np.float32),
                 "scale": child_sc.detach().cpu().numpy().astype(np.float32),
                 "opacity": parent_opacity.detach().cpu().numpy().reshape(-1).astype(np.float32),
-            },
+            }
+
+            new_positions.append(child_positions)
+            new_rotations.append(rotations[split_idx].detach().clone())
+            new_scales.append(child_sc)
+            new_albedos.append(albedos[split_idx].detach().clone())
+            new_opacities.append(parent_opacity.clone())
+            new_betas.append(betas[split_idx].detach().clone())
+            new_powers.append(powers[split_idx].detach().clone())
+            source_index_chunks.append(split_idx)
+            grad_norm_chunks.append(selection_score[split_idx])
+
+        if not new_positions:
+            return None
+
+        new_position_t = torch.cat(new_positions, dim=0)
+        new_rotation_t = torch.cat(new_rotations, dim=0)
+        new_scale_t = torch.cat(new_scales, dim=0)
+        new_albedo_t = torch.cat(new_albedos, dim=0)
+        new_opacity_t = torch.cat(new_opacities, dim=0)
+        new_beta_t = torch.cat(new_betas, dim=0)
+        new_power_t = torch.cat(new_powers, dim=0)
+        source_index_t = torch.cat(source_index_chunks, dim=0)
+        grad_norm_t = torch.cat(grad_norm_chunks, dim=0)
+
+        result = {
             "new": {
-                "position": clone_positions.detach().cpu().numpy().astype(np.float32),
-                "rotation": rot.detach().cpu().numpy().astype(np.float32),
-                "scale": child_sc.detach().cpu().numpy().astype(np.float32),
-                "albedo": alb.detach().cpu().numpy().astype(np.float32),
-                "opacity": child_opacity.detach().cpu().numpy().reshape(-1).astype(np.float32),
-                "beta": be.detach().cpu().numpy().reshape(-1).astype(np.float32),
-                "power": pow_.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "position": new_position_t.detach().cpu().numpy().astype(np.float32),
+                "rotation": new_rotation_t.detach().cpu().numpy().astype(np.float32),
+                "scale": new_scale_t.detach().cpu().numpy().astype(np.float32),
+                "albedo": new_albedo_t.detach().cpu().numpy().astype(np.float32),
+                "opacity": new_opacity_t.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "beta": new_beta_t.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                "power": new_power_t.detach().cpu().numpy().reshape(-1).astype(np.float32),
             },
-            "source_index": selected_idx_np,
-            "grad_norm": selection_score[selected_idx].detach().cpu().numpy().astype(np.float32),
+            "source_index": source_index_t.detach().cpu().numpy().astype(np.int64),
+            "grad_norm": grad_norm_t.detach().cpu().numpy().astype(np.float32),
+            "clone_count": int(clone_idx.numel()),
+            "split_count": int(split_idx.numel()),
+            "exact_clone_scale_threshold": exact_clone_scale_threshold_value,
+            "split_offset_scale": float(clone_offset_scale),
+            "split_scale_factor": safe_clone_scale_factor,
             "replace_source": False,
         }
+
+        if update_source is not None:
+            result["update_source"] = update_source
+
+        return result
 
 
 def add_densification_stats_np(

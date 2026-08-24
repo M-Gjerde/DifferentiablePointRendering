@@ -64,6 +64,132 @@ namespace Pale {
 
             tangentV = glm::normalize(tangentV);
         }
+
+        void writePackedPointBvhChild(PackedPointBVHNode &packedNode,
+                                      bool writeLeftChild,
+                                      const std::vector<BVHNode> &nodes,
+                                      uint32_t childNodeIndex) {
+            const BVHNode &childNode = nodes[childNodeIndex];
+            const uint32_t childIndex = childNode.isLeaf() ? childNode.leftFirst : childNodeIndex;
+            const uint32_t childCount = childNode.isLeaf() ? childNode.triCount : 0u;
+
+            if (writeLeftChild) {
+                packedNode.leftAabbMin = childNode.aabbMin;
+                packedNode.leftAabbMax = childNode.aabbMax;
+                packedNode.leftIndex = childIndex;
+                packedNode.leftCount = childCount;
+            } else {
+                packedNode.rightAabbMin = childNode.aabbMin;
+                packedNode.rightAabbMax = childNode.aabbMax;
+                packedNode.rightIndex = childIndex;
+                packedNode.rightCount = childCount;
+            }
+        }
+
+        std::vector<PackedPointBVHNode> makePackedPointBvhNodes(const std::vector<BVHNode> &nodes) {
+            std::vector<PackedPointBVHNode> packedNodes(nodes.size());
+
+            for (uint32_t nodeIndex = 0u; nodeIndex < nodes.size(); ++nodeIndex) {
+                const BVHNode &node = nodes[nodeIndex];
+                PackedPointBVHNode &packedNode = packedNodes[nodeIndex];
+
+                if (node.isLeaf()) {
+                    writePackedPointBvhChild(packedNode, true, nodes, nodeIndex);
+                    continue;
+                }
+
+                writePackedPointBvhChild(packedNode, true, nodes, node.leftFirst);
+                writePackedPointBvhChild(packedNode, false, nodes, node.leftFirst + 1u);
+            }
+
+            return packedNodes;
+        }
+
+        void addCollapsedQbvhChild(const std::vector<BVHNode> &nodes,
+                                   uint32_t childNodeIndex,
+                                   uint32_t (&childSourceNodes)[4],
+                                   uint32_t &childSourceCount) {
+            const BVHNode &childNode = nodes[childNodeIndex];
+            if (childNode.isLeaf()) {
+                childSourceNodes[childSourceCount++] = childNodeIndex;
+                return;
+            }
+
+            childSourceNodes[childSourceCount++] = childNode.leftFirst;
+            childSourceNodes[childSourceCount++] = childNode.leftFirst + 1u;
+        }
+
+        void writePackedPointQbvhChild(PackedPointQBVHNode &qbvhNode,
+                                       uint32_t slot,
+                                       const std::vector<BVHNode> &nodes,
+                                       uint32_t childSourceNodeIndex,
+                                       uint32_t childQbvhNodeIndex) {
+            const BVHNode &childNode = nodes[childSourceNodeIndex];
+
+            qbvhNode.minX[slot] = childNode.aabbMin.x();
+            qbvhNode.minY[slot] = childNode.aabbMin.y();
+            qbvhNode.minZ[slot] = childNode.aabbMin.z();
+            qbvhNode.maxX[slot] = childNode.aabbMax.x();
+            qbvhNode.maxY[slot] = childNode.aabbMax.y();
+            qbvhNode.maxZ[slot] = childNode.aabbMax.z();
+            qbvhNode.childSourceNodeIndex[slot] = childSourceNodeIndex;
+
+            if (childNode.isLeaf()) {
+                qbvhNode.childIndex[slot] = childNode.leftFirst;
+                qbvhNode.childCount[slot] = childNode.triCount;
+            } else {
+                qbvhNode.childIndex[slot] = childQbvhNodeIndex;
+                qbvhNode.childCount[slot] = 0u;
+            }
+        }
+
+        uint32_t buildPackedPointQbvhNode(std::vector<PackedPointQBVHNode> &qbvhNodes,
+                                          const std::vector<BVHNode> &nodes,
+                                          uint32_t sourceNodeIndex) {
+            const uint32_t qbvhNodeIndex = static_cast<uint32_t>(qbvhNodes.size());
+            qbvhNodes.emplace_back();
+
+            const BVHNode &sourceNode = nodes[sourceNodeIndex];
+            uint32_t childSourceNodes[4]{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+            uint32_t childSourceCount = 0u;
+
+            if (sourceNode.isLeaf()) {
+                childSourceNodes[childSourceCount++] = sourceNodeIndex;
+            } else {
+                addCollapsedQbvhChild(nodes, sourceNode.leftFirst, childSourceNodes, childSourceCount);
+                addCollapsedQbvhChild(nodes, sourceNode.leftFirst + 1u, childSourceNodes, childSourceCount);
+            }
+
+            for (uint32_t slot = 0u; slot < childSourceCount; ++slot) {
+                const uint32_t childSourceNodeIndex = childSourceNodes[slot];
+                const BVHNode &childNode = nodes[childSourceNodeIndex];
+                const uint32_t childQbvhNodeIndex = childNode.isLeaf()
+                                                        ? UINT32_MAX
+                                                        : buildPackedPointQbvhNode(
+                                                            qbvhNodes,
+                                                            nodes,
+                                                            childSourceNodeIndex);
+                writePackedPointQbvhChild(
+                    qbvhNodes[qbvhNodeIndex],
+                    slot,
+                    nodes,
+                    childSourceNodeIndex,
+                    childQbvhNodeIndex);
+            }
+
+            return qbvhNodeIndex;
+        }
+
+        std::vector<PackedPointQBVHNode> makePackedPointQbvhNodes(const std::vector<BVHNode> &nodes) {
+            std::vector<PackedPointQBVHNode> qbvhNodes;
+            if (nodes.empty()) {
+                return qbvhNodes;
+            }
+
+            qbvhNodes.reserve(nodes.size());
+            buildPackedPointQbvhNode(qbvhNodes, nodes, 0u);
+            return qbvhNodes;
+        }
     }
 
     SceneBuild::BuildProducts SceneBuild::build(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
@@ -104,6 +230,11 @@ namespace Pale {
         buildProducts.bottomLevelNodes.clear();
         buildProducts.bottomLevelRanges.clear();
         buildProducts.topLevelNodes.clear();
+        buildProducts.pointTraversalData.clear();
+        buildProducts.pointPackedBvhNodes.clear();
+        buildProducts.pointPackedBvhRanges.clear();
+        buildProducts.pointQbvhNodes.clear();
+        buildProducts.pointQbvhRanges.clear();
         buildProducts.pointPermutation.clear();
         // Note: we do NOT touch vertices/triangles/points/instances/etc.
         buildBottomLevelBVHs(buildProducts, buildOptions);
@@ -850,6 +981,8 @@ namespace Pale {
             const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
 
             buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
+            buildProducts.pointPackedBvhRanges.push_back({0u, 0u});
+            buildProducts.pointQbvhRanges.push_back({0u, 0u});
             meshRangeToBlasRange[meshIndex] = blasRangeIndex;
 
             //{
@@ -881,9 +1014,14 @@ namespace Pale {
 
             buildProducts.pointPermutation.reserve(
                 buildProducts.pointPermutation.size() + blasResult.pointPermutation.size());
+            buildProducts.pointTraversalData.reserve(
+                buildProducts.pointTraversalData.size() + blasResult.pointPermutation.size());
 
             for (uint32_t localPointIndex : blasResult.pointPermutation) {
-                buildProducts.pointPermutation.push_back(globalPointStart + localPointIndex);
+                const uint32_t primitiveIndex = globalPointStart + localPointIndex;
+                buildProducts.pointPermutation.push_back(primitiveIndex);
+                buildProducts.pointTraversalData.push_back(
+                    makeSurfelTraversalData(buildProducts.points[primitiveIndex], primitiveIndex));
             }
 
             const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
@@ -903,7 +1041,29 @@ namespace Pale {
             const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
 
             buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
+            buildProducts.pointPackedBvhRanges.push_back({0u, 0u});
+            buildProducts.pointQbvhRanges.push_back({0u, 0u});
             pointRangeToBlasRange[pointCloudIndex] = blasRangeIndex;
+
+            const std::vector<PackedPointBVHNode> packedNodes = makePackedPointBvhNodes(blasResult.nodes);
+            const uint32_t packedFirstNode = static_cast<uint32_t>(buildProducts.pointPackedBvhNodes.size());
+            buildProducts.pointPackedBvhNodes.insert(buildProducts.pointPackedBvhNodes.end(),
+                                                     packedNodes.begin(),
+                                                     packedNodes.end());
+            buildProducts.pointPackedBvhRanges[blasRangeIndex] = {
+                packedFirstNode,
+                static_cast<uint32_t>(packedNodes.size())
+            };
+
+            const std::vector<PackedPointQBVHNode> qbvhNodes = makePackedPointQbvhNodes(blasResult.nodes);
+            const uint32_t qbvhFirstNode = static_cast<uint32_t>(buildProducts.pointQbvhNodes.size());
+            buildProducts.pointQbvhNodes.insert(buildProducts.pointQbvhNodes.end(),
+                                                qbvhNodes.begin(),
+                                                qbvhNodes.end());
+            buildProducts.pointQbvhRanges[blasRangeIndex] = {
+                qbvhFirstNode,
+                static_cast<uint32_t>(qbvhNodes.size())
+            };
             //{
             //    // One file per point cloud BLAS (by point cloud index)
             //    std::string pointCloudBlasPath =

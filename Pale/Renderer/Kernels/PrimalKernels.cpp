@@ -228,6 +228,85 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         float3 accumulatedRadianceRGB{0.0f};
         float renderingTransmittance = 1.0f;
         float accumulatedRenderingWeight = 0.0f;
+        // =====================================================================
+        // Individual-surfel surface quantities.
+        //
+        // Rendering below still uses symmetric slabs. The regularizer consumes
+        // individual front-to-back surfel hits from the same traversal stream.
+        // =====================================================================
+        float regularizerTransmittance = 1.0f;
+        float accumulatedRegularizerWeight = 0.0f;
+        float accumulatedWeightedDepth = 0.0f;
+        float3 accumulatedWeightedNormal{0.0f};
+        float visibilityWeightedOpacityLoss = 0.0f;
+        float previousDepthDistortionWeights[kMaxSplatEventsPerRay];
+        float previousDepthDistortionDepths[kMaxSplatEventsPerRay];
+        float previousDepthDistortionNdcDepths[kMaxSplatEventsPerRay];
+        uint32_t previousDepthDistortionHitCount = 0u;
+        uint32_t regularizerHitIndex = 0u;
+        float distortion = 0.0f;
+        float accumulatedCompositeWeight = 0.0f;
+        bool medianFound = false;
+        float medianDepth = 0.0f;
+        float3 medianWorldPosition{0.0f};
+        bool keepTracingRegularizer = true;
+
+        auto accumulateRegularizerHit =
+            [&](const LocalSurfelLayerHit &regularizerHit) -> bool {
+            if (regularizerHit.primitiveIndex == kInvalidIndex) {
+                return true;
+            }
+            const Point &surfel = scene.points[regularizerHit.primitiveIndex];
+            const float alphaGeom = regularizerHit.alphaGeom;
+            const float alpha = surfel.opacity * alphaGeom;
+            if (alphaGeom <= kAlphaEpsilon) {
+                return true;
+            }
+            const float depth = dot(regularizerHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+            if (depth <= 0.0f) {
+                return true;
+            }
+            const float opacityResidual = 1.0f - surfel.opacity;
+            visibilityWeightedOpacityLoss +=
+                    regularizerTransmittance * alphaGeom * opacityResidual * opacityResidual;
+            if (alpha <= kAlphaEpsilon) {
+                return true;
+            }
+
+            const float compositeWeight = regularizerTransmittance * alpha;
+            accumulatedRegularizerWeight += compositeWeight;
+            accumulatedWeightedDepth += compositeWeight * depth;
+
+            if (!medianFound && accumulatedCompositeWeight + compositeWeight >= 0.5f) {
+                medianFound = true;
+                medianDepth = depth;
+                medianWorldPosition = regularizerHit.hitPositionW;
+            }
+            accumulatedCompositeWeight += compositeWeight;
+
+            const float ndcDepth = depthDistortionNdc01(depth);
+            for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
+                const float pairWeight = depthDistortionPairSeparationWeight(
+                    previousDepthDistortionDepths[previousIndex], depth);
+                if (pairWeight <= 0.0f) { continue; }
+                const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
+                distortion += pairWeight * previousDepthDistortionWeights[previousIndex] * compositeWeight *
+                              depthDifference * depthDifference;
+            }
+            if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
+                previousDepthDistortionWeights[previousDepthDistortionHitCount] = compositeWeight;
+                previousDepthDistortionDepths[previousDepthDistortionHitCount] = depth;
+                previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
+                ++previousDepthDistortionHitCount;
+            }
+
+            float3 orientedNormalW = normalize(cross(surfel.tanU, surfel.tanV));
+            if (dot(orientedNormalW, -originalRay.direction) < 0.0f) { orientedNormalW = -orientedNormalW; }
+            accumulatedWeightedNormal += compositeWeight * orientedNormalW;
+
+            regularizerTransmittance *= 1.0f - alpha;
+            return regularizerTransmittance > kAlphaEpsilon;
+        };
 
         auto renderPointLocalLayer = [&](const PointCloudLocalLayer &localLayer, const Ray &layerRay) {
             const float slabOpacity = localLayer.opacity;
@@ -299,6 +378,23 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                     }
                 }
 
+                if (keepTracingRegularizer) {
+                    for (uint32_t batchIndex = 0u;
+                         batchIndex < hitCount && regularizerHitIndex < maxSplatEventsPerRay;
+                         ++batchIndex) {
+                        const LocalSurfelLayerHit &pointHit = pointHits[batchIndex];
+                        if (pointHit.tWorld > furthestConsumedT + RayEpsilon) {
+                            break;
+                        }
+
+                        keepTracingRegularizer = accumulateRegularizerHit(pointHit);
+                        ++regularizerHitIndex;
+                        if (!keepTracingRegularizer) {
+                            break;
+                        }
+                    }
+                }
+
                 const bool consumedAllFetchedHits = hitCursor >= hitCount;
                 if (furthestConsumedT <= 0.0f) {
                     break;
@@ -319,6 +415,17 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
                 if (instance.geometryType == GeometryType::PointCloud) {
                     const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(renderingRay, worldHit, instance, scene, localLayerDepthEpsilon, maxLocalSurfelHits, localLayerNormalCosineThreshold);
+                    if (keepTracingRegularizer) {
+                        for (uint32_t localHitIndex = 0u;
+                             localHitIndex < localLayer.hitCount && regularizerHitIndex < maxSplatEventsPerRay;
+                             ++localHitIndex) {
+                            keepTracingRegularizer = accumulateRegularizerHit(localLayer.hits[localHitIndex]);
+                            ++regularizerHitIndex;
+                            if (!keepTracingRegularizer) {
+                                break;
+                            }
+                        }
+                    }
                     renderPointLocalLayer(localLayer, renderingRay);
                     renderingRay.origin += renderingRay.direction * (localLayer.furthestT + RayEpsilon);
                     continue;
@@ -343,196 +450,6 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             }
         }
         // =====================================================================
-        // PASS B: individual-surfel surface quantities.
-        //
-        // Physical rendering above still uses symmetric slabs.
-        //
-        // This pass deliberately treats every surfel intersection individually,
-        // but restores the depth-estimation behavior of the old camera gather:
-        //   - alpha_i = eta_i * worldHit.alphaGeom
-        //   - mean depth = weighted expected depth
-        //   - median only exists if cumulative visible opacity reaches 0.5
-        //   - no "deepest surfel" fallback
-        // =====================================================================
-        Ray regularizerRay = originalRay;
-        float regularizerTransmittance = 1.0f;
-        // Sum_i w_i
-        float accumulatedRegularizerWeight = 0.0f;
-        // Sum_i w_i z_i
-        float accumulatedWeightedDepth = 0.0f;
-        // Used for rendered normal.
-        float3 accumulatedWeightedNormal{0.0f};
-        // 2DGS depth distortion, with smooth attenuation for distant depth pairs.
-        float previousDepthDistortionWeights[kMaxSplatEventsPerRay];
-        float previousDepthDistortionDepths[kMaxSplatEventsPerRay];
-        float previousDepthDistortionNdcDepths[kMaxSplatEventsPerRay];
-        uint32_t previousDepthDistortionHitCount = 0u;
-        float distortion = 0.0f;
-        // Restore old median semantics.
-        float accumulatedCompositeWeight = 0.0f;
-        bool medianFound = false;
-        float medianDepth = 0.0f;
-        float3 medianWorldPosition{0.0f};
-
-        auto accumulateRegularizerHit =
-            [&](const LocalSurfelLayerHit &regularizerHit) -> bool {
-            if (regularizerHit.primitiveIndex == kInvalidIndex) {
-                return true;
-            }
-            const Point &surfel = scene.points[regularizerHit.primitiveIndex];
-            // -------------------------------------------------------------
-            // Effective opacity.
-            //
-            // IMPORTANT:
-            // Match the old gather kernel here.
-            //
-            // alphaGeom already contains the beta-profile value at the actual
-            // ray/surfel intersection.
-            //
-            // Do NOT use:
-            //
-            //   opacityBeta(...) * surfel.opacity
-            //
-            // because opacityBeta returns the validity flag in this codebase.
-            // -------------------------------------------------------------
-            const float alphaGeom = regularizerHit.alphaGeom;
-            const float alpha = surfel.opacity * alphaGeom;
-            if (alpha <= kAlphaEpsilon) {
-                return true;
-            }
-            // Camera-forward depth, same convention as the old kernel.
-            const float depth = dot(regularizerHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
-            if (depth <= 0.0f) {
-                return true;
-            }
-            // T_i alpha_i
-            const float compositeWeight = regularizerTransmittance * alpha;
-            // -------------------------------------------------------------
-            // Mean / expected depth.
-            //
-            // Same behavior as old cameraGatherKernel:
-            //
-            //   sum_i w_i z_i / sum_i w_i
-            // -------------------------------------------------------------
-            accumulatedRegularizerWeight += compositeWeight;
-            accumulatedWeightedDepth += compositeWeight * depth;
-            // -------------------------------------------------------------
-            // Median depth.
-            //
-            // Restore OLD behavior:
-            //
-            // Pick the FIRST surfel for which cumulative visible opacity
-            // reaches 0.5.
-            //
-            // Critically, if it never reaches 0.5, medianFound remains false.
-            // -------------------------------------------------------------
-            if (!medianFound && accumulatedCompositeWeight + compositeWeight >= 0.5f) {
-                medianFound = true;
-                medianDepth = depth;
-                medianWorldPosition = regularizerHit.hitPositionW;
-            }
-            accumulatedCompositeWeight += compositeWeight;
-            // -------------------------------------------------------------
-            // Depth distortion.
-            //
-            // Keep the original pairwise weighted depth distortion, but let
-            // pairs smoothly lose authority as their camera-forward depth
-            // separation approaches the renderer-owned cutoff.
-            // -------------------------------------------------------------
-            const float ndcDepth = depthDistortionNdc01(depth);
-            for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
-                const float pairWeight = depthDistortionPairSeparationWeight(
-                    previousDepthDistortionDepths[previousIndex], depth);
-                if (pairWeight <= 0.0f) { continue; }
-                const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
-                distortion += pairWeight * previousDepthDistortionWeights[previousIndex] * compositeWeight *
-                              depthDifference * depthDifference;
-            }
-            if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
-                previousDepthDistortionWeights[previousDepthDistortionHitCount] = compositeWeight;
-                previousDepthDistortionDepths[previousDepthDistortionHitCount] = depth;
-                previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
-                ++previousDepthDistortionHitCount;
-            }
-            // -------------------------------------------------------------
-            // Rendered surfel normal.
-            //
-            // Keep the newer weighted-normal representation.
-            // -------------------------------------------------------------
-            float3 orientedNormalW = normalize(cross(surfel.tanU, surfel.tanV));
-            if (dot(orientedNormalW, -originalRay.direction) < 0.0f) { orientedNormalW = -orientedNormalW; }
-            accumulatedWeightedNormal += compositeWeight * orientedNormalW;
-            // Update transmission only after all quantities for hit i
-            // have used the pre-hit T_i.
-            regularizerTransmittance *= 1.0f - alpha;
-            return regularizerTransmittance > kAlphaEpsilon;
-        };
-
-        if (canUsePointHitBatches) {
-            for (uint32_t hitIndex = 0u; hitIndex < maxSplatEventsPerRay;) {
-                LocalSurfelLayerHit pointHits[kMaxPointHitBatch];
-                uint32_t pointInstanceIndex = kInvalidIndex;
-                const uint32_t hitCount = collectScenePointHitsDirect(
-                    regularizerRay,
-                    scene,
-                    RayEpsilon,
-                    std::numeric_limits<float>::infinity(),
-                    pointHits,
-                    pointHitBatchSize,
-                    pointInstanceIndex);
-
-                if (hitCount == 0u) {
-                    break;
-                }
-
-                float furthestConsumedT = 0.0f;
-                bool keepTracingRegularizer = true;
-                for (uint32_t batchIndex = 0u;
-                     batchIndex < hitCount && hitIndex < maxSplatEventsPerRay;
-                     ++batchIndex) {
-                    const LocalSurfelLayerHit &pointHit = pointHits[batchIndex];
-                    furthestConsumedT = sycl::fmax(furthestConsumedT, pointHit.tWorld);
-                    keepTracingRegularizer = accumulateRegularizerHit(pointHit);
-                    ++hitIndex;
-                    if (!keepTracingRegularizer) {
-                        break;
-                    }
-                }
-
-                if (furthestConsumedT <= 0.0f) {
-                    break;
-                }
-
-                regularizerRay.origin += regularizerRay.direction * (furthestConsumedT + RayEpsilon);
-                if (!keepTracingRegularizer || hitCount < pointHitBatchSize) {
-                    break;
-                }
-            }
-        } else {
-            for (uint32_t hitIndex = 0u; hitIndex < maxSplatEventsPerRay; ++hitIndex) {
-                WorldHit worldHit{};
-                intersectScene(regularizerRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
-                if (!worldHit.hit) { break; }
-                buildIntersectionNormal(scene, worldHit);
-                const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
-                // A mesh blocks the surfel stream.
-                //
-                // Unlike the old camera gather, we do not make meshes part of the
-                // surfel regularizer depth representation.
-                if (instance.geometryType != GeometryType::PointCloud) { break; }
-
-                LocalSurfelLayerHit regularizerHit{};
-                regularizerHit.tWorld = worldHit.t;
-                regularizerHit.primitiveIndex = worldHit.primitiveIndex;
-                regularizerHit.alphaGeom = worldHit.alphaGeom;
-                regularizerHit.hitPositionW = worldHit.hitPositionW;
-
-                const bool keepTracingRegularizer = accumulateRegularizerHit(regularizerHit);
-                regularizerRay.origin = worldHit.hitPositionW + regularizerRay.direction * RayEpsilon;
-                if (!keepTracingRegularizer) { break; }
-            }
-        }
-        // =====================================================================
         // Store physical rendering outputs.
         // =====================================================================
         sensor.framebuffer[pixelIndex] = float4{accumulatedRadianceRGB.x(), accumulatedRadianceRGB.y(), accumulatedRadianceRGB.z(), sycl::clamp(accumulatedRenderingWeight, 0.0f, 1.0f)};
@@ -545,7 +462,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         } else {
             sensor.meanDepthBuffer[pixelIndex] = 0.0f;
         }
-        sensor.visibilityWeightedOpacityBuffer[pixelIndex] = accumulatedRegularizerWeight;
+        sensor.visibilityWeightedOpacityBuffer[pixelIndex] = visibilityWeightedOpacityLoss;
         // Old median semantics:
         // no 50% accumulated opacity -> no surface depth.
         if (medianFound) {
