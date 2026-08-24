@@ -69,7 +69,7 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Global LR scheduling
     use_global_lr_schedule: bool = True
-    global_lr_scale_init: float = 10.0
+    global_lr_scale_init: float = 5.0
     global_lr_scale_final: float = 1.0
     global_lr_start_iteration: int = 0
     global_lr_max_steps: int = int(1.0e4)
@@ -78,7 +78,7 @@ class OptimizationConfig:
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.0075
     normal_from_depth_use_mean_depth: bool = False
-    opacity_prior_weight: float = 0.01
+    opacity_prior_weight: float = 0.0
 
     # Density control / EV-splitting
     # Ignore stats from the first half of each densification interval after cloning/pruning.
@@ -88,14 +88,14 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 2.0e-4
+    densification_grad_abs_min: float = 1.0e-4
+    densification_grad_abs_min_final: float = 1.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 10_000
+    densification_grad_abs_min_decay_end_iteration: int = 6_000
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.3
     densification_split_scale_factor: float = math.sqrt(2.0)
-    densification_exact_clone_percent_dense: float = 0.01
+    densification_exact_clone_percent_dense: float = 0.0025
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
