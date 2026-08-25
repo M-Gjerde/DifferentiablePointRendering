@@ -179,12 +179,9 @@ def find_run_dir_by_index(optimization_output_root: Path, run_index: int) -> Pat
             f"No run folders with metrics.csv found under: {optimization_output_root}"
         )
 
+    # Select latest run purely by metrics.csv age (most recent first)
     candidate_run_dirs.sort(
-        key=lambda item: (
-            item["parsed_timestamp"] is not None,
-            item["parsed_timestamp"] if item["parsed_timestamp"] is not None else datetime.min,
-            item["modified_time"],
-        ),
+        key=lambda item: item["modified_time"],
         reverse=True,
     )
 
@@ -890,6 +887,7 @@ def main() -> None:
         )
 
     camera_name = camera_names[args.camera_index]
+    print("Using run dir:", run_dir)
     print("Using camera:", camera_name)
 
     output_path = build_gif(

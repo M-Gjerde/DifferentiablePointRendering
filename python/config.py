@@ -74,9 +74,9 @@ class OptimizationConfig:
     global_lr_scale_init: float = 10.0
     global_lr_scale_final: float = 2.0
     global_lr_start_iteration: int = 0
-    global_lr_max_steps: int = int(1.0e4)
+    global_lr_max_steps: int = int(2.0e4)
 
-    depth_distort_weight: float = 1.0e3
+    depth_distort_weight: float = 2.0e3
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.05
     normal_from_depth_use_mean_depth: bool = False
@@ -91,7 +91,7 @@ class OptimizationConfig:
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 0.5e-4
+    densification_grad_abs_min_final: float = 1.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 10_000
     densification_scale_min: float = 6.0e-3
@@ -125,7 +125,7 @@ class OptimizationConfig:
 
     # Logging
     log_interval: int = 5
-    save_interval: int = densification_interval
+    save_interval: int = 50
     save_ply_files_interval: int = save_interval
 
     # Mesh Extraction
