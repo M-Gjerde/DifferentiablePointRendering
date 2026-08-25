@@ -70,7 +70,7 @@ class OptimizationConfig:
     # Global LR scheduling
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 5.0
-    global_lr_scale_final: float = 1.0
+    global_lr_scale_final: float = 2.0
     global_lr_start_iteration: int = 0
     global_lr_max_steps: int = int(1.0e4)
 
