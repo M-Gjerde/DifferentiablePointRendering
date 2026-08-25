@@ -859,6 +859,11 @@ namespace Pale {
         const float3 &queryPositionWorld,
         const float3 &queryNormal,
         const DeviceSurfacePhotonMapGrid &grid) {
+        if (grid.photons == nullptr || grid.cellStart == nullptr || grid.cellEnd == nullptr ||
+            grid.sortedPhotonIndex == nullptr || grid.totalCellCount == 0u) {
+            return float3{0.0f};
+        }
+
         const float3 normalizedQueryNormal = normalize(queryNormal);
 
         const float radius = grid.minimumGatherRadiusWorld;

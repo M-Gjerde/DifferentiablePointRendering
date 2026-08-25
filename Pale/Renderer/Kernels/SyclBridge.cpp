@@ -90,54 +90,6 @@ namespace Pale {
     }
 
     void submitPhotonMappingKernel(RenderPackage& pkg) {
-        const uint64_t renderSeed = pkg.random.seed; // capture value
-
-        pkg.queue.fill(pkg.intermediates.map.photonCountDevicePtr, 0u, 1).wait();
-        {
-            ScopedTimer forwardTimer("Forward Pass Total", spdlog::level::debug);
-            for (int forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
-                {
-                    ScopedTimer timer("launchRayGenEmitterKernel");
-                    launchRayGenEmitterKernel(pkg, forwardPass);
-                }
-
-                uint32_t activeCount = 0;
-                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
-                {
-                    ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
-
-                    for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces; ++bounce) {
-                        pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
-                        pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                        pkg.queue.wait();
-                        {
-                            ScopedTimer timer("launchIntersectKernel");
-                            launchIntersectKernel(pkg, activeCount);
-                        }
-                        uint32_t nextCount = 0;
-                        pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
-                        pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
-                                         nextCount * sizeof(RayState));
-                        pkg.queue.wait();
-                        activeCount = nextCount;
-                        pkg.queue.wait();
-                        if (!activeCount)
-                            break;
-                    }
-                }
-            }
-        }
-        uint32_t photonMapCount = 0;
-        pkg.queue.memcpy(&photonMapCount,
-                         pkg.intermediates.map.photonCountDevicePtr,
-                         sizeof(uint32_t)).wait();
-
-        const uint32_t photonCount = std::min(photonMapCount, pkg.intermediates.map.photonCapacity);
-        {
-            //ScopedTimer timer("buildPhotonCellRangesAndOrdering", spdlog::level::debug);
-            //buildPhotonCellRangesAndOrdering(pkg.queue, pkg.intermediates.map, photonCount);
-        }
         {
             ScopedTimer timer("Camera Gather for " + std::to_string(pkg.numSensors) + " cameras", spdlog::level::debug);
 
@@ -157,41 +109,8 @@ namespace Pale {
                     pkg.queue.wait();
                 }
             }
-
-            // Photon map stats:
-            // Percent full
-            uint32_t photonMapCount = 0;
-            pkg.queue.memcpy(&photonMapCount,
-                             pkg.intermediates.map.photonCountDevicePtr,
-                             sizeof(uint32_t)).wait();
-
-            const uint32_t photonCapacity = pkg.intermediates.map.photonCapacity;
-
-            const float percentFull =
-                photonCapacity > 0
-                    ? 100.0f * static_cast<float>(photonMapCount) / static_cast<float>(photonCapacity)
-                    : 0.0f;
-
-            if (percentFull < 99.0f) Log::PA_DEBUG("Photonmap is at {:.2f}% capacity", percentFull);
-            else {
-                Log::PA_ERROR("Photonmap is at {:.2f}% capacity", percentFull);
-            }
-
-
-            /*
-            {
-
-                ScopedTimer timer("dumpPhotonMapToPLY");
-                dumpPhotonMapToPLY(pkg.queue,
-                                  pkg.intermediates.map.photons,
-                                  photonMapCount,
-                                  std::filesystem::path("Output/photon_map.ply"));
-
-            }
-            */
         }
 
-        // Save photon map to disk:
         {
             ScopedTimer timer("Post Processing", spdlog::level::debug);
             launchPostProcessKernel(pkg);

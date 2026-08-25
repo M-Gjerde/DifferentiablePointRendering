@@ -97,7 +97,7 @@ class OptimizationConfig:
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.5
     densification_split_scale_factor: float = math.sqrt(4.0)
-    densification_exact_clone_percent_dense: float = 0.0
+    densification_exact_clone_percent_dense: float = 0.003
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 

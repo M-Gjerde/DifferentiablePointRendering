@@ -39,34 +39,10 @@ namespace Pale {
         }
         ensureRayCapacity(requiredRayQueueCapacity);
 
-        if (m_settings.integratorKind == IntegratorKind::photonMapping || m_settings.integratorKind ==
-            IntegratorKind::lightTracingCylinderRay) {
-            freePhotonMap();
-            freePhotonGridBuffers();
-
-            allocatePhotonMap();
-
-            const auto &topTLAS = bp.topLevelNodes.front();
-            const AABB sceneAabb{topTLAS.aabbMin, topTLAS.aabbMax};
-
-            const float3 sceneMin = sceneAabb.minP;
-            const float3 sceneMax = sceneAabb.maxP;
-            const float3 sceneExtent = sceneMax - sceneMin;
-
-            Log::PA_INFO(
-                "Scene AABB min = ({:.6f}, {:.6f}, {:.6f}), "
-                "max = ({:.6f}, {:.6f}, {:.6f}), "
-                "extent = ({:.6f}, {:.6f}, {:.6f})",
-                sceneMin.x(), sceneMin.y(), sceneMin.z(),
-                sceneMax.x(), sceneMax.y(), sceneMax.z(),
-                sceneExtent.x(), sceneExtent.y(), sceneExtent.z()
-            );
-
-            const float diffuse_surface_area = bp.diffuseSurfaceArea;
-            const float photon_count = static_cast<float>(m_settings.photonsPerLaunch);
-
-            configurePhotonGrid(sceneAabb);
-        }
+        // Photon-map construction is currently disabled: the camera gather path
+        // only uses direct lighting while the photon-grid build is inactive.
+        freePhotonMap();
+        freePhotonGridBuffers();
     }
 
     // Call this before first render, or inside submitKernel() after computing capacity.
