@@ -6,12 +6,17 @@ project(PaleRealtimeViewer
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(BUILD_SHARED_LIBS OFF)
 
 get_filename_component(PALE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 set(PALE_ROOT "${PALE_ROOT}" CACHE PATH "DifferentiablePointRendering repository root")
+
+# AdaptiveCpp's target-wide launcher also wraps clang-scan-deps, which rejects
+# AdaptiveCpp command-line options. Leave the CMake setting empty and use the
+# installation's default generic SSCP flow.
+set(ACPP_TARGETS "" CACHE STRING "AdaptiveCpp compilation targets" FORCE)
 
 find_package(AdaptiveCpp REQUIRED)
 find_package(OpenEXR REQUIRED)
@@ -23,7 +28,7 @@ set(FETCHCONTENT_QUIET OFF)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 # Allow using FetchContent_Populate(imgui/imguizmo) with declared details under CMake 4.0+
 if(POLICY CMP0169)
-  cmake_policy(SET CMP0169 OLD)
+    cmake_policy(SET CMP0169 OLD)
 endif()
 
 set(SPDLOG_USE_STD_FORMAT ON)
@@ -172,6 +177,10 @@ set(KERNEL_SOURCES
         "${PALE_ROOT}/Pale/Renderer/Kernels/PrimalKernels.cpp"
         "${PALE_ROOT}/Pale/Renderer/Kernels/PostprocessKernel.cpp")
 
+set_source_files_properties(${KERNEL_SOURCES} PROPERTIES
+        CXX_SCAN_FOR_MODULES ON
+        SKIP_PRECOMPILE_HEADERS ON)
+
 set(ENGINE_SOURCES
         "${PALE_ROOT}/Pale/Core/DeviceSelector.cpp"
         "${PALE_ROOT}/Pale/Core/ScopedTimer.cpp"
@@ -186,6 +195,7 @@ set(ENGINE_SOURCES
         ${KERNEL_SOURCES})
 
 add_library(PaleLibRealtime ${ENGINE_SOURCES})
+set_property(TARGET PaleLibRealtime PROPERTY CXX_SCAN_FOR_MODULES ON)
 target_sources(PaleLibRealtime
         PUBLIC
         FILE_SET CXX_MODULES
@@ -227,7 +237,9 @@ target_compile_options(PaleLibRealtime
         PUBLIC
         -fopenmp=libomp
         PRIVATE
-        $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer>
+        # Distro LLVM 22.1 debug-info bitcode is unreadable by ROCm 7.2's
+        # LLVM 22.0 COMGR. -g0 must follow CMake's and this target's -g flags.
+        $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer -g0>
         $<$<CONFIG:Release>:-O3>)
 target_link_libraries(PaleLibRealtime
         PRIVATE
@@ -249,13 +261,16 @@ target_include_directories(PaleLibRealtime
         "${PALE_ROOT}/vendor/yaml-cpp/include"
         "${PALE_ROOT}/vendor/stb_image"
         "${PALE_ROOT}/vendor/tinyply/source")
-add_sycl_to_target(TARGET PaleLibRealtime)
+add_sycl_to_target(
+        TARGET PaleLibRealtime
+        SOURCES ${KERNEL_SOURCES})
 
 add_executable(PaleRealtimeViewer main.cpp)
+set_property(TARGET PaleRealtimeViewer PROPERTY CXX_SCAN_FOR_MODULES ON)
 target_compile_options(PaleRealtimeViewer
         PRIVATE
         -fopenmp=libomp
-        $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer>
+        $<$<CONFIG:Debug>:-g -O0 -fno-inline -fno-omit-frame-pointer -g0>
         $<$<CONFIG:Release>:-O3>)
 target_compile_definitions(PaleRealtimeViewer
         PRIVATE
@@ -266,4 +281,6 @@ target_link_libraries(PaleRealtimeViewer
         imgui
         imguizmo
         OpenGL::GL)
-add_sycl_to_target(TARGET PaleRealtimeViewer)
+add_sycl_to_target(
+        TARGET PaleRealtimeViewer
+        SOURCES main.cpp)

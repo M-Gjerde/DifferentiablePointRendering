@@ -2432,7 +2432,7 @@ namespace Pale {
         return accumulatedDirectRadiance;
     }
 
-    /*
+
     struct PointSampledSceneHit {
         bool hit = false;
         bool isEmissive = false;
@@ -2484,7 +2484,7 @@ namespace Pale {
         return true;
     }
 
-    /*
+
     SYCL_EXTERNAL inline bool intersectBLASPointSampledGeometry(
         const Ray &rayWorld, const Ray &rayObject, uint32_t blasRangeIndex,
         const Transform &transform, const GPUSceneBuffers &scene,
@@ -2673,7 +2673,7 @@ namespace Pale {
         return true;
     }
 
-    /*
+
     SYCL_EXTERNAL inline bool intersectScenePointSampledGeometry(
         const Ray &rayWorld, const GPUSceneBuffers &scene,
         const PathTracerSettings &settings, PointSampledSceneHit &outHit) {
@@ -2792,7 +2792,7 @@ namespace Pale {
         return outHit.hit;
     }
 
-    /*
+
     SYCL_EXTERNAL inline float tracePointSampledShadowTransmissionToPoint(
         const GPUSceneBuffers &scene,
         const PathTracerSettings &settings,
@@ -2842,7 +2842,7 @@ namespace Pale {
         return transmission;
     }
 
-    /*
+
     SYCL_EXTERNAL inline float3 estimateDirectPointSampledAreaLight(
         const GPUSceneBuffers &scene,
         const PathTracerSettings &settings,

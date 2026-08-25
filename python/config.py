@@ -90,14 +90,14 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 1.0e-4
+    densification_grad_abs_min: float = 6.0e-4
+    densification_grad_abs_min_final: float = 1.25e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 10_000
+    densification_grad_abs_min_decay_end_iteration: int = 8_000
     densification_scale_min: float = 6.0e-3
-    densification_split_offset_scale: float = 0.3
-    densification_split_scale_factor: float = math.sqrt(2.0)
-    densification_exact_clone_percent_dense: float = 0.005
+    densification_split_offset_scale: float = 0.5
+    densification_split_scale_factor: float = math.sqrt(4.0)
+    densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
@@ -157,7 +157,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
     elif config.optimizer_type == "adam":
         factor_position = 0.0001
         factor_rotation = 0.001
-        factor_scale = 0.00008
+        factor_scale = 0.0001
         factor_albedo = 0.0015
         factor_opacity = 0.0005
         factor_beta = 0.002

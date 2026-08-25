@@ -172,7 +172,7 @@ namespace Pale {
                     ? 100.0f * static_cast<float>(photonMapCount) / static_cast<float>(photonCapacity)
                     : 0.0f;
 
-            if (percentFull < 99.0f) Log::PA_INFO("Photonmap is at {:.2f}% capacity", percentFull);
+            if (percentFull < 99.0f) Log::PA_DEBUG("Photonmap is at {:.2f}% capacity", percentFull);
             else {
                 Log::PA_ERROR("Photonmap is at {:.2f}% capacity", percentFull);
             }

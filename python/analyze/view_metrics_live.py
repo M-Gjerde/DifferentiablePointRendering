@@ -835,7 +835,22 @@ def optimization_status_text(dataframe: pd.DataFrame, latest_iteration: int) -> 
 
     average_iterations_per_second = None
     if total_time_sec is not None and total_time_sec > 0.0:
-        average_iterations_per_second = float(latest_iteration) / total_time_sec
+        run_start_iteration = None
+        if "iteration" in dataframe.columns and not dataframe.empty:
+            try:
+                iters = pd.to_numeric(dataframe["iteration"], errors="coerce")
+                iters = iters[np.isfinite(iters)]
+                if not iters.empty:
+                    run_start_iteration = int(np.min(iters))
+            except Exception:
+                run_start_iteration = None
+
+        if run_start_iteration is not None:
+            completed_iterations = max(0, int(latest_iteration) - int(run_start_iteration) + 1)
+            average_iterations_per_second = completed_iterations / float(total_time_sec)
+        else:
+            # Fallback: behave as before if we cannot infer the start iteration
+            average_iterations_per_second = float(latest_iteration) / float(total_time_sec)
 
     if average_iterations_per_second is not None and np.isfinite(average_iterations_per_second):
         parts.append(f"avg={average_iterations_per_second:.2f} it/s")
@@ -977,7 +992,7 @@ def draw_metrics_figure(
             f"{loss_column_name} over iterations\n"
             f"{title_run_name}\n"
             f"iter={latest_iteration} | "
-            f"{optimization_status_text(loss_dataframe, latest_iteration)}"
+            f"{optimization_status_text(dataframe, latest_iteration)}"
         )
         axis.grid(True)
 
@@ -1261,7 +1276,7 @@ def draw_metrics_figure(
         f"Live optimization metrics\n"
         f"{shorten_middle(metrics_csv_path.parent.name, max_chars=80)}\n"
         f"iter={latest_iteration} | loss rows={loss_row_count}{loss_average_text} | "
-        f"{optimization_status_text(loss_dataframe, latest_iteration)}"
+        f"{optimization_status_text(dataframe, latest_iteration)}"
         f"\npoints={point_count_history_label}"
     )
 

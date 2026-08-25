@@ -6,7 +6,7 @@ project(DifferentiablePointRendering
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # PIC everywhere python module thing
 set(BUILD_SHARED_LIBS OFF)               # prefer static vendors we control
@@ -49,6 +49,13 @@ set(KERNEL_SOURCES
         Pale/Renderer/Kernels/AdjointKernels.cpp
         Pale/Renderer/Kernels/PrimalKernels.cpp
         Pale/Renderer/Kernels/PostprocessKernel.cpp
+)
+
+set(PALE_ACPP_TARGETS "hip:gfx1100" CACHE STRING "AdaptiveCpp compilation targets")
+
+set_source_files_properties(${KERNEL_SOURCES} PROPERTIES
+        CXX_SCAN_FOR_MODULES OFF
+        SKIP_PRECOMPILE_HEADERS ON
 )
 
 set(ENGINE_SOURCES
@@ -139,7 +146,11 @@ target_include_directories(PaleLib
 )
 
 # Enable SYCL for the engine library (device code lives here)
-add_sycl_to_target(TARGET PaleLib)
+add_sycl_to_target(
+        TARGET PaleLib
+        TARGETS "${PALE_ACPP_TARGETS}"
+        SOURCES ${KERNEL_SOURCES}
+)
 
 # -------- Executable (main only) --------
 add_executable(${PROJECT_NAME} Pale/main.cpp)
@@ -152,7 +163,6 @@ target_compile_options(${PROJECT_NAME}
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE PaleLib)
 # If main.cpp itself submits SYCL (unlikely), also decorate the exe:
-add_sycl_to_target(TARGET ${PROJECT_NAME})
 
 # -------- Cleanup of old AdaptiveCpp caches --------
 set(ACPP_APP_BASE_DIR "$ENV{HOME}/.acpp/apps")
@@ -204,9 +214,6 @@ if (BUILD_PYBIND)
             $<$<CONFIG:Release>:-O3>
 
     )
-
-    # If the bindings submit SYCL, decorate the module as well
-    add_sycl_to_target(TARGET pale)
 
     # Produce 'pale.so' without 'lib' prefix or 'd' postfix
     set_target_properties(pale PROPERTIES

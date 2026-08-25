@@ -971,7 +971,7 @@ void launchPointSampledPathTracingCameraKernel(
     });
     queue.wait();
 }
-/*
+
 void generateNextRays(RenderPackage& pkg, uint32_t activeRayCount) {
     auto& queue = pkg.queue;
     auto& scene = pkg.scene;
