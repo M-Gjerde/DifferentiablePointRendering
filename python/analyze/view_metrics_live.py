@@ -364,6 +364,7 @@ def update_geometry_evaluation_state(
         seed: int,
         scale: float,
         use_vertices: bool,
+        metrics_dataframe: pd.DataFrame | None,
 ) -> bool:
     if state.run_dir != run_dir:
         state.run_dir = run_dir
@@ -417,8 +418,6 @@ def update_geometry_evaluation_state(
     )
 
     for iteration, mesh_path in eligible_checkpoints:
-        print()
-        print(f"Evaluating live CD: {run_dir.name} iter {iteration}", flush=True)
         set_random_seed(seed)
         reconstruction_points, reconstruction_sampling = load_points_from_ply(
             ply_path=mesh_path,
@@ -446,10 +445,56 @@ def update_geometry_evaluation_state(
             }
         )
         state.evaluated_iterations.add(iteration)
+
+        # Print concise stats only at each CD update: loss, CD, completion, accuracy, points (split)
+        loss_text = "n/a"
+        points_text = "n/a"
+        split_text = "n/a"
+        try:
+            if metrics_dataframe is not None and "iteration" in metrics_dataframe.columns:
+                row_df = metrics_dataframe.loc[
+                    metrics_dataframe["iteration"].astype(np.int64) == int(iteration)
+                ]
+                if not row_df.empty:
+                    # Loss selection (prefer total mean, then RGB mean, else first available from selection logic)
+                    try:
+                        loss_column = select_loss_column(metrics_dataframe, explicit_loss_column=None)
+                    except Exception:
+                        loss_column = None
+                    if loss_column is not None and loss_column in row_df.columns:
+                        loss_val = pd.to_numeric(row_df[loss_column].iloc[-1], errors="coerce")
+                        if np.isfinite(loss_val):
+                            loss_text = f"{float(loss_val):.6g}"
+
+                    # Point count (prefer num_points, then point_count)
+                    for pc_name in ("num_points", "point_count"):
+                        if pc_name in row_df.columns:
+                            pc_val = pd.to_numeric(row_df[pc_name].iloc[-1], errors="coerce")
+                            if np.isfinite(pc_val):
+                                points_text = f"{int(pc_val)}"
+                                break
+
+                    # Split count (prefer total, then active, then per-iter events)
+                    for sc in ("densification_split_points_total",
+                               "densification_split_points_active",
+                               "densification_split_points"):
+                        if sc in row_df.columns:
+                            sv = pd.to_numeric(row_df[sc].iloc[-1], errors="coerce")
+                            if np.isfinite(sv):
+                                try:
+                                    split_text = f"{int(sv)}"
+                                except Exception:
+                                    split_text = f"{float(sv):.6g}"
+                                break
+        except Exception:
+            pass
+
         print(
-            f"Live CD: iter={iteration} CD={float(metrics['cd']):.6g} "
-            f"Accuracy={float(metrics['accuracy']):.6g} "
-            f"Completion={float(metrics['completion']):.6g}",
+            f"loss={loss_text} | "
+            f"CD={float(metrics['cd']):.6g} | "
+            f"completion={float(metrics['completion']):.6g} | "
+            f"accuracy={float(metrics['accuracy']):.6g} | "
+            f"points={points_text} (split={split_text})",
             flush=True,
         )
 
@@ -1441,6 +1486,7 @@ def main() -> None:
                             seed=args.geometry_seed,
                             scale=args.geometry_scale,
                             use_vertices=args.geometry_use_vertices,
+                            metrics_dataframe=geometry_dataframe,
                         )
                 except ValueError:
                     pass
@@ -1466,31 +1512,6 @@ def main() -> None:
                 if args.save_plot:
                     output_png_path = run_dir / args.loss_output_name
                     figure.savefig(output_png_path, dpi=200)
-
-                latest_iteration = "unknown"
-
-                try:
-                    prepared_dataframe = prepare_metrics_dataframe(
-                        dataframe=previous_dataframe,
-                        from_iteration=args.from_iteration,
-                        last_iterations=args.iterations,
-                        skip_opacity_reset_noise=args.skip,
-                    )
-
-                    if not prepared_dataframe.empty:
-                        latest_iteration = str(
-                            int(prepared_dataframe["iteration"].iloc[-1])
-                        )
-                except Exception:
-                    pass
-
-                print(
-                    f"\rUpdated live plot | iteration={latest_iteration} | "
-                    f"CD points={len(geometry_state.rows)} | "
-                    f"columns={plotted_columns}",
-                    end="",
-                    flush=True,
-                )
 
             plt.pause(args.refresh_seconds)
 
