@@ -432,12 +432,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     optimizer = create_masked_optimizer(config, positions, rotation_delta, scales, albedos, opacities, betas, powers)
     learning_rate_schedules = create_learning_rate_schedules(config)
-    active_learning_rates = update_optimizer_learning_rates(optimizer, learning_rate_schedules, 0)
+    resume_iteration_offset = max(0, int(getattr(config, "resume_iteration_offset", 0)))
+    final_global_iteration = resume_iteration_offset + int(config.iterations)
+    if resume_iteration_offset > 0:
+        print(
+            "[checkpoint] Continuing iteration-dependent schedules from "
+            f"iteration {resume_iteration_offset}; this run will end at "
+            f"global iteration {final_global_iteration}."
+        )
+    active_learning_rates = update_optimizer_learning_rates(
+        optimizer,
+        learning_rate_schedules,
+        resume_iteration_offset,
+    )
 
     initial_images = renderer.render_forward()
     initial_depth_distortion_weight = scheduled_regularizer_weight(
         depth_distortion_base_weight,
-        iteration=0,
+        iteration=resume_iteration_offset,
         start_iteration=depth_distortion_start_iteration,
     )
 
@@ -548,23 +560,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         try:
             for iteration in range(1, config.iterations + 1):
                 iteration_start = time.perf_counter()
+                global_iteration = resume_iteration_offset + iteration
 
                 active_training_camera_ids = select_active_training_camera_ids(
                     training_camera_ids=training_camera_ids,
-                    iteration=iteration,
+                    iteration=global_iteration,
                     config=config,
                 )
 
                 active_depth_distortion_weight = scheduled_regularizer_weight(
                     depth_distortion_base_weight,
-                    iteration=iteration,
+                    iteration=global_iteration,
                     start_iteration=depth_distortion_start_iteration,
                 )
                 active_opacity_prior_weight = opacity_prior_weight
                 active_densification_grad_abs_min = scheduled_densification_grad_abs_min(
                     initial_threshold=densification_grad_abs_min,
                     final_threshold=densification_grad_abs_min_final,
-                    iteration=iteration,
+                    iteration=global_iteration,
                     start_iteration=densification_grad_abs_min_decay_start_iteration,
                     end_iteration=densification_grad_abs_min_decay_end_iteration,
                 )
@@ -574,7 +587,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     active_learning_rates = update_optimizer_learning_rates(
                         optimizer,
                         learning_rate_schedules,
-                        iteration,
+                        global_iteration,
                     )
                     active_camera_name = active_camera_name_for_iteration(
                         active_training_camera_ids,
@@ -674,7 +687,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         None,
                     )
                     update_densification_statistics(
-                        iteration=iteration,
+                        iteration=global_iteration,
                         densification_interval=densification_interval,
                         densification_stats_skip_iterations=densification_stats_skip_iterations,
                         densify_position_grad_accum_np=densify_position_grad_accum_np,
@@ -689,31 +702,34 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
                     )
 
-                    scheduled_opacity_reset = reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0
+                    scheduled_opacity_reset = (
+                            reset_opacity_interval > 0
+                            and global_iteration % reset_opacity_interval == 0
+                    )
                     manual_opacity_reset = bool(config.reset_opacity_iterations)
                     did_reset_opacity = scheduled_opacity_reset or manual_opacity_reset
 
                     if did_reset_opacity:
                         renderer.reset_trainable_opacity_on_gpu(float(reset_opacity_value))
-                        print(f"[Iter {iteration:04d}] Resetting all opacities to {reset_opacity_value}")
+                        print(f"[Iter {global_iteration:04d}] Resetting all opacities to {reset_opacity_value}")
                         config.reset_opacity_iterations = False
 
                     should_check_densification = (
                             not did_reset_opacity
                             and densification_interval > 0
-                            and iteration >= densify_after
-                            and iteration % densification_interval == 0
+                            and global_iteration >= densify_after
+                            and global_iteration % densification_interval == 0
                     )
                     should_check_prune = (
                             not did_reset_opacity
                             and prune_interval > 0
-                            and iteration >= prune_after
-                            and iteration % prune_interval == 0
+                            and global_iteration >= prune_after
+                            and global_iteration % prune_interval == 0
                     )
                     should_check_inactive_prune = (
                             not did_reset_opacity
                             and camera_cycle_complete
-                            and iteration >= prune_after
+                            and global_iteration >= prune_after
                             and inactive_gradient_prune_cycles > 0
                     )
                     if (
@@ -748,7 +764,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     if not did_reset_opacity:
                         if should_check_densification:
                             densification_result = maybe_make_densification_result(
-                                iteration=iteration, config=config, positions=positions, rotations=rotations,
+                                iteration=global_iteration, config=config, positions=positions, rotations=rotations,
                                 scales=scales, albedos=albedos, opacities=opacities,
                                 betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
                                 densify_position_grad_accum_np=densify_position_grad_accum_np,
@@ -763,7 +779,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                         if should_check_prune:
                             scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
-                                iteration=iteration, config=config, scales=scales, opacities=opacities,
+                                iteration=global_iteration, config=config, scales=scales, opacities=opacities,
                                 trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
                                 prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
                                 opacity_prune_threshold=opacity_prune_threshold,
@@ -787,7 +803,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             if inactive_camera_cycle_indices.size > 0:
                                 indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
                     else:
-                        print(f"[Iter {iteration:04d}] Skipping densification/pruning due to opacity reset")
+                        print(f"[Iter {global_iteration:04d}] Skipping densification/pruning due to opacity reset")
 
                     if indices_to_remove_list or densification_result is not None:
                         old_point_count_for_topology = int(positions.shape[0])
@@ -836,7 +852,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                             if config.densification_verbose:
                                 print(
-                                    f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
+                                    f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                     f"scale={len(scale_prune_set)}, "
                                     f"opacity={len(opacity_prune_set)}, "
                                     f"inactive_gradient={len(inactive_cycle_prune_set)} "
@@ -945,7 +961,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         active_learning_rates = update_optimizer_learning_rates(
                             optimizer,
                             learning_rate_schedules,
-                            iteration,
+                            global_iteration,
                         )
                         trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
                         frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
@@ -955,7 +971,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
                         visited_training_camera_ids_this_cycle.clear()
 
-                    if densification_interval > 0 and iteration >= densify_after and iteration % densification_interval == 0:
+                    if (
+                            densification_interval > 0
+                            and global_iteration >= densify_after
+                            and global_iteration % densification_interval == 0
+                    ):
                         densify_position_grad_accum_np[:] = 0.0
                         densify_position_grad_denom_np[:] = 0.0
                         densify_position_grad_vector_accum_np[:] = 0.0
@@ -972,7 +992,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     save_interval = int(config.save_interval)
                     should_save_iteration_outputs = (
                             save_interval > 0 and (
-                            iteration % save_interval == 0 or iteration == config.iterations)
+                            global_iteration % save_interval == 0 or iteration == config.iterations)
                     )
 
                     if should_save_iteration_outputs:
@@ -988,9 +1008,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                         save_iteration_outputs(
                             output_dir=config.output_dir,
-                            iteration=iteration,
+                            iteration=global_iteration,
                             save_interval=config.save_interval,
-                            final_iteration=config.iterations,
+                            final_iteration=final_global_iteration,
                             all_camera_ids=all_camera_ids,
                             forward_out=save_forward_out,
                             adjoint_images=snapshot_adjoint_images,
@@ -1006,10 +1026,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     iteration_point_cloud_path = None
                     should_extract_mesh_checkpoint = (
                             mesh_extraction_interval > 0
-                            and iteration % mesh_extraction_interval == 0
+                            and global_iteration % mesh_extraction_interval == 0
                     )
                     needs_parameter_snapshot = (
-                            (save_ply_files_interval > 0 and iteration % save_ply_files_interval == 0)
+                            (save_ply_files_interval > 0 and global_iteration % save_ply_files_interval == 0)
                             or should_extract_mesh_checkpoint
                     )
                     if needs_parameter_snapshot:
@@ -1031,10 +1051,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             trainable_surfel_mask=trainable_surfel_mask,
                         )
 
-                    if save_ply_files_interval > 0 and iteration % save_ply_files_interval == 0:
+                    if save_ply_files_interval > 0 and global_iteration % save_ply_files_interval == 0:
                         iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
                             config.output_dir,
-                            iteration,
+                            global_iteration,
                             positions,
                             rotations,
                             scales,
@@ -1048,7 +1068,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         if iteration_point_cloud_path is None:
                             iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
                                 config.output_dir,
-                                iteration,
+                                global_iteration,
                                 positions,
                                 rotations,
                                 scales,
@@ -1057,7 +1077,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 betas,
                                 powers,
                             )
-                        extract_mesh_checkpoint(config, iteration, iteration_point_cloud_path)
+                        extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
 
                     num_points = int(positions.shape[0])
                     iteration_end = time.perf_counter()
@@ -1083,7 +1103,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     csv_writer.writerow(
                         [
-                            iteration,
+                            global_iteration,
                             active_camera_name,
                             len(active_training_camera_ids),
                             averaged_loss_state["loss_metric_camera_count"],
@@ -1128,10 +1148,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         last_log_time = iteration_end
 
                         lr_position = active_learning_rates.get("position", float(config.learning_rate_position))
+                        exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
+                            config=config,
+                            positions=positions,
+                        )
+                        minimum_splittable_scale = minimum_splittable_scale_for_config(config)
                         print(
                             format_training_iteration_log(
-                                iteration=iteration,
-                                total_iterations=config.iterations,
+                                iteration=global_iteration,
+                                total_iterations=final_global_iteration,
                                 iteration_time=iteration_time,
                                 iteration_rate=iteration_rate,
                                 total_time=total_time,
@@ -1140,7 +1165,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 lr_position=lr_position,
                                 active_densification_grad_abs_min=active_densification_grad_abs_min,
                                 active_depth_distortion_weight=active_depth_distortion_weight,
+                                active_normal_consistency_weight=normal_consistency_weight,
                                 active_opacity_prior_weight=active_opacity_prior_weight,
+                                exact_clone_scale_threshold=exact_clone_scale_threshold,
+                                minimum_splittable_scale=minimum_splittable_scale,
                                 grad_pos_rms=0.0,
                                 grad_rotation_rms=0.0,
                                 grad_scale_rms=0.0,
@@ -1170,7 +1198,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             manual_points_path = save_manual_snapshot(
                                 renderer,
                                 config.output_dir,
-                                iteration,
+                                global_iteration,
                                 positions,
                                 rotations,
                                 scales,
@@ -1180,7 +1208,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 powers,
                                 training_camera_ids,
                             )
-                            extract_mesh_checkpoint(config, iteration, manual_points_path)
+                            extract_mesh_checkpoint(config, global_iteration, manual_points_path)
                         elif hotkey == "g":
                             print(
                                 "[device-training-step] Gradient snapshot skipped; host gradients were not downloaded.")
@@ -1192,7 +1220,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     active_training_camera_ids=active_training_camera_ids,
                     latest_loss_values_by_camera=latest_loss_values_by_camera,
                     training_camera_ids=training_camera_ids,
-                    iteration=iteration,
+                    iteration=global_iteration,
                     one_camera_per_iteration=config.one_camera_per_iteration,
                     use_depth_distortion_gradients=use_depth_distortion_gradients,
                     use_depth_distortion=use_depth_distortion,
@@ -1267,7 +1295,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     None,
                 )
                 update_densification_statistics(
-                    iteration=iteration,
+                    iteration=global_iteration,
                     densification_interval=densification_interval,
                     densification_stats_skip_iterations=densification_stats_skip_iterations,
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
@@ -1295,7 +1323,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     grad_albedos_np, grad_opacities_np, grad_betas_np,
                 )
 
-                active_learning_rates = update_optimizer_learning_rates(optimizer, learning_rate_schedules, iteration)
+                active_learning_rates = update_optimizer_learning_rates(
+                    optimizer,
+                    learning_rate_schedules,
+                    global_iteration,
+                )
                 optimizer.step()
                 apply_local_rotation_update_to_quaternions_inplace(
                     rotations,
@@ -1304,7 +1336,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     max_rotation_step_radians=float(config.max_rotation_step_radians),
                 )
 
-                scheduled_opacity_reset = reset_opacity_interval > 0 and iteration % reset_opacity_interval == 0
+                scheduled_opacity_reset = (
+                        reset_opacity_interval > 0
+                        and global_iteration % reset_opacity_interval == 0
+                )
                 manual_opacity_reset = bool(config.reset_opacity_iterations)
                 did_reset_opacity = scheduled_opacity_reset or manual_opacity_reset
 
@@ -1312,14 +1347,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     with torch.no_grad():
                         opacities[trainable_surfel_mask] = float(reset_opacity_value)
 
-                    print(f"[Iter {iteration:04d}] Resetting all opacities to {reset_opacity_value}")
+                    print(f"[Iter {global_iteration:04d}] Resetting all opacities to {reset_opacity_value}")
                     config.reset_opacity_iterations = False
 
                 verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
                                           trainable_surfel_mask=trainable_surfel_mask)
                 apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
 
-                if iteration % rebuild_bvh_interval == 0:
+                if global_iteration % rebuild_bvh_interval == 0:
                     rebuild_bvh(renderer)
 
                 densification_result = None
@@ -1329,7 +1364,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 if not did_reset_opacity:
                     densification_result = maybe_make_densification_result(
-                        iteration=iteration, config=config, positions=positions, rotations=rotations, scales=scales,
+                        iteration=global_iteration, config=config, positions=positions, rotations=rotations, scales=scales,
                         albedos=albedos, opacities=opacities,
                         betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
                         densify_position_grad_accum_np=densify_position_grad_accum_np,
@@ -1342,14 +1377,18 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     )
 
                     scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
-                        iteration=iteration, config=config, scales=scales, opacities=opacities,
+                        iteration=global_iteration, config=config, scales=scales, opacities=opacities,
                         trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
                         prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
                         opacity_prune_threshold=opacity_prune_threshold, max_prune_fraction=max_prune_fraction,
                     )
 
                     inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
-                    if (camera_cycle_complete and iteration >= prune_after and inactive_gradient_prune_cycles > 0):
+                    if (
+                            camera_cycle_complete
+                            and global_iteration >= prune_after
+                            and inactive_gradient_prune_cycles > 0
+                    ):
                         trainable_surfel_mask_np = (
                             trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
                         active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
@@ -1369,7 +1408,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         if inactive_camera_cycle_indices.size > 0:
                             indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
                 else:
-                    print(f"[Iter {iteration:04d}] Skipping densification/pruning due to opacity reset")
+                    print(f"[Iter {global_iteration:04d}] Skipping densification/pruning due to opacity reset")
 
                 if indices_to_remove_list or densification_result is not None:
                     old_params_for_optimizer = make_named_parameter_dict(positions, rotation_delta, scales, albedos,
@@ -1404,7 +1443,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
                         if config.densification_verbose:
                             print(
-                                f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
+                                f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                 f"scale={len(scale_prune_set)}, "
                                 f"opacity={len(opacity_prune_set)}, "
                                 f"inactive_gradient={len(inactive_cycle_prune_set)} "
@@ -1496,8 +1535,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         copy_source_state_to_new=False,
                     )
 
-                    active_learning_rates = update_optimizer_learning_rates(optimizer, learning_rate_schedules,
-                                                                            iteration)
+                    active_learning_rates = update_optimizer_learning_rates(
+                        optimizer,
+                        learning_rate_schedules,
+                        global_iteration,
+                    )
                     trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
                     frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
                     #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
@@ -1506,14 +1548,20 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
                     visited_training_camera_ids_this_cycle.clear()
 
-                if densification_interval > 0 and iteration >= densify_after and iteration % densification_interval == 0:
+                if (
+                        densification_interval > 0
+                        and global_iteration >= densify_after
+                        and global_iteration % densification_interval == 0
+                ):
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
                     densify_position_grad_vector_accum_np[:] = 0.0
 
                 save_interval = int(config.save_interval)
                 should_save_iteration_outputs = (
-                        save_interval > 0 and (iteration % save_interval == 0 or iteration == config.iterations))
+                        save_interval > 0
+                        and (global_iteration % save_interval == 0 or iteration == config.iterations)
+                )
 
                 if should_save_iteration_outputs:
                     if forward_out is None or config.one_camera_per_iteration or config.save_snapshot_grad:
@@ -1532,9 +1580,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     save_iteration_outputs(
                         output_dir=config.output_dir,
-                        iteration=iteration,
+                        iteration=global_iteration,
                         save_interval=config.save_interval,
-                        final_iteration=config.iterations,
+                        final_iteration=final_global_iteration,
                         all_camera_ids=all_camera_ids,
                         forward_out=save_forward_out,
                         adjoint_images=snapshot_adjoint_images,
@@ -1550,13 +1598,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 iteration_point_cloud_path = None
                 should_extract_mesh_checkpoint = (
                         mesh_extraction_interval > 0
-                        and iteration % mesh_extraction_interval == 0
+                        and global_iteration % mesh_extraction_interval == 0
                 )
 
-                if save_ply_files_interval > 0 and iteration % save_ply_files_interval == 0:
+                if save_ply_files_interval > 0 and global_iteration % save_ply_files_interval == 0:
                     iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
                         config.output_dir,
-                        iteration,
+                        global_iteration,
                         positions,
                         rotations,
                         scales,
@@ -1570,7 +1618,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     if iteration_point_cloud_path is None:
                         iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
                             config.output_dir,
-                            iteration,
+                            global_iteration,
                             positions,
                             rotations,
                             scales,
@@ -1580,7 +1628,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             powers,
                         )
 
-                    extract_mesh_checkpoint(config, iteration, iteration_point_cloud_path)
+                    extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
 
                 num_points = positions.shape[0]
                 iteration_end = time.perf_counter()
@@ -1606,7 +1654,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 csv_writer.writerow(
                     [
-                        iteration,
+                        global_iteration,
                         active_camera_name,
                         len(active_training_camera_ids),
                         averaged_loss_state["loss_metric_camera_count"],
@@ -1672,10 +1720,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         else {}
                     )
 
+                    exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
+                        config=config,
+                        positions=positions,
+                    )
+                    minimum_splittable_scale = minimum_splittable_scale_for_config(config)
                     print(
                         format_training_iteration_log(
-                            iteration=iteration,
-                            total_iterations=config.iterations,
+                            iteration=global_iteration,
+                            total_iterations=final_global_iteration,
                             iteration_time=iteration_time,
                             iteration_rate=iteration_rate,
                             total_time=total_time,
@@ -1684,7 +1737,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             lr_position=lr_position,
                             active_densification_grad_abs_min=active_densification_grad_abs_min,
                             active_depth_distortion_weight=active_depth_distortion_weight,
+                            active_normal_consistency_weight=normal_consistency_weight,
                             active_opacity_prior_weight=active_opacity_prior_weight,
+                            exact_clone_scale_threshold=exact_clone_scale_threshold,
+                            minimum_splittable_scale=minimum_splittable_scale,
                             grad_pos_rms=grad_pos_rms,
                             grad_rotation_rms=grad_rotation_rms,
                             grad_scale_rms=grad_scale_rms,
@@ -1725,7 +1781,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         manual_points_path = save_manual_snapshot(
                             renderer,
                             config.output_dir,
-                            iteration,
+                            global_iteration,
                             positions,
                             rotations,
                             scales,
@@ -1735,16 +1791,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             powers,
                             training_camera_ids,
                         )
-                        extract_mesh_checkpoint(config, iteration, manual_points_path)
+                        extract_mesh_checkpoint(config, global_iteration, manual_points_path)
                     elif hotkey == "g":
-                        save_gradients_snapshot(config.output_dir, iteration, grad_position_np, grad_rotation_np,
+                        save_gradients_snapshot(config.output_dir, global_iteration, grad_position_np, grad_rotation_np,
                                                 grad_scales_np, grad_albedos_np, grad_opacities_np,
                                                 grad_betas_np)
 
         except KeyboardInterrupt:
             elapsed = time.perf_counter() - total_start_time
+            stopped_global_iteration = resume_iteration_offset + int(iteration)
             print(
-                f"\nCtrl+C detected at iteration {iteration:04d}. "
+                f"\nCtrl+C detected at iteration {stopped_global_iteration:04d}. "
                 f"Total elapsed time: {elapsed:.1f} s. "
                 "Stopping optimization loop and saving current result..."
             )
@@ -1769,7 +1826,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     final_depth_distortion_weight = scheduled_regularizer_weight(
         depth_distortion_base_weight,
-        iteration=iteration,
+        iteration=resume_iteration_offset + int(iteration),
         start_iteration=depth_distortion_start_iteration,
     )
 

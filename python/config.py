@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 6
+    adjoint_passes: int = 3
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -53,13 +54,14 @@ class OptimizationConfig:
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
     checkpoint: Path | None = None
+    resume_iteration_offset: int = 0
 
     device: str = "cpu"
 
     iterations: int = int(10.0e4)
     optimizer_type: str = "adam"
     # Learning rates
-    learning_rate: float = 1.0
+    learning_rate: float = 5.0
     learning_rate_position: float | None = None
     learning_rate_rotation: float | None = None
     max_rotation_step_radians: float = 0.01
@@ -70,13 +72,13 @@ class OptimizationConfig:
     # Global LR scheduling
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 5.0
-    global_lr_scale_final: float = 2.0
+    global_lr_scale_final: float = 1.0
     global_lr_start_iteration: int = 0
     global_lr_max_steps: int = int(1.0e4)
 
     depth_distort_weight: float = 1.0e3
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.015
+    normal_consistency_weight: float = 0.05
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
 
@@ -89,13 +91,13 @@ class OptimizationConfig:
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 2.5e-4
+    densification_grad_abs_min_final: float = 1.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 5_000
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.3
     densification_split_scale_factor: float = math.sqrt(2.0)
-    densification_exact_clone_percent_dense: float = 0.003
+    densification_exact_clone_percent_dense: float = 0.004
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
@@ -204,6 +206,43 @@ def _checkpoint_config_value(run_config: dict, key: str):
     return None
 
 
+def _last_metrics_iteration(checkpoint_dir: Path) -> int | None:
+    metrics_csv_path = checkpoint_dir / "metrics.csv"
+    if not metrics_csv_path.is_file():
+        return None
+
+    last_iteration: int | None = None
+    with metrics_csv_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        for row in csv.DictReader(metrics_file):
+            value = row.get("iteration")
+            if value is None:
+                continue
+            try:
+                last_iteration = max(last_iteration or 0, int(float(value)))
+            except ValueError:
+                continue
+
+    return last_iteration
+
+
+def _checkpoint_resume_iteration_offset(checkpoint_dir: Path, run_config: dict) -> int:
+    last_metrics_iteration = _last_metrics_iteration(checkpoint_dir)
+    if last_metrics_iteration is not None:
+        return max(0, int(last_metrics_iteration))
+
+    configured_iterations = _checkpoint_config_value(run_config, "iterations")
+    if configured_iterations is None:
+        return 0
+
+    try:
+        prior_offset = _checkpoint_config_value(run_config, "resume_iteration_offset")
+        if prior_offset is None:
+            prior_offset = 0
+        return max(0, int(prior_offset) + int(configured_iterations))
+    except (TypeError, ValueError):
+        return 0
+
+
 def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) -> None:
     if config.checkpoint is None:
         return
@@ -239,11 +278,17 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
     config.checkpoint = checkpoint_dir
     config.pointcloud_ply = str(checkpoint_points_path)
     config.pointcloud_ply_is_explicit = True
+    if "resume_iteration_offset" not in cli_overrides:
+        config.resume_iteration_offset = _checkpoint_resume_iteration_offset(
+            checkpoint_dir=checkpoint_dir,
+            run_config=run_config,
+        )
 
     print(f"[checkpoint] Run directory       : {checkpoint_dir}")
     print(f"[checkpoint] Scene XML           : {config.scene_xml}")
     print(f"[checkpoint] Dataset path        : {config.dataset_path}")
     print(f"[checkpoint] Initial point cloud : {checkpoint_points_path}")
+    print(f"[checkpoint] Resume iteration   : {config.resume_iteration_offset}")
 
 
 def parse_args() -> OptimizationConfig:
@@ -283,6 +328,15 @@ def parse_args() -> OptimizationConfig:
             "Prior optimization run directory. Reuses scene/dataset/assets from "
             "<checkpoint>/run_config.json and uses <checkpoint>/points_final.ply "
             "as this run's initial point cloud."
+        ),
+    )
+    parser.add_argument(
+        "--resume-iteration-offset",
+        type=int,
+        help=(
+            "Global iteration offset for resumed schedules. Defaults to the "
+            "checkpoint metrics.csv max iteration, falling back to the "
+            "checkpoint run_config iterations."
         ),
     )
     parser.add_argument("--device", type=str)

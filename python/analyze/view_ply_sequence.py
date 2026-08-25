@@ -543,8 +543,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--color-boost-step", type=float, default=0.5, help="Amount added/subtracted from color boost when pressing +/-.")
     parser.add_argument("--navigation-repeat-seconds", type=float, default=0.15, help="Repeat delay for held left/right navigation keys.")
     parser.add_argument("--normal-length", type=float, default=0.0, help="Length of displayed normal vectors. If <= 0, use 2 * median max(su, sv).")
-    parser.add_argument("--show-normals", action="store_true", help="Show surfel normals at startup. Press N in the viewer to toggle.")
-    parser.add_argument("--normal-neighbor-count", type=int, default=32, help="Number of nearest surfels used when pressing F or M to correct isolated normal flips.")
+    parser.add_argument("--show-normals", action="store_true", help="Show surfel normals at startup. Press Shift+N in the viewer to toggle.")
+    parser.add_argument("--normal-neighbor-count", type=int, default=32, help="Number of nearest surfels used when pressing F or Shift+M to correct isolated normal flips.")
     parser.add_argument("--normal-flip-threshold", type=float, default=0.0, help="Flip a normal when its local neighborhood alignment is below -threshold.")
 
     return parser.parse_args()
@@ -593,6 +593,7 @@ def main() -> None:
     pressed_keys: set[str] = set()
     last_navigation_action_time = 0.0
     navigation_repeat_seconds = max(float(args.navigation_repeat_seconds), 0.01)
+    navigation_skip_count = 10
 
     if use_explicit_ply:
         print(f"Using PLY file: {ply_paths[0]}")
@@ -601,8 +602,9 @@ def main() -> None:
     print(f"Found {len(ply_paths)} PLY files.")
     print(
         "Controls: Right/Left arrow = refresh + next/previous PLY, Home/End = refresh + first/last, "
+        "n/m = skip 10 PLYs forward/back, "
         "+/- = color boost, [/] or PageDown/PageUp = surfel scale, slider = surfel scale, "
-        "S = toggle solid/file opacity, N = toggle normals, F/M = correct isolated normal flips, "
+        "S = toggle solid/file opacity, Shift+N = toggle normals, F/Shift+M = correct isolated normal flips, "
         "R = reload current, Q/Escape = quit"
     )
 
@@ -933,6 +935,18 @@ def main() -> None:
             load_current_index()
             return
 
+        if action == "skip_next":
+            refresh_ply_file_list_preserving_current()
+            current_index = (current_index + navigation_skip_count) % len(ply_paths)
+            load_current_index()
+            return
+
+        if action == "skip_previous":
+            refresh_ply_file_list_preserving_current()
+            current_index = (current_index - navigation_skip_count) % len(ply_paths)
+            load_current_index()
+            return
+
         if action == "first":
             refresh_ply_file_list_preserving_current()
             current_index = 0
@@ -1045,11 +1059,19 @@ def main() -> None:
             queue_action("toggle_solid")
             return
 
-        if key_symbol in ("n", "N"):
+        if key_symbol == "n":
+            queue_action("skip_next")
+            return
+
+        if key_symbol == "m":
+            queue_action("skip_previous")
+            return
+
+        if key_symbol == "N":
             queue_action("toggle_normals")
             return
 
-        if key_symbol in ("f", "F", "m", "M"):
+        if key_symbol in ("f", "F", "M"):
             queue_action("toggle_normal_correction")
             return
 

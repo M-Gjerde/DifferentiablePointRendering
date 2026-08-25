@@ -659,6 +659,48 @@ def scheduled_densification_grad_abs_min(
     return initial_threshold + t * (final_threshold - initial_threshold)
 
 
+def densification_scene_extent_for_positions(
+        config: OptimizationConfig,
+        positions,
+) -> float:
+    scene_extent = float(getattr(config, "densification_scene_extent", 0.0))
+    if scene_extent > 0.0:
+        return scene_extent
+
+    positions_np = positions.detach().cpu().numpy()
+    if positions_np.size > 0:
+        scene_extent = float(np.max(np.ptp(positions_np, axis=0)))
+    else:
+        scene_extent = 1.0
+
+    return max(scene_extent, 1.0e-6)
+
+
+def exact_clone_scale_threshold_for_positions(
+        config: OptimizationConfig,
+        positions,
+) -> float:
+    exact_clone_percent_dense = float(
+        getattr(config, "densification_exact_clone_percent_dense", 0.0)
+    )
+    if exact_clone_percent_dense <= 0.0:
+        return 0.0
+
+    return exact_clone_percent_dense * densification_scene_extent_for_positions(
+        config=config,
+        positions=positions,
+    )
+
+
+def minimum_splittable_scale_for_config(config: OptimizationConfig) -> float:
+    split_scale_factor = max(
+        float(getattr(config, "densification_split_scale_factor", math.sqrt(2.0))),
+        1.0,
+    )
+    min_clone_scale = float(getattr(config, "densification_scale_min", 8.0e-3))
+    return min_clone_scale * split_scale_factor * (1.0 + 1.0e-4)
+
+
 def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
@@ -730,7 +772,10 @@ def format_training_iteration_log(
         lr_position: float,
         active_densification_grad_abs_min: float,
         active_depth_distortion_weight: float,
+        active_normal_consistency_weight: float,
         active_opacity_prior_weight: float,
+        exact_clone_scale_threshold: float,
+        minimum_splittable_scale: float,
         grad_pos_rms: float,
         grad_rotation_rms: float,
         grad_scale_rms: float,
@@ -751,12 +796,15 @@ def format_training_iteration_log(
         f"\n[Iter {iteration:04d}/{total_iterations}] "
         f"time={iteration_time:.3f}s total={total_time:.1f}s "
         f"it/s={iteration_rate:.2f} pts={num_points} "
-        f"adaptive_lr_pos={lr_position} densify_thr={active_densification_grad_abs_min:.3e}\n"
+        f"adaptive_lr_pos={lr_position} densify_thr={active_densification_grad_abs_min:.3e} "
+        f"depth_active_w={active_depth_distortion_weight:.3e} "
+        f"normal_active_w={active_normal_consistency_weight:.3e} "
+        f"clone_only_max_scale={exact_clone_scale_threshold:.3e} "
+        f"split_min_scale={minimum_splittable_scale:.3e}\n"
         f"  losses_mean[{loss_camera_count}/{loss_camera_expected_count} cameras]:"
         f" rgb={loss_state['total_rgb_loss_value']:.3e}"
         f" depth_raw={loss_state['total_depth_distortion_loss_raw']:.3e}"
         f" depth_w={loss_state['total_depth_distortion_loss_weighted']:.3e}"
-        f" depth_active_w={active_depth_distortion_weight:.3e}"
         f" normal_raw={loss_state['total_normal_loss_raw']:.3e}"
         f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
         f" opacity_raw={loss_state['total_opacity_prior_loss_raw']:.3e}"
@@ -1748,19 +1796,13 @@ def maybe_make_densification_result(
 
         grad_threshold = float("nan")
         grad_quantile_threshold = float("nan")
-        scene_extent = float(getattr(config, "densification_scene_extent", 0.0))
-        if scene_extent <= 0.0:
-            positions_np = positions.detach().cpu().numpy()
-            if positions_np.size > 0:
-                scene_extent = float(np.max(np.ptp(positions_np, axis=0)))
-            else:
-                scene_extent = 1.0
-            scene_extent = max(scene_extent, 1.0e-6)
-        exact_clone_percent_dense = float(getattr(config, "densification_exact_clone_percent_dense", 0.0))
-        exact_clone_scale_threshold = (
-            exact_clone_percent_dense * scene_extent
-            if exact_clone_percent_dense > 0.0
-            else 0.0
+        scene_extent = densification_scene_extent_for_positions(
+            config=config,
+            positions=positions,
+        )
+        exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
+            config=config,
+            positions=positions,
         )
         split_offset_scale = float(getattr(config, "densification_split_offset_scale", 0.3))
 

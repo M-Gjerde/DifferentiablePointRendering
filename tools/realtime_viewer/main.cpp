@@ -60,6 +60,7 @@ namespace {
     constexpr uint32_t kDefaultViewportImageExtent = 500u;
     constexpr float kSidebarDockFraction = 0.50f;
     constexpr std::size_t kFrameTimeHistoryCapacity = 240u;
+    constexpr int kSnapshotFastStep = 25;
 
     struct AppArgs {
         std::filesystem::path assetsDir = PALE_DEFAULT_ASSET_DIR;
@@ -2191,9 +2192,16 @@ int main(int argc, char** argv) {
             }
         };
 
-        auto stepLatestOptimizationSnapshot = [&](int direction) {
+        auto stepLatestOptimizationSnapshot = [&](int offset) {
+            if (offset == 0) {
+                return;
+            }
+            const int direction = offset < 0 ? -1 : 1;
+            const std::size_t stepCount =
+                offset < 0 ? static_cast<std::size_t>(-offset) : static_cast<std::size_t>(offset);
+
             if (!latestOptimizationMode || latestOptimizationPointsDirectory.empty()) {
-                pointCloudStatus = "Press R or Load latest run PLY before using left/right snapshot navigation";
+                pointCloudStatus = "Press R or Load latest run PLY before using snapshot navigation";
                 return;
             }
 
@@ -2275,7 +2283,9 @@ int main(int argc, char** argv) {
             }
 
             const std::size_t nextIndex =
-                direction < 0 ? currentIndex - 1u : currentIndex + 1u;
+                direction < 0
+                    ? (currentIndex > stepCount ? currentIndex - stepCount : 0u)
+                    : std::min(currentIndex + stepCount, snapshots.size() - 1u);
             const std::filesystem::path nextPath = snapshots[nextIndex].path;
             if (replacePointCloud(nextPath, true)) {
                 latestOptimizationMode = true;
@@ -2828,6 +2838,14 @@ int main(int argc, char** argv) {
 
                 if (ImGui::IsKeyPressed(ImGuiKey_L, false)) {
                     jumpToOptimizationSnapshotBoundary(true);
+                }
+
+                if (ImGui::IsKeyDown(ImGuiKey_N)) {
+                    stepLatestOptimizationSnapshot(-kSnapshotFastStep);
+                }
+
+                if (ImGui::IsKeyDown(ImGuiKey_M)) {
+                    stepLatestOptimizationSnapshot(kSnapshotFastStep);
                 }
 
                 if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
