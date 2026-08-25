@@ -30,6 +30,7 @@ class GeometryEvaluationState:
     run_dir: Path | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
     evaluated_iterations: set[int] = field(default_factory=set)
+    printed_device_warning: bool = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -292,8 +293,21 @@ def lazy_chamfer_imports():
         )
     except ModuleNotFoundError as exception:
         raise RuntimeError(
-            "Live CD evaluation requires the dependencies used by metrics/chamfer_ours.py "
-            "(notably open3d and pytorch3d). Run without --gt for loss-only live plotting."
+            "Live CD evaluation requires additional libraries (PyTorch, PyTorch3D, Open3D).\n"
+            "\n"
+            "Install (GPU/CUDA recommended):\n"
+            "  1) Install CUDA-enabled PyTorch:\n"
+            "     conda install -c pytorch -c nvidia pytorch pytorch-cuda=12.1\n"
+            "  2) Install PyTorch3D and Open3D:\n"
+            "     pip install pytorch3d open3d\n"
+            "\n"
+            "Notes:\n"
+            "- Ensure your CUDA drivers/toolkit match the chosen PyTorch CUDA version.\n"
+            "- If PyTorch3D wheel is unavailable for your platform/PyTorch version, consult\n"
+            "  the PyTorch3D installation guide for compatible versions or source builds.\n"
+            "- If you cannot use a GPU, CPU-only evaluation is possible but slower.\n"
+            "\n"
+            "Alternatively, run without --gt to view loss curves only."
         ) from exception
 
     return compute_paper_ready_chamfer, load_points_from_ply, resolve_device, set_random_seed
@@ -381,6 +395,18 @@ def update_geometry_evaluation_state(
     ) = lazy_chamfer_imports()
 
     device = resolve_device(device_name)
+    if not state.printed_device_warning:
+        device_type = getattr(device, "type", str(device))
+        if not str(device_type).startswith("cuda"):
+            print(
+                "Warning: Live Chamfer distance is running on CPU. "
+                "For faster evaluation, use a CUDA-capable GPU (e.g., --geometry-device cuda or --geometry-device cuda:0). "
+                "If CUDA is unavailable, install a CUDA-enabled PyTorch and PyTorch3D to enable GPU evaluation.",
+                file=sys.stderr,
+                flush=True,
+            )
+        state.printed_device_warning = True
+
     ground_truth_points, ground_truth_sampling = get_ground_truth_points(
         ground_truth_path=ground_truth_path.expanduser().resolve(),
         samples=samples,

@@ -89,13 +89,13 @@ class OptimizationConfig:
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 3.0e-4
+    densification_grad_abs_min_final: float = 2.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 10_000
+    densification_grad_abs_min_decay_end_iteration: int = 5_000
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.3
     densification_split_scale_factor: float = math.sqrt(2.0)
-    densification_exact_clone_percent_dense: float = 0.003
+    densification_exact_clone_percent_dense: float = 0.004
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
