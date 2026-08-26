@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
+from config import scheduled_iteration_interval
 from optimizers import (create_learning_rate_schedules, update_optimizer_learning_rates, )
 from training_helpers import *
 from density_control import *
@@ -467,7 +468,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     print_loss_summary("Initial", *initial_loss_tuple)
 
-    densification_interval = int(config.densification_interval)
+    base_densification_interval = int(config.densification_interval)
+    final_densification_interval = int(config.densification_interval_final)
+    densification_interval = base_densification_interval
     prune_interval = int(config.prune_interval)
     densification_stats_skip_iterations = (
         max(densification_interval // 2, 0)
@@ -561,6 +564,28 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             for iteration in range(1, config.iterations + 1):
                 iteration_start = time.perf_counter()
                 global_iteration = resume_iteration_offset + iteration
+
+                if config.use_global_lr_schedule:
+                    densification_interval = scheduled_iteration_interval(
+                        initial_interval=base_densification_interval,
+                        final_interval=final_densification_interval,
+                        iteration=global_iteration,
+                        start_iteration=int(config.global_lr_start_iteration),
+                        max_steps=int(config.global_lr_max_steps),
+                    )
+                else:
+                    densification_interval = base_densification_interval
+                densification_stats_skip_iterations = (
+                    max(densification_interval // 2, 0)
+                    if bool(
+                        getattr(
+                            config,
+                            "densification_stats_skip_interval_start",
+                            getattr(config, "densification_stats_warmup", True),
+                        )
+                    )
+                    else 0
+                )
 
                 active_training_camera_ids = select_active_training_camera_ids(
                     training_camera_ids=training_camera_ids,

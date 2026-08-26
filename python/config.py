@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 3
+    adjoint_passes: int = 6
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -61,7 +61,7 @@ class OptimizationConfig:
     iterations: int = int(10.0e4)
     optimizer_type: str = "adam"
     # Learning rates
-    learning_rate: float = 1.0
+    learning_rate: float = 0.2
     learning_rate_position: float | None = None
     learning_rate_rotation: float | None = None
     max_rotation_step_radians: float = 0.01
@@ -74,7 +74,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 10.0
     global_lr_scale_final: float = 2.0
     global_lr_start_iteration: int = 0
-    global_lr_max_steps: int = int(2.0e4)
+    global_lr_max_steps: int = int(2.5e4)
 
     depth_distort_weight: float = 2.0e3
     depth_distort_start_iteration: int = 0
@@ -85,19 +85,23 @@ class OptimizationConfig:
     # Density control / EV-splitting
     # Ignore stats from the first half of each densification interval after cloning/pruning.
     densification_stats_skip_interval_start: bool = True
-    densification_interval: int = 25
-    prune_interval: int = 25
+
+    # Densification becomes less frequent over the global LR schedule, giving
+    # newly cloned surfels more optimization steps as their movement slows.
+    densification_interval: int = 75
+    densification_interval_final: int = 50
+    prune_interval: int = 75
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 6.0e-4
-    densification_grad_abs_min_final: float = 1.25e-4
+    densification_grad_abs_min_final: float = 1.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 8_000
+    densification_grad_abs_min_decay_end_iteration: int = 10_000
     densification_scale_min: float = 6.0e-3
-    densification_split_offset_scale: float = 0.5
-    densification_split_scale_factor: float = math.sqrt(4.0)
-    densification_exact_clone_percent_dense: float = 0.003
+    densification_split_offset_scale: float = 0.4
+    densification_split_scale_factor: float = math.sqrt(3.0)
+    densification_exact_clone_percent_dense: float = 0.000
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
@@ -178,12 +182,22 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         config.learning_rate_beta = factor_beta * base_learning_rate
 
 
-def scale_iteration_interval_by_learning_rate(base_interval: int, learning_rate: float, ) -> int:
-    if base_interval <= 0:
-        return base_interval
-    if learning_rate <= 0.0:
-        raise ValueError(f"learning_rate must be positive, got {learning_rate}")
-    return max(1, math.ceil(float(base_interval) / learning_rate))
+def scheduled_iteration_interval(
+        initial_interval: int,
+        final_interval: int,
+        iteration: int,
+        start_iteration: int,
+        max_steps: int,
+) -> int:
+    if initial_interval <= 0:
+        return initial_interval
+    if final_interval <= 0:
+        raise ValueError(f"final_interval must be positive, got {final_interval}")
+    if max_steps <= 0:
+        return initial_interval if iteration < start_iteration else final_interval
+
+    progress = min(max(float(iteration - start_iteration) / float(max_steps), 0.0), 1.0)
+    return max(1, round(initial_interval * (1.0 - progress) + final_interval * progress))
 
 
 def _load_checkpoint_run_config(checkpoint_dir: Path) -> dict:
@@ -366,6 +380,7 @@ def parse_args() -> OptimizationConfig:
     )
     # Density control / EV-splitting
     parser.add_argument("--densification-interval", type=int)
+    parser.add_argument("--densification-interval-final", type=int)
     parser.add_argument("--prune-interval", type=int)
     parser.add_argument("--densify-after", type=int)
     parser.add_argument("--prune-after", type=int)
