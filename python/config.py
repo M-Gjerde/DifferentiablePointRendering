@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 6
+    adjoint_passes: int = 3
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -58,10 +58,10 @@ class OptimizationConfig:
 
     device: str = "cpu"
 
-    iterations: int = int(10.0e4)
+    iterations: int = int(100_000)
     optimizer_type: str = "adam"
     # Learning rates
-    learning_rate: float = 0.2
+    learning_rate: float = 1.0
     learning_rate_position: float | None = None
     learning_rate_rotation: float | None = None
     max_rotation_step_radians: float = 0.01
@@ -71,14 +71,14 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Global LR scheduling
     use_global_lr_schedule: bool = True
-    global_lr_scale_init: float = 10.0
+    global_lr_scale_init: float = 5.0
     global_lr_scale_final: float = 2.0
     global_lr_start_iteration: int = 0
-    global_lr_max_steps: int = int(2.5e4)
+    global_lr_max_steps: int = int(15_000)
 
-    depth_distort_weight: float = 2.0e3
+    depth_distort_weight: float = 500
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.05
+    normal_consistency_weight: float = 0.025
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
 
@@ -88,20 +88,20 @@ class OptimizationConfig:
 
     # Densification becomes less frequent over the global LR schedule, giving
     # newly cloned surfels more optimization steps as their movement slows.
-    densification_interval: int = 75
-    densification_interval_final: int = 50
-    prune_interval: int = 75
+    densification_interval: int = 50
+    densification_interval_final: int = 200
+    prune_interval: int = 50
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 6.0e-4
     densification_grad_abs_min_final: float = 1.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 10_000
+    densification_grad_abs_min_decay_end_iteration: int = 7_000
     densification_scale_min: float = 6.0e-3
-    densification_split_offset_scale: float = 0.4
-    densification_split_scale_factor: float = math.sqrt(3.0)
-    densification_exact_clone_percent_dense: float = 0.000
+    densification_split_offset_scale: float = 0.3
+    densification_split_scale_factor: float = math.sqrt(2.0)
+    densification_exact_clone_percent_dense: float = 0.004
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
@@ -159,11 +159,11 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.0001
-        factor_rotation = 0.001
-        factor_scale = 0.0001
-        factor_albedo = 0.0015
-        factor_opacity = 0.0005
+        factor_position = 0.0002
+        factor_rotation = 0.002
+        factor_scale = 0.0002
+        factor_albedo = 0.003
+        factor_opacity = 0.001
         factor_beta = 0.002
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")

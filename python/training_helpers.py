@@ -770,6 +770,8 @@ def format_training_iteration_log(
         num_points: int,
         loss_state: Dict[str, Any],
         lr_position: float,
+        active_densification_interval: int,
+        active_prune_interval: int,
         active_densification_grad_abs_min: float,
         active_depth_distortion_weight: float,
         active_normal_consistency_weight: float,
@@ -796,7 +798,10 @@ def format_training_iteration_log(
         f"\n[Iter {iteration:04d}/{total_iterations}] "
         f"time={iteration_time:.3f}s total={total_time:.1f}s "
         f"it/s={iteration_rate:.2f} pts={num_points} "
-        f"adaptive_lr_pos={lr_position} densify_thr={active_densification_grad_abs_min:.3e} "
+        f"adaptive_lr_pos={lr_position} "
+        f"densify_interval={active_densification_interval} "
+        f"prune_interval={active_prune_interval} "
+        f"densify_thr={active_densification_grad_abs_min:.3e} "
         f"depth_active_w={active_depth_distortion_weight:.3e} "
         f"normal_active_w={active_normal_consistency_weight:.3e} "
         f"clone_only_max_scale={exact_clone_scale_threshold:.3e} "
