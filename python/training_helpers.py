@@ -1517,6 +1517,7 @@ def extract_total_gradient_arrays(
 def update_densification_statistics(
         iteration: int,
         densification_interval: int,
+        densification_cycle_start_iteration: int,
         densification_stats_skip_iterations: int,
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
@@ -1532,7 +1533,7 @@ def update_densification_statistics(
     if densification_interval <= 0:
         return
 
-    densification_phase = iteration % densification_interval
+    densification_phase = max(0, int(iteration) - int(densification_cycle_start_iteration))
     should_accumulate = (
             densification_interval <= 1
             or (
@@ -1740,13 +1741,17 @@ def maybe_make_densification_result(
         densification_verbose: bool,
         densification_grad_quantile: float,
         densification_grad_abs_min: float,
+        force_densification: bool = False,
 ) -> Optional[Dict[str, np.ndarray]]:
     if densification_interval <= 0:
         return None
 
-    if not (
-            iteration >= densify_after
-            and iteration % densification_interval == 0
+    if iteration < densify_after:
+        return None
+
+    if (
+            not force_densification
+            and iteration % densification_interval != 0
     ):
         return None
 

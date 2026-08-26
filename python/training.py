@@ -119,6 +119,45 @@ def active_densification_origin_counts(densification_origin_np: np.ndarray) -> t
     )
 
 
+def active_densification_interval_for_iteration(
+        config: OptimizationConfig,
+        base_densification_interval: int,
+        final_densification_interval: int,
+        iteration: int,
+) -> int:
+    if config.use_global_lr_schedule:
+        return scheduled_iteration_interval(
+            initial_interval=base_densification_interval,
+            final_interval=final_densification_interval,
+            iteration=iteration,
+            start_iteration=int(config.global_lr_start_iteration),
+            max_steps=int(config.global_lr_max_steps),
+        )
+    return base_densification_interval
+
+
+def densification_stats_skip_for_interval(config: OptimizationConfig, densification_interval: int) -> int:
+    if not bool(
+            getattr(
+                config,
+                "densification_stats_skip_interval_start",
+                getattr(config, "densification_stats_warmup", True),
+            )
+    ):
+        return 0
+    return max(int(densification_interval) // 2, 0)
+
+
+def next_densification_iteration_after(
+        current_iteration: int,
+        densify_after: int,
+        densification_interval: int,
+) -> Optional[int]:
+    if densification_interval <= 0:
+        return None
+    return max(int(densify_after), int(current_iteration) + max(int(densification_interval), 1))
+
+
 def active_camera_name_for_iteration(
         active_training_camera_ids: Sequence[str],
         one_camera_per_iteration: bool,
@@ -470,21 +509,26 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     base_densification_interval = int(config.densification_interval)
     final_densification_interval = int(config.densification_interval_final)
-    densification_interval = base_densification_interval
-    prune_interval = int(config.prune_interval)
-    densification_stats_skip_iterations = (
-        max(densification_interval // 2, 0)
-        if bool(
-            getattr(
-                config,
-                "densification_stats_skip_interval_start",
-                getattr(config, "densification_stats_warmup", True),
-            )
-        )
-        else 0
+    densification_interval = active_densification_interval_for_iteration(
+        config=config,
+        base_densification_interval=base_densification_interval,
+        final_densification_interval=final_densification_interval,
+        iteration=resume_iteration_offset,
     )
+    prune_interval = int(config.prune_interval)
     densify_after = config.densify_after if config.densify_after >= 0 else densification_interval
     prune_after = config.prune_after if config.prune_after >= 0 else prune_interval
+    densification_cycle_start_iteration = resume_iteration_offset
+    densification_cycle_interval = densification_interval
+    densification_stats_skip_iterations = densification_stats_skip_for_interval(
+        config=config,
+        densification_interval=densification_cycle_interval,
+    )
+    next_densification_iteration = next_densification_iteration_after(
+        current_iteration=resume_iteration_offset,
+        densify_after=densify_after,
+        densification_interval=densification_interval,
+    )
 
     opacity_prune_threshold = float(config.opacity_prune_threshold)
     max_prune_fraction = float(config.max_prune_fraction)
@@ -565,26 +609,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 iteration_start = time.perf_counter()
                 global_iteration = resume_iteration_offset + iteration
 
-                if config.use_global_lr_schedule:
-                    densification_interval = scheduled_iteration_interval(
-                        initial_interval=base_densification_interval,
-                        final_interval=final_densification_interval,
-                        iteration=global_iteration,
-                        start_iteration=int(config.global_lr_start_iteration),
-                        max_steps=int(config.global_lr_max_steps),
-                    )
-                else:
-                    densification_interval = base_densification_interval
-                densification_stats_skip_iterations = (
-                    max(densification_interval // 2, 0)
-                    if bool(
-                        getattr(
-                            config,
-                            "densification_stats_skip_interval_start",
-                            getattr(config, "densification_stats_warmup", True),
-                        )
-                    )
-                    else 0
+                densification_interval = active_densification_interval_for_iteration(
+                    config=config,
+                    base_densification_interval=base_densification_interval,
+                    final_densification_interval=final_densification_interval,
+                    iteration=global_iteration,
                 )
 
                 active_training_camera_ids = select_active_training_camera_ids(
@@ -713,7 +742,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     )
                     update_densification_statistics(
                         iteration=global_iteration,
-                        densification_interval=densification_interval,
+                        densification_interval=densification_cycle_interval,
+                        densification_cycle_start_iteration=densification_cycle_start_iteration,
                         densification_stats_skip_iterations=densification_stats_skip_iterations,
                         densify_position_grad_accum_np=densify_position_grad_accum_np,
                         densify_position_grad_denom_np=densify_position_grad_denom_np,
@@ -739,12 +769,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         print(f"[Iter {global_iteration:04d}] Resetting all opacities to {reset_opacity_value}")
                         config.reset_opacity_iterations = False
 
-                    should_check_densification = (
-                            not did_reset_opacity
-                            and densification_interval > 0
-                            and global_iteration >= densify_after
-                            and global_iteration % densification_interval == 0
+                    densification_is_due = (
+                            densification_interval > 0
+                            and next_densification_iteration is not None
+                            and global_iteration >= next_densification_iteration
                     )
+                    should_check_densification = not did_reset_opacity and densification_is_due
                     should_check_prune = (
                             not did_reset_opacity
                             and prune_interval > 0
@@ -800,6 +830,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densification_verbose=densification_verbose,
                                 densification_grad_quantile=densification_grad_quantile,
                                 densification_grad_abs_min=active_densification_grad_abs_min,
+                                force_densification=True,
                             )
 
                         if should_check_prune:
@@ -996,14 +1027,21 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
                         visited_training_camera_ids_this_cycle.clear()
 
-                    if (
-                            densification_interval > 0
-                            and global_iteration >= densify_after
-                            and global_iteration % densification_interval == 0
-                    ):
+                    if densification_is_due:
                         densify_position_grad_accum_np[:] = 0.0
                         densify_position_grad_denom_np[:] = 0.0
                         densify_position_grad_vector_accum_np[:] = 0.0
+                        densification_cycle_start_iteration = global_iteration
+                        densification_cycle_interval = densification_interval
+                        densification_stats_skip_iterations = densification_stats_skip_for_interval(
+                            config=config,
+                            densification_interval=densification_cycle_interval,
+                        )
+                        next_densification_iteration = next_densification_iteration_after(
+                            current_iteration=global_iteration,
+                            densify_after=densify_after,
+                            densification_interval=densification_interval,
+                        )
 
                     grad_position_renderer_norm = 0.0
                     grad_position_renderer_max = 0.0
@@ -1323,7 +1361,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 )
                 update_densification_statistics(
                     iteration=global_iteration,
-                    densification_interval=densification_interval,
+                    densification_interval=densification_cycle_interval,
+                    densification_cycle_start_iteration=densification_cycle_start_iteration,
                     densification_stats_skip_iterations=densification_stats_skip_iterations,
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
                     densify_position_grad_denom_np=densify_position_grad_denom_np,
@@ -1377,6 +1416,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     print(f"[Iter {global_iteration:04d}] Resetting all opacities to {reset_opacity_value}")
                     config.reset_opacity_iterations = False
 
+                densification_is_due = (
+                        densification_interval > 0
+                        and next_densification_iteration is not None
+                        and global_iteration >= next_densification_iteration
+                )
+
                 verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
                                           trainable_surfel_mask=trainable_surfel_mask)
                 apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
@@ -1390,18 +1435,20 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 indices_to_remove_list = []
 
                 if not did_reset_opacity:
-                    densification_result = maybe_make_densification_result(
-                        iteration=global_iteration, config=config, positions=positions, rotations=rotations, scales=scales,
-                        albedos=albedos, opacities=opacities,
-                        betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
-                        densify_position_grad_accum_np=densify_position_grad_accum_np,
-                        densify_position_grad_denom_np=densify_position_grad_denom_np,
-                        densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-                        densify_after=densify_after,
-                        densification_interval=densification_interval, densification_verbose=densification_verbose,
-                        densification_grad_quantile=densification_grad_quantile,
-                        densification_grad_abs_min=active_densification_grad_abs_min,
-                    )
+                    if densification_is_due:
+                        densification_result = maybe_make_densification_result(
+                            iteration=global_iteration, config=config, positions=positions, rotations=rotations,
+                            scales=scales, albedos=albedos, opacities=opacities,
+                            betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
+                            densify_position_grad_accum_np=densify_position_grad_accum_np,
+                            densify_position_grad_denom_np=densify_position_grad_denom_np,
+                            densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                            densify_after=densify_after,
+                            densification_interval=densification_interval, densification_verbose=densification_verbose,
+                            densification_grad_quantile=densification_grad_quantile,
+                            densification_grad_abs_min=active_densification_grad_abs_min,
+                            force_densification=True,
+                        )
 
                     scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
                         iteration=global_iteration, config=config, scales=scales, opacities=opacities,
@@ -1575,14 +1622,21 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
                     visited_training_camera_ids_this_cycle.clear()
 
-                if (
-                        densification_interval > 0
-                        and global_iteration >= densify_after
-                        and global_iteration % densification_interval == 0
-                ):
+                if densification_is_due:
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
                     densify_position_grad_vector_accum_np[:] = 0.0
+                    densification_cycle_start_iteration = global_iteration
+                    densification_cycle_interval = densification_interval
+                    densification_stats_skip_iterations = densification_stats_skip_for_interval(
+                        config=config,
+                        densification_interval=densification_cycle_interval,
+                    )
+                    next_densification_iteration = next_densification_iteration_after(
+                        current_iteration=global_iteration,
+                        densify_after=densify_after,
+                        densification_interval=densification_interval,
+                    )
 
                 save_interval = int(config.save_interval)
                 should_save_iteration_outputs = (
