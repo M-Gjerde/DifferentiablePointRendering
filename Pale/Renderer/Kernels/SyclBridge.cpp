@@ -13,60 +13,97 @@
 import Pale.Log;
 
 namespace Pale {
+    static void waitForProfiling(sycl::queue& queue) {
+        if (ScopedTimerDetail::isProfilingEnabled()) {
+            queue.wait();
+        }
+    }
+
     void submitLightTracingKernel(RenderPackage& pkg) {
         {
             ScopedTimer forwardTimer("Forward Pass Total", spdlog::level::debug);
             for (uint32_t forwardPass = 0; forwardPass < pkg.settings.numForwardPasses; forwardPass++) {
-                pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
                 {
-                    ScopedTimer timer("launchRayGenEmitterKernel");
+                    ScopedTimer timer("Forward light tracing: reset primary count", spdlog::level::debug);
+                    pkg.queue.fill(pkg.intermediates.countPrimary, 0u, 1).wait();
+                }
+                {
+                    ScopedTimer timer("Forward light tracing: ray gen emitter launch", spdlog::level::debug);
                     launchRayGenEmitterKernel(pkg, forwardPass);
                 }
 
                 uint32_t activeCount = 0;
-                pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
+                {
+                    ScopedTimer timer("Forward light tracing: read active ray count", spdlog::level::debug);
+                    pkg.queue.memcpy(&activeCount, pkg.intermediates.countPrimary, sizeof(uint32_t)).wait();
+                }
                 {
                     ScopedTimer forwardTimer("Traced forward pass", spdlog::level::debug);
 
-                    for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                        launchContributionEmitterVisibleKernel(pkg, activeCount, cameraIndex);
+                    {
+                        ScopedTimer timer(
+                            "Forward light tracing: emitter visible contributions launch+wait",
+                            spdlog::level::debug);
+                        for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                            launchContributionEmitterVisibleKernel(pkg, activeCount, cameraIndex);
+                        }
+                        waitForProfiling(pkg.queue);
                     }
 
                     for (uint32_t bounce = 0; bounce < pkg.settings.maxBounces && activeCount > 0; ++bounce) {
                         ScopedTimer bounceTimer("Bounce: " + std::to_string(bounce));
-                        pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
-                        //pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
-                        pkg.queue.wait();
                         {
-                            ScopedTimer timer("launchIntersectKernel");
-                            launchIntersectKernel(pkg, activeCount);
+                            ScopedTimer timer("Forward light tracing: reset extension count", spdlog::level::debug);
+                            pkg.queue.fill(pkg.intermediates.countExtensionOut, static_cast<uint32_t>(0), 1);
+                            //pkg.queue.fill(pkg.intermediates.hitRecords, WorldHit(), activeCount);
+                            pkg.queue.wait();
                         }
-                        ScopedTimer timer("ContributionKernels total");
                         uint32_t contributionCount = 0;
-                        pkg.queue.memcpy(&contributionCount, pkg.intermediates.countContributions,
-                                         sizeof(uint32_t)).wait();
-                        for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
-                            //if (pkg.sensors[cameraIndex].name[6] != '2')
-                            //    continue;
-                            launchContributionKernel(pkg, contributionCount, cameraIndex);
+                        {
+                            ScopedTimer timer(
+                                "Forward light tracing: intersect + read contribution count",
+                                spdlog::level::debug);
+                            launchIntersectKernel(pkg, activeCount);
+                            pkg.queue.memcpy(
+                                &contributionCount,
+                                pkg.intermediates.countContributions,
+                                sizeof(uint32_t)).wait();
                         }
-                        pkg.queue.fill(pkg.intermediates.countContributions, static_cast<uint32_t>(0), 1);
+                        {
+                            ScopedTimer timer("ContributionKernels total");
+                            for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
+                                //if (pkg.sensors[cameraIndex].name[6] != '2')
+                                //    continue;
+                                launchContributionKernel(pkg, contributionCount, cameraIndex);
+                            }
+                            waitForProfiling(pkg.queue);
+                        }
+                        {
+                            ScopedTimer timer("Forward light tracing: reset contribution count", spdlog::level::debug);
+                            pkg.queue.fill(pkg.intermediates.countContributions, static_cast<uint32_t>(0), 1);
+                        }
 
                         uint32_t nextCount = 0;
-                        pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
-                        pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
-                                         nextCount * sizeof(RayState));
-                        pkg.queue.wait();
+                        {
+                            ScopedTimer timer("Forward light tracing: read next ray count", spdlog::level::debug);
+                            pkg.queue.memcpy(&nextCount, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
+                        }
+                        {
+                            ScopedTimer timer("Forward light tracing: copy extension rays", spdlog::level::debug);
+                            pkg.queue.memcpy(pkg.intermediates.primaryRays, pkg.intermediates.extensionRaysA,
+                                             nextCount * sizeof(RayState));
+                            pkg.queue.wait();
+                        }
                         activeCount = nextCount;
-                        pkg.queue.wait();
                     }
                 }
             }
         }
         // Gamma, exposure and rgb8 conversion
         {
-            ScopedTimer timer("Post Processing", spdlog::level::debug);
+            ScopedTimer timer("Post Processing launch+wait", spdlog::level::debug);
             launchPostProcessKernel(pkg);
+            waitForProfiling(pkg.queue);
         }
     }
 
@@ -91,20 +128,33 @@ namespace Pale {
 
     void submitPhotonMappingKernel(RenderPackage& pkg) {
         {
-            ScopedTimer timer("Camera Gather for " + std::to_string(pkg.numSensors) + " cameras", spdlog::level::debug);
+            ScopedTimer timer(
+                "Forward photon mapping: camera gather total",
+                spdlog::level::debug);
 
             for (size_t gatherPass = 0; gatherPass < pkg.settings.numGatherPasses; ++gatherPass) {
+                ScopedTimer passTimer(
+                    "Forward photon mapping: gather pass launch+wait",
+                    spdlog::level::debug);
                 for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
                     const bool useCameraGatherKernel2 =
-                        pkg.settings.cameraGatherKernelKind == CameraGatherKernelKind::CameraGatherKernel2;
-                    ScopedTimer timer(
-                        std::string(useCameraGatherKernel2 ? "launchCameraGatherKernel2: " : "launchCameraGatherKernel: ") +
-                        std::to_string(cameraIndex) + "/" +
-                        std::to_string(pkg.numSensors), spdlog::level::debug);
-                    if (useCameraGatherKernel2) {
-                        launchCameraGatherKernel2(pkg, cameraIndex, gatherPass);
-                    } else {
-                        launchCameraGatherKernel(pkg, cameraIndex, gatherPass);
+                            pkg.settings.cameraGatherKernelKind == CameraGatherKernelKind::CameraGatherKernel2;
+                    const std::string kernelName =
+                            useCameraGatherKernel2 ? "CameraGatherKernel2" : "CameraGatherKernel";
+                    ScopedTimer cameraTimer(
+                        "Forward photon mapping: " + kernelName +
+                        " camera " + std::to_string(cameraIndex + 1u) + "/" +
+                        std::to_string(pkg.numSensors) + " launch+wait",
+                        spdlog::level::debug);
+                    {
+                        ScopedTimer launchTimer(
+                            "Forward photon mapping: " + kernelName + " launch",
+                            spdlog::level::debug);
+                        if (useCameraGatherKernel2) {
+                            launchCameraGatherKernel2(pkg, cameraIndex, gatherPass);
+                        } else {
+                            launchCameraGatherKernel(pkg, cameraIndex, gatherPass);
+                        }
                     }
                     pkg.queue.wait();
                 }
@@ -112,8 +162,9 @@ namespace Pale {
         }
 
         {
-            ScopedTimer timer("Post Processing", spdlog::level::debug);
+            ScopedTimer timer("Post Processing launch+wait", spdlog::level::debug);
             launchPostProcessKernel(pkg);
+            waitForProfiling(pkg.queue);
         }
     }
 

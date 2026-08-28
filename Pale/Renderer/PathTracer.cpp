@@ -535,17 +535,29 @@ namespace Pale {
 
         switch (m_settings.integratorKind) {
             case IntegratorKind::lightTracing:
+            {
+                ScopedTimer timer("Forward submit: light tracing", spdlog::level::debug);
                 submitLightTracingKernel(renderPackage);
                 break;
+            }
             case IntegratorKind::lightTracingCylinderRay:
+            {
+                ScopedTimer timer("Forward submit: light tracing cylinder ray", spdlog::level::debug);
                 submitLightTracingKernelCylinderRay(renderPackage);
                 break;
+            }
             case IntegratorKind::photonMapping:
+            {
+                ScopedTimer timer("Forward submit: photon mapping", spdlog::level::debug);
                 submitPhotonMappingKernel(renderPackage);
                 break;
+            }
         }
 
-        m_queue.wait();
+        {
+            ScopedTimer timer("Forward final queue wait", spdlog::level::debug);
+            m_queue.wait();
+        }
     }
 
     void PathTracer::renderBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients,

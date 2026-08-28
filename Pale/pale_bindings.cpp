@@ -264,6 +264,14 @@ public:
                     get_f(settingsDict,
                           "opacity_prior_weight",
                           m_settings.visibilityWeightedOpacityRegularizerWeight);
+            m_settings.rendererDebugMinimumProjectedFootprint =
+                    get_b(settingsDict,
+                          "minimum_projected_footprint",
+                          m_settings.rendererDebugMinimumProjectedFootprint);
+            m_settings.rendererDebugMinimumProjectedFootprintPixels =
+                    get_f(settingsDict,
+                          "minimum_projected_footprint_pixels",
+                          m_settings.rendererDebugMinimumProjectedFootprintPixels);
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
 
@@ -293,6 +301,8 @@ public:
         Pale::Log::PA_WARN("  Visibility opacity weight : {}", m_settings.visibilityWeightedOpacityRegularizerWeight);
         Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", m_settings.depthDistortionWeight);
         Pale::Log::PA_WARN("  Normal Consistency Weight : {}", m_settings.normalConsistencyWeight);
+        Pale::Log::PA_WARN("  Minimum footprint enabled : {}", m_settings.rendererDebugMinimumProjectedFootprint);
+        Pale::Log::PA_WARN("  Minimum footprint sigma px: {}", m_settings.rendererDebugMinimumProjectedFootprintPixels);
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorsForward.size(); ++i) {
             const auto &s = sensorsForward[i];
@@ -3975,9 +3985,21 @@ private:
                 }
 
                 auto cleanGradient = [](float value) -> float {
-                    return sycl::isfinite(value) ? value : 0.0f;
+                    constexpr float maxAbsGradientComponent = 1.0e6f;
+                    if (!sycl::isfinite(value)) {
+                        return 0.0f;
+                    }
+                    return sycl::fmin(
+                        sycl::fmax(value, -maxAbsGradientComponent),
+                        maxAbsGradientComponent);
+                };
+                auto cleanParameter = [](float value, float fallback) -> float {
+                    return sycl::isfinite(value) ? value : fallback;
                 };
                 auto clampValue = [](float value, float minValue, float maxValue) -> float {
+                    if (!sycl::isfinite(value)) {
+                        return minValue;
+                    }
                     return sycl::fmin(sycl::fmax(value, minValue), maxValue);
                 };
                 auto adamUpdate = [&](float gradientValue, float &m, float &v, float learningRate) -> float {
@@ -3987,11 +4009,18 @@ private:
                     if (!useAdam) {
                         return learningRate * gradientValue;
                     }
+                    if (!sycl::isfinite(m)) {
+                        m = 0.0f;
+                    }
+                    if (!sycl::isfinite(v)) {
+                        v = 0.0f;
+                    }
                     m = beta1 * m + (1.0f - beta1) * gradientValue;
                     v = beta2 * v + (1.0f - beta2) * gradientValue * gradientValue;
                     const float mHat = m / sycl::fmax(biasCorrection1, 1.0e-20f);
                     const float vHat = v / sycl::fmax(biasCorrection2, 1.0e-20f);
-                    return learningRate * mHat / (sycl::sqrt(vHat) + epsilon);
+                    const float update = learningRate * mHat / (sycl::sqrt(vHat) + epsilon);
+                    return sycl::isfinite(update) ? update : 0.0f;
                 };
                 auto dot3 = [](const Pale::float3 &a, const Pale::float3 &b) -> float {
                     return a.x() * b.x() + a.y() * b.y() + a.z() * b.z();
@@ -4101,9 +4130,9 @@ private:
                     positionM[primitiveIndex].z(),
                     positionV[primitiveIndex].z(),
                     lrPosition);
-                point.position.x() = clampValue(point.position.x() - positionUpdateX, -5.0f, 5.0f);
-                point.position.y() = clampValue(point.position.y() - positionUpdateY, -5.0f, 5.0f);
-                point.position.z() = clampValue(point.position.z() - positionUpdateZ, -5.0f, 5.0f);
+                point.position.x() = clampValue(cleanParameter(point.position.x(), 0.0f) - positionUpdateX, -5.0f, 5.0f);
+                point.position.y() = clampValue(cleanParameter(point.position.y(), 0.0f) - positionUpdateY, -5.0f, 5.0f);
+                point.position.z() = clampValue(cleanParameter(point.position.z(), 0.0f) - positionUpdateZ, -5.0f, 5.0f);
 
                 float rotationDeltaX = -adamUpdate(
                     cleanGradient(rotationGradient.x() * cameraBatchScale),
@@ -4191,8 +4220,9 @@ private:
                     scaleM[primitiveIndex].y(),
                     scaleV[primitiveIndex].y(),
                     lrScale);
-                point.scale.x() = clampValue(point.scale.x() - scaleUpdateX, 0.0f, 1.0f);
-                point.scale.y() = clampValue(point.scale.y() - scaleUpdateY, 0.0f, 1.0f);
+                constexpr float minSurfelScale = 1.0e-6f;
+                point.scale.x() = clampValue(cleanParameter(point.scale.x(), minSurfelScale) - scaleUpdateX, minSurfelScale, 1.0f);
+                point.scale.y() = clampValue(cleanParameter(point.scale.y(), minSurfelScale) - scaleUpdateY, minSurfelScale, 1.0f);
 
                 const float albedoUpdateX = adamUpdate(
                     cleanGradient(albedoGradient.x() * cameraBatchScale),
@@ -4209,23 +4239,23 @@ private:
                     albedoM[primitiveIndex].z(),
                     albedoV[primitiveIndex].z(),
                     lrAlbedo);
-                point.albedo.x() = clampValue(point.albedo.x() - albedoUpdateX, 0.0f, 1.0f);
-                point.albedo.y() = clampValue(point.albedo.y() - albedoUpdateY, 0.0f, 1.0f);
-                point.albedo.z() = clampValue(point.albedo.z() - albedoUpdateZ, 0.0f, 1.0f);
+                point.albedo.x() = clampValue(cleanParameter(point.albedo.x(), 0.0f) - albedoUpdateX, 0.0f, 1.0f);
+                point.albedo.y() = clampValue(cleanParameter(point.albedo.y(), 0.0f) - albedoUpdateY, 0.0f, 1.0f);
+                point.albedo.z() = clampValue(cleanParameter(point.albedo.z(), 0.0f) - albedoUpdateZ, 0.0f, 1.0f);
 
                 const float opacityUpdate = adamUpdate(
                     cleanGradient(opacityGradient * cameraBatchScale),
                     opacityM[primitiveIndex],
                     opacityV[primitiveIndex],
                     lrOpacity);
-                point.opacity = clampValue(point.opacity - opacityUpdate, 0.0f, 1.0f);
+                point.opacity = clampValue(cleanParameter(point.opacity, 0.0f) - opacityUpdate, 0.0f, 1.0f);
 
                 const float betaUpdate = adamUpdate(
                     cleanGradient(betaGradient * cameraBatchScale),
                     betaM[primitiveIndex],
                     betaV[primitiveIndex],
                     lrBeta);
-                point.beta = clampValue(point.beta - betaUpdate, -2.0f, 5.0f);
+                point.beta = clampValue(cleanParameter(point.beta, 1.0f) - betaUpdate, -2.0f, 5.0f);
             });
     }
 

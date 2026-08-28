@@ -331,21 +331,23 @@ def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, obje
         "power": 0.0,
     }
 
-    use_global_lr_schedule = bool(getattr(config, "use_global_lr_schedule", False))
-    if use_global_lr_schedule:
-        global_lr_scale_func = make_exponential_scale_func(
+    use_position_lr_schedule = bool(getattr(config, "use_global_lr_schedule", False))
+    if use_position_lr_schedule:
+        position_lr_scale_func = make_exponential_scale_func(
             scale_init=float(getattr(config, "global_lr_scale_init", 1.0)),
             scale_final=float(getattr(config, "global_lr_scale_final", 1.0)),
             start_iteration=int(getattr(config, "global_lr_start_iteration", 0)),
             max_steps=int(getattr(config, "global_lr_max_steps", 0)),
         )
     else:
-        global_lr_scale_func = make_constant_scale_func()
+        position_lr_scale_func = make_constant_scale_func()
 
     return {
         "base_learning_rates": base_learning_rates,
-        "global_lr_scale_func": global_lr_scale_func,
-        "parameter_lr_scale_funcs": {},
+        "global_lr_scale_func": make_constant_scale_func(),
+        "parameter_lr_scale_funcs": {
+            "position": position_lr_scale_func,
+        },
     }
 
 

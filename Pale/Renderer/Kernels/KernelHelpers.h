@@ -806,11 +806,18 @@ namespace Pale {
         PointCloudSurfaceRecord surfaceRecord{};
         surfaceRecord.primitiveIndex = localHit.primitiveIndex;
         surfaceRecord.alphaGeom = localHit.alphaGeom;
+        surfaceRecord.objectAlphaGeom = localHit.objectAlphaGeom;
+        surfaceRecord.lowPassAlphaGeom = localHit.lowPassAlphaGeom;
+        surfaceRecord.lowPassDeltaPixels = localHit.lowPassDeltaPixels;
+        surfaceRecord.lowPassSigmaPixels = localHit.lowPassSigmaPixels;
+        surfaceRecord.alphaProfileBranch = localHit.alphaProfileBranch;
+        surfaceRecord.usesSurfelCenterHitPosition = localHit.usesSurfelCenterHitPosition;
+        surfaceRecord.hitPositionW = localHit.hitPositionW;
         surfaceRecord.pathId = rayState.pathId;
         surfaceRecord.incomingDirection = rayState.ray.direction;
 
         const Point &surfel = scene.points[localHit.primitiveIndex];
-        surfaceRecord.uv = phiInverse(localHit.hitPositionW, surfel);
+        surfaceRecord.uv = localHit.uv;
 
         const float3 tangentUWorld = surfel.scale.x() * surfel.tanU;
         const float3 tangentVWorld = surfel.scale.y() * surfel.tanV;
@@ -826,7 +833,14 @@ namespace Pale {
         const Point &surfel,
         const PointCloudSurfaceRecord &surfaceRecord) {
         ReconstructedSurfelState reconstructedState{};
-        reconstructedState.position = phiMapping(surfel, surfaceRecord.uv.x(), surfaceRecord.uv.y());
+        const bool hasStoredHitPosition =
+                sycl::isfinite(surfaceRecord.hitPositionW.x()) &&
+                sycl::isfinite(surfaceRecord.hitPositionW.y()) &&
+                sycl::isfinite(surfaceRecord.hitPositionW.z());
+        reconstructedState.position =
+                hasStoredHitPosition
+                    ? surfaceRecord.hitPositionW
+                    : phiMapping(surfel, surfaceRecord.uv.x(), surfaceRecord.uv.y());
         reconstructedState.tangentUWorld = surfel.scale.x() * surfel.tanU;
         reconstructedState.tangentVWorld = surfel.scale.y() * surfel.tanV;
 
@@ -1207,7 +1221,11 @@ namespace Pale {
             sample.lightIndex = light_index;
             sample.surface.primitiveIndex = light.primitiveIndex;
             sample.surface.alphaGeom = alphaGeom;
+            sample.surface.objectAlphaGeom = alphaGeom;
+            sample.surface.lowPassAlphaGeom = 0.0f;
+            sample.surface.alphaProfileBranch = kSurfelAlphaProfileObject;
             sample.surface.uv = {localU, localV};
+            sample.surface.hitPositionW = positionWorld;
         }
         return sample;
     }
@@ -1284,7 +1302,11 @@ namespace Pale {
 
         sample.surface.primitiveIndex = light.primitiveIndex;
         sample.surface.alphaGeom = alphaGeom;
+        sample.surface.objectAlphaGeom = alphaGeom;
+        sample.surface.lowPassAlphaGeom = 0.0f;
+        sample.surface.alphaProfileBranch = kSurfelAlphaProfileObject;
         sample.surface.uv = {localU, localV};
+        sample.surface.hitPositionW = positionWorld;
 
         return sample;
     }

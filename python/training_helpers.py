@@ -642,6 +642,7 @@ def scheduled_densification_grad_abs_min(
         iteration: int,
         start_iteration: int,
         end_iteration: int,
+        decay_power: float = 2.0,
 ) -> float:
     initial_threshold = float(initial_threshold)
     final_threshold = float(final_threshold)
@@ -650,24 +651,38 @@ def scheduled_densification_grad_abs_min(
 
     if end_iteration <= start_iteration:
         return final_threshold if int(iteration) >= start_iteration else initial_threshold
+
     if int(iteration) <= start_iteration:
         return initial_threshold
+
     if int(iteration) >= end_iteration:
         return final_threshold
 
     t = float(int(iteration) - start_iteration) / float(end_iteration - start_iteration)
-    return initial_threshold + t * (final_threshold - initial_threshold)
 
+    return final_threshold + (initial_threshold - final_threshold) * (1.0 - t) ** decay_power
 
 def densification_scene_extent_for_positions(
         config: OptimizationConfig,
         positions,
+        trainable_surfel_mask: Optional[torch.Tensor] = None,
 ) -> float:
     scene_extent = float(getattr(config, "densification_scene_extent", 0.0))
     if scene_extent > 0.0:
         return scene_extent
 
     positions_np = positions.detach().cpu().numpy()
+    if trainable_surfel_mask is not None and positions_np.size > 0:
+        trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
+        if trainable_np.shape[0] != positions_np.shape[0]:
+            raise RuntimeError(
+                "Trainable surfel mask length mismatch for densification scene extent: "
+                f"{trainable_np.shape[0]} vs {positions_np.shape[0]}"
+            )
+        trainable_positions_np = positions_np[trainable_np]
+        if trainable_positions_np.size > 0:
+            positions_np = trainable_positions_np
+
     if positions_np.size > 0:
         scene_extent = float(np.max(np.ptp(positions_np, axis=0)))
     else:
@@ -679,6 +694,7 @@ def densification_scene_extent_for_positions(
 def exact_clone_scale_threshold_for_positions(
         config: OptimizationConfig,
         positions,
+        trainable_surfel_mask: Optional[torch.Tensor] = None,
 ) -> float:
     exact_clone_percent_dense = float(
         getattr(config, "densification_exact_clone_percent_dense", 0.0)
@@ -689,6 +705,7 @@ def exact_clone_scale_threshold_for_positions(
     return exact_clone_percent_dense * densification_scene_extent_for_positions(
         config=config,
         positions=positions,
+        trainable_surfel_mask=trainable_surfel_mask,
     )
 
 
@@ -1769,6 +1786,12 @@ def maybe_make_densification_result(
                 densify_position_grad_vector_accum_np[valid_denom_np]
                 / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
         )
+        avg_density_grad_vector_local_np = np.nan_to_num(
+            avg_density_grad_vector_local_np,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
 
         tangent_u, tangent_v, _ = quaternion_to_tangent_frame_torch(rotations.detach())
         tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
@@ -1777,6 +1800,12 @@ def maybe_make_densification_result(
                 avg_density_grad_vector_local_np[:, 0:1] * tangent_u_np
                 + avg_density_grad_vector_local_np[:, 1:2] * tangent_v_np
         ).astype(np.float32)
+        avg_density_grad_vector_np = np.nan_to_num(
+            avg_density_grad_vector_np,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
 
         grad_pos_norm_np = np.nan_to_num(
             avg_density_grad_norm_np,
@@ -1809,10 +1838,12 @@ def maybe_make_densification_result(
         scene_extent = densification_scene_extent_for_positions(
             config=config,
             positions=positions,
+            trainable_surfel_mask=trainable_surfel_mask,
         )
         exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
             config=config,
             positions=positions,
+            trainable_surfel_mask=trainable_surfel_mask,
         )
         split_offset_scale = float(getattr(config, "densification_split_offset_scale", 0.3))
 
@@ -2095,6 +2126,8 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "densification_split_points_total",
             "densification_clone_points_active",
             "densification_split_points_active",
+            "prune_scale_area_points",
+            "prune_inactive_gradient_points",
             "iteration_time_sec",
             "total_time_sec",
             "grad_position_renderer_norm",

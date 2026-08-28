@@ -815,6 +815,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     opacity_prune_indices = []
                     indices_to_remove_list = []
                     inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
+                    prune_scale_area_points = 0
+                    prune_inactive_gradient_points = 0
 
                     if not did_reset_opacity:
                         if should_check_densification:
@@ -905,6 +907,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
 
                             inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
+                            removed_index_set = set(int(index) for index in indices_to_remove)
+                            prune_scale_area_points = len(scale_prune_set & removed_index_set)
+                            prune_inactive_gradient_points = len(inactive_cycle_prune_set & removed_index_set)
 
                             if config.densification_verbose:
                                 print(
@@ -1188,6 +1193,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densification_split_points_total,
                             densification_clone_points_active,
                             densification_split_points_active,
+                            prune_scale_area_points,
+                            prune_inactive_gradient_points,
                             iteration_time,
                             total_time,
                             grad_position_renderer_norm,
@@ -1214,6 +1221,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
                             config=config,
                             positions=positions,
+                            trainable_surfel_mask=trainable_surfel_mask,
                         )
                         minimum_splittable_scale = minimum_splittable_scale_for_config(config)
                         print(
@@ -1433,6 +1441,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 scale_prune_indices = []
                 opacity_prune_indices = []
                 indices_to_remove_list = []
+                inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
+                prune_scale_area_points = 0
+                prune_inactive_gradient_points = 0
 
                 if not did_reset_opacity:
                     if densification_is_due:
@@ -1457,7 +1468,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         opacity_prune_threshold=opacity_prune_threshold, max_prune_fraction=max_prune_fraction,
                     )
 
-                    inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
                     if (
                             camera_cycle_complete
                             and global_iteration >= prune_after
@@ -1515,6 +1525,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
 
                         inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
+                        removed_index_set = set(int(index) for index in indices_to_remove)
+                        prune_scale_area_points = len(scale_prune_set & removed_index_set)
+                        prune_inactive_gradient_points = len(inactive_cycle_prune_set & removed_index_set)
                         if config.densification_verbose:
                             print(
                                 f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
@@ -1757,6 +1770,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densification_split_points_total,
                         densification_clone_points_active,
                         densification_split_points_active,
+                        prune_scale_area_points,
+                        prune_inactive_gradient_points,
                         iteration_time,
                         total_time,
                         grad_position_renderer_norm,
@@ -1804,6 +1819,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
                         config=config,
                         positions=positions,
+                        trainable_surfel_mask=trainable_surfel_mask,
                     )
                     minimum_splittable_scale = minimum_splittable_scale_for_config(config)
                     print(

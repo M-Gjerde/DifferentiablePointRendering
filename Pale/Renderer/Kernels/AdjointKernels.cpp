@@ -33,7 +33,10 @@ namespace Pale {
         const float3 directRadiance = estimateDirectPointSampledPointLights(
                                           scene, settings, reconstructedState.position,
                                           reconstructedState.orientedNormal, surfel.alpha_r * surfel.albedo) * alpha;
-        float3 emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * reconstructedState.areaWorld)) * alpha;
+        float3 emittedRadiance{0.0f};
+        if (reconstructedState.areaWorld > 1.0e-12f && sycl::isfinite(reconstructedState.areaWorld)) {
+            emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * reconstructedState.areaWorld)) * alpha;
+        }
         if (surfel.flux > 0.0f && surfaceRecord.sideSign < 0) { emittedRadiance = float3{0.0f, 0.0f, 0.0f}; }
         return emittedRadiance + directRadiance + indirectRadiance;
     }
@@ -487,7 +490,7 @@ namespace Pale {
 
             const float dLossDAlphaK = dot(pathWeightAtTarget, dSlabRadianceDAlphaK) * invSpp;
             const float3 dAlphaEffDPosition =
-                    computeAlphaEffectiveGradientWrtTranslation(surfelX, xSurface, xState);
+                    computeAlphaEffectiveGradientWrtTranslation(surfelX, xSurface, xState, sensor.camera);
             const float3 gradPosition = dLossDAlphaK * dAlphaEffDPosition;
             const float2 dAlphaEffDScale = computeAlphaEffectiveGradientWrtScale(surfelX, xSurface);
             const float gradScaleU = dLossDAlphaK * dAlphaEffDScale.x();
@@ -507,7 +510,8 @@ namespace Pale {
             const float v = xSurface.uv.y();
             const float oneMinusR2 = 1.0f - u * u - v * v;
             float gradBeta = 0.0f;
-            if (oneMinusR2 > 1.0e-8f) {
+            if (xSurface.alphaProfileBranch != kSurfelAlphaProfileLowPass &&
+                oneMinusR2 > 1.0e-8f) {
                 const float betaScale = 4.0f * sycl::exp(surfelX.beta);
                 const float dAlphaGeomDBeta =
                     betaScale * sycl::log(oneMinusR2) * xSurface.alphaGeom;
@@ -587,6 +591,10 @@ namespace Pale {
                 rayState.pathThroughput = initialAdjointWeight;
                 rayState.bounceIndex = 0;
                 rayState.pixelIndex = pixelIndex;
+                rayState.cameraSamplePixel = float2{
+                    static_cast<float>(pixelX) + jitterX,
+                    static_cast<float>(pixelY) + jitterY
+                };
                 rayState.traversalIndex = 0u;
                 rayState.transmission = 1.0f;
                 rayState.pathId = pixelIndex; // 0 .. (W*H-1)
@@ -652,6 +660,15 @@ namespace Pale {
                     WorldHit worldHit{};
                     PointCloudLocalLayer prebuiltPointLayer{};
                     bool hasPrebuiltPointLayer = false;
+                    const MinimumProjectedFootprintFilter primaryMinimumFootprintFilter =
+                        minimumProjectedFootprintFilterFromSettings(
+                            settings,
+                            sensor.camera,
+                            currentRayState.cameraSamplePixel);
+                    const MinimumProjectedFootprintFilter activeMinimumFootprintFilter =
+                        currentRayState.bounceIndex == 0u
+                            ? primaryMinimumFootprintFilter
+                            : disabledMinimumProjectedFootprintFilter();
                     if (canUsePointHitBatches) {
                         LocalSurfelLayerHit pointHits[kMaxPointHitBatch];
                         uint32_t pointInstanceIndex = kInvalidIndex;
@@ -662,7 +679,8 @@ namespace Pale {
                             std::numeric_limits<float>::infinity(),
                             pointHits,
                             pointLayerCandidateCapacity,
-                            pointInstanceIndex);
+                            pointInstanceIndex,
+                            activeMinimumFootprintFilter);
 
                         if (hitCount > 0u) {
                             const LocalSurfelLayerHit &anchorHit = pointHits[0];
@@ -705,7 +723,8 @@ namespace Pale {
                                     scene,
                                     localLayerDepthEpsilon,
                                     maxLocalSurfelHits,
-                                    localLayerNormalCosineThreshold);
+                                    localLayerNormalCosineThreshold,
+                                    activeMinimumFootprintFilter);
                         const float qNull = settings.sampling.qNull;
                         const float qReflect = settings.sampling.qReflect;
                         float3 sampledOutgoingDirectionWorld{0.0f};
@@ -970,7 +989,11 @@ namespace Pale {
                         const float3 pathWeightAtTarget = eventRecord.xPathThroughput * eventRecord.transmission;
                         const float dLossDAlphaK = dot(pathWeightAtTarget, dSlabRadianceDAlphaK) * invSpp;
                         const float3 dAlphaEffDPosition =
-                                computeAlphaEffectiveGradientWrtTranslation(surfelX, xSurface, xState);
+                                computeAlphaEffectiveGradientWrtTranslation(
+                                    surfelX,
+                                    xSurface,
+                                    xState,
+                                    sensor.camera);
                         const float3 gradPosition = dLossDAlphaK * dAlphaEffDPosition;
                         const float2 dAlphaEffDScale = computeAlphaEffectiveGradientWrtScale(surfelX, xSurface);
                         const float gradScaleU = dLossDAlphaK * dAlphaEffDScale.x();
@@ -990,7 +1013,8 @@ namespace Pale {
                         const float v = xSurface.uv.y();
                         const float oneMinusR2 = 1.0f - u * u - v * v;
                         float gradBeta = 0.0f;
-                        if (oneMinusR2 > 1.0e-8f) {
+                        if (xSurface.alphaProfileBranch != kSurfelAlphaProfileLowPass &&
+                            oneMinusR2 > 1.0e-8f) {
                             const float betaScale = 4.0f * sycl::exp(surfelX.beta);
                             const float dAlphaGeomDBeta = betaScale * sycl::log(oneMinusR2) * xSurface.alphaGeom;
                             gradBeta = dLossDAlphaK * surfelX.opacity * dAlphaGeomDBeta;
@@ -1071,6 +1095,8 @@ namespace Pale {
             const uint32_t pointLayerCandidateCapacity =
                     rendererDebugPointLayerCandidateCapacity(settings);
             const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
+            const MinimumProjectedFootprintFilter primaryMinimumFootprintFilter =
+                    minimumProjectedFootprintFilterFromSettings(settings, sensor.camera);
             uint32_t directPointInstanceIndex = kInvalidIndex;
             const bool canUsePointHitBatches =
                     pointHitBatchSize > 1u &&
@@ -1098,7 +1124,8 @@ namespace Pale {
                         remainingTargetDistance - RayEpsilon,
                         pointHits,
                         pointLayerCandidateCapacity,
-                        pointInstanceIndex);
+                        pointInstanceIndex,
+                        primaryMinimumFootprintFilter);
 
                     if (hitCount > 0u) {
                         const LocalSurfelLayerHit &anchorHit = pointHits[0];
@@ -1141,7 +1168,8 @@ namespace Pale {
                                 scene,
                                 localLayerDepthEpsilon,
                                 maxLocalSurfelHits,
-                                localLayerNormalCosineThreshold);
+                                localLayerNormalCosineThreshold,
+                                primaryMinimumFootprintFilter);
                 const Point &referenceSurfel = scene.points[worldHit.primitiveIndex];
                 float3 referenceNormal = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
                 if (dot(referenceNormal, -rayDirection) < 0.0f) referenceNormal = -referenceNormal;
@@ -1156,12 +1184,17 @@ namespace Pale {
                     const float alphaGeom = localHit.alphaGeom;
                     const float alphaEffective = sycl::clamp(occluderSurfel.opacity * alphaGeom, 0.0f, 1.0f);
                     const float oneMinusAlpha = sycl::fmax(0.0f, 1.0f - alphaEffective);
-                    const float2 uv = phiInverse(localHit.hitPositionW, occluderSurfel);
+                    const float2 uv = localHit.uv;
                     const float u = uv.x(), v = uv.y();
                     const float oneMinusR2 = 1.0f - u * u - v * v;
                     float3 gradPosition{0.0f}, gradWorldRotation{0.0f};
                     float gradScaleU = 0.0f, gradScaleV = 0.0f, gradBeta = 0.0f;
-                    if (oneMinusR2 > 1.0e-8f) {
+                    if (localHit.alphaProfileBranch == kSurfelAlphaProfileLowPass) {
+                        gradPosition = computeMinimumFootprintAlphaEffectiveGradientWrtTranslation(
+                            occluderSurfel,
+                            localHit,
+                            sensor.camera);
+                    } else if (oneMinusR2 > 1.0e-8f) {
                         const float scaleU = occluderSurfel.scale.x();
                         const float scaleV = occluderSurfel.scale.y();
                         const float betaScale = 4.0f * sycl::exp(occluderSurfel.beta);
@@ -1266,11 +1299,14 @@ namespace Pale {
         const uint32_t pointHitBatchLookaheadCapacity =
                 rendererDebugPointHitBatchLookaheadCapacity(settings);
         const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
-        const auto xyWorkItemCount = static_cast<std::size_t>(eventCount) * kMaxLocalSurfelHits;
+        if (eventCount == 0u || maxLocalSurfelHits == 0u) {
+            return;
+        }
+        const auto xyWorkItemCount = static_cast<std::size_t>(eventCount) * maxLocalSurfelHits;
         sycl::event kernelEvent4 = queue.parallel_for(sycl::range<1>(xyWorkItemCount), [=](sycl::id<1> globalId) {
             const uint32_t flatIndex = static_cast<uint32_t>(globalId[0]);
-            const uint32_t eventIndex = flatIndex / kMaxLocalSurfelHits;
-            const uint32_t localIndex = flatIndex - eventIndex * kMaxLocalSurfelHits;
+            const uint32_t eventIndex = flatIndex / maxLocalSurfelHits;
+            const uint32_t localIndex = flatIndex - eventIndex * maxLocalSurfelHits;
             const MeasurementGradientEventXY eventRecord = measurementEvents[eventIndex];
             const uint32_t slabCount = eventRecord.surfelSlabCount;
             if (slabCount == 0u || slabCount > kMaxLocalSurfelHits || localIndex >= slabCount) return;
@@ -1827,7 +1863,14 @@ namespace Pale {
     struct SurfaceRegularizerHitRecord {
         uint32_t primitiveIndex = kInvalidIndex;
         float3 hitPositionW{0.0f};
+        float2 uv{0.0f, 0.0f};
         float alphaGeom = 0.0f;
+        float objectAlphaGeom = 0.0f;
+        float lowPassAlphaGeom = 0.0f;
+        float2 lowPassDeltaPixels{0.0f, 0.0f};
+        float lowPassSigmaPixels = 0.0f;
+        uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
+        uint32_t usesSurfelCenterHitPosition = 0u;
         float alphaEffective = 0.0f;
         float transmittanceBefore = 1.0f;
         float compositeWeight = 0.0f;
@@ -1838,7 +1881,7 @@ namespace Pale {
 
     SYCL_EXTERNAL inline SurfaceRegularizerConstituentGradient differentiateSurfaceRegularizerConstituent(
         const Point &surfel, const SurfaceRegularizerHitRecord &hit, const float3 &rayDir, const float3 &cameraForward,
-        float barAlphaEffective, float barDepth, const float3 &barOrientedNormal) {
+        const CameraGPU &camera, float barAlphaEffective, float barDepth, const float3 &barOrientedNormal) {
         constexpr float kDenomEps = 1.0e-8f;
         SurfaceRegularizerConstituentGradient gradient{};
         const float3 position = surfel.position;
@@ -1849,16 +1892,30 @@ namespace Pale {
         const float opacity = surfel.opacity;
         const float3 hitPosition = hit.hitPositionW;
         if (sycl::fabs(scaleU) <= kDenomEps || sycl::fabs(scaleV) <= kDenomEps) { return gradient; }
-        const float2 uv = phiInverse(hitPosition, surfel);
+        const float2 uv = hit.uv;
         const float u = uv.x();
         const float v = uv.y();
-        const AlphaKernelEval kernelEval = evaluateAlphaKernelAndDerivatives(surfel, u, v);
+        const bool lowPassBranch = hit.alphaProfileBranch == kSurfelAlphaProfileLowPass;
         // alphaEffective = opacity * alphaGeom
         const float barAlphaGeom = barAlphaEffective * opacity;
         gradient.opacity = barAlphaEffective * hit.alphaGeom;
-        gradient.beta = barAlphaGeom * kernelEval.dValue_dBeta;
-        const float barU = barAlphaGeom * kernelEval.dValue_dU;
-        const float barV = barAlphaGeom * kernelEval.dValue_dV;
+        float barU = 0.0f;
+        float barV = 0.0f;
+        if (lowPassBranch) {
+            if (hit.lowPassAlphaGeom > 0.0f && hit.lowPassSigmaPixels > 0.0f) {
+                const float sigmaSquared = sycl::fmax(
+                    hit.lowPassSigmaPixels * hit.lowPassSigmaPixels,
+                    1.0e-8f);
+                const float2 barCenterPixels =
+                        hit.lowPassDeltaPixels * (barAlphaGeom * hit.lowPassAlphaGeom / sigmaSquared);
+                gradient.position += accumulateProjectedCenterGradientToWorld(camera, position, barCenterPixels);
+            }
+        } else {
+            const AlphaKernelEval kernelEval = evaluateAlphaKernelAndDerivatives(surfel, u, v);
+            gradient.beta = barAlphaGeom * kernelEval.dValue_dBeta;
+            barU = barAlphaGeom * kernelEval.dValue_dU;
+            barV = barAlphaGeom * kernelEval.dValue_dV;
+        }
         const float3 hitOffset = hitPosition - position;
         // z = dot(x - cameraPosition, cameraForward)
         float3 barHitPosition = barDepth * cameraForward;
@@ -1885,11 +1942,15 @@ namespace Pale {
         if (normalRawLength > kDenomEps) {
             const float3 normal = normalRaw / normalRawLength;
             float3 barNormal{0.0f};
-            const float normalDotRay = dot(normal, rayDir);
-            if (sycl::fabs(normalDotRay) > kDenomEps) {
-                const float barLambda = dot(barHitPosition, rayDir);
-                gradient.position += (barLambda / normalDotRay) * normal;
-                barNormal += (barLambda / normalDotRay) * (position - hitPosition);
+            if (hit.usesSurfelCenterHitPosition != 0u) {
+                gradient.position += barHitPosition;
+            } else {
+                const float normalDotRay = dot(normal, rayDir);
+                if (sycl::fabs(normalDotRay) > kDenomEps) {
+                    const float barLambda = dot(barHitPosition, rayDir);
+                    gradient.position += (barLambda / normalDotRay) * normal;
+                    barNormal += (barLambda / normalDotRay) * (position - hitPosition);
+                }
             }
             // ---------------------------------------------------------------------
             // Direct derivative through the rendered camera-oriented normal.
@@ -1970,6 +2031,11 @@ namespace Pale {
                 float accumulatedWeight = 0.0f;
                 float accumulatedWeightedDepth = 0.0f;
                 Ray regularizerRay = originalRay;
+                const MinimumProjectedFootprintFilter primaryMinimumFootprintFilter =
+                        minimumProjectedFootprintFilterFromSettings(
+                            settings,
+                            sensor.camera,
+                            float2{static_cast<float>(pixelX), static_cast<float>(pixelY)});
                 uint32_t directPointInstanceIndex = kInvalidIndex;
                 const bool canUsePointHitBatches =
                         pointHitBatchSize > 1u &&
@@ -1982,15 +2048,8 @@ namespace Pale {
                         return true;
                     }
                     const Point &surfel = scene.points[primitiveIndex];
-                    const float2 uv = phiInverse(surfaceHit.hitPositionW, surfel);
-                    // ---------------------------------------------------------
-                    // alpha_i = eta_i * alphaGeom_i
-                    //
-                    // Use the OUTPUT of opacityBeta as alphaGeom.
-                    // Ignore its return value here.
-                    // ---------------------------------------------------------
-                    float alphaGeom = 0.0f;
-                    opacityBeta(uv, surfel, &alphaGeom);
+                    const float2 uv = surfaceHit.uv;
+                    const float alphaGeom = surfaceHit.alphaGeom;
                     if (alphaGeom <= kAlphaEpsilon) {
                         return true;
                     }
@@ -2007,7 +2066,14 @@ namespace Pale {
                     SurfaceRegularizerHitRecord &record = hits[hitCount];
                     record.primitiveIndex = primitiveIndex;
                     record.hitPositionW = surfaceHit.hitPositionW;
+                    record.uv = uv;
                     record.alphaGeom = alphaGeom;
+                    record.objectAlphaGeom = surfaceHit.objectAlphaGeom;
+                    record.lowPassAlphaGeom = surfaceHit.lowPassAlphaGeom;
+                    record.lowPassDeltaPixels = surfaceHit.lowPassDeltaPixels;
+                    record.lowPassSigmaPixels = surfaceHit.lowPassSigmaPixels;
+                    record.alphaProfileBranch = surfaceHit.alphaProfileBranch;
+                    record.usesSurfelCenterHitPosition = surfaceHit.usesSurfelCenterHitPosition;
                     record.alphaEffective = alphaEffective;
                     record.transmittanceBefore = transmittance;
                     record.compositeWeight = compositeWeight;
@@ -2047,7 +2113,8 @@ namespace Pale {
                             std::numeric_limits<float>::infinity(),
                             pointHits,
                             batchCapacity,
-                            pointInstanceIndex);
+                            pointInstanceIndex,
+                            primaryMinimumFootprintFilter);
 
                         if (batchHitCount == 0u) {
                             break;
@@ -2095,6 +2162,13 @@ namespace Pale {
                         surfaceHit.primitiveIndex = worldHit.primitiveIndex;
                         surfaceHit.alphaGeom = worldHit.alphaGeom;
                         surfaceHit.hitPositionW = worldHit.hitPositionW;
+                        surfaceHit.uv = phiInverse(worldHit.hitPositionW, scene.points[worldHit.primitiveIndex]);
+                        surfaceHit.objectAlphaGeom = worldHit.alphaGeom;
+                        surfaceHit.lowPassAlphaGeom = 0.0f;
+                        surfaceHit.lowPassDeltaPixels = float2{0.0f, 0.0f};
+                        surfaceHit.lowPassSigmaPixels = 0.0f;
+                        surfaceHit.alphaProfileBranch = kSurfelAlphaProfileObject;
+                        surfaceHit.usesSurfelCenterHitPosition = 0u;
 
                         const bool keepTracingRegularizer = recordRegularizerHit(surfaceHit);
                         regularizerRay.origin = worldHit.hitPositionW + regularizerRay.direction * RayEpsilon;
@@ -2243,10 +2317,11 @@ namespace Pale {
                     }
                     const SurfaceRegularizerConstituentGradient depthGradient =
                             differentiateSurfaceRegularizerConstituent(surfel, hit, rayDirection, sensor.camera.forward,
-                                                                       barAlphaDepth, barDepthDepth, float3{0.0f});
+                                                                       sensor.camera, barAlphaDepth, barDepthDepth,
+                                                                       float3{0.0f});
                     const SurfaceRegularizerConstituentGradient normalGradient =
                             differentiateSurfaceRegularizerConstituent(surfel, hit, rayDirection, sensor.camera.forward,
-                                                                       barAlphaNormal, barDepthNormal,
+                                                                       sensor.camera, barAlphaNormal, barDepthNormal,
                                                                        barOrientedNormal);
                     // =========================================================
                     // DEPTH DISTORTION OUTPUT

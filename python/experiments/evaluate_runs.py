@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Evaluate optimization run folders. Produces loss plots from metrics.csv "
-            "and optional Chamfer curves from mesh_checkpoints/iter_*/fuse_post.ply."
+            "and optional Chamfer scores from mesh/fuse_post.ply or checkpoint meshes."
         )
     )
     parser.add_argument("--run-dir", type=Path, action="append", default=[], help="Run directory to evaluate.")
@@ -116,7 +116,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Evaluate every mesh checkpoint. By default, only the latest checkpoint is evaluated.",
+        help="Evaluate every mesh checkpoint. By default, evaluate mesh/fuse_post.ply.",
     )
     parser.add_argument("--samples", type=int, default=50_000, help="Surface samples for Chamfer.")
     parser.add_argument("--device", type=str, default="auto", help="Chamfer device: auto, cpu, cuda, cuda:0, ...")
@@ -413,6 +413,27 @@ def find_mesh_checkpoints(run_dir: Path, reconstruction_name: str) -> list[MeshC
     return sorted(checkpoints, key=lambda checkpoint: checkpoint.iteration)
 
 
+def final_iteration_from_rows(loss_rows: list[dict[str, str]], run_config: dict[str, Any]) -> int:
+    final_iteration = last_numeric_value(loss_rows, "iteration")
+    if final_iteration is not None:
+        return int(final_iteration)
+
+    optimization_config = optimization_config_from_run_config(run_config)
+    configured_iterations = safe_float(optimization_config.get("iterations"))
+    if configured_iterations is not None:
+        return int(configured_iterations)
+
+    return 0
+
+
+def find_main_mesh(run_dir: Path, reconstruction_name: str, iteration: int) -> list[MeshCheckpoint]:
+    mesh_path = run_dir / "mesh" / reconstruction_name
+    if not mesh_path.is_file():
+        print(f"Warning: main mesh not found, skipping default geometry evaluation: {mesh_path}")
+        return []
+    return [MeshCheckpoint(iteration=int(iteration), mesh_path=mesh_path.resolve())]
+
+
 def select_mesh_checkpoints(
     checkpoints: list[MeshCheckpoint],
     full: bool,
@@ -567,7 +588,11 @@ def compute_geometry_rows(
     rows: list[dict[str, Any]] = []
     best_row: dict[str, Any] | None = None
     for checkpoint in checkpoints:
-        print(f"Evaluating geometry: {run_dir.name} iter {checkpoint.iteration}", flush=True)
+        print(
+            f"Evaluating geometry: {run_dir.name} iter {checkpoint.iteration} | "
+            f"reconstruction={checkpoint.mesh_path} | gt={ground_truth_path}",
+            flush=True,
+        )
         set_random_seed(seed)
         reconstruction_points, reconstruction_sampling = load_points_from_ply(
             ply_path=checkpoint.mesh_path,
@@ -668,7 +693,7 @@ def plot_geometry_curve(run_dir: Path, rows: list[dict[str, Any]], output_path: 
         linewidth=1.2,
         label="completion",
     )
-    axis.set_title(f"Mesh checkpoint geometry - {run_dir.name}")
+    axis.set_title(f"Geometry - {run_dir.name}")
     axis.set_xlabel("Iteration")
     axis.set_ylabel("Chamfer distance")
     axis.grid(True, alpha=0.25)
@@ -823,7 +848,7 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
     )
 
     geometry_rows: list[dict[str, Any]] = []
-    geometry_mode = "full" if args.full else "latest"
+    geometry_mode = "full" if args.full else "final"
     geometry_csv_path = evaluation_dir / f"mesh_checkpoint_metrics_{geometry_mode}.csv"
     geometry_plot_path = evaluation_dir / f"geometry_curve_{geometry_mode}.png"
     loss_geometry_plot_path = evaluation_dir / f"loss_geometry_curve_{geometry_mode}.png"
@@ -832,10 +857,17 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
         if geometry_csv_path.exists() and not args.force:
             geometry_rows = read_existing_geometry_rows(geometry_csv_path)
         else:
-            checkpoints = select_mesh_checkpoints(
-                find_mesh_checkpoints(run_dir, args.reconstruction_name),
-                full=args.full,
-            )
+            if args.full:
+                checkpoints = select_mesh_checkpoints(
+                    find_mesh_checkpoints(run_dir, args.reconstruction_name),
+                    full=True,
+                )
+            else:
+                checkpoints = find_main_mesh(
+                    run_dir=run_dir,
+                    reconstruction_name=args.reconstruction_name,
+                    iteration=final_iteration_from_rows(loss_rows, run_config),
+                )
             geometry_rows = compute_geometry_rows(
                 run_dir=run_dir,
                 checkpoints=checkpoints,
@@ -904,7 +936,7 @@ def plot_geometry_comparison(evaluations: list[RunEvaluation], output_path: Path
         label = f"{evaluation.run_dir.name} best={min(cds):.4g}"
         axis.plot(iterations, cds, marker="o", linewidth=1.4, label=label)
 
-    axis.set_title("Mesh checkpoint Chamfer comparison")
+    axis.set_title("Chamfer comparison")
     axis.set_xlabel("Iteration")
     axis.set_ylabel("CD")
     axis.grid(True, alpha=0.25)

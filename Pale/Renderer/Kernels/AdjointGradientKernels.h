@@ -203,6 +203,89 @@ namespace Pale {
         float3 gradientWrtSurfaceNormal{0.0f, 0.0f, 0.0f};
     };
 
+    SYCL_EXTERNAL inline float2 cameraProjectionFocalPixels(const CameraGPU &camera) {
+        if (camera.hasPinholeIntrinsics != 0u && camera.fx > 0.0f && camera.fy > 0.0f) {
+            return float2{sycl::fabs(camera.fx), sycl::fabs(camera.fy)};
+        }
+
+        const float width = sycl::fmax(static_cast<float>(camera.width), 1.0f);
+        const float height = sycl::fmax(static_cast<float>(camera.height), 1.0f);
+        const float fy = 0.5f * height / sycl::tan(0.5f * glm::radians(camera.fovy));
+        const float fx = fy * (width / height);
+        return float2{fx, fy};
+    }
+
+    SYCL_EXTERNAL inline float3 accumulateProjectedCenterGradientToWorld(
+        const CameraGPU &camera,
+        const float3 &positionW,
+        const float2 &barCenterPixels) {
+        const float4 viewPosition = camera.view * float4{positionW, 1.0f};
+        const float zForward = -viewPosition.z();
+        if (!sycl::isfinite(zForward) || zForward <= 1.0e-8f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float2 focal = cameraProjectionFocalPixels(camera);
+        if (!(focal.x() > 0.0f) || !(focal.y() > 0.0f)) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float inverseDepth = 1.0f / zForward;
+        const float inverseDepthSquared = inverseDepth * inverseDepth;
+        const float3 barCameraPosition{
+            barCenterPixels.x() * focal.x() * inverseDepth,
+            barCenterPixels.y() * (-focal.y() * inverseDepth),
+            barCenterPixels.x() * focal.x() * viewPosition.x() * inverseDepthSquared +
+            barCenterPixels.y() * (-focal.y() * viewPosition.y() * inverseDepthSquared)
+        };
+
+        return float3{
+            camera.view.row[0].x() * barCameraPosition.x() +
+            camera.view.row[1].x() * barCameraPosition.y() +
+            camera.view.row[2].x() * barCameraPosition.z(),
+            camera.view.row[0].y() * barCameraPosition.x() +
+            camera.view.row[1].y() * barCameraPosition.y() +
+            camera.view.row[2].y() * barCameraPosition.z(),
+            camera.view.row[0].z() * barCameraPosition.x() +
+            camera.view.row[1].z() * barCameraPosition.y() +
+            camera.view.row[2].z() * barCameraPosition.z()
+        };
+    }
+
+    SYCL_EXTERNAL inline float3 computeMinimumFootprintAlphaEffectiveGradientWrtTranslation(
+        const Point &surfel,
+        const PointCloudSurfaceRecord &surface,
+        const CameraGPU &camera) {
+        if (surface.alphaProfileBranch != kSurfelAlphaProfileLowPass ||
+            surface.lowPassAlphaGeom <= 0.0f ||
+            surface.lowPassSigmaPixels <= 0.0f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float sigmaSquared =
+                sycl::fmax(surface.lowPassSigmaPixels * surface.lowPassSigmaPixels, 1.0e-8f);
+        const float centerScale = surfel.opacity * surface.lowPassAlphaGeom / sigmaSquared;
+        const float2 barCenterPixels = surface.lowPassDeltaPixels * centerScale;
+        return accumulateProjectedCenterGradientToWorld(camera, surfel.position, barCenterPixels);
+    }
+
+    SYCL_EXTERNAL inline float3 computeMinimumFootprintAlphaEffectiveGradientWrtTranslation(
+        const Point &surfel,
+        const LocalSurfelLayerHit &hit,
+        const CameraGPU &camera) {
+        if (hit.alphaProfileBranch != kSurfelAlphaProfileLowPass ||
+            hit.lowPassAlphaGeom <= 0.0f ||
+            hit.lowPassSigmaPixels <= 0.0f) {
+            return float3{0.0f, 0.0f, 0.0f};
+        }
+
+        const float sigmaSquared =
+                sycl::fmax(hit.lowPassSigmaPixels * hit.lowPassSigmaPixels, 1.0e-8f);
+        const float centerScale = surfel.opacity * hit.lowPassAlphaGeom / sigmaSquared;
+        const float2 barCenterPixels = hit.lowPassDeltaPixels * centerScale;
+        return accumulateProjectedCenterGradientToWorld(camera, surfel.position, barCenterPixels);
+    }
+
     SYCL_EXTERNAL inline bool computePointLightGeometry(
         const float3 &surfacePositionW,
         const float3 &surfaceNormalW,
@@ -245,7 +328,14 @@ namespace Pale {
     }
 
     SYCL_EXTERNAL inline float3 computeAlphaEffectiveGradientWrtTranslation(
-        const Point &surfel, const PointCloudSurfaceRecord &surface, const ReconstructedSurfelState &state) {
+        const Point &surfel,
+        const PointCloudSurfaceRecord &surface,
+        const ReconstructedSurfelState &state,
+        const CameraGPU &camera) {
+        if (surface.alphaProfileBranch == kSurfelAlphaProfileLowPass) {
+            return computeMinimumFootprintAlphaEffectiveGradientWrtTranslation(surfel, surface, camera);
+        }
+
         const float u = surface.uv.x();
         const float v = surface.uv.y();
         const float r2 = u * u + v * v;
@@ -279,6 +369,10 @@ namespace Pale {
 
     SYCL_EXTERNAL inline float2 computeAlphaEffectiveGradientWrtScale(const Point &surfel,
                                                                       const PointCloudSurfaceRecord &surface) {
+        if (surface.alphaProfileBranch == kSurfelAlphaProfileLowPass) {
+            return float2{0.0f, 0.0f};
+        }
+
         const float u = surface.uv.x();
         const float v = surface.uv.y();
         const float oneMinusR2 = 1.0f - u * u - v * v;
@@ -318,6 +412,10 @@ namespace Pale {
     SYCL_EXTERNAL inline float3 computeAlphaEffectiveGradientWrtWorldRotation(
         const Point &surfel, const PointCloudSurfaceRecord &surface, const ReconstructedSurfelState &state,
         const float3 &rayOrigin) {
+        if (surface.alphaProfileBranch == kSurfelAlphaProfileLowPass) {
+            return float3{0.0f};
+        }
+
         const float u = surface.uv.x();
         const float v = surface.uv.y();
         const float oneMinusR2 = 1.0f - u * u - v * v;

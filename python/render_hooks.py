@@ -8,6 +8,43 @@ import torch
 import pale  # custom renderer bindings
 
 
+MIN_SURFEL_SCALE = 1.0e-6
+
+
+def _finite_min_max(x: torch.Tensor) -> tuple[float, float]:
+    finite = x[torch.isfinite(x)]
+    if finite.numel() == 0:
+        return float("nan"), float("nan")
+    return float(finite.min().item()), float(finite.max().item())
+
+
+def _assert_finite_np(name: str, array: np.ndarray) -> None:
+    if np.isfinite(array).all():
+        return
+    bad_mask = ~np.isfinite(array)
+    first_bad_flat = int(np.flatnonzero(bad_mask)[0])
+    first_bad_index = np.unravel_index(first_bad_flat, array.shape)
+    raise RuntimeError(
+        f"{name} contains non-finite values: "
+        f"bad_count={int(np.count_nonzero(bad_mask))}, "
+        f"first_bad_index={first_bad_index}, "
+        f"first_bad_value={array[first_bad_index]}"
+    )
+
+
+def _assert_positive_np(name: str, array: np.ndarray, min_value: float) -> None:
+    bad_mask = ~(array >= min_value)
+    if not np.any(bad_mask):
+        return
+    first_bad_flat = int(np.flatnonzero(bad_mask)[0])
+    first_bad_index = np.unravel_index(first_bad_flat, array.shape)
+    raise RuntimeError(
+        f"{name} must be >= {min_value:g}: "
+        f"bad_count={int(np.count_nonzero(bad_mask))}, "
+        f"first_bad_index={first_bad_index}, "
+        f"first_bad_value={array[first_bad_index]}"
+    )
+
 
 
 def get_forward_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
@@ -266,24 +303,25 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
     In-place verification/clamping of scale values.
 
     Enforces:
-        0.001 <= s_u, s_v <= 1.0
+        MIN_SURFEL_SCALE <= s_u, s_v <= 1.0
     """
     with torch.no_grad():
         s = scales.data
-        before_min = float(s.min().item())
-        before_max = float(s.max().item())
+        before_min, before_max = _finite_min_max(s)
+        nonfinite_count = int(torch.count_nonzero(~torch.isfinite(s)).item())
 
-        s_clamped = torch.clamp(s, min=0.00, max=1.0) ## TODO Enforcing min size matching photon map min resolution
+        s_clean = torch.nan_to_num(s, nan=MIN_SURFEL_SCALE, posinf=1.0, neginf=MIN_SURFEL_SCALE)
+        s_clamped = torch.clamp(s_clean, min=MIN_SURFEL_SCALE, max=1.0)
         s.copy_(s_clamped)
 
-        after_min = float(s.min().item())
-        after_max = float(s.max().item())
+        after_min, after_max = _finite_min_max(s)
 
         return {
             "before_min": before_min,
             "before_max": before_max,
             "after_min": after_min,
             "after_max": after_max,
+            "nonfinite_count": nonfinite_count,
         }
 
 def verify_positions_inplace(positions: torch.Tensor) -> dict[str, float]:
@@ -295,20 +333,21 @@ def verify_positions_inplace(positions: torch.Tensor) -> dict[str, float]:
     """
     with torch.no_grad():
         p = positions.data
-        before_min = float(p.min().item())
-        before_max = float(p.max().item())
+        before_min, before_max = _finite_min_max(p)
+        nonfinite_count = int(torch.count_nonzero(~torch.isfinite(p)).item())
 
-        p_clamped = torch.clamp(p, min=-5.0, max=5.0)
+        p_clean = torch.nan_to_num(p, nan=0.0, posinf=5.0, neginf=-5.0)
+        p_clamped = torch.clamp(p_clean, min=-5.0, max=5.0)
         p.copy_(p_clamped)
 
-        after_min = float(p.min().item())
-        after_max = float(p.max().item())
+        after_min, after_max = _finite_min_max(p)
 
         return {
             "before_min": before_min,
             "before_max": before_max,
             "after_min": after_min,
             "after_max": after_max,
+            "nonfinite_count": nonfinite_count,
         }
 
 
@@ -321,20 +360,21 @@ def verify_albedos_inplace(albedos: torch.Tensor) -> dict[str, float]:
     """
     with torch.no_grad():
         s = albedos.data
-        before_min = float(s.min().item())
-        before_max = float(s.max().item())
+        before_min, before_max = _finite_min_max(s)
+        nonfinite_count = int(torch.count_nonzero(~torch.isfinite(s)).item())
 
-        s_clamped = torch.clamp(s, min=0.0, max=1.0)
+        s_clean = torch.nan_to_num(s, nan=0.0, posinf=1.0, neginf=0.0)
+        s_clamped = torch.clamp(s_clean, min=0.0, max=1.0)
         s.copy_(s_clamped)
 
-        after_min = float(s.min().item())
-        after_max = float(s.max().item())
+        after_min, after_max = _finite_min_max(s)
 
         return {
             "before_min": before_min,
             "before_max": before_max,
             "after_min": after_min,
             "after_max": after_max,
+            "nonfinite_count": nonfinite_count,
         }
 
 
@@ -347,20 +387,21 @@ def verify_opacities_inplace(opacities: torch.Tensor) -> dict[str, float]:
     """
     with torch.no_grad():
         s = opacities.data
-        before_min = float(s.min().item())
-        before_max = float(s.max().item())
+        before_min, before_max = _finite_min_max(s)
+        nonfinite_count = int(torch.count_nonzero(~torch.isfinite(s)).item())
 
-        s_clamped = torch.clamp(s, min=0.0, max=1.0)
+        s_clean = torch.nan_to_num(s, nan=0.0, posinf=1.0, neginf=0.0)
+        s_clamped = torch.clamp(s_clean, min=0.0, max=1.0)
         s.copy_(s_clamped)
 
-        after_min = float(s.min().item())
-        after_max = float(s.max().item())
+        after_min, after_max = _finite_min_max(s)
 
         return {
             "before_min": before_min,
             "before_max": before_max,
             "after_min": after_min,
             "after_max": after_max,
+            "nonfinite_count": nonfinite_count,
         }
 
 def verify_beta_inplace(
@@ -376,13 +417,14 @@ def verify_beta_inplace(
     If trainable_surfel_mask is provided, only trainable surfels are verified.
     Frozen surfels are left untouched.
     """
-    min_beta_value = -2.0
-    max_beta_value = 2.0
+    min_beta_value = -1.5
+    max_beta_value = 5.0
     with torch.no_grad():
         beta_values = betas.data
 
-        before_min = float(beta_values.min().item())
-        before_max = float(beta_values.max().item())
+        before_min, before_max = _finite_min_max(beta_values)
+        nonfinite_count = int(torch.count_nonzero(~torch.isfinite(beta_values)).item())
+        beta_values.copy_(torch.nan_to_num(beta_values, nan=1.0, posinf=max_beta_value, neginf=min_beta_value))
 
         if trainable_surfel_mask is None:
             beta_values.clamp_(min=min_beta_value, max=max_beta_value)
@@ -410,14 +452,14 @@ def verify_beta_inplace(
                 max=5.0,
             )
 
-        after_min = float(beta_values.min().item())
-        after_max = float(beta_values.max().item())
+        after_min, after_max = _finite_min_max(beta_values)
 
         return {
             "before_min": before_min,
             "before_max": before_max,
             "after_min": after_min,
             "after_max": after_max,
+            "nonfinite_count": nonfinite_count,
         }
 def apply_point_parameters(
         renderer: pale.Renderer,
@@ -443,6 +485,19 @@ def apply_point_parameters(
         raise RuntimeError(f"rotation must have shape (N,4), got {rotations_np.shape}")
     if positions_np.shape[0] != rotations_np.shape[0]:
         raise RuntimeError(f"position/rotation point-count mismatch: {positions_np.shape[0]} vs {rotations_np.shape[0]}")
+
+    arrays_to_check = {
+        "position": positions_np,
+        "rotation": rotations_np,
+        "scale": scales_np,
+        "albedo": albedos_np,
+        "opacity": opacities_np,
+        "beta": betas_np,
+        "power": powers_np,
+    }
+    for name, array in arrays_to_check.items():
+        _assert_finite_np(name, array)
+    _assert_positive_np("scale", scales_np, MIN_SURFEL_SCALE)
 
     renderer.apply_point_optimization(
         {
@@ -525,9 +580,12 @@ def add_new_points(renderer, densification_result: dict | None) -> None:
     }
 
     arrays_to_check = {
+        "new.position": position,
         "new.rotation": rotation,
         "new.scale": scale,
         "new.albedo": albedo,
+        "new.opacity": opacity,
+        "new.beta": beta,
     }
 
     for name, expected_shape in expected_shapes.items():
@@ -545,6 +603,11 @@ def add_new_points(renderer, densification_result: dict | None) -> None:
             raise RuntimeError(f"new.power must have length {n_new}, got {power.shape[0]}")
     else:
         power = np.zeros((n_new,), dtype=np.float32)
+
+    arrays_to_check["new.power"] = power
+    for name, array in arrays_to_check.items():
+        _assert_finite_np(name, array)
+    _assert_positive_np("new.scale", scale, MIN_SURFEL_SCALE)
 
     renderer.add_points(
         {

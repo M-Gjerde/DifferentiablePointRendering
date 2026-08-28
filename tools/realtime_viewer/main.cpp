@@ -60,7 +60,7 @@ namespace {
     constexpr uint32_t kDefaultViewportImageExtent = 500u;
     constexpr float kSidebarDockFraction = 0.50f;
     constexpr std::size_t kFrameTimeHistoryCapacity = 240u;
-    constexpr int kSnapshotFastStep = 25;
+    constexpr uint64_t kSnapshotIterationStep = 1000u;
 
     struct AppArgs {
         std::filesystem::path assetsDir = PALE_DEFAULT_ASSET_DIR;
@@ -370,6 +370,36 @@ namespace {
         double maxMs = 0.0;
     };
 
+    [[nodiscard]] double averageTimerMs(const TimerAggregate& aggregate) {
+        return aggregate.count > 0u
+                   ? aggregate.totalMs / static_cast<double>(aggregate.count)
+                   : 0.0;
+    }
+
+    [[nodiscard]] double renderTimeShare(double timerMs, double lastRenderMs) {
+        return lastRenderMs > 0.0 ? 100.0 * timerMs / lastRenderMs : 0.0;
+    }
+
+    [[nodiscard]] bool isOuterTimerRow(const std::string& name) {
+        return name == "Rendering time" ||
+               name == "Forward Pass Total" ||
+               name == "Traced forward pass" ||
+               name == "Forward photon mapping: camera gather total" ||
+               name == "Forward photon mapping: gather pass launch+wait" ||
+               name.rfind("Forward submit:", 0) == 0;
+    }
+
+    [[nodiscard]] const TimerAggregate* firstDetailedTimer(
+        const std::vector<TimerAggregate>& timerAggregates) {
+        const auto iterator = std::find_if(
+            timerAggregates.begin(),
+            timerAggregates.end(),
+            [](const TimerAggregate& aggregate) {
+                return !isOuterTimerRow(aggregate.name);
+            });
+        return iterator != timerAggregates.end() ? &*iterator : nullptr;
+    }
+
     [[nodiscard]] std::vector<TimerAggregate> aggregateTimerRecords(
         const std::vector<Pale::ScopedTimerRecord>& records) {
         std::vector<TimerAggregate> aggregates;
@@ -450,13 +480,15 @@ namespace {
         stream << "TLAS nodes\t" << sceneGpu.tlasNodeCount << "\n\n";
 
         stream << "Render stages\n";
-        stream << "Stage\tCount\tTotal ms\tLast ms\tMax ms\n";
+        stream << "Stage\tCount\tTotal ms\tAvg ms\tLast ms\tMax ms\t% render\n";
         for (const TimerAggregate& aggregate : aggregateTimerRecords(timerRecords)) {
             stream << aggregate.name << '\t'
                    << aggregate.count << '\t'
                    << aggregate.totalMs << '\t'
+                   << averageTimerMs(aggregate) << '\t'
                    << aggregate.lastMs << '\t'
-                   << aggregate.maxMs << '\n';
+                   << aggregate.maxMs << '\t'
+                   << renderTimeShare(aggregate.totalMs, lastRenderMs) << '\n';
         }
 
         stream << "\nRaw timer events\n";
@@ -501,6 +533,40 @@ namespace {
                << percent(counters.blasPointNodeHits, counters.blasPointNodeTests) << '\n';
         stream << "Point primitive acceptance\t"
                << percent(counters.surfelAcceptedHits, counters.pointLeafPrimitiveTests) << '\n';
+
+        stream << "\nForward gather work\n";
+        stream << "Counter\tTotal\tPer pixel\n";
+        appendCounterTextRow(stream, "Pixels", counters.forwardGatherPixels, pixelCount);
+        appendCounterTextRow(stream, "Point-hit queries", counters.forwardGatherPointHitQueries, pixelCount);
+        appendCounterTextRow(stream, "Point-hit candidates", counters.forwardGatherPointHitCandidates, pixelCount);
+        appendCounterTextRow(stream, "Local layers", counters.forwardGatherLocalLayers, pixelCount);
+        appendCounterTextRow(stream, "Local layer hits", counters.forwardGatherLocalLayerHits, pixelCount);
+        appendCounterTextRow(stream, "Object-profile local hits", counters.forwardGatherObjectProfileHits, pixelCount);
+        appendCounterTextRow(stream, "Low-pass local hits", counters.forwardGatherLowPassProfileHits, pixelCount);
+        appendCounterTextRow(stream, "Regularizer hits", counters.forwardGatherRegularizerHits, pixelCount);
+        appendCounterTextRow(stream, "Photon gather calls", counters.forwardGatherPhotonGatherCalls, pixelCount);
+        appendCounterTextRow(stream, "Direct-light calls", counters.forwardGatherDirectLightCalls, pixelCount);
+        appendCounterTextRow(stream, "Direct-light light visits", counters.forwardGatherDirectLightLightVisits, pixelCount);
+        appendCounterTextRow(stream, "Depth-pair iterations", counters.forwardGatherDepthPairIterations, pixelCount);
+        appendCounterTextRow(stream, "Mesh hits", counters.forwardGatherMeshHits, pixelCount);
+        appendCounterTextRow(stream, "No-hit terminations", counters.forwardGatherNoHitTerminations, pixelCount);
+        appendCounterTextRow(stream, "Opacity terminations", counters.forwardGatherOpacityTerminations, pixelCount);
+        appendCounterTextRow(stream, "Max-splat terminations", counters.forwardGatherMaxSplatTerminations, pixelCount);
+
+        stream << "\nForward gather rates\n";
+        stream << "Metric\tValue\n";
+        stream << "Candidates per point-hit query\t"
+               << (counters.forwardGatherPointHitQueries > 0u
+                       ? static_cast<double>(counters.forwardGatherPointHitCandidates) /
+                         static_cast<double>(counters.forwardGatherPointHitQueries)
+                       : 0.0) << '\n';
+        stream << "Hits per local layer\t"
+               << (counters.forwardGatherLocalLayers > 0u
+                       ? static_cast<double>(counters.forwardGatherLocalLayerHits) /
+                         static_cast<double>(counters.forwardGatherLocalLayers)
+                       : 0.0) << '\n';
+        stream << "Low-pass hit share\t"
+               << percent(counters.forwardGatherLowPassProfileHits, counters.forwardGatherLocalLayerHits) << '\n';
         return stream.str();
     }
 
@@ -605,15 +671,25 @@ namespace {
                 const std::vector<TimerAggregate> timerAggregates = aggregateTimerRecords(timerRecords);
                 if (timerAggregates.empty()) {
                     ImGui::TextUnformatted("No timer data for the last render");
-                } else if (ImGui::BeginTable(
-                               "TimerAggregateTable",
-                               5,
-                               ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                } else if (const TimerAggregate* topTimer = firstDetailedTimer(timerAggregates)) {
+                    ImGui::Text(
+                        "Top detailed timer: %s  %.3f ms total  %.3f ms avg",
+                        topTimer->name.c_str(),
+                        topTimer->totalMs,
+                        averageTimerMs(*topTimer));
+                }
+
+                if (!timerAggregates.empty() && ImGui::BeginTable(
+                        "TimerAggregateTable",
+                        7,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
                     ImGui::TableSetupColumn("Stage");
                     ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed, 56.0f);
                     ImGui::TableSetupColumn("Total ms", ImGuiTableColumnFlags_WidthFixed, 86.0f);
+                    ImGui::TableSetupColumn("Avg ms", ImGuiTableColumnFlags_WidthFixed, 86.0f);
                     ImGui::TableSetupColumn("Last ms", ImGuiTableColumnFlags_WidthFixed, 86.0f);
                     ImGui::TableSetupColumn("Max ms", ImGuiTableColumnFlags_WidthFixed, 86.0f);
+                    ImGui::TableSetupColumn("% render", ImGuiTableColumnFlags_WidthFixed, 78.0f);
                     ImGui::TableHeadersRow();
 
                     for (const TimerAggregate& aggregate : timerAggregates) {
@@ -625,9 +701,13 @@ namespace {
                         ImGui::TableNextColumn();
                         ImGui::Text("%.3f", aggregate.totalMs);
                         ImGui::TableNextColumn();
+                        ImGui::Text("%.3f", averageTimerMs(aggregate));
+                        ImGui::TableNextColumn();
                         ImGui::Text("%.3f", aggregate.lastMs);
                         ImGui::TableNextColumn();
                         ImGui::Text("%.3f", aggregate.maxMs);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.1f%%", renderTimeShare(aggregate.totalMs, lastRenderMs));
                     }
                     ImGui::EndTable();
                 }
@@ -670,6 +750,53 @@ namespace {
                 ImGui::Text(
                     "Point primitive acceptance: %.2f%%",
                     percent(counters.surfelAcceptedHits, counters.pointLeafPrimitiveTests));
+            }
+
+            if (ImGui::CollapsingHeader("Forward gather work", ImGuiTreeNodeFlags_DefaultOpen)) {
+                const double pixelCount =
+                    static_cast<double>(renderWidth) * static_cast<double>(renderHeight);
+                if (ImGui::BeginTable(
+                        "ForwardGatherCounterTable",
+                        3,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                    ImGui::TableSetupColumn("Counter");
+                    ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_WidthFixed, 132.0f);
+                    ImGui::TableSetupColumn("Per pixel", ImGuiTableColumnFlags_WidthFixed, 92.0f);
+                    ImGui::TableHeadersRow();
+                    drawCounterRow("Pixels", counters.forwardGatherPixels, pixelCount);
+                    drawCounterRow("Point-hit queries", counters.forwardGatherPointHitQueries, pixelCount);
+                    drawCounterRow("Point-hit candidates", counters.forwardGatherPointHitCandidates, pixelCount);
+                    drawCounterRow("Local layers", counters.forwardGatherLocalLayers, pixelCount);
+                    drawCounterRow("Local layer hits", counters.forwardGatherLocalLayerHits, pixelCount);
+                    drawCounterRow("Object-profile local hits", counters.forwardGatherObjectProfileHits, pixelCount);
+                    drawCounterRow("Low-pass local hits", counters.forwardGatherLowPassProfileHits, pixelCount);
+                    drawCounterRow("Regularizer hits", counters.forwardGatherRegularizerHits, pixelCount);
+                    drawCounterRow("Photon gather calls", counters.forwardGatherPhotonGatherCalls, pixelCount);
+                    drawCounterRow("Direct-light calls", counters.forwardGatherDirectLightCalls, pixelCount);
+                    drawCounterRow("Direct-light light visits", counters.forwardGatherDirectLightLightVisits, pixelCount);
+                    drawCounterRow("Depth-pair iterations", counters.forwardGatherDepthPairIterations, pixelCount);
+                    drawCounterRow("Mesh hits", counters.forwardGatherMeshHits, pixelCount);
+                    drawCounterRow("No-hit terminations", counters.forwardGatherNoHitTerminations, pixelCount);
+                    drawCounterRow("Opacity terminations", counters.forwardGatherOpacityTerminations, pixelCount);
+                    drawCounterRow("Max-splat terminations", counters.forwardGatherMaxSplatTerminations, pixelCount);
+                    ImGui::EndTable();
+                }
+
+                const double candidatesPerQuery =
+                    counters.forwardGatherPointHitQueries > 0u
+                        ? static_cast<double>(counters.forwardGatherPointHitCandidates) /
+                          static_cast<double>(counters.forwardGatherPointHitQueries)
+                        : 0.0;
+                const double hitsPerLayer =
+                    counters.forwardGatherLocalLayers > 0u
+                        ? static_cast<double>(counters.forwardGatherLocalLayerHits) /
+                          static_cast<double>(counters.forwardGatherLocalLayers)
+                        : 0.0;
+                ImGui::Text("Candidates/query: %.3f", candidatesPerQuery);
+                ImGui::Text("Hits/layer: %.3f", hitsPerLayer);
+                ImGui::Text(
+                    "Low-pass hit share: %.2f%%",
+                    percent(counters.forwardGatherLowPassProfileHits, counters.forwardGatherLocalLayerHits));
             }
 
             if (ImGui::CollapsingHeader("Raw timer events")) {
@@ -918,6 +1045,26 @@ namespace {
             return std::nullopt;
         }
         return bestRun->pointCloud.path;
+    }
+
+    [[nodiscard]] std::optional<std::filesystem::path> sceneXmlForOptimizationPointCloud(
+        const std::filesystem::path& pointCloudPath) {
+        const std::filesystem::path pointsDirectory = pointCloudPath.parent_path();
+        if (pointsDirectory.empty() || pointsDirectory.filename() != "points") {
+            return std::nullopt;
+        }
+
+        const std::filesystem::path runDirectory = pointsDirectory.parent_path();
+        if (runDirectory.empty()) {
+            return std::nullopt;
+        }
+
+        const std::filesystem::path scenePath = runDirectory / "scene.xml";
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(scenePath, error) || error) {
+            return std::nullopt;
+        }
+        return scenePath;
     }
 
     bool drawPlyBrowser(
@@ -1309,6 +1456,44 @@ namespace {
         return orbit;
     }
 
+    OrbitCamera makeOrbitCameraFromSceneCamera(
+        const Pale::CameraGPU& camera,
+        const SceneBounds& bounds,
+        const OrbitCamera& fallback) {
+        OrbitCamera orbit = fallback;
+        const glm::vec3 cameraPosition = Pale::sycl2glm(camera.pos);
+        glm::vec3 cameraForward = Pale::sycl2glm(camera.forward);
+        if (!std::isfinite(cameraForward.x) ||
+            !std::isfinite(cameraForward.y) ||
+            !std::isfinite(cameraForward.z) ||
+            glm::dot(cameraForward, cameraForward) <= 1.0e-20f) {
+            const glm::vec3 centerDirection = bounds.center - cameraPosition;
+            cameraForward =
+                glm::dot(centerDirection, centerDirection) > 1.0e-20f
+                    ? glm::normalize(centerDirection)
+                    : glm::vec3(0.0f, 0.0f, -1.0f);
+        } else {
+            cameraForward = glm::normalize(cameraForward);
+        }
+
+        float targetDistance = glm::dot(bounds.center - cameraPosition, cameraForward);
+        if (!std::isfinite(targetDistance) || targetDistance <= 0.001f) {
+            targetDistance = std::max(bounds.radius * 2.5f, 0.001f);
+        }
+
+        orbit.target = cameraPosition + cameraForward * targetDistance;
+        orbit.distance = targetDistance;
+        orbit.farClip = std::max(orbit.farClip, bounds.radius * 20.0f);
+        if (camera.hasPinholeIntrinsics != 0u && camera.fy > 0.0f && camera.height > 0) {
+            orbit.fovyDegrees = glm::degrees(
+                2.0f * std::atan(static_cast<float>(camera.height) / (2.0f * camera.fy)));
+        } else if (camera.fovy > 0.0f) {
+            orbit.fovyDegrees = camera.fovy;
+        }
+        orbit.setPositionKeepingTarget(cameraPosition);
+        return orbit;
+    }
+
     void registerAssetLoaders(Pale::AssetManager& assetManager) {
         assetManager.enableHotReload(true);
         assetManager.registerLoader<Pale::Mesh>(
@@ -1479,6 +1664,8 @@ namespace {
         settings.pointGeometryCoverageScale = 1.0f;
         settings.pointGeometryMinimumContributors = 1u;
         settings.pointGeometryDebugShowAlbedo = false;
+        settings.rendererDebugMinimumProjectedFootprint = false;
+        settings.rendererDebugMinimumProjectedFootprintPixels = 0.707f;
         return settings;
     }
 
@@ -1940,6 +2127,7 @@ int main(int argc, char** argv) {
 
         SceneBounds bounds = computeSceneBounds(buildProducts);
         OrbitCamera orbit = makeInitialOrbitCamera(buildProducts, bounds);
+        std::filesystem::path currentScenePath = args.scenePath;
         std::filesystem::path currentPointCloudPath = args.pointCloudPath;
         std::array<char, 1024> pointCloudPathBuffer{};
         copyPathToBuffer(currentPointCloudPath, pointCloudPathBuffer);
@@ -2155,6 +2343,104 @@ int main(int argc, char** argv) {
             return true;
         };
 
+        auto replaceSceneAndPointCloud = [&](
+            const std::filesystem::path& requestedScenePath,
+            const std::filesystem::path& requestedPointCloudPath,
+            bool keepLatestOptimizationMode = false) -> bool {
+            if (requestedScenePath.empty()) {
+                pointCloudStatus = "No scene XML path selected";
+                return false;
+            }
+            if (requestedPointCloudPath.empty()) {
+                pointCloudStatus = "No PLY path selected";
+                return false;
+            }
+            if (!isPlyPath(requestedPointCloudPath)) {
+                pointCloudStatus = "Selected file is not a .ply file";
+                return false;
+            }
+
+            std::error_code error;
+            if (!std::filesystem::is_regular_file(requestedScenePath, error) || error) {
+                pointCloudStatus = "Scene XML does not exist: " + requestedScenePath.string();
+                return false;
+            }
+            error.clear();
+            if (!std::filesystem::exists(requestedPointCloudPath, error) || error) {
+                pointCloudStatus = "PLY file does not exist: " + requestedPointCloudPath.string();
+                return false;
+            }
+
+            std::shared_ptr<Pale::Scene> nextScene;
+            try {
+                nextScene = loadSceneWithPointCloud(assetManager, requestedScenePath, requestedPointCloudPath);
+            } catch (const std::exception& exception) {
+                pointCloudStatus = "Failed to load optimization scene: " + std::string(exception.what());
+                return false;
+            }
+
+            OrbitCamera preservedOrbit = orbit;
+            CameraSource preservedCameraSource = cameraSource;
+            if (cameraSource == CameraSource::SceneXml && !buildProducts.cameraGPUs.empty()) {
+                const int cameraIndex = std::clamp(
+                    selectedSceneCameraIndex,
+                    0,
+                    static_cast<int>(buildProducts.cameraGPUs.size() - 1u));
+                preservedOrbit = makeOrbitCameraFromSceneCamera(
+                    buildProducts.cameraGPUs[static_cast<std::size_t>(cameraIndex)],
+                    bounds,
+                    orbit);
+                preservedCameraSource = CameraSource::Viewport;
+            }
+
+            scene = std::move(nextScene);
+            currentScenePath = requestedScenePath;
+            currentPointCloudPath = requestedPointCloudPath;
+            copyPathToBuffer(currentPointCloudPath, pointCloudPathBuffer);
+            if (currentPointCloudPath.has_parent_path()) {
+                plyBrowserDirectory = currentPointCloudPath.parent_path();
+            }
+
+            selectedSceneCameraIndex = 0;
+            selectedLightIndex = 0;
+            selectedSurfelLightIndex = 0;
+            selectedSurfelEditorIndex = -1;
+            surfelLightStatus.clear();
+            surfelEditorStatus.clear();
+            rebuildSceneGpu();
+            orbit = preservedOrbit;
+            orbit.farClip = std::max(orbit.farClip, std::max(1000.0f, bounds.radius * 20.0f));
+            cameraSource = preservedCameraSource;
+            cameraDirty = true;
+
+            if (!keepLatestOptimizationMode) {
+                latestOptimizationMode = false;
+                latestOptimizationPointsDirectory.clear();
+                latestOptimizationSnapshots.clear();
+                latestOptimizationSnapshotIndex = 0u;
+            }
+
+            pointCloudStatus =
+                "Loaded optimization scene " + currentScenePath.filename().string() +
+                " with " + std::to_string(buildProducts.points.size()) + " surfels";
+            return true;
+        };
+
+        auto replaceOptimizationPointCloud = [&](
+            const std::filesystem::path& requestedPath,
+            bool keepLatestOptimizationMode = false) -> bool {
+            if (const std::optional<std::filesystem::path> optimizationScenePath =
+                    sceneXmlForOptimizationPointCloud(requestedPath)) {
+                return replaceSceneAndPointCloud(*optimizationScenePath, requestedPath, keepLatestOptimizationMode);
+            }
+
+            const bool loaded = replacePointCloud(requestedPath, keepLatestOptimizationMode);
+            if (loaded) {
+                pointCloudStatus += "; no scene.xml found beside optimization run";
+            }
+            return loaded;
+        };
+
         auto refreshLatestOptimizationPointCloud = [&]() {
             const std::optional<std::filesystem::path> latestPointCloud =
                 findLatestOptimizationPointCloud(optimizationOutputDirectory);
@@ -2179,7 +2465,7 @@ int main(int argc, char** argv) {
             const std::size_t latestSnapshotIndex =
                 static_cast<std::size_t>(std::distance(snapshots.begin(), snapshotIterator));
 
-            if (replacePointCloud(*latestPointCloud, true)) {
+            if (replaceOptimizationPointCloud(*latestPointCloud, true)) {
                 latestOptimizationMode = true;
                 latestOptimizationPointsDirectory = pointsDirectory;
                 latestOptimizationSnapshots = std::move(snapshots);
@@ -2192,7 +2478,7 @@ int main(int argc, char** argv) {
             }
         };
 
-        auto stepLatestOptimizationSnapshot = [&](int offset) {
+        auto stepLatestOptimizationSnapshot = [&](int offset, std::optional<uint64_t> iterationStep = std::nullopt) {
             if (offset == 0) {
                 return;
             }
@@ -2240,7 +2526,7 @@ int main(int argc, char** argv) {
 
             if (switchedToNewLatestDirectory && direction > 0 && latestPointCloud) {
                 const std::size_t latestIndex = newLatestSnapshotIndex.value_or(snapshots.size() - 1u);
-                if (replacePointCloud(snapshots[latestIndex].path, true)) {
+                if (replaceOptimizationPointCloud(snapshots[latestIndex].path, true)) {
                     latestOptimizationMode = true;
                     latestOptimizationSnapshots = std::move(snapshots);
                     latestOptimizationSnapshotIndex = latestIndex;
@@ -2266,7 +2552,7 @@ int main(int argc, char** argv) {
                                            : static_cast<std::size_t>(std::distance(snapshots.begin(), currentIterator));
 
             if (direction < 0 && currentIndex == 0u) {
-                if (switchedToNewLatestDirectory && replacePointCloud(snapshots[currentIndex].path, true)) {
+                if (switchedToNewLatestDirectory && replaceOptimizationPointCloud(snapshots[currentIndex].path, true)) {
                     latestOptimizationMode = true;
                     pointCloudStatus = "Already at earliest optimization snapshot";
                 }
@@ -2282,10 +2568,50 @@ int main(int argc, char** argv) {
                 return;
             }
 
-            const std::size_t nextIndex =
-                direction < 0
-                    ? (currentIndex > stepCount ? currentIndex - stepCount : 0u)
-                    : std::min(currentIndex + stepCount, snapshots.size() - 1u);
+            std::size_t nextIndex = currentIndex;
+            if (iterationStep.has_value() && *iterationStep > 0u) {
+                const uint64_t currentIteration = snapshots[currentIndex].iteration;
+                uint64_t targetIteration = currentIteration;
+                if (direction < 0) {
+                    targetIteration = currentIteration - (currentIteration % *iterationStep);
+                    if (targetIteration == currentIteration && targetIteration >= *iterationStep) {
+                        targetIteration -= *iterationStep;
+                    }
+                } else {
+                    targetIteration =
+                        ((currentIteration / *iterationStep) + 1u) * *iterationStep;
+                }
+
+                const auto nextIterator = std::lower_bound(
+                    snapshots.begin(),
+                    snapshots.end(),
+                    targetIteration,
+                    [](const PointCloudSnapshot& snapshot, uint64_t target) {
+                        return snapshot.iteration < target;
+                    });
+                if (nextIterator == snapshots.begin()) {
+                    nextIndex = 0u;
+                } else if (nextIterator == snapshots.end()) {
+                    nextIndex = snapshots.size() - 1u;
+                } else {
+                    const std::size_t afterIndex =
+                        static_cast<std::size_t>(std::distance(snapshots.begin(), nextIterator));
+                    const std::size_t beforeIndex = afterIndex - 1u;
+                    const uint64_t beforeDelta = targetIteration - snapshots[beforeIndex].iteration;
+                    const uint64_t afterDelta = snapshots[afterIndex].iteration - targetIteration;
+                    nextIndex = beforeDelta <= afterDelta ? beforeIndex : afterIndex;
+                }
+
+                if (nextIndex == currentIndex) {
+                    nextIndex = direction < 0
+                                    ? (currentIndex > 0u ? currentIndex - 1u : 0u)
+                                    : std::min(currentIndex + 1u, snapshots.size() - 1u);
+                }
+            } else {
+                nextIndex = direction < 0
+                                ? (currentIndex > stepCount ? currentIndex - stepCount : 0u)
+                                : std::min(currentIndex + stepCount, snapshots.size() - 1u);
+            }
             const std::filesystem::path nextPath = snapshots[nextIndex].path;
             if (replacePointCloud(nextPath, true)) {
                 latestOptimizationMode = true;
@@ -2324,7 +2650,7 @@ int main(int argc, char** argv) {
 
             const std::size_t targetIndex = latestSnapshot ? snapshots.size() - 1u : 0u;
             const std::filesystem::path targetPath = snapshots[targetIndex].path;
-            if (replacePointCloud(targetPath, true)) {
+            if (replaceOptimizationPointCloud(targetPath, true)) {
                 latestOptimizationMode = true;
                 latestOptimizationPointsDirectory = pointsDirectory;
                 latestOptimizationSnapshots = std::move(snapshots);
@@ -2840,12 +3166,12 @@ int main(int argc, char** argv) {
                     jumpToOptimizationSnapshotBoundary(true);
                 }
 
-                if (ImGui::IsKeyDown(ImGuiKey_N)) {
-                    stepLatestOptimizationSnapshot(-kSnapshotFastStep);
+                if (ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+                    stepLatestOptimizationSnapshot(-1, kSnapshotIterationStep);
                 }
 
-                if (ImGui::IsKeyDown(ImGuiKey_M)) {
-                    stepLatestOptimizationSnapshot(kSnapshotFastStep);
+                if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+                    stepLatestOptimizationSnapshot(1, kSnapshotIterationStep);
                 }
 
                 if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
@@ -2895,7 +3221,7 @@ int main(int argc, char** argv) {
                 areaLights.empty() ? Pale::Entity{} : areaLights[static_cast<std::size_t>(selectedLightIndex)];
 
             ImGui::Begin("Renderer settings");
-            ImGui::TextWrapped("Scene: %s", args.scenePath.string().c_str());
+            ImGui::TextWrapped("Scene: %s", currentScenePath.string().c_str());
             ImGui::TextWrapped("Point cloud: %s", currentPointCloudPath.string().c_str());
             ImGui::Text("Point cloud PLY path");
             ImGui::PushItemWidth(-1.0f);
@@ -3506,6 +3832,31 @@ int main(int argc, char** argv) {
                             &settings.rendererDebugPointHitBatchLookahead)) {
                         renderRequested = true;
                     }
+
+                    if (ImGui::Checkbox(
+                            "Share layer direct light",
+                            &settings.rendererDebugShareLocalLayerDirectLighting)) {
+                        renderRequested = true;
+                    }
+
+                    if (ImGui::Checkbox(
+                            "2DGS low-pass footprint",
+                            &settings.rendererDebugMinimumProjectedFootprint)) {
+                        renderRequested = true;
+                    }
+
+                    float lowPassSigmaPixels =
+                        settings.rendererDebugMinimumProjectedFootprintPixels;
+                    if (ImGui::SliderFloat(
+                            "Low-pass sigma px",
+                            &lowPassSigmaPixels,
+                            0.05f,
+                            2.0f,
+                            "%.2f")) {
+                        settings.rendererDebugMinimumProjectedFootprintPixels =
+                            std::max(lowPassSigmaPixels, 0.0f);
+                        renderRequested = true;
+                    }
                 }
 
                 if (ImGui::Checkbox("Show point albedo", &settings.pointGeometryDebugShowAlbedo)) {
@@ -3864,21 +4215,33 @@ int main(int argc, char** argv) {
 	                    }
 	                    viewportPickArmed = false;
 	                }
-	                if (cameraSource == CameraSource::Viewport && imageHovered && !viewportCameraInputBlocked) {
-	                    if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-                        orbit.orbit(io.MouseDelta);
-                        cameraDirty = true;
-                    }
-                    if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
-                        ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
-                        orbit.pan(io.MouseDelta);
-                        cameraDirty = true;
-                    }
-                    if (io.MouseWheel != 0.0f) {
-                        orbit.zoom(io.MouseWheel);
-                        cameraDirty = true;
-                    }
-                }
+	                if (imageHovered && !viewportCameraInputBlocked) {
+	                    const bool orbitDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+	                    const bool panDragging =
+	                        ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
+	                        ImGui::IsMouseDragging(ImGuiMouseButton_Right);
+	                    const bool zooming = io.MouseWheel != 0.0f;
+	                    if (cameraSource == CameraSource::SceneXml && (orbitDragging || panDragging || zooming)) {
+	                        orbit = makeOrbitCameraFromSceneCamera(displayedCamera, bounds, orbit);
+	                        cameraSource = CameraSource::Viewport;
+	                        cameraDirty = true;
+	                        renderRequested = true;
+	                    }
+	                    if (cameraSource == CameraSource::Viewport) {
+	                        if (orbitDragging) {
+	                            orbit.orbit(io.MouseDelta);
+	                            cameraDirty = true;
+	                        }
+	                        if (panDragging) {
+	                            orbit.pan(io.MouseDelta);
+	                            cameraDirty = true;
+	                        }
+	                        if (zooming) {
+	                            orbit.zoom(io.MouseWheel);
+	                            cameraDirty = true;
+	                        }
+	                    }
+	                }
             } else {
                 ImGui::Text("No render yet");
             }

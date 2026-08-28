@@ -234,12 +234,39 @@ def make_under_reconstruction_clones(
         update_source = None
 
         if clone_idx.numel() > 0:
-            # 3DGS-style exact clone. Disabled by default; enable with exact_clone_scale_threshold.
-            new_positions.append(positions[clone_idx].detach().clone())
+            clone_grad = grad_pos[clone_idx]
+
+            if tangent_project_position_grad:
+                clone_tangent_u = tu_all[clone_idx]
+                clone_tangent_v = tv_all[clone_idx]
+                clone_grad = (
+                        torch.sum(clone_grad * clone_tangent_u, dim=1, keepdim=True) * clone_tangent_u
+                        + torch.sum(clone_grad * clone_tangent_v, dim=1, keepdim=True) * clone_tangent_v
+                )
+
+            clone_grad_norm = torch.linalg.norm(clone_grad, dim=1, keepdim=True)
+            clone_direction = torch.where(
+                    clone_grad_norm > 1.0e-12,
+                    clone_grad / torch.clamp(clone_grad_norm, min=1.0e-12),
+                    torch.zeros_like(clone_grad),
+            )
+
+            clone_spatial_scale = torch.max(scales[clone_idx].detach(), dim=1, keepdim=True).values
+            clone_offset = float(0.05) * clone_spatial_scale
+
+            # grad_pos is assumed to contain dL/dposition, so move toward descent.
+            clone_positions = (
+                    positions[clone_idx].detach()
+                    - clone_offset * clone_direction
+            )
+
+            new_positions.append(clone_positions)
             new_rotations.append(rotations[clone_idx].detach().clone())
             new_scales.append(scales[clone_idx].detach().clone())
             new_albedos.append(albedos[clone_idx].detach().clone())
-            new_opacities.append(torch.clamp(opacities[clone_idx].detach().clone(), 0.0, 1.0))
+            new_opacities.append(
+                    torch.clamp(opacities[clone_idx].detach().clone(), 0.0, 1.0)
+            )
             new_betas.append(betas[clone_idx].detach().clone())
             new_powers.append(powers[clone_idx].detach().clone())
             source_index_chunks.append(clone_idx)

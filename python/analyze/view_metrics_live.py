@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import sys
 import time
@@ -586,7 +587,17 @@ def read_metrics_csv_safely(
     """
     for _ in range(3):
         try:
-            dataframe = pd.read_csv(metrics_csv_path)
+            csv_bytes = metrics_csv_path.read_bytes()
+            if not csv_bytes.strip():
+                return previous_dataframe
+
+            if not csv_bytes.endswith(b"\n"):
+                last_newline_index = csv_bytes.rfind(b"\n")
+                if last_newline_index < 0:
+                    return previous_dataframe
+                csv_bytes = csv_bytes[:last_newline_index + 1]
+
+            dataframe = pd.read_csv(io.BytesIO(csv_bytes))
             if dataframe.empty:
                 return previous_dataframe
             return dataframe
@@ -731,18 +742,18 @@ def plot_top_loss_columns_with_dual_axis(
     plot_linear_columns(
         left_axis,
         dataframe,
-        rgb_columns + extra_columns,
+        total_columns + extra_columns,
         style_map,
     )
 
     right_axis = None
 
-    if total_columns:
+    if rgb_columns:
         right_axis = left_axis.twinx()
         plot_linear_columns(
             right_axis,
             dataframe,
-            total_columns,
+            rgb_columns,
             style_map,
         )
 
@@ -1066,6 +1077,13 @@ def draw_metrics_figure(
             "densification_split_points",
         ],
     )
+    point_prune_event_columns = get_available_columns(
+        point_count_dataframe,
+        [
+            "prune_scale_area_points",
+            "prune_inactive_gradient_points",
+        ],
+    )
 
     if (
             not top_columns
@@ -1075,6 +1093,7 @@ def draw_metrics_figure(
             and not point_growth_active_columns
             and not point_growth_total_columns
             and not point_growth_event_columns
+            and not point_prune_event_columns
     ):
         selected_loss_column = select_loss_column(
             loss_dataframe,
@@ -1157,6 +1176,18 @@ def draw_metrics_figure(
             linestyle="--",
             alpha=0.95,
         ),
+        "prune_scale_area_points_total": dict(
+            color="tab:red",
+            linewidth=1.8,
+            linestyle="-.",
+            alpha=0.95,
+        ),
+        "prune_inactive_gradient_points_total": dict(
+            color="tab:gray",
+            linewidth=1.8,
+            linestyle="-.",
+            alpha=0.95,
+        ),
     }
 
     include_geometry_panel = len(visible_geometry_rows) > 0
@@ -1166,6 +1197,7 @@ def draw_metrics_figure(
             or len(point_growth_active_columns) > 0
             or len(point_growth_total_columns) > 0
             or len(point_growth_event_columns) > 0
+            or len(point_prune_event_columns) > 0
     )
     num_panels = 2 + int(include_raw_panel) + int(include_geometry_panel) + int(include_point_count_panel)
 
@@ -1226,15 +1258,15 @@ def draw_metrics_figure(
         apply_loss_y_scale(ax_top_right, loss_y_scale)
 
     if any(
-            column_name in {"loss_rgb_mean", "loss_rgb_sum"}
+            column_name in {"loss_total_mean", "loss_total_sum"}
             for column_name in top_columns
     ):
-        ax_top.set_ylabel(f"Mean RGB loss ({loss_y_scale})")
+        ax_top.set_ylabel(f"Mean total loss ({loss_y_scale})")
     else:
         ax_top.set_ylabel(f"Mean image loss ({loss_y_scale})")
 
     if ax_top_right is not None:
-        ax_top_right.set_ylabel(f"Mean total loss ({loss_y_scale})")
+        ax_top_right.set_ylabel(f"Mean RGB loss ({loss_y_scale})")
 
     latest_iteration = int(loss_dataframe["iteration"].iloc[-1])
     loss_row_count = len(loss_dataframe)
@@ -1280,7 +1312,11 @@ def draw_metrics_figure(
         f"\npoints={point_count_history_label}"
     )
 
-    ax_top.grid(True)
+    if ax_top_right is not None:
+        ax_top.grid(False)
+        ax_top_right.grid(True)
+    else:
+        ax_top.grid(True)
     set_combined_legend(ax_top, ax_top_right)
 
     ax_weighted.set_ylabel(f"Mean weighted regularizers ({loss_y_scale})")
@@ -1358,6 +1394,25 @@ def draw_metrics_figure(
                     **style_map.get(f"{column_name}_total", {}),
                 )
 
+        point_prune_labels = {
+            "prune_scale_area_points": "pruned: small area total",
+            "prune_inactive_gradient_points": "pruned: inactive gradient total",
+        }
+        for column_name in point_prune_event_columns:
+            values = np.nancumsum(
+                np.nan_to_num(
+                    dataframe_column_as_float_array(point_count_dataframe, column_name),
+                    nan=0.0,
+                )
+            )
+            ax_point_count.step(
+                point_count_dataframe["iteration"],
+                values,
+                where="post",
+                label=point_prune_labels.get(column_name, f"{column_name} total"),
+                **style_map.get(f"{column_name}_total", {}),
+            )
+
         ax_point_count.set_ylabel("Points")
         ax_point_count.yaxis.set_major_formatter(StrMethodFormatter("{x:.0f}"))
         ax_point_count.grid(True)
@@ -1381,6 +1436,7 @@ def draw_metrics_figure(
         + point_growth_active_columns
         + point_growth_total_columns
         + ([] if point_growth_active_columns or point_growth_total_columns else point_growth_event_columns)
+        + point_prune_event_columns
     )
 
     return ", ".join(plotted_columns)
@@ -1433,6 +1489,7 @@ def main() -> None:
     previous_dataframe: pd.DataFrame | None = None
     previous_file_state: tuple[float, int] | None = None
     previous_run_dir: Path | None = None
+    last_plot_warning: str | None = None
     geometry_state = GeometryEvaluationState()
 
     print("Starting live metrics viewer. Press Ctrl+C in the terminal to stop.")
@@ -1455,6 +1512,7 @@ def main() -> None:
                 previous_run_dir = run_dir
                 previous_file_state = None
                 previous_dataframe = None
+                last_plot_warning = None
 
                 print()
                 print(f"Watching run       : {run_dir}")
@@ -1507,7 +1565,8 @@ def main() -> None:
                     pass
 
             if previous_dataframe is not None and (file_changed or geometry_changed):
-                plotted_columns = draw_metrics_figure(
+                try:
+                    plotted_columns = draw_metrics_figure(
                         figure=figure,
                         dataframe=previous_dataframe,
                         metrics_csv_path=metrics_csv_path,
@@ -1519,14 +1578,24 @@ def main() -> None:
                         point_count_windowed=args.point_count_windowed,
                         loss_y_scale=args.loss_y_scale,
                         geometry_rows=geometry_state.rows,
-                )
+                    )
+                except ValueError as exception:
+                    warning_text = str(exception)
+                    if warning_text != last_plot_warning:
+                        print(
+                            f"Waiting for plottable metrics rows: {warning_text}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        last_plot_warning = warning_text
+                else:
+                    last_plot_warning = None
+                    figure.canvas.draw_idle()
+                    figure.canvas.flush_events()
 
-                figure.canvas.draw_idle()
-                figure.canvas.flush_events()
-
-                if args.save_plot:
-                    output_png_path = run_dir / args.loss_output_name
-                    figure.savefig(output_png_path, dpi=200)
+                    if args.save_plot:
+                        output_png_path = run_dir / args.loss_output_name
+                        figure.savefig(output_png_path, dpi=200)
 
             plt.pause(args.refresh_seconds)
 

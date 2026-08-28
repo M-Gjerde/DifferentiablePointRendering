@@ -245,6 +245,23 @@ namespace Pale {
         uint64_t surfelPlaneTests = 0u;
         uint64_t surfelProfileTests = 0u;
         uint64_t surfelAcceptedHits = 0u;
+
+        uint64_t forwardGatherPixels = 0u;
+        uint64_t forwardGatherPointHitQueries = 0u;
+        uint64_t forwardGatherPointHitCandidates = 0u;
+        uint64_t forwardGatherLocalLayers = 0u;
+        uint64_t forwardGatherLocalLayerHits = 0u;
+        uint64_t forwardGatherObjectProfileHits = 0u;
+        uint64_t forwardGatherLowPassProfileHits = 0u;
+        uint64_t forwardGatherRegularizerHits = 0u;
+        uint64_t forwardGatherPhotonGatherCalls = 0u;
+        uint64_t forwardGatherDirectLightCalls = 0u;
+        uint64_t forwardGatherDirectLightLightVisits = 0u;
+        uint64_t forwardGatherDepthPairIterations = 0u;
+        uint64_t forwardGatherMeshHits = 0u;
+        uint64_t forwardGatherNoHitTerminations = 0u;
+        uint64_t forwardGatherOpacityTerminations = 0u;
+        uint64_t forwardGatherMaxSplatTerminations = 0u;
     };
 
     CHECK_16(RenderProfilingCounters);
@@ -319,7 +336,7 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 8;
+    constexpr uint32_t kMaxSplatEventsPerRay = 12;
     constexpr uint32_t kMaxLocalSurfelHits = 8;
     constexpr uint32_t kMaxPointHitBatch = 8;
     constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;
@@ -329,7 +346,7 @@ namespace Pale {
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
     constexpr float LocalLayerDepthEpsilon = 7.50e-3f;
-    constexpr float LocalLayerNormalCosineThreshold = 0.7071f; // 45 degrees mismatch to stop blending slabs
+    constexpr float LocalLayerNormalCosineThreshold = -1.0f; // 45 degrees mismatch to stop blending slabs
     constexpr float DepthDistortionMaxPairDepthSeparation = LocalLayerDepthEpsilon * 00.0f;
 
     /*************************  Ray & Hit *****************************/
@@ -349,6 +366,7 @@ namespace Pale {
         uint32_t traversalIndex{0};
         float openSegmentProposalInverse = 1.0f;
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
+        float2 cameraSamplePixel{FLT_MAX, FLT_MAX};
         uint32_t lightIndex = UINT32_MAX;
         uint32_t hasTrackedParameter = UINT32_MAX;
         uint32_t pathId;
@@ -356,11 +374,21 @@ namespace Pale {
 
     static_assert(std::is_trivially_copyable_v<RayState>);
 
+    constexpr uint32_t kSurfelAlphaProfileObject = 0u;
+    constexpr uint32_t kSurfelAlphaProfileLowPass = 1u;
+
     struct LocalSurfelLayerHit {
         float tWorld;
         uint32_t primitiveIndex;
         float alphaGeom;
         float3 hitPositionW;
+        float2 uv{0.0f, 0.0f};
+        float objectAlphaGeom = 0.0f;
+        float lowPassAlphaGeom = 0.0f;
+        float2 lowPassDeltaPixels{0.0f, 0.0f};
+        float lowPassSigmaPixels = 0.0f;
+        uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
+        uint32_t usesSurfelCenterHitPosition = 0u;
     };
 
     struct SurfelEvent {
@@ -442,6 +470,13 @@ namespace Pale {
         uint32_t primitiveIndex = UINT32_MAX;
         float2 uv = float2{FLT_MAX, FLT_MAX};
         float alphaGeom = FLT_MAX;
+        float objectAlphaGeom = 0.0f;
+        float lowPassAlphaGeom = 0.0f;
+        float2 lowPassDeltaPixels{0.0f, 0.0f};
+        float lowPassSigmaPixels = 0.0f;
+        uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
+        uint32_t usesSurfelCenterHitPosition = 0u;
+        float3 hitPositionW{FLT_MAX, FLT_MAX, FLT_MAX};
         int32_t sideSign = 1;
         float3 incomingDirection = float3{FLT_MAX, FLT_MAX, FLT_MAX};
         uint32_t pathId = UINT32_MAX;
@@ -766,8 +801,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.3f;
-        float qReflect = 0.7f;
+        float qNull = 0.5f;
+        float qReflect = 0.5f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
@@ -808,10 +843,13 @@ namespace Pale {
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
-        uint32_t rendererDebugMaxSplatEventsPerRay = 8;
+        uint32_t rendererDebugMaxSplatEventsPerRay = 12;
         uint32_t rendererDebugMaxLocalSurfelHits = 8;
         uint32_t rendererDebugPointHitBatchSize = 8;
         bool rendererDebugPointHitBatchLookahead = true;
+        bool rendererDebugShareLocalLayerDirectLighting = false;
+        bool rendererDebugMinimumProjectedFootprint = false;
+        float rendererDebugMinimumProjectedFootprintPixels = 0.707f;
     };
 
     inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {

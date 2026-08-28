@@ -214,6 +214,30 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         const uint32_t pointHitBatchLookaheadCapacity =
             rendererDebugPointHitBatchLookaheadCapacity(settings);
         const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
+        const bool shareLocalLayerDirectLighting = settings.rendererDebugShareLocalLayerDirectLighting;
+        const bool profileEnabled = scene.profileCounters != nullptr;
+        uint64_t profilePointHitQueries = 0u;
+        uint64_t profilePointHitCandidates = 0u;
+        uint64_t profileLocalLayers = 0u;
+        uint64_t profileLocalLayerHits = 0u;
+        uint64_t profileObjectProfileHits = 0u;
+        uint64_t profileLowPassProfileHits = 0u;
+        uint64_t profileRegularizerHits = 0u;
+        uint64_t profilePhotonGatherCalls = 0u;
+        uint64_t profileDirectLightCalls = 0u;
+        uint64_t profileDirectLightLightVisits = 0u;
+        uint64_t profileDepthPairIterations = 0u;
+        uint64_t profileMeshHits = 0u;
+        uint64_t profileNoHitTerminations = 0u;
+        uint64_t profileOpacityTerminations = 0u;
+        uint64_t profileMaxSplatTerminations = 0u;
+        bool profileStoppedByNoHit = false;
+        bool profileStoppedByOpacity = false;
+        const MinimumProjectedFootprintFilter minimumFootprintFilter =
+            minimumProjectedFootprintFilterFromSettings(
+                settings,
+                sensor.camera,
+                float2{static_cast<float>(pixelX), static_cast<float>(pixelY)});
         uint32_t directPointInstanceIndex = kInvalidIndex;
         const bool canUsePointHitBatches =
             pointHitBatchSize > 1u &&
@@ -285,6 +309,10 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             accumulatedCompositeWeight += compositeWeight;
 
             const float ndcDepth = depthDistortionNdc01(depth);
+            if (profileEnabled) {
+                profileRegularizerHits += 1u;
+                profileDepthPairIterations += previousDepthDistortionHitCount;
+            }
             for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                 const float pairWeight = depthDistortionPairSeparationWeight(
                     previousDepthDistortionDepths[previousIndex], depth);
@@ -310,6 +338,31 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
 
         auto renderPointLocalLayer = [&](const PointCloudLocalLayer &localLayer, const Ray &layerRay) {
             const float slabOpacity = localLayer.opacity;
+            if (profileEnabled) {
+                profileLocalLayers += 1u;
+                profileLocalLayerHits += localLayer.hitCount;
+                for (uint32_t localHitIndex = 0u; localHitIndex < localLayer.hitCount; ++localHitIndex) {
+                    if (localLayer.hits[localHitIndex].alphaProfileBranch == kSurfelAlphaProfileLowPass) {
+                        profileLowPassProfileHits += 1u;
+                    } else {
+                        profileObjectProfileHits += 1u;
+                    }
+                }
+            }
+            if (localLayer.hitCount == 0u) {
+                return;
+            }
+
+            const LocalSurfelLayerHit &anchorHit = localLayer.hits[0];
+            const float3 anchorPositionW = anchorHit.hitPositionW;
+            float3 anchorNormalW = localLayer.referenceNormalW;
+            if (dot(anchorNormalW, anchorNormalW) <= 1.0e-16f) {
+                const Point &anchorSurfel = scene.points[anchorHit.primitiveIndex];
+                anchorNormalW = normalize(cross(anchorSurfel.tanU, anchorSurfel.tanV));
+                if (dot(anchorNormalW, -layerRay.direction) < 0.0f) anchorNormalW = -anchorNormalW;
+            }
+            const float sharedDirectLightEpsilon = localLayer.directLightEpsilon[0];
+
             for (uint32_t localHitIndex = 0u; localHitIndex < localLayer.hitCount; ++localHitIndex) {
                 const float layerWeight = localLayer.weight[localHitIndex];
                 if (layerWeight <= 0.0f) continue;
@@ -318,12 +371,91 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
                 if (dot(normalW, -layerRay.direction) < 0.0f) normalW = -normalW;
                 const float compositeWeight = renderingTransmittance * layerWeight;
+                if (profileEnabled) {
+                    profilePhotonGatherCalls += 1u;
+                }
                 const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(localHit.hitPositionW, normalW, photonMap);
                 const float3 indirectRadiance = indirectIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf);
                 const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
-                const float3 emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
-                const float3 directRadiance = estimateDirectPointSampledPointLights(scene, settings, localHit.hitPositionW, normalW, surfel.alpha_r * surfel.albedo, localLayer.directLightEpsilon[localHitIndex]);
+                float3 emittedRadiance{0.0f};
+                if (surfelArea > 1.0e-12f && sycl::isfinite(surfelArea)) {
+                    emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * surfelArea));
+                }
+                float3 directRadiance{0.0f};
+                if (!shareLocalLayerDirectLighting) {
+                    if (profileEnabled) {
+                        profileDirectLightCalls += 1u;
+                        profileDirectLightLightVisits += scene.lightCount;
+                    }
+                    directRadiance = estimateDirectPointSampledPointLights(
+                        scene,
+                        settings,
+                        localHit.hitPositionW,
+                        normalW,
+                        surfel.alpha_r * surfel.albedo,
+                        localLayer.directLightEpsilon[localHitIndex]);
+                }
                 accumulatedRadianceRGB += compositeWeight * (emittedRadiance + indirectRadiance + directRadiance);
+            }
+
+            if (shareLocalLayerDirectLighting && profileEnabled) {
+                profileDirectLightCalls += 1u;
+                profileDirectLightLightVisits += scene.lightCount;
+            }
+            if (!shareLocalLayerDirectLighting) {
+                if (slabOpacity > kAlphaEpsilon) { accumulatedRenderingWeight += renderingTransmittance * slabOpacity; }
+                renderingTransmittance *= localLayer.transmission;
+                return;
+            }
+            for (uint32_t lightIndex = 0u; lightIndex < scene.lightCount; ++lightIndex) {
+                const GPULightRecord &light = scene.lights[lightIndex];
+                if (light.lightType != LightType::Surfel) {
+                    continue;
+                }
+
+                const Point &lightSurfel = scene.points[light.primitiveIndex];
+                const float3 lightPositionW = lightSurfel.position;
+                const float3 toLight = lightPositionW - anchorPositionW;
+                const float distanceSquared = dot(toLight, toLight);
+                if (distanceSquared <= 1.0e-12f) {
+                    continue;
+                }
+
+                const float distance = sycl::sqrt(distanceSquared);
+                const float3 lightDirection = toLight / distance;
+                const float shadowTransmission =
+                    traceShadowTransmissionToPoint(
+                        scene,
+                        settings,
+                        anchorPositionW,
+                        anchorNormalW,
+                        lightPositionW,
+                        sharedDirectLightEpsilon);
+                if (shadowTransmission <= 0.0f) {
+                    continue;
+                }
+
+                const float3 radiantIntensity =
+                    light.flux * light.color * (1.0f / (4.0f * M_PIf));
+                const float3 sharedIncident =
+                    radiantIntensity * shadowTransmission * (1.0f / distanceSquared);
+
+                for (uint32_t localHitIndex = 0u; localHitIndex < localLayer.hitCount; ++localHitIndex) {
+                    const float layerWeight = localLayer.weight[localHitIndex];
+                    if (layerWeight <= 0.0f) continue;
+                    const LocalSurfelLayerHit &localHit = localLayer.hits[localHitIndex];
+                    const Point &surfel = scene.points[localHit.primitiveIndex];
+                    float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
+                    if (dot(normalW, -layerRay.direction) < 0.0f) normalW = -normalW;
+                    const float surfaceCosine = sycl::fmax(0.0f, dot(normalW, lightDirection));
+                    if (surfaceCosine <= 0.0f) {
+                        continue;
+                    }
+                    const float3 diffuseBrdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
+                    const float compositeWeight = renderingTransmittance * layerWeight;
+                    accumulatedRadianceRGB +=
+                        compositeWeight * diffuseBrdf * sharedIncident * surfaceCosine;
+                }
             }
             if (slabOpacity > kAlphaEpsilon) { accumulatedRenderingWeight += renderingTransmittance * slabOpacity; }
             renderingTransmittance *= localLayer.transmission;
@@ -340,9 +472,18 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                     std::numeric_limits<float>::infinity(),
                     pointHits,
                     pointHitBatchLookaheadCapacity,
-                    pointInstanceIndex);
+                    pointInstanceIndex,
+                    minimumFootprintFilter);
+                if (profileEnabled) {
+                    profilePointHitQueries += 1u;
+                    profilePointHitCandidates += hitCount;
+                }
 
                 if (hitCount == 0u) {
+                    if (profileEnabled) {
+                        profileNoHitTerminations += 1u;
+                        profileStoppedByNoHit = true;
+                    }
                     break;
                 }
 
@@ -374,6 +515,10 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                         ++hitCursor;
                     }
                     if (renderingTransmittance <= kAlphaEpsilon) {
+                        if (profileEnabled && !profileStoppedByOpacity) {
+                            profileOpacityTerminations += 1u;
+                            profileStoppedByOpacity = true;
+                        }
                         break;
                     }
                 }
@@ -403,18 +548,56 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 renderingRay.origin += renderingRay.direction * (furthestConsumedT + RayEpsilon);
                 if (renderingTransmittance <= kAlphaEpsilon ||
                     (consumedAllFetchedHits && hitCount < pointHitBatchLookaheadCapacity)) {
+                    if (profileEnabled && renderingTransmittance <= kAlphaEpsilon && !profileStoppedByOpacity) {
+                        profileOpacityTerminations += 1u;
+                        profileStoppedByOpacity = true;
+                    }
+                    if (profileEnabled &&
+                        renderingTransmittance > kAlphaEpsilon &&
+                        consumedAllFetchedHits &&
+                        hitCount < pointHitBatchLookaheadCapacity &&
+                        !profileStoppedByNoHit) {
+                        profileNoHitTerminations += 1u;
+                        profileStoppedByNoHit = true;
+                    }
                     break;
                 }
+            }
+            if (profileEnabled &&
+                !profileStoppedByNoHit &&
+                !profileStoppedByOpacity &&
+                renderingTransmittance > kAlphaEpsilon) {
+                profileMaxSplatTerminations += 1u;
             }
         } else {
             for (uint32_t traversalIndex = 0u; traversalIndex < maxSplatEventsPerRay; ++traversalIndex) {
                 WorldHit worldHit{};
+                if (profileEnabled) {
+                    profilePointHitQueries += 1u;
+                }
                 intersectScene(renderingRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
-                if (!worldHit.hit) break;
+                if (!worldHit.hit) {
+                    if (profileEnabled) {
+                        profileNoHitTerminations += 1u;
+                        profileStoppedByNoHit = true;
+                    }
+                    break;
+                }
                 buildIntersectionNormal(scene, worldHit);
                 const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
                 if (instance.geometryType == GeometryType::PointCloud) {
-                    const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(renderingRay, worldHit, instance, scene, localLayerDepthEpsilon, maxLocalSurfelHits, localLayerNormalCosineThreshold);
+                    const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(
+                        renderingRay,
+                        worldHit,
+                        instance,
+                        scene,
+                        localLayerDepthEpsilon,
+                        maxLocalSurfelHits,
+                        localLayerNormalCosineThreshold,
+                        minimumFootprintFilter);
+                    if (profileEnabled) {
+                        profilePointHitCandidates += localLayer.hitCount;
+                    }
                     if (keepTracingRegularizer) {
                         for (uint32_t localHitIndex = 0u;
                              localHitIndex < localLayer.hitCount && regularizerHitIndex < maxSplatEventsPerRay;
@@ -431,6 +614,9 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                     continue;
                 }
                 if (instance.geometryType == GeometryType::Mesh) {
+                    if (profileEnabled) {
+                        profileMeshHits += 1u;
+                    }
                     const GPUMaterial &material = scene.materials[instance.materialIndex];
                     const bool isBackfaceHit = dot(renderingRay.direction, worldHit.geometricNormalW) > 0.0f;
                     const float3 normalW = isBackfaceHit ? -worldHit.geometricNormalW : worldHit.geometricNormalW;
@@ -439,14 +625,29 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                         const float3 emittedRadiance = material.power * material.baseColor;
                         accumulatedRadianceRGB += renderingTransmittance * min(emittedRadiance, 1.0f);
                     } else {
+                        if (profileEnabled) {
+                            profilePhotonGatherCalls += 1u;
+                            profileDirectLightCalls += 1u;
+                            profileDirectLightLightVisits += scene.lightCount;
+                        }
                         const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(worldHit.hitPositionW, normalW, photonMap);
                         const float3 indirectRadiance = (material.baseColor * M_1_PIf) * indirectIrradiance;
                         const float3 directRadiance = estimateDirectPointSampledPointLights(scene, settings, worldHit.hitPositionW, normalW, material.baseColor, localLayerDepthEpsilon);
                         accumulatedRadianceRGB += renderingTransmittance * (indirectRadiance + directRadiance);
                     }
                     renderingTransmittance = 0.0f;
+                    if (profileEnabled && !profileStoppedByOpacity) {
+                        profileOpacityTerminations += 1u;
+                        profileStoppedByOpacity = true;
+                    }
                     break;
                 }
+            }
+            if (profileEnabled &&
+                !profileStoppedByNoHit &&
+                !profileStoppedByOpacity &&
+                renderingTransmittance > kAlphaEpsilon) {
+                profileMaxSplatTerminations += 1u;
             }
         }
         // =====================================================================
@@ -476,6 +677,25 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             sensor.visibleNormalBuffer[pixelIndex] = float4{accumulatedWeightedNormal.x(), accumulatedWeightedNormal.y(), accumulatedWeightedNormal.z(), 1.0f};
         } else {
             sensor.visibleNormalBuffer[pixelIndex] = float4{0.0f};
+        }
+        if (profileEnabled) {
+            RenderProfilingCounters *counters = scene.profileCounters;
+            addRenderProfileCounter(&counters->forwardGatherPixels, 1u);
+            addRenderProfileCounter(&counters->forwardGatherPointHitQueries, profilePointHitQueries);
+            addRenderProfileCounter(&counters->forwardGatherPointHitCandidates, profilePointHitCandidates);
+            addRenderProfileCounter(&counters->forwardGatherLocalLayers, profileLocalLayers);
+            addRenderProfileCounter(&counters->forwardGatherLocalLayerHits, profileLocalLayerHits);
+            addRenderProfileCounter(&counters->forwardGatherObjectProfileHits, profileObjectProfileHits);
+            addRenderProfileCounter(&counters->forwardGatherLowPassProfileHits, profileLowPassProfileHits);
+            addRenderProfileCounter(&counters->forwardGatherRegularizerHits, profileRegularizerHits);
+            addRenderProfileCounter(&counters->forwardGatherPhotonGatherCalls, profilePhotonGatherCalls);
+            addRenderProfileCounter(&counters->forwardGatherDirectLightCalls, profileDirectLightCalls);
+            addRenderProfileCounter(&counters->forwardGatherDirectLightLightVisits, profileDirectLightLightVisits);
+            addRenderProfileCounter(&counters->forwardGatherDepthPairIterations, profileDepthPairIterations);
+            addRenderProfileCounter(&counters->forwardGatherMeshHits, profileMeshHits);
+            addRenderProfileCounter(&counters->forwardGatherNoHitTerminations, profileNoHitTerminations);
+            addRenderProfileCounter(&counters->forwardGatherOpacityTerminations, profileOpacityTerminations);
+            addRenderProfileCounter(&counters->forwardGatherMaxSplatTerminations, profileMaxSplatTerminations);
         }
     });
     kernelEvent3.wait();
@@ -590,6 +810,11 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
         float accumulatedMeanDepth = 0.0f;
         const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
         const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
+        const MinimumProjectedFootprintFilter minimumFootprintFilter =
+            minimumProjectedFootprintFilterFromSettings(
+                settings,
+                sensor.camera,
+                float2{static_cast<float>(pixelX), static_cast<float>(pixelY)});
         uint32_t directPointInstanceIndex = kInvalidIndex;
         const bool canUsePointHitBatches =
             pointHitBatchSize > 1u &&
@@ -604,7 +829,10 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
             const float3 indirectIrradiance = gatherDiffuseIrradianceAtPoint(pointHit.hitPositionW, normalW, photonMap);
             const float3 indirectRadiance = indirectIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf) * alphaEff;
             const float surfelArea = M_PIf * surfel.scale.x() * surfel.scale.y();
-            float3 emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * surfelArea)) * alphaEff;
+            float3 emittedRadiance{0.0f};
+            if (surfelArea > 1.0e-12f && sycl::isfinite(surfelArea)) {
+                emittedRadiance = surfel.albedo * (surfel.flux / (M_PIf * surfelArea)) * alphaEff;
+            }
             if (surfel.isEmissive() && hitBackside) {
                 // emittedRadiance = float3(0.0f, 0.0f, 0.0f);
             }
@@ -661,7 +889,8 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                     std::numeric_limits<float>::infinity(),
                     pointHits,
                     batchCapacity,
-                    pointInstanceIndex);
+                    pointInstanceIndex,
+                    minimumFootprintFilter);
 
                 if (hitCount == 0u) { break; }
 
@@ -694,6 +923,13 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                     pointHit.primitiveIndex = worldHit.primitiveIndex;
                     pointHit.alphaGeom = worldHit.alphaGeom;
                     pointHit.hitPositionW = worldHit.hitPositionW;
+                    pointHit.uv = phiInverse(worldHit.hitPositionW, scene.points[worldHit.primitiveIndex]);
+                    pointHit.objectAlphaGeom = worldHit.alphaGeom;
+                    pointHit.lowPassAlphaGeom = 0.0f;
+                    pointHit.lowPassDeltaPixels = float2{0.0f, 0.0f};
+                    pointHit.lowPassSigmaPixels = 0.0f;
+                    pointHit.alphaProfileBranch = kSurfelAlphaProfileObject;
+                    pointHit.usesSurfelCenterHitPosition = 0u;
                     accumulatePointHit(pointHit);
                     primaryRay.origin = worldHit.hitPositionW + primaryRay.direction * RayEpsilon;
                     continue;
