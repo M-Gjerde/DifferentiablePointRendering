@@ -336,7 +336,7 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 12;
+    constexpr uint32_t kMaxSplatEventsPerRay = 8;
     constexpr uint32_t kMaxLocalSurfelHits = 8;
     constexpr uint32_t kMaxPointHitBatch = 8;
     constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;
@@ -347,7 +347,7 @@ namespace Pale {
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
     constexpr float LocalLayerDepthEpsilon = 7.50e-3f;
     constexpr float LocalLayerNormalCosineThreshold = -1.0f; // 45 degrees mismatch to stop blending slabs
-    constexpr float DepthDistortionMaxPairDepthSeparation = LocalLayerDepthEpsilon * 00.0f;
+    constexpr float DepthDistortionMaxPairDepthSeparation = LocalLayerDepthEpsilon * 20.0f;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -843,9 +843,9 @@ namespace Pale {
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
-        uint32_t rendererDebugMaxSplatEventsPerRay = 12;
+        uint32_t rendererDebugMaxSplatEventsPerRay = 8;
         uint32_t rendererDebugMaxLocalSurfelHits = 8;
-        uint32_t rendererDebugPointHitBatchSize = 8;
+        uint32_t rendererDebugPointHitBatchSize = 6;
         bool rendererDebugPointHitBatchLookahead = true;
         bool rendererDebugShareLocalLayerDirectLighting = false;
         bool rendererDebugMinimumProjectedFootprint = false;
