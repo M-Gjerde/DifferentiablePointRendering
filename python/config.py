@@ -73,13 +73,13 @@ class OptimizationConfig:
     # Position LR scheduling. The option names are kept for run-config compatibility.
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 2.0
-    global_lr_scale_final: float = 0.4
+    global_lr_scale_final: float = 0.5
     global_lr_start_iteration: int = 0
     global_lr_max_steps: int = int(4_000)
 
-    depth_distort_weight: float = 100
+    depth_distort_weight: float = 500
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
+    normal_consistency_weight: float = 0.025
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     minimum_projected_footprint: bool = True
@@ -93,18 +93,18 @@ class OptimizationConfig:
     # newly cloned surfels more optimization steps as their movement slows.
     densification_interval: int = 50
     densification_interval_final: int = 100
-    prune_interval: int = 200
+    prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 2.0e-4
+    densification_grad_abs_min_final: float = 2.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 4_000
     densification_scale_min: float = 3.0e-3
     densification_split_offset_scale: float = 0.1
     densification_split_scale_factor: float = math.sqrt(2)
-    densification_exact_clone_percent_dense: float = 0.025
+    densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
