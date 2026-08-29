@@ -248,7 +248,6 @@ def make_device_training_step_options(
             float(config.learning_rate_beta),
         ),
         "camera_batch_scale": camera_batch_scale,
-        "max_rotation_step_radians": float(config.max_rotation_step_radians),
         "return_gradient_stats": return_gradient_stats,
         "include_depth_distortion": include_depth_distortion,
         "include_normal_consistency": include_normal_consistency,
@@ -1407,7 +1406,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     rotations,
                     rotation_delta,
                     trainable_surfel_mask=trainable_surfel_mask,
-                    max_rotation_step_radians=float(config.max_rotation_step_radians),
                 )
 
                 scheduled_opacity_reset = (

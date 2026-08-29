@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 8
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -66,21 +66,20 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float | None = None
     learning_rate_rotation: float | None = None
-    max_rotation_step_radians: float = 0.01
     learning_rate_scale: float | None = None
     learning_rate_albedo: float | None = None
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
     # Position LR scheduling. The option names are kept for run-config compatibility.
     use_global_lr_schedule: bool = True
-    global_lr_scale_init: float = 3.0
-    global_lr_scale_final: float = 1.0
+    global_lr_scale_init: float = 2.0
+    global_lr_scale_final: float = 0.4
     global_lr_start_iteration: int = 0
     global_lr_max_steps: int = int(4_000)
 
-    depth_distort_weight: float = 500
+    depth_distort_weight: float = 100
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.025
+    normal_consistency_weight: float = 0.005
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     minimum_projected_footprint: bool = True
@@ -92,20 +91,20 @@ class OptimizationConfig:
 
     # Densification becomes less frequent over the position LR schedule, giving
     # newly cloned surfels more optimization steps as their movement slows.
-    densification_interval: int = 25
+    densification_interval: int = 50
     densification_interval_final: int = 100
-    prune_interval: int = 25
+    prune_interval: int = 200
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 6.0e-4
-    densification_grad_abs_min_final: float = 1.0e-4
+    densification_grad_abs_min: float = 8.0e-4
+    densification_grad_abs_min_final: float = 2.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 4_000
     densification_scale_min: float = 3.0e-3
-    densification_split_offset_scale: float = 0.025
+    densification_split_offset_scale: float = 0.1
     densification_split_scale_factor: float = math.sqrt(2)
-    densification_exact_clone_percent_dense: float = 0.035
+    densification_exact_clone_percent_dense: float = 0.025
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
@@ -115,7 +114,7 @@ class OptimizationConfig:
     # Pruning
     opacity_prune_threshold: float = 0.0
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = math.pi * 1.0e-7
+    min_surfel_area: float = math.pi * 5.0e-7
     inactive_gradient_prune_cycles: int = 2  # One cycle is one loop through all training cameras
 
     # Misc scheduling
@@ -164,11 +163,11 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
         factor_position = 0.001
-        factor_rotation = 0.008
+        factor_rotation = 0.05
         factor_scale = 0.0008
-        factor_albedo = 0.01
+        factor_albedo = 0.005
         factor_opacity = 0.00
-        factor_beta = 0.08
+        factor_beta = 0.002
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -361,7 +360,6 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float)
     parser.add_argument("--lr-pos", dest="learning_rate_position", type=float)
     parser.add_argument("--lr-rot", dest="learning_rate_rotation", type=float)
-    parser.add_argument("--max-rotation-step-radians", type=float)
     parser.add_argument("--lr-scale", dest="learning_rate_scale", type=float)
     parser.add_argument("--lr-albedo", dest="learning_rate_albedo", type=float)
     parser.add_argument("--lr-opacity", dest="learning_rate_opacity", type=float)

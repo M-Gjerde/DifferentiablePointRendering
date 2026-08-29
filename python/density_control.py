@@ -252,7 +252,7 @@ def make_under_reconstruction_clones(
             )
 
             clone_spatial_scale = torch.max(scales[clone_idx].detach(), dim=1, keepdim=True).values
-            clone_offset = float(0.05) * clone_spatial_scale
+            clone_offset = clone_offset_scale * clone_spatial_scale
 
             # grad_pos is assumed to contain dL/dposition, so move toward descent.
             clone_positions = (
