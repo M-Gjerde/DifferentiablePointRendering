@@ -2337,8 +2337,8 @@ namespace Pale {
                         if (!kDetachDepthDistortionWeights) {
                             atomicAddFloat2(depthGradients.gradScale[hit.primitiveIndex],
                                             float2{depthGradient.scaleU, depthGradient.scaleV});
-                            atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
-                            atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradient.beta);
+                            //atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
+                            //atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradient.beta);
                         }
                     }
                     // =========================================================
