@@ -77,7 +77,7 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 0
     global_lr_max_steps: int = int(4_000)
 
-    depth_distort_weight: float = 1e7
+    depth_distort_weight: float = 1e3
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.025
     normal_from_depth_use_mean_depth: bool = False
