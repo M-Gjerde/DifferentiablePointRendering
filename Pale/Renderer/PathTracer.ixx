@@ -14,30 +14,49 @@ import Pale.Render.BVH;
 import Pale.Render.SceneBuild;
 
 export namespace Pale {
-
-
-
     class PathTracer {
     public:
-        explicit PathTracer(sycl::queue q, const PathTracerSettings& settings = {});
+        explicit PathTracer(sycl::queue q, const PathTracerSettings &settings = {});
+
         void setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp);
-        void renderForward(std::vector<SensorGPU>& sensors);
-        void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages* debugImages);
+
+        void renderForward(std::vector<SensorGPU> &sensors);
+
+        void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages *debugImages);
+
         void renderDepthDistortionBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients);
+
         void renderNormalConsistencyBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients);
+
+        void renderSurfaceRegularizersBackward(std::vector<SensorGPU> &sensors,
+                                               PointGradients &depthDistortionGradients,
+                                               PointGradients &normalConsistencyGradients,
+                                               PointGradients &visibilityOpacityGradients,
+                                               PointGradients &intraSlabDepthGradients,
+                                               PointGradients &curvatureScaleGradients,
+                                               DebugImages *debugImages);
+
         void reset();
 
-        PathTracerSettings& getSettings() { return m_settings; }
+        PathTracerSettings &getSettings() { return m_settings; }
 
     private:
         void ensureRayCapacity(uint32_t requiredRayQueueCapacity);
-        void ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid& grid);
+
+        void ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid &grid);
+
         void allocateIntermediates(uint32_t newCapacity);
+
         void allocatePhotonMap();
+
         void freeIntermediates();
+
         void freePhotonMap();
+
         void freePhotonGridBuffers();
-        void configurePhotonGrid(const AABB& sceneAabb);
+
+        void configurePhotonGrid(const AABB &sceneAabb);
+
     private:
         sycl::queue m_queue;
         GPUSceneBuffers m_sceneGPU{};
@@ -46,5 +65,4 @@ export namespace Pale {
         uint32_t m_rayQueueCapacity = 0;
         uint64_t m_sessionSeed = 42;
     };
-
 }

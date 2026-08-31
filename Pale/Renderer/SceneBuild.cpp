@@ -4,14 +4,19 @@
 
 module;
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
 #include <glm/glm.hpp>
 
 #define GLM_ENABLE_EXPERIMENTAL
+#include "glm/gtx/quaternion.hpp"
 #include "glm/gtx/string_cast.hpp"
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/Kernels/KernelHelpers.h"
@@ -23,6 +28,170 @@ import Pale.Render.BVH;
 import Pale.Log;
 
 namespace Pale {
+    namespace {
+        glm::quat normalizeOrIdentity(glm::quat q) {
+            if (glm::length2(q) <= 1.0e-20f) {
+                return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+            q = glm::normalize(q);
+            if (q.w < 0.0f) {
+                q = -q;
+            }
+            return q;
+        }
+
+        void surfelFrameFromQuaternion(
+            const glm::quat &inputQuaternion,
+            glm::vec3 &tangentU,
+            glm::vec3 &tangentV) {
+            const glm::quat q = normalizeOrIdentity(inputQuaternion);
+            const glm::mat3 rotation = glm::mat3_cast(q);
+
+            tangentU = glm::normalize(glm::vec3(rotation[0]));
+            tangentV = glm::normalize(glm::vec3(rotation[1]));
+
+            // Clean tiny numerical drift while preserving the quaternion orientation.
+            tangentV = tangentV - glm::dot(tangentV, tangentU) * tangentU;
+
+            if (glm::length2(tangentV) <= 1.0e-20f) {
+                const glm::vec3 fallback =
+                    glm::abs(tangentU.y) < 0.9f
+                        ? glm::vec3(0.0f, 1.0f, 0.0f)
+                        : glm::vec3(1.0f, 0.0f, 0.0f);
+
+                tangentV = fallback - glm::dot(fallback, tangentU) * tangentU;
+            }
+
+            tangentV = glm::normalize(tangentV);
+        }
+
+        void writePackedPointBvhChild(PackedPointBVHNode &packedNode,
+                                      bool writeLeftChild,
+                                      const std::vector<BVHNode> &nodes,
+                                      uint32_t childNodeIndex) {
+            const BVHNode &childNode = nodes[childNodeIndex];
+            const uint32_t childIndex = childNode.isLeaf() ? childNode.leftFirst : childNodeIndex;
+            const uint32_t childCount = childNode.isLeaf() ? childNode.triCount : 0u;
+
+            if (writeLeftChild) {
+                packedNode.leftAabbMin = childNode.aabbMin;
+                packedNode.leftAabbMax = childNode.aabbMax;
+                packedNode.leftIndex = childIndex;
+                packedNode.leftCount = childCount;
+            } else {
+                packedNode.rightAabbMin = childNode.aabbMin;
+                packedNode.rightAabbMax = childNode.aabbMax;
+                packedNode.rightIndex = childIndex;
+                packedNode.rightCount = childCount;
+            }
+        }
+
+        std::vector<PackedPointBVHNode> makePackedPointBvhNodes(const std::vector<BVHNode> &nodes) {
+            std::vector<PackedPointBVHNode> packedNodes(nodes.size());
+
+            for (uint32_t nodeIndex = 0u; nodeIndex < nodes.size(); ++nodeIndex) {
+                const BVHNode &node = nodes[nodeIndex];
+                PackedPointBVHNode &packedNode = packedNodes[nodeIndex];
+
+                if (node.isLeaf()) {
+                    writePackedPointBvhChild(packedNode, true, nodes, nodeIndex);
+                    continue;
+                }
+
+                writePackedPointBvhChild(packedNode, true, nodes, node.leftFirst);
+                writePackedPointBvhChild(packedNode, false, nodes, node.leftFirst + 1u);
+            }
+
+            return packedNodes;
+        }
+
+        void addCollapsedQbvhChild(const std::vector<BVHNode> &nodes,
+                                   uint32_t childNodeIndex,
+                                   uint32_t (&childSourceNodes)[4],
+                                   uint32_t &childSourceCount) {
+            const BVHNode &childNode = nodes[childNodeIndex];
+            if (childNode.isLeaf()) {
+                childSourceNodes[childSourceCount++] = childNodeIndex;
+                return;
+            }
+
+            childSourceNodes[childSourceCount++] = childNode.leftFirst;
+            childSourceNodes[childSourceCount++] = childNode.leftFirst + 1u;
+        }
+
+        void writePackedPointQbvhChild(PackedPointQBVHNode &qbvhNode,
+                                       uint32_t slot,
+                                       const std::vector<BVHNode> &nodes,
+                                       uint32_t childSourceNodeIndex,
+                                       uint32_t childQbvhNodeIndex) {
+            const BVHNode &childNode = nodes[childSourceNodeIndex];
+
+            qbvhNode.minX[slot] = childNode.aabbMin.x();
+            qbvhNode.minY[slot] = childNode.aabbMin.y();
+            qbvhNode.minZ[slot] = childNode.aabbMin.z();
+            qbvhNode.maxX[slot] = childNode.aabbMax.x();
+            qbvhNode.maxY[slot] = childNode.aabbMax.y();
+            qbvhNode.maxZ[slot] = childNode.aabbMax.z();
+            qbvhNode.childSourceNodeIndex[slot] = childSourceNodeIndex;
+
+            if (childNode.isLeaf()) {
+                qbvhNode.childIndex[slot] = childNode.leftFirst;
+                qbvhNode.childCount[slot] = childNode.triCount;
+            } else {
+                qbvhNode.childIndex[slot] = childQbvhNodeIndex;
+                qbvhNode.childCount[slot] = 0u;
+            }
+        }
+
+        uint32_t buildPackedPointQbvhNode(std::vector<PackedPointQBVHNode> &qbvhNodes,
+                                          const std::vector<BVHNode> &nodes,
+                                          uint32_t sourceNodeIndex) {
+            const uint32_t qbvhNodeIndex = static_cast<uint32_t>(qbvhNodes.size());
+            qbvhNodes.emplace_back();
+
+            const BVHNode &sourceNode = nodes[sourceNodeIndex];
+            uint32_t childSourceNodes[4]{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+            uint32_t childSourceCount = 0u;
+
+            if (sourceNode.isLeaf()) {
+                childSourceNodes[childSourceCount++] = sourceNodeIndex;
+            } else {
+                addCollapsedQbvhChild(nodes, sourceNode.leftFirst, childSourceNodes, childSourceCount);
+                addCollapsedQbvhChild(nodes, sourceNode.leftFirst + 1u, childSourceNodes, childSourceCount);
+            }
+
+            for (uint32_t slot = 0u; slot < childSourceCount; ++slot) {
+                const uint32_t childSourceNodeIndex = childSourceNodes[slot];
+                const BVHNode &childNode = nodes[childSourceNodeIndex];
+                const uint32_t childQbvhNodeIndex = childNode.isLeaf()
+                                                        ? UINT32_MAX
+                                                        : buildPackedPointQbvhNode(
+                                                            qbvhNodes,
+                                                            nodes,
+                                                            childSourceNodeIndex);
+                writePackedPointQbvhChild(
+                    qbvhNodes[qbvhNodeIndex],
+                    slot,
+                    nodes,
+                    childSourceNodeIndex,
+                    childQbvhNodeIndex);
+            }
+
+            return qbvhNodeIndex;
+        }
+
+        std::vector<PackedPointQBVHNode> makePackedPointQbvhNodes(const std::vector<BVHNode> &nodes) {
+            std::vector<PackedPointQBVHNode> qbvhNodes;
+            if (nodes.empty()) {
+                return qbvhNodes;
+            }
+
+            qbvhNodes.reserve(nodes.size());
+            buildPackedPointQbvhNode(qbvhNodes, nodes, 0u);
+            return qbvhNodes;
+        }
+    }
+
     SceneBuild::BuildProducts SceneBuild::build(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
                                                 const BuildOptions &buildOptions) {
         BuildProducts buildProducts;
@@ -61,6 +230,11 @@ namespace Pale {
         buildProducts.bottomLevelNodes.clear();
         buildProducts.bottomLevelRanges.clear();
         buildProducts.topLevelNodes.clear();
+        buildProducts.pointTraversalData.clear();
+        buildProducts.pointPackedBvhNodes.clear();
+        buildProducts.pointPackedBvhRanges.clear();
+        buildProducts.pointQbvhNodes.clear();
+        buildProducts.pointQbvhRanges.clear();
         buildProducts.pointPermutation.clear();
         // Note: we do NOT touch vertices/triangles/points/instances/etc.
         buildBottomLevelBVHs(buildProducts, buildOptions);
@@ -85,35 +259,50 @@ namespace Pale {
         // 2) For each unique mesh, append geometry once and record ALL ranges
         for (const UUID &meshId: uniqueMeshIds) {
             const auto meshAsset = assetAccess.getMesh(meshId);
-            Submesh mesh = meshAsset->submeshes.front();
             const uint32_t vertexBaseIndex = static_cast<uint32_t>(vertices.size());
             const uint32_t triangleBaseIndex = static_cast<uint32_t>(triangles.size());
-            for (size_t i = 0; i < mesh.positions.size(); ++i) {
-                Vertex gpuVertex{};
-                gpuVertex.pos = float3{mesh.positions[i].x, mesh.positions[i].y, mesh.positions[i].z};
-                gpuVertex.norm = float3{mesh.normals[i].x, mesh.normals[i].y, mesh.normals[i].z};
-                vertices.push_back(gpuVertex);
+            if (!meshAsset) {
+                std::ostringstream errorStream;
+                errorStream << "Mesh asset does not exist. Mesh id: " << std::string(meshId);
+                throw std::runtime_error(errorStream.str());
             }
+
             constexpr float oneThird = 1.0f / 3.0f;
-            for (size_t i = 0; i < mesh.indices.size(); i += 3) {
-                const uint32_t i0 = mesh.indices[i + 0] + vertexBaseIndex;
-                const uint32_t i1 = mesh.indices[i + 1] + vertexBaseIndex;
-                const uint32_t i2 = mesh.indices[i + 2] + vertexBaseIndex;
-                Triangle tri{};
-                tri.v0 = i0;
-                tri.v1 = i1;
-                tri.v2 = i2;
-                const float3 p0 = vertices[i0].pos;
-                const float3 p1 = vertices[i1].pos;
-                const float3 p2 = vertices[i2].pos;
-                tri.centroid = (p0 + p1 + p2) * oneThird;
-                triangles.push_back(tri);
+            for (const Submesh &mesh: meshAsset->submeshes) {
+                const uint32_t submeshVertexBaseIndex = static_cast<uint32_t>(vertices.size());
+                for (size_t i = 0; i < mesh.positions.size(); ++i) {
+                    const glm::vec3 normal =
+                        i < mesh.normals.size() ? mesh.normals[i] : glm::vec3(0.0f, 0.0f, 1.0f);
+                    Vertex gpuVertex{};
+                    gpuVertex.pos = float3{mesh.positions[i].x, mesh.positions[i].y, mesh.positions[i].z};
+                    gpuVertex.norm = float3{normal.x, normal.y, normal.z};
+                    vertices.push_back(gpuVertex);
+                }
+                for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+                    const uint32_t i0 = mesh.indices[i + 0] + submeshVertexBaseIndex;
+                    const uint32_t i1 = mesh.indices[i + 1] + submeshVertexBaseIndex;
+                    const uint32_t i2 = mesh.indices[i + 2] + submeshVertexBaseIndex;
+                    Triangle tri{};
+                    tri.v0 = i0;
+                    tri.v1 = i1;
+                    tri.v2 = i2;
+                    const float3 p0 = vertices[i0].pos;
+                    const float3 p1 = vertices[i1].pos;
+                    const float3 p2 = vertices[i2].pos;
+                    tri.centroid = (p0 + p1 + p2) * oneThird;
+                    triangles.push_back(tri);
+                }
             }
             MeshRange meshRange{};
             meshRange.firstVert = vertexBaseIndex;
-            meshRange.vertCount = static_cast<uint32_t>(mesh.positions.size());
+            meshRange.vertCount = static_cast<uint32_t>(vertices.size()) - vertexBaseIndex;
             meshRange.firstTri = triangleBaseIndex;
-            meshRange.triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
+            meshRange.triCount = static_cast<uint32_t>(triangles.size()) - triangleBaseIndex;
+            if (meshRange.triCount == 0u) {
+                vertices.resize(vertexBaseIndex);
+                triangles.resize(triangleBaseIndex);
+                continue;
+            }
             const uint32_t rangeIndex = static_cast<uint32_t>(outBuildProducts.meshRanges.size());
             outBuildProducts.meshRanges.push_back(meshRange);
             outBuildProducts.meshIndexById[meshId] = rangeIndex;
@@ -127,33 +316,54 @@ namespace Pale {
                                       const std::unordered_map<UUID, uint32_t> &meshIndexById,
                                       BuildProducts &outBuildProducts) {
         std::unordered_map<UUID, uint32_t> materialIndexByUuid;
-        auto view = scene->getAllEntitiesWith<MeshComponent, MaterialComponent, TransformComponent, TagComponent>();
-        for (auto [entityId, meshComponent, materialComponent, transformComponent, tagComponent]: view.each()) {
+        std::optional<uint32_t> defaultMaterialIndex;
+        auto getDefaultMaterialIndex = [&]() -> uint32_t {
+            if (!defaultMaterialIndex.has_value()) {
+                GPUMaterial gpuMaterial{};
+                gpuMaterial.baseColor = float3{0.72f, 0.72f, 0.72f};
+                gpuMaterial.specular = 0.0f;
+                gpuMaterial.diffuse = 0.65f;
+                gpuMaterial.power = 0.0f;
+                gpuMaterial.phongExp = 16.0f;
+                defaultMaterialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
+                outBuildProducts.materials.push_back(gpuMaterial);
+            }
+            return *defaultMaterialIndex;
+        };
+
+        auto view = scene->getAllEntitiesWith<MeshComponent, TransformComponent, TagComponent>();
+        for (auto [entityId, meshComponent, transformComponent, tagComponent]: view.each()) {
             auto it = meshIndexById.find(meshComponent.meshID);
             if (it == meshIndexById.end()) continue;
             const uint32_t geometryIndex = it->second;
             // material de-dup
             uint32_t materialIndex;
-            if (auto mit = materialIndexByUuid.find(materialComponent.materialID); mit != materialIndexByUuid.end()) {
-                materialIndex = mit->second;
+            Entity entity(entityId, scene.get());
+            if (!entity.hasComponent<MaterialComponent>()) {
+                materialIndex = getDefaultMaterialIndex();
             } else {
-                const auto materialAsset = assetAccess.getMaterial(materialComponent.materialID);
-                if (!materialAsset) {
-                    std::ostringstream errorStream;
-                    errorStream
-                        << "Material does not exist. Entity tag: " << tagComponent.tag << "\n";
+                const MaterialComponent &materialComponent = entity.getComponent<MaterialComponent>();
+                if (auto mit = materialIndexByUuid.find(materialComponent.materialID); mit != materialIndexByUuid.end()) {
+                    materialIndex = mit->second;
+                } else {
+                    const auto materialAsset = assetAccess.getMaterial(materialComponent.materialID);
+                    if (!materialAsset) {
+                        std::ostringstream errorStream;
+                        errorStream
+                            << "Material does not exist. Entity tag: " << tagComponent.tag << "\n";
 
-                    throw std::runtime_error(errorStream.str());
+                        throw std::runtime_error(errorStream.str());
+                    }
+                    GPUMaterial gpuMaterial{};
+                    gpuMaterial.baseColor = materialAsset->baseColor;
+                    gpuMaterial.specular = materialAsset->metallic;
+                    gpuMaterial.diffuse = materialAsset->roughness;
+                    gpuMaterial.power = materialAsset->power;
+                    gpuMaterial.phongExp = 16;
+                    materialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
+                    outBuildProducts.materials.push_back(gpuMaterial);
+                    materialIndexByUuid.emplace(materialComponent.materialID, materialIndex);
                 }
-                GPUMaterial gpuMaterial{};
-                gpuMaterial.baseColor = materialAsset->baseColor;
-                gpuMaterial.specular = materialAsset->metallic;
-                gpuMaterial.diffuse = materialAsset->roughness;
-                gpuMaterial.power = materialAsset->power;
-                gpuMaterial.phongExp = 16;
-                materialIndex = static_cast<uint32_t>(outBuildProducts.materials.size());
-                outBuildProducts.materials.push_back(gpuMaterial);
-                materialIndexByUuid.emplace(materialComponent.materialID, materialIndex);
             }
             // transform
             Transform gpuTransform{};
@@ -204,8 +414,17 @@ namespace Pale {
             for (size_t i = 0; i < pointGeometry.positions.size(); ++i) {
                 Point gpuPoint{};
                 gpuPoint.position = pointGeometry.positions[i];
-                gpuPoint.tanU = normalize(pointGeometry.tanU[i]);
-                gpuPoint.tanV = normalize(pointGeometry.tanV[i]); // assume orthonormal input
+                if (pointGeometry.quat.size() != pointGeometry.positions.size()) {
+                    throw std::runtime_error(
+                        "SceneBuild::collectPointCloudGeometry: pointGeometry.quat size mismatch");
+                }
+
+                glm::vec3 tangentU;
+                glm::vec3 tangentV;
+                surfelFrameFromQuaternion(pointGeometry.quat[i], tangentU, tangentV);
+
+                gpuPoint.tanU = tangentU;
+                gpuPoint.tanV = tangentV;
                 gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
                 gpuPoint.albedo = glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
                 gpuPoint.opacity = glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
@@ -370,9 +589,15 @@ namespace Pale {
                     light.flux = pointGeometry.powers[i];
                     light.color = pointGeometry.albedos[i];
 
-                    glm::vec3 tangentUWorld = pointGeometry.scales[i].x * pointGeometry.tanU[i];
-                    glm::vec3 tangentVWorld = pointGeometry.scales[i].y * pointGeometry.tanV[i];
-                    float totalAreaWorld = M_PIf * length(cross(tangentUWorld, tangentVWorld));
+                    glm::vec3 tangentU;
+                    glm::vec3 tangentV;
+                    surfelFrameFromQuaternion(pointGeometry.quat[i], tangentU, tangentV);
+
+                    glm::vec3 tangentUWorld = pointGeometry.scales[i].x * tangentU;
+                    glm::vec3 tangentVWorld = pointGeometry.scales[i].y * tangentV;
+
+                    float totalAreaWorld =
+                        M_PIf * glm::length(glm::cross(tangentUWorld, tangentVWorld));
                     light.totalAreaWorld = totalAreaWorld;
                     out.lights.push_back(light);
                 }
@@ -429,18 +654,42 @@ namespace Pale {
     }
 
 
+    inline float surfelBvhRadiusScaleBeta(
+        const Point &surfel,
+        const SceneBuild::BuildOptions &buildOptions) {
+        const float alphaMin = std::max(0.0f, buildOptions.pointBvhEffectiveAlphaMin);
+        if (!(alphaMin > 0.0f) || surfel.isEmissive()) {
+            return 1.0f;
+        }
+
+        const float opacity = std::clamp(surfel.opacity, 0.0f, 1.0f);
+        const float minRadiusScale = std::clamp(buildOptions.pointBvhMinRadiusScale, 0.0f, 1.0f);
+        if (!(opacity > alphaMin)) {
+            return minRadiusScale;
+        }
+
+        const float beta = std::clamp(surfel.beta, -20.0f, 20.0f);
+        const float betaExponent = std::max(4.0f * std::exp(beta), 1.0e-8f);
+        const float profileCutoff = std::clamp(alphaMin / opacity, 0.0f, 1.0f);
+        const float oneMinusRadiusSquared =
+            std::pow(profileCutoff, 1.0f / betaExponent);
+        const float radiusSquared =
+            std::clamp(1.0f - oneMinusRadiusSquared, 0.0f, 1.0f);
+        return std::clamp(std::sqrt(radiusSquared), minRadiusScale, 1.0f);
+    }
+
     inline AABB surfelObjectAabbBeta(const Point &surfel,
-                                     float supportRadiusScale = 1.0001f,
-                                     float normalThickness = 0.001f) {
+                                     const SceneBuild::BuildOptions &buildOptions) {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
         const float3 normalDirection = normalize(cross(tangentU, tangentV));
 
         // For the beta kernel with r^2 = u^2 + v^2 <= 1, the in-plane radii
-        // are just scale.x() and scale.y(), times an optional safety factor.
+        // are scale.x() and scale.y(), optionally clamped by effective opacity.
+        const float supportRadiusScale = surfelBvhRadiusScaleBeta(surfel, buildOptions);
         const float supportRadiusU = supportRadiusScale * surfel.scale.x();
         const float supportRadiusV = supportRadiusScale * surfel.scale.y();
-        const float normalExtent = normalThickness;
+        const float normalExtent = std::max(0.0f, buildOptions.pointBvhNormalThickness);
 
         auto computeAxisExtent = [&](int axisIndex) -> float {
             const float tangentUComponent =
@@ -524,7 +773,7 @@ namespace Pale {
         std::vector<AABB> localAabbs(localPoints.size());
         std::vector<float3> localCentroids(localPoints.size());
         for (uint32_t i = 0; i < localPoints.size(); ++i) {
-            const AABB aabb = surfelObjectAabbBeta(localPoints[i]);
+            const AABB aabb = surfelObjectAabbBeta(localPoints[i], buildOptions);
             localAabbs[i] = aabb;
             localCentroids[i] = localPoints[i].position;
         }
@@ -536,7 +785,8 @@ namespace Pale {
                                  localCentroids,
                                  localNodes,
                                  localPointOrder,
-                                 buildOptions.bvhMaxLeafPoints);
+                                 buildOptions.bvhMaxLeafPoints,
+                                 buildOptions.pointBvhUseBinnedSah);
 
         // 4) Package
         BLASResult result{};
@@ -731,6 +981,8 @@ namespace Pale {
             const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
 
             buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
+            buildProducts.pointPackedBvhRanges.push_back({0u, 0u});
+            buildProducts.pointQbvhRanges.push_back({0u, 0u});
             meshRangeToBlasRange[meshIndex] = blasRangeIndex;
 
             //{
@@ -762,9 +1014,14 @@ namespace Pale {
 
             buildProducts.pointPermutation.reserve(
                 buildProducts.pointPermutation.size() + blasResult.pointPermutation.size());
+            buildProducts.pointTraversalData.reserve(
+                buildProducts.pointTraversalData.size() + blasResult.pointPermutation.size());
 
             for (uint32_t localPointIndex : blasResult.pointPermutation) {
-                buildProducts.pointPermutation.push_back(globalPointStart + localPointIndex);
+                const uint32_t primitiveIndex = globalPointStart + localPointIndex;
+                buildProducts.pointPermutation.push_back(primitiveIndex);
+                buildProducts.pointTraversalData.push_back(
+                    makeSurfelTraversalData(buildProducts.points[primitiveIndex], primitiveIndex));
             }
 
             const uint32_t firstNode = static_cast<uint32_t>(buildProducts.bottomLevelNodes.size());
@@ -784,7 +1041,29 @@ namespace Pale {
             const uint32_t blasRangeIndex = static_cast<uint32_t>(buildProducts.bottomLevelRanges.size());
 
             buildProducts.bottomLevelRanges.push_back({firstNode, nodeCount});
+            buildProducts.pointPackedBvhRanges.push_back({0u, 0u});
+            buildProducts.pointQbvhRanges.push_back({0u, 0u});
             pointRangeToBlasRange[pointCloudIndex] = blasRangeIndex;
+
+            const std::vector<PackedPointBVHNode> packedNodes = makePackedPointBvhNodes(blasResult.nodes);
+            const uint32_t packedFirstNode = static_cast<uint32_t>(buildProducts.pointPackedBvhNodes.size());
+            buildProducts.pointPackedBvhNodes.insert(buildProducts.pointPackedBvhNodes.end(),
+                                                     packedNodes.begin(),
+                                                     packedNodes.end());
+            buildProducts.pointPackedBvhRanges[blasRangeIndex] = {
+                packedFirstNode,
+                static_cast<uint32_t>(packedNodes.size())
+            };
+
+            const std::vector<PackedPointQBVHNode> qbvhNodes = makePackedPointQbvhNodes(blasResult.nodes);
+            const uint32_t qbvhFirstNode = static_cast<uint32_t>(buildProducts.pointQbvhNodes.size());
+            buildProducts.pointQbvhNodes.insert(buildProducts.pointQbvhNodes.end(),
+                                                qbvhNodes.begin(),
+                                                qbvhNodes.end());
+            buildProducts.pointQbvhRanges[blasRangeIndex] = {
+                qbvhFirstNode,
+                static_cast<uint32_t>(qbvhNodes.size())
+            };
             //{
             //    // One file per point cloud BLAS (by point cloud index)
             //    std::string pointCloudBlasPath =

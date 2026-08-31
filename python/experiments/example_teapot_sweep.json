@@ -1,0 +1,25 @@
+{
+  "dataset_path": "~/phd/datasets/teapot_10_pbdr/",
+  "ground_truth": "~/phd/models/teapot.ply",
+  "output_root": "OptimizationOutput/sweeps/teapot_10",
+  "base_args": {
+    "iterations": 15000,
+    "log_interval": 50,
+    "save_interval": 1000,
+    "save_ply_files_interval": 1000,
+    "mesh_extraction_interval": 1000,
+    "mesh_extraction_depth_key": "median_depth",
+    "mesh_extraction_mesh_res": 1024,
+    "mesh_extraction_num_cluster": 50,
+    "densification_stats_skip_interval_start": true
+  },
+  "search_space": {
+    "learning_rate": [0.5, 1.0, 2.0],
+    "densification_interval": [25, 100],
+    "densify_bsdf_gamma": [0.0, 1.0],
+    "densification_grad_abs_min": [0.0008, 0.0005],
+    "normal_consistency_weight": [0.0, 0.005, 0.01, 0.02],
+    "depth_distort_weight": [0.0, 10.0, 1000.0],
+    "opacity_prior_weight": [0.0, 0.01, 0.1]
+  }
+}

@@ -4,6 +4,8 @@
 #
 # Features:
 # - Reads per-case sweep config from test_Y_empty.json
+# - Supports rotation_x/y/z cases through fd_test.py's local SO(3)
+#   gradients["rotation"] extraction.
 # - Per-case required fields:
 #     scene, camera, parameter, index, min, max,
 #     forward_passes, bounces, adjoint_passes, adjoint_bounces
@@ -135,7 +137,7 @@ def parse_args() -> argparse.Namespace:
         help="Disable ANSI color output.",
     )
     argument_parser.add_argument(
-        "--case_index",
+        "--case-index",
         type=int,
         default=None,
         help="Run only one case by zero-based index from test_Y_empty.json.",
@@ -530,7 +532,7 @@ def main() -> None:
     if args.case_index is not None:
         if args.case_index < 0 or args.case_index >= len(cases):
             raise RuntimeError(
-                f"--case_index out of range: got {args.case_index}, "
+                f"--case-index out of range: got {args.case_index}, "
                 f"but test_Y_empty.json has {len(cases)} cases."
             )
         cases = [cases[args.case_index]]
@@ -585,6 +587,15 @@ def main() -> None:
             f"enable_adjoint_shadow_rays={enable_adjoint_shadow_rays} "
             f"target_mode={target_mode}"
         )
+        if parameter in {"rotation_x", "rotation_y", "rotation_z"} and args.grad_floor > 1e-6:
+            print(
+                color(
+                    "note: rotation analytic gradients are reported per degree in the CSV; "
+                    "use --grad_floor 1e-6 if rows are skipped as tiny.",
+                    ANSI_YELLOW,
+                    enable_color,
+                )
+            )
 
         render_target_return_code = run_render_target(
             python_exe=args.python,

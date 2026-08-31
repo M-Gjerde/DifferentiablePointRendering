@@ -8,11 +8,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # PIC everywhere
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # PIC everywhere python module thing
 set(BUILD_SHARED_LIBS OFF)               # prefer static vendors we control
 
 find_package(AdaptiveCpp REQUIRED)
-
 find_package(OpenEXR REQUIRED)
 
 # -------- Vendors --------
@@ -231,8 +230,8 @@ if (BUILD_PYBIND)
             ARCHIVE DESTINATION "${PYTHON_SITE}"
     )
 
-    add_custom_target(install_pale_debug
-            COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --config Debug
+    add_custom_target(install_pale
+            COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}"
             DEPENDS pale)
 else ()
     message(STATUS "BUILD_PYBIND=OFF: skipping Python module")

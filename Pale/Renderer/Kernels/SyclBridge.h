@@ -14,6 +14,6 @@ namespace Pale {
     void submitAdjointKernel(RenderPackage& renderPackage);
     void submitDepthDistortionKernel(RenderPackage& renderPackage);
     void submitNormalConsistencyKernel(RenderPackage& renderPackage);
-
+    void submitSurfaceRegularizersKernel(RenderPackage &pkg);
 }
 

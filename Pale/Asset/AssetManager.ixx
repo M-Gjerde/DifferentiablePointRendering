@@ -62,6 +62,10 @@ export namespace Pale {
             return std::static_pointer_cast<T>(asset);
         }
 
+        void invalidate(const AssetHandle& id) {
+            m_cache.erase(id);
+        }
+
         void prefetch(const AssetHandle& id) {
             if (m_futures.contains(id)) return;
             auto meta = m_registry.meta(id);
@@ -96,8 +100,14 @@ export namespace Pale {
                 for (auto& [id, meta] : snap) {
                     if (!std::filesystem::exists(meta.path)) continue;
                     auto nowWrite = std::filesystem::last_write_time(meta.path);
-                    if (meta.lastWrite != std::filesystem::file_time_type{} && nowWrite != meta.lastWrite) {
-                        m_cache.erase(id); // invalidate; next get() reloads
+                    auto observedIt = m_lastObservedWrites.find(id);
+                    if (observedIt == m_lastObservedWrites.end()) {
+                        m_lastObservedWrites.emplace(id, nowWrite);
+                        continue;
+                    }
+                    if (observedIt->second != nowWrite) {
+                        m_cache.erase(id); // invalidate once per distinct write time
+                        observedIt->second = nowWrite;
                     }
                 }
                 std::this_thread::sleep_for(400ms);
@@ -110,6 +120,7 @@ export namespace Pale {
         std::unordered_map<AssetType, LoaderFn> m_loaders{};
         std::shared_mutex m_loaderMtx{};
         std::unordered_map<AssetHandle, std::future<void>> m_futures{};
+        std::unordered_map<AssetHandle, std::filesystem::file_time_type> m_lastObservedWrites{};
 
 
         std::atomic<bool> m_running{false};

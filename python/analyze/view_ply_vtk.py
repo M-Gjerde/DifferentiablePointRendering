@@ -8,10 +8,12 @@ from typing import List, Tuple
 import numpy as np
 import vtk
 
+
 def find_latest_points_ply(
     output_root_path: Path,
     use_initial: bool,
     index: int = 0,
+    verbose: bool = True,
 ) -> Path:
     if index < 0:
         raise ValueError(f"index must be >= 0, got {index}.")
@@ -22,7 +24,8 @@ def find_latest_points_ply(
     target_filename = "initial_points.ply" if use_initial else "points_final.ply"
 
     if output_root_path.is_file():
-        print(f"Using PLY file: {output_root_path}")
+        if verbose:
+            print(f"Using PLY file: {output_root_path}")
         return output_root_path
 
     points_in_root = output_root_path / target_filename
@@ -33,7 +36,8 @@ def find_latest_points_ply(
                 f"so only index=0 is valid. Got index={index}."
             )
 
-        print(f"Using {target_filename} in run directory: {output_root_path}")
+        if verbose:
+            print(f"Using {target_filename} in run directory: {output_root_path}")
         return points_in_root
 
     candidate_run_dirs: List[Path] = []
@@ -62,265 +66,341 @@ def find_latest_points_ply(
     selected_run_dir = sorted_run_dirs[index]
     selected_ply_path = selected_run_dir / target_filename
 
-    print(f"Using run index {index}: {selected_run_dir}")
-    print(f"{target_filename}: {selected_ply_path}")
+    if verbose:
+        print(f"Using run index {index}: {selected_run_dir}")
+        print(f"{target_filename}: {selected_ply_path}")
 
     return selected_ply_path
 
 
-def numpy_rgb01_and_alpha01_to_vtk_u8_rgba(name: str, rgb01: np.ndarray,
-                                           alpha01: np.ndarray) -> vtk.vtkUnsignedCharArray:
-    rgbU8 = (np.asarray(rgb01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
-    aU8 = (np.asarray(alpha01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
+def numpy_rgb01_and_alpha01_to_vtk_u8_rgba(
+    name: str,
+    rgb01: np.ndarray,
+    alpha01: np.ndarray,
+) -> vtk.vtkUnsignedCharArray:
+    rgb_u8 = (np.asarray(rgb01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
+    alpha_u8 = (np.asarray(alpha01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
 
-    rgba = np.concatenate([rgbU8, aU8.reshape(-1, 1)], axis=1)
+    rgba = np.concatenate([rgb_u8, alpha_u8.reshape(-1, 1)], axis=1)
 
-    arrayHandle = vtk.vtkUnsignedCharArray()
-    arrayHandle.SetName(name)
-    arrayHandle.SetNumberOfComponents(4)
-    arrayHandle.SetNumberOfTuples(rgba.shape[0])
-    for i in range(rgba.shape[0]):
-        arrayHandle.SetTuple4(i, int(rgba[i, 0]), int(rgba[i, 1]), int(rgba[i, 2]), int(rgba[i, 3]))
-    return arrayHandle
+    array_handle = vtk.vtkUnsignedCharArray()
+    array_handle.SetName(name)
+    array_handle.SetNumberOfComponents(4)
+    array_handle.SetNumberOfTuples(rgba.shape[0])
+
+    for point_index in range(rgba.shape[0]):
+        array_handle.SetTuple4(
+            point_index,
+            int(rgba[point_index, 0]),
+            int(rgba[point_index, 1]),
+            int(rgba[point_index, 2]),
+            int(rgba[point_index, 3]),
+        )
+
+    return array_handle
 
 
-# -----------------------------------------------------------------------------
-# Reused loader style, corrected for your PLY layout (albedo at 11..13, opacity at 14)
-# -----------------------------------------------------------------------------
 def load_surfels_from_ply(
-        plyPath: Path,
-        opacityThreshold: float,
+    ply_path: Path,
+    opacity_threshold: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    pkX: List[float] = []
-    pkY: List[float] = []
-    pkZ: List[float] = []
+    position_x_values: List[float] = []
+    position_y_values: List[float] = []
+    position_z_values: List[float] = []
 
-    tuX: List[float] = []
-    tuY: List[float] = []
-    tuZ: List[float] = []
+    tangent_u_x_values: List[float] = []
+    tangent_u_y_values: List[float] = []
+    tangent_u_z_values: List[float] = []
 
-    tvX: List[float] = []
-    tvY: List[float] = []
-    tvZ: List[float] = []
+    tangent_v_x_values: List[float] = []
+    tangent_v_y_values: List[float] = []
+    tangent_v_z_values: List[float] = []
 
-    suValues: List[float] = []
-    svValues: List[float] = []
+    scale_u_values: List[float] = []
+    scale_v_values: List[float] = []
 
-    color0: List[float] = []
-    color1: List[float] = []
-    color2: List[float] = []
-    opacityValues: List[float] = []
+    color_r_values: List[float] = []
+    color_g_values: List[float] = []
+    color_b_values: List[float] = []
+    opacity_values: List[float] = []
 
-    with plyPath.open("r", encoding="utf-8") as fileHandle:
-        headerFinished = False
-        for line in fileHandle:
-            if not headerFinished:
+    with ply_path.open("r", encoding="utf-8") as file_handle:
+        header_finished = False
+
+        for line in file_handle:
+            if not header_finished:
                 if line.strip() == "end_header":
-                    headerFinished = True
+                    header_finished = True
                 continue
 
             parts = line.strip().split()
             if not parts:
                 continue
 
-            # Need at least index 14 for opacity
+            # Expected layout:
+            # 0..2   position
+            # 3..5   tangent_u
+            # 6..8   tangent_v
+            # 9..10  scale_u, scale_v
+            # 11..13 albedo/color
+            # 14     opacity
             if len(parts) < 15:
                 continue
 
-            opacityValue = float(parts[14])
-            if opacityValue < opacityThreshold:
+            opacity_value = float(parts[14])
+            if opacity_value < opacity_threshold:
                 continue
 
-            opacityValues.append(opacityValue)
+            opacity_values.append(opacity_value)
 
-            pkX.append(float(parts[0]))
-            pkY.append(float(parts[1]))
-            pkZ.append(float(parts[2]))
+            position_x_values.append(float(parts[0]))
+            position_y_values.append(float(parts[1]))
+            position_z_values.append(float(parts[2]))
 
-            tuX.append(float(parts[3]))
-            tuY.append(float(parts[4]))
-            tuZ.append(float(parts[5]))
+            tangent_u_x_values.append(float(parts[3]))
+            tangent_u_y_values.append(float(parts[4]))
+            tangent_u_z_values.append(float(parts[5]))
 
-            tvX.append(float(parts[6]))
-            tvY.append(float(parts[7]))
-            tvZ.append(float(parts[8]))
+            tangent_v_x_values.append(float(parts[6]))
+            tangent_v_y_values.append(float(parts[7]))
+            tangent_v_z_values.append(float(parts[8]))
 
-            suValues.append(float(parts[9]))
-            svValues.append(float(parts[10]))
+            scale_u_values.append(float(parts[9]))
+            scale_v_values.append(float(parts[10]))
 
-            # Albedo at 11..13
-            color0.append(float(parts[11]))
-            color1.append(float(parts[12]))
-            color2.append(float(parts[13]))
+            color_r_values.append(float(parts[11]))
+            color_g_values.append(float(parts[12]))
+            color_b_values.append(float(parts[13]))
 
-            # color0.append(float(0.7))
-            # color1.append(float(0.99))
-            # color2.append(float(0.99))
+    if len(position_x_values) == 0:
+        raise RuntimeError(f"No points loaded from '{ply_path}'. Try lowering --opacity-threshold.")
 
-    if len(pkX) == 0:
-        raise RuntimeError(f"No points loaded from '{plyPath}'. Try lowering --opacity-threshold.")
+    positions = np.stack(
+        [position_x_values, position_y_values, position_z_values],
+        axis=1,
+    ).astype(np.float32)
 
-    positions = np.stack([pkX, pkY, pkZ], axis=1).astype(np.float32)
-    tangentU = np.stack([tuX, tuY, tuZ], axis=1).astype(np.float32)
-    tangentV = np.stack([tvX, tvY, tvZ], axis=1).astype(np.float32)
-    su = np.asarray(suValues, dtype=np.float32)
-    sv = np.asarray(svValues, dtype=np.float32)
-    colors = np.stack([color0, color1, color2], axis=1).astype(np.float32).clip(0.0, 1.0)
-    opacities = np.asarray(opacityValues, dtype=np.float32).clip(0.0, 1.0)
+    tangent_u = np.stack(
+        [tangent_u_x_values, tangent_u_y_values, tangent_u_z_values],
+        axis=1,
+    ).astype(np.float32)
 
-    print(f"Loaded {positions.shape[0]} points from {plyPath}")
-    return positions, tangentU, tangentV, su, sv, colors, opacities
+    tangent_v = np.stack(
+        [tangent_v_x_values, tangent_v_y_values, tangent_v_z_values],
+        axis=1,
+    ).astype(np.float32)
+
+    scale_u = np.asarray(scale_u_values, dtype=np.float32)
+    scale_v = np.asarray(scale_v_values, dtype=np.float32)
+
+    colors = np.stack(
+        [color_r_values, color_g_values, color_b_values],
+        axis=1,
+    ).astype(np.float32).clip(0.0, 1.0)
+
+    opacities = np.asarray(opacity_values, dtype=np.float32).clip(0.0, 1.0)
+
+    print(f"Loaded {positions.shape[0]} points from {ply_path}")
+
+    return positions, tangent_u, tangent_v, scale_u, scale_v, colors, opacities
 
 
-# -----------------------------------------------------------------------------
-# Quaternion orientation (for VTK versions without matrix orientation mode)
-# -----------------------------------------------------------------------------
-def rotation_matrix_to_quaternion_wxyz(rotationMatrices: np.ndarray) -> np.ndarray:
+def rotation_matrix_to_quaternion_wxyz(rotation_matrices: np.ndarray) -> np.ndarray:
     """
-    Convert rotation matrices (N,3,3) to quaternions in (w,x,y,z).
-    Numerically stable branch-based conversion.
+    Convert rotation matrices with shape (N, 3, 3) to quaternions in (w, x, y, z).
     """
-    r = rotationMatrices
-    q = np.zeros((r.shape[0], 4), dtype=np.float32)
+    rotation = rotation_matrices
+    quaternions = np.zeros((rotation.shape[0], 4), dtype=np.float32)
 
-    trace = r[:, 0, 0] + r[:, 1, 1] + r[:, 2, 2]
-    positive = trace > 0.0
+    trace = rotation[:, 0, 0] + rotation[:, 1, 1] + rotation[:, 2, 2]
+    positive_trace_mask = trace > 0.0
 
-    # trace > 0
-    t = trace[positive]
-    s = np.sqrt(t + 1.0) * 2.0
-    q[positive, 0] = 0.25 * s
-    q[positive, 1] = (r[positive, 2, 1] - r[positive, 1, 2]) / s
-    q[positive, 2] = (r[positive, 0, 2] - r[positive, 2, 0]) / s
-    q[positive, 3] = (r[positive, 1, 0] - r[positive, 0, 1]) / s
+    positive_trace = trace[positive_trace_mask]
+    positive_scale = np.sqrt(positive_trace + 1.0) * 2.0
 
-    # trace <= 0
-    neg = ~positive
-    if np.any(neg):
-        rNeg = r[neg]
-        diag = np.stack([rNeg[:, 0, 0], rNeg[:, 1, 1], rNeg[:, 2, 2]], axis=1)
-        maxIndex = np.argmax(diag, axis=1)
+    quaternions[positive_trace_mask, 0] = 0.25 * positive_scale
+    quaternions[positive_trace_mask, 1] = (
+        rotation[positive_trace_mask, 2, 1] - rotation[positive_trace_mask, 1, 2]
+    ) / positive_scale
+    quaternions[positive_trace_mask, 2] = (
+        rotation[positive_trace_mask, 0, 2] - rotation[positive_trace_mask, 2, 0]
+    ) / positive_scale
+    quaternions[positive_trace_mask, 3] = (
+        rotation[positive_trace_mask, 1, 0] - rotation[positive_trace_mask, 0, 1]
+    ) / positive_scale
 
-        for k in (0, 1, 2):
-            mask = maxIndex == k
-            if not np.any(mask):
+    non_positive_trace_mask = ~positive_trace_mask
+
+    if np.any(non_positive_trace_mask):
+        rotation_negative = rotation[non_positive_trace_mask]
+        diagonal = np.stack(
+            [
+                rotation_negative[:, 0, 0],
+                rotation_negative[:, 1, 1],
+                rotation_negative[:, 2, 2],
+            ],
+            axis=1,
+        )
+
+        max_diagonal_index = np.argmax(diagonal, axis=1)
+
+        for diagonal_index in (0, 1, 2):
+            current_mask = max_diagonal_index == diagonal_index
+            if not np.any(current_mask):
                 continue
-            rk = rNeg[mask]
 
-            if k == 0:
-                s = np.sqrt(1.0 + rk[:, 0, 0] - rk[:, 1, 1] - rk[:, 2, 2]) * 2.0
-                qw = (rk[:, 2, 1] - rk[:, 1, 2]) / s
-                qx = 0.25 * s
-                qy = (rk[:, 0, 1] + rk[:, 1, 0]) / s
-                qz = (rk[:, 0, 2] + rk[:, 2, 0]) / s
-            elif k == 1:
-                s = np.sqrt(1.0 + rk[:, 1, 1] - rk[:, 0, 0] - rk[:, 2, 2]) * 2.0
-                qw = (rk[:, 0, 2] - rk[:, 2, 0]) / s
-                qx = (rk[:, 0, 1] + rk[:, 1, 0]) / s
-                qy = 0.25 * s
-                qz = (rk[:, 1, 2] + rk[:, 2, 1]) / s
+            current_rotation = rotation_negative[current_mask]
+
+            if diagonal_index == 0:
+                current_scale = np.sqrt(
+                    1.0
+                    + current_rotation[:, 0, 0]
+                    - current_rotation[:, 1, 1]
+                    - current_rotation[:, 2, 2]
+                ) * 2.0
+
+                quaternion_w = (current_rotation[:, 2, 1] - current_rotation[:, 1, 2]) / current_scale
+                quaternion_x = 0.25 * current_scale
+                quaternion_y = (current_rotation[:, 0, 1] + current_rotation[:, 1, 0]) / current_scale
+                quaternion_z = (current_rotation[:, 0, 2] + current_rotation[:, 2, 0]) / current_scale
+
+            elif diagonal_index == 1:
+                current_scale = np.sqrt(
+                    1.0
+                    + current_rotation[:, 1, 1]
+                    - current_rotation[:, 0, 0]
+                    - current_rotation[:, 2, 2]
+                ) * 2.0
+
+                quaternion_w = (current_rotation[:, 0, 2] - current_rotation[:, 2, 0]) / current_scale
+                quaternion_x = (current_rotation[:, 0, 1] + current_rotation[:, 1, 0]) / current_scale
+                quaternion_y = 0.25 * current_scale
+                quaternion_z = (current_rotation[:, 1, 2] + current_rotation[:, 2, 1]) / current_scale
+
             else:
-                s = np.sqrt(1.0 + rk[:, 2, 2] - rk[:, 0, 0] - rk[:, 1, 1]) * 2.0
-                qw = (rk[:, 1, 0] - rk[:, 0, 1]) / s
-                qx = (rk[:, 0, 2] + rk[:, 2, 0]) / s
-                qy = (rk[:, 1, 2] + rk[:, 2, 1]) / s
-                qz = 0.25 * s
+                current_scale = np.sqrt(
+                    1.0
+                    + current_rotation[:, 2, 2]
+                    - current_rotation[:, 0, 0]
+                    - current_rotation[:, 1, 1]
+                ) * 2.0
 
-            outIdx = np.where(neg)[0][mask]
-            q[outIdx, 0] = qw
-            q[outIdx, 1] = qx
-            q[outIdx, 2] = qy
-            q[outIdx, 3] = qz
+                quaternion_w = (current_rotation[:, 1, 0] - current_rotation[:, 0, 1]) / current_scale
+                quaternion_x = (current_rotation[:, 0, 2] + current_rotation[:, 2, 0]) / current_scale
+                quaternion_y = (current_rotation[:, 1, 2] + current_rotation[:, 2, 1]) / current_scale
+                quaternion_z = 0.25 * current_scale
 
-    # Normalize
-    q /= (np.linalg.norm(q, axis=1, keepdims=True) + 1e-12)
-    return q
+            output_indices = np.where(non_positive_trace_mask)[0][current_mask]
+            quaternions[output_indices, 0] = quaternion_w
+            quaternions[output_indices, 1] = quaternion_x
+            quaternions[output_indices, 2] = quaternion_y
+            quaternions[output_indices, 3] = quaternion_z
+
+    quaternions /= np.linalg.norm(quaternions, axis=1, keepdims=True) + 1e-12
+
+    return quaternions
 
 
-def build_orientation_quaternions_wxyz(tangentU: np.ndarray, tangentV: np.ndarray) -> np.ndarray:
+def build_orientation_quaternions_wxyz(
+    tangent_u: np.ndarray,
+    tangent_v: np.ndarray,
+) -> np.ndarray:
     """
-    Build a local frame:
-      X axis = u
-      Y axis = v (re-orthogonalized)
-      Z axis = n = cross(u,v)
-    Disk source is in XY plane, so this rotates it into the surfel plane.
-    Returns quaternions as (w,x,y,z) per point for VTK quaternion mode.
+    Build a local surfel frame.
+
+    X axis = tangent_u
+    Y axis = tangent_v re-orthogonalized against tangent_u
+    Z axis = normal = cross(tangent_u, tangent_v)
+
+    The VTK disk source is in the XY plane, so this rotates it into the surfel plane.
     """
-    u = tangentU.astype(np.float32)
-    v = tangentV.astype(np.float32)
+    tangent_u_float = tangent_u.astype(np.float32)
+    tangent_v_float = tangent_v.astype(np.float32)
 
-    uHat = u / (np.linalg.norm(u, axis=1, keepdims=True) + 1e-12)
-    vHat = v / (np.linalg.norm(v, axis=1, keepdims=True) + 1e-12)
-
-    n = np.cross(uHat, vHat)
-    nHat = n / (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
-
-    vOrtho = vHat - (np.sum(vHat * uHat, axis=1, keepdims=True) * uHat)
-    vOrtho = vOrtho / (np.linalg.norm(vOrtho, axis=1, keepdims=True) + 1e-12)
-
-    # Rotation matrix columns = [u v n]
-    rotationMatrices = np.zeros((uHat.shape[0], 3, 3), dtype=np.float32)
-    rotationMatrices[:, :, 0] = uHat
-    rotationMatrices[:, :, 1] = vOrtho
-    rotationMatrices[:, :, 2] = nHat
-
-    return rotation_matrix_to_quaternion_wxyz(rotationMatrices)
-
-
-def numpy_to_vtk_float_array(name: str, data: np.ndarray, numComponents: int) -> vtk.vtkFloatArray:
-    flat = np.asarray(data, dtype=np.float32).reshape(data.shape[0], numComponents)
-    arrayHandle = vtk.vtkFloatArray()
-    arrayHandle.SetName(name)
-    arrayHandle.SetNumberOfComponents(numComponents)
-    arrayHandle.SetNumberOfTuples(flat.shape[0])
-    for i in range(flat.shape[0]):
-        arrayHandle.SetTuple(i, flat[i].tolist())
-    return arrayHandle
-
-
-def numpy_rgb01_to_vtk_u8_rgb(name: str, rgb01: np.ndarray) -> vtk.vtkUnsignedCharArray:
-    rgbU8 = (np.asarray(rgb01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
-    arrayHandle = vtk.vtkUnsignedCharArray()
-    arrayHandle.SetName(name)
-    arrayHandle.SetNumberOfComponents(3)
-    arrayHandle.SetNumberOfTuples(rgbU8.shape[0])
-    for i in range(rgbU8.shape[0]):
-        arrayHandle.SetTuple3(i, int(rgbU8[i, 0]), int(rgbU8[i, 1]), int(rgbU8[i, 2]))
-    return arrayHandle
-
-
-def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="VTK viewer: render surfels as oriented ellipses (glyphs).")
-    parser.add_argument("--output-root", type=Path, required=False, default=Path("../Assets/OptimizationOutput"))
-    parser.add_argument("--initial", action="store_true",
-                        help="Load initial_points.ply instead of points_final.ply.")
-    parser.add_argument("--opacity-threshold", type=float, default=0.0)
-    parser.add_argument("--area-threshold", type=float, default=0.0)
-    parser.add_argument("--max-ellipses", type=int, default=0)
-    parser.add_argument("--disk-resolution", type=int, default=16)
-    parser.add_argument("--index", type=int, default=0)
-    parser.add_argument("--alpha", type=float, default=0.95)
-    parser.add_argument("--scale", type=float, default=1)
-    parser.add_argument("--solid", action="store_true")
-    return parser.parse_args()
-
-def main() -> None:
-    args = parse_arguments()
-    ply_path = find_latest_points_ply(args.output_root, use_initial=args.initial, index=args.index)
-
-    positions, tangent_u, tangent_v, su, sv, colors, opacities = load_surfels_from_ply(
-        ply_path,
-        opacityThreshold=args.opacity_threshold,
+    unit_tangent_u = tangent_u_float / (
+        np.linalg.norm(tangent_u_float, axis=1, keepdims=True) + 1e-12
     )
 
-    ellipse_area = su * sv
+    tangent_v_normalized = tangent_v_float / (
+        np.linalg.norm(tangent_v_float, axis=1, keepdims=True) + 1e-12
+    )
+
+    normal = np.cross(unit_tangent_u, tangent_v_normalized)
+    unit_normal = normal / (np.linalg.norm(normal, axis=1, keepdims=True) + 1e-12)
+
+    tangent_v_orthogonal = tangent_v_normalized - (
+        np.sum(tangent_v_normalized * unit_tangent_u, axis=1, keepdims=True) * unit_tangent_u
+    )
+
+    unit_tangent_v = tangent_v_orthogonal / (
+        np.linalg.norm(tangent_v_orthogonal, axis=1, keepdims=True) + 1e-12
+    )
+
+    rotation_matrices = np.zeros((unit_tangent_u.shape[0], 3, 3), dtype=np.float32)
+    rotation_matrices[:, :, 0] = unit_tangent_u
+    rotation_matrices[:, :, 1] = unit_tangent_v
+    rotation_matrices[:, :, 2] = unit_normal
+
+    return rotation_matrix_to_quaternion_wxyz(rotation_matrices)
+
+
+def numpy_to_vtk_float_array(
+    name: str,
+    data: np.ndarray,
+    num_components: int,
+) -> vtk.vtkFloatArray:
+    flat_data = np.asarray(data, dtype=np.float32).reshape(data.shape[0], num_components)
+
+    array_handle = vtk.vtkFloatArray()
+    array_handle.SetName(name)
+    array_handle.SetNumberOfComponents(num_components)
+    array_handle.SetNumberOfTuples(flat_data.shape[0])
+
+    for point_index in range(flat_data.shape[0]):
+        array_handle.SetTuple(point_index, flat_data[point_index].tolist())
+
+    return array_handle
+
+
+def numpy_rgb01_to_vtk_u8_rgb(
+    name: str,
+    rgb01: np.ndarray,
+) -> vtk.vtkUnsignedCharArray:
+    rgb_u8 = (np.asarray(rgb01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
+
+    array_handle = vtk.vtkUnsignedCharArray()
+    array_handle.SetName(name)
+    array_handle.SetNumberOfComponents(3)
+    array_handle.SetNumberOfTuples(rgb_u8.shape[0])
+
+    for point_index in range(rgb_u8.shape[0]):
+        array_handle.SetTuple3(
+            point_index,
+            int(rgb_u8[point_index, 0]),
+            int(rgb_u8[point_index, 1]),
+            int(rgb_u8[point_index, 2]),
+        )
+
+    return array_handle
+
+
+def build_poly_data_from_ply(
+    ply_path: Path,
+    args: argparse.Namespace,
+) -> vtk.vtkPolyData:
+    positions, tangent_u, tangent_v, scale_u, scale_v, colors, opacities = load_surfels_from_ply(
+        ply_path=ply_path,
+        opacity_threshold=args.opacity_threshold,
+    )
+
+    ellipse_area = scale_u * scale_v
     ellipse_mask = ellipse_area >= float(args.area_threshold)
 
     positions = positions[ellipse_mask]
     tangent_u = tangent_u[ellipse_mask]
     tangent_v = tangent_v[ellipse_mask]
-    su = su[ellipse_mask] * args.scale
-    sv = sv[ellipse_mask] * args.scale
+    scale_u = scale_u[ellipse_mask] * args.scale
+    scale_v = scale_v[ellipse_mask] * args.scale
     colors = colors[ellipse_mask]
     opacities = opacities[ellipse_mask]
 
@@ -331,8 +411,8 @@ def main() -> None:
         positions = positions[: args.max_ellipses]
         tangent_u = tangent_u[: args.max_ellipses]
         tangent_v = tangent_v[: args.max_ellipses]
-        su = su[: args.max_ellipses]
-        sv = sv[: args.max_ellipses]
+        scale_u = scale_u[: args.max_ellipses]
+        scale_v = scale_v[: args.max_ellipses]
         colors = colors[: args.max_ellipses]
         opacities = opacities[: args.max_ellipses]
 
@@ -341,20 +421,132 @@ def main() -> None:
     points = vtk.vtkPoints()
     points.SetDataTypeToFloat()
     points.SetNumberOfPoints(int(positions.shape[0]))
-    for i in range(int(positions.shape[0])):
-        points.SetPoint(i, float(positions[i, 0]), float(positions[i, 1]), float(positions[i, 2]))
+
+    for point_index in range(int(positions.shape[0])):
+        points.SetPoint(
+            point_index,
+            float(positions[point_index, 0]),
+            float(positions[point_index, 1]),
+            float(positions[point_index, 2]),
+        )
 
     poly_data = vtk.vtkPolyData()
     poly_data.SetPoints(points)
 
     quaternions = build_orientation_quaternions_wxyz(tangent_u, tangent_v)
-    poly_data.GetPointData().AddArray(numpy_to_vtk_float_array("orientation", quaternions, 4))
 
-    scale_triples = np.stack([su, sv, np.ones_like(su)], axis=1).astype(np.float32)
-    poly_data.GetPointData().AddArray(numpy_to_vtk_float_array("scale", scale_triples, 3))
+    poly_data.GetPointData().AddArray(
+        numpy_to_vtk_float_array("orientation", quaternions, 4)
+    )
+
+    scale_triples = np.stack(
+        [scale_u, scale_v, np.ones_like(scale_u)],
+        axis=1,
+    ).astype(np.float32)
+
+    poly_data.GetPointData().AddArray(
+        numpy_to_vtk_float_array("scale", scale_triples, 3)
+    )
 
     poly_data.GetPointData().AddArray(
         numpy_rgb01_and_alpha01_to_vtk_u8_rgba("color_rgba", colors, opacities)
+    )
+
+    poly_data.Modified()
+
+    return poly_data
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="VTK viewer: render surfels as oriented ellipses and reload when the PLY changes."
+    )
+
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        required=False,
+        default=Path("../Assets/OptimizationOutput"),
+    )
+
+    parser.add_argument(
+        "--initial",
+        action="store_true",
+        help="Load initial_points.ply instead of points_final.ply.",
+    )
+
+    parser.add_argument(
+        "--opacity-threshold",
+        type=float,
+        default=0.0,
+    )
+
+    parser.add_argument(
+        "--area-threshold",
+        type=float,
+        default=0.0,
+    )
+
+    parser.add_argument(
+        "--max-ellipses",
+        type=int,
+        default=0,
+    )
+
+    parser.add_argument(
+        "--disk-resolution",
+        type=int,
+        default=16,
+    )
+
+    parser.add_argument(
+        "--index",
+        type=int,
+        default=0,
+    )
+
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.95,
+    )
+
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=1.0,
+    )
+
+    parser.add_argument(
+        "--solid",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--reload-ms",
+        type=int,
+        default=1000,
+        help="How often to check whether the selected PLY file changed.",
+    )
+
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_arguments()
+
+    ply_path = find_latest_points_ply(
+        output_root_path=args.output_root,
+        use_initial=args.initial,
+        index=args.index,
+        verbose=True,
+    )
+
+    last_loaded_mtime_ns = ply_path.stat().st_mtime_ns
+
+    poly_data = build_poly_data_from_ply(
+        ply_path=ply_path,
+        args=args,
     )
 
     disk = vtk.vtkDiskSource()
@@ -387,15 +579,14 @@ def main() -> None:
     renderer.AddActor(actor)
     renderer.SetBackground(0.2, 0.2, 0.25)
     renderer.SetUseDepthPeeling(True)
+    renderer.SetMaximumNumberOfPeels(100)
+    renderer.SetOcclusionRatio(0.1)
 
     render_window = vtk.vtkRenderWindow()
     render_window.AddRenderer(renderer)
     render_window.SetSize(1200, 900)
     render_window.SetAlphaBitPlanes(True)
     render_window.SetMultiSamples(0)
-
-    renderer.SetMaximumNumberOfPeels(100)
-    renderer.SetOcclusionRatio(0.1)
 
     interactor = vtk.vtkRenderWindowInteractor()
     interactor.SetRenderWindow(render_window)
@@ -406,8 +597,55 @@ def main() -> None:
 
     camera = renderer.GetActiveCamera()
     camera.SetViewUp(0.0, 1.0, 0.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.25)
 
-    renderer.ResetCamera()
+    renderer.ResetCameraClippingRange()
+
+    def reload_points_if_changed(caller, event_name) -> None:
+        nonlocal ply_path
+        nonlocal last_loaded_mtime_ns
+
+        try:
+            current_ply_path = find_latest_points_ply(
+                output_root_path=args.output_root,
+                use_initial=args.initial,
+                index=args.index,
+                verbose=False,
+            )
+
+            current_mtime_ns = current_ply_path.stat().st_mtime_ns
+
+            if current_ply_path == ply_path and current_mtime_ns == last_loaded_mtime_ns:
+                return
+
+            new_poly_data = build_poly_data_from_ply(
+                ply_path=current_ply_path,
+                args=args,
+            )
+
+            mapper.SetInputData(new_poly_data)
+            mapper.Modified()
+
+            ply_path = current_ply_path
+            last_loaded_mtime_ns = current_mtime_ns
+
+            renderer.ResetCameraClippingRange()
+
+            # Important:
+            # Do not call renderer.ResetCamera() here.
+            # That would change the user's current camera view.
+            render_window.Render()
+
+            print(f"Reloaded point cloud: {current_ply_path}")
+
+        except Exception as exception:
+            # This can happen if the optimizer is currently writing the PLY.
+            # The next timer tick will try again.
+            print(f"Could not reload point cloud yet: {exception}")
+
+    interactor.AddObserver("TimerEvent", reload_points_if_changed)
+    interactor.CreateRepeatingTimer(int(args.reload_ms))
+
     render_window.Render()
     interactor.Start()
 

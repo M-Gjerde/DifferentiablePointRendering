@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from typing import Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 from config import OptimizationConfig
 
 import numpy as np
@@ -11,59 +11,26 @@ import numpy as np
 def create_optimizer(
     config: OptimizationConfig,
     positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
+    rotation: torch.nn.Parameter,
     scales: torch.nn.Parameter,
     albedos: torch.nn.Parameter,
     opacities: torch.nn.Parameter,
     betas: torch.nn.Parameter,
 ) -> torch.optim.Optimizer:
-    """
-    Create an optimizer with per-parameter learning rates.
-
-    Falls back to config.learning_rate if a specific LR is not set.
-    """
+    """Create an optimizer with per-parameter learning rates."""
     opt_type = config.optimizer_type.lower()
-
-    lr_pos = config.learning_rate_position
-    lr_tan = config.learning_rate_tangent
-    lr_scale = config.learning_rate_scale
-    lr_albedo = config.learning_rate_albedo
-    lr_opacity = config.learning_rate_opacity
-    lr_beta = config.learning_rate_beta
-
     param_groups = [
-        {
-            "params": [positions],
-            "lr": lr_pos,
-        },
-        {
-            "params": [tangent_u, tangent_v],
-            "lr": lr_tan,
-        },
-        {
-            "params": [scales],
-            "lr": lr_scale,
-        },
-        {
-            "params": [albedos],
-            "lr": lr_albedo,
-        },
-        {
-            "params": [opacities],
-            "lr": lr_opacity,
-        },
-        {
-            "params": [betas],
-            "lr": lr_beta,
-        },
+        {"params": [positions], "lr": config.learning_rate_position, "name": "position"},
+        {"params": [rotation], "lr": config.learning_rate_rotation, "name": "rotation"},
+        {"params": [scales], "lr": config.learning_rate_scale, "name": "scale"},
+        {"params": [albedos], "lr": config.learning_rate_albedo, "name": "albedo"},
+        {"params": [opacities], "lr": config.learning_rate_opacity, "name": "opacity"},
+        {"params": [betas], "lr": config.learning_rate_beta, "name": "beta"},
     ]
-
     if opt_type == "sgd":
-        return torch.optim.SGD(param_groups, momentum=0.8)
+        return torch.optim.SGD(param_groups, momentum=0.5)
     if opt_type == "adam":
         return torch.optim.Adam(param_groups)
-
     raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
 
@@ -211,21 +178,14 @@ class MaskedAdam(torch.optim.Optimizer):
 
 def compute_surfel_update_mask(
     grad_position_np: np.ndarray,
-    grad_tangent_u_np: np.ndarray,
-    grad_tangent_v_np: np.ndarray,
+    grad_rotation_np: np.ndarray,
     grad_scales_np: np.ndarray,
     grad_albedos_np: np.ndarray,
     grad_opacities_np: np.ndarray,
     grad_betas_np: np.ndarray,
     eps: float = 0.0,
 ) -> np.ndarray:
-    """
-    Returns a boolean mask of shape (N,) telling whether a surfel should be updated.
-
-    If eps == 0.0: updates any surfel with any nonzero gradient entry.
-    If eps > 0.0: uses L2 norm thresholding (numerically safer).
-    """
-    # Accumulate squared norm per surfel across ALL parameter gradients
+    """Return a per-surfel update mask based on all gradient blocks."""
     sq = np.zeros((grad_position_np.shape[0],), dtype=np.float32)
 
     def add_sq(a: np.ndarray) -> None:
@@ -236,8 +196,7 @@ def compute_surfel_update_mask(
             sq[:] += np.sum(aa * aa, axis=1)
 
     add_sq(grad_position_np)
-    add_sq(grad_tangent_u_np)
-    add_sq(grad_tangent_v_np)
+    add_sq(grad_rotation_np)
     add_sq(grad_scales_np)
     add_sq(grad_albedos_np)
     add_sq(grad_opacities_np.reshape(-1))
@@ -251,46 +210,34 @@ def compute_surfel_update_mask(
 def assign_numpy_gradients_to_tensors_masked(
     device: torch.device,
     positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
+    rotation: torch.nn.Parameter,
     scales: torch.nn.Parameter,
     albedos: torch.nn.Parameter,
     opacities: torch.nn.Parameter,
     betas: torch.nn.Parameter,
     grad_position_np: np.ndarray,
-    grad_tangent_u_np: np.ndarray,
-    grad_tangent_v_np: np.ndarray,
+    grad_rotation_np: np.ndarray,
     grad_scales_np: np.ndarray,
     grad_albedos_np: np.ndarray,
     grad_opacities_np: np.ndarray,
     grad_betas_np: np.ndarray,
-    surfel_update_mask_np: np.ndarray,   # (N,) bool
+    surfel_update_mask_np: np.ndarray,
 ) -> None:
-    """
-    Copies numpy gradients into .grad and attaches a per-surfel update mask.
-
-    The optimizer will only update rows where surfel_update_mask is True.
-    """
-    surfel_update_mask_t = torch.tensor(
-        surfel_update_mask_np, device=device, dtype=torch.bool
-    )  # (N,)
+    """Copy numpy gradients into .grad and attach a per-surfel update mask."""
+    surfel_update_mask_t = torch.tensor(surfel_update_mask_np, device=device, dtype=torch.bool)
 
     def set_grad_and_mask(param: torch.nn.Parameter, grad_np: np.ndarray) -> None:
         grad_t = torch.tensor(grad_np, device=device, dtype=torch.float32)
         param.grad = grad_t
-
-        # Store per-surfel mask and a broadcast mask matching param shape
-        param.surfelMask = surfel_update_mask_t  # (N,)
+        param.surfelMask = surfel_update_mask_t
         if grad_t.ndim == 1:
             param.updateMask = surfel_update_mask_t
         else:
-            # Broadcast along feature dimension(s)
             expand_shape = (surfel_update_mask_t.shape[0],) + (1,) * (grad_t.ndim - 1)
             param.updateMask = surfel_update_mask_t.view(expand_shape).expand_as(grad_t)
 
     set_grad_and_mask(positions, grad_position_np)
-    set_grad_and_mask(tangent_u, grad_tangent_u_np)
-    set_grad_and_mask(tangent_v, grad_tangent_v_np)
+    set_grad_and_mask(rotation, grad_rotation_np)
     set_grad_and_mask(scales, grad_scales_np)
     set_grad_and_mask(albedos, grad_albedos_np)
     set_grad_and_mask(opacities, grad_opacities_np.reshape(-1))
@@ -301,8 +248,7 @@ def assign_numpy_gradients_to_tensors_masked(
 def create_masked_optimizer(
     config: OptimizationConfig,
     positions: torch.nn.Parameter,
-    tangent_u: torch.nn.Parameter,
-    tangent_v: torch.nn.Parameter,
+    rotation: torch.nn.Parameter,
     scales: torch.nn.Parameter,
     albedos: torch.nn.Parameter,
     opacities: torch.nn.Parameter,
@@ -311,32 +257,140 @@ def create_masked_optimizer(
 ) -> torch.optim.Optimizer:
     opt_type = config.optimizer_type.lower()
 
-    lr_pos = config.learning_rate_position
-    lr_tan = config.learning_rate_tangent
-    lr_scale = config.learning_rate_scale
-    lr_albedo = config.learning_rate_albedo
-    lr_opacity = config.learning_rate_opacity
-    lr_beta = config.learning_rate_beta
-    lr_power = 0
-
     param_groups = [
-        {"params": [positions], "lr": lr_pos},
-        {"params": [tangent_u, tangent_v], "lr": lr_tan},
-        {"params": [scales], "lr": lr_scale},
-        {"params": [albedos], "lr": lr_albedo},
-        {"params": [opacities], "lr": lr_opacity},
-        {"params": [betas], "lr": lr_beta},
-        {"params": [powers], "lr": lr_power},
+        {"params": [positions], "lr": config.learning_rate_position, "name": "position"},
+        {"params": [rotation], "lr": config.learning_rate_rotation, "name": "rotation"},
+        {"params": [scales], "lr": config.learning_rate_scale, "name": "scale"},
+        {"params": [albedos], "lr": config.learning_rate_albedo, "name": "albedo"},
+        {"params": [opacities], "lr": config.learning_rate_opacity, "name": "opacity"},
+        {"params": [betas], "lr": config.learning_rate_beta, "name": "beta"},
+        {"params": [powers], "lr": 0.0, "name": "power"},
     ]
 
     if opt_type == "sgd":
         return torch.optim.SGD(param_groups, momentum=0.8)
-
     if opt_type == "adam":
         return torch.optim.Adam(param_groups)
-
     if opt_type in ("masked_adam", "nullgrad_adam", "sparse_adam"):
-        # NOTE: this is NOT torch.optim.SparseAdam; it is the masked dense Adam above.
         return MaskedAdam(param_groups)
-
     raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
+
+def make_constant_scale_func() -> Callable[[int], float]:
+    def schedule(_: int) -> float:
+        return 1.0
+
+    return schedule
+
+
+def make_exponential_scale_func(
+        scale_init: float,
+        scale_final: float,
+        max_steps: int,
+        start_iteration: int = 0,
+) -> Callable[[int], float]:
+    if scale_init <= 0.0:
+        raise ValueError(f"scale_init must be positive, got {scale_init}")
+    if scale_final <= 0.0:
+        raise ValueError(f"scale_final must be positive, got {scale_final}")
+    if max_steps < 0:
+        raise ValueError(f"max_steps must be non-negative, got {max_steps}")
+
+    if max_steps == 0:
+        def immediate_schedule(iteration: int) -> float:
+            return scale_init if iteration < start_iteration else scale_final
+
+        return immediate_schedule
+
+    def schedule(iteration: int) -> float:
+        t = np.clip(float(iteration - start_iteration) / float(max_steps), 0.0, 1.0)
+        return float(
+            np.exp(
+                np.log(scale_init) * (1.0 - t)
+                + np.log(scale_final) * t
+            )
+        )
+
+    return schedule
+
+
+def get_required_learning_rate(config: OptimizationConfig, attribute_name: str) -> float:
+    learning_rate = getattr(config, attribute_name)
+    if learning_rate is None:
+        raise ValueError(f"config.{attribute_name} must be resolved before creating LR schedules.")
+    return float(learning_rate)
+
+
+def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, object]:
+    base_learning_rates = {
+        "position": get_required_learning_rate(config, "learning_rate_position"),
+        "rotation": get_required_learning_rate(config, "learning_rate_rotation"),
+        "scale": get_required_learning_rate(config, "learning_rate_scale"),
+        "albedo": get_required_learning_rate(config, "learning_rate_albedo"),
+        "opacity": get_required_learning_rate(config, "learning_rate_opacity"),
+        "beta": get_required_learning_rate(config, "learning_rate_beta"),
+        "power": 0.0,
+    }
+
+    use_position_lr_schedule = bool(getattr(config, "use_global_lr_schedule", False))
+    if use_position_lr_schedule:
+        position_lr_scale_func = make_exponential_scale_func(
+            scale_init=float(getattr(config, "global_lr_scale_init", 1.0)),
+            scale_final=float(getattr(config, "global_lr_scale_final", 1.0)),
+            start_iteration=int(getattr(config, "global_lr_start_iteration", 0)),
+            max_steps=int(getattr(config, "global_lr_max_steps", 0)),
+        )
+    else:
+        position_lr_scale_func = make_constant_scale_func()
+
+    return {
+        "base_learning_rates": base_learning_rates,
+        "global_lr_scale_func": make_constant_scale_func(),
+        "parameter_lr_scale_funcs": {
+            "position": position_lr_scale_func,
+        },
+    }
+
+
+def update_optimizer_learning_rates(
+        optimizer: torch.optim.Optimizer,
+        learning_rate_schedules: dict[str, object],
+        iteration: int,
+) -> dict[str, float]:
+    base_learning_rates = learning_rate_schedules.get("base_learning_rates", {})
+    global_lr_scale_func = learning_rate_schedules.get("global_lr_scale_func", make_constant_scale_func())
+    parameter_lr_scale_funcs = learning_rate_schedules.get("parameter_lr_scale_funcs", {})
+
+    if not callable(global_lr_scale_func):
+        raise RuntimeError("global_lr_scale_func must be callable.")
+
+    global_lr_scale = float(global_lr_scale_func(iteration))
+    active_learning_rates: dict[str, float] = {
+        "global_lr_scale": global_lr_scale,
+    }
+
+    for parameter_group in optimizer.param_groups:
+        group_name = parameter_group.get("name", None)
+        if group_name is None:
+            raise RuntimeError(
+                "Optimizer parameter group is missing a 'name'. "
+                "Add names such as 'position', 'rotation', 'scale', 'albedo', 'opacity', 'beta', or 'power'."
+            )
+
+        group_name = str(group_name)
+
+        if group_name not in base_learning_rates:
+            raise RuntimeError(f"No base learning rate registered for parameter group '{group_name}'.")
+
+        base_learning_rate = float(base_learning_rates[group_name])
+        parameter_lr_scale_func = parameter_lr_scale_funcs.get(group_name, make_constant_scale_func())
+
+        if not callable(parameter_lr_scale_func):
+            raise RuntimeError(f"LR scale function for parameter group '{group_name}' must be callable.")
+
+        parameter_lr_scale = float(parameter_lr_scale_func(iteration))
+        learning_rate = base_learning_rate * global_lr_scale * parameter_lr_scale
+
+        parameter_group["lr"] = learning_rate
+        active_learning_rates[group_name] = learning_rate
+
+    return active_learning_rates

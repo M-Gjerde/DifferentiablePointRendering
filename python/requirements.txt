@@ -1,6 +1,11 @@
 numpy
-torch
 imageio
 matplotlib
+pandas
+pillow
 opencv-python
 open3d
+vtk
+OpenEXR
+Imath
+# Install PyTorch/PyTorch3D after activation with install_torch_cu128.sh.

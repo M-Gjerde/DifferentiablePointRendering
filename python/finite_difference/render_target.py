@@ -11,9 +11,9 @@ def main(args) -> None:
         "photons": 1e6,
         "bounces": args.bounces,
         "forward_passes": args.forward_passes,
+        "primal_shadow_rays":  1,
+        "adjoint_shadow_rays": 1,
         "gather_passes": 1,
-        "adjoint_bounces": 0,
-        "adjoint_passes": 0,
         "logging": 4,
         "seed": 42,
     }

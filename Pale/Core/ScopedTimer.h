@@ -1,14 +1,28 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 #include "spdlog/spdlog.h"
 
 namespace Pale {
+struct ScopedTimerRecord {
+    std::string name{};
+    double durationMs = 0.0;
+    uint64_t sequence = 0u;
+    spdlog::level::level_enum logLevel = spdlog::level::trace;
+};
+
 namespace ScopedTimerDetail {
     [[nodiscard]] bool isLogLevelEnabled( int logLevel) noexcept;
+    [[nodiscard]] bool isProfilingEnabled() noexcept;
+    void setProfilingEnabled(bool enabled);
+    void clearProfilingRecords();
+    [[nodiscard]] std::vector<ScopedTimerRecord> snapshotProfilingRecords();
+    void recordDuration(std::string_view scopeName, double durationMs, spdlog::level::level_enum logLevel);
     void logTraceDuration(std::string_view scopeName, double durationMs, spdlog::level::level_enum logLevel);
 }
 
@@ -24,7 +38,11 @@ public:
         }
     }
     */
-    explicit ScopedTimer(std::string name, spdlog::level::level_enum logLevel = spdlog::level::trace) : m_enabled(ScopedTimerDetail::isLogLevelEnabled(logLevel)), m_logLevel(logLevel) {
+    explicit ScopedTimer(std::string name, spdlog::level::level_enum logLevel = spdlog::level::trace)
+        : m_logEnabled(ScopedTimerDetail::isLogLevelEnabled(logLevel)),
+          m_profileEnabled(ScopedTimerDetail::isProfilingEnabled()),
+          m_enabled(m_logEnabled || m_profileEnabled),
+          m_logLevel(logLevel) {
         if (m_enabled) {
             m_name = std::move(name);
             m_start = Clock::now();
@@ -45,10 +63,17 @@ public:
 
         const auto end = Clock::now();
         const double durationMs = std::chrono::duration<double, std::milli>(end - m_start).count();
-        ScopedTimerDetail::logTraceDuration(m_name, durationMs, m_logLevel);
+        if (m_profileEnabled) {
+            ScopedTimerDetail::recordDuration(m_name, durationMs, m_logLevel);
+        }
+        if (m_logEnabled) {
+            ScopedTimerDetail::logTraceDuration(m_name, durationMs, m_logLevel);
+        }
     }
 
 private:
+    bool m_logEnabled{false};
+    bool m_profileEnabled{false};
     bool m_enabled{false};
     std::string m_name{};
     Clock::time_point m_start{};
@@ -56,4 +81,3 @@ private:
 };
 
 } // namespace Pale
-

@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
-import imageio.v2 as imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -17,13 +16,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Create a 6-panel optimization GIF from the latest optimization run.\n"
-            "Panels: target | initial render | final render | optimization sequence | median depth | loss curve"
+            "Panels: target | rendered | final render | optimization loss | median depth | normal from depth"
         )
     )
     parser.add_argument(
         "--optimization-output-root",
         type=Path,
-        default=Path("../Assets/OptimizationOutput"),
+        default=Path("OptimizationOutput"),
         help="Root folder containing timestamped optimization runs.",
     )
     parser.add_argument(
@@ -41,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fps",
         type=float,
-        default=8.0,
+        default=5.0,
         help="GIF framerate.",
     )
     parser.add_argument(
@@ -56,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional explicit loss column from metrics.csv. "
-            "Defaults to loss_total_sum, then loss_rgb_sum, then loss_depth_distortion_sum."
+            "Defaults to loss_total_mean, then loss_rgb_mean, then the weighted mean regularizers."
         ),
     )
     parser.add_argument(
@@ -84,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         help="GIF loop count. 0 = infinite.",
     )
     parser.add_argument(
-        "--frame-stride",
+        "--frame-stride", "--stride",
         type=int,
         default=1,
         help="Use every N-th render frame. Example: 10 means use frames 0, 10, 20, ...",
@@ -102,6 +101,38 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Zero-based index of the run to use when --run-dir is omitted. "
             "0 = latest, 1 = second latest, 2 = third latest, ..."
+        ),
+    )
+    parser.add_argument(
+        "--last-frame-hold-seconds",
+        type=float,
+        default=10.0,
+        help="Hold the final GIF frame for this many seconds before looping.",
+    )
+    parser.add_argument(
+        "--slow-start-until-iteration",
+        type=int,
+        default=1000,
+        help=(
+            "Use denser GIF frame sampling up to and including this render iteration. "
+            "Set to 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--slow-start-frame-density",
+        "--slow-start-duration-scale",
+        dest="slow_start_frame_density",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--slow-start-frame-stride",
+        type=int,
+        default=1,
+        help=(
+            "Use every N-th render frame during the slow-start segment. "
+            "Example: 1 keeps every early frame, while --frame-stride controls the later frames."
         ),
     )
 
@@ -148,12 +179,9 @@ def find_run_dir_by_index(optimization_output_root: Path, run_index: int) -> Pat
             f"No run folders with metrics.csv found under: {optimization_output_root}"
         )
 
+    # Select latest run purely by metrics.csv age (most recent first)
     candidate_run_dirs.sort(
-        key=lambda item: (
-            item["parsed_timestamp"] is not None,
-            item["parsed_timestamp"] if item["parsed_timestamp"] is not None else datetime.min,
-            item["modified_time"],
-        ),
+        key=lambda item: item["modified_time"],
         reverse=True,
     )
 
@@ -171,32 +199,52 @@ def find_run_dir_by_index(optimization_output_root: Path, run_index: int) -> Pat
 
     return candidate_run_dirs[run_index]["run_dir"]
 
-    if not candidate_run_dirs:
-        raise FileNotFoundError(
-            f"No run folders with metrics.csv found under: {optimization_output_root}"
-        )
 
-    candidate_run_dirs.sort(
-        key=lambda item: (
-            item["parsed_timestamp"] is not None,
-            item["parsed_timestamp"] if item["parsed_timestamp"] is not None else datetime.min,
-            item["modified_time"],
-        ),
-        reverse=True,
-    )
+def csv_value_is_true(value: object) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
 
-    return candidate_run_dirs[0]["run_dir"]
+    if pd.isna(value):
+        return False
+
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y"}
 
 
 def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
-    if "camera_name" not in dataframe.columns:
-        return dataframe
+    """Return the rows representing the global/averaged optimization metric.
 
-    mask = dataframe["camera_name"].astype(str) == "ALL_CAMERAS"
-    if mask.any():
-        return dataframe.loc[mask].copy()
+    Current training writes one row per iteration with ``*_mean`` losses. For
+    one-camera-per-iteration training, the first few rows only average over the
+    cameras visited so far; once the camera cache is complete,
+    ``loss_average_is_complete`` becomes true. Prefer only those complete
+    averages, while retaining all rows for short/interrupted runs that never
+    reach a complete average.
 
-    return dataframe.copy()
+    Older metrics files may instead contain one row per camera and mark the
+    aggregate row as ``camera_name == ALL_CAMERAS``. That format remains
+    supported for old runs.
+    """
+    if dataframe.empty:
+        return dataframe.copy()
+
+    filtered = dataframe.copy()
+
+    if "loss_average_is_complete" in filtered.columns:
+        complete_mask = filtered["loss_average_is_complete"].map(csv_value_is_true)
+        if bool(complete_mask.any()):
+            filtered = filtered.loc[complete_mask].copy()
+
+    if "camera_name" in filtered.columns:
+        aggregate_mask = filtered["camera_name"].astype(str) == "ALL_CAMERAS"
+        if bool(aggregate_mask.any()):
+            filtered = filtered.loc[aggregate_mask].copy()
+
+    if "iteration" not in filtered.columns:
+        return filtered
+
+    filtered["iteration"] = pd.to_numeric(filtered["iteration"], errors="coerce")
+    filtered = filtered.loc[np.isfinite(filtered["iteration"])].copy()
+    return filtered.sort_values("iteration").reset_index(drop=True)
 
 
 def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None) -> str:
@@ -209,11 +257,26 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         return explicit_loss_column
 
     preferred = [
+        # Current averaged metrics.csv format.
+        "loss_total_mean",
+        "loss_rgb_mean",
+        "loss_normal_consistency_weighted_mean",
+        "loss_depth_distortion_weighted_mean",
+        "loss_opacity_prior_weighted_mean",
+        "loss_normal_consistency_raw_mean",
+        "loss_depth_distortion_raw_mean",
+        "loss_opacity_prior_raw_mean",
+
+        # Backward compatibility with previous metrics.csv formats.
         "loss_total_sum",
         "loss_rgb_sum",
-        "loss_depth_distortion_sum",
-        "loss_depth_distortion_weighted_sum",
         "loss_normal_consistency_weighted_sum",
+        "loss_depth_distortion_weighted_sum",
+        "loss_opacity_prior_weighted_sum",
+        "loss_normal_consistency_raw_sum",
+        "loss_depth_distortion_raw_sum",
+        "loss_opacity_prior_raw_sum",
+        "loss_depth_distortion_sum",
         "loss_l2_window_mean",
         "loss_l2_current_camera",
         "loss_l2_window_sum_scaled",
@@ -223,11 +286,14 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
         if column_name in dataframe.columns:
             return column_name
 
-    raise ValueError(f"No supported loss column found. Available columns: {list(dataframe.columns)}")
+    raise ValueError(
+        "No supported loss column found. "
+        f"Available columns: {list(dataframe.columns)}"
+    )
 
 
 def discover_camera_names(run_dir: Path) -> List[str]:
-    camera_names = []
+    camera_names = set()
 
     for child in sorted(run_dir.iterdir()):
         if not child.is_dir():
@@ -235,12 +301,30 @@ def discover_camera_names(run_dir: Path) -> List[str]:
 
         render_dir = child / "render"
         if render_dir.is_dir():
-            camera_names.append(child.name)
+            camera_names.add(child.name)
+
+    final_image_patterns = [
+        "render_target_*.png",
+        "render_final_*.png",
+        "median_depth_final_*.png",
+        "normal_from_depth_final_*.png",
+    ]
+
+    for pattern in final_image_patterns:
+        for image_path in run_dir.glob(pattern):
+            match = re.match(
+                r"^(?:render_target|render_final|median_depth_final|normal_from_depth_final)_(.+)\.png$",
+                image_path.name,
+            )
+            if match is not None:
+                camera_names.add(match.group(1))
 
     if not camera_names:
-        raise FileNotFoundError(f"No camera folders with a render/ subfolder found in: {run_dir}")
+        raise FileNotFoundError(
+            f"No camera folders or final camera images found in: {run_dir}"
+        )
 
-    return camera_names
+    return sorted(camera_names)
 
 
 def make_loss_curve_image(
@@ -256,14 +340,23 @@ def make_loss_curve_image(
     if "iteration" not in dataframe.columns:
         raise ValueError("metrics.csv does not contain an 'iteration' column")
 
-    dataframe = dataframe.sort_values("iteration").reset_index(drop=True)
     loss_column = select_loss_column(dataframe, explicit_loss_column)
+    loss_values = pd.to_numeric(dataframe[loss_column], errors="coerce")
+
+    valid_mask = np.isfinite(dataframe["iteration"]) & np.isfinite(loss_values)
+    dataframe = dataframe.loc[valid_mask].copy()
+    dataframe[loss_column] = loss_values.loc[valid_mask]
+
+    if dataframe.empty:
+        raise ValueError(
+            f"No finite values were found for '{loss_column}' after filtering metrics.csv."
+        )
 
     plt.figure(figsize=(width / 100.0, height / 100.0), dpi=100)
     plt.plot(dataframe["iteration"], dataframe[loss_column], linewidth=2.0)
     plt.xlabel("Iteration")
     plt.ylabel(loss_column)
-    plt.title("Loss curve")
+    plt.title("Mean loss curve" if loss_column.endswith("_mean") else "Loss curve")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_png_path, dpi=100)
@@ -277,6 +370,14 @@ def load_image_rgb(path: Path) -> Image.Image:
         raise FileNotFoundError(f"Missing image: {path}")
 
     return Image.open(path).convert("RGB")
+
+
+def load_optional_image_rgb(path: Path, label: str) -> Image.Image | None:
+    if not path.exists():
+        print(f"Skipping {label}: missing {path}")
+        return None
+
+    return load_image_rgb(path)
 
 
 def make_placeholder_image(
@@ -374,10 +475,25 @@ def make_panel(
     return draw_panel_title(fitted, title, panel_width, title_height, font)
 
 
+def make_optional_panel(
+    image: Image.Image | None,
+    title: str,
+    panel_width: int,
+    panel_height: int,
+    title_height: int,
+    font: ImageFont.ImageFont,
+) -> Image.Image | None:
+    if image is None:
+        return None
+
+    return make_panel(image, title, panel_width, panel_height, title_height, font)
+
+
 def compose_grid_panels(
     rows: List[List[Image.Image]],
     background_color: tuple[int, int, int] = (10, 10, 10),
 ) -> Image.Image:
+    rows = [row for row in rows if row]
     if not rows:
         raise ValueError("Cannot compose an empty panel grid")
 
@@ -411,7 +527,8 @@ def parse_frame_index_from_name(path: Path, suffix: str) -> int | None:
 
 def discover_render_frames(camera_render_dir: Path) -> List[Path]:
     if not camera_render_dir.exists():
-        raise FileNotFoundError(f"Missing render directory: {camera_render_dir}")
+        print(f"Skipping rendered frames: missing {camera_render_dir}")
+        return []
 
     frame_paths = sorted(
         camera_render_dir.glob("*_render.png"),
@@ -424,7 +541,8 @@ def discover_render_frames(camera_render_dir: Path) -> List[Path]:
     )
 
     if not frame_paths:
-        raise FileNotFoundError(f"No optimization render frames found in: {camera_render_dir}")
+        print(f"Skipping rendered frames: no optimization render frames found in {camera_render_dir}")
+        return []
 
     return frame_paths
 
@@ -432,11 +550,32 @@ def select_render_frames_for_gif(
     render_frame_paths: List[Path],
     frame_stride: int,
     max_gif_frames: int | None,
+    slow_start_until_iteration: int,
+    slow_start_frame_stride: int,
 ) -> List[Path]:
     if frame_stride < 1:
         raise ValueError(f"--frame-stride must be >= 1, got {frame_stride}")
+    if slow_start_until_iteration < 0:
+        raise ValueError(
+            f"--slow-start-until-iteration must be >= 0, got {slow_start_until_iteration}"
+        )
+    if slow_start_frame_stride < 1:
+        raise ValueError(
+            f"--slow-start-frame-stride must be >= 1, got {slow_start_frame_stride}"
+        )
 
-    selected_frame_paths = render_frame_paths[::frame_stride]
+    selected_frame_paths = []
+    for frame_index, render_frame_path in enumerate(render_frame_paths):
+        render_iteration = parse_frame_index_from_name(render_frame_path, "render")
+        use_slow_start_stride = (
+            slow_start_until_iteration > 0
+            and render_iteration is not None
+            and render_iteration <= slow_start_until_iteration
+        )
+        active_stride = slow_start_frame_stride if use_slow_start_stride else frame_stride
+
+        if frame_index % active_stride == 0:
+            selected_frame_paths.append(render_frame_path)
 
     if render_frame_paths[-1] not in selected_frame_paths:
         selected_frame_paths.append(render_frame_paths[-1])
@@ -468,31 +607,43 @@ def select_render_frames_for_gif(
     return selected_frame_paths
 
 def discover_median_depth_frames(camera_median_depth_dir: Path) -> dict[int, Path]:
-    if not camera_median_depth_dir.exists():
+    return discover_snapshot_frames(camera_median_depth_dir, "median_depth")
+
+
+def discover_snapshot_frames(camera_snapshot_dir: Path, suffix: str) -> dict[int, Path]:
+    if not camera_snapshot_dir.exists():
         return {}
 
-    median_depth_frame_paths = {}
+    frame_paths = {}
 
-    for median_depth_path in camera_median_depth_dir.glob("*_median_depth.png"):
-        frame_index = parse_frame_index_from_name(median_depth_path, "median_depth")
+    for snapshot_path in camera_snapshot_dir.glob(f"*_{suffix}.png"):
+        frame_index = parse_frame_index_from_name(snapshot_path, suffix)
         if frame_index is None:
             continue
 
-        median_depth_frame_paths[frame_index] = median_depth_path
+        frame_paths[frame_index] = snapshot_path
 
-    return median_depth_frame_paths
+    return frame_paths
 
 
 def get_matching_median_depth_path(
     render_frame_path: Path,
     median_depth_frame_paths: dict[int, Path],
 ) -> Path | None:
-    render_frame_index = parse_frame_index_from_name(render_frame_path, "render")
+    return get_matching_snapshot_path(render_frame_path, median_depth_frame_paths, "render")
+
+
+def get_matching_snapshot_path(
+    render_frame_path: Path,
+    snapshot_frame_paths: dict[int, Path],
+    render_suffix: str = "render",
+) -> Path | None:
+    render_frame_index = parse_frame_index_from_name(render_frame_path, render_suffix)
 
     if render_frame_index is None:
         return None
 
-    return median_depth_frame_paths.get(render_frame_index)
+    return snapshot_frame_paths.get(render_frame_index)
 
 
 def build_gif(
@@ -507,13 +658,18 @@ def build_gif(
     loop: int,
     frame_stride: int,
     max_gif_frames: int | None,
+    last_frame_hold_seconds: float,
+    slow_start_until_iteration: int,
+    slow_start_frame_stride: int,
 ) -> Path:
     target_path = run_dir / f"render_target_{camera_name}.png"
-    initial_path = run_dir / f"render_initial_{camera_name}.png"
     final_path = run_dir / f"render_final_{camera_name}.png"
+    final_median_depth_path = run_dir / f"median_depth_final_{camera_name}.png"
+    final_normal_from_depth_path = run_dir / f"normal_from_depth_final_{camera_name}.png"
 
     render_dir = run_dir / camera_name / "render"
     median_depth_dir = run_dir / camera_name / "median_depth"
+    normal_from_depth_dir = run_dir / camera_name / "normal_from_depth"
 
     metrics_csv_path = run_dir / "metrics.csv"
     loss_curve_path = run_dir / "loss_curve_for_gif.png"
@@ -523,42 +679,46 @@ def build_gif(
     except Exception:
         font = ImageFont.load_default()
 
-    target_img = load_image_rgb(target_path)
-    final_img = load_image_rgb(final_path)
-
-    if initial_path.exists():
-        initial_img = load_image_rgb(initial_path)
-    else:
-        initial_img = make_placeholder_image(
-            f"Missing initial render\n{initial_path.name}",
-            panel_width,
-            panel_height,
-            font,
-        )
+    target_img = load_optional_image_rgb(target_path, "target")
+    final_img = load_optional_image_rgb(final_path, "final render")
+    final_median_depth_img = load_optional_image_rgb(final_median_depth_path, "final median depth")
+    final_normal_from_depth_img = load_optional_image_rgb(final_normal_from_depth_path, "final normal from depth")
 
     all_render_frame_paths = discover_render_frames(render_dir)
     render_frame_paths = select_render_frames_for_gif(
         render_frame_paths=all_render_frame_paths,
         frame_stride=frame_stride,
         max_gif_frames=max_gif_frames,
-    )
+        slow_start_until_iteration=slow_start_until_iteration,
+        slow_start_frame_stride=slow_start_frame_stride,
+    ) if all_render_frame_paths else []
 
-    print(
-        f"GIF frame sampling: using {len(render_frame_paths)} / "
-        f"{len(all_render_frame_paths)} render frames"
-    )
+    if all_render_frame_paths:
+        print(
+            f"GIF frame sampling: using {len(render_frame_paths)} / "
+            f"{len(all_render_frame_paths)} render frames"
+        )
     median_depth_frame_paths = discover_median_depth_frames(median_depth_dir)
+    normal_from_depth_frame_paths = discover_snapshot_frames(normal_from_depth_dir, "normal_from_depth")
 
-    loss_curve_img_path, used_loss_column = make_loss_curve_image(
-        metrics_csv_path=metrics_csv_path,
-        output_png_path=loss_curve_path,
-        explicit_loss_column=loss_column,
-        width=panel_width,
-        height=panel_height,
-    )
-    loss_curve_img = load_image_rgb(loss_curve_img_path)
+    loss_curve_img = None
+    used_loss_column = None
+    if metrics_csv_path.exists():
+        try:
+            loss_curve_img_path, used_loss_column = make_loss_curve_image(
+                metrics_csv_path=metrics_csv_path,
+                output_png_path=loss_curve_path,
+                explicit_loss_column=loss_column,
+                width=panel_width,
+                height=panel_height,
+            )
+            loss_curve_img = load_image_rgb(loss_curve_img_path)
+        except Exception as exception:
+            print(f"Skipping optimization loss figure: {exception}")
+    else:
+        print(f"Skipping optimization loss figure: missing {metrics_csv_path}")
 
-    target_panel = make_panel(
+    target_panel = make_optional_panel(
         target_img,
         f"Target ({camera_name})",
         panel_width,
@@ -567,16 +727,7 @@ def build_gif(
         font,
     )
 
-    initial_panel = make_panel(
-        initial_img,
-        f"Initial render ({camera_name})",
-        panel_width,
-        panel_height,
-        title_height,
-        font,
-    )
-
-    final_panel = make_panel(
+    final_panel = make_optional_panel(
         final_img,
         f"Final render ({camera_name})",
         panel_width,
@@ -585,80 +736,137 @@ def build_gif(
         font,
     )
 
-    loss_panel = make_panel(
+    loss_title = (
+        f"Optimization loss ({used_loss_column})"
+        if used_loss_column is not None
+        else "Optimization loss"
+    )
+    loss_panel = make_optional_panel(
         loss_curve_img,
-        f"Loss curve ({used_loss_column})",
+        loss_title,
         panel_width,
         panel_height,
         title_height,
         font,
     )
 
-    no_median_depth_img = make_placeholder_image(
-        "Median depth unavailable",
-        panel_width,
-        panel_height,
-        font,
-    )
-
     output_path = run_dir / output_name
-    duration_sec = 1.0 / max(fps, 1.0e-6)
 
-    with imageio.get_writer(output_path, mode="I", duration=duration_sec, loop=loop) as writer:
-        for frame_index, render_frame_path in enumerate(render_frame_paths):
+    base_duration_ms = max(1, int(round(1000.0 / max(fps, 1.0e-6))))
+
+    if last_frame_hold_seconds > 0.0:
+        final_duration_ms = max(
+            base_duration_ms,
+            int(round(last_frame_hold_seconds * 1000.0)),
+        )
+    else:
+        final_duration_ms = base_duration_ms
+
+    gif_frames: list[Image.Image] = []
+    gif_durations_ms: list[int] = []
+    frame_paths_for_output: list[Path | None] = render_frame_paths if render_frame_paths else [None]
+
+    for frame_index, render_frame_path in enumerate(frame_paths_for_output):
+        rendered_panel = None
+        if render_frame_path is not None:
             render_img = load_image_rgb(render_frame_path)
-
-            optimization_panel = make_panel(
+            rendered_panel = make_panel(
                 render_img,
-                f"Optimization ({render_frame_path.stem})",
+                f"Rendered ({render_frame_path.stem})",
                 panel_width,
                 panel_height,
                 title_height,
                 font,
             )
 
+        median_depth_img = None
+        median_depth_title = f"Median depth ({camera_name})"
+        if render_frame_path is not None:
             median_depth_path = get_matching_median_depth_path(
                 render_frame_path=render_frame_path,
                 median_depth_frame_paths=median_depth_frame_paths,
             )
-
             if median_depth_path is not None:
                 median_depth_img = load_image_rgb(median_depth_path)
                 median_depth_title = f"Median depth ({median_depth_path.stem})"
-            else:
-                median_depth_img = no_median_depth_img
-                median_depth_title = "Median depth"
+        if median_depth_img is None:
+            median_depth_img = final_median_depth_img
 
-            median_depth_panel = make_panel(
-                median_depth_img,
-                median_depth_title,
-                panel_width,
-                panel_height,
-                title_height,
-                font,
+        normal_from_depth_img = None
+        normal_from_depth_title = f"Normal from depth ({camera_name})"
+        if render_frame_path is not None:
+            normal_from_depth_path = get_matching_snapshot_path(
+                render_frame_path=render_frame_path,
+                snapshot_frame_paths=normal_from_depth_frame_paths,
             )
+            if normal_from_depth_path is not None:
+                normal_from_depth_img = load_image_rgb(normal_from_depth_path)
+                normal_from_depth_title = f"Normal from depth ({normal_from_depth_path.stem})"
+        if normal_from_depth_img is None:
+            normal_from_depth_img = final_normal_from_depth_img
 
-            grid = compose_grid_panels(
-                [
-                    [
-                        target_panel,
-                        initial_panel,
-                        final_panel,
-                    ],
-                    [
-                        optimization_panel,
-                        median_depth_panel,
-                        loss_panel,
-                    ],
-                ]
-            )
+        median_depth_panel = make_optional_panel(
+            median_depth_img,
+            median_depth_title,
+            panel_width,
+            panel_height,
+            title_height,
+            font,
+        )
 
-            writer.append_data(np.asarray(grid, dtype=np.uint8))
+        normal_from_depth_panel = make_optional_panel(
+            normal_from_depth_img,
+            normal_from_depth_title,
+            panel_width,
+            panel_height,
+            title_height,
+            font,
+        )
+
+        grid = compose_grid_panels(
+            [
+                [panel for panel in [target_panel, rendered_panel, final_panel] if panel is not None],
+                [panel for panel in [loss_panel, median_depth_panel, normal_from_depth_panel] if panel is not None],
+            ]
+        )
+
+        gif_frames.append(grid)
+
+        is_last_frame = frame_index == len(frame_paths_for_output) - 1
+        if is_last_frame:
+            gif_durations_ms.append(final_duration_ms)
+            continue
+
+        frame_duration_ms = base_duration_ms
+        gif_durations_ms.append(frame_duration_ms)
+
+    if not gif_frames:
+        raise RuntimeError("No GIF frames were generated")
+
+    gif_frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=gif_frames[1:],
+        duration=gif_durations_ms,
+        loop=loop,
+        optimize=False,
+        disposal=2,
+    )
 
     return output_path
 
 def main() -> None:
     args = parse_args()
+    slow_start_frame_stride = args.slow_start_frame_stride
+    if args.slow_start_frame_density is not None:
+        if args.slow_start_frame_density <= 0.0:
+            raise ValueError(
+                f"--slow-start-frame-density must be > 0, got {args.slow_start_frame_density}"
+            )
+        slow_start_frame_stride = max(
+            1,
+            int(round(args.frame_stride / max(1.0, args.slow_start_frame_density))),
+        )
 
     if args.run_dir is not None:
         run_dir = args.run_dir.resolve()
@@ -679,6 +887,7 @@ def main() -> None:
         )
 
     camera_name = camera_names[args.camera_index]
+    print("Using run dir:", run_dir)
     print("Using camera:", camera_name)
 
     output_path = build_gif(
@@ -693,6 +902,9 @@ def main() -> None:
         loop=args.loop,
         frame_stride=args.frame_stride,
         max_gif_frames=args.max_gif_frames,
+        last_frame_hold_seconds=args.last_frame_hold_seconds,
+        slow_start_until_iteration=args.slow_start_until_iteration,
+        slow_start_frame_stride=slow_start_frame_stride,
     )
 
     print()
@@ -702,6 +914,14 @@ def main() -> None:
     print(f"Available cameras: {camera_names}")
     print(f"Selected camera  : [{args.camera_index}] {camera_name}")
     print(f"FPS              : {args.fps}")
+    if args.slow_start_until_iteration > 0:
+        print(
+            "Slow start       : "
+            f"<= iter {args.slow_start_until_iteration}, "
+            f"frame stride {slow_start_frame_stride}"
+        )
+    else:
+        print("Slow start       : disabled")
     print(f"Output GIF       : {output_path}")
 
 

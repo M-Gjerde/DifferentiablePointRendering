@@ -1,0 +1,43 @@
+ply
+format ascii 1.0
+comment Quaternion surfels: position, rotation quaternion, scales, diffuse albedo, opacity
+element vertex 12
+property float x
+property float y
+property float z
+property float rot_w
+property float rot_x
+property float rot_y
+property float rot_z
+property float su
+property float sv
+property float albedo_r
+property float albedo_g
+property float albedo_b
+property float opacity
+property float beta
+property float shape
+property float power
+end_header
+-0.4 0.3 0.95  0.0 0.0 0.0 0.0  0.0 0.0  1.0 1.0 1.0  0.0 0.0 0.0 30.0
+0.4  0.3 0.95  0.0 0.0 0.0 0.0  0.0 0.0  1.0 1.0 1.0  0.0 0.0 0.0 30.0
+
+-0.05 0.5 0.2 1.0 0.0 0.0 0.0  0.15 0.15  1.0 0.1 0.1  1.0 -1.0 0.0 0.0
+0.05  0.5 0.2 1.0 0.0 0.0 0.0  0.15 0.15  0.1 1.0 0.1  1.0 -1.0 0.0 0.0
+0.05  0.5 0.195 1.0 0.0 0.0 0.0  0.15 0.15  0.1 1.0 0.1  1.0 -1.0 0.0 0.0
+0.05  0.5 0.205 1.0 0.0 0.0 0.0  0.15 0.15  0.1 0.0 1.1  1.0 -1.0 0.0 0.0
+
+0.0 0.5 0.0  1.0 0.0 0.0 0.0  1.0 1.0  1.0 1.0 1.0  1.0 -5.0 0.0 0.0
+0.1 0.5 0.01  1.0 0.0 0.0 0.0  1.0 1.0  0.0 0.0 1.0  1.0 -5.0 0.0 0.0
+0.1 0.4 0.008  1.0 0.0 0.0 0.0  1.0 1.0  0.0 0.5 0.5  1.0 -5.0 0.0 0.0
+0.1 0.3 0.011  1.0 0.0 0.0 0.0  1.0 1.0  1.0 0.0 0.0  1.0 -5.0 0.0 0.0
+
+
+0.0 0.5 0.5  0.0 1.0 0.0 0.0  1.0 1.0  0.0 0.0 0.0  0.5 -0 0.0 0.0
+
+
+0.0 1.0 0.5  0.70710678 0.70710678 0.0 0.0  1.0 1.0  1.0 1.0 1.0  1.0 -5.0 0.0 0.0
+
+-0.5 0.5 5.5  0.5 0.5 0.5 0.5  1.0 1.0  0.8 0.1 0.1  1.0 -0 0.0 0.0
+0.5 0.5 5.5  0.70710678 0.0 -0.70710678 0.0  1.0 1.0  0.1 0.8 0.1  1.0 -0 0.0 0.0
+

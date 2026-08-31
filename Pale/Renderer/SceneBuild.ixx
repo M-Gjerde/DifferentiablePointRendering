@@ -43,6 +43,10 @@ export namespace Pale {
         struct BuildProducts {
             std::vector<BVHNode> bottomLevelNodes; // concatenated BLAS nodes
             std::vector<BLASRange> bottomLevelRanges; // [offset,count] per mesh
+            std::vector<PackedPointBVHNode> pointPackedBvhNodes;
+            std::vector<BLASRange> pointPackedBvhRanges;
+            std::vector<PackedPointQBVHNode> pointQbvhNodes;
+            std::vector<BLASRange> pointQbvhRanges;
             std::vector<TLASNode> topLevelNodes; // single TLAS
 
             std::vector<Vertex> vertices;
@@ -51,6 +55,7 @@ export namespace Pale {
             std::unordered_map<UUID, uint32_t> meshIndexById;
 
             std::vector<Point> points; // global SoA/AoS slice
+            std::vector<SurfelTraversalData> pointTraversalData;
             std::vector<uint32_t> pointPermutation;
             std::vector<PointCloudRange> pointCloudRanges;
             std::unordered_map<UUID, uint32_t> pointCloudIndexById;
@@ -71,8 +76,12 @@ export namespace Pale {
         };
 
         struct BuildOptions {
-            uint32_t bvhMaxLeafTriangles = 4;
-            uint32_t bvhMaxLeafPoints = 4;
+            uint32_t bvhMaxLeafTriangles = 2;
+            uint32_t bvhMaxLeafPoints = 2;
+            bool pointBvhUseBinnedSah = true;
+            float pointBvhEffectiveAlphaMin = 0.01f;
+            float pointBvhMinRadiusScale = 0.010f;
+            float pointBvhNormalThickness = 0.0001f;
         };
 
 

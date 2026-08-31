@@ -5,8 +5,8 @@ import argparse
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
-
+from typing import List, Optional, Set
+import os
 import cv2
 import numpy as np
 
@@ -27,6 +27,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--cols", type=int, default=4, help="Number of tile columns.")
     parser.add_argument("--pad", type=int, default=6, help="Padding between tiles (pixels).")
     parser.add_argument("--window-scale", type=float, default=1.0, help="Resize window to scale*mosaic size.")
+    parser.add_argument("--parent-pid", type=int, default=0,
+                        help="Exit automatically when this parent process is no longer alive.", )
 
     # New: camera folder discovery behavior
     parser.add_argument(
@@ -56,6 +58,26 @@ def parse_arguments() -> argparse.Namespace:
 
     return parser.parse_args()
 
+def is_parent_process_alive(parent_pid: int) -> bool:
+    if parent_pid <= 0:
+        return True
+
+    current_parent_pid = os.getppid()
+    if current_parent_pid != parent_pid:
+        return False
+
+    if hasattr(os, "kill"):
+        try:
+            os.kill(parent_pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    return True
+
 
 def load_image_bgr_safely(image_path: Path, wait_time: float = 0.03) -> Optional[np.ndarray]:
     if not image_path.exists():
@@ -76,21 +98,42 @@ def load_image_bgr_safely(image_path: Path, wait_time: float = 0.03) -> Optional
     return cv2.imread(str(image_path), cv2.IMREAD_COLOR)
 
 
+def has_matching_target_image(run_dir: Path, camera_name: str) -> bool:
+    return (run_dir / f"render_target_{camera_name}.png").exists()
+
+
 def discover_camera_dirs(run_dir: Path) -> List[Path]:
     if not run_dir.is_dir():
         raise RuntimeError(f"output-path '{run_dir}' must be a directory.")
-    return [p for p in sorted(run_dir.iterdir()) if p.is_dir()]
+
+    camera_dirs: List[Path] = []
+    for path in sorted(run_dir.iterdir()):
+        if not path.is_dir():
+            continue
+
+        has_render_subfolder = (path / "render").is_dir()
+        has_target_image = has_matching_target_image(run_dir, path.name)
+
+        if has_render_subfolder or has_target_image:
+            camera_dirs.append(path)
+
+    return camera_dirs
 
 
 def discover_camera_names(run_dir: Path) -> List[str]:
-    return [p.name for p in discover_camera_dirs(run_dir)]
+    return [path.name for path in discover_camera_dirs(run_dir)]
+
+
+def get_latest_render_path(run_dir: Path, camera_name: str) -> Optional[Path]:
+    render_dir = run_dir / camera_name / "render"
+    return get_latest_png(render_dir)
 
 
 def wait_for_stable_camera_dirs(
-    run_dir: Path,
-    timeout_seconds: float,
-    poll_period_ms: int,
-    stable_grace_seconds: float,
+        run_dir: Path,
+        timeout_seconds: float,
+        poll_period_ms: int,
+        stable_grace_seconds: float,
 ) -> List[str]:
     """
     Polls for camera folder creation during startup.
@@ -140,14 +183,6 @@ def get_latest_png(render_directory: Path) -> Optional[Path]:
     return candidates[-1]
 
 
-def get_latest_render_path(run_dir: Path, camera_name: str) -> Optional[Path]:
-    camera_dir = run_dir / camera_name
-    render_dir = camera_dir / "render"
-    if not render_dir.exists():
-        render_dir = camera_dir
-    return get_latest_png(render_dir)
-
-
 def get_target_path(run_dir: Path, camera_name: str) -> Optional[Path]:
     candidate = run_dir / f"render_target_{camera_name}.png"
     return candidate if candidate.exists() else None
@@ -166,7 +201,7 @@ def resize_and_letterbox(image_bgr: np.ndarray, tile_w: int, tile_h: int) -> np.
     canvas = np.zeros((tile_h, tile_w, 3), dtype=np.uint8)
     x0 = (tile_w - new_w) // 2
     y0 = (tile_h - new_h) // 2
-    canvas[y0 : y0 + new_h, x0 : x0 + new_w] = resized
+    canvas[y0: y0 + new_h, x0: x0 + new_w] = resized
     return canvas
 
 
@@ -193,12 +228,12 @@ def draw_label(tile_bgr: np.ndarray, text: str, is_selected: bool) -> None:
 
 
 def build_mosaic(
-    tiles: List[np.ndarray],
-    rows: int,
-    cols: int,
-    tile_w: int,
-    tile_h: int,
-    pad: int,
+        tiles: List[np.ndarray],
+        rows: int,
+        cols: int,
+        tile_w: int,
+        tile_h: int,
+        pad: int,
 ) -> np.ndarray:
     mosaic_h = rows * tile_h + (rows + 1) * pad
     mosaic_w = cols * tile_w + (cols + 1) * pad
@@ -209,7 +244,7 @@ def build_mosaic(
         c = idx % cols
         y0 = pad + r * (tile_h + pad)
         x0 = pad + c * (tile_w + pad)
-        mosaic[y0 : y0 + tile_h, x0 : x0 + tile_w] = tile
+        mosaic[y0: y0 + tile_h, x0: x0 + tile_w] = tile
 
     return mosaic
 
@@ -262,9 +297,12 @@ def main() -> None:
     )
 
     last_discovery_time = time.time()
+    parent_pid: int = int(args.parent_pid)
 
     try:
         while True:
+            if not is_parent_process_alive(parent_pid):
+                break
             # Runtime discovery (throttled): refresh camera folder list occasionally.
             now = time.time()
             if (now - last_discovery_time) >= runtime_discovery_period_s:
@@ -330,7 +368,7 @@ def main() -> None:
                 else:
                     tile_bgr = resize_and_letterbox(image_bgr, tile_w, tile_h)
 
-                label = f"[{i+1}] {tile_selection.cameraName} | {tile_selection.viewMode}"
+                label = f"[{i + 1}] {tile_selection.cameraName} | {tile_selection.viewMode}"
                 draw_label(tile_bgr, label, is_selected=(i == active_tile_index))
                 tiles.append(tile_bgr)
 

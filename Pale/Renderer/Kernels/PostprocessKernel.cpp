@@ -23,6 +23,7 @@ namespace Pale {
                 const float gammaCorrection = sensor.gammaCorrection;
                 const float inverseGamma =
                     (gammaCorrection > 0.0f) ? (1.0f / gammaCorrection) : 1.0f;
+                const bool useSrgbEncoding = sensor.useSrgbEncoding;
 
                 commandGroupHandler.parallel_for<class PostProcessKernelTag>(
                     sycl::range<1>(raysPerSet),
@@ -43,10 +44,11 @@ namespace Pale {
                         const uint32_t pixelIndex = linearIndex;
                         const float4 hdrRgba = sensor.framebuffer[pixelIndex];
 
+                        float alphaLinear = sycl::clamp(hdrRgba.w(), 0.0f, 1.0f);
+                        const float inverseAlpha = alphaLinear > 1.0e-6f ? 1.0f / alphaLinear : 0.0f;
                         float redLinear = hdrRgba.x();
                         float greenLinear = hdrRgba.y();
                         float blueLinear = hdrRgba.z();
-                        float alphaLinear = hdrRgba.w(); // if you care about alpha
 
                         // Apply exposure
                         redLinear *= exposureCorrection;
@@ -58,18 +60,26 @@ namespace Pale {
                         greenLinear = sycl::fmax(greenLinear, 0.0f);
                         blueLinear = sycl::fmax(blueLinear, 0.0f);
 
-                        // Apply gamma (convert to display space)
-                        redLinear = sycl::pow(redLinear, inverseGamma);
-                        greenLinear = sycl::pow(greenLinear, inverseGamma);
-                        blueLinear = sycl::pow(blueLinear, inverseGamma);
+                        // Convert linear renderer output to display space. Exact
+                        // IEC 61966-2-1 sRGB is the default; the legacy power
+                        // gamma remains available as an explicit viewer opt-out.
+                        auto encodeDisplayChannel = [=](float linearValue) -> float {
+                            if (!useSrgbEncoding) {
+                                return sycl::pow(linearValue, inverseGamma);
+                            }
+                            if (linearValue <= 0.0031308f) {
+                                return 12.92f * linearValue;
+                            }
+                            return 1.055f * sycl::pow(linearValue, 1.0f / 2.4f) - 0.055f;
+                        };
+                        redLinear = encodeDisplayChannel(redLinear);
+                        greenLinear = encodeDisplayChannel(greenLinear);
+                        blueLinear = encodeDisplayChannel(blueLinear);
 
                         // Clamp to [0,1] before quantization
                         redLinear = sycl::clamp(redLinear, 0.0f, 1.0f);
                         greenLinear = sycl::clamp(greenLinear, 0.0f, 1.0f);
                         blueLinear = sycl::clamp(blueLinear, 0.0f, 1.0f);
-
-                        // If you want alpha fixed to 1.0 (opaque), do that here:
-                        alphaLinear = sycl::clamp(alphaLinear, 0.0f, 1.0f);
 
                         auto convertChannelToUint8 = [](float channelValue) -> unsigned char {
                             // scale to [0,255] with simple rounding
@@ -81,20 +91,21 @@ namespace Pale {
                         const unsigned char redU8 = convertChannelToUint8(redLinear);
                         const unsigned char greenU8 = convertChannelToUint8(greenLinear);
                         const unsigned char blueU8 = convertChannelToUint8(blueLinear);
+                        const unsigned char alphaU8 = convertChannelToUint8(alphaLinear);
 
                         sycl::uchar4 outputPixel(
                             redU8,
                             greenU8,
                             blueU8,
-                            255
+                            alphaU8
                         );
 
-                        // 3 floats per pixel, packed
+                        // 4 floats per pixel, packed RGBA
                         const uint32_t ldrBase = linearIndex * 4u;
                         sensor.ldrFramebuffer[ldrBase + 0u] = redLinear;
                         sensor.ldrFramebuffer[ldrBase + 1u] = greenLinear;
                         sensor.ldrFramebuffer[ldrBase + 2u] = blueLinear;
-                        sensor.ldrFramebuffer[ldrBase + 3u] = 1.0f;
+                        sensor.ldrFramebuffer[ldrBase + 3u] = alphaLinear;
 
 
                         sensor.outputFramebuffer[linearIndex] = outputPixel;
@@ -240,4 +251,3 @@ void accumulatePhotonEnergyPerSurfelDebug(RenderPackage& renderPackage)
 }
 
 } // namespace Pale
-

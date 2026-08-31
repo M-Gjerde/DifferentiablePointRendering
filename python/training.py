@@ -1,1591 +1,1813 @@
 from __future__ import annotations
 
-import csv
-import os
-import time
-from pathlib import Path
-from typing import Dict, Tuple, Optional, List
-from collections import deque
-
-import numpy as np
-import torch
-
-import pale
-from config import OptimizationConfig, RendererSettingsConfig
-from io_utils import (
-    load_target_image,
-    save_positions_numpy,
-    save_render,
-    save_gradient_sign_png_py,
-    save_loss_image,
-    save_gaussians_to_ply,
-)
-from losses import (
-    compute_l2_loss,
-    compute_l2_grad,
-    compute_parameter_mse,
-)
-from optimizers import (
-    create_masked_optimizer,
-)
-from density_control import (
-    compute_prune_indices_by_opacity,
-    compute_prune_indices_by_degenerate_scale,
-)
-from render_hooks import (
-    remove_points,
-    fetch_parameters,
-    apply_point_parameters,
-    verify_tangents_inplace,
-    verify_scales_inplace,
-    verify_albedos_inplace,
-    verify_opacities_inplace,
-    verify_beta_inplace,
-    verify_positions_inplace,
-    add_new_points,
-    rebuild_bvh,
-    get_training_camera_names, get_all_camera_names,
-)
-from debug_init_utils import add_debug_noise_to_initial_parameters
-
+import shlex
+import subprocess
 import sys
-import select
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional, Sequence
+
+from config import scheduled_iteration_interval
+from optimizers import (create_learning_rate_schedules, update_optimizer_learning_rates, )
+from training_helpers import *
+from density_control import *
 
 
-# ---------------------------------------------------------------------------
-# Utility helpers
-# ---------------------------------------------------------------------------
-
-def get_forward_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    return np.asarray(
-        forward_out[camera_name]["image"],
-        dtype=np.float32,
-        order="C",
-    )
-
-
-def get_forward_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    return get_forward_rgba(forward_out, camera_name)[..., :3]
-
-
-def _infer_hw_from_forward(forward_out: Dict[str, dict], camera_name: str) -> tuple[int, int]:
-    image = np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
-    return int(image.shape[0]), int(image.shape[1])
-
-
-def get_forward_depth_distortion(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "depth_distortion" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w), dtype=np.float32)
-
-    depth = np.asarray(
-        camera_out["depth_distortion"],
-        dtype=np.float32,
-        order="C",
-    )
-    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def get_forward_visible_normal(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "visible_normal" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w, 4), dtype=np.float32)
-
-    normal = np.asarray(
-        camera_out["visible_normal"],
-        dtype=np.float32,
-        order="C",
-    )
-    return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def get_forward_normal_from_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "normal_from_depth" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w, 4), dtype=np.float32)
-
-    normal = np.asarray(
-        camera_out["normal_from_depth"],
-        dtype=np.float32,
-        order="C",
-    )
-    return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def save_normal_map_snapshot(
-        output_path_png: Path,
-        normal_rgba: np.ndarray,
-        save_npy: bool = True,
+def extract_mesh_from_point_cloud(
+        config: OptimizationConfig,
+        points_path: Path,
+        mesh_output_subdir: Path,
+        log_prefix: str,
 ) -> None:
-    normal_rgba = np.asarray(normal_rgba, dtype=np.float32, order="C")
-    normal_rgb = np.clip(normal_rgba[..., :3], -1.0, 1.0)
+    extract_mesh_script = Path(__file__).resolve().with_name("extract_mesh.py")
 
-    if normal_rgba.shape[-1] >= 4:
-        valid = normal_rgba[..., 3] > 0.0
-    else:
-        valid = np.ones(normal_rgb.shape[:2], dtype=bool)
+    command = [
+        sys.executable,
+        str(extract_mesh_script),
+        "--ply",
+        str(points_path),
+        "--mesh-output-subdir",
+        str(mesh_output_subdir),
+        "--depth-key",
+        str(config.mesh_extraction_depth_key),
+        "--mesh-res",
+        str(int(config.mesh_extraction_mesh_res)),
+        "--num-cluster",
+        str(int(config.mesh_extraction_num_cluster)),
+    ]
 
-    vis = 0.5 * (normal_rgb + 1.0)
-    vis[~valid] = 0.0
+    print(
+        f"{log_prefix} Extracting mesh to "
+        f"{config.output_dir / mesh_output_subdir}"
+    )
 
-    save_render(output_path_png, vis)
+    result = subprocess.run(
+        command,
+        cwd=extract_mesh_script.parent,
+        check=False,
+    )
 
-    if save_npy:
-        np.save(output_path_png.with_suffix(".npy"), normal_rgba)
-
-
-def make_trainable_surfel_mask_from_powers(
-        powers: torch.Tensor,
-        eps: float = 0.0,
-) -> torch.Tensor:
-    """
-    Returns True for surfels that are allowed to receive gradient updates.
-
-    Surfels with non-zero power are treated as light/emissive surfels and frozen.
-    """
-    with torch.no_grad():
-        power_values = powers.detach()
-
-        if power_values.ndim == 1:
-            emissive_mask = torch.abs(power_values) > eps
-        else:
-            emissive_mask = torch.any(torch.abs(power_values) > eps, dim=1)
-
-        return ~emissive_mask
+    if result.returncode != 0:
+        print(
+            f"{log_prefix} Mesh extraction failed "
+            f"with exit code {result.returncode}: {shlex.join(command)}"
+        )
 
 
-def zero_frozen_surfel_gradients_np(
-        trainable_mask: torch.Tensor,
-        grad_position_np: np.ndarray,
-        grad_tangent_u_np: np.ndarray,
-        grad_tangent_v_np: np.ndarray,
-        grad_scales_np: np.ndarray,
-        grad_albedos_np: np.ndarray,
-        grad_opacities_np: np.ndarray,
-        grad_betas_np: np.ndarray,
-) -> None:
-    """
-    In-place zeroing of gradients for frozen surfels.
-
-    Frozen surfels are typically emissive surfels where power != 0.
-    """
-    trainable_mask_np = trainable_mask.detach().cpu().numpy().astype(bool)
-    frozen_mask_np = ~trainable_mask_np
-
-    grad_position_np[frozen_mask_np] = 0.0
-    grad_tangent_u_np[frozen_mask_np] = 0.0
-    grad_tangent_v_np[frozen_mask_np] = 0.0
-    grad_scales_np[frozen_mask_np] = 0.0
-    grad_albedos_np[frozen_mask_np] = 0.0
-    grad_opacities_np[frozen_mask_np] = 0.0
-    grad_betas_np[frozen_mask_np] = 0.0
-
-
-def make_mean_reduction_adjoint_image(
-        image_2d: np.ndarray,
-        loss_weight: float,
-) -> np.ndarray:
-    """
-    If loss_dist = loss_weight * mean(image_2d),
-    then d loss_dist / d image_2d[p] = loss_weight / N for every pixel p.
-    """
-    pixel_count = max(image_2d.size, 1)
-    return np.full(
-        image_2d.shape,
-        fill_value=loss_weight / float(pixel_count),
-        dtype=np.float32,
+def extract_mesh_checkpoint(config: OptimizationConfig, iteration: int, points_path: Path) -> None:
+    extract_mesh_from_point_cloud(
+        config=config,
+        points_path=points_path,
+        mesh_output_subdir=Path("mesh_checkpoints") / f"iter_{iteration:05d}",
+        log_prefix=f"[Iter {iteration:04d}]",
     )
 
 
-def sum_gradient_dicts(*gradient_dicts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    """
-    Sum any number of renderer-produced gradient dictionaries parameter-wise.
-    All dicts must contain the same keys and shapes.
-    """
-    active = [g for g in gradient_dicts if g is not None and len(g) > 0]
-    if not active:
-        return {}
+def extract_final_mesh(config: OptimizationConfig, points_path: Path) -> None:
+    extract_mesh_from_point_cloud(
+        config=config,
+        points_path=points_path,
+        mesh_output_subdir=Path("mesh"),
+        log_prefix="[Final]",
+    )
 
-    result: Dict[str, np.ndarray] = {
-        key: np.asarray(value, dtype=np.float32, order="C").copy()
-        for key, value in active[0].items()
+
+@dataclass
+class IterationGradientResult:
+    active_camera_name: str
+    forward_out: Optional[Dict[str, dict]]
+    loss_state: Dict[str, Any]
+    averaged_loss_state: Dict[str, Any]
+    photo_gradients: Dict[str, np.ndarray]
+    depth_regularizer_gradients: Dict[str, np.ndarray]
+    normal_regularizer_gradients: Dict[str, np.ndarray]
+    opacity_prior_gradients: Dict[str, np.ndarray]
+    intra_slab_depth_gradients: Dict[str, np.ndarray]
+    curvature_scale_gradients: Dict[str, np.ndarray]
+    surface_regularizer_gradients: Dict[str, np.ndarray]
+    total_gradients: Dict[str, np.ndarray]
+    adjoint_images: Dict[str, Any]
+    photo_gradient_surfel_stats: Dict[str, Any]
+
+
+DENSIFICATION_ORIGIN_INITIAL = np.uint8(0)
+DENSIFICATION_ORIGIN_CLONE = np.uint8(1)
+DENSIFICATION_ORIGIN_SPLIT = np.uint8(2)
+
+
+def make_new_densification_origin_np(densification_result: dict | None, n_new: int) -> np.ndarray:
+    new_origin_np = np.full((int(n_new),), DENSIFICATION_ORIGIN_INITIAL, dtype=np.uint8)
+    if densification_result is None or n_new <= 0:
+        return new_origin_np
+
+    clone_count = max(0, int(densification_result.get("clone_count", 0)))
+    split_count = max(0, int(densification_result.get("split_count", 0)))
+    clone_count = min(clone_count, n_new)
+    split_count = min(split_count, n_new - clone_count)
+
+    if clone_count > 0:
+        new_origin_np[:clone_count] = DENSIFICATION_ORIGIN_CLONE
+    if split_count > 0:
+        new_origin_np[clone_count:clone_count + split_count] = DENSIFICATION_ORIGIN_SPLIT
+
+    return new_origin_np
+
+
+def active_densification_origin_counts(densification_origin_np: np.ndarray) -> tuple[int, int]:
+    return (
+        int(np.count_nonzero(densification_origin_np == DENSIFICATION_ORIGIN_CLONE)),
+        int(np.count_nonzero(densification_origin_np == DENSIFICATION_ORIGIN_SPLIT)),
+    )
+
+
+def active_densification_interval_for_iteration(
+        config: OptimizationConfig,
+        base_densification_interval: int,
+        final_densification_interval: int,
+        iteration: int,
+) -> int:
+    if config.use_global_lr_schedule:
+        return scheduled_iteration_interval(
+            initial_interval=base_densification_interval,
+            final_interval=final_densification_interval,
+            iteration=iteration,
+            start_iteration=int(config.global_lr_start_iteration),
+            max_steps=int(config.global_lr_max_steps),
+        )
+    return base_densification_interval
+
+
+def densification_stats_skip_for_interval(config: OptimizationConfig, densification_interval: int) -> int:
+    if not bool(
+            getattr(
+                config,
+                "densification_stats_skip_interval_start",
+                getattr(config, "densification_stats_warmup", True),
+            )
+    ):
+        return 0
+    return max(int(densification_interval) // 2, 0)
+
+
+def next_densification_iteration_after(
+        current_iteration: int,
+        densify_after: int,
+        densification_interval: int,
+) -> Optional[int]:
+    if densification_interval <= 0:
+        return None
+    return max(int(densify_after), int(current_iteration) + max(int(densification_interval), 1))
+
+
+def active_camera_name_for_iteration(
+        active_training_camera_ids: Sequence[str],
+        one_camera_per_iteration: bool,
+) -> str:
+    return active_training_camera_ids[0] if one_camera_per_iteration else "ALL_CAMERAS"
+
+
+def make_rgb_loss_state(
+        active_training_camera_ids: Sequence[str],
+        adjoint_images: Dict[str, Any],
+) -> Dict[str, Any]:
+    loss_state = make_zero_loss_values()
+    loss_state.update({
+        "depth_distortion_grad_images": {},
+        "visible_normal_adjoints": {},
+        "depth_normal_adjoints": {},
+        "depth_distortion_maps_for_logging": {},
+        "per_camera_loss_values": {},
+    })
+
+    rgb_loss_values = adjoint_images.get("loss_values", {})
+    for camera_name in active_training_camera_ids:
+        rgb_loss_value = float(rgb_loss_values[camera_name])
+        camera_loss_values = make_zero_loss_values()
+        camera_loss_values["total_rgb_loss_value"] = rgb_loss_value
+        camera_loss_values["total_loss_value"] = rgb_loss_value
+        loss_state["per_camera_loss_values"][camera_name] = camera_loss_values
+        loss_state["total_rgb_loss_value"] += rgb_loss_value
+        loss_state["total_loss_value"] += rgb_loss_value
+
+    return loss_state
+
+
+def add_regularizer_loss_state(
+        loss_state: Dict[str, Any],
+        regularizer_loss_state: Dict[str, Any],
+) -> None:
+    for loss_key in LOSS_VALUE_KEYS:
+        loss_state[loss_key] += regularizer_loss_state[loss_key]
+
+    for camera_name, camera_loss_values in regularizer_loss_state["per_camera_loss_values"].items():
+        existing_camera_loss_values = loss_state["per_camera_loss_values"].setdefault(
+            camera_name,
+            make_zero_loss_values(),
+        )
+        for loss_key in LOSS_VALUE_KEYS:
+            existing_camera_loss_values[loss_key] += camera_loss_values[loss_key]
+
+    loss_state["depth_distortion_grad_images"] = regularizer_loss_state["depth_distortion_grad_images"]
+    loss_state["visible_normal_adjoints"] = regularizer_loss_state["visible_normal_adjoints"]
+    loss_state["depth_normal_adjoints"] = regularizer_loss_state["depth_normal_adjoints"]
+    loss_state["depth_distortion_maps_for_logging"] = regularizer_loss_state["depth_distortion_maps_for_logging"]
+    loss_state["intra_slab_depth_maps_for_logging"] = regularizer_loss_state.get(
+        "intra_slab_depth_maps_for_logging", {}
+    )
+    loss_state["curvature_scale_maps_for_logging"] = regularizer_loss_state.get(
+        "curvature_scale_maps_for_logging", {}
+    )
+
+
+def make_device_training_step_options(
+        config: OptimizationConfig,
+        active_learning_rates: Dict[str, float],
+        camera_batch_scale: float,
+        return_gradient_stats: bool = False,
+        include_depth_distortion: bool = False,
+        include_normal_consistency: bool = False,
+        include_opacity_prior: bool = False,
+        include_intra_slab_depth: bool = False,
+        include_curvature_scale: bool = False,
+) -> Dict[str, Any]:
+    return {
+        "optimizer": config.optimizer_type,
+        "learning_rate_position": active_learning_rates.get(
+            "position",
+            float(config.learning_rate_position),
+        ),
+        "learning_rate_rotation": active_learning_rates.get(
+            "rotation",
+            float(config.learning_rate_rotation),
+        ),
+        "learning_rate_scale": active_learning_rates.get(
+            "scale",
+            float(config.learning_rate_scale),
+        ),
+        "learning_rate_albedo": active_learning_rates.get(
+            "albedo",
+            float(config.learning_rate_albedo),
+        ),
+        "learning_rate_opacity": active_learning_rates.get(
+            "opacity",
+            float(config.learning_rate_opacity),
+        ),
+        "learning_rate_beta": active_learning_rates.get(
+            "beta",
+            float(config.learning_rate_beta),
+        ),
+        "camera_batch_scale": camera_batch_scale,
+        "return_gradient_stats": return_gradient_stats,
+        "include_depth_distortion": include_depth_distortion,
+        "include_normal_consistency": include_normal_consistency,
+        "include_opacity_prior": include_opacity_prior,
+        "include_intra_slab_depth": include_intra_slab_depth,
+        "include_curvature_scale": include_curvature_scale,
     }
 
-    for gradient_dict in active[1:]:
-        if set(gradient_dict.keys()) != set(result.keys()):
-            raise RuntimeError(
-                f"Gradient key mismatch: {set(result.keys())} vs {set(gradient_dict.keys())}"
+
+def active_surfel_mask_from_position_records(
+        photo_gradient_surfel_stats: Dict[str, Any],
+        point_count: int,
+) -> np.ndarray:
+    position_record_count_per_camera_np = photo_gradient_surfel_stats.get(
+        "position_record_count_per_camera",
+        None,
+    )
+    if position_record_count_per_camera_np is None:
+        raise RuntimeError(
+            "Inactive-surfel pruning requires "
+            "adjoint_images['gradient_stats']['position_record_count_per_camera']."
+        )
+
+    position_record_count_per_camera_np = np.asarray(position_record_count_per_camera_np)
+
+    if position_record_count_per_camera_np.shape[0] != point_count:
+        raise RuntimeError(
+            "Position-record-count shape mismatch: "
+            f"expected {point_count}, got {position_record_count_per_camera_np.shape[0]}"
+        )
+
+    if position_record_count_per_camera_np.ndim == 1:
+        return position_record_count_per_camera_np > 0
+
+    return np.any(position_record_count_per_camera_np > 0, axis=1)
+
+
+def compute_iteration_gradients(
+        renderer: pale.Renderer,
+        active_training_camera_ids: Sequence[str],
+        latest_loss_values_by_camera: Dict[str, Dict[str, float]],
+        training_camera_ids: Sequence[str],
+        iteration: int,
+        one_camera_per_iteration: bool,
+        use_depth_distortion_gradients: bool,
+        use_depth_distortion: bool,
+        use_normal_consistency: bool,
+        use_opacity_prior: bool,
+        use_intra_slab_depth: bool,
+        use_curvature_scale: bool,
+        active_depth_distortion_weight: float,
+        normal_consistency_weight: float,
+        active_opacity_prior_weight: float,
+        intra_slab_depth_weight: float,
+        curvature_scale_weight: float,
+) -> IterationGradientResult:
+    active_camera_name = active_camera_name_for_iteration(
+        active_training_camera_ids,
+        one_camera_per_iteration,
+    )
+    photo_gradients, adjoint_images = renderer.render_rgb_loss_backward(
+        list(active_training_camera_ids)
+    )
+    loss_state = make_rgb_loss_state(active_training_camera_ids, adjoint_images)
+
+    forward_out = None
+    depth_regularizer_gradients: Dict[str, np.ndarray] = {}
+    normal_regularizer_gradients: Dict[str, np.ndarray] = {}
+    opacity_prior_gradients: Dict[str, np.ndarray] = {}
+    intra_slab_depth_gradients: Dict[str, np.ndarray] = {}
+    curvature_scale_gradients: Dict[str, np.ndarray] = {}
+    surface_regularizer_gradients: Dict[str, np.ndarray] = {}
+
+    if (use_depth_distortion_gradients or use_normal_consistency or use_opacity_prior or
+            use_intra_slab_depth or use_curvature_scale):
+        if (
+                hasattr(renderer, "render_forward_surface_regularizer_loss_and_adjoint")
+                and hasattr(renderer, "render_surface_regularizers_backward_from_current_adjoint")
+        ):
+            regularizer_loss_state = renderer.render_forward_surface_regularizer_loss_and_adjoint(
+                list(active_training_camera_ids),
+                {
+                    "depth_distortion_weight": active_depth_distortion_weight,
+                    "normal_consistency_weight": normal_consistency_weight,
+                    "opacity_prior_weight": active_opacity_prior_weight,
+                    "intra_slab_depth_weight": intra_slab_depth_weight,
+                    "curvature_scale_weight": curvature_scale_weight,
+                    "use_depth_distortion": use_depth_distortion,
+                    "use_normal_consistency": use_normal_consistency,
+                    "use_opacity_prior": use_opacity_prior,
+                    "use_intra_slab_depth": use_intra_slab_depth,
+                    "use_curvature_scale": use_curvature_scale,
+                },
+            )
+            add_regularizer_loss_state(loss_state, regularizer_loss_state)
+
+            surface_regularizer_components = renderer.render_surface_regularizers_backward_from_current_adjoint(
+                list(active_training_camera_ids),
+                True,
+            )
+        else:
+            forward_out = (
+                renderer.render_forward(active_camera_name)
+                if one_camera_per_iteration
+                else renderer.render_forward()
             )
 
-        for key in result.keys():
-            g = np.asarray(gradient_dict[key], dtype=np.float32, order="C")
-            if result[key].shape != g.shape:
-                raise RuntimeError(
-                    f"Gradient shape mismatch for '{key}': "
-                    f"{result[key].shape} vs {g.shape}"
-                )
-            result[key] += g
+            regularizer_loss_state = compute_surface_regularizer_losses_and_adjoints(
+                forward_out=forward_out,
+                training_camera_ids=list(active_training_camera_ids),
+                depth_distortion_weight=active_depth_distortion_weight,
+                normal_consistency_weight=normal_consistency_weight,
+                opacity_prior_weight=active_opacity_prior_weight,
+                intra_slab_depth_weight=intra_slab_depth_weight,
+                curvature_scale_weight=curvature_scale_weight,
+                use_depth_distortion=use_depth_distortion,
+                use_normal_consistency=use_normal_consistency,
+                use_opacity_prior=use_opacity_prior,
+                use_intra_slab_depth=use_intra_slab_depth,
+                use_curvature_scale=use_curvature_scale,
+            )
+            add_regularizer_loss_state(loss_state, regularizer_loss_state)
 
-    return result
+            surface_regularizer_components = renderer.render_surface_regularizers_backward(
+                list(active_training_camera_ids),
+                loss_state["depth_distortion_grad_images"],
+                loss_state["visible_normal_adjoints"],
+                loss_state["depth_normal_adjoints"],
+                loss_state["intra_slab_depth_grad_images"],
+                loss_state["curvature_scale_grad_images"],
+            )
+        depth_regularizer_gradients = surface_regularizer_components["depth_distortion"]
+        normal_regularizer_gradients = surface_regularizer_components["normal_consistency"]
+        opacity_prior_gradients = surface_regularizer_components.get("opacity_prior", {})
+        intra_slab_depth_gradients = surface_regularizer_components.get("intra_slab_depth", {})
+        curvature_scale_gradients = surface_regularizer_components.get("curvature_scale", {})
 
+        repair_nonfinite_gradient_dict_inplace("depth_regularizer_gradients", depth_regularizer_gradients, iteration)
+        repair_nonfinite_gradient_dict_inplace("normal_regularizer_gradients", normal_regularizer_gradients, iteration)
+        repair_nonfinite_gradient_dict_inplace("opacity_prior_gradients", opacity_prior_gradients, iteration)
+        repair_nonfinite_gradient_dict_inplace(
+            "intra_slab_depth_gradients", intra_slab_depth_gradients, iteration
+        )
+        repair_nonfinite_gradient_dict_inplace(
+            "curvature_scale_gradients", curvature_scale_gradients, iteration
+        )
+        surface_regularizer_gradients = sum_gradient_dicts(
+            depth_regularizer_gradients,
+            normal_regularizer_gradients,
+            opacity_prior_gradients,
+            intra_slab_depth_gradients,
+            curvature_scale_gradients,
+        )
 
-def poll_hotkey() -> Optional[str]:
-    """
-    Non-blocking check for a single-line keyboard input.
+    photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
 
-    Returns:
-        's' if the user typed 's' + Enter      -> manual snapshot (render + points)
-        'g' if the user typed 'g' + Enter      -> gradient dump
-        None otherwise.
-
-    Only works when stdin is a TTY (interactive terminal).
-    """
-    if not sys.stdin.isatty():
-        return None
-
-    readable, _, _ = select.select([sys.stdin], [], [], 0.0)
-    if not readable:
-        return None
-
-    line = sys.stdin.readline().strip().lower()
-    if line in ("s", "g"):
-        return line
-    return None
-
-
-def save_gradients_snapshot(
-        output_dir: Path,
-        iteration: int,
-        grad_position_np: np.ndarray,
-        grad_tangent_u_np: np.ndarray,
-        grad_tangent_v_np: np.ndarray,
-        grad_scales_np: np.ndarray,
-        grad_albedos_np: np.ndarray,
-        grad_opacities_np: np.ndarray,
-        grad_betas_np: np.ndarray,
-) -> None:
-    """
-    Save point-wise gradients to disk:
-
-    - CSV: one row per point, easy to open in Excel:
-        point_index,
-        grad_pos_x, grad_pos_y, grad_pos_z,
-        grad_tan_u_x, grad_tan_u_y, grad_tan_u_z,
-        grad_tan_v_x, grad_tan_v_y, grad_tan_v_z,
-        grad_scale_u, grad_scale_v,
-        grad_albedo_r, grad_albedo_g, grad_albedo_b,
-        grad_opacity, grad_beta
-
-    - NPZ: raw arrays for programmatic inspection.
-    """
-    gradients_dir = output_dir / "gradients"
-    gradients_dir.mkdir(parents=True, exist_ok=True)
-
-    num_points = grad_position_np.shape[0]
-
-    # Make sure 1D quantities are truly 1D
-    grad_opacity_flat = grad_opacities_np.reshape(num_points)
-    grad_beta_flat = grad_betas_np.reshape(num_points)
-
-    # 1) CSV for quick inspection
-    csv_path = gradients_dir / f"gradients_iter_{iteration:04d}.csv"
-    with open(csv_path, "w", newline="") as csv_file:
-        writer = csv.writer(csv_file)
-
-        header = [
-            "point_index",
-            # position
-            "grad_pos_x", "grad_pos_y", "grad_pos_z",
-            # tangent_u
-            "grad_tan_u_x", "grad_tan_u_y", "grad_tan_u_z",
-            # tangent_v
-            "grad_tan_v_x", "grad_tan_v_y", "grad_tan_v_z",
-            # scales (s_u, s_v)
-            "grad_scale_u", "grad_scale_v",
-            # albedos (R,G,B)
-            "grad_albedo_r", "grad_albedo_g", "grad_albedo_b",
-            # scalar params
-            "grad_opacity",
-            "grad_beta",
-        ]
-        writer.writerow(header)
-
-        for idx in range(num_points):
-            gx, gy, gz = grad_position_np[idx]
-            gux, guy, guz = grad_tangent_u_np[idx]
-            gvx, gvy, gvz = grad_tangent_v_np[idx]
-            gsu, gsv = grad_scales_np[idx]
-            gcr, gcg, gcb = grad_albedos_np[idx]
-            gop = grad_opacity_flat[idx]
-            gb = grad_beta_flat[idx]
-
-            row = [
-                idx,
-                gx, gy, gz,
-                gux, guy, guz,
-                gvx, gvy, gvz,
-                gsu, gsv,
-                gcr, gcg, gcb,
-                gop,
-                gb,
-            ]
-            writer.writerow(row)
-
-    # 2) NPZ with full arrays (for Python / NumPy)
-    npz_path = gradients_dir / f"gradients_iter_{iteration:04d}.npz"
-    np.savez_compressed(
-        npz_path,
-        grad_position=grad_position_np,
-        grad_tangent_u=grad_tangent_u_np,
-        grad_tangent_v=grad_tangent_v_np,
-        grad_scales=grad_scales_np,
-        grad_albedos=grad_albedos_np,
-        grad_opacities=grad_opacities_np,
-        grad_betas=grad_betas_np,
+    repair_nonfinite_gradient_dict_inplace("photo_gradients", photo_gradients, iteration)
+    repair_nonfinite_gradient_dict_inplace(
+        "surface_regularizer_gradients",
+        surface_regularizer_gradients,
+        iteration,
     )
+    total_gradients = sum_gradient_dicts(photo_gradients, surface_regularizer_gradients)
+
+    for camera_name, camera_loss_values in loss_state["per_camera_loss_values"].items():
+        latest_loss_values_by_camera[camera_name] = dict(camera_loss_values)
+
+    averaged_loss_state = make_averaged_loss_state_from_camera_cache(
+        latest_loss_values_by_camera=latest_loss_values_by_camera,
+        expected_camera_ids=list(training_camera_ids),
+    )
+
+    return IterationGradientResult(
+        active_camera_name=active_camera_name,
+        forward_out=forward_out,
+        loss_state=loss_state,
+        averaged_loss_state=averaged_loss_state,
+        photo_gradients=photo_gradients,
+        depth_regularizer_gradients=depth_regularizer_gradients,
+        normal_regularizer_gradients=normal_regularizer_gradients,
+        opacity_prior_gradients=opacity_prior_gradients,
+        intra_slab_depth_gradients=intra_slab_depth_gradients,
+        curvature_scale_gradients=curvature_scale_gradients,
+        surface_regularizer_gradients=surface_regularizer_gradients,
+        total_gradients=total_gradients,
+        adjoint_images=adjoint_images,
+        photo_gradient_surfel_stats=photo_gradient_surfel_stats,
+    )
+
+
+def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
+                     renderer_settings: RendererSettingsConfig) -> None:
+    target_images, training_camera_ids, all_camera_ids = load_target_images(
+        renderer,
+        Path(config.dataset_path),
+        target_color_space=config.target_color_space,
+    )
+
+    depth_distortion_base_weight = float(getattr(config, "depth_distort_weight", 0.0))
+    depth_distortion_start_iteration = int(getattr(config, "depth_distort_start_iteration", 0))
+
+    normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
+    opacity_prior_weight = float(getattr(config, "opacity_prior_weight", 0.0))
+    intra_slab_depth_weight = float(getattr(config, "intra_slab_depth_weight", 0.0))
+    curvature_scale_weight = float(getattr(config, "curvature_scale_weight", 0.0))
+    save_ply_files_interval = int(config.save_ply_files_interval)
+    mesh_extraction_interval = int(getattr(config, "mesh_extraction_interval", 1_000))
+
+    if save_ply_files_interval < 0:
+        raise ValueError(f"save_ply_files_interval must be >= 0, got {save_ply_files_interval}")
+    if mesh_extraction_interval < 0:
+        raise ValueError(f"mesh_extraction_interval must be >= 0, got {mesh_extraction_interval}")
+
+    use_depth_distortion = depth_distortion_base_weight != 0.0
+    use_normal_consistency = normal_consistency_weight != 0.0
+    use_opacity_prior = opacity_prior_weight != 0.0
+    use_intra_slab_depth = intra_slab_depth_weight != 0.0
+    use_curvature_scale = curvature_scale_weight != 0.0
 
     print(
-        f"[Iter {iteration:04d}] Hotkey 'g' pressed -> "
-        f"saved gradients to:\n  {csv_path}\n  {npz_path}"
+        "Loss terms: "
+        f"depth_distortion={use_depth_distortion} "
+        f"base_weight={depth_distortion_base_weight:.3e} "
+        f"start_iter={depth_distortion_start_iteration}, "
+        f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
+        f"opacity_prior={use_opacity_prior} weight={opacity_prior_weight:.3e}, "
+        f"intra_slab_depth={use_intra_slab_depth} weight={intra_slab_depth_weight:.3e}, "
+        f"curvature_scale={use_curvature_scale} weight={curvature_scale_weight:.3e}"
     )
+    renderer.upload_training_targets(target_images)
 
+    initial_params = fetch_parameters(renderer)
+    initial_params_reference = make_initial_params_reference(initial_params)
+    print(f"Fetched {initial_params['position'].shape[0]} initial points from PLY.")
 
-from pathlib import Path
+    device = torch.device(config.device)
 
-import numpy as np
-import matplotlib
+    positions, rotations, scales, albedos, opacities, betas, powers = create_torch_parameters_from_initial(
+        initial_params, device)
+    rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
 
+    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
+    print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
-def save_depth_distortion_snapshot(
-        output_path_png: Path,
-        depth_distortion: np.ndarray,
-        quantile: float = 0.99,
-        save_npy: bool = True,
-        cmap: str = "inferno",  # or "seismic"
-) -> None:
-    """
-    Save a scalar depth-distortion map as:
-      - PNG visualization (colormap applied, quantile-normalized)
-      - optional raw .npy next to it
-    """
-    depth = np.asarray(depth_distortion, dtype=np.float32, order="C")
-    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-    depth = np.maximum(depth, 0.0)
-
-    if save_npy:
-        np.save(output_path_png.with_suffix(".npy"), depth)
-
-    if depth.size == 0:
-        vis = np.zeros((1, 1, 3), dtype=np.float32)
-    else:
-        vmax = float(np.quantile(depth, quantile))
-        if not np.isfinite(vmax) or vmax <= 1e-12:
-            vmax = 1.0
-
-        vis_scalar = np.clip(depth / vmax, 0.0, 1.0)
-
-        cmap_fn = matplotlib.colormaps[cmap]
-        vis = cmap_fn(vis_scalar)[..., :3].astype(np.float32, copy=False)
-
-    save_render(output_path_png, vis)
-
-    if save_npy:
-        np.save(output_path_png.with_suffix(".npy"), depth)
-
-
-def save_checkpoint_snapshot(
-        output_dir: Path,
-        iteration: int,
-        camera_ids: List[str],
-        current_images: Dict[str, np.ndarray],
-        positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
-        scales: torch.Tensor,
-        albedos: torch.Tensor,
-        opacities: torch.Tensor,
-        betas: torch.Tensor,
-        powers: torch.Tensor,
-        camera_name: str,
-) -> None:
-    """
-    Save an iteration checkpoint:
-      - output_dir/checkpoints/iter_XXXX/points.ply
-      - output_dir/checkpoints/iter_XXXX/render_<camera>.png
-      - output_dir/checkpoints/iter_XXXX/depth_distortion_<camera>.png
-      - output_dir/checkpoints/iter_XXXX/depth_distortion_<camera>.npy
-      - output_dir/checkpoints/iter_XXXX/render_final.png
-      - output_dir/checkpoints/iter_XXXX/depth_distortion_final.png
-    """
-    checkpoint_dir = output_dir / "checkpoints" / f"iter_{iteration:04d}"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save points
-    ply_path = checkpoint_dir / "points.ply"
-    save_gaussians_to_ply(
-        ply_path,
+    verify_parameters_inplane(
         positions,
-        tangent_u,
-        tangent_v,
+        rotations,
         scales,
         albedos,
         opacities,
-        betas,
-        powers,
-        shape_default=0.0,
-    )
-
-    # Save renders + depth distortion (all cameras)
-    for cam_name in camera_ids:
-        image_numpy = get_forward_rgb(current_images, cam_name)
-        save_render(checkpoint_dir / f"render_{cam_name}.png", image_numpy)
-
-        depth_numpy = get_forward_depth_distortion(current_images, cam_name)
-        save_depth_distortion_snapshot(
-            checkpoint_dir / f"depth_distortion_{cam_name}.png",
-            depth_numpy,
-            quantile=0.99,
-            save_npy=True,
-        )
-        median_depth_numpy = get_forward_median_depth(current_images, cam_name)
-        save_median_depth_snapshot(
-            checkpoint_dir / f"median_depth_{cam_name}.png",
-            median_depth_numpy,
-            quantile=0.99,
-            save_npy=True,
-        )
-
-    # Convenience: chosen/main camera
-    main_img = get_forward_rgb(current_images, camera_name)
-    save_render(checkpoint_dir / "render_final.png", main_img)
-
-    main_depth = get_forward_depth_distortion(current_images, camera_name)
-    save_depth_distortion_snapshot(
-        checkpoint_dir / "depth_distortion_final.png",
-        main_depth,
-        quantile=0.99,
-        save_npy=True,
-    )
-
-    main_median_depth = get_forward_median_depth(current_images, camera_name)
-    save_median_depth_snapshot(
-        checkpoint_dir / "median_depth_final.png",
-        main_median_depth,
-        quantile=0.99,
-        save_npy=True,
-    )
-
-    print(f"[Iter {iteration:04d}] Saved checkpoint: {checkpoint_dir}")
-
-
-def rms_point(x):
-    n = max(x.shape[0], 1)
-    return float(np.linalg.norm(x) / np.sqrt(n))
-
-
-def rms_scalar(x):
-    return float(np.linalg.norm(x) / np.sqrt(max(x.size, 1)))
-
-
-def get_forward_median_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "median_depth" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w), dtype=np.float32)
-
-    depth = np.asarray(
-        camera_out["median_depth"],
-        dtype=np.float32,
-        order="C",
-    )
-    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def save_median_depth_snapshot(
-        output_path_png: Path,
-        median_depth: np.ndarray,
-        quantile: float = 0.99,
-        save_npy: bool = True,
-        cmap: str = "viridis",
-) -> None:
-    depth = np.asarray(median_depth, dtype=np.float32, order="C")
-    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-
-    if save_npy:
-        np.save(output_path_png.with_suffix(".npy"), depth)
-
-    valid = depth > 0.0
-
-    if depth.size == 0 or not np.any(valid):
-        vis = np.zeros((max(depth.shape[0], 1), max(depth.shape[1], 1), 3), dtype=np.float32)
-    else:
-        valid_depth = depth[valid]
-
-        vmin = float(np.min(valid_depth))
-        vmax = float(np.quantile(valid_depth, quantile))
-
-        if not np.isfinite(vmin):
-            vmin = 0.0
-        if not np.isfinite(vmax) or vmax <= vmin + 1e-12:
-            vmax = vmin + 1.0
-
-        vis_scalar = np.zeros_like(depth, dtype=np.float32)
-        vis_scalar[valid] = np.clip((depth[valid] - vmin) / (vmax - vmin), 0.0, 1.0)
-
-        cmap_fn = matplotlib.colormaps[cmap]
-        vis = cmap_fn(vis_scalar)[..., :3].astype(np.float32, copy=False)
-        vis[~valid] = 0.0
-
-    save_render(output_path_png, vis)
-
-
-def save_manual_snapshot(
-        renderer: Pale.Renderer,
-        output_dir: Path,
-        iteration: int,
-        positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
-        scales: torch.Tensor,
-        albedos: torch.Tensor,
-        opacities: torch.Tensor,
-        betas: torch.Tensor,
-        powers: torch.Tensor,
-        camera_ids: List[str],
-) -> None:
-    """
-    Save the current state using the same filenames as the final output.
-    These will be overwritten later, both by future manual saves and at the end.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    final_images = renderer.render_forward()
-
-    for camera_name in camera_ids:
-        img_np = get_forward_rgb(final_images, camera_name)
-        save_render(Path(output_dir / f"render_final_{camera_name}.png"), img_np)
-
-        depth_np = get_forward_depth_distortion(final_images, camera_name)
-        save_depth_distortion_snapshot(
-            Path(output_dir / f"depth_distortion_final_{camera_name}.png"),
-            depth_np,
-            quantile=0.99,
-            save_npy=True,
-        )
-
-        median_depth_np = get_forward_median_depth(final_images, camera_name)
-        save_median_depth_snapshot(
-            Path(output_dir / f"median_depth_final_{camera_name}.png"),
-            median_depth_np,
-            quantile=0.99,
-            save_npy=True,
-        )
-
-    # Save full parameter set as PLY
-    ply_path = output_dir / "points_final.ply"
-    save_gaussians_to_ply(
-        ply_path,
-        positions,
-        tangent_u,
-        tangent_v,
-        scales,
-        albedos,
-        opacities,
-        betas,
-        powers,
-        shape_default=0.0,
-    )
-    print(
-        f"[Iter {iteration:04d}] Hotkey 's' pressed -> "
-        f"saved render_final_<camera>.png, depth_distortion_final_<camera>.png, and points_final.ply"
-    )
-
-
-def clear_output_dir(output_dir: Path) -> None:
-    """
-    Remove all files in the given directory (and direct subdirectories),
-    then ensure the directory exists.
-    """
-    if output_dir.exists():
-        for item in output_dir.iterdir():
-            if item.is_file():
-                item.unlink()
-            elif item.is_dir():
-                for sub_item in item.iterdir():
-                    if sub_item.is_file():
-                        sub_item.unlink()
-    else:
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-
-def max_point_norm(x: np.ndarray) -> float:
-    x = np.asarray(x, dtype=np.float32)
-    if x.size == 0:
-        return 0.0
-    if x.ndim == 1:
-        return float(np.max(np.abs(x)))
-    return float(np.max(np.linalg.norm(x, axis=1))) if x.shape[0] > 0 else 0.0
-
-
-def rms_any(x: np.ndarray) -> float:
-    x = np.asarray(x, dtype=np.float32)
-    if x.size == 0:
-        return 0.0
-    return float(np.linalg.norm(x.ravel()) / np.sqrt(x.size))
-
-
-def gradient_stats_from_dict(gradient_dict: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
-    stats: Dict[str, Dict[str, float]] = {}
-    for key, value in gradient_dict.items():
-        g = np.asarray(value, dtype=np.float32, order="C")
-        stats[key] = {
-            "rms": rms_any(g),
-            "max": max_point_norm(g),
-        }
-    return stats
-
-
-def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
-    def s(name: str) -> str:
-        if name not in stats:
-            return f"{name}=NA"
-        return f"{name}_rms={stats[name]['rms']:.2e}, {name}_max={stats[name]['max']:.2e}"
-
-    return (
-        f"{tag}: "
-        f"{s('position')}, "
-        f"{s('tangent_u')}, "
-        f"{s('tangent_v')}, "
-        f"{s('scale')}, "
-        f"{s('albedo')}, "
-        f"{s('opacity')}, "
-        f"{s('beta')}"
-    )
-
-def compute_opacity_target_regularizer_and_gradients(
-        opacities: torch.Tensor,
-        trainable_surfel_mask: torch.Tensor,
-        opacity_target: float,
-        opacity_weight: float,
-        use_opacity_loss: bool,
-) -> tuple[float, np.ndarray]:
-    """
-    Quadratic opacity target regularizer.
-
-    L = opacity_weight * mean((opacity - opacity_target)^2)
-
-    Only trainable surfels are included in the mean and receive gradients.
-    Frozen emissive surfels receive zero gradient.
-
-    Returns:
-        loss_value,
-        grad_opacity_np with same shape as opacities
-    """
-    opacity_np = opacities.detach().cpu().numpy().astype(np.float32, copy=False)
-    grad_opacity_np = np.zeros_like(opacity_np, dtype=np.float32)
-
-    if not use_opacity_loss or opacity_weight == 0.0:
-        return 0.0, grad_opacity_np
-
-    trainable_mask_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
-
-    opacity_flat = opacity_np.reshape(-1)
-    grad_opacity_flat = grad_opacity_np.reshape(-1)
-
-    if opacity_flat.shape[0] != trainable_mask_np.shape[0]:
-        raise RuntimeError(
-            "Opacity regularizer shape mismatch: "
-            f"opacities has {opacity_flat.shape[0]} scalar values, "
-            f"but trainable_surfel_mask has {trainable_mask_np.shape[0]} entries."
-        )
-
-    if not np.any(trainable_mask_np):
-        return 0.0, grad_opacity_np
-
-    active_opacities = opacity_flat[trainable_mask_np]
-    opacity_error = active_opacities - float(opacity_target)
-
-    active_count = max(int(opacity_error.size), 1)
-
-    loss_value = float(
-        float(opacity_weight) * np.mean(opacity_error * opacity_error)
-    )
-
-    grad_active = (
-        2.0 * float(opacity_weight) / float(active_count)
-    ) * opacity_error
-
-    grad_opacity_flat[trainable_mask_np] = grad_active.astype(np.float32, copy=False)
-
-    return loss_value, grad_opacity_np
-
-
-def compute_normal_consistency_loss_and_adjoints(
-        visible_normal_rgba: np.ndarray,
-        depth_normal_rgba: np.ndarray,
-        weight: float,
-) -> tuple[float, np.ndarray, np.ndarray]:
-    vis_rgba = np.asarray(visible_normal_rgba, dtype=np.float32, order="C")
-    dep_rgba = np.asarray(depth_normal_rgba, dtype=np.float32, order="C")
-
-    vis = vis_rgba[..., :3]
-    dep = dep_rgba[..., :3]
-
-    vis_valid = vis_rgba[..., 3] > 0.0
-    dep_valid = dep_rgba[..., 3] > 0.0
-
-    vis_finite = np.isfinite(vis).all(axis=-1)
-    dep_finite = np.isfinite(dep).all(axis=-1)
-
-    mask = vis_valid & dep_valid & vis_finite & dep_finite
-    valid_count = max(int(mask.sum()), 1)
-
-    scale = float(weight) / float(valid_count)
-
-    dot_nd = np.sum(vis * dep, axis=-1)
-    loss_map = np.zeros_like(dot_nd, dtype=np.float32)
-    loss_map[mask] = scale * (1.0 - dot_nd[mask])
-    loss = float(loss_map.sum())
-
-    dL_dvis = np.zeros_like(vis, dtype=np.float32)
-    dL_ddep = np.zeros_like(dep, dtype=np.float32)
-
-    dL_dvis[mask] = -scale * dep[mask]
-    dL_ddep[mask] = -scale * vis[mask]
-
-    return loss, dL_dvis, dL_ddep
-
-
-def summarize_depth_distortion_maps(
-        depth_maps: Dict[str, np.ndarray],
-        adjoint_maps: Dict[str, np.ndarray],
-) -> str:
-    if not depth_maps:
-        return "depth_distortion: no cameras"
-
-    means = []
-    maxs = []
-    p99s = []
-    adjoint_means = []
-    adjoint_maxs = []
-
-    for camera_name, depth in depth_maps.items():
-        d = np.asarray(depth, dtype=np.float32)
-        a = np.asarray(adjoint_maps[camera_name], dtype=np.float32)
-
-        means.append(float(np.mean(d)))
-        maxs.append(float(np.max(d)))
-        p99s.append(float(np.quantile(d, 0.99)))
-
-        adjoint_means.append(float(np.mean(a)))
-        adjoint_maxs.append(float(np.max(np.abs(a))))
-
-    return (
-        "depth_distortion_maps: "
-        f"mean(avg)={np.mean(means):.3e}, "
-        f"p99(avg)={np.mean(p99s):.3e}, "
-        f"max(global)={np.max(maxs):.3e}, "
-        f"adj_mean(avg)={np.mean(adjoint_means):.3e}, "
-        f"adj_max(global)={np.max(adjoint_maxs):.3e}"
-    )
-
-
-def refetch_parameters_as_torch(
-        renderer: pale.Renderer,
-        device: torch.device,
-) -> Tuple[torch.nn.Parameter, ...]:
-    """
-    Fetch parameters from the renderer, convert them to torch.nn.Parameter tensors.
-    Returns (positions, tangent_u, tangent_v, scales, albedos, opacities).
-    """
-    updated = fetch_parameters(renderer)
-
-    positions = torch.nn.Parameter(
-        torch.tensor(updated["position"], device=device, dtype=torch.float32)
-    )
-    tangent_u = torch.nn.Parameter(
-        torch.tensor(updated["tangent_u"], device=device, dtype=torch.float32)
-    )
-    tangent_v = torch.nn.Parameter(
-        torch.tensor(updated["tangent_v"], device=device, dtype=torch.float32)
-    )
-    scales = torch.nn.Parameter(
-        torch.tensor(updated["scale"], device=device, dtype=torch.float32)
-    )
-    albedos = torch.nn.Parameter(
-        torch.tensor(updated["albedo"], device=device, dtype=torch.float32)
-    )
-    opacities = torch.nn.Parameter(
-        torch.tensor(updated["opacity"], device=device, dtype=torch.float32)
-    )
-    betas = torch.nn.Parameter(
-        torch.tensor(updated["beta"], device=device, dtype=torch.float32)
-    )
-    powers = torch.nn.Parameter(
-        torch.tensor(updated["power"], device=device, dtype=torch.float32)
-    )
-
-    return positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
-
-
-def verify_parameters_inplane(
-        positions: torch.Tensor,
-        tangent_u: torch.Tensor,
-        tangent_v: torch.Tensor,
-        scales: torch.Tensor,
-        albedos: torch.Tensor,
-        opacities: torch.Tensor,
-        betas: torch.Tensor,
-        trainable_surfel_mask: Optional[torch.Tensor] = None,
-) -> None:
-    """
-    Enforce parameter constraints in-place.
-
-    For now, trainable_surfel_mask is only applied to beta verification.
-    Frozen emissive surfels are therefore not beta-clamped.
-    """
-    verify_tangents_inplace(tangent_u, tangent_v)
-    verify_scales_inplace(scales)
-    verify_positions_inplace(positions)
-    verify_albedos_inplace(albedos)
-    verify_opacities_inplace(opacities)
-
-    verify_beta_inplace(
         betas,
         trainable_surfel_mask=trainable_surfel_mask,
     )
 
-
-def assign_numpy_gradients_to_tensors(
-        device: torch.device,
-        positions: torch.nn.Parameter,
-        tangent_u: torch.nn.Parameter,
-        tangent_v: torch.nn.Parameter,
-        scales: torch.nn.Parameter,
-        albedos: torch.nn.Parameter,
-        opacities: torch.nn.Parameter,
-        betas: torch.nn.Parameter,
-        grad_position_np: np.ndarray,
-        grad_tangent_u_np: np.ndarray,
-        grad_tangent_v_np: np.ndarray,
-        grad_scales_np: np.ndarray,
-        grad_albedos_np: np.ndarray,
-        grad_opacities_np: np.ndarray,
-        grad_betas_np: np.ndarray,
-) -> None:
-    """
-    Copy numpy gradient arrays into the .grad fields of the given torch Parameters.
-    """
-    positions.grad = torch.tensor(grad_position_np, device=device, dtype=torch.float32)
-    tangent_u.grad = torch.tensor(grad_tangent_u_np, device=device, dtype=torch.float32)
-    tangent_v.grad = torch.tensor(grad_tangent_v_np, device=device, dtype=torch.float32)
-    scales.grad = torch.tensor(grad_scales_np, device=device, dtype=torch.float32)
-    albedos.grad = torch.tensor(grad_albedos_np, device=device, dtype=torch.float32)
-    opacities.grad = torch.tensor(grad_opacities_np, device=device, dtype=torch.float32)
-    betas.grad = torch.tensor(grad_betas_np, device=device, dtype=torch.float32)
-
-
-def compute_density_importance(
-        grad_position_np: np.ndarray,
-        grad_scales_np: np.ndarray,
-        grad_opacities_np: np.ndarray,
-) -> torch.Tensor:
-    """
-    Construct a scalar importance per point from position, scale, and opacity gradients.
-    """
-    grad_pos_norm = np.linalg.norm(grad_position_np, axis=1)
-    grad_scale_norm = np.linalg.norm(grad_scales_np, axis=1)
-    grad_opacity_abs = np.abs(grad_opacities_np).reshape(-1)
-
-    importance_np = (
-            grad_pos_norm
-            + 0.3 * grad_scale_norm
-            + 0.1 * grad_opacity_abs
-    ).astype(np.float32)
-
-    return torch.from_numpy(importance_np)
-
-
-def run_optimization(
-        renderer: Pale.Renderer,
-        config: OptimizationConfig,
-        renderer_settings: RendererSettingsConfig,
-) -> None:
-    def sum_gradient_dicts_any(*gradient_dicts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        nonempty = [g for g in gradient_dicts if g]
-        if not nonempty:
-            return {}
-
-        reference_keys = list(nonempty[0].keys())
-        result: Dict[str, np.ndarray] = {}
-
-        for key in reference_keys:
-            accumulated = None
-            reference_shape = None
-
-            for gradient_dict in nonempty:
-                if key not in gradient_dict:
-                    raise RuntimeError(f"Missing gradient key '{key}' in one of the gradient dictionaries.")
-
-                grad = np.asarray(gradient_dict[key], dtype=np.float32, order="C")
-
-                if reference_shape is None:
-                    reference_shape = grad.shape
-                    accumulated = np.array(grad, dtype=np.float32, copy=True, order="C")
-                else:
-                    if grad.shape != reference_shape:
-                        raise RuntimeError(
-                            f"Gradient shape mismatch for '{key}': "
-                            f"expected {reference_shape}, got {grad.shape}"
-                        )
-                    accumulated += grad
-
-            result[key] = accumulated
-
-        return result
-
-    # ------------------------------------------------------------------
-    # 1a. Load target images per camera
-    # ------------------------------------------------------------------
-    target_path = Path(config.dataset_path)
-    target_images: Dict[str, np.ndarray] = {}
-
-    if not target_path.is_dir():
-        raise RuntimeError(
-            f"Target path '{target_path}' must be a directory when multiple cameras are used."
-        )
-
-    print(f"Loading target images from directory: {target_path}")
-    training_camera_ids = get_training_camera_names(renderer)
-    all_camera_ids = get_all_camera_names(renderer)
-
-    for camera_name in training_camera_ids:
-        image_path = target_path / "images" / f"{camera_name}.png"
-        if not image_path.is_file():
-            raise RuntimeError(
-                f"Missing target image for camera '{camera_name}': {image_path}"
-            )
-        target_images[camera_name] = load_target_image(image_path)
-        print(
-            f"  Camera '{camera_name}': loaded target {image_path} "
-            f"with shape {target_images[camera_name].shape}"
-        )
-
-    depth_distortion_weight = float(getattr(config, "depth_distort_weight", 0.0))
-    normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
-
-    opacity_loss_weight = float(getattr(config, "opacity_loss_weight", 0.0))
-    opacity_target = 1.0
-
-    use_depth_distortion = depth_distortion_weight != 0.0
-    use_normal_consistency = normal_consistency_weight != 0.0
-    use_opacity_loss = opacity_loss_weight != 0.0
-
-    print(
-        "Loss terms: "
-        f"depth_distortion={use_depth_distortion} weight={depth_distortion_weight:.3e}, "
-        f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
-        f"opacity_loss_weight={opacity_loss_weight:.3e}, "
-        f"opacity_target={opacity_target:.3f}"
-    )
-
-    # ------------------------------------------------------------------
-    # Fetch initial parameters from renderer
-    # ------------------------------------------------------------------
-    initial_params = fetch_parameters(renderer)
-    initial_positions_np = initial_params["position"]
-    initial_tangent_u_np = initial_params["tangent_u"]
-    initial_tangent_v_np = initial_params["tangent_v"]
-    initial_scale_np = initial_params["scale"]
-    initial_albedo_np = initial_params["albedo"]
-    initial_opacity_np = initial_params["opacity"]
-    initial_beta_np = initial_params["beta"]
-    initial_power_np = initial_params["power"]
-
-    num_points_initial = initial_positions_np.shape[0]
-    print(f"Fetched {num_points_initial} initial points from PLY.")
-
-    initial_params_reference: Dict[str, np.ndarray] = {
-        "position": initial_positions_np.copy(),
-        "tangent_u": initial_tangent_u_np.copy(),
-        "tangent_v": initial_tangent_v_np.copy(),
-        "scale": initial_scale_np.copy(),
-        "albedo": initial_albedo_np.copy(),
-        "opacity": initial_opacity_np.copy(),
-        "beta": initial_beta_np.copy(),
-        "power": initial_power_np.copy(),
-    }
-
-    apply_noise = False
-    if apply_noise:
-        (
-            initial_positions_np,
-            initial_tangent_u_np,
-            initial_tangent_v_np,
-            initial_scale_np,
-            initial_albedo_np,
-            initial_opacity_np,
-            initial_beta_np,
-        ) = add_debug_noise_to_initial_parameters(
-            initial_positions_np,
-            initial_tangent_u_np,
-            initial_tangent_v_np,
-            initial_scale_np,
-            initial_albedo_np,
-            initial_opacity_np,
-            initial_beta_np,
-        )
-        print("Initial parameters perturbed by debug Gaussian noise.")
-
-    device = torch.device(config.device)
-
-    positions = torch.nn.Parameter(
-        torch.tensor(initial_positions_np, device=device, dtype=torch.float32)
-    )
-    tangent_u = torch.nn.Parameter(
-        torch.tensor(initial_tangent_u_np, device=device, dtype=torch.float32)
-    )
-    tangent_v = torch.nn.Parameter(
-        torch.tensor(initial_tangent_v_np, device=device, dtype=torch.float32)
-    )
-    scales = torch.nn.Parameter(
-        torch.tensor(initial_scale_np, device=device, dtype=torch.float32)
-    )
-    albedos = torch.nn.Parameter(
-        torch.tensor(initial_albedo_np, device=device, dtype=torch.float32)
-    )
-    opacities = torch.nn.Parameter(
-        torch.tensor(initial_opacity_np, device=device, dtype=torch.float32)
-    )
-    betas = torch.nn.Parameter(
-        torch.tensor(initial_beta_np, device=device, dtype=torch.float32)
-    )
-    powers = torch.nn.Parameter(
-        torch.tensor(initial_power_np, device=device, dtype=torch.float32)
-    )
-
-    # ------------------------------------------------------------------
-    # 2. Initial reparameterization and sync with renderer
-    # ------------------------------------------------------------------
-
-    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
-
-    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
-    print(
-        f"Frozen emissive surfels: {frozen_surfel_count} / "
-        f"{int(trainable_surfel_mask.numel())}"
-    )
-    verify_parameters_inplane(positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
-                              trainable_surfel_mask=trainable_surfel_mask,
-                              )
-
-    apply_point_parameters(
-        renderer, positions, tangent_u, tangent_v, scales, albedos, opacities, betas, powers
-    )
+    apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
     rebuild_bvh(renderer)
 
-    (
-        positions,
-        tangent_u,
-        tangent_v,
-        scales,
-        albedos,
-        opacities,
-        betas,
-        powers,
-    ) = refetch_parameters_as_torch(renderer, device)
-
+    positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(renderer, device)
+    rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    optimizer = create_masked_optimizer(
-        config,
-        positions,
-        tangent_u,
-        tangent_v,
-        scales,
-        albedos,
-        opacities,
-        betas,
-        powers,
+    optimizer = create_masked_optimizer(config, positions, rotation_delta, scales, albedos, opacities, betas, powers)
+    learning_rate_schedules = create_learning_rate_schedules(config)
+    resume_iteration_offset = max(0, int(getattr(config, "resume_iteration_offset", 0)))
+    final_global_iteration = resume_iteration_offset + int(config.iterations)
+    if resume_iteration_offset > 0:
+        print(
+            "[checkpoint] Continuing iteration-dependent schedules from "
+            f"iteration {resume_iteration_offset}; this run will end at "
+            f"global iteration {final_global_iteration}."
+        )
+    active_learning_rates = update_optimizer_learning_rates(
+        optimizer,
+        learning_rate_schedules,
+        resume_iteration_offset,
     )
 
-    # ------------------------------------------------------------------
-    # 3. Initial loss and output dir setup (multi-camera)
-    # ------------------------------------------------------------------
     initial_images = renderer.render_forward()
-
-    initial_rgb_loss = 0.0
-    initial_depth_distortion_loss_raw = 0.0
-    initial_normal_loss_raw = 0.0
-
-    initial_points_path = config.output_dir / "initial_points.ply"
-    save_gaussians_to_ply(
-        initial_points_path,
-        positions,
-        tangent_u,
-        tangent_v,
-        scales,
-        albedos,
-        opacities,
-        betas,
-        powers,
-        shape_default=0.0,
+    initial_depth_distortion_weight = scheduled_regularizer_weight(
+        depth_distortion_base_weight,
+        iteration=resume_iteration_offset,
+        start_iteration=depth_distortion_start_iteration,
     )
-    print(f"Initial parameters written to PLY: {initial_points_path}")
 
-    for camera_name in all_camera_ids:
-        img_np = get_forward_rgb(initial_images, camera_name)
+    initial_loss_tuple = compute_initial_losses_and_save_outputs(
+        output_dir=config.output_dir, initial_images=initial_images, target_images=target_images,
+        all_camera_ids=all_camera_ids, positions=positions, rotations=rotations,
+        scales=scales, albedos=albedos, opacities=opacities, betas=betas, powers=powers,
+        depth_distortion_weight=initial_depth_distortion_weight,
+        normal_consistency_weight=normal_consistency_weight,
+        opacity_prior_weight=opacity_prior_weight,
+        intra_slab_depth_weight=intra_slab_depth_weight,
+        curvature_scale_weight=curvature_scale_weight,
+        use_depth_distortion=use_depth_distortion,
+        use_normal_consistency=use_normal_consistency,
+        use_opacity_prior=use_opacity_prior,
+        use_intra_slab_depth=use_intra_slab_depth,
+        use_curvature_scale=use_curvature_scale,
+    )
 
-        camera_base_dir = config.output_dir / camera_name
-        camera_base_dir.mkdir(parents=True, exist_ok=True)
+    print_loss_summary("Initial", *initial_loss_tuple)
 
-        save_render(
-            config.output_dir / f"render_initial_{camera_name}.png",
-            img_np,
+    base_densification_interval = int(config.densification_interval)
+    final_densification_interval = int(config.densification_interval_final)
+    densification_interval = active_densification_interval_for_iteration(
+        config=config,
+        base_densification_interval=base_densification_interval,
+        final_densification_interval=final_densification_interval,
+        iteration=resume_iteration_offset,
+    )
+    prune_interval = int(config.prune_interval)
+    densify_after = config.densify_after if config.densify_after >= 0 else densification_interval
+    prune_after = config.prune_after if config.prune_after >= 0 else prune_interval
+    densification_cycle_start_iteration = resume_iteration_offset
+    densification_cycle_interval = densification_interval
+    densification_stats_skip_iterations = densification_stats_skip_for_interval(
+        config=config,
+        densification_interval=densification_cycle_interval,
+    )
+    next_densification_iteration = next_densification_iteration_after(
+        current_iteration=resume_iteration_offset,
+        densify_after=densify_after,
+        densification_interval=densification_interval,
+    )
+
+    opacity_prune_threshold = float(config.opacity_prune_threshold)
+    max_prune_fraction = float(config.max_prune_fraction)
+    inactive_gradient_prune_cycles = int(config.inactive_gradient_prune_cycles)
+    reset_opacity_interval = int(config.reset_opacity_interval)
+    reset_opacity_value = float(config.reset_opacity_value)
+    densification_verbose = bool(config.densification_verbose)
+    densification_grad_quantile = as_config_float(config.densification_grad_quantile)
+    densification_grad_abs_min = float(config.densification_grad_abs_min)
+    densification_grad_abs_min_final = float(config.densification_grad_abs_min_final)
+    densification_grad_abs_min_decay_start_iteration = int(config.densification_grad_abs_min_decay_start_iteration)
+    densification_grad_abs_min_decay_end_iteration = int(config.densification_grad_abs_min_decay_end_iteration)
+    densify_bsdf_floor = float(config.densify_bsdf_floor)
+    densify_bsdf_gamma = float(config.densify_bsdf_gamma)
+    rebuild_bvh_interval = max(int(config.rebuild_bvh_interval), 1)
+    use_device_training_step = bool(getattr(config, "use_device_training_step", True))
+    device_training_disabled_reasons: list[str] = []
+    required_device_training_methods = (
+        "render_rgb_training_step",
+        "render_rgb_backward_from_current_forward",
+        "render_forward_surface_regularizer_loss_and_adjoint",
+        "render_surface_regularizers_backward_from_current_adjoint",
+        "apply_device_training_step",
+        "reset_trainable_opacity_on_gpu",
+        "sync_point_parameters_from_gpu",
+        "capture_device_adam_state",
+        "upload_device_adam_state",
+    )
+    missing_device_training_methods = [
+        method_name
+        for method_name in required_device_training_methods
+        if not hasattr(renderer, method_name)
+    ]
+    if missing_device_training_methods:
+        device_training_disabled_reasons.append(
+            "renderer binding is missing "
+            + ", ".join(missing_device_training_methods)
+        )
+    if str(config.optimizer_type).lower() != "adam":
+        device_training_disabled_reasons.append("device path currently matches Adam only")
+    use_device_training_step = use_device_training_step and not device_training_disabled_reasons
+    if use_device_training_step:
+        print("[device-training-step] Enabled device-resident optimizer path.")
+    elif bool(getattr(config, "use_device_training_step", True)):
+        print(
+            "[device-training-step] Disabled: "
+            + "; ".join(device_training_disabled_reasons)
         )
 
-        if camera_name not in target_images:
-            print(
-                f"Warning: no target image found for camera '{camera_name}', "
-                f"skipping target save and loss."
-            )
-            continue
-
-        tgt_np = target_images[camera_name]
-        initial_rgb_loss += float(compute_l2_loss(img_np, tgt_np))
-
-        save_render(
-            config.output_dir / f"render_target_{camera_name}.png",
-            tgt_np,
-        )
-
-        if use_depth_distortion:
-            dist_np = get_forward_depth_distortion(initial_images, camera_name)
-            initial_depth_distortion_loss_raw += float(dist_np.mean())
-
-        if use_normal_consistency:
-            visible_normal = get_forward_visible_normal(initial_images, camera_name)
-            normal_from_depth = get_forward_normal_from_depth(initial_images, camera_name)
-            raw_normal_loss_value, _, _ = compute_normal_consistency_loss_and_adjoints(
-                visible_normal,
-                normal_from_depth,
-                1.0,
-            )
-            initial_normal_loss_raw += raw_normal_loss_value
-
-    initial_depth_distortion_loss_weighted = (
-            depth_distortion_weight * initial_depth_distortion_loss_raw
+    densify_position_grad_accum_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
+    densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
+    # Stores local tangent coordinates (u, v, 0); converted to world space at clone time.
+    densify_position_grad_vector_accum_np = np.zeros(tuple(positions.shape), dtype=np.float32)
+    active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool)
+    inactive_gradient_cycle_count_np = np.zeros((positions.shape[0],), dtype=np.uint32, )
+    densification_origin_np = np.full(
+        (positions.shape[0],),
+        DENSIFICATION_ORIGIN_INITIAL,
+        dtype=np.uint8,
     )
-    initial_normal_loss_weighted = (
-            normal_consistency_weight * initial_normal_loss_raw
-    )
-    initial_opacity_regularizer_loss, _ = (
-        compute_opacity_target_regularizer_and_gradients(
-            opacities=opacities,
-            trainable_surfel_mask=trainable_surfel_mask,
-            opacity_target=opacity_target,
-            opacity_weight=opacity_loss_weight,
-            use_opacity_loss=use_opacity_loss,
-        )
-    )
-
-    initial_total_loss = (
-            initial_rgb_loss +
-            initial_depth_distortion_loss_weighted +
-            initial_normal_loss_weighted +
-            initial_opacity_regularizer_loss
-    )
-
-    print(f"Initial RGB loss                       : {initial_rgb_loss:.6e}")
-    print(f"Initial depth distortion loss (raw)    : {initial_depth_distortion_loss_raw:.6e}")
-    print(f"Initial depth distortion loss (weighted): {initial_depth_distortion_loss_weighted:.6e}")
-    print(f"Initial normal consistency loss (raw)  : {initial_normal_loss_raw:.6e}")
-    print(f"Initial normal consistency loss (weighted): {initial_normal_loss_weighted:.6e}")
-    print(f"Initial opacity regularizer loss        : {initial_opacity_regularizer_loss:.6e}")
-    print(f"Initial total loss                     : {initial_total_loss:.6e}")
-
-    # ------------------------------------------------------------------
-    # 4. Density control / scheduling hyperparameters
-    # ------------------------------------------------------------------
-    iteration = 0
-
-    densification_interval = 1e100
-    prune_interval = 50
-    burnin_iterations = 50
-
-    reset_opacity_interval = int(1e10)
-    densification_grad_threshold = 1e-9
-
-    opacity_prune_threshold = 100.0
-    max_prune_fraction = 0.3
-    rebuild_bvh_interval = 5
+    visited_training_camera_ids_this_cycle: set[str] = set()
 
     metrics_csv_path = config.output_dir / "metrics.csv"
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    total_start_time = time.perf_counter()
+    last_log_iteration = 0
+    last_log_time = total_start_time
+    iteration = 0
+    latest_loss_values_by_camera: Dict[str, Dict[str, float]] = {}
+    densification_clone_points_total = 0
+    densification_split_points_total = 0
 
     with open(metrics_csv_path, "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(
-            [
-                "iteration",
-                "camera_name",
-                "loss_rgb_sum",
-                "loss_depth_distortion_raw_sum",
-                "loss_depth_distortion_weighted_sum",
-                "loss_normal_consistency_raw_sum",
-                "loss_normal_consistency_weighted_sum",
-                "loss_opacity_regularizer",
-                "loss_total_sum",
-                "parameter_mse",
-                "num_points",
-                "iteration_time_sec",
-                "total_time",
-                "grad_opacity_total_rms",
-                "grad_opacity_total_max",
-                "grad_opacity_regularizer_rms",
-                "grad_opacity_regularizer_max",
-            ]
-        )
-
-        total_start_time = time.perf_counter()
+        write_metrics_header(csv_writer)
 
         try:
             for iteration in range(1, config.iterations + 1):
                 iteration_start = time.perf_counter()
+                global_iteration = resume_iteration_offset + iteration
 
-                # --------------------------------------------------------------
-                # 5. Forward pass and image-space loss (multi-camera)
-                # --------------------------------------------------------------
-                forward_out = renderer.render_forward()
+                densification_interval = active_densification_interval_for_iteration(
+                    config=config,
+                    base_densification_interval=base_densification_interval,
+                    final_densification_interval=final_densification_interval,
+                    iteration=global_iteration,
+                )
 
-                total_rgb_loss_value = 0.0
-                total_depth_distortion_loss_raw = 0.0
-                total_depth_distortion_loss_weighted = 0.0
-                total_normal_loss_raw = 0.0
-                total_normal_loss_weighted = 0.0
-                total_loss_value = 0.0
+                active_training_camera_ids = select_active_training_camera_ids(
+                    training_camera_ids=training_camera_ids,
+                    iteration=global_iteration,
+                    config=config,
+                )
 
-                visible_normal_adjoints: Dict[str, np.ndarray] = {}
-                depth_normal_adjoints: Dict[str, np.ndarray] = {}
+                active_depth_distortion_weight = scheduled_regularizer_weight(
+                    depth_distortion_base_weight,
+                    iteration=global_iteration,
+                    start_iteration=depth_distortion_start_iteration,
+                )
+                active_opacity_prior_weight = opacity_prior_weight
+                active_densification_grad_abs_min = scheduled_densification_grad_abs_min(
+                    initial_threshold=densification_grad_abs_min,
+                    final_threshold=densification_grad_abs_min_final,
+                    iteration=global_iteration,
+                    start_iteration=densification_grad_abs_min_decay_start_iteration,
+                    end_iteration=densification_grad_abs_min_decay_end_iteration,
+                )
 
-                loss_grad_images: Dict[str, np.ndarray] = {}
-                depth_distortion_grad_images: Dict[str, np.ndarray] = {}
-                loss_images: Dict[str, np.ndarray] = {}
-                depth_distortion_maps_for_logging: Dict[str, np.ndarray] = {}
-                visible_normal_maps_for_logging: Dict[str, np.ndarray] = {}
-                depth_normal_maps_for_logging: Dict[str, np.ndarray] = {}
+                use_depth_distortion_gradients = active_depth_distortion_weight != 0.0
+                if use_device_training_step:
+                    active_learning_rates = update_optimizer_learning_rates(
+                        optimizer,
+                        learning_rate_schedules,
+                        global_iteration,
+                    )
+                    active_camera_name = active_camera_name_for_iteration(
+                        active_training_camera_ids,
+                        config.one_camera_per_iteration,
+                    )
+                    camera_batch_scale = (
+                        float(len(training_camera_ids)) / float(len(active_training_camera_ids))
+                        if config.one_camera_per_iteration and config.scale_single_camera_gradients
+                        else 1.0
+                    )
+                    use_surface_regularizers = (
+                            use_depth_distortion_gradients
+                            or use_normal_consistency
+                            or use_opacity_prior
+                            or use_intra_slab_depth
+                            or use_curvature_scale
+                    )
+                    needs_gradient_stats = (
+                            densification_interval > 0
+                            or inactive_gradient_prune_cycles > 0
+                    )
+                    device_step_options = make_device_training_step_options(
+                        config=config,
+                        active_learning_rates=active_learning_rates,
+                        camera_batch_scale=camera_batch_scale,
+                        return_gradient_stats=needs_gradient_stats,
+                    )
 
-                for camera_name in training_camera_ids:
-                    current_rgb_np = get_forward_rgb(forward_out, camera_name)
-                    target_rgb_np = target_images[camera_name]
-
-                    rgb_grad = compute_l2_grad(current_rgb_np, target_rgb_np)
-                    rgb_loss_value = float(compute_l2_loss(current_rgb_np, target_rgb_np))
-
-                    total_rgb_loss_value += rgb_loss_value
-                    total_loss_value += rgb_loss_value
-
-                    loss_grad_images[camera_name] = rgb_grad
-                    loss_images[camera_name] = rgb_grad
-
-                    if use_depth_distortion:
-                        current_depth_distortion_np = get_forward_depth_distortion(forward_out, camera_name)
-                        depth_distortion_maps_for_logging[camera_name] = current_depth_distortion_np
-
-                        depth_distortion_loss_raw = float(current_depth_distortion_np.mean())
-                        depth_distortion_loss_weighted = (
-                                depth_distortion_weight * depth_distortion_loss_raw
+                    regularizer_loss_state = None
+                    if use_surface_regularizers:
+                        regularizer_loss_state = renderer.render_forward_surface_regularizer_loss_and_adjoint(
+                            list(active_training_camera_ids),
+                            {
+                                "depth_distortion_weight": active_depth_distortion_weight,
+                                "normal_consistency_weight": normal_consistency_weight,
+                                "opacity_prior_weight": active_opacity_prior_weight,
+                                "intra_slab_depth_weight": intra_slab_depth_weight,
+                                "curvature_scale_weight": curvature_scale_weight,
+                                "use_depth_distortion": use_depth_distortion,
+                                "use_normal_consistency": use_normal_consistency,
+                                "use_opacity_prior": use_opacity_prior,
+                                "use_intra_slab_depth": use_intra_slab_depth,
+                                "use_curvature_scale": use_curvature_scale,
+                            },
+                        )
+                        adjoint_images = renderer.render_rgb_backward_from_current_forward(
+                            list(active_training_camera_ids),
+                            {"return_gradient_stats": needs_gradient_stats},
+                        )
+                    else:
+                        adjoint_images = renderer.render_rgb_training_step(
+                            list(active_training_camera_ids),
+                            device_step_options,
                         )
 
-                        total_depth_distortion_loss_raw += depth_distortion_loss_raw
-                        total_depth_distortion_loss_weighted += depth_distortion_loss_weighted
-                        total_loss_value += depth_distortion_loss_weighted
+                    loss_state = make_rgb_loss_state(active_training_camera_ids, adjoint_images)
 
-                        depth_distortion_grad_images[camera_name] = make_mean_reduction_adjoint_image(
-                            current_depth_distortion_np,
-                            depth_distortion_weight,
+                    if use_surface_regularizers:
+                        add_regularizer_loss_state(loss_state, regularizer_loss_state)
+
+                        renderer.render_surface_regularizers_backward_from_current_adjoint(
+                            list(active_training_camera_ids)
                         )
 
-                    if use_normal_consistency:
-                        visible_normal = get_forward_visible_normal(forward_out, camera_name)
-                        normal_from_depth = get_forward_normal_from_depth(forward_out, camera_name)
-
-                        visible_normal_maps_for_logging[camera_name] = visible_normal
-                        depth_normal_maps_for_logging[camera_name] = normal_from_depth
-
-                        raw_normal_loss_value, dvis_raw, ddepth_raw = (
-                            compute_normal_consistency_loss_and_adjoints(
-                                visible_normal,
-                                normal_from_depth,
-                                1.0,
+                        apply_result = renderer.apply_device_training_step(
+                            make_device_training_step_options(
+                                config=config,
+                                active_learning_rates=active_learning_rates,
+                                camera_batch_scale=camera_batch_scale,
+                                include_depth_distortion=use_depth_distortion_gradients,
+                                include_normal_consistency=use_normal_consistency,
+                                include_opacity_prior=use_opacity_prior,
+                                include_intra_slab_depth=use_intra_slab_depth,
+                                include_curvature_scale=use_curvature_scale,
                             )
                         )
+                        adjoint_images["point_count"] = apply_result.get(
+                            "point_count",
+                            adjoint_images.get("point_count", int(positions.shape[0])),
+                        )
+                        adjoint_images["optimizer_step"] = apply_result.get("optimizer_step", 0)
 
-                        weighted_normal_loss_value = (
-                                normal_consistency_weight * raw_normal_loss_value
+                    for camera_name, camera_loss_values in loss_state["per_camera_loss_values"].items():
+                        latest_loss_values_by_camera[camera_name] = dict(camera_loss_values)
+
+                    averaged_loss_state = make_averaged_loss_state_from_camera_cache(
+                        latest_loss_values_by_camera=latest_loss_values_by_camera,
+                        expected_camera_ids=list(training_camera_ids),
+                    )
+
+                    photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
+                    if inactive_gradient_prune_cycles > 0:
+                        active_during_camera_cycle_np |= active_surfel_mask_from_position_records(
+                            photo_gradient_surfel_stats,
+                            point_count=int(positions.shape[0]),
+                        )
+                    visited_training_camera_ids_this_cycle.update(active_training_camera_ids)
+                    camera_cycle_complete = (
+                            len(visited_training_camera_ids_this_cycle) == len(training_camera_ids)
+                    )
+
+                    clone_signal_per_camera_np = photo_gradient_surfel_stats.get("clone_signal_per_camera", None)
+                    clone_signal_record_count_per_camera_np = photo_gradient_surfel_stats.get(
+                        "clone_signal_record_count_per_camera",
+                        None,
+                    )
+                    update_densification_statistics(
+                        iteration=global_iteration,
+                        densification_interval=densification_cycle_interval,
+                        densification_cycle_start_iteration=densification_cycle_start_iteration,
+                        densification_stats_skip_iterations=densification_stats_skip_iterations,
+                        densify_position_grad_accum_np=densify_position_grad_accum_np,
+                        densify_position_grad_denom_np=densify_position_grad_denom_np,
+                        densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                        rotations=rotations,
+                        albedos=albedos,
+                        trainable_surfel_mask=trainable_surfel_mask,
+                        densify_bsdf_floor=densify_bsdf_floor,
+                        densify_bsdf_gamma=densify_bsdf_gamma,
+                        densify_position_grad_per_camera_np=clone_signal_per_camera_np,
+                        densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
+                    )
+
+                    scheduled_opacity_reset = (
+                            reset_opacity_interval > 0
+                            and global_iteration % reset_opacity_interval == 0
+                    )
+                    manual_opacity_reset = bool(config.reset_opacity_iterations)
+                    did_reset_opacity = scheduled_opacity_reset or manual_opacity_reset
+
+                    if did_reset_opacity:
+                        renderer.reset_trainable_opacity_on_gpu(float(reset_opacity_value))
+                        print(f"[Iter {global_iteration:04d}] Resetting all opacities to {reset_opacity_value}")
+                        config.reset_opacity_iterations = False
+
+                    densification_is_due = (
+                            densification_interval > 0
+                            and next_densification_iteration is not None
+                            and global_iteration >= next_densification_iteration
+                    )
+                    should_check_densification = not did_reset_opacity and densification_is_due
+                    should_check_prune = (
+                            not did_reset_opacity
+                            and prune_interval > 0
+                            and global_iteration >= prune_after
+                            and global_iteration % prune_interval == 0
+                    )
+                    should_check_inactive_prune = (
+                            not did_reset_opacity
+                            and camera_cycle_complete
+                            and global_iteration >= prune_after
+                            and inactive_gradient_prune_cycles > 0
+                    )
+                    if (
+                            should_check_densification
+                            or should_check_prune
+                            or should_check_inactive_prune
+                    ):
+                        renderer.sync_point_parameters_from_gpu()
+                        positions, rotations, scales, albedos, opacities, betas, powers = (
+                            refetch_parameters_as_torch(renderer, device)
+                        )
+                        rotation_delta = torch.nn.Parameter(
+                            torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
+                        )
+                        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                        verify_parameters_inplane(
+                            positions,
+                            rotations,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            trainable_surfel_mask=trainable_surfel_mask,
                         )
 
-                        total_normal_loss_raw += raw_normal_loss_value
-                        total_normal_loss_weighted += weighted_normal_loss_value
-                        total_loss_value += weighted_normal_loss_value
+                    densification_result = None
+                    scale_prune_indices = []
+                    opacity_prune_indices = []
+                    indices_to_remove_list = []
+                    inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
+                    prune_scale_area_points = 0
+                    prune_inactive_gradient_points = 0
 
-                        visible_normal_adjoints[camera_name] = (
-                                normal_consistency_weight * dvis_raw
-                        ).astype(np.float32, copy=False)
-                        depth_normal_adjoints[camera_name] = (
-                                normal_consistency_weight * ddepth_raw
-                        ).astype(np.float32, copy=False)
+                    if not did_reset_opacity:
+                        if should_check_densification:
+                            densification_result = maybe_make_densification_result(
+                                iteration=global_iteration, config=config, positions=positions, rotations=rotations,
+                                scales=scales, albedos=albedos, opacities=opacities,
+                                betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
+                                densify_position_grad_accum_np=densify_position_grad_accum_np,
+                                densify_position_grad_denom_np=densify_position_grad_denom_np,
+                                densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                                densify_after=densify_after,
+                                densification_interval=densification_interval,
+                                densification_verbose=densification_verbose,
+                                densification_grad_quantile=densification_grad_quantile,
+                                densification_grad_abs_min=active_densification_grad_abs_min,
+                                force_densification=True,
+                            )
 
-                # ------------------------------------------------------------------
-                # Backward passes
-                # ------------------------------------------------------------------
-                photo_gradients, adjoint_images = renderer.render_backward(loss_grad_images)
+                        if should_check_prune:
+                            scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
+                                iteration=global_iteration, config=config, scales=scales, opacities=opacities,
+                                trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
+                                prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
+                                opacity_prune_threshold=opacity_prune_threshold,
+                                max_prune_fraction=max_prune_fraction,
+                            )
 
-                distortion_gradients: Dict[str, np.ndarray] = {}
-                normal_gradients: Dict[str, np.ndarray] = {}
+                        if should_check_inactive_prune:
+                            trainable_surfel_mask_np = (
+                                trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
+                            active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
+                            inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
+                            inactive_gradient_cycle_count_np[active_this_cycle_np] = 0
+                            inactive_gradient_cycle_count_np[inactive_this_cycle_np] = np.minimum(
+                                inactive_gradient_cycle_count_np[inactive_this_cycle_np] + 1,
+                                inactive_gradient_prune_cycles,
+                            )
+                            inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
+                                    inactive_gradient_cycle_count_np >= inactive_gradient_prune_cycles)).astype(
+                                np.int64)
 
-                if use_depth_distortion and len(depth_distortion_grad_images) > 0:
-                    distortion_gradients = renderer.render_depth_distortion_backward(
-                        depth_distortion_grad_images
+                            if inactive_camera_cycle_indices.size > 0:
+                                indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
+                    else:
+                        print(f"[Iter {global_iteration:04d}] Skipping densification/pruning due to opacity reset")
+
+                    if indices_to_remove_list or densification_result is not None:
+                        old_point_count_for_topology = int(positions.shape[0])
+                        keep_mask_np = np.ones(old_point_count_for_topology, dtype=bool)
+                        device_adam_state_snapshot = None
+
+                        if densification_result is not None:
+                            protected_src = np.asarray(
+                                densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
+                                dtype=np.int64).reshape(-1)
+                            if protected_src.size > 0 and indices_to_remove_list:
+                                protected_set = set(int(i) for i in protected_src)
+                                indices_to_remove_list = [int(i) for i in indices_to_remove_list if
+                                                          int(i) not in protected_set]
+
+                        n_new_for_topology = 0
+                        if densification_result is not None:
+                            new_block_for_topology = densification_result.get("new", None)
+                            if new_block_for_topology is not None:
+                                n_new_for_topology = int(new_block_for_topology["position"].shape[0])
+
+                        if indices_to_remove_list or n_new_for_topology > 0:
+                            device_adam_state_snapshot = renderer.capture_device_adam_state()
+
+                        if densification_result is not None:
+                            apply_densification_source_updates_inplace(
+                                densification_result, positions, rotations, scales,
+                                albedos, opacities, betas, powers,
+                            )
+                            verify_parameters_inplane(
+                                positions, rotations, scales, albedos, opacities, betas,
+                                trainable_surfel_mask=trainable_surfel_mask,
+                            )
+                            apply_point_parameters(
+                                renderer, positions, rotations, scales,
+                                albedos, opacities, betas, powers,
+                            )
+
+                        if indices_to_remove_list:
+                            scale_prune_set = set(int(i) for i in scale_prune_indices)
+                            opacity_prune_set = set(int(i) for i in opacity_prune_indices)
+                            overlap_set = scale_prune_set & opacity_prune_set
+                            indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
+
+                            inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
+                            removed_index_set = set(int(index) for index in indices_to_remove)
+                            prune_scale_area_points = len(scale_prune_set & removed_index_set)
+                            prune_inactive_gradient_points = len(inactive_cycle_prune_set & removed_index_set)
+
+                            if config.densification_verbose:
+                                print(
+                                    f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
+                                    f"scale={len(scale_prune_set)}, "
+                                    f"opacity={len(opacity_prune_set)}, "
+                                    f"inactive_gradient={len(inactive_cycle_prune_set)} "
+                                    f"(threshold={inactive_gradient_prune_cycles} cycles), "
+                                    f"both_scale_opacity={len(overlap_set)}, "
+                                    f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
+                                    f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
+                                )
+
+                            keep_mask_np[indices_to_remove] = False
+                            remove_points(renderer, indices_to_remove)
+                            densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
+                            densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
+                            densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
+                            active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
+                            inactive_gradient_cycle_count_np = inactive_gradient_cycle_count_np[keep_mask_np]
+                            densification_origin_np = densification_origin_np[keep_mask_np]
+
+                        source_index_for_new_np = None
+                        if densification_result is not None:
+                            new_block = densification_result.get("new", None)
+                            if new_block is not None:
+                                n_new = int(new_block["position"].shape[0])
+                                add_new_points(renderer, densification_result)
+
+                                source_index_for_new_np = np.asarray(
+                                    densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
+                                    dtype=np.int64,
+                                ).reshape(-1)
+
+                                if source_index_for_new_np.shape[0] != n_new:
+                                    source_index_for_new_np = None
+
+                                densify_position_grad_accum_np = np.concatenate(
+                                    [densify_position_grad_accum_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
+                                densify_position_grad_denom_np = np.concatenate(
+                                    [densify_position_grad_denom_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
+                                densify_position_grad_vector_accum_np = np.concatenate(
+                                    [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)],
+                                    axis=0)
+                                active_during_camera_cycle_np = np.concatenate(
+                                    [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
+                                inactive_gradient_cycle_count_np = np.concatenate(
+                                    [inactive_gradient_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0)
+                                densification_origin_np = np.concatenate(
+                                    [
+                                        densification_origin_np,
+                                        make_new_densification_origin_np(densification_result, n_new),
+                                    ],
+                                    axis=0,
+                                )
+
+                        rebuild_bvh(renderer)
+                        positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
+                            renderer, device)
+                        rotation_delta = torch.nn.Parameter(
+                            torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
+
+                        if densify_position_grad_accum_np.shape[0] != positions.shape[0]:
+                            raise RuntimeError(
+                                "Densification scalar accumulator length mismatch after topology change: "
+                                f"{densify_position_grad_accum_np.shape[0]} vs {positions.shape[0]}"
+                            )
+
+                        if densify_position_grad_vector_accum_np.shape[0] != positions.shape[0]:
+                            raise RuntimeError(
+                                "Densification vector accumulator length mismatch after topology change: "
+                                f"{densify_position_grad_vector_accum_np.shape[0]} vs {positions.shape[0]}"
+                            )
+
+                        if densification_origin_np.shape[0] != positions.shape[0]:
+                            raise RuntimeError(
+                                "Densification origin length mismatch after topology change: "
+                                f"{densification_origin_np.shape[0]} vs {positions.shape[0]}"
+                            )
+
+                        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                        verify_parameters_inplane(
+                            positions, rotations, scales, albedos, opacities, betas,
+                            trainable_surfel_mask=trainable_surfel_mask,
+                        )
+                        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
+                                               powers)
+                        rebuild_bvh(renderer)
+
+                        migrated_device_adam_state = migrate_device_adam_state_snapshot(
+                            device_adam_state_snapshot,
+                            keep_mask_np=keep_mask_np,
+                            new_point_count=int(positions.shape[0]),
+                            source_index_for_new_np=source_index_for_new_np,
+                            copy_source_state_to_new=False,
+                        )
+                        if migrated_device_adam_state is not None:
+                            renderer.upload_device_adam_state(migrated_device_adam_state)
+
+                        optimizer = create_masked_optimizer(
+                            config,
+                            positions,
+                            rotation_delta,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            powers,
+                        )
+                        active_learning_rates = update_optimizer_learning_rates(
+                            optimizer,
+                            learning_rate_schedules,
+                            global_iteration,
+                        )
+                        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                        frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
+                        #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
+
+                    if camera_cycle_complete:
+                        active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
+                        visited_training_camera_ids_this_cycle.clear()
+
+                    if densification_is_due:
+                        densify_position_grad_accum_np[:] = 0.0
+                        densify_position_grad_denom_np[:] = 0.0
+                        densify_position_grad_vector_accum_np[:] = 0.0
+                        densification_cycle_start_iteration = global_iteration
+                        densification_cycle_interval = densification_interval
+                        densification_stats_skip_iterations = densification_stats_skip_for_interval(
+                            config=config,
+                            densification_interval=densification_cycle_interval,
+                        )
+                        next_densification_iteration = next_densification_iteration_after(
+                            current_iteration=global_iteration,
+                            densify_after=densify_after,
+                            densification_interval=densification_interval,
+                        )
+
+                    grad_position_renderer_norm = 0.0
+                    grad_position_renderer_max = 0.0
+                    grad_position_surface_regularizer_norm = 0.0
+                    grad_position_surface_regularizer_max = 0.0
+                    grad_position_total_norm = 0.0
+                    grad_position_total_max = 0.0
+                    grad_opacity_total_norm = 0.0
+                    grad_opacity_total_max = 0.0
+
+                    save_interval = int(config.save_interval)
+                    is_first_iteration = iteration == 1
+                    should_save_iteration_outputs = (
+                            is_first_iteration
+                            or (
+                                save_interval > 0
+                                and (
+                                    global_iteration % save_interval == 0
+                                    or iteration == config.iterations
+                                )
+                            )
                     )
 
-                if use_normal_consistency and len(visible_normal_adjoints) > 0:
-                    normal_gradients = renderer.render_normal_consistency_backward(
-                        visible_normal_adjoints,
-                        depth_normal_adjoints,
+                    if should_save_iteration_outputs:
+                        save_forward_out = renderer.render_forward()
+                        snapshot_adjoint_images = adjoint_images
+                        if config.save_snapshot_grad:
+                            snapshot_adjoint_images = compute_snapshot_adjoint_images(
+                                renderer=renderer,
+                                forward_out=save_forward_out,
+                                target_images=target_images,
+                                camera_ids=training_camera_ids,
+                            )
+
+                        save_iteration_outputs(
+                            output_dir=config.output_dir,
+                            iteration=global_iteration,
+                            save_interval=config.save_interval,
+                            final_iteration=final_global_iteration,
+                            all_camera_ids=all_camera_ids,
+                            forward_out=save_forward_out,
+                            adjoint_images=snapshot_adjoint_images,
+                            renderer_settings=renderer_settings,
+                            save_rgb=config.save_snapshot_rgb,
+                            save_median_depth=config.save_snapshot_median_depth,
+                            save_depth_distortion=config.save_snapshot_depth_distortion,
+                            save_visible_normal=config.save_snapshot_visible_normal,
+                            save_normal_from_depth=config.save_snapshot_normal_from_depth,
+                            save_grad=config.save_snapshot_grad,
+                            force=is_first_iteration,
+                        )
+
+                    iteration_point_cloud_path = None
+                    should_extract_mesh_checkpoint = (
+                            mesh_extraction_interval > 0
+                            and global_iteration % mesh_extraction_interval == 0
+                    )
+                    needs_parameter_snapshot = (
+                            (save_ply_files_interval > 0 and global_iteration % save_ply_files_interval == 0)
+                            or should_extract_mesh_checkpoint
+                    )
+                    if needs_parameter_snapshot:
+                        renderer.sync_point_parameters_from_gpu()
+                        positions, rotations, scales, albedos, opacities, betas, powers = (
+                            refetch_parameters_as_torch(renderer, device)
+                        )
+                        rotation_delta = torch.nn.Parameter(
+                            torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
+                        )
+                        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                        verify_parameters_inplane(
+                            positions,
+                            rotations,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            trainable_surfel_mask=trainable_surfel_mask,
+                        )
+
+                    if save_ply_files_interval > 0 and global_iteration % save_ply_files_interval == 0:
+                        iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                            config.output_dir,
+                            global_iteration,
+                            positions,
+                            rotations,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            powers,
+                        )
+
+                    if should_extract_mesh_checkpoint:
+                        if iteration_point_cloud_path is None:
+                            iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                                config.output_dir,
+                                global_iteration,
+                                positions,
+                                rotations,
+                                scales,
+                                albedos,
+                                opacities,
+                                betas,
+                                powers,
+                            )
+                        extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
+
+                    num_points = int(positions.shape[0])
+                    iteration_end = time.perf_counter()
+                    iteration_time = iteration_end - iteration_start
+                    total_time = iteration_end - total_start_time
+                    densification_clone_points = (
+                        int(densification_result.get("clone_count", 0))
+                        if densification_result is not None
+                        else 0
+                    )
+                    densification_split_points = (
+                        int(densification_result.get("split_count", 0))
+                        if densification_result is not None
+                        else 0
+                    )
+                    densification_new_points = densification_clone_points + densification_split_points
+                    densification_clone_points_total += densification_clone_points
+                    densification_split_points_total += densification_split_points
+                    (
+                        densification_clone_points_active,
+                        densification_split_points_active,
+                    ) = active_densification_origin_counts(densification_origin_np)
+
+                    csv_writer.writerow(
+                        [
+                            global_iteration,
+                            active_camera_name,
+                            len(active_training_camera_ids),
+                            averaged_loss_state["loss_metric_camera_count"],
+                            averaged_loss_state["loss_metric_expected_camera_count"],
+                            averaged_loss_state["loss_metric_is_complete"],
+                            averaged_loss_state["total_rgb_loss_value"],
+                            averaged_loss_state["total_depth_distortion_loss_raw"],
+                            averaged_loss_state["total_depth_distortion_loss_weighted"],
+                            averaged_loss_state["total_normal_loss_raw"],
+                            averaged_loss_state["total_normal_loss_weighted"],
+                            averaged_loss_state["total_opacity_prior_loss_raw"],
+                            averaged_loss_state["total_opacity_prior_loss_weighted"],
+                            averaged_loss_state["total_intra_slab_depth_loss_raw"],
+                            averaged_loss_state["total_intra_slab_depth_loss_weighted"],
+                            averaged_loss_state["total_curvature_scale_loss_raw"],
+                            averaged_loss_state["total_curvature_scale_loss_weighted"],
+                            averaged_loss_state["total_loss_value"],
+                            num_points,
+                            densification_new_points,
+                            densification_clone_points,
+                            densification_split_points,
+                            densification_clone_points_total,
+                            densification_split_points_total,
+                            densification_clone_points_active,
+                            densification_split_points_active,
+                            prune_scale_area_points,
+                            prune_inactive_gradient_points,
+                            iteration_time,
+                            total_time,
+                            grad_position_renderer_norm,
+                            grad_position_renderer_max,
+                            grad_position_surface_regularizer_norm,
+                            grad_position_surface_regularizer_max,
+                            grad_position_total_norm,
+                            grad_position_total_max,
+                            grad_opacity_total_norm,
+                            grad_opacity_total_max,
+                        ]
+                    )
+                    csv_file.flush()
+
+                    log_interval = int(config.log_interval)
+                    if iteration == 1 or (log_interval > 0 and iteration % log_interval == 0):
+                        logged_iteration_count = iteration - last_log_iteration
+                        log_elapsed_time = iteration_end - last_log_time
+                        iteration_rate = float(logged_iteration_count) / max(log_elapsed_time, 1.0e-12)
+                        last_log_iteration = iteration
+                        last_log_time = iteration_end
+
+                        lr_position = active_learning_rates.get("position", float(config.learning_rate_position))
+                        exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
+                            config=config,
+                            positions=positions,
+                            trainable_surfel_mask=trainable_surfel_mask,
+                        )
+                        minimum_splittable_scale = minimum_splittable_scale_for_config(config)
+                        print(
+                            format_training_iteration_log(
+                                iteration=global_iteration,
+                                total_iterations=final_global_iteration,
+                                iteration_time=iteration_time,
+                                iteration_rate=iteration_rate,
+                                total_time=total_time,
+                                num_points=num_points,
+                                loss_state=averaged_loss_state,
+                                lr_position=lr_position,
+                                active_densification_interval=densification_interval,
+                                active_prune_interval=prune_interval,
+                                active_densification_grad_abs_min=active_densification_grad_abs_min,
+                                active_depth_distortion_weight=active_depth_distortion_weight,
+                                active_normal_consistency_weight=normal_consistency_weight,
+                                active_opacity_prior_weight=active_opacity_prior_weight,
+                                exact_clone_scale_threshold=exact_clone_scale_threshold,
+                                minimum_splittable_scale=minimum_splittable_scale,
+                                grad_pos_rms=0.0,
+                                grad_rotation_rms=0.0,
+                                grad_scale_rms=0.0,
+                                grad_albedo_rms=0.0,
+                                grad_opacity_rms=0.0,
+                                grad_beta_rms=0.0,
+                                grad_pos_max=0.0,
+                                grad_rotation_max=0.0,
+                                grad_scale_max=0.0,
+                                grad_albedo_max=0.0,
+                                grad_opacity_max=0.0,
+                                grad_beta_max=0.0,
+                            )
+                        )
+                        print(format_loss_breakdown(averaged_loss_state))
+                        # print("[device-training-step] Host gradient arrays skipped in fixed-topology path.")
+
+                        hotkey = poll_hotkey()
+                        if hotkey == "s":
+                            renderer.sync_point_parameters_from_gpu()
+                            positions, rotations, scales, albedos, opacities, betas, powers = (
+                                refetch_parameters_as_torch(renderer, device)
+                            )
+                            rotation_delta = torch.nn.Parameter(
+                                torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
+                            )
+                            manual_points_path = save_manual_snapshot(
+                                renderer,
+                                config.output_dir,
+                                global_iteration,
+                                positions,
+                                rotations,
+                                scales,
+                                albedos,
+                                opacities,
+                                betas,
+                                powers,
+                                training_camera_ids,
+                            )
+                            extract_mesh_checkpoint(config, global_iteration, manual_points_path)
+                        elif hotkey == "g":
+                            print(
+                                "[device-training-step] Gradient snapshot skipped; host gradients were not downloaded.")
+
+                    continue
+
+                iteration_gradients = compute_iteration_gradients(
+                    renderer=renderer,
+                    active_training_camera_ids=active_training_camera_ids,
+                    latest_loss_values_by_camera=latest_loss_values_by_camera,
+                    training_camera_ids=training_camera_ids,
+                    iteration=global_iteration,
+                    one_camera_per_iteration=config.one_camera_per_iteration,
+                    use_depth_distortion_gradients=use_depth_distortion_gradients,
+                    use_depth_distortion=use_depth_distortion,
+                    use_normal_consistency=use_normal_consistency,
+                    use_opacity_prior=use_opacity_prior,
+                    use_intra_slab_depth=use_intra_slab_depth,
+                    use_curvature_scale=use_curvature_scale,
+                    active_depth_distortion_weight=active_depth_distortion_weight,
+                    normal_consistency_weight=normal_consistency_weight,
+                    active_opacity_prior_weight=active_opacity_prior_weight,
+                    intra_slab_depth_weight=intra_slab_depth_weight,
+                    curvature_scale_weight=curvature_scale_weight,
+                )
+
+                active_camera_name = iteration_gradients.active_camera_name
+                forward_out = iteration_gradients.forward_out
+                loss_state = iteration_gradients.loss_state
+                averaged_loss_state = iteration_gradients.averaged_loss_state
+                photo_gradients = iteration_gradients.photo_gradients
+                depth_regularizer_gradients = iteration_gradients.depth_regularizer_gradients
+                normal_regularizer_gradients = iteration_gradients.normal_regularizer_gradients
+                opacity_prior_gradients = iteration_gradients.opacity_prior_gradients
+                intra_slab_depth_gradients = iteration_gradients.intra_slab_depth_gradients
+                curvature_scale_gradients = iteration_gradients.curvature_scale_gradients
+                surface_regularizer_gradients = iteration_gradients.surface_regularizer_gradients
+                total_gradients = iteration_gradients.total_gradients
+                adjoint_images = iteration_gradients.adjoint_images
+                photo_gradient_surfel_stats = iteration_gradients.photo_gradient_surfel_stats
+
+                # Any positive per-camera record means the surfel contributed at least one
+                # position-gradient record during this render-backward call.
+                active_during_camera_cycle_np |= active_surfel_mask_from_position_records(
+                    photo_gradient_surfel_stats,
+                    point_count=int(positions.shape[0]),
+                )
+                visited_training_camera_ids_this_cycle.update(active_training_camera_ids)
+                camera_cycle_complete = (len(visited_training_camera_ids_this_cycle) == len(training_camera_ids))
+
+                camera_batch_scale = (
+                    float(len(training_camera_ids)) / float(len(active_training_camera_ids))
+                    if config.one_camera_per_iteration and config.scale_single_camera_gradients
+                    else 1.0
+                )
+
+                if camera_batch_scale != 1.0:
+                    photo_gradients = scale_gradient_dict(photo_gradients, camera_batch_scale)
+                    depth_regularizer_gradients = scale_gradient_dict(
+                        depth_regularizer_gradients,
+                        camera_batch_scale,
+                    )
+                    normal_regularizer_gradients = scale_gradient_dict(
+                        normal_regularizer_gradients,
+                        camera_batch_scale,
+                    )
+                    opacity_prior_gradients = scale_gradient_dict(
+                        opacity_prior_gradients,
+                        camera_batch_scale,
+                    )
+                    intra_slab_depth_gradients = scale_gradient_dict(
+                        intra_slab_depth_gradients,
+                        camera_batch_scale,
+                    )
+                    curvature_scale_gradients = scale_gradient_dict(
+                        curvature_scale_gradients,
+                        camera_batch_scale,
+                    )
+                    surface_regularizer_gradients = scale_gradient_dict(
+                        surface_regularizer_gradients,
+                        camera_batch_scale,
+                    )
+                    total_gradients = sum_gradient_dicts(
+                        photo_gradients,
+                        surface_regularizer_gradients,
                     )
 
-                photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
-                distortion_gradient_stats = (
-                    gradient_stats_from_dict(distortion_gradients)
-                    if distortion_gradients else {}
-                )
-                normal_gradient_stats = (
-                    gradient_stats_from_dict(normal_gradients)
-                    if normal_gradients else {}
-                )
+                (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np,
+                 grad_betas_np,) = extract_total_gradient_arrays(total_gradients)
 
-                # ------------------------------------------------------------------
-                # Blend the final update vector in Python
-                # ------------------------------------------------------------------
-                total_gradients = sum_gradient_dicts_any(
-                    photo_gradients,
-                    distortion_gradients,
-                    normal_gradients,
-                )
-
-                grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
-                grad_tangent_u_np = np.asarray(total_gradients["tangent_u"], dtype=np.float32, order="C")
-                grad_tangent_v_np = np.asarray(total_gradients["tangent_v"], dtype=np.float32, order="C")
-                grad_scales_np = np.asarray(total_gradients["scale"], dtype=np.float32, order="C")
-                grad_albedos_np = np.asarray(total_gradients["albedo"], dtype=np.float32, order="C")
-                grad_opacities_np = np.asarray(total_gradients["opacity"], dtype=np.float32, order="C")
-                grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
-
-                opacity_regularizer_loss, grad_opacity_regularizer_np = (
-                    compute_opacity_target_regularizer_and_gradients(
-                        opacities=opacities,
-                        trainable_surfel_mask=trainable_surfel_mask,
-                        opacity_target=opacity_target,
-                        opacity_weight=opacity_loss_weight,
-                        use_opacity_loss=use_opacity_loss,
-                    )
-                )
-                opacity_regularizer_gradient_stats = gradient_stats_from_dict(
-                    {"opacity": grad_opacity_regularizer_np}
-                )
-                grad_opacities_np += grad_opacity_regularizer_np
-                total_loss_value += opacity_regularizer_loss
-
-                grad_opacity_regularizer_rms = rms_any(grad_opacity_regularizer_np)
-                grad_opacity_regularizer_max = max_point_norm(grad_opacity_regularizer_np)
-
-                grad_opacity_total_rms = rms_any(grad_opacities_np)
+                grad_opacity_total_norm = gradient_l2_norm(grad_opacities_np)
                 grad_opacity_total_max = max_point_norm(grad_opacities_np)
 
-                current_positions_shape = tuple(positions.shape)
-                if grad_position_np.shape != current_positions_shape:
-                    raise RuntimeError(
-                        f"Gradient shape mismatch for position: expected {current_positions_shape}, "
-                        f"got {grad_position_np.shape}"
-                    )
+                grad_position_renderer_norm, grad_position_renderer_max = position_gradient_norm_stats_or_zero(
+                    photo_gradients)
 
-                # --------------------------------------------------------------
-                # 7. Optimizer step
-                # --------------------------------------------------------------
+                grad_position_surface_regularizer_norm, grad_position_surface_regularizer_max = position_gradient_norm_stats_or_zero(
+                    surface_regularizer_gradients
+                )
+                grad_position_total_norm = gradient_l2_norm(grad_position_np)
+                grad_position_total_max = max_point_norm(grad_position_np)
+
+                if grad_position_np.shape != tuple(positions.shape):
+                    raise RuntimeError(
+                        f"Gradient shape mismatch for position: expected {tuple(positions.shape)}, got {grad_position_np.shape}")
+
+                clone_signal_per_camera_np = photo_gradient_surfel_stats.get("clone_signal_per_camera", None)
+                clone_signal_record_count_per_camera_np = photo_gradient_surfel_stats.get(
+                    "clone_signal_record_count_per_camera",
+                    None,
+                )
+                update_densification_statistics(
+                    iteration=global_iteration,
+                    densification_interval=densification_cycle_interval,
+                    densification_cycle_start_iteration=densification_cycle_start_iteration,
+                    densification_stats_skip_iterations=densification_stats_skip_iterations,
+                    densify_position_grad_accum_np=densify_position_grad_accum_np,
+                    densify_position_grad_denom_np=densify_position_grad_denom_np,
+                    densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                    rotations=rotations,
+                    albedos=albedos,
+                    trainable_surfel_mask=trainable_surfel_mask,
+                    densify_bsdf_floor=densify_bsdf_floor,
+                    densify_bsdf_gamma=densify_bsdf_gamma,
+                    densify_position_grad_per_camera_np=clone_signal_per_camera_np,
+                    densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
+                )
+
                 optimizer.zero_grad(set_to_none=True)
 
                 zero_frozen_surfel_gradients_np(
-                    trainable_surfel_mask,
-                    grad_position_np,
-                    grad_tangent_u_np,
-                    grad_tangent_v_np,
-                    grad_scales_np,
-                    grad_albedos_np,
-                    grad_opacities_np,
-                    grad_betas_np,
+                    trainable_surfel_mask, grad_position_np, grad_rotation_np,
+                    grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np,
                 )
 
                 assign_numpy_gradients_to_tensors(
-                    device,
-                    positions,
-                    tangent_u,
-                    tangent_v,
-                    scales,
-                    albedos,
-                    opacities,
-                    betas,
-                    grad_position_np,
-                    grad_tangent_u_np,
-                    grad_tangent_v_np,
-                    grad_scales_np,
-                    grad_albedos_np,
-                    grad_opacities_np,
-                    grad_betas_np,
+                    device, positions, rotation_delta, scales, albedos, opacities, betas,
+                    grad_position_np, grad_rotation_np, grad_scales_np,
+                    grad_albedos_np, grad_opacities_np, grad_betas_np,
                 )
 
+                active_learning_rates = update_optimizer_learning_rates(
+                    optimizer,
+                    learning_rate_schedules,
+                    global_iteration,
+                )
                 optimizer.step()
-
-                if iteration % reset_opacity_interval == 0:
-                    with torch.no_grad():
-                        opacities[:] = 0.1
-                    print(f"[Iter {iteration:04d}] Resetting all opacities to 0.1")
-
-                # --------------------------------------------------------------
-                # 8. Reparameterization, sync, BVH
-                # --------------------------------------------------------------
-                verify_parameters_inplane(
-                    positions, tangent_u, tangent_v, scales, albedos, opacities, betas,
+                apply_local_rotation_update_to_quaternions_inplace(
+                    rotations,
+                    rotation_delta,
                     trainable_surfel_mask=trainable_surfel_mask,
-
                 )
 
-                apply_point_parameters(
-                    renderer,
-                    positions,
-                    tangent_u,
-                    tangent_v,
-                    scales,
-                    albedos,
-                    opacities,
-                    betas,
-                    powers
+                scheduled_opacity_reset = (
+                        reset_opacity_interval > 0
+                        and global_iteration % reset_opacity_interval == 0
+                )
+                manual_opacity_reset = bool(config.reset_opacity_iterations)
+                did_reset_opacity = scheduled_opacity_reset or manual_opacity_reset
+
+                if did_reset_opacity:
+                    with torch.no_grad():
+                        opacities[trainable_surfel_mask] = float(reset_opacity_value)
+
+                    print(f"[Iter {global_iteration:04d}] Resetting all opacities to {reset_opacity_value}")
+                    config.reset_opacity_iterations = False
+
+                densification_is_due = (
+                        densification_interval > 0
+                        and next_densification_iteration is not None
+                        and global_iteration >= next_densification_iteration
                 )
 
-                if iteration % rebuild_bvh_interval == 0:
+                verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                                          trainable_surfel_mask=trainable_surfel_mask)
+                apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
+
+                if global_iteration % rebuild_bvh_interval == 0:
                     rebuild_bvh(renderer)
-                # --------------------------------------------------------------
-                # 9. Densification + pruning
-                # --------------------------------------------------------------
-                densification_result: Optional[Dict[str, np.ndarray]] = None
-                indices_to_remove_list: List[int] = []
 
-                scale_prune_indices = np.zeros((0,), dtype=np.int64)
-                opacity_prune_indices = np.zeros((0,), dtype=np.int64)
+                densification_result = None
+                scale_prune_indices = []
+                opacity_prune_indices = []
+                indices_to_remove_list = []
+                inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
+                prune_scale_area_points = 0
+                prune_inactive_gradient_points = 0
 
-                if iteration >= burnin_iterations and iteration % prune_interval == 0:
-                    # ----------------------------------------------------------
-                    # Prune geometrically degenerate surfels.
-                    #
-                    # A surfel is degenerate if either:
-                    #   scale_u <= 1e-5
-                    #   scale_v <= 1e-5
-                    #
-                    # trainable_surfel_mask protects emissive/light surfels.
-                    # ----------------------------------------------------------
-                    scale_prune_indices = compute_prune_indices_by_degenerate_scale(
-                        scales,
-                        min_scale=1.0e-6,
-                        trainable_mask=trainable_surfel_mask,
-                        min_points_to_keep=1,
+                if not did_reset_opacity:
+                    if densification_is_due:
+                        densification_result = maybe_make_densification_result(
+                            iteration=global_iteration, config=config, positions=positions, rotations=rotations,
+                            scales=scales, albedos=albedos, opacities=opacities,
+                            betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
+                            densify_position_grad_accum_np=densify_position_grad_accum_np,
+                            densify_position_grad_denom_np=densify_position_grad_denom_np,
+                            densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                            densify_after=densify_after,
+                            densification_interval=densification_interval, densification_verbose=densification_verbose,
+                            densification_grad_quantile=densification_grad_quantile,
+                            densification_grad_abs_min=active_densification_grad_abs_min,
+                            force_densification=True,
+                        )
+
+                    scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
+                        iteration=global_iteration, config=config, scales=scales, opacities=opacities,
+                        trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
+                        prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
+                        opacity_prune_threshold=opacity_prune_threshold, max_prune_fraction=max_prune_fraction,
                     )
 
-                    if scale_prune_indices.size > 0:
-                        indices_to_remove_list.extend(int(i) for i in scale_prune_indices)
+                    if (
+                            camera_cycle_complete
+                            and global_iteration >= prune_after
+                            and inactive_gradient_prune_cycles > 0
+                    ):
+                        trainable_surfel_mask_np = (
+                            trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
+                        active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
+                        inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
+                        # A surfel with any position-gradient record in this
+                        # complete camera cycle is no longer considered inactive.
+                        inactive_gradient_cycle_count_np[active_this_cycle_np] = 0
+                        # Count consecutive complete cycles with no position-gradient
+                        # record. Saturate at the threshold; larger values are irrelevant.
+                        inactive_gradient_cycle_count_np[inactive_this_cycle_np] = np.minimum(
+                            inactive_gradient_cycle_count_np[inactive_this_cycle_np] + 1,
+                            inactive_gradient_prune_cycles, )
+                        inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
+                                inactive_gradient_cycle_count_np >= inactive_gradient_prune_cycles)).astype(
+                            np.int64)
 
-                    # ----------------------------------------------------------
-                    # Prune low-opacity surfels.
-                    # ----------------------------------------------------------
-                    # opacity_prune_indices = compute_prune_indices_by_opacity(
-                    #    opacities,
-                    #    min_opacity=opacity_prune_threshold,
-                    #    use_quantile=False,
-                    #    max_fraction_to_prune=max_prune_fraction,
-                    # )
-
-                    if opacity_prune_indices.size > 0:
-                        indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
+                        if inactive_camera_cycle_indices.size > 0:
+                            indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
+                else:
+                    print(f"[Iter {global_iteration:04d}] Skipping densification/pruning due to opacity reset")
 
                 if indices_to_remove_list or densification_result is not None:
+                    old_params_for_optimizer = make_named_parameter_dict(positions, rotation_delta, scales, albedos,
+                                                                         opacities, betas, powers, )
+                    old_optimizer_for_migration = optimizer
+                    old_point_count_for_migration = int(positions.shape[0])
+                    keep_mask_np = np.ones(old_point_count_for_migration, dtype=bool)
+
+                    if densification_result is not None:
+                        protected_src = np.asarray(
+                            densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
+                            dtype=np.int64).reshape(-1)
+                        if protected_src.size > 0 and indices_to_remove_list:
+                            protected_set = set(int(i) for i in protected_src)
+                            indices_to_remove_list = [int(i) for i in indices_to_remove_list if
+                                                      int(i) not in protected_set]
+
+                    if densification_result is not None:
+                        apply_densification_source_updates_inplace(densification_result, positions, rotations, scales,
+                                                                   albedos, opacities, betas, powers, )
+                        verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                                                  trainable_surfel_mask=trainable_surfel_mask, )
+                        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
+                                               powers, )
+
                     if indices_to_remove_list:
                         scale_prune_set = set(int(i) for i in scale_prune_indices)
                         opacity_prune_set = set(int(i) for i in opacity_prune_indices)
-
-                        scale_only_set = scale_prune_set - opacity_prune_set
-                        opacity_only_set = opacity_prune_set - scale_prune_set
                         overlap_set = scale_prune_set & opacity_prune_set
+                        indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
 
-                        indices_to_remove = np.unique(
-                            np.asarray(indices_to_remove_list, dtype=np.int64)
-                        )
+                        inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
+                        removed_index_set = set(int(index) for index in indices_to_remove)
+                        prune_scale_area_points = len(scale_prune_set & removed_index_set)
+                        prune_inactive_gradient_points = len(inactive_cycle_prune_set & removed_index_set)
+                        if config.densification_verbose:
+                            print(
+                                f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
+                                f"scale={len(scale_prune_set)}, "
+                                f"opacity={len(opacity_prune_set)}, "
+                                f"inactive_gradient={len(inactive_cycle_prune_set)} "
+                                f"(threshold={inactive_gradient_prune_cycles} cycles), "
+                                f"both_scale_opacity={len(overlap_set)}, "
+                                f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
+                                f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
+                            )
 
-                        print(
-                            f"[Iter {iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
-                            f"scale={len(scale_prune_set)}, "
-                            f"opacity={len(opacity_prune_set)}, "
-                            f"both={len(overlap_set)}, "
-                            f"scale_only={len(scale_only_set)}, "
-                            f"opacity_only={len(opacity_only_set)}"
-                        )
-
+                        keep_mask_np[indices_to_remove] = False
                         remove_points(renderer, indices_to_remove)
-                        rebuild_bvh(renderer)
+                        densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
+                        densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
+                        densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
+                        active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
+                        inactive_gradient_cycle_count_np = (inactive_gradient_cycle_count_np[keep_mask_np])
+                        densification_origin_np = densification_origin_np[keep_mask_np]
+                    source_index_for_new_np = None
 
-                    (
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        albedos,
-                        opacities,
-                        betas,
-                        powers
-                    ) = refetch_parameters_as_torch(renderer, device)
+                    if densification_result is not None:
+                        new_block = densification_result.get("new", None)
+                        if new_block is not None:
+                            n_new = int(new_block["position"].shape[0])
+                            add_new_points(renderer, densification_result)
 
-                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                            source_index_for_new_np = np.asarray(
+                                densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
+                                dtype=np.int64,
+                            ).reshape(-1)
 
-                    verify_parameters_inplane(
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        albedos,
-                        opacities,
-                        betas,
-                        trainable_surfel_mask=trainable_surfel_mask,
-                    )
+                            if source_index_for_new_np.shape[0] != n_new:
+                                source_index_for_new_np = None
 
-                    apply_point_parameters(
-                        renderer,
-                        positions,
-                        tangent_u,
-                        tangent_v,
-                        scales,
-                        albedos,
-                        opacities,
-                        betas,
-                        powers,
-                    )
+                            densify_position_grad_accum_np = np.concatenate(
+                                [densify_position_grad_accum_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
+                            densify_position_grad_denom_np = np.concatenate(
+                                [densify_position_grad_denom_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
+                            densify_position_grad_vector_accum_np = np.concatenate(
+                                [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)], axis=0)
+                            active_during_camera_cycle_np = np.concatenate(
+                                [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
+                            inactive_gradient_cycle_count_np = np.concatenate(
+                                [inactive_gradient_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0, )
+                            densification_origin_np = np.concatenate(
+                                [
+                                    densification_origin_np,
+                                    make_new_densification_origin_np(densification_result, n_new),
+                                ],
+                                axis=0,
+                            )
 
                     rebuild_bvh(renderer)
+                    positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
+                        renderer, device)
+                    rotation_delta = torch.nn.Parameter(
+                        torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
 
-                    optimizer = create_masked_optimizer(
-                        config,
+                    if densify_position_grad_accum_np.shape[0] != positions.shape[0]:
+                        raise RuntimeError(
+                            "Densification scalar accumulator length mismatch after topology change: "
+                            f"{densify_position_grad_accum_np.shape[0]} vs {positions.shape[0]}"
+                        )
+
+                    if densify_position_grad_vector_accum_np.shape[0] != positions.shape[0]:
+                        raise RuntimeError(
+                            "Densification vector accumulator length mismatch after topology change: "
+                            f"{densify_position_grad_vector_accum_np.shape[0]} vs {positions.shape[0]}"
+                        )
+
+                    if densification_origin_np.shape[0] != positions.shape[0]:
+                        raise RuntimeError(
+                            "Densification origin length mismatch after topology change: "
+                            f"{densification_origin_np.shape[0]} vs {positions.shape[0]}"
+                        )
+
+                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                    verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                                              trainable_surfel_mask=trainable_surfel_mask, )
+
+                    apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers, )
+                    rebuild_bvh(renderer)
+
+                    new_params_for_optimizer = make_named_parameter_dict(positions, rotation_delta, scales, albedos,
+                                                                         opacities, betas, powers, )
+                    optimizer = rebuild_optimizer_preserving_state(
+                        config=config, old_optimizer=old_optimizer_for_migration,
+                        old_params=old_params_for_optimizer, new_params=new_params_for_optimizer,
+                        keep_mask_np=keep_mask_np, source_index_for_new_np=source_index_for_new_np,
+                        copy_source_state_to_new=False,
+                    )
+
+                    active_learning_rates = update_optimizer_learning_rates(
+                        optimizer,
+                        learning_rate_schedules,
+                        global_iteration,
+                    )
+                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
+                    #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
+
+                if camera_cycle_complete:
+                    active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
+                    visited_training_camera_ids_this_cycle.clear()
+
+                if densification_is_due:
+                    densify_position_grad_accum_np[:] = 0.0
+                    densify_position_grad_denom_np[:] = 0.0
+                    densify_position_grad_vector_accum_np[:] = 0.0
+                    densification_cycle_start_iteration = global_iteration
+                    densification_cycle_interval = densification_interval
+                    densification_stats_skip_iterations = densification_stats_skip_for_interval(
+                        config=config,
+                        densification_interval=densification_cycle_interval,
+                    )
+                    next_densification_iteration = next_densification_iteration_after(
+                        current_iteration=global_iteration,
+                        densify_after=densify_after,
+                        densification_interval=densification_interval,
+                    )
+
+                save_interval = int(config.save_interval)
+                is_first_iteration = iteration == 1
+                should_save_iteration_outputs = (
+                        is_first_iteration
+                        or (
+                            save_interval > 0
+                            and (
+                                global_iteration % save_interval == 0
+                                or iteration == config.iterations
+                            )
+                        )
+                )
+
+                if should_save_iteration_outputs:
+                    if forward_out is None or config.one_camera_per_iteration or config.save_snapshot_grad:
+                        save_forward_out = renderer.render_forward()
+                    else:
+                        save_forward_out = forward_out
+
+                    snapshot_adjoint_images = adjoint_images
+                    if config.save_snapshot_grad:
+                        snapshot_adjoint_images = compute_snapshot_adjoint_images(
+                            renderer=renderer,
+                            forward_out=save_forward_out,
+                            target_images=target_images,
+                            camera_ids=training_camera_ids,
+                        )
+
+                    save_iteration_outputs(
+                        output_dir=config.output_dir,
+                        iteration=global_iteration,
+                        save_interval=config.save_interval,
+                        final_iteration=final_global_iteration,
+                        all_camera_ids=all_camera_ids,
+                        forward_out=save_forward_out,
+                        adjoint_images=snapshot_adjoint_images,
+                        renderer_settings=renderer_settings,
+                        save_rgb=config.save_snapshot_rgb,
+                        save_median_depth=config.save_snapshot_median_depth,
+                        save_depth_distortion=config.save_snapshot_depth_distortion,
+                        save_visible_normal=config.save_snapshot_visible_normal,
+                        save_normal_from_depth=config.save_snapshot_normal_from_depth,
+                        save_grad=config.save_snapshot_grad,
+                        force=is_first_iteration,
+                    )
+
+                iteration_point_cloud_path = None
+                should_extract_mesh_checkpoint = (
+                        mesh_extraction_interval > 0
+                        and global_iteration % mesh_extraction_interval == 0
+                )
+
+                if save_ply_files_interval > 0 and global_iteration % save_ply_files_interval == 0:
+                    iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                        config.output_dir,
+                        global_iteration,
                         positions,
-                        tangent_u,
-                        tangent_v,
+                        rotations,
                         scales,
                         albedos,
                         opacities,
@@ -1593,213 +1815,187 @@ def run_optimization(
                         powers,
                     )
 
-                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                if should_extract_mesh_checkpoint:
+                    if iteration_point_cloud_path is None:
+                        iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                            config.output_dir,
+                            global_iteration,
+                            positions,
+                            rotations,
+                            scales,
+                            albedos,
+                            opacities,
+                            betas,
+                            powers,
+                        )
 
-                    frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
-                    print(
-                        f"Frozen emissive surfels: {frozen_surfel_count} / "
-                        f"{int(trainable_surfel_mask.numel())}"
-                    )
-                # --------------------------------------------------------------
-                # 10. Snapshots
-                # --------------------------------------------------------------
-                if iteration % config.save_interval == 0 or iteration == config.iterations:
-                    for camera_name in all_camera_ids:
-                        camera_base_dir = config.output_dir / camera_name
-                        camera_render_dir = camera_base_dir / "render"
-                        camera_grad_dir = camera_base_dir / "grad"
-                        camera_depth_dir = camera_base_dir / "depth_distortion"
-                        camera_visible_normal_dir = camera_base_dir / "visible_normal"
-                        camera_depth_normal_dir = camera_base_dir / "normal_from_depth"
-                        camera_median_depth_dir = camera_base_dir / "median_depth"
-                        camera_render_dir.mkdir(parents=True, exist_ok=True)
-                        camera_grad_dir.mkdir(parents=True, exist_ok=True)
+                    extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
 
-                        image_numpy = get_forward_rgb(forward_out, camera_name)
-                        render_path = camera_render_dir / f"{iteration:04d}_render.png"
-                        save_render(render_path, image_numpy)
-
-                        if use_depth_distortion:
-                            camera_depth_dir.mkdir(parents=True, exist_ok=True)
-                            depth_distortion_numpy = get_forward_depth_distortion(forward_out, camera_name)
-                            depth_distortion_path = camera_depth_dir / f"{iteration:04d}_depth_distortion.png"
-                            save_depth_distortion_snapshot(
-                                depth_distortion_path,
-                                depth_distortion_numpy,
-                                quantile=0.99,
-                                save_npy=True,
-                            )
-
-                        if use_normal_consistency:
-                            camera_median_depth_dir.mkdir(parents=True, exist_ok=True)
-                            camera_visible_normal_dir.mkdir(parents=True, exist_ok=True)
-                            camera_depth_normal_dir.mkdir(parents=True, exist_ok=True)
-
-                            median_depth_numpy = get_forward_median_depth(forward_out, camera_name)
-                            visible_normal_numpy = get_forward_visible_normal(forward_out, camera_name)
-                            normal_from_depth_numpy = get_forward_normal_from_depth(forward_out, camera_name)
-
-                            save_median_depth_snapshot(
-                                camera_median_depth_dir / f"{iteration:04d}_median_depth.png",
-                                median_depth_numpy,
-                                quantile=0.99,
-                                save_npy=True,
-                            )
-
-                            save_normal_map_snapshot(
-                                camera_visible_normal_dir / f"{iteration:04d}_visible_normal.png",
-                                visible_normal_numpy,
-                                save_npy=True,
-                            )
-
-                            save_normal_map_snapshot(
-                                camera_depth_normal_dir / f"{iteration:04d}_normal_from_depth.png",
-                                normal_from_depth_numpy,
-                                save_npy=True,
-                            )
-                        adjoint_source_images = adjoint_images.get("adjoint_source")
-                        if adjoint_source_images is not None and camera_name in adjoint_source_images:
-                            grad_img_np = np.asarray(
-                                adjoint_source_images[camera_name],
-                                dtype=np.float32,
-                                order="C",
-                            )
-                            grad_img_np = np.nan_to_num(
-                                grad_img_np,
-                                nan=0.0,
-                                posinf=0.0,
-                                neginf=0.0,
-                            )
-
-                            grad_path = camera_grad_dir / f"{iteration:04d}_grad_099.png"
-                            save_gradient_sign_png_py(
-                                grad_path,
-                                grad_img_np,
-                                adjoint_spp=renderer_settings.adjoint_passes,
-                                abs_quantile=0.999,
-                                flip_y=False,
-                            )
-
-                # --------------------------------------------------------------
-                # 11. Metrics and logging
-                # --------------------------------------------------------------
                 num_points = positions.shape[0]
                 iteration_end = time.perf_counter()
                 iteration_time = iteration_end - iteration_start
                 total_time = iteration_end - total_start_time
-
-                current_params_np = {
-                    "position": positions.detach().cpu().numpy(),
-                    "tangent_u": tangent_u.detach().cpu().numpy(),
-                    "tangent_v": tangent_v.detach().cpu().numpy(),
-                    "scale": scales.detach().cpu().numpy(),
-                    "albedo": albedos.detach().cpu().numpy(),
-                    "opacity": opacities.detach().cpu().numpy(),
-                    "beta": betas.detach().cpu().numpy(),
-                    "power": powers.detach().cpu().numpy(),
-                }
-                parameter_mse = compute_parameter_mse(
-                    current_params_np,
-                    initial_params_reference,
+                densification_clone_points = (
+                    int(densification_result.get("clone_count", 0))
+                    if densification_result is not None
+                    else 0
                 )
+                densification_split_points = (
+                    int(densification_result.get("split_count", 0))
+                    if densification_result is not None
+                    else 0
+                )
+                densification_new_points = densification_clone_points + densification_split_points
+                densification_clone_points_total += densification_clone_points
+                densification_split_points_total += densification_split_points
+                (
+                    densification_clone_points_active,
+                    densification_split_points_active,
+                ) = active_densification_origin_counts(densification_origin_np)
 
                 csv_writer.writerow(
                     [
-                        iteration,
-                        "ALL_CAMERAS",
-                        total_rgb_loss_value,
-                        total_depth_distortion_loss_raw,
-                        total_depth_distortion_loss_weighted,
-                        total_normal_loss_raw,
-                        total_normal_loss_weighted,
-                        opacity_regularizer_loss,
-                        total_loss_value,
-                        parameter_mse,
+                        global_iteration,
+                        active_camera_name,
+                        len(active_training_camera_ids),
+                        averaged_loss_state["loss_metric_camera_count"],
+                        averaged_loss_state["loss_metric_expected_camera_count"],
+                        averaged_loss_state["loss_metric_is_complete"],
+                        averaged_loss_state["total_rgb_loss_value"],
+                        averaged_loss_state["total_depth_distortion_loss_raw"],
+                        averaged_loss_state["total_depth_distortion_loss_weighted"],
+                        averaged_loss_state["total_normal_loss_raw"],
+                        averaged_loss_state["total_normal_loss_weighted"],
+                        averaged_loss_state["total_opacity_prior_loss_raw"],
+                        averaged_loss_state["total_opacity_prior_loss_weighted"],
+                        averaged_loss_state["total_intra_slab_depth_loss_raw"],
+                        averaged_loss_state["total_intra_slab_depth_loss_weighted"],
+                        averaged_loss_state["total_curvature_scale_loss_raw"],
+                        averaged_loss_state["total_curvature_scale_loss_weighted"],
+                        averaged_loss_state["total_loss_value"],
                         num_points,
+                        densification_new_points,
+                        densification_clone_points,
+                        densification_split_points,
+                        densification_clone_points_total,
+                        densification_split_points_total,
+                        densification_clone_points_active,
+                        densification_split_points_active,
+                        prune_scale_area_points,
+                        prune_inactive_gradient_points,
                         iteration_time,
                         total_time,
-                        grad_opacity_total_rms,
+                        grad_position_renderer_norm,
+                        grad_position_renderer_max,
+                        grad_position_surface_regularizer_norm,
+                        grad_position_surface_regularizer_max,
+                        grad_position_total_norm,
+                        grad_position_total_max,
+                        grad_opacity_total_norm,
                         grad_opacity_total_max,
-                        grad_opacity_regularizer_rms,
-                        grad_opacity_regularizer_max,
                     ]
                 )
+
                 csv_file.flush()
 
-                if iteration % config.log_interval == 0 or iteration == 1:
+                log_interval = int(config.log_interval)
+                if iteration == 1 or (log_interval > 0 and iteration % log_interval == 0):
+                    logged_iteration_count = iteration - last_log_iteration
+                    log_elapsed_time = iteration_end - last_log_time
+                    iteration_rate = float(logged_iteration_count) / max(log_elapsed_time, 1.0e-12)
+                    last_log_iteration = iteration
+                    last_log_time = iteration_end
+
                     grad_pos_rms = rms_point(grad_position_np)
-                    grad_tanu_rms = rms_point(grad_tangent_u_np)
-                    grad_tanv_rms = rms_point(grad_tangent_v_np)
+                    grad_rotation_rms = rms_point(grad_rotation_np)
                     grad_scale_rms = rms_point(grad_scales_np)
                     grad_albedo_rms = rms_point(grad_albedos_np)
                     grad_opacity_rms = rms_point(grad_opacities_np)
                     grad_beta_rms = rms_point(grad_betas_np)
 
                     grad_pos_max = max_point_norm(grad_position_np)
-                    grad_tanu_max = max_point_norm(grad_tangent_u_np)
-                    grad_tanv_max = max_point_norm(grad_tangent_v_np)
+                    grad_rotation_max = max_point_norm(grad_rotation_np)
                     grad_scale_max = max_point_norm(grad_scales_np)
                     grad_albedo_max = max_point_norm(grad_albedos_np)
                     grad_opacity_max = max_point_norm(grad_opacities_np)
                     grad_beta_max = max_point_norm(grad_betas_np)
-
-                    print(
-                        f"[Iter {iteration:04d}/{config.iterations}] "
-                        f"RGB={total_rgb_loss_value:.3e}, "
-                        f"DdistRaw={total_depth_distortion_loss_raw:.3e}, "
-                        f"DdistW={total_depth_distortion_loss_weighted:.3e}, "
-                        f"NconsRaw={total_normal_loss_raw:.3e}, "
-                        f"NconsW={total_normal_loss_weighted:.3e}, "
-                        f"OpacityReg={opacity_regularizer_loss:.3e}, "
-                        f"Total={total_loss_value:.3e}, "
-                        f"t={iteration_time:.3f} s, "
-                        f"pos_rms={grad_pos_rms:.2e}, "
-                        f"tu_rms={grad_tanu_rms:.2e}, "
-                        f"tv_rms={grad_tanv_rms:.2e}, "
-                        f"su,sv_rms={grad_scale_rms:.2e}, "
-                        f"rho_rms={grad_albedo_rms:.2e}, "
-                        f"eta_rms={grad_opacity_rms:.2e}, "
-                        f"beta_rms={grad_beta_rms:.2e}, "
-                        f"pos_max={grad_pos_max:.2e}, "
-                        f"tu_max={grad_tanu_max:.2e}, "
-                        f"tv_max={grad_tanv_max:.2e}, "
-                        f"su,sv_max={grad_scale_max:.2e}, "
-                        f"rho_max={grad_albedo_max:.2e}, "
-                        f"eta_max={grad_opacity_max:.2e}, "
-                        f"beta_max={grad_beta_max:.2e}, "
-                        f"pts={num_points}, "
-                        f"t_total={total_time:.1f} s, "
-                        f"it/s={1.0 / iteration_time:.2f}"
+                    lr_position = active_learning_rates.get("position", float(config.learning_rate_position))
+                    photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
+                    surface_regularizer_gradient_stats = (
+                        gradient_stats_from_dict(surface_regularizer_gradients)
+                        if surface_regularizer_gradients
+                        else {}
                     )
 
-                    print(format_gradient_stats("photo_grads", photo_gradient_stats))
-
-                    if distortion_gradients:
-                        print(format_gradient_stats("dist_grads ", distortion_gradient_stats))
-
-                    if normal_gradients:
-                        print(format_gradient_stats("norm_grads ", normal_gradient_stats))
-
-                    if use_depth_distortion and depth_distortion_maps_for_logging:
-                        print(
-                            summarize_depth_distortion_maps(
-                                depth_distortion_maps_for_logging,
-                                depth_distortion_grad_images,
-                            )
+                    exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
+                        config=config,
+                        positions=positions,
+                        trainable_surfel_mask=trainable_surfel_mask,
+                    )
+                    minimum_splittable_scale = minimum_splittable_scale_for_config(config)
+                    print(
+                        format_training_iteration_log(
+                            iteration=global_iteration,
+                            total_iterations=final_global_iteration,
+                            iteration_time=iteration_time,
+                            iteration_rate=iteration_rate,
+                            total_time=total_time,
+                            num_points=num_points,
+                            loss_state=averaged_loss_state,
+                            lr_position=lr_position,
+                            active_densification_interval=densification_interval,
+                            active_prune_interval=prune_interval,
+                            active_densification_grad_abs_min=active_densification_grad_abs_min,
+                            active_depth_distortion_weight=active_depth_distortion_weight,
+                            active_normal_consistency_weight=normal_consistency_weight,
+                            active_opacity_prior_weight=active_opacity_prior_weight,
+                            exact_clone_scale_threshold=exact_clone_scale_threshold,
+                            minimum_splittable_scale=minimum_splittable_scale,
+                            grad_pos_rms=grad_pos_rms,
+                            grad_rotation_rms=grad_rotation_rms,
+                            grad_scale_rms=grad_scale_rms,
+                            grad_albedo_rms=grad_albedo_rms,
+                            grad_opacity_rms=grad_opacity_rms,
+                            grad_beta_rms=grad_beta_rms,
+                            grad_pos_max=grad_pos_max,
+                            grad_rotation_max=grad_rotation_max,
+                            grad_scale_max=grad_scale_max,
+                            grad_albedo_max=grad_albedo_max,
+                            grad_opacity_max=grad_opacity_max,
+                            grad_beta_max=grad_beta_max,
                         )
+                    )
 
-                    if use_opacity_loss:
-                        print(format_gradient_stats("opacity_reg", opacity_regularizer_gradient_stats))
+                    print(format_loss_breakdown(averaged_loss_state))
+
+                    print(
+                        format_gradient_source_balance(
+                            loss_gradients=photo_gradients,
+                            depth_regularizer_gradients=depth_regularizer_gradients,
+                            normal_regularizer_gradients=normal_regularizer_gradients,
+                            opacity_prior_gradients=opacity_prior_gradients,
+                            intra_slab_depth_gradients=intra_slab_depth_gradients,
+                            curvature_scale_gradients=curvature_scale_gradients,
+                            surface_regularizer_gradients=surface_regularizer_gradients,
+                            total_gradients=total_gradients,
+                        )
+                    )
+                    print(format_gradient_stats("render_grads", photo_gradient_stats))
+
+                    if surface_regularizer_gradients:
+                        print(format_gradient_stats("surface_regularizers", surface_regularizer_gradient_stats))
+                    if use_depth_distortion and loss_state["depth_distortion_maps_for_logging"]:
+                        print(summarize_depth_distortion_maps(loss_state["depth_distortion_maps_for_logging"],
+                                                              loss_state["depth_distortion_grad_images"]))
 
                     hotkey = poll_hotkey()
                     if hotkey == "s":
-                        save_manual_snapshot(
+                        manual_points_path = save_manual_snapshot(
                             renderer,
                             config.output_dir,
-                            iteration,
+                            global_iteration,
                             positions,
-                            tangent_u,
-                            tangent_v,
+                            rotations,
                             scales,
                             albedos,
                             opacities,
@@ -1807,42 +2003,28 @@ def run_optimization(
                             powers,
                             training_camera_ids,
                         )
+                        extract_mesh_checkpoint(config, global_iteration, manual_points_path)
                     elif hotkey == "g":
-                        save_gradients_snapshot(
-                            config.output_dir,
-                            iteration,
-                            grad_position_np,
-                            grad_tangent_u_np,
-                            grad_tangent_v_np,
-                            grad_scales_np,
-                            grad_albedos_np,
-                            grad_opacities_np,
-                            grad_betas_np,
-                        )
+                        save_gradients_snapshot(config.output_dir, global_iteration, grad_position_np, grad_rotation_np,
+                                                grad_scales_np, grad_albedos_np, grad_opacities_np,
+                                                grad_betas_np)
 
         except KeyboardInterrupt:
             elapsed = time.perf_counter() - total_start_time
+            stopped_global_iteration = resume_iteration_offset + int(iteration)
             print(
-                f"\nCtrl+C detected at iteration {iteration:04d}. "
+                f"\nCtrl+C detected at iteration {stopped_global_iteration:04d}. "
                 f"Total elapsed time: {elapsed:.1f} s. "
                 "Stopping optimization loop and saving current result..."
             )
 
-    # ------------------------------------------------------------------
-    # 12. Final render and export (multi-camera)
-    # ------------------------------------------------------------------
-    apply_point_parameters(
-        renderer,
-        positions,
-        tangent_u,
-        tangent_v,
-        scales,
-        albedos,
-        opacities,
-        betas,
-        powers
-    )
-
+    if use_device_training_step:
+        renderer.sync_point_parameters_from_gpu()
+        positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(renderer, device)
+        rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
+        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+    else:
+        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
     final_images = renderer.render_forward()
 
     final_rgb_loss = 0.0
@@ -1850,110 +2032,128 @@ def run_optimization(
     final_depth_distortion_loss_weighted = 0.0
     final_normal_loss_raw = 0.0
     final_normal_loss_weighted = 0.0
+    final_opacity_prior_loss_raw = 0.0
+    final_opacity_prior_loss_weighted = 0.0
+    final_intra_slab_depth_loss_raw = 0.0
+    final_intra_slab_depth_loss_weighted = 0.0
+    final_curvature_scale_loss_raw = 0.0
+    final_curvature_scale_loss_weighted = 0.0
     final_total_loss = 0.0
+
+    final_depth_distortion_weight = scheduled_regularizer_weight(
+        depth_distortion_base_weight,
+        iteration=resume_iteration_offset + int(iteration),
+        start_iteration=depth_distortion_start_iteration,
+    )
 
     for camera_name in training_camera_ids:
         img_np = get_forward_rgb(final_images, camera_name)
+        img_linear_np = get_forward_linear_rgb(final_images, camera_name)
         tgt_np = target_images[camera_name]
-
-        rgb_loss_cam = float(compute_l2_loss(img_np, tgt_np))
+        rgb_loss_cam = float(compute_l2_loss(img_linear_np, tgt_np))
         final_rgb_loss += rgb_loss_cam
         final_total_loss += rgb_loss_cam
-
-        save_render(Path(config.output_dir / f"render_final_{camera_name}.png"), img_np)
+        save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
 
         if use_depth_distortion:
             dist_np = get_forward_depth_distortion(final_images, camera_name)
             dist_loss_cam_raw = float(dist_np.mean())
-            dist_loss_cam_weighted = depth_distortion_weight * dist_loss_cam_raw
-
+            dist_loss_cam_weighted = final_depth_distortion_weight * dist_loss_cam_raw
             final_depth_distortion_loss_raw += dist_loss_cam_raw
             final_depth_distortion_loss_weighted += dist_loss_cam_weighted
             final_total_loss += dist_loss_cam_weighted
-
-            save_depth_distortion_snapshot(
-                Path(config.output_dir / f"depth_distortion_final_{camera_name}.png"),
-                dist_np,
-                quantile=0.99,
-                save_npy=True,
-            )
+            save_depth_distortion_snapshot(config.output_dir / f"depth_distortion_final_{camera_name}.png", dist_np,
+                                           quantile=0.99, save_npy=False)
 
         if use_normal_consistency:
             median_depth = get_forward_median_depth(final_images, camera_name)
             visible_normal = get_forward_visible_normal(final_images, camera_name)
             normal_from_depth = get_forward_normal_from_depth(final_images, camera_name)
-
-            normal_loss_cam_raw, _, _ = compute_normal_consistency_loss_and_adjoints(
-                visible_normal,
-                normal_from_depth,
-                1.0,
-            )
+            normal_loss_cam_raw, _, _ = compute_normal_consistency_loss_and_adjoints(visible_normal, normal_from_depth,
+                                                                                     1.0)
             normal_loss_cam_weighted = normal_consistency_weight * normal_loss_cam_raw
 
             final_normal_loss_raw += normal_loss_cam_raw
             final_normal_loss_weighted += normal_loss_cam_weighted
             final_total_loss += normal_loss_cam_weighted
 
-            save_median_depth_snapshot(
-                Path(config.output_dir / f"median_depth_final_{camera_name}.png"),
-                median_depth,
-                save_npy=True,
-            )
-            save_normal_map_snapshot(
-                Path(config.output_dir / f"visible_normal_final_{camera_name}.png"),
-                visible_normal,
-                save_npy=True,
-            )
-            save_normal_map_snapshot(
-                Path(config.output_dir / f"normal_from_depth_final_{camera_name}.png"),
-                normal_from_depth,
-                save_npy=True,
-            )
+            save_median_depth_snapshot(config.output_dir / f"median_depth_final_{camera_name}.png", median_depth,
+                                       save_npy=False)
+            save_normal_map_snapshot(config.output_dir / f"visible_normal_final_{camera_name}.png", visible_normal,
+                                     save_npy=False)
+            save_normal_map_snapshot(config.output_dir / f"normal_from_depth_final_{camera_name}.png",
+                                     normal_from_depth, save_npy=False)
 
-    final_opacity_regularizer_loss, _ = (
-        compute_opacity_target_regularizer_and_gradients(
-            opacities=opacities,
-            trainable_surfel_mask=trainable_surfel_mask,
-            opacity_target=opacity_target,
-            opacity_weight=opacity_loss_weight,
-            use_opacity_loss=use_opacity_loss,
-        )
+        if use_opacity_prior:
+            opacity_prior_cam_raw = float(get_forward_opacity_prior(final_images, camera_name).mean())
+            opacity_prior_cam_weighted = opacity_prior_weight * opacity_prior_cam_raw
+
+            final_opacity_prior_loss_raw += opacity_prior_cam_raw
+            final_opacity_prior_loss_weighted += opacity_prior_cam_weighted
+            final_total_loss += opacity_prior_cam_weighted
+
+        if use_intra_slab_depth:
+            intra_slab_depth_map = get_forward_intra_slab_depth(final_images, camera_name)
+            intra_slab_active_count = max(
+                1,
+                int(get_forward_intra_slab_depth_active_slab_count(
+                    final_images,
+                    camera_name,
+                ).sum(dtype=np.uint64)),
+            )
+            intra_slab_depth_cam_raw = float(
+                intra_slab_depth_map.sum() / intra_slab_active_count
+            )
+            intra_slab_depth_cam_weighted = (
+                intra_slab_depth_weight * intra_slab_depth_cam_raw
+            )
+            final_intra_slab_depth_loss_raw += intra_slab_depth_cam_raw
+            final_intra_slab_depth_loss_weighted += intra_slab_depth_cam_weighted
+            final_total_loss += intra_slab_depth_cam_weighted
+
+        if use_curvature_scale:
+            curvature_scale_map = get_forward_curvature_scale(final_images, camera_name)
+            curvature_scale_active_count = max(
+                1,
+                int(get_forward_curvature_scale_active_slab_count(
+                    final_images,
+                    camera_name,
+                ).sum(dtype=np.uint64)),
+            )
+            curvature_scale_cam_raw = float(
+                curvature_scale_map.sum() / curvature_scale_active_count
+            )
+            curvature_scale_cam_weighted = (
+                curvature_scale_weight * curvature_scale_cam_raw
+            )
+            final_curvature_scale_loss_raw += curvature_scale_cam_raw
+            final_curvature_scale_loss_weighted += curvature_scale_cam_weighted
+            final_total_loss += curvature_scale_cam_weighted
+
+    print_loss_summary("Initial", *initial_loss_tuple)
+    print_loss_summary(
+        "Final",
+        final_rgb_loss,
+        final_depth_distortion_loss_raw,
+        final_depth_distortion_loss_weighted,
+        final_normal_loss_raw,
+        final_normal_loss_weighted,
+        final_opacity_prior_loss_raw,
+        final_opacity_prior_loss_weighted,
+        final_intra_slab_depth_loss_raw,
+        final_intra_slab_depth_loss_weighted,
+        final_curvature_scale_loss_raw,
+        final_curvature_scale_loss_weighted,
+        final_total_loss,
     )
-
-    final_total_loss += final_opacity_regularizer_loss
-
-    print(f"Initial RGB loss                        : {initial_rgb_loss:.6e}")
-    print(f"Initial depth distortion loss (raw)     : {initial_depth_distortion_loss_raw:.6e}")
-    print(f"Initial depth distortion loss (weighted): {initial_depth_distortion_loss_weighted:.6e}")
-    print(f"Initial normal consistency loss (raw)   : {initial_normal_loss_raw:.6e}")
-    print(f"Initial normal consistency loss (weighted): {initial_normal_loss_weighted:.6e}")
-    print(f"Initial opacity regularizer loss         : {initial_opacity_regularizer_loss:.6e}")
-    print(f"Initial total loss                      : {initial_total_loss:.6e}")
-
-    print(f"Final RGB loss                          : {final_rgb_loss:.6e}")
-    print(f"Final depth distortion loss (raw)       : {final_depth_distortion_loss_raw:.6e}")
-    print(f"Final depth distortion loss (weighted)  : {final_depth_distortion_loss_weighted:.6e}")
-    print(f"Final normal consistency loss (raw)     : {final_normal_loss_raw:.6e}")
-    print(f"Final normal consistency loss (weighted): {final_normal_loss_weighted:.6e}")
-    print(f"Final opacity regularizer loss           : {final_opacity_regularizer_loss:.6e}")
-    print(f"Final total loss                        : {final_total_loss:.6e}")
-
     ply_path = config.output_dir / "points_final.ply"
-    save_gaussians_to_ply(
-        ply_path,
-        positions,
-        tangent_u,
-        tangent_v,
-        scales,
-        albedos,
-        opacities,
-        betas,
-        powers,
-        shape_default=0.0,
-    )
+    save_gaussians_to_ply(ply_path, positions, rotations, scales, albedos, opacities, betas, powers,
+                          shape_default=0.0)
+
     print(f"Final parameters written to PLY: {ply_path}")
+    if bool(getattr(config, "save_final_mesh", True)):
+        extract_final_mesh(config, ply_path)
 
     print("\nOptimization completed.")
     print(f"Outputs saved in: {config.output_dir.resolve()}")
-    total_elapsed = time.perf_counter() - total_start_time
-    print(f"Total optimization wall time: {total_elapsed:.1f} s")
+    print(f"Total optimization wall time: {time.perf_counter() - total_start_time:.1f} s")

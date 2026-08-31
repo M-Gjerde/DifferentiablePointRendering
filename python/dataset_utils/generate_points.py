@@ -202,8 +202,8 @@ def generate_volume_ply(
     defaultOpacity = opacity
     defaultBeta = -0.0
     defaultShape = 0.0
-    defaultRGB = [0.7, 0.7, 0.7]
-    color_noise = 0.1
+    defaultRGB = [0.5, 0.5, 0.5]
+    color_noise = 0.05
 
     lines: list[str] = []
     lines.extend(
@@ -267,7 +267,7 @@ def generate_volume_ply(
                 )
 
 
-    light_power = 50.0
+    light_1_power = 400.0
 
     light_nx = 0.0
     light_ny = 0.0
@@ -277,7 +277,7 @@ def generate_volume_ply(
         compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
     )
 
-    light_x = 0.5
+    light_x = 3
     light_y = -0.8
     light_z = 2.2
     light_su = 0.001
@@ -286,7 +286,7 @@ def generate_volume_ply(
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = -100.0
+    light_beta = -1000.0
     light_shape = 0.0
 
     light_line = (
@@ -295,11 +295,11 @@ def generate_volume_ply(
         f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
         f"{light_su:.7f} {light_sv:.7f} "
         f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
-        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_1_power:.7f}"
     )
     lines.append(light_line)
 
-    light_x = -0.5
+    light_x = -3
     light_y = 0.8
     light_z = 2.2
     light_albedo_r = 1.0
@@ -308,6 +308,7 @@ def generate_volume_ply(
     light_opacity = 1.0
     light_beta = -100.0
     light_shape = 0.0
+    light_2_power = 300.0
 
     light_line = (
         f"{light_x:.7f} {light_y:.7f} {light_z:.7f} "
@@ -315,22 +316,19 @@ def generate_volume_ply(
         f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
         f"{light_su:.7f} {light_sv:.7f} "
         f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
-        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_2_power:.7f}"
     )
     lines.append(light_line)
     light_x = 0.0
     light_y = 0.0
-    light_z = -2.0
+    light_z = 3.0
     light_albedo_r = 1.0
     light_albedo_g = 1.0
     light_albedo_b = 1.0
     light_opacity = 1.0
-    light_beta = -100.0
+    light_beta = -1000.0
     light_shape = 0.0
-
-    light_nx = 0.0
-    light_ny = 0.0
-    light_nz = 1.0
+    light_3_power = 200
 
     light_tu_x, light_tu_y, light_tu_z, light_tv_x, light_tv_y, light_tv_z = (
         compute_tangent_basis_from_normal(light_nx, light_ny, light_nz)
@@ -342,7 +340,7 @@ def generate_volume_ply(
         f"{light_tv_x:.7f} {light_tv_y:.7f} {light_tv_z:.7f} "
         f"{light_su:.7f} {light_sv:.7f} "
         f"{light_albedo_r:.7f} {light_albedo_g:.7f} {light_albedo_b:.7f} "
-        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_power:.7f}"
+        f"{light_opacity:.7f} {light_beta:.7f} {light_shape:.7f} {light_3_power:.7f}"
     )
     lines.append(light_line)
 
@@ -406,15 +404,15 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "tangent_noise_std": 5.0,
     },
     "plane": {
-        "min_x": -0.5,
-        "max_x": 0.5,
-        "min_y": -0.5,
-        "max_y": 0.5,
+        "min_x": -0.1,
+        "max_x": 0.1,
+        "min_y": -0.1,
+        "max_y": 0.1,
         "min_z": -0.01,
         "max_z": 0.01,
         "scale": 0.05,
-        "position_noise_std": 0.02,
-        "tangent_noise_std": 5.0,
+        "position_noise_std": 0.01,
+        "tangent_noise_std": 00.0,
     },
 }
 
@@ -442,8 +440,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-z", type=float)
     parser.add_argument("--max-z", type=float)
 
-    parser.add_argument("--scale", type=float)
-    parser.add_argument("--opacity", type=float, default=0.1)
+    parser.add_argument("--scale", type=float, default=0.1)
+    parser.add_argument("--opacity", type=float, default=1.0)
     parser.add_argument("--position-noise-std", type=float)
     parser.add_argument("--tangent-noise-std", type=float)
     parser.add_argument("--seed", type=int, default=None)

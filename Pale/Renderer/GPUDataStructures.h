@@ -33,6 +33,7 @@ namespace Pale {
         QuadricPoint
     };
 
+    // GPU Struct
     struct alignas(16) Point {
         float3 position{0.0f};
         float3 tanU{0.0f};
@@ -55,6 +56,26 @@ namespace Pale {
 
     CHECK_16(Point);
 
+    struct alignas(16) SurfelTraversalData {
+        float3 position{0.0f};
+        uint32_t primitiveIndex{UINT32_MAX};
+
+        float3 normal{0.0f, 0.0f, 1.0f};
+        uint32_t flags{0u};
+
+        float3 invScaleTanU{0.0f};
+        float opacity{0.0f};
+
+        float3 invScaleTanV{0.0f};
+        float betaExponent{4.0f};
+
+        bool isEmissive() const {
+            return (flags & 1u) != 0u;
+        }
+    };
+
+    CHECK_16(SurfelTraversalData);
+
     struct alignas(16) BVHNode {
         float3 aabbMin; // 16
         float3 aabbMax; // 32
@@ -66,6 +87,38 @@ namespace Pale {
     };
 
     CHECK_16(BVHNode);
+
+    struct alignas(16) PackedPointBVHNode {
+        float3 leftAabbMin{0.0f};
+        uint32_t leftIndex{UINT32_MAX};
+
+        float3 leftAabbMax{0.0f};
+        uint32_t leftCount{0u};
+
+        float3 rightAabbMin{0.0f};
+        uint32_t rightIndex{UINT32_MAX};
+
+        float3 rightAabbMax{0.0f};
+        uint32_t rightCount{0u};
+    };
+
+    CHECK_16(PackedPointBVHNode);
+
+    struct alignas(16) PackedPointQBVHNode {
+        float minX[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float minY[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float minZ[4]{0.0f, 0.0f, 0.0f, 0.0f};
+
+        float maxX[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float maxY[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float maxZ[4]{0.0f, 0.0f, 0.0f, 0.0f};
+
+        uint32_t childIndex[4]{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+        uint32_t childCount[4]{0u, 0u, 0u, 0u};
+        uint32_t childSourceNodeIndex[4]{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    };
+
+    CHECK_16(PackedPointQBVHNode);
 
     struct alignas(16) BLASRange {
         uint32_t firstNode{};
@@ -108,8 +161,7 @@ namespace Pale {
     CHECK_16(Transform);
 
     /*************************  Scene graph **************************/
-    constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
-    static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
+
 
     enum class GeometryType : uint32_t { Mesh = 0, PointCloud = 1, InvalidType = UINT32_MAX };
 
@@ -175,6 +227,45 @@ namespace Pale {
         float cdf; // inclusive CDF in [0,1] within its light’s triangle range
     };
 
+    struct alignas(16) RenderProfilingCounters {
+        uint64_t sceneRayQueries = 0u;
+
+        uint64_t tlasNodeTests = 0u;
+        uint64_t tlasNodeHits = 0u;
+        uint64_t tlasLeafInstances = 0u;
+
+        uint64_t blasMeshNodeTests = 0u;
+        uint64_t blasMeshNodeHits = 0u;
+        uint64_t triangleTests = 0u;
+        uint64_t triangleHits = 0u;
+
+        uint64_t blasPointNodeTests = 0u;
+        uint64_t blasPointNodeHits = 0u;
+        uint64_t pointLeafPrimitiveTests = 0u;
+        uint64_t surfelPlaneTests = 0u;
+        uint64_t surfelProfileTests = 0u;
+        uint64_t surfelAcceptedHits = 0u;
+
+        uint64_t forwardGatherPixels = 0u;
+        uint64_t forwardGatherPointHitQueries = 0u;
+        uint64_t forwardGatherPointHitCandidates = 0u;
+        uint64_t forwardGatherLocalLayers = 0u;
+        uint64_t forwardGatherLocalLayerHits = 0u;
+        uint64_t forwardGatherObjectProfileHits = 0u;
+        uint64_t forwardGatherLowPassProfileHits = 0u;
+        uint64_t forwardGatherRegularizerHits = 0u;
+        uint64_t forwardGatherPhotonGatherCalls = 0u;
+        uint64_t forwardGatherDirectLightCalls = 0u;
+        uint64_t forwardGatherDirectLightLightVisits = 0u;
+        uint64_t forwardGatherDepthPairIterations = 0u;
+        uint64_t forwardGatherMeshHits = 0u;
+        uint64_t forwardGatherNoHitTerminations = 0u;
+        uint64_t forwardGatherOpacityTerminations = 0u;
+        uint64_t forwardGatherMaxSplatTerminations = 0u;
+    };
+
+    CHECK_16(RenderProfilingCounters);
+
     struct InstanceRecord {
         GeometryType geometryType{GeometryType::InvalidType};
         uint32_t geometryIndex{0}; // meshRanges index or pointRanges index
@@ -202,6 +293,11 @@ namespace Pale {
         Transform *transforms{nullptr};
         GPUMaterial *materials{nullptr};
         Point *points{nullptr};
+        SurfelTraversalData *pointTraversalData{nullptr};
+        PackedPointBVHNode *pointPackedBvhNodes{nullptr};
+        BLASRange *pointPackedBvhRanges{nullptr};
+        PackedPointQBVHNode *pointQbvhNodes{nullptr};
+        BLASRange *pointQbvhRanges{nullptr};
         InstanceRecord *instances{nullptr};
         uint32_t *pointPermutation{nullptr};
 
@@ -210,12 +306,20 @@ namespace Pale {
         uint32_t triangleCount{0};
         uint32_t vertexCount{0};
         uint32_t pointCount{0};
+        uint32_t pointTraversalDataCount{0};
+        uint32_t pointPackedBvhNodeCount{0};
+        uint32_t pointPackedBvhRangeCount{0};
+        uint32_t pointQbvhNodeCount{0};
+        uint32_t pointQbvhRangeCount{0};
         uint32_t pointPermutationCount{0};
 
         GPULightRecord *lights{nullptr};
         GPUEmissiveTriangle *emissiveTriangles{nullptr};
         uint32_t lightCount{0};
         uint32_t emissiveTriangleCount{0};
+
+        // Optional device-owned profiling counters. Null means no instrumentation.
+        RenderProfilingCounters *profileCounters{nullptr};
     };
 
     static_assert(std::is_trivially_copyable_v<GPUSceneBuffers>);
@@ -229,6 +333,23 @@ namespace Pale {
     enum class SurfelIntersectMode : uint32_t { Bernoulli = 0, Transmit = 1, FirstHit = 2, Uniform = 3 };
 
     enum class EventType : uint32_t { Null = 0, Reflect = 1, Transmit = 2, Absorb = 3, TransmittanceGradient = 4 };
+
+    // Maximum expected per-ray surfel intersections.
+    // Must be compile-time constant for stack arrays in SYCL device code.
+    constexpr uint32_t kMaxSplatEventsPerRay = 8;
+    constexpr uint32_t kMaxLocalSurfelHits = 8;
+    constexpr uint32_t kMaxPointHitBatch = 8;
+    constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;
+
+    constexpr float RayEpsilon = 1e-6f;
+    constexpr float RayEpsilon2 = 1e-6f;
+    constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
+    static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
+    constexpr float LocalLayerDepthEpsilon = 5.00e-3f;
+    constexpr float LocalLayerNormalCosineThreshold = -1.0f; // 45 degrees mismatch to stop blending slabs
+    constexpr float IntraSlabConsensusDenominatorEpsilon = 1.0e-6f;
+    constexpr float CurvatureScaleRegularizerGamma = 0.5f;
+    constexpr float CurvatureRegularizerDistanceEpsilon = 1.0e-6f;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -247,6 +368,7 @@ namespace Pale {
         uint32_t traversalIndex{0};
         float openSegmentProposalInverse = 1.0f;
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
+        float2 cameraSamplePixel{FLT_MAX, FLT_MAX};
         uint32_t lightIndex = UINT32_MAX;
         uint32_t hasTrackedParameter = UINT32_MAX;
         uint32_t pathId;
@@ -254,11 +376,22 @@ namespace Pale {
 
     static_assert(std::is_trivially_copyable_v<RayState>);
 
+    constexpr uint32_t kSurfelAlphaProfileObject = 0u;
+    constexpr uint32_t kSurfelAlphaProfileLowPass = 1u;
 
-    // Maximum expected per-ray surfel intersections.
-    // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr int kMaxSplatEventsPerRay = 5;
-
+    struct LocalSurfelLayerHit {
+        float tWorld;
+        uint32_t primitiveIndex;
+        float alphaGeom;
+        float3 hitPositionW;
+        float2 uv{0.0f, 0.0f};
+        float objectAlphaGeom = 0.0f;
+        float lowPassAlphaGeom = 0.0f;
+        float2 lowPassDeltaPixels{0.0f, 0.0f};
+        float lowPassSigmaPixels = 0.0f;
+        uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
+        uint32_t usesSurfelCenterHitPosition = 0u;
+    };
 
     struct SurfelEvent {
         float t = FLT_MAX; // local space t
@@ -326,9 +459,6 @@ namespace Pale {
         Transmit = 3u
     };
 
-    static constexpr uint32_t kMaxSegmentOccluders = 5;
-
-
     struct PendingCameraSegment {
         bool valid = false;
         uint32_t pathId = 0u;
@@ -342,6 +472,13 @@ namespace Pale {
         uint32_t primitiveIndex = UINT32_MAX;
         float2 uv = float2{FLT_MAX, FLT_MAX};
         float alphaGeom = FLT_MAX;
+        float objectAlphaGeom = 0.0f;
+        float lowPassAlphaGeom = 0.0f;
+        float2 lowPassDeltaPixels{0.0f, 0.0f};
+        float lowPassSigmaPixels = 0.0f;
+        uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
+        uint32_t usesSurfelCenterHitPosition = 0u;
+        float3 hitPositionW{FLT_MAX, FLT_MAX, FLT_MAX};
         int32_t sideSign = 1;
         float3 incomingDirection = float3{FLT_MAX, FLT_MAX, FLT_MAX};
         uint32_t pathId = UINT32_MAX;
@@ -359,6 +496,20 @@ namespace Pale {
         float pdfLocalCoordsSample;
         float pdfArea; // 1 / (triangleCount * triArea)
         float totalAreaWorld;
+        bool valid;
+
+        PointCloudSurfaceRecord surface;
+        float lightJacobian;
+    };
+
+    struct PointLightSample {
+        float3 positionW;
+        float3 normalW; // unit
+        float3 direction;
+        float3 flux;
+        uint32_t lightIndex;
+        float pdfSelectLight; // 1 / lightCount
+        float pdfDir;
         bool valid;
 
         PointCloudSurfaceRecord surface;
@@ -425,12 +576,13 @@ namespace Pale {
         float3 pathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
 
         // Segment metadata for the segment arriving at this vertex from the previous one.
-        float transmissionFromPrevious = FLT_MAX;
+        float transmission = FLT_MAX;
         float geometryFromPrevious = FLT_MAX;
         float areaPdfFromPrevious = FLT_MAX;
 
         // Local scattering factor stored at this vertex.
-        float3 bsdfAlpha = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 bsdf = float3{FLT_MAX, FLT_MAX, FLT_MAX};
+        float alpha = FLT_MAX;
 
         // Only used for the camera-attached path case.
         float cosineFromPrevious = FLT_MAX;
@@ -453,23 +605,45 @@ namespace Pale {
     };
 
     struct MeasurementGradientEvent {
-        PointCloudSurfaceRecord xSurface;
+        PointCloudSurfaceRecord xSurface[kMaxLocalSurfelHits];
+        float layerWeights[kMaxLocalSurfelHits];
+        float directLightEps[kMaxLocalSurfelHits];
+        uint32_t surfelSlabCount = 0;
         float transmission{};
         float3 xPathThroughput;
         bool useImplicitRayHitJacobian = false;
     };
 
+    struct OccluderDerivative {
+        float3 gradPosition{0.0f, 0.0f, 0.0f};
+        float gradScaleU = 0.0f;
+        float gradScaleV = 0.0f;
+        float gradEta = 0.0f;
+        float gradBeta = 0.0f;
+        float3 gradRotation{0.0f, 0.0f, 0.0f};
+
+        float3 gradAlphaWrtSegmentStart{0.0f, 0.0f, 0.0f};
+        float3 gradAlphaWrtStartPoint{0.0f, 0.0f, 0.0f};
+        float3 gradAlphaWrtEndPoint{0.0f, 0.0f, 0.0f};
+
+        float prefixTransmittance = 1.0f;
+        float oneMinusAlpha = 1.0f;
+        uint32_t primitiveIndex = kInvalidIndex;
+    };
+
     struct MeasurementGradientEventXY {
-        PointCloudSurfaceRecord xSurface;
-        PointCloudSurfaceRecord ySurface;
-        float3 xPathThroughput = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        float transmission = 1.0f;
-        float transmissionPreviousSegment = FLT_MAX;
-        float geometryPreviousSegment = FLT_MAX;
-        float cosinePreviousSegment = FLT_MAX;
-        bool useImplicitRayHitJacobian = false;
-        bool isDirectLightSample = false;
-        float3 directLightRadiance{FLT_MAX, FLT_MAX, FLT_MAX};
+        PointCloudSurfaceRecord xSurface[kMaxLocalSurfelHits];
+        float layerWeights[kMaxLocalSurfelHits];
+        float directLightEps[kMaxLocalSurfelHits];
+
+        uint32_t surfelSlabCount = 0u;
+
+        float3 xPathThroughput{0.0f};
+        float3 pointLightPositionW{0.0f};
+        float3 pointLightRadiantIntensity{0.0f};
+
+        uint32_t pointLightPrimitiveIndex = kInvalidIndex;
+        uint32_t surfaceLightGeometryMask = 0u;
     };
 
     struct MaterialVertexGradientEvent {
@@ -483,7 +657,11 @@ namespace Pale {
     struct MaterialEdgeGradientEvent {
         PointCloudSurfaceRecord startSurface{};
         PointCloudSurfaceRecord endSurface{};
-        float3 sampledEdgeThroughput{0.0f, 0.0f, 0.0f};
+        float3 sampledEdgeThroughput{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 betaIncrement{FLT_MAX, FLT_MAX, FLT_MAX};
+        float3 bsdf{FLT_MAX, FLT_MAX, FLT_MAX};
+        float alpha = FLT_MAX;
+        float invSamplePDF = FLT_MAX;
         float segmentTransmittance = 1.0f;
         float segmentGeometricTerm = 1.0f;
         float segmentAreaPdf = 1.0f;
@@ -503,17 +681,6 @@ namespace Pale {
         float areaWorld = FLT_MAX;
     };
 
-    struct SurfelGradientPayload {
-        float gradBeta = FLT_MAX;
-        float gradEta = FLT_MAX;
-        float3 gradRho = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        float3 gradPosition = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        float gradScaleU = FLT_MAX;
-        float gradScaleV = FLT_MAX;
-        float3 gradTangentU = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-        float3 gradTangentV = float3{FLT_MAX, FLT_MAX, FLT_MAX};
-    };
-
     struct SurfelGradientRecord {
         uint32_t primitiveIndex = UINT32_MAX;
 
@@ -527,15 +694,17 @@ namespace Pale {
         float gradPositionX = FLT_MAX;
         float gradPositionY = FLT_MAX;
         float gradPositionZ = FLT_MAX;
+        float cloneSignalX = 0.0f;
+        float cloneSignalY = 0.0f;
+        float cloneSignalZ = 0.0f;
+        uint32_t hasCloneSignal = 0u;
 
         float gradScaleU = FLT_MAX;
         float gradScaleV = FLT_MAX;
-        float gradTangentUX = FLT_MAX;
-        float gradTangentUY = FLT_MAX;
-        float gradTangentUZ = FLT_MAX;
-        float gradTangentVX = FLT_MAX;
-        float gradTangentVY = FLT_MAX;
-        float gradTangentVZ = FLT_MAX;
+
+        float gradRotationX = FLT_MAX;
+        float gradRotationY = FLT_MAX;
+        float gradRotationZ = FLT_MAX;
     };
 
 
@@ -558,16 +727,6 @@ namespace Pale {
         uint32_t totalCount = 0u;
     };
 
-    struct OccluderDerivative {
-        float3 gradPosition{0.0f};
-        float gradScaleU = 0.0f;
-        float gradScaleV = 0.0f;
-        float gradEta = 0.0f;
-        float gradBeta = 0.0f;
-        float3 gradTangentU{0.0f};
-        float3 gradTangentV{0.0f};
-        uint32_t primitiveIndex = kInvalidIndex;
-    };
 
     struct CompletedGradientEvent {
         bool valid = false;
@@ -628,9 +787,14 @@ namespace Pale {
     static_assert(std::is_trivially_copyable_v<WorldHit>);
 
     enum class IntegratorKind : uint32_t {
-        lightTracing,
-        lightTracingCylinderRay,
-        photonMapping
+        lightTracing = 0x0001,
+        lightTracingCylinderRay = 0x0002,
+        photonMapping = 0x0004
+    };
+
+    enum class CameraGatherKernelKind : uint32_t {
+        CameraGatherKernel = 0u,
+        CameraGatherKernel2 = 1u,
     };
 
     struct Random {
@@ -639,8 +803,8 @@ namespace Pale {
     };
 
     struct AdjointSampleSettings {
-        float qNull = 0.4f;
-        float qReflect = 0.6f;
+        float qNull = 0.5f;
+        float qReflect = 0.5f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
@@ -654,20 +818,97 @@ namespace Pale {
         uint32_t numForwardPasses = 6;
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
-        uint32_t russianRouletteStart = 6; // Which bounce to start RR
+        uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
+        uint32_t numGatherPasses = 1;
+        CameraGatherKernelKind cameraGatherKernelKind = CameraGatherKernelKind::CameraGatherKernel2;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
         uint32_t surfelIndexForDebugImages = 1;
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
+        float visibilityWeightedOpacityRegularizerWeight = 0.0f;
+        float intraSlabDepthRegularizerWeight = 0.0f;
+        float curvatureScaleRegularizerWeight = 0.0f;
+        bool normalFromDepthUseMeanDepth = false;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
-        uint32_t numAdjointPathShadowRays = 4;
+        uint32_t numAdjointPathShadowRays = 1;
 
-        bool useDepthDistortion = false;
-        bool useNormalConsistency = false;
+        // Cylinder ray:
+        // EGWR 2000 point-sampled geometry debug renderer.
+        float pointGeometrySupportRadius = 0.002f;
+        float pointGeometryReconstructionLength = 0.04f;
+        float pointGeometryRayOffsetMultiplier = 2.0f;
+        float pointGeometryCoverageScale = 1.1f;
+        uint32_t pointGeometryMinimumContributors = 1u;
+        bool pointGeometryDebugShowAlbedo = false;
+
+        // Renderer debug controls. These clamp to the compile-time stack capacities above.
+        float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
+        float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
+        uint32_t rendererDebugMaxSplatEventsPerRay = 8;
+        uint32_t rendererDebugMaxLocalSurfelHits = 8;
+        uint32_t rendererDebugPointHitBatchSize = 6;
+        bool rendererDebugPointHitBatchLookahead = true;
+        bool rendererDebugShareLocalLayerDirectLighting = true;
+        bool rendererDebugMinimumProjectedFootprint = false;
+        float rendererDebugMinimumProjectedFootprintPixels = 0.707f;
     };
+
+    inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {
+        if (requested == 0u) {
+            return 1u;
+        }
+        return requested < hardMaximum ? requested : hardMaximum;
+    }
+
+    inline uint32_t rendererDebugMaxSplatEventsPerRay(const PathTracerSettings& settings) {
+        return clampRendererDebugLimit(settings.rendererDebugMaxSplatEventsPerRay, kMaxSplatEventsPerRay);
+    }
+
+    inline uint32_t rendererDebugMaxLocalSurfelHits(const PathTracerSettings& settings) {
+        return clampRendererDebugLimit(settings.rendererDebugMaxLocalSurfelHits, kMaxLocalSurfelHits);
+    }
+
+    inline uint32_t rendererDebugPointHitBatchSize(const PathTracerSettings& settings) {
+        return clampRendererDebugLimit(settings.rendererDebugPointHitBatchSize, kMaxPointHitBatch);
+    }
+
+    inline uint32_t rendererDebugPointHitBatchLookaheadCapacity(const PathTracerSettings& settings) {
+        const uint32_t coreBatchSize = rendererDebugPointHitBatchSize(settings);
+        if (!settings.rendererDebugPointHitBatchLookahead) {
+            return coreBatchSize;
+        }
+
+        const uint32_t localCandidateCount = rendererDebugMaxLocalSurfelHits(settings);
+        const uint32_t requestedCapacity = coreBatchSize + localCandidateCount - 1u;
+        return requestedCapacity < kMaxPointHitBatchWithLookahead
+                   ? requestedCapacity
+                   : kMaxPointHitBatchWithLookahead;
+    }
+
+    inline uint32_t rendererDebugPointLayerCandidateCapacity(const PathTracerSettings& settings) {
+        return settings.rendererDebugPointHitBatchLookahead
+                   ? rendererDebugMaxLocalSurfelHits(settings)
+                   : rendererDebugPointHitBatchSize(settings);
+    }
+
+    inline float rendererDebugLocalLayerDepthEpsilon(const PathTracerSettings& settings) {
+        return settings.rendererDebugLocalLayerDepthEpsilon > RayEpsilon
+                   ? settings.rendererDebugLocalLayerDepthEpsilon
+                   : RayEpsilon;
+    }
+
+    inline float rendererDebugLocalLayerNormalCosineThreshold(const PathTracerSettings& settings) {
+        if (settings.rendererDebugLocalLayerNormalCosineThreshold < -1.0f) {
+            return -1.0f;
+        }
+        if (settings.rendererDebugLocalLayerNormalCosineThreshold > 1.0f) {
+            return 1.0f;
+        }
+        return settings.rendererDebugLocalLayerNormalCosineThreshold;
+    }
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);
     static_assert(sycl::is_device_copyable<PathTracerSettings>::value);
@@ -755,6 +996,7 @@ namespace Pale {
         uint32_t *countMaterialVertexEvents = nullptr;
         uint32_t *countMaterialEndEdgeEvents = nullptr;
         uint32_t *countMaterialStartEdgeEvents = nullptr;
+        uint32_t *countGradientRecords = nullptr;
 
         // capacities
         uint32_t maxMeasurementEventCount = 0u;

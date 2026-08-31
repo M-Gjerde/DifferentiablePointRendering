@@ -402,20 +402,17 @@ namespace Pale {
     struct SmallStack {
         uint32_t data[MaxN];
         int sp = 0;
-
         bool push(uint32_t v) // returns false on overflow
         {
             if (sp >= MaxN) return false;
             data[sp++] = v;
             return true;
         }
-
         uint32_t pop() // safe pop – returns 0 on underflow
         {
             if (sp <= 0) return 0u;
             return data[--sp];
         }
-
         bool empty() const { return sp == 0; }
     };
 
