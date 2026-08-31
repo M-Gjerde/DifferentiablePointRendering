@@ -75,10 +75,10 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Position LR scheduling. The option names are kept for run-config compatibility.
     use_global_lr_schedule: bool = True
-    global_lr_scale_init: float = 20.0
+    global_lr_scale_init: float = 10.0
     global_lr_scale_final: float = 1.0
     global_lr_start_iteration: int = 0
-    global_lr_max_steps: int = int(10_000)
+    global_lr_max_steps: int = int(8_000)
 
     depth_distort_weight: float = 1
     depth_distort_start_iteration: int = 0
@@ -104,9 +104,9 @@ class OptimizationConfig:
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 2.0e-3
-    densification_grad_abs_min_final: float = 2.5e-4
+    densification_grad_abs_min_final: float = 7.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 3_000
+    densification_grad_abs_min_decay_end_iteration: int = 10_000
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
