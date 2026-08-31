@@ -76,9 +76,9 @@ class OptimizationConfig:
     # Position LR scheduling. The option names are kept for run-config compatibility.
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 20.0
-    global_lr_scale_final: float = 0.75
+    global_lr_scale_final: float = 1.0
     global_lr_start_iteration: int = 0
-    global_lr_max_steps: int = int(3_000)
+    global_lr_max_steps: int = int(10_000)
 
     depth_distort_weight: float = 1
     depth_distort_start_iteration: int = 0
@@ -103,8 +103,8 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-4
-    densification_grad_abs_min_final: float = 1.0e-4
+    densification_grad_abs_min: float = 2.0e-3
+    densification_grad_abs_min_final: float = 2.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 3_000
     densification_scale_min: float = 6.0e-3
@@ -138,7 +138,7 @@ class OptimizationConfig:
 
     # Logging
     log_interval: int = 5
-    save_interval: int = 10
+    save_interval: int = 25
     save_ply_files_interval: int = save_interval
 
     # Mesh Extraction
