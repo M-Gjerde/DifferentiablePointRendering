@@ -80,14 +80,14 @@ class OptimizationConfig:
     global_lr_start_iteration: int = 0
     global_lr_max_steps: int = int(8_000)
 
-    depth_distort_weight: float = 1
+    depth_distort_weight: float = 1.0
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.002
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
     intra_slab_depth_weight: float = 1.0e-4
-    curvature_scale_weight: float = 5.0e-6
+    curvature_scale_weight: float = 2.0e-6
     minimum_projected_footprint: bool = False
     minimum_projected_footprint_pixels: float = 0.707
 
@@ -104,9 +104,9 @@ class OptimizationConfig:
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 2.0e-3
-    densification_grad_abs_min_final: float = 7.0e-4
+    densification_grad_abs_min_final: float = 7.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 10_000
+    densification_grad_abs_min_decay_end_iteration: int = 8_000
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
