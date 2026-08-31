@@ -1600,6 +1600,69 @@ namespace Pale {
         float directLightEpsilon[kMaxLocalSurfelHits] = {RayEpsilon};
     };
 
+    struct PointCloudLocalLayerConsensus {
+        float3 pointW{0.0f};
+        float t = 0.0f;
+        float denominator = 0.0f;
+        uint32_t valid = 0u;
+    };
+
+    // Least-squares point on the ray shared by all planes in the slab:
+    //
+    //   A = sum_i (n_i.d)^2
+    //   B = sum_i (n_i.d) n_i.(p_i-o)
+    //   x_Q = o + d B/A.
+    //
+    // This form never divides by an individual n_i.d and is invariant to
+    // flipping any two-sided surfel normal.
+    SYCL_EXTERNAL static PointCloudLocalLayerConsensus computePointCloudLocalLayerConsensus(
+        const PointCloudLocalLayer &layer,
+        const Ray &rayWorld,
+        const GPUSceneBuffers &scene) {
+        PointCloudLocalLayerConsensus consensus{};
+        if (layer.hitCount == 0u) {
+            return consensus;
+        }
+
+        float numerator = 0.0f;
+        float denominator = 0.0f;
+        for (uint32_t localHitIndex = 0u;
+             localHitIndex < layer.hitCount;
+             ++localHitIndex) {
+            const LocalSurfelLayerHit &localHit = layer.hits[localHitIndex];
+            if (localHit.primitiveIndex == kInvalidIndex) {
+                return consensus;
+            }
+            const Point &surfel = scene.points[localHit.primitiveIndex];
+            const float3 normalRaw = cross(surfel.tanU, surfel.tanV);
+            const float normalLengthSquared = dot(normalRaw, normalRaw);
+            if (normalLengthSquared <= 1.0e-16f) {
+                return consensus;
+            }
+            const float3 normalW = normalRaw / sycl::sqrt(normalLengthSquared);
+            const float viewCosine = dot(normalW, rayWorld.direction);
+            denominator += viewCosine * viewCosine;
+            numerator += viewCosine * dot(normalW, surfel.position - rayWorld.origin);
+        }
+
+        consensus.denominator = denominator;
+        if (!sycl::isfinite(numerator) || !sycl::isfinite(denominator) ||
+            denominator <= IntraSlabConsensusDenominatorEpsilon) {
+            return consensus;
+        }
+
+        consensus.t = numerator / denominator;
+        consensus.pointW = rayWorld.origin + consensus.t * rayWorld.direction;
+        if (!sycl::isfinite(consensus.t) ||
+            !sycl::isfinite(consensus.pointW.x()) ||
+            !sycl::isfinite(consensus.pointW.y()) ||
+            !sycl::isfinite(consensus.pointW.z())) {
+            return PointCloudLocalLayerConsensus{};
+        }
+        consensus.valid = 1u;
+        return consensus;
+    }
+
     SYCL_EXTERNAL static PointCloudLocalLayer makeSingleHitPointCloudLocalLayer(
         const Ray &rayWorld,
         const LocalSurfelLayerHit &hit,

@@ -47,6 +47,14 @@ export namespace Pale {
                 sycl::malloc_device(pixelCount * sizeof(float), queue));
             float *visibilityWeightedOpacityBuffer = reinterpret_cast<float *>(sycl::malloc_device(
                 pixelCount * sizeof(float), queue));
+            float *intraSlabDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
+            float *intraSlabDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
+            uint32_t *intraSlabDepthActiveSlabCountBuffer =
+                    sycl::malloc_device<uint32_t>(pixelCount, queue);
+            float *curvatureScaleBuffer = sycl::malloc_device<float>(pixelCount, queue);
+            float *curvatureScaleAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
+            uint32_t *curvatureScaleActiveSlabCountBuffer =
+                    sycl::malloc_device<uint32_t>(pixelCount, queue);
             float *meanDepthBuffer = reinterpret_cast<float *>(sycl::malloc_device(pixelCount * sizeof(float), queue));
             float *medianDepthAdjointBuffer = reinterpret_cast<float *>(sycl::malloc_device(
                 pixelCount * sizeof(float), queue));
@@ -64,7 +72,16 @@ export namespace Pale {
             // Optional: check allocations
             if (deviceHighDynamicRangeFramebuffer == nullptr ||
                 deviceOutputFramebuffer == nullptr ||
-                deviceLdrFramebuffer == nullptr) {
+                deviceLdrFramebuffer == nullptr ||
+                depthDistortionBuffer == nullptr ||
+                depthDistortionAdjointBuffer == nullptr ||
+                visibilityWeightedOpacityBuffer == nullptr ||
+                intraSlabDepthBuffer == nullptr ||
+                intraSlabDepthAdjointBuffer == nullptr ||
+                intraSlabDepthActiveSlabCountBuffer == nullptr ||
+                curvatureScaleBuffer == nullptr ||
+                curvatureScaleAdjointBuffer == nullptr ||
+                curvatureScaleActiveSlabCountBuffer == nullptr) {
                 // Handle allocation failure: free what succeeded, skip this camera or throw
                 if (deviceHighDynamicRangeFramebuffer) {
                     sycl::free(deviceHighDynamicRangeFramebuffer, queue);
@@ -74,6 +91,19 @@ export namespace Pale {
                 }
                 if (deviceLdrFramebuffer) {
                     sycl::free(deviceLdrFramebuffer, queue);
+                }
+                if (depthDistortionBuffer) sycl::free(depthDistortionBuffer, queue);
+                if (depthDistortionAdjointBuffer) sycl::free(depthDistortionAdjointBuffer, queue);
+                if (visibilityWeightedOpacityBuffer) sycl::free(visibilityWeightedOpacityBuffer, queue);
+                if (intraSlabDepthBuffer) sycl::free(intraSlabDepthBuffer, queue);
+                if (intraSlabDepthAdjointBuffer) sycl::free(intraSlabDepthAdjointBuffer, queue);
+                if (intraSlabDepthActiveSlabCountBuffer) {
+                    sycl::free(intraSlabDepthActiveSlabCountBuffer, queue);
+                }
+                if (curvatureScaleBuffer) sycl::free(curvatureScaleBuffer, queue);
+                if (curvatureScaleAdjointBuffer) sycl::free(curvatureScaleAdjointBuffer, queue);
+                if (curvatureScaleActiveSlabCountBuffer) {
+                    sycl::free(curvatureScaleActiveSlabCountBuffer, queue);
                 }
                 continue;
             }
@@ -92,6 +122,12 @@ export namespace Pale {
                 queue.memset(depthDistortionAdjointBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(medianDepthBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(visibilityWeightedOpacityBuffer, 0, pixelCount * sizeof(float));
+                queue.memset(intraSlabDepthBuffer, 0, pixelCount * sizeof(float));
+                queue.memset(intraSlabDepthAdjointBuffer, 0, pixelCount * sizeof(float));
+                queue.memset(intraSlabDepthActiveSlabCountBuffer, 0, pixelCount * sizeof(uint32_t));
+                queue.memset(curvatureScaleBuffer, 0, pixelCount * sizeof(float));
+                queue.memset(curvatureScaleAdjointBuffer, 0, pixelCount * sizeof(float));
+                queue.memset(curvatureScaleActiveSlabCountBuffer, 0, pixelCount * sizeof(uint32_t));
                 queue.memset(meanDepthBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(medianDepthAdjointBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(medianWorldPositionBuffer, 0, pixelCount * 4u * sizeof(float));
@@ -111,6 +147,12 @@ export namespace Pale {
             sensorGpu.medianDepthBuffer = medianDepthBuffer;
             sensorGpu.meanDepthBuffer = meanDepthBuffer;
             sensorGpu.visibilityWeightedOpacityBuffer = visibilityWeightedOpacityBuffer;
+            sensorGpu.intraSlabDepthBuffer = intraSlabDepthBuffer;
+            sensorGpu.intraSlabDepthAdjointBuffer = intraSlabDepthAdjointBuffer;
+            sensorGpu.intraSlabDepthActiveSlabCountBuffer = intraSlabDepthActiveSlabCountBuffer;
+            sensorGpu.curvatureScaleBuffer = curvatureScaleBuffer;
+            sensorGpu.curvatureScaleAdjointBuffer = curvatureScaleAdjointBuffer;
+            sensorGpu.curvatureScaleActiveSlabCountBuffer = curvatureScaleActiveSlabCountBuffer;
             sensorGpu.medianWorldPositionBuffer = medianWorldPositionBuffer;
             sensorGpu.visibleNormalBuffer = visibleNormalBuffer;
             sensorGpu.normalFromDepthBuffer = normalFromDepthBuffer;
@@ -376,6 +418,17 @@ export namespace Pale {
         std::vector<float> host(count);
         if (devicePtr != nullptr && count > 0) {
             queue.memcpy(host.data(), devicePtr, count * sizeof(float)).wait();
+        }
+        return host;
+    }
+
+    inline std::vector<uint32_t> downloadUint32Buffer(
+        sycl::queue queue,
+        const uint32_t *devicePtr,
+        std::size_t count) {
+        std::vector<uint32_t> host(count);
+        if (devicePtr != nullptr && count > 0) {
+            queue.memcpy(host.data(), devicePtr, count * sizeof(uint32_t)).wait();
         }
         return host;
     }

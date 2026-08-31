@@ -650,12 +650,16 @@ def select_loss_column(
         "loss_rgb_mean",
         "loss_bsdf_decay_weighted_mean",
         "loss_opacity_prior_weighted_mean",
+        "loss_intra_slab_depth_weighted_mean",
+        "loss_curvature_scale_weighted_mean",
         "loss_normal_consistency_weighted_mean",
         "loss_depth_distortion_weighted_mean",
         "loss_total_sum",
         "loss_rgb_sum",
         "loss_bsdf_decay_weighted_sum",
         "loss_opacity_prior_weighted_sum",
+        "loss_intra_slab_depth_weighted_sum",
+        "loss_curvature_scale_weighted_sum",
         "loss_normal_consistency_weighted_sum",
         "loss_depth_distortion_weighted_sum",
     ]
@@ -1041,6 +1045,14 @@ def draw_metrics_figure(
                 "loss_opacity_prior_weighted_sum",
             ),
             (
+                "loss_intra_slab_depth_weighted_mean",
+                "loss_intra_slab_depth_weighted_sum",
+            ),
+            (
+                "loss_curvature_scale_weighted_mean",
+                "loss_curvature_scale_weighted_sum",
+            ),
+            (
                 "loss_bsdf_decay_weighted_mean",
                 "loss_bsdf_decay_weighted_sum",
             ),
@@ -1120,6 +1132,16 @@ def draw_metrics_figure(
             linewidth=1.8,
             alpha=0.95,
         ),
+        "loss_intra_slab_depth_weighted_mean": dict(
+            color="tab:cyan",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
+        "loss_curvature_scale_weighted_mean": dict(
+            color="tab:pink",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
         "loss_bsdf_decay_weighted_mean": dict(
             color="tab:brown",
             linewidth=1.8,
@@ -1141,6 +1163,16 @@ def draw_metrics_figure(
         ),
         "loss_opacity_prior_weighted_sum": dict(
             color="tab:purple",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
+        "loss_intra_slab_depth_weighted_sum": dict(
+            color="tab:cyan",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
+        "loss_curvature_scale_weighted_sum": dict(
+            color="tab:pink",
             linewidth=1.8,
             alpha=0.95,
         ),
@@ -1313,10 +1345,38 @@ def draw_metrics_figure(
     )
 
     if ax_top_right is not None:
-        ax_top.grid(False)
-        ax_top_right.grid(True)
+        # A twinned RGB axis is drawn over the base axis. Relying on only the
+        # twin's default grid can make the grid disappear depending on axis
+        # draw order/backend. Split ownership explicitly: x grid lines come
+        # from the shared base axis and y grid lines follow the RGB scale.
+        ax_top.set_axisbelow(True)
+        ax_top_right.set_axisbelow(True)
+        ax_top_right.patch.set_visible(False)
+        ax_top.grid(
+            True,
+            which="both",
+            axis="x",
+            color="0.72",
+            linewidth=0.8,
+            alpha=0.55,
+        )
+        ax_top_right.grid(
+            True,
+            which="both",
+            axis="y",
+            color="0.72",
+            linewidth=0.8,
+            alpha=0.55,
+        )
     else:
-        ax_top.grid(True)
+        ax_top.set_axisbelow(True)
+        ax_top.grid(
+            True,
+            which="both",
+            color="0.72",
+            linewidth=0.8,
+            alpha=0.55,
+        )
     set_combined_legend(ax_top, ax_top_right)
 
     ax_weighted.set_ylabel(f"Mean weighted regularizers ({loss_y_scale})")

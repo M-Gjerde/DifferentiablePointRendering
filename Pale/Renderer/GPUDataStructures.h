@@ -347,7 +347,9 @@ namespace Pale {
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
     constexpr float LocalLayerDepthEpsilon = 7.50e-3f;
     constexpr float LocalLayerNormalCosineThreshold = -1.0f; // 45 degrees mismatch to stop blending slabs
-    constexpr float DepthDistortionMaxPairDepthSeparation = LocalLayerDepthEpsilon * 20.0f;
+    constexpr float IntraSlabConsensusDenominatorEpsilon = 1.0e-6f;
+    constexpr float CurvatureScaleRegularizerGamma = 0.5f;
+    constexpr float CurvatureRegularizerDistanceEpsilon = 1.0e-6f;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -826,6 +828,8 @@ namespace Pale {
         float depthDistortionWeight = 0.0f;
         float normalConsistencyWeight = 0.0f;
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
+        float intraSlabDepthRegularizerWeight = 0.0f;
+        float curvatureScaleRegularizerWeight = 0.0f;
         bool normalFromDepthUseMeanDepth = false;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
@@ -847,7 +851,7 @@ namespace Pale {
         uint32_t rendererDebugMaxLocalSurfelHits = 8;
         uint32_t rendererDebugPointHitBatchSize = 6;
         bool rendererDebugPointHitBatchLookahead = true;
-        bool rendererDebugShareLocalLayerDirectLighting = false;
+        bool rendererDebugShareLocalLayerDirectLighting = true;
         bool rendererDebugMinimumProjectedFootprint = false;
         float rendererDebugMinimumProjectedFootprintPixels = 0.707f;
     };
@@ -904,37 +908,6 @@ namespace Pale {
             return 1.0f;
         }
         return settings.rendererDebugLocalLayerNormalCosineThreshold;
-    }
-
-    inline float depthDistortionPairSeparationWeight(float depthA, float depthB) {
-        if constexpr (DepthDistortionMaxPairDepthSeparation <= 0.0f) {
-            return 1.0f;
-        }
-
-        const float separation = sycl::fabs(depthB - depthA);
-        if (separation >= DepthDistortionMaxPairDepthSeparation) {
-            return 0.0f;
-        }
-
-        const float t = separation / DepthDistortionMaxPairDepthSeparation;
-        const float smoothstep = t * t * (3.0f - 2.0f * t);
-        return 1.0f - smoothstep;
-    }
-
-    inline float depthDistortionPairSeparationWeightDerivativeWrtDelta(float depthDelta) {
-        if constexpr (DepthDistortionMaxPairDepthSeparation <= 0.0f) {
-            return 0.0f;
-        }
-
-        const float separation = sycl::fabs(depthDelta);
-        if (separation <= 0.0f || separation >= DepthDistortionMaxPairDepthSeparation) {
-            return 0.0f;
-        }
-
-        const float t = separation / DepthDistortionMaxPairDepthSeparation;
-        const float derivativeWrtSeparation =
-                -(6.0f * t * (1.0f - t)) / DepthDistortionMaxPairDepthSeparation;
-        return derivativeWrtSeparation * (depthDelta >= 0.0f ? 1.0f : -1.0f);
     }
 
     static_assert(std::is_trivially_copyable_v<PathTracerSettings>);

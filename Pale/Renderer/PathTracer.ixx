@@ -31,7 +31,10 @@ export namespace Pale {
         void renderSurfaceRegularizersBackward(std::vector<SensorGPU> &sensors,
                                                PointGradients &depthDistortionGradients,
                                                PointGradients &normalConsistencyGradients,
-                                               PointGradients &visibilityOpacityGradients, DebugImages *debugImages);
+                                               PointGradients &visibilityOpacityGradients,
+                                               PointGradients &intraSlabDepthGradients,
+                                               PointGradients &curvatureScaleGradients,
+                                               DebugImages *debugImages);
 
         void reset();
 

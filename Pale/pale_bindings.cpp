@@ -264,6 +264,14 @@ public:
                     get_f(settingsDict,
                           "opacity_prior_weight",
                           m_settings.visibilityWeightedOpacityRegularizerWeight);
+            m_settings.intraSlabDepthRegularizerWeight =
+                    get_f(settingsDict,
+                          "intra_slab_depth_weight",
+                          m_settings.intraSlabDepthRegularizerWeight);
+            m_settings.curvatureScaleRegularizerWeight =
+                    get_f(settingsDict,
+                          "curvature_scale_weight",
+                          m_settings.curvatureScaleRegularizerWeight);
             m_settings.rendererDebugMinimumProjectedFootprint =
                     get_b(settingsDict,
                           "minimum_projected_footprint",
@@ -286,6 +294,8 @@ public:
         depthDistortionGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         normalConsistencyGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        intraSlabDepthGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        curvatureScaleGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
 
         // Print summary
         Pale::Log::PA_WARN("=== Renderer Settings ===");
@@ -301,6 +311,8 @@ public:
         Pale::Log::PA_WARN("  Visibility opacity weight : {}", m_settings.visibilityWeightedOpacityRegularizerWeight);
         Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", m_settings.depthDistortionWeight);
         Pale::Log::PA_WARN("  Normal Consistency Weight : {}", m_settings.normalConsistencyWeight);
+        Pale::Log::PA_WARN("  Intra-slab depth weight   : {}", m_settings.intraSlabDepthRegularizerWeight);
+        Pale::Log::PA_WARN("  Curvature scale weight    : {}", m_settings.curvatureScaleRegularizerWeight);
         Pale::Log::PA_WARN("  Minimum footprint enabled : {}", m_settings.rendererDebugMinimumProjectedFootprint);
         Pale::Log::PA_WARN("  Minimum footprint sigma px: {}", m_settings.rendererDebugMinimumProjectedFootprintPixels);
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
@@ -331,6 +343,8 @@ public:
             Pale::freeGradientsForScene(queue, depthDistortionGradients);
             Pale::freeGradientsForScene(queue, normalConsistencyGradients);
             Pale::freeGradientsForScene(queue, visibilityOpacityGradients);
+            Pale::freeGradientsForScene(queue, intraSlabDepthGradients);
+            Pale::freeGradientsForScene(queue, curvatureScaleGradients);
 
             Pale::freeDebugImagesForScene(queue, debugImages.data(), debugImages.size());
             freeTrainingTargets(queue);
@@ -364,6 +378,10 @@ public:
             std::vector<float> imageDataRAW;
             std::vector<float> depthDistortionData;
             std::vector<float> visibilityWeightedOpacityData;
+            std::vector<float> intraSlabDepthData;
+            std::vector<std::uint32_t> intraSlabDepthActiveSlabCountData;
+            std::vector<float> curvatureScaleData;
+            std::vector<std::uint32_t> curvatureScaleActiveSlabCountData;
 
             std::vector<float> medianDepthData;
             std::vector<float> meanDepthData;
@@ -396,6 +414,17 @@ public:
 
             hostImage.visibilityWeightedOpacityData =
                     Pale::downloadFloatBuffer(queue, sensor.visibilityWeightedOpacityBuffer, pixelCount);
+
+            hostImage.intraSlabDepthData =
+                    Pale::downloadFloatBuffer(queue, sensor.intraSlabDepthBuffer, pixelCount);
+            hostImage.intraSlabDepthActiveSlabCountData =
+                    Pale::downloadUint32Buffer(
+                        queue, sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
+            hostImage.curvatureScaleData =
+                    Pale::downloadFloatBuffer(queue, sensor.curvatureScaleBuffer, pixelCount);
+            hostImage.curvatureScaleActiveSlabCountData =
+                    Pale::downloadUint32Buffer(
+                        queue, sensor.curvatureScaleActiveSlabCountBuffer, pixelCount);
 
             hostImage.medianDepthData =
                     Pale::downloadFloatBuffer(queue, sensor.medianDepthBuffer, pixelCount);
@@ -470,6 +499,23 @@ public:
                 );
             };
 
+            auto makeUintScalarArray = [&](std::vector<std::uint32_t> &buffer)
+                    -> py::array_t<std::uint32_t> {
+                auto *ownedBuffer = new std::vector<std::uint32_t>(std::move(buffer));
+                std::vector<ssize_t> uintScalarStrides{
+                    static_cast<ssize_t>(imageWidth * sizeof(std::uint32_t)),
+                    static_cast<ssize_t>(sizeof(std::uint32_t))
+                };
+                return py::array_t<std::uint32_t>(
+                    scalarShape,
+                    uintScalarStrides,
+                    ownedBuffer->data(),
+                    py::capsule(ownedBuffer, [](void *ptr) {
+                        delete static_cast<std::vector<std::uint32_t> *>(ptr);
+                    })
+                );
+            };
+
             py::dict cameraResult;
             cameraResult[py::str("image")] = makeRGBAArray(hostImage.imageData);
             cameraResult[py::str("raw")] = makeRGBAArray(hostImage.imageDataRAW);
@@ -479,6 +525,15 @@ public:
 
             cameraResult[py::str("opacity_prior")] =
                     makeScalarArray(hostImage.visibilityWeightedOpacityData);
+
+            cameraResult[py::str("intra_slab_depth")] =
+                    makeScalarArray(hostImage.intraSlabDepthData);
+            cameraResult[py::str("intra_slab_depth_active_slab_count")] =
+                    makeUintScalarArray(hostImage.intraSlabDepthActiveSlabCountData);
+            cameraResult[py::str("curvature_scale")] =
+                    makeScalarArray(hostImage.curvatureScaleData);
+            cameraResult[py::str("curvature_scale_active_slab_count")] =
+                    makeUintScalarArray(hostImage.curvatureScaleActiveSlabCountData);
 
             cameraResult[py::str("median_depth")] =
                     makeScalarArray(hostImage.medianDepthData);
@@ -625,7 +680,8 @@ public:
                 selectedBatch.debugImages.data());
 
             ensureDeviceTrainingState(gradients.numPoints, syclQueue);
-            launchDeviceTrainingStepKernel(syclQueue, gradients, nullptr, nullptr, nullptr, options);
+            launchDeviceTrainingStepKernel(
+                syclQueue, gradients, nullptr, nullptr, nullptr, nullptr, nullptr, options);
             launchPointBvhRefitKernel(syclQueue);
             syclQueue.wait_and_throw();
             devicePointParametersDirty = true;
@@ -705,6 +761,10 @@ public:
                 get_b(optionsDictionary, "include_normal_consistency", false);
         const bool includeVisibilityWeightedOpacity =
                 get_b(optionsDictionary, "include_opacity_prior", false);
+        const bool includeIntraSlabDepth =
+                get_b(optionsDictionary, "include_intra_slab_depth", false);
+        const bool includeCurvatureScale =
+                get_b(optionsDictionary, "include_curvature_scale", false);
 
         const Pale::PointGradients *depthGradients =
                 includeDepthDistortion ? &depthDistortionGradients : nullptr;
@@ -712,6 +772,10 @@ public:
                 includeNormalConsistency ? &normalConsistencyGradients : nullptr;
         const Pale::PointGradients *visibilityGradients =
                 includeVisibilityWeightedOpacity ? &visibilityOpacityGradients : nullptr;
+        const Pale::PointGradients *intraSlabGradients =
+                includeIntraSlabDepth ? &intraSlabDepthGradients : nullptr;
+        const Pale::PointGradients *curvatureGradients =
+                includeCurvatureScale ? &curvatureScaleGradients : nullptr;
 
         {
             py::gil_scoped_release release;
@@ -722,6 +786,8 @@ public:
                 depthGradients,
                 normalGradients,
                 visibilityGradients,
+                intraSlabGradients,
+                curvatureGradients,
                 options);
             launchPointBvhRefitKernel(syclQueue);
             syclQueue.wait_and_throw();
@@ -747,23 +813,39 @@ public:
                 get_b(optionsDictionary, "use_normal_consistency", false);
         const bool useVisibilityWeightedOpacity =
                 get_b(optionsDictionary, "use_opacity_prior", false);
+        const bool useIntraSlabDepth =
+                get_b(optionsDictionary, "use_intra_slab_depth", false);
+        const bool useCurvatureScale =
+                get_b(optionsDictionary, "use_curvature_scale", false);
         const float depthDistortionWeight =
                 get_f(optionsDictionary, "depth_distortion_weight", 0.0f);
         const float normalConsistencyWeight =
                 get_f(optionsDictionary, "normal_consistency_weight", 0.0f);
         const float visibilityWeightedOpacityWeight =
                 get_f(optionsDictionary, "opacity_prior_weight", 0.0f);
+        const float intraSlabDepthWeight =
+                get_f(optionsDictionary, "intra_slab_depth_weight", 0.0f);
+        const float curvatureScaleWeight =
+                get_f(optionsDictionary, "curvature_scale_weight", 0.0f);
 
         const std::size_t cameraCount = selectedBatch.sensors.size();
         std::vector<float> depthDistortionSums(cameraCount, 0.0f);
         std::vector<float> normalConsistencySums(cameraCount, 0.0f);
         std::vector<float> visibilityWeightedOpacitySums(cameraCount, 0.0f);
+        std::vector<float> intraSlabDepthSums(cameraCount, 0.0f);
+        std::vector<float> curvatureScaleSums(cameraCount, 0.0f);
         std::vector<std::uint32_t> normalConsistencyValidCounts(cameraCount, 0u);
+        std::vector<std::uint32_t> intraSlabDepthActiveSlabCounts(cameraCount, 0u);
+        std::vector<std::uint32_t> curvatureScaleActiveSlabCounts(cameraCount, 0u);
 
         float *depthDistortionSumsDevice = nullptr;
         float *normalConsistencySumsDevice = nullptr;
         float *visibilityWeightedOpacitySumsDevice = nullptr;
+        float *intraSlabDepthSumsDevice = nullptr;
+        float *curvatureScaleSumsDevice = nullptr;
         std::uint32_t *normalConsistencyValidCountsDevice = nullptr;
+        std::uint32_t *intraSlabDepthActiveSlabCountsDevice = nullptr;
+        std::uint32_t *curvatureScaleActiveSlabCountsDevice = nullptr;
 
         auto freeTempBuffers = [&]() {
             if (depthDistortionSumsDevice) {
@@ -778,9 +860,25 @@ public:
                 sycl::free(visibilityWeightedOpacitySumsDevice, syclQueue);
                 visibilityWeightedOpacitySumsDevice = nullptr;
             }
+            if (intraSlabDepthSumsDevice) {
+                sycl::free(intraSlabDepthSumsDevice, syclQueue);
+                intraSlabDepthSumsDevice = nullptr;
+            }
+            if (curvatureScaleSumsDevice) {
+                sycl::free(curvatureScaleSumsDevice, syclQueue);
+                curvatureScaleSumsDevice = nullptr;
+            }
             if (normalConsistencyValidCountsDevice) {
                 sycl::free(normalConsistencyValidCountsDevice, syclQueue);
                 normalConsistencyValidCountsDevice = nullptr;
+            }
+            if (intraSlabDepthActiveSlabCountsDevice) {
+                sycl::free(intraSlabDepthActiveSlabCountsDevice, syclQueue);
+                intraSlabDepthActiveSlabCountsDevice = nullptr;
+            }
+            if (curvatureScaleActiveSlabCountsDevice) {
+                sycl::free(curvatureScaleActiveSlabCountsDevice, syclQueue);
+                curvatureScaleActiveSlabCountsDevice = nullptr;
             }
         };
 
@@ -790,22 +888,36 @@ public:
             m_settings.depthDistortionWeight = depthDistortionWeight;
             m_settings.normalConsistencyWeight = normalConsistencyWeight;
             m_settings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
+            m_settings.intraSlabDepthRegularizerWeight = intraSlabDepthWeight;
+            m_settings.curvatureScaleRegularizerWeight = curvatureScaleWeight;
             auto &pathSettings = pathTracer->getSettings();
             pathSettings.depthDistortionWeight = depthDistortionWeight;
             pathSettings.normalConsistencyWeight = normalConsistencyWeight;
             pathSettings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
+            pathSettings.intraSlabDepthRegularizerWeight = intraSlabDepthWeight;
+            pathSettings.curvatureScaleRegularizerWeight = curvatureScaleWeight;
 
             pathTracer->renderForward(selectedBatch.sensors);
 
             depthDistortionSumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
             normalConsistencySumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
             visibilityWeightedOpacitySumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
+            intraSlabDepthSumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
+            curvatureScaleSumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
             normalConsistencyValidCountsDevice =
+                    sycl::malloc_device<std::uint32_t>(cameraCount, syclQueue);
+            intraSlabDepthActiveSlabCountsDevice =
+                    sycl::malloc_device<std::uint32_t>(cameraCount, syclQueue);
+            curvatureScaleActiveSlabCountsDevice =
                     sycl::malloc_device<std::uint32_t>(cameraCount, syclQueue);
             if (!depthDistortionSumsDevice ||
                 !normalConsistencySumsDevice ||
                 !visibilityWeightedOpacitySumsDevice ||
-                !normalConsistencyValidCountsDevice) {
+                !intraSlabDepthSumsDevice ||
+                !curvatureScaleSumsDevice ||
+                !normalConsistencyValidCountsDevice ||
+                !intraSlabDepthActiveSlabCountsDevice ||
+                !curvatureScaleActiveSlabCountsDevice) {
                 throw std::runtime_error(
                     "render_forward_surface_regularizer_loss_and_adjoint: failed to allocate temporary loss buffers");
             }
@@ -813,7 +925,11 @@ public:
             syclQueue.fill(depthDistortionSumsDevice, 0.0f, cameraCount);
             syclQueue.fill(normalConsistencySumsDevice, 0.0f, cameraCount);
             syclQueue.fill(visibilityWeightedOpacitySumsDevice, 0.0f, cameraCount);
+            syclQueue.fill(intraSlabDepthSumsDevice, 0.0f, cameraCount);
+            syclQueue.fill(curvatureScaleSumsDevice, 0.0f, cameraCount);
             syclQueue.fill(normalConsistencyValidCountsDevice, 0u, cameraCount);
+            syclQueue.fill(intraSlabDepthActiveSlabCountsDevice, 0u, cameraCount);
+            syclQueue.fill(curvatureScaleActiveSlabCountsDevice, 0u, cameraCount);
 
             for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
                 launchSurfaceRegularizerLossAccumulationKernel(
@@ -822,10 +938,16 @@ public:
                     depthDistortionSumsDevice + cameraIndex,
                     normalConsistencySumsDevice + cameraIndex,
                     visibilityWeightedOpacitySumsDevice + cameraIndex,
+                    intraSlabDepthSumsDevice + cameraIndex,
+                    curvatureScaleSumsDevice + cameraIndex,
                     normalConsistencyValidCountsDevice + cameraIndex,
+                    intraSlabDepthActiveSlabCountsDevice + cameraIndex,
+                    curvatureScaleActiveSlabCountsDevice + cameraIndex,
                     useDepthDistortion,
                     useNormalConsistency,
-                    useVisibilityWeightedOpacity);
+                    useVisibilityWeightedOpacity,
+                    useIntraSlabDepth,
+                    useCurvatureScale);
             }
 
             syclQueue.memcpy(
@@ -841,8 +963,24 @@ public:
                 visibilityWeightedOpacitySumsDevice,
                 cameraCount * sizeof(float));
             syclQueue.memcpy(
+                intraSlabDepthSums.data(),
+                intraSlabDepthSumsDevice,
+                cameraCount * sizeof(float));
+            syclQueue.memcpy(
+                curvatureScaleSums.data(),
+                curvatureScaleSumsDevice,
+                cameraCount * sizeof(float));
+            syclQueue.memcpy(
                 normalConsistencyValidCounts.data(),
                 normalConsistencyValidCountsDevice,
+                cameraCount * sizeof(std::uint32_t));
+            syclQueue.memcpy(
+                intraSlabDepthActiveSlabCounts.data(),
+                intraSlabDepthActiveSlabCountsDevice,
+                cameraCount * sizeof(std::uint32_t));
+            syclQueue.memcpy(
+                curvatureScaleActiveSlabCounts.data(),
+                curvatureScaleActiveSlabCountsDevice,
                 cameraCount * sizeof(std::uint32_t));
             syclQueue.wait_and_throw();
 
@@ -852,9 +990,15 @@ public:
                     selectedBatch.sensors[cameraIndex],
                     depthDistortionWeight,
                     normalConsistencyWeight,
+                    intraSlabDepthWeight,
+                    curvatureScaleWeight,
                     normalConsistencyValidCounts[cameraIndex],
+                    intraSlabDepthActiveSlabCounts[cameraIndex],
+                    curvatureScaleActiveSlabCounts[cameraIndex],
                     useDepthDistortion,
-                    useNormalConsistency);
+                    useNormalConsistency,
+                    useIntraSlabDepth,
+                    useCurvatureScale);
             }
             syclQueue.wait_and_throw();
         } catch (...) {
@@ -868,6 +1012,8 @@ public:
         result["visible_normal_adjoints"] = py::dict();
         result["depth_normal_adjoints"] = py::dict();
         result["depth_distortion_maps_for_logging"] = py::dict();
+        result["intra_slab_depth_maps_for_logging"] = py::dict();
+        result["curvature_scale_maps_for_logging"] = py::dict();
         py::dict perCameraLossValues;
 
         float totalDepthRaw = 0.0f;
@@ -876,6 +1022,10 @@ public:
         float totalNormalWeighted = 0.0f;
         float totalVisibilityOpacityRaw = 0.0f;
         float totalVisibilityOpacityWeighted = 0.0f;
+        float totalIntraSlabDepthRaw = 0.0f;
+        float totalIntraSlabDepthWeighted = 0.0f;
+        float totalCurvatureScaleRaw = 0.0f;
+        float totalCurvatureScaleWeighted = 0.0f;
 
         for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
             const Pale::SensorGPU &sensor = selectedBatch.sensors[cameraIndex];
@@ -899,6 +1049,20 @@ public:
                                                    ? visibilityWeightedOpacitySums[cameraIndex] / pixelCount
                                                    : 0.0f;
             const float visibilityOpacityWeighted = visibilityOpacityRaw * visibilityWeightedOpacityWeight;
+            const float activeIntraSlabCount = std::max(
+                1.0f,
+                static_cast<float>(intraSlabDepthActiveSlabCounts[cameraIndex]));
+            const float activeCurvatureSlabCount = std::max(
+                1.0f,
+                static_cast<float>(curvatureScaleActiveSlabCounts[cameraIndex]));
+            const float intraSlabDepthRaw = useIntraSlabDepth
+                ? intraSlabDepthSums[cameraIndex] / activeIntraSlabCount
+                : 0.0f;
+            const float intraSlabDepthWeighted = intraSlabDepthRaw * intraSlabDepthWeight;
+            const float curvatureScaleRaw = useCurvatureScale
+                ? curvatureScaleSums[cameraIndex] / activeCurvatureSlabCount
+                : 0.0f;
+            const float curvatureScaleWeighted = curvatureScaleRaw * curvatureScaleWeight;
 
             py::dict cameraLossValues = makeZeroLossValuesDictionary();
             cameraLossValues["total_depth_distortion_loss_raw"] = depthRaw;
@@ -907,7 +1071,13 @@ public:
             cameraLossValues["total_normal_loss_weighted"] = normalWeighted;
             cameraLossValues["total_opacity_prior_loss_raw"] = visibilityOpacityRaw;
             cameraLossValues["total_opacity_prior_loss_weighted"] = visibilityOpacityWeighted;
-            cameraLossValues["total_loss_value"] = depthWeighted + normalWeighted + visibilityOpacityWeighted;
+            cameraLossValues["total_intra_slab_depth_loss_raw"] = intraSlabDepthRaw;
+            cameraLossValues["total_intra_slab_depth_loss_weighted"] = intraSlabDepthWeighted;
+            cameraLossValues["total_curvature_scale_loss_raw"] = curvatureScaleRaw;
+            cameraLossValues["total_curvature_scale_loss_weighted"] = curvatureScaleWeighted;
+            cameraLossValues["total_loss_value"] =
+                depthWeighted + normalWeighted + visibilityOpacityWeighted +
+                intraSlabDepthWeighted + curvatureScaleWeighted;
             perCameraLossValues[py::str(cameraName)] = cameraLossValues;
 
             totalDepthRaw += depthRaw;
@@ -916,6 +1086,10 @@ public:
             totalNormalWeighted += normalWeighted;
             totalVisibilityOpacityRaw += visibilityOpacityRaw;
             totalVisibilityOpacityWeighted += visibilityOpacityWeighted;
+            totalIntraSlabDepthRaw += intraSlabDepthRaw;
+            totalIntraSlabDepthWeighted += intraSlabDepthWeighted;
+            totalCurvatureScaleRaw += curvatureScaleRaw;
+            totalCurvatureScaleWeighted += curvatureScaleWeighted;
         }
 
         result["total_depth_distortion_loss_raw"] = totalDepthRaw;
@@ -924,7 +1098,13 @@ public:
         result["total_normal_loss_weighted"] = totalNormalWeighted;
         result["total_opacity_prior_loss_raw"] = totalVisibilityOpacityRaw;
         result["total_opacity_prior_loss_weighted"] = totalVisibilityOpacityWeighted;
-        result["total_loss_value"] = totalDepthWeighted + totalNormalWeighted + totalVisibilityOpacityWeighted;
+        result["total_intra_slab_depth_loss_raw"] = totalIntraSlabDepthRaw;
+        result["total_intra_slab_depth_loss_weighted"] = totalIntraSlabDepthWeighted;
+        result["total_curvature_scale_loss_raw"] = totalCurvatureScaleRaw;
+        result["total_curvature_scale_loss_weighted"] = totalCurvatureScaleWeighted;
+        result["total_loss_value"] =
+            totalDepthWeighted + totalNormalWeighted + totalVisibilityOpacityWeighted +
+            totalIntraSlabDepthWeighted + totalCurvatureScaleWeighted;
         result["per_camera_loss_values"] = std::move(perCameraLossValues);
         return result;
     }
@@ -942,6 +1122,8 @@ public:
                 depthDistortionGradients,
                 normalConsistencyGradients,
                 visibilityOpacityGradients,
+                intraSlabDepthGradients,
+                curvatureScaleGradients,
                 selectedBatch.debugImages.data());
         }
 
@@ -953,6 +1135,8 @@ public:
         result["depth_distortion"] = makeGradientDictionary(depthDistortionGradients);
         result["normal_consistency"] = makeGradientDictionary(normalConsistencyGradients);
         result["opacity_prior"] = makeGradientDictionary(visibilityOpacityGradients);
+        result["intra_slab_depth"] = makeGradientDictionary(intraSlabDepthGradients);
+        result["curvature_scale"] = makeGradientDictionary(curvatureScaleGradients);
         return result;
     }
 
@@ -2490,6 +2674,8 @@ public:
         const py::dict &depthDistortionGradImagesDictionary,
         const py::dict &visibleNormalGradImagesDictionary,
         const py::dict &normalFromDepthGradImagesDictionary,
+        const py::dict &intraSlabDepthGradImagesDictionary,
+        const py::dict &curvatureScaleGradImagesDictionary,
         bool returnGradients) {
         using std::int64_t;
         using std::size_t;
@@ -2510,6 +2696,8 @@ public:
         std::unordered_map<std::string, std::vector<float> > depthAdjointPerCamera;
         std::unordered_map<std::string, std::vector<float> > visibleNormalAdjointPerCamera;
         std::unordered_map<std::string, std::vector<float> > normalFromDepthAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float> > intraSlabDepthAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float> > curvatureScaleAdjointPerCamera;
 
         auto packFloatImage = [](const py::array &array,
                                  std::uint32_t expectedWidth,
@@ -2616,6 +2804,28 @@ public:
                         "depth_distortion"));
             }
 
+            if (intraSlabDepthGradImagesDictionary.contains(py::str(cameraName))) {
+                intraSlabDepthAdjointPerCamera.emplace(
+                    cameraName,
+                    packFloatImage(
+                        intraSlabDepthGradImagesDictionary[py::str(cameraName)].cast<py::array>(),
+                        sensor.width,
+                        sensor.height,
+                        cameraName,
+                        "intra_slab_depth"));
+            }
+
+            if (curvatureScaleGradImagesDictionary.contains(py::str(cameraName))) {
+                curvatureScaleAdjointPerCamera.emplace(
+                    cameraName,
+                    packFloatImage(
+                        curvatureScaleGradImagesDictionary[py::str(cameraName)].cast<py::array>(),
+                        sensor.width,
+                        sensor.height,
+                        cameraName,
+                        "curvature_scale"));
+            }
+
             const bool hasVisibleNormal = visibleNormalGradImagesDictionary.contains(py::str(cameraName));
             const bool hasDepthNormal = normalFromDepthGradImagesDictionary.contains(py::str(cameraName));
 
@@ -2657,6 +2867,8 @@ public:
             const size_t pixelCount = static_cast<size_t>(sensor.width) * static_cast<size_t>(sensor.height);
 
             syclQueue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount);
+            syclQueue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
+            syclQueue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
             syclQueue.fill(sensor.visibleNormalAdjointBuffer, Pale::float4{0.0f}, pixelCount);
             syclQueue.fill(sensor.normalFromDepthAdjointBuffer, Pale::float4{0.0f}, pixelCount);
             syclQueue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount);
@@ -2667,6 +2879,22 @@ public:
                     syclQueue,
                     sensor.depthDistortionAdjointBuffer,
                     depthIt->second);
+            }
+
+            auto intraSlabIt = intraSlabDepthAdjointPerCamera.find(cameraName);
+            if (intraSlabIt != intraSlabDepthAdjointPerCamera.end()) {
+                Pale::uploadFloatImage(
+                    syclQueue,
+                    sensor.intraSlabDepthAdjointBuffer,
+                    intraSlabIt->second);
+            }
+
+            auto curvatureScaleIt = curvatureScaleAdjointPerCamera.find(cameraName);
+            if (curvatureScaleIt != curvatureScaleAdjointPerCamera.end()) {
+                Pale::uploadFloatImage(
+                    syclQueue,
+                    sensor.curvatureScaleAdjointBuffer,
+                    curvatureScaleIt->second);
             }
 
             auto visibleIt = visibleNormalAdjointPerCamera.find(cameraName);
@@ -2693,6 +2921,8 @@ public:
             depthDistortionGradients,
             normalConsistencyGradients,
             visibilityOpacityGradients,
+            intraSlabDepthGradients,
+            curvatureScaleGradients,
             selectedDebugImages.data());
 
         py::gil_scoped_acquire gilAcquire;
@@ -2705,6 +2935,8 @@ public:
         result["depth_distortion"] = makeGradientDictionary(depthDistortionGradients);
         result["normal_consistency"] = makeGradientDictionary(normalConsistencyGradients);
         result["opacity_prior"] = makeGradientDictionary(visibilityOpacityGradients);
+        result["intra_slab_depth"] = makeGradientDictionary(intraSlabDepthGradients);
+        result["curvature_scale"] = makeGradientDictionary(curvatureScaleGradients);
         return result;
     }
 
@@ -2712,12 +2944,16 @@ public:
         const py::list &cameraNamesList,
         const py::dict &depthDistortionGradImagesDictionary,
         const py::dict &visibleNormalGradImagesDictionary,
-        const py::dict &normalFromDepthGradImagesDictionary) {
+        const py::dict &normalFromDepthGradImagesDictionary,
+        const py::dict &intraSlabDepthGradImagesDictionary,
+        const py::dict &curvatureScaleGradImagesDictionary) {
         return runSurfaceRegularizersBackward(
             cameraNamesList,
             depthDistortionGradImagesDictionary,
             visibleNormalGradImagesDictionary,
             normalFromDepthGradImagesDictionary,
+            intraSlabDepthGradImagesDictionary,
+            curvatureScaleGradImagesDictionary,
             true);
     }
 
@@ -2725,12 +2961,16 @@ public:
         const py::list &cameraNamesList,
         const py::dict &depthDistortionGradImagesDictionary,
         const py::dict &visibleNormalGradImagesDictionary,
-        const py::dict &normalFromDepthGradImagesDictionary) {
+        const py::dict &normalFromDepthGradImagesDictionary,
+        const py::dict &intraSlabDepthGradImagesDictionary,
+        const py::dict &curvatureScaleGradImagesDictionary) {
         (void) runSurfaceRegularizersBackward(
             cameraNamesList,
             depthDistortionGradImagesDictionary,
             visibleNormalGradImagesDictionary,
             normalFromDepthGradImagesDictionary,
+            intraSlabDepthGradImagesDictionary,
+            curvatureScaleGradImagesDictionary,
             false);
     }
 
@@ -3046,6 +3286,8 @@ public:
         Pale::freeGradientsForScene(deviceSelector->getQueue(), depthDistortionGradients);
         Pale::freeGradientsForScene(deviceSelector->getQueue(), normalConsistencyGradients);
         Pale::freeGradientsForScene(deviceSelector->getQueue(), visibilityOpacityGradients);
+        Pale::freeGradientsForScene(deviceSelector->getQueue(), intraSlabDepthGradients);
+        Pale::freeGradientsForScene(deviceSelector->getQueue(), curvatureScaleGradients);
         Pale::freeDebugImagesForScene(deviceSelector->getQueue(), debugImages.data(), debugImages.size());
         debugImages.clear();
         debugImages.resize(sensorsForward.size());
@@ -3053,6 +3295,8 @@ public:
         depthDistortionGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         normalConsistencyGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        intraSlabDepthGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        curvatureScaleGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         pathTracer->setScene(sceneGpu, buildProducts);
         devicePointParametersDirty = false;
     }
@@ -3896,6 +4140,8 @@ private:
                                         const Pale::PointGradients *depthGradients,
                                         const Pale::PointGradients *normalGradients,
                                         const Pale::PointGradients *visibilityGradients,
+                                        const Pale::PointGradients *intraSlabGradients,
+                                        const Pale::PointGradients *curvatureGradients,
                                         const DeviceTrainingStepOptions &options) {
         if (!sceneGpu.points || sceneGpu.pointCount == 0u) {
             throw std::runtime_error("launchDeviceTrainingStepKernel: scene has no device points");
@@ -3916,6 +4162,8 @@ private:
         validateOptionalGradientSource(depthGradients, "depthDistortionGradients");
         validateOptionalGradientSource(normalGradients, "normalConsistencyGradients");
         validateOptionalGradientSource(visibilityGradients, "visibilityOpacityGradients");
+        validateOptionalGradientSource(intraSlabGradients, "intraSlabDepthGradients");
+        validateOptionalGradientSource(curvatureGradients, "curvatureScaleGradients");
 
         const bool useAdam = options.optimizer == "adam";
         const std::uint32_t adamStep = ++deviceTrainingState.step;
@@ -3951,6 +4199,18 @@ private:
              visibilityGradAlbedo = visibilityGradients ? visibilityGradients->gradAlbedo : nullptr,
              visibilityGradOpacity = visibilityGradients ? visibilityGradients->gradOpacity : nullptr,
              visibilityGradBeta = visibilityGradients ? visibilityGradients->gradBeta : nullptr,
+             intraSlabGradPosition = intraSlabGradients ? intraSlabGradients->gradPosition : nullptr,
+             intraSlabGradRotation = intraSlabGradients ? intraSlabGradients->gradRotation : nullptr,
+             intraSlabGradScale = intraSlabGradients ? intraSlabGradients->gradScale : nullptr,
+             intraSlabGradAlbedo = intraSlabGradients ? intraSlabGradients->gradAlbedo : nullptr,
+             intraSlabGradOpacity = intraSlabGradients ? intraSlabGradients->gradOpacity : nullptr,
+             intraSlabGradBeta = intraSlabGradients ? intraSlabGradients->gradBeta : nullptr,
+             curvatureGradPosition = curvatureGradients ? curvatureGradients->gradPosition : nullptr,
+             curvatureGradRotation = curvatureGradients ? curvatureGradients->gradRotation : nullptr,
+             curvatureGradScale = curvatureGradients ? curvatureGradients->gradScale : nullptr,
+             curvatureGradAlbedo = curvatureGradients ? curvatureGradients->gradAlbedo : nullptr,
+             curvatureGradOpacity = curvatureGradients ? curvatureGradients->gradOpacity : nullptr,
+             curvatureGradBeta = curvatureGradients ? curvatureGradients->gradBeta : nullptr,
              positionM = deviceTrainingState.positionM,
              positionV = deviceTrainingState.positionV,
              rotationM = deviceTrainingState.rotationM,
@@ -4044,6 +4304,8 @@ private:
                 auto sumFloat3Gradient = [&](Pale::float3 *depthPointer,
                                              Pale::float3 *normalPointer,
                                              Pale::float3 *visibilityPointer,
+                                             Pale::float3 *intraSlabPointer,
+                                             Pale::float3 *curvaturePointer,
                                              Pale::float3 baseGradient) -> Pale::float3 {
                     Pale::float3 gradient = baseGradient;
                     if (depthPointer) {
@@ -4055,11 +4317,19 @@ private:
                     if (visibilityPointer) {
                         gradient += visibilityPointer[primitiveIndex];
                     }
+                    if (intraSlabPointer) {
+                        gradient += intraSlabPointer[primitiveIndex];
+                    }
+                    if (curvaturePointer) {
+                        gradient += curvaturePointer[primitiveIndex];
+                    }
                     return gradient;
                 };
                 auto sumFloatGradient = [&](float *depthPointer,
                                             float *normalPointer,
                                             float *visibilityPointer,
+                                            float *intraSlabPointer,
+                                            float *curvaturePointer,
                                             float baseGradient) -> float {
                     float gradient = baseGradient;
                     if (depthPointer) {
@@ -4071,6 +4341,12 @@ private:
                     if (visibilityPointer) {
                         gradient += visibilityPointer[primitiveIndex];
                     }
+                    if (intraSlabPointer) {
+                        gradient += intraSlabPointer[primitiveIndex];
+                    }
+                    if (curvaturePointer) {
+                        gradient += curvaturePointer[primitiveIndex];
+                    }
                     return gradient;
                 };
 
@@ -4078,11 +4354,15 @@ private:
                     depthGradPosition,
                     normalGradPosition,
                     visibilityGradPosition,
+                    intraSlabGradPosition,
+                    curvatureGradPosition,
                     gradPosition[primitiveIndex]);
                 const Pale::float3 rotationGradient = sumFloat3Gradient(
                     depthGradRotation,
                     normalGradRotation,
                     visibilityGradRotation,
+                    intraSlabGradRotation,
+                    curvatureGradRotation,
                     gradRotation[primitiveIndex]);
                 const Pale::float2 baseScaleGradient = gradScale[primitiveIndex];
                 float scaleGradientX = baseScaleGradient.x();
@@ -4099,20 +4379,34 @@ private:
                     scaleGradientX += visibilityGradScale[primitiveIndex].x();
                     scaleGradientY += visibilityGradScale[primitiveIndex].y();
                 }
+                if (intraSlabGradScale) {
+                    scaleGradientX += intraSlabGradScale[primitiveIndex].x();
+                    scaleGradientY += intraSlabGradScale[primitiveIndex].y();
+                }
+                if (curvatureGradScale) {
+                    scaleGradientX += curvatureGradScale[primitiveIndex].x();
+                    scaleGradientY += curvatureGradScale[primitiveIndex].y();
+                }
                 const Pale::float3 albedoGradient = sumFloat3Gradient(
                     depthGradAlbedo,
                     normalGradAlbedo,
                     visibilityGradAlbedo,
+                    intraSlabGradAlbedo,
+                    curvatureGradAlbedo,
                     gradAlbedo[primitiveIndex]);
                 const float opacityGradient = sumFloatGradient(
                     depthGradOpacity,
                     normalGradOpacity,
                     visibilityGradOpacity,
+                    intraSlabGradOpacity,
+                    curvatureGradOpacity,
                     gradOpacity[primitiveIndex]);
                 const float betaGradient = sumFloatGradient(
                     depthGradBeta,
                     normalGradBeta,
                     visibilityGradBeta,
+                    intraSlabGradBeta,
+                    curvatureGradBeta,
                     gradBeta[primitiveIndex]);
 
                 const float positionUpdateX = adamUpdate(
@@ -4543,6 +4837,10 @@ private:
         result["total_normal_loss_weighted"] = 0.0f;
         result["total_opacity_prior_loss_raw"] = 0.0f;
         result["total_opacity_prior_loss_weighted"] = 0.0f;
+        result["total_intra_slab_depth_loss_raw"] = 0.0f;
+        result["total_intra_slab_depth_loss_weighted"] = 0.0f;
+        result["total_curvature_scale_loss_raw"] = 0.0f;
+        result["total_curvature_scale_loss_weighted"] = 0.0f;
         result["total_loss_value"] = 0.0f;
         return result;
     }
@@ -4553,10 +4851,16 @@ private:
         float *depthDistortionSum,
         float *normalConsistencySum,
         float *visibilityWeightedOpacitySum,
+        float *intraSlabDepthSum,
+        float *curvatureScaleSum,
         std::uint32_t *normalConsistencyValidCount,
+        std::uint32_t *intraSlabDepthActiveSlabCount,
+        std::uint32_t *curvatureScaleActiveSlabCount,
         bool useDepthDistortion,
         bool useNormalConsistency,
-        bool useVisibilityWeightedOpacity) {
+        bool useVisibilityWeightedOpacity,
+        bool useIntraSlabDepth,
+        bool useCurvatureScale) {
         const std::uint32_t pixelCount = sensor.width * sensor.height;
         if (pixelCount == 0u) {
             return;
@@ -4579,6 +4883,18 @@ private:
             throw std::runtime_error(
                 "launchSurfaceRegularizerLossAccumulationKernel: missing visibility-weighted opacity buffers");
         }
+        if (useIntraSlabDepth &&
+            (!sensor.intraSlabDepthBuffer || !sensor.intraSlabDepthActiveSlabCountBuffer ||
+             !intraSlabDepthSum || !intraSlabDepthActiveSlabCount)) {
+            throw std::runtime_error(
+                "launchSurfaceRegularizerLossAccumulationKernel: missing intra-slab depth buffers");
+        }
+        if (useCurvatureScale &&
+            (!sensor.curvatureScaleBuffer || !sensor.curvatureScaleActiveSlabCountBuffer ||
+             !curvatureScaleSum || !curvatureScaleActiveSlabCount)) {
+            throw std::runtime_error(
+                "launchSurfaceRegularizerLossAccumulationKernel: missing curvature-scale buffers");
+        }
 
         queue.parallel_for<class SurfaceRegularizerLossAccumulationKernelTag>(
             sycl::range<1>(pixelCount),
@@ -4586,13 +4902,23 @@ private:
              visibleNormalBuffer = sensor.visibleNormalBuffer,
              normalFromDepthBuffer = sensor.normalFromDepthBuffer,
              visibilityWeightedOpacityBuffer = sensor.visibilityWeightedOpacityBuffer,
+             intraSlabDepthBuffer = sensor.intraSlabDepthBuffer,
+             intraSlabDepthCountBuffer = sensor.intraSlabDepthActiveSlabCountBuffer,
+             curvatureScaleBuffer = sensor.curvatureScaleBuffer,
+             curvatureScaleCountBuffer = sensor.curvatureScaleActiveSlabCountBuffer,
              depthDistortionSum,
              normalConsistencySum,
              visibilityWeightedOpacitySum,
+             intraSlabDepthSum,
+             curvatureScaleSum,
              normalConsistencyValidCount,
+             intraSlabDepthActiveSlabCount,
+             curvatureScaleActiveSlabCount,
              useDepthDistortion,
              useNormalConsistency,
-             useVisibilityWeightedOpacity](sycl::id<1> pixelId) {
+             useVisibilityWeightedOpacity,
+             useIntraSlabDepth,
+             useCurvatureScale](sycl::id<1> pixelId) {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
 
                 auto clean = [](float value) -> float {
@@ -4617,6 +4943,40 @@ private:
                         sycl::memory_scope::device,
                         sycl::access::address_space::global_space>(*visibilityWeightedOpacitySum);
                     opacityAtomic.fetch_add(opacityValue);
+                }
+
+                if (useIntraSlabDepth) {
+                    const float lossValue = clean(intraSlabDepthBuffer[pixelIndex]);
+                    const std::uint32_t activeCount = intraSlabDepthCountBuffer[pixelIndex];
+                    auto lossAtomic = sycl::atomic_ref<
+                        float,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(*intraSlabDepthSum);
+                    lossAtomic.fetch_add(lossValue);
+                    auto countAtomic = sycl::atomic_ref<
+                        std::uint32_t,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(*intraSlabDepthActiveSlabCount);
+                    countAtomic.fetch_add(activeCount);
+                }
+
+                if (useCurvatureScale) {
+                    const float lossValue = clean(curvatureScaleBuffer[pixelIndex]);
+                    const std::uint32_t activeCount = curvatureScaleCountBuffer[pixelIndex];
+                    auto lossAtomic = sycl::atomic_ref<
+                        float,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(*curvatureScaleSum);
+                    lossAtomic.fetch_add(lossValue);
+                    auto countAtomic = sycl::atomic_ref<
+                        std::uint32_t,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(*curvatureScaleActiveSlabCount);
+                    countAtomic.fetch_add(activeCount);
                 }
 
                 if (useNormalConsistency) {
@@ -4658,15 +5018,23 @@ private:
         const Pale::SensorGPU &sensor,
         float depthDistortionWeight,
         float normalConsistencyWeight,
+        float intraSlabDepthWeight,
+        float curvatureScaleWeight,
         std::uint32_t normalConsistencyValidCount,
+        std::uint32_t intraSlabDepthActiveSlabCount,
+        std::uint32_t curvatureScaleActiveSlabCount,
         bool useDepthDistortion,
-        bool useNormalConsistency) {
+        bool useNormalConsistency,
+        bool useIntraSlabDepth,
+        bool useCurvatureScale) {
         const std::uint32_t pixelCount = sensor.width * sensor.height;
         if (pixelCount == 0u) {
             return;
         }
 
         if (!sensor.depthDistortionAdjointBuffer ||
+            !sensor.intraSlabDepthAdjointBuffer ||
+            !sensor.curvatureScaleAdjointBuffer ||
             !sensor.visibleNormalAdjointBuffer ||
             !sensor.normalFromDepthAdjointBuffer ||
             !sensor.medianDepthAdjointBuffer) {
@@ -4686,17 +5054,33 @@ private:
                                       ? normalConsistencyWeight /
                                         static_cast<float>(std::max(normalConsistencyValidCount, 1u))
                                       : 0.0f;
+        const float intraSlabDepthScale = useIntraSlabDepth
+            ? intraSlabDepthWeight /
+              static_cast<float>(std::max(intraSlabDepthActiveSlabCount, 1u))
+            : 0.0f;
+        const float curvatureScale = useCurvatureScale
+            ? curvatureScaleWeight /
+              static_cast<float>(std::max(curvatureScaleActiveSlabCount, 1u))
+            : 0.0f;
 
         queue.parallel_for<class SurfaceRegularizerAdjointFillKernelTag>(
             sycl::range<1>(pixelCount),
             [visibleNormalBuffer = sensor.visibleNormalBuffer,
              normalFromDepthBuffer = sensor.normalFromDepthBuffer,
              depthDistortionAdjointBuffer = sensor.depthDistortionAdjointBuffer,
+             intraSlabDepthAdjointBuffer = sensor.intraSlabDepthAdjointBuffer,
+             intraSlabDepthCountBuffer = sensor.intraSlabDepthActiveSlabCountBuffer,
+             curvatureScaleAdjointBuffer = sensor.curvatureScaleAdjointBuffer,
+             curvatureScaleCountBuffer = sensor.curvatureScaleActiveSlabCountBuffer,
              visibleNormalAdjointBuffer = sensor.visibleNormalAdjointBuffer,
              normalFromDepthAdjointBuffer = sensor.normalFromDepthAdjointBuffer,
              medianDepthAdjointBuffer = sensor.medianDepthAdjointBuffer,
              depthScale,
              normalScale,
+             intraSlabDepthScale,
+             curvatureScale,
+             useIntraSlabDepth,
+             useCurvatureScale,
              useNormalConsistency](sycl::id<1> pixelId) {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
 
@@ -4705,6 +5089,14 @@ private:
                 };
 
                 depthDistortionAdjointBuffer[pixelIndex] = depthScale;
+                intraSlabDepthAdjointBuffer[pixelIndex] =
+                    useIntraSlabDepth && intraSlabDepthCountBuffer[pixelIndex] > 0u
+                        ? intraSlabDepthScale
+                        : 0.0f;
+                curvatureScaleAdjointBuffer[pixelIndex] =
+                    useCurvatureScale && curvatureScaleCountBuffer[pixelIndex] > 0u
+                        ? curvatureScale
+                        : 0.0f;
                 medianDepthAdjointBuffer[pixelIndex] = 0.0f;
 
                 Pale::float4 visibleAdjoint{0.0f, 0.0f, 0.0f, 0.0f};
@@ -4917,6 +5309,8 @@ private:
     Pale::PointGradients depthDistortionGradients{};
     Pale::PointGradients normalConsistencyGradients{};
     Pale::PointGradients visibilityOpacityGradients{};
+    Pale::PointGradients intraSlabDepthGradients{};
+    Pale::PointGradients curvatureScaleGradients{};
     std::unordered_map<std::string, TrainingTargetDevice> trainingTargets{};
     DeviceAdamState deviceTrainingState{};
     bool devicePointParametersDirty{false};
@@ -5012,11 +5406,15 @@ PYBIND11_MODULE(pale, m) {
                 py::arg("camera_names"),
                 py::arg("depth_distortion_grad_images"),
                 py::arg("visible_normal_grad_images"),
-                py::arg("normal_from_depth_grad_images"))
+                py::arg("normal_from_depth_grad_images"),
+                py::arg("intra_slab_depth_grad_images"),
+                py::arg("curvature_scale_grad_images"))
             .def("render_surface_regularizers_backward_no_gradients",
                  &PythonRenderer::render_surface_regularizers_backward_no_gradients,
                  py::arg("camera_names"),
                  py::arg("depth_distortion_grad_images"),
                  py::arg("visible_normal_grad_images"),
-                 py::arg("normal_from_depth_grad_images"));
+                 py::arg("normal_from_depth_grad_images"),
+                 py::arg("intra_slab_depth_grad_images"),
+                 py::arg("curvature_scale_grad_images"));
 }

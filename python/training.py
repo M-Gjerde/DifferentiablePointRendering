@@ -83,6 +83,8 @@ class IterationGradientResult:
     depth_regularizer_gradients: Dict[str, np.ndarray]
     normal_regularizer_gradients: Dict[str, np.ndarray]
     opacity_prior_gradients: Dict[str, np.ndarray]
+    intra_slab_depth_gradients: Dict[str, np.ndarray]
+    curvature_scale_gradients: Dict[str, np.ndarray]
     surface_regularizer_gradients: Dict[str, np.ndarray]
     total_gradients: Dict[str, np.ndarray]
     adjoint_images: Dict[str, Any]
@@ -210,6 +212,12 @@ def add_regularizer_loss_state(
     loss_state["visible_normal_adjoints"] = regularizer_loss_state["visible_normal_adjoints"]
     loss_state["depth_normal_adjoints"] = regularizer_loss_state["depth_normal_adjoints"]
     loss_state["depth_distortion_maps_for_logging"] = regularizer_loss_state["depth_distortion_maps_for_logging"]
+    loss_state["intra_slab_depth_maps_for_logging"] = regularizer_loss_state.get(
+        "intra_slab_depth_maps_for_logging", {}
+    )
+    loss_state["curvature_scale_maps_for_logging"] = regularizer_loss_state.get(
+        "curvature_scale_maps_for_logging", {}
+    )
 
 
 def make_device_training_step_options(
@@ -220,6 +228,8 @@ def make_device_training_step_options(
         include_depth_distortion: bool = False,
         include_normal_consistency: bool = False,
         include_opacity_prior: bool = False,
+        include_intra_slab_depth: bool = False,
+        include_curvature_scale: bool = False,
 ) -> Dict[str, Any]:
     return {
         "optimizer": config.optimizer_type,
@@ -252,6 +262,8 @@ def make_device_training_step_options(
         "include_depth_distortion": include_depth_distortion,
         "include_normal_consistency": include_normal_consistency,
         "include_opacity_prior": include_opacity_prior,
+        "include_intra_slab_depth": include_intra_slab_depth,
+        "include_curvature_scale": include_curvature_scale,
     }
 
 
@@ -294,9 +306,13 @@ def compute_iteration_gradients(
         use_depth_distortion: bool,
         use_normal_consistency: bool,
         use_opacity_prior: bool,
+        use_intra_slab_depth: bool,
+        use_curvature_scale: bool,
         active_depth_distortion_weight: float,
         normal_consistency_weight: float,
         active_opacity_prior_weight: float,
+        intra_slab_depth_weight: float,
+        curvature_scale_weight: float,
 ) -> IterationGradientResult:
     active_camera_name = active_camera_name_for_iteration(
         active_training_camera_ids,
@@ -311,9 +327,12 @@ def compute_iteration_gradients(
     depth_regularizer_gradients: Dict[str, np.ndarray] = {}
     normal_regularizer_gradients: Dict[str, np.ndarray] = {}
     opacity_prior_gradients: Dict[str, np.ndarray] = {}
+    intra_slab_depth_gradients: Dict[str, np.ndarray] = {}
+    curvature_scale_gradients: Dict[str, np.ndarray] = {}
     surface_regularizer_gradients: Dict[str, np.ndarray] = {}
 
-    if use_depth_distortion_gradients or use_normal_consistency or use_opacity_prior:
+    if (use_depth_distortion_gradients or use_normal_consistency or use_opacity_prior or
+            use_intra_slab_depth or use_curvature_scale):
         if (
                 hasattr(renderer, "render_forward_surface_regularizer_loss_and_adjoint")
                 and hasattr(renderer, "render_surface_regularizers_backward_from_current_adjoint")
@@ -324,9 +343,13 @@ def compute_iteration_gradients(
                     "depth_distortion_weight": active_depth_distortion_weight,
                     "normal_consistency_weight": normal_consistency_weight,
                     "opacity_prior_weight": active_opacity_prior_weight,
+                    "intra_slab_depth_weight": intra_slab_depth_weight,
+                    "curvature_scale_weight": curvature_scale_weight,
                     "use_depth_distortion": use_depth_distortion,
                     "use_normal_consistency": use_normal_consistency,
                     "use_opacity_prior": use_opacity_prior,
+                    "use_intra_slab_depth": use_intra_slab_depth,
+                    "use_curvature_scale": use_curvature_scale,
                 },
             )
             add_regularizer_loss_state(loss_state, regularizer_loss_state)
@@ -348,9 +371,13 @@ def compute_iteration_gradients(
                 depth_distortion_weight=active_depth_distortion_weight,
                 normal_consistency_weight=normal_consistency_weight,
                 opacity_prior_weight=active_opacity_prior_weight,
+                intra_slab_depth_weight=intra_slab_depth_weight,
+                curvature_scale_weight=curvature_scale_weight,
                 use_depth_distortion=use_depth_distortion,
                 use_normal_consistency=use_normal_consistency,
                 use_opacity_prior=use_opacity_prior,
+                use_intra_slab_depth=use_intra_slab_depth,
+                use_curvature_scale=use_curvature_scale,
             )
             add_regularizer_loss_state(loss_state, regularizer_loss_state)
 
@@ -359,18 +386,30 @@ def compute_iteration_gradients(
                 loss_state["depth_distortion_grad_images"],
                 loss_state["visible_normal_adjoints"],
                 loss_state["depth_normal_adjoints"],
+                loss_state["intra_slab_depth_grad_images"],
+                loss_state["curvature_scale_grad_images"],
             )
         depth_regularizer_gradients = surface_regularizer_components["depth_distortion"]
         normal_regularizer_gradients = surface_regularizer_components["normal_consistency"]
         opacity_prior_gradients = surface_regularizer_components.get("opacity_prior", {})
+        intra_slab_depth_gradients = surface_regularizer_components.get("intra_slab_depth", {})
+        curvature_scale_gradients = surface_regularizer_components.get("curvature_scale", {})
 
         repair_nonfinite_gradient_dict_inplace("depth_regularizer_gradients", depth_regularizer_gradients, iteration)
         repair_nonfinite_gradient_dict_inplace("normal_regularizer_gradients", normal_regularizer_gradients, iteration)
         repair_nonfinite_gradient_dict_inplace("opacity_prior_gradients", opacity_prior_gradients, iteration)
+        repair_nonfinite_gradient_dict_inplace(
+            "intra_slab_depth_gradients", intra_slab_depth_gradients, iteration
+        )
+        repair_nonfinite_gradient_dict_inplace(
+            "curvature_scale_gradients", curvature_scale_gradients, iteration
+        )
         surface_regularizer_gradients = sum_gradient_dicts(
             depth_regularizer_gradients,
             normal_regularizer_gradients,
             opacity_prior_gradients,
+            intra_slab_depth_gradients,
+            curvature_scale_gradients,
         )
 
     photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
@@ -400,6 +439,8 @@ def compute_iteration_gradients(
         depth_regularizer_gradients=depth_regularizer_gradients,
         normal_regularizer_gradients=normal_regularizer_gradients,
         opacity_prior_gradients=opacity_prior_gradients,
+        intra_slab_depth_gradients=intra_slab_depth_gradients,
+        curvature_scale_gradients=curvature_scale_gradients,
         surface_regularizer_gradients=surface_regularizer_gradients,
         total_gradients=total_gradients,
         adjoint_images=adjoint_images,
@@ -416,6 +457,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
     opacity_prior_weight = float(getattr(config, "opacity_prior_weight", 0.0))
+    intra_slab_depth_weight = float(getattr(config, "intra_slab_depth_weight", 0.0))
+    curvature_scale_weight = float(getattr(config, "curvature_scale_weight", 0.0))
     save_ply_files_interval = int(config.save_ply_files_interval)
     mesh_extraction_interval = int(getattr(config, "mesh_extraction_interval", 1_000))
 
@@ -427,6 +470,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     use_depth_distortion = depth_distortion_base_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
     use_opacity_prior = opacity_prior_weight != 0.0
+    use_intra_slab_depth = intra_slab_depth_weight != 0.0
+    use_curvature_scale = curvature_scale_weight != 0.0
 
     print(
         "Loss terms: "
@@ -434,7 +479,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         f"base_weight={depth_distortion_base_weight:.3e} "
         f"start_iter={depth_distortion_start_iteration}, "
         f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
-        f"opacity_prior={use_opacity_prior} weight={opacity_prior_weight:.3e}"
+        f"opacity_prior={use_opacity_prior} weight={opacity_prior_weight:.3e}, "
+        f"intra_slab_depth={use_intra_slab_depth} weight={intra_slab_depth_weight:.3e}, "
+        f"curvature_scale={use_curvature_scale} weight={curvature_scale_weight:.3e}"
     )
     renderer.upload_training_targets(target_images)
 
@@ -499,9 +546,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         depth_distortion_weight=initial_depth_distortion_weight,
         normal_consistency_weight=normal_consistency_weight,
         opacity_prior_weight=opacity_prior_weight,
+        intra_slab_depth_weight=intra_slab_depth_weight,
+        curvature_scale_weight=curvature_scale_weight,
         use_depth_distortion=use_depth_distortion,
         use_normal_consistency=use_normal_consistency,
         use_opacity_prior=use_opacity_prior,
+        use_intra_slab_depth=use_intra_slab_depth,
+        use_curvature_scale=use_curvature_scale,
     )
 
     print_loss_summary("Initial", *initial_loss_tuple)
@@ -655,6 +706,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             use_depth_distortion_gradients
                             or use_normal_consistency
                             or use_opacity_prior
+                            or use_intra_slab_depth
+                            or use_curvature_scale
                     )
                     needs_gradient_stats = (
                             densification_interval > 0
@@ -675,9 +728,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 "depth_distortion_weight": active_depth_distortion_weight,
                                 "normal_consistency_weight": normal_consistency_weight,
                                 "opacity_prior_weight": active_opacity_prior_weight,
+                                "intra_slab_depth_weight": intra_slab_depth_weight,
+                                "curvature_scale_weight": curvature_scale_weight,
                                 "use_depth_distortion": use_depth_distortion,
                                 "use_normal_consistency": use_normal_consistency,
                                 "use_opacity_prior": use_opacity_prior,
+                                "use_intra_slab_depth": use_intra_slab_depth,
+                                "use_curvature_scale": use_curvature_scale,
                             },
                         )
                         adjoint_images = renderer.render_rgb_backward_from_current_forward(
@@ -707,6 +764,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 include_depth_distortion=use_depth_distortion_gradients,
                                 include_normal_consistency=use_normal_consistency,
                                 include_opacity_prior=use_opacity_prior,
+                                include_intra_slab_depth=use_intra_slab_depth,
+                                include_curvature_scale=use_curvature_scale,
                             )
                         )
                         adjoint_images["point_count"] = apply_result.get(
@@ -1183,6 +1242,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             averaged_loss_state["total_normal_loss_weighted"],
                             averaged_loss_state["total_opacity_prior_loss_raw"],
                             averaged_loss_state["total_opacity_prior_loss_weighted"],
+                            averaged_loss_state["total_intra_slab_depth_loss_raw"],
+                            averaged_loss_state["total_intra_slab_depth_loss_weighted"],
+                            averaged_loss_state["total_curvature_scale_loss_raw"],
+                            averaged_loss_state["total_curvature_scale_loss_weighted"],
                             averaged_loss_state["total_loss_value"],
                             num_points,
                             densification_new_points,
@@ -1298,9 +1361,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     use_depth_distortion=use_depth_distortion,
                     use_normal_consistency=use_normal_consistency,
                     use_opacity_prior=use_opacity_prior,
+                    use_intra_slab_depth=use_intra_slab_depth,
+                    use_curvature_scale=use_curvature_scale,
                     active_depth_distortion_weight=active_depth_distortion_weight,
                     normal_consistency_weight=normal_consistency_weight,
                     active_opacity_prior_weight=active_opacity_prior_weight,
+                    intra_slab_depth_weight=intra_slab_depth_weight,
+                    curvature_scale_weight=curvature_scale_weight,
                 )
 
                 active_camera_name = iteration_gradients.active_camera_name
@@ -1311,6 +1378,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 depth_regularizer_gradients = iteration_gradients.depth_regularizer_gradients
                 normal_regularizer_gradients = iteration_gradients.normal_regularizer_gradients
                 opacity_prior_gradients = iteration_gradients.opacity_prior_gradients
+                intra_slab_depth_gradients = iteration_gradients.intra_slab_depth_gradients
+                curvature_scale_gradients = iteration_gradients.curvature_scale_gradients
                 surface_regularizer_gradients = iteration_gradients.surface_regularizer_gradients
                 total_gradients = iteration_gradients.total_gradients
                 adjoint_images = iteration_gradients.adjoint_images
@@ -1333,6 +1402,26 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 if camera_batch_scale != 1.0:
                     photo_gradients = scale_gradient_dict(photo_gradients, camera_batch_scale)
+                    depth_regularizer_gradients = scale_gradient_dict(
+                        depth_regularizer_gradients,
+                        camera_batch_scale,
+                    )
+                    normal_regularizer_gradients = scale_gradient_dict(
+                        normal_regularizer_gradients,
+                        camera_batch_scale,
+                    )
+                    opacity_prior_gradients = scale_gradient_dict(
+                        opacity_prior_gradients,
+                        camera_batch_scale,
+                    )
+                    intra_slab_depth_gradients = scale_gradient_dict(
+                        intra_slab_depth_gradients,
+                        camera_batch_scale,
+                    )
+                    curvature_scale_gradients = scale_gradient_dict(
+                        curvature_scale_gradients,
+                        camera_batch_scale,
+                    )
                     surface_regularizer_gradients = scale_gradient_dict(
                         surface_regularizer_gradients,
                         camera_batch_scale,
@@ -1759,6 +1848,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["total_normal_loss_weighted"],
                         averaged_loss_state["total_opacity_prior_loss_raw"],
                         averaged_loss_state["total_opacity_prior_loss_weighted"],
+                        averaged_loss_state["total_intra_slab_depth_loss_raw"],
+                        averaged_loss_state["total_intra_slab_depth_loss_weighted"],
+                        averaged_loss_state["total_curvature_scale_loss_raw"],
+                        averaged_loss_state["total_curvature_scale_loss_weighted"],
                         averaged_loss_state["total_loss_value"],
                         num_points,
                         densification_new_points,
@@ -1861,6 +1954,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             depth_regularizer_gradients=depth_regularizer_gradients,
                             normal_regularizer_gradients=normal_regularizer_gradients,
                             opacity_prior_gradients=opacity_prior_gradients,
+                            intra_slab_depth_gradients=intra_slab_depth_gradients,
+                            curvature_scale_gradients=curvature_scale_gradients,
                             surface_regularizer_gradients=surface_regularizer_gradients,
                             total_gradients=total_gradients,
                         )
@@ -1919,6 +2014,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     final_normal_loss_weighted = 0.0
     final_opacity_prior_loss_raw = 0.0
     final_opacity_prior_loss_weighted = 0.0
+    final_intra_slab_depth_loss_raw = 0.0
+    final_intra_slab_depth_loss_weighted = 0.0
+    final_curvature_scale_loss_raw = 0.0
+    final_curvature_scale_loss_weighted = 0.0
     final_total_loss = 0.0
 
     final_depth_distortion_weight = scheduled_regularizer_weight(
@@ -1972,6 +2071,44 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_opacity_prior_loss_weighted += opacity_prior_cam_weighted
             final_total_loss += opacity_prior_cam_weighted
 
+        if use_intra_slab_depth:
+            intra_slab_depth_map = get_forward_intra_slab_depth(final_images, camera_name)
+            intra_slab_active_count = max(
+                1,
+                int(get_forward_intra_slab_depth_active_slab_count(
+                    final_images,
+                    camera_name,
+                ).sum(dtype=np.uint64)),
+            )
+            intra_slab_depth_cam_raw = float(
+                intra_slab_depth_map.sum() / intra_slab_active_count
+            )
+            intra_slab_depth_cam_weighted = (
+                intra_slab_depth_weight * intra_slab_depth_cam_raw
+            )
+            final_intra_slab_depth_loss_raw += intra_slab_depth_cam_raw
+            final_intra_slab_depth_loss_weighted += intra_slab_depth_cam_weighted
+            final_total_loss += intra_slab_depth_cam_weighted
+
+        if use_curvature_scale:
+            curvature_scale_map = get_forward_curvature_scale(final_images, camera_name)
+            curvature_scale_active_count = max(
+                1,
+                int(get_forward_curvature_scale_active_slab_count(
+                    final_images,
+                    camera_name,
+                ).sum(dtype=np.uint64)),
+            )
+            curvature_scale_cam_raw = float(
+                curvature_scale_map.sum() / curvature_scale_active_count
+            )
+            curvature_scale_cam_weighted = (
+                curvature_scale_weight * curvature_scale_cam_raw
+            )
+            final_curvature_scale_loss_raw += curvature_scale_cam_raw
+            final_curvature_scale_loss_weighted += curvature_scale_cam_weighted
+            final_total_loss += curvature_scale_cam_weighted
+
     print_loss_summary("Initial", *initial_loss_tuple)
     print_loss_summary(
         "Final",
@@ -1982,6 +2119,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_normal_loss_weighted,
         final_opacity_prior_loss_raw,
         final_opacity_prior_loss_weighted,
+        final_intra_slab_depth_loss_raw,
+        final_intra_slab_depth_loss_weighted,
+        final_curvature_scale_loss_raw,
+        final_curvature_scale_loss_weighted,
         final_total_loss,
     )
     ply_path = config.output_dir / "points_final.ply"

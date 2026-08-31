@@ -87,24 +87,30 @@ namespace {
         VisibleNormal,
         DepthNormal,
         DepthDistortion,
+        IntraSlabDepth,
+        CurvatureScale,
     };
 
-    constexpr std::array<ViewImageMode, 6> kViewImageModeShortcutOrder = {
+    constexpr std::array<ViewImageMode, 8> kViewImageModeShortcutOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
         ViewImageMode::MeanDepth,
         ViewImageMode::VisibleNormal,
         ViewImageMode::DepthNormal,
+        ViewImageMode::IntraSlabDepth,
+        ViewImageMode::CurvatureScale,
     };
 
-    constexpr std::array<const char*, 6> kViewImageModeLabels = {
+    constexpr std::array<const char*, 8> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
         "4 Mean depth",
         "5 Visible normal",
         "6 Depth normal",
+        "7 Intra-slab depth",
+        "8 Curvature scale",
     };
 
     int viewImageModeShortcutIndex(ViewImageMode mode) {
@@ -130,11 +136,15 @@ namespace {
         bool visibleNormalValid = false;
         bool depthNormalValid = false;
         bool depthDistortionValid = false;
+        bool intraSlabDepthValid = false;
+        bool curvatureScaleValid = false;
         std::vector<float> meanDepth;
         std::vector<float> medianDepth;
         std::vector<float> visibleNormal;
         std::vector<float> depthNormal;
         std::vector<float> depthDistortion;
+        std::vector<float> intraSlabDepth;
+        std::vector<float> curvatureScale;
 
         void invalidate() {
             width = 0;
@@ -144,11 +154,15 @@ namespace {
             visibleNormalValid = false;
             depthNormalValid = false;
             depthDistortionValid = false;
+            intraSlabDepthValid = false;
+            curvatureScaleValid = false;
             meanDepth.clear();
             medianDepth.clear();
             visibleNormal.clear();
             depthNormal.clear();
             depthDistortion.clear();
+            intraSlabDepth.clear();
+            curvatureScale.clear();
         }
 
         void prepareFor(uint32_t nextWidth, uint32_t nextHeight) {
@@ -1553,6 +1567,12 @@ namespace {
         sensor.depthDistortionBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.depthDistortionAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.visibilityWeightedOpacityBuffer = sycl::malloc_device<float>(pixelCount, queue);
+        sensor.intraSlabDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
+        sensor.intraSlabDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
+        sensor.intraSlabDepthActiveSlabCountBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
+        sensor.curvatureScaleBuffer = sycl::malloc_device<float>(pixelCount, queue);
+        sensor.curvatureScaleAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
+        sensor.curvatureScaleActiveSlabCountBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
         sensor.medianDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.meanDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.medianDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
@@ -1562,7 +1582,10 @@ namespace {
         sensor.normalFromDepthAdjointBuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
         sensor.visibleNormalAdjointBuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
 
-        if (!sensor.framebuffer || !sensor.outputFramebuffer || !sensor.ldrFramebuffer) {
+        if (!sensor.framebuffer || !sensor.outputFramebuffer || !sensor.ldrFramebuffer ||
+            !sensor.intraSlabDepthBuffer || !sensor.intraSlabDepthAdjointBuffer ||
+            !sensor.intraSlabDepthActiveSlabCountBuffer || !sensor.curvatureScaleBuffer ||
+            !sensor.curvatureScaleAdjointBuffer || !sensor.curvatureScaleActiveSlabCountBuffer) {
             throw std::runtime_error("Failed to allocate realtime sensor framebuffers");
         }
         return sensor;
@@ -1577,6 +1600,12 @@ namespace {
         queue.memset(sensor.depthDistortionBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.depthDistortionAdjointBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.visibilityWeightedOpacityBuffer, 0, pixelCount * sizeof(float));
+        queue.memset(sensor.intraSlabDepthBuffer, 0, pixelCount * sizeof(float));
+        queue.memset(sensor.intraSlabDepthAdjointBuffer, 0, pixelCount * sizeof(float));
+        queue.memset(sensor.intraSlabDepthActiveSlabCountBuffer, 0, pixelCount * sizeof(std::uint32_t));
+        queue.memset(sensor.curvatureScaleBuffer, 0, pixelCount * sizeof(float));
+        queue.memset(sensor.curvatureScaleAdjointBuffer, 0, pixelCount * sizeof(float));
+        queue.memset(sensor.curvatureScaleActiveSlabCountBuffer, 0, pixelCount * sizeof(std::uint32_t));
         queue.memset(sensor.medianDepthBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.meanDepthBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.medianDepthAdjointBuffer, 0, pixelCount * sizeof(float));
@@ -1603,6 +1632,12 @@ namespace {
         freeDevicePtr(queue, sensor.depthDistortionBuffer);
         freeDevicePtr(queue, sensor.depthDistortionAdjointBuffer);
         freeDevicePtr(queue, sensor.visibilityWeightedOpacityBuffer);
+        freeDevicePtr(queue, sensor.intraSlabDepthBuffer);
+        freeDevicePtr(queue, sensor.intraSlabDepthAdjointBuffer);
+        freeDevicePtr(queue, sensor.intraSlabDepthActiveSlabCountBuffer);
+        freeDevicePtr(queue, sensor.curvatureScaleBuffer);
+        freeDevicePtr(queue, sensor.curvatureScaleAdjointBuffer);
+        freeDevicePtr(queue, sensor.curvatureScaleActiveSlabCountBuffer);
         freeDevicePtr(queue, sensor.medianDepthBuffer);
         freeDevicePtr(queue, sensor.meanDepthBuffer);
         freeDevicePtr(queue, sensor.medianDepthAdjointBuffer);
@@ -2805,6 +2840,20 @@ int main(int argc, char** argv) {
                         debugDisplayBuffers.depthDistortionValid = true;
                     }
                     return true;
+                case ViewImageMode::IntraSlabDepth:
+                    if (!debugDisplayBuffers.intraSlabDepthValid) {
+                        debugDisplayBuffers.intraSlabDepth =
+                            Pale::downloadFloatBuffer(queue, sensor.intraSlabDepthBuffer, pixelCount);
+                        debugDisplayBuffers.intraSlabDepthValid = true;
+                    }
+                    return true;
+                case ViewImageMode::CurvatureScale:
+                    if (!debugDisplayBuffers.curvatureScaleValid) {
+                        debugDisplayBuffers.curvatureScale =
+                            Pale::downloadFloatBuffer(queue, sensor.curvatureScaleBuffer, pixelCount);
+                        debugDisplayBuffers.curvatureScaleValid = true;
+                    }
+                    return true;
                 case ViewImageMode::Rendered:
                     return true;
             }
@@ -2860,6 +2909,26 @@ int main(int argc, char** argv) {
                     case ViewImageMode::DepthDistortion:
                         colorizeScalarBuffer(
                             debugDisplayBuffers.depthDistortion,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::IntraSlabDepth:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.intraSlabDepth,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::CurvatureScale:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.curvatureScale,
                             displayedRenderWidth,
                             displayedRenderHeight,
                             false,
@@ -3190,13 +3259,15 @@ int main(int argc, char** argv) {
                     stepLatestOptimizationSnapshot(-1);
                 }
 
-                constexpr std::array<ImGuiKey, 6> viewImageModeShortcutKeys = {
+                constexpr std::array<ImGuiKey, 8> viewImageModeShortcutKeys = {
                     ImGuiKey_1,
                     ImGuiKey_2,
                     ImGuiKey_3,
                     ImGuiKey_4,
                     ImGuiKey_5,
                     ImGuiKey_6,
+                    ImGuiKey_7,
+                    ImGuiKey_8,
                 };
 
                 for (std::size_t shortcutIndex = 0;
@@ -3355,7 +3426,9 @@ int main(int argc, char** argv) {
             }
             if (viewImageMode == ViewImageMode::MeanDepth ||
                 viewImageMode == ViewImageMode::MedianDepth ||
-                viewImageMode == ViewImageMode::DepthDistortion) {
+                viewImageMode == ViewImageMode::DepthDistortion ||
+                viewImageMode == ViewImageMode::IntraSlabDepth ||
+                viewImageMode == ViewImageMode::CurvatureScale) {
                 int scalarColorMapIndex = static_cast<int>(scalarColorMap);
                 const char* scalarColorMaps[] = {"Viridis", "Jet"};
                 if (ImGui::Combo(

@@ -80,6 +80,50 @@ def get_forward_opacity_prior(forward_out: Dict[str, dict], camera_name: str) ->
     return np.nan_to_num(opacity_prior, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def get_forward_intra_slab_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "intra_slab_depth" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+    values = np.asarray(camera_out["intra_slab_depth"], dtype=np.float32, order="C")
+    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def get_forward_intra_slab_depth_active_slab_count(
+        forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "intra_slab_depth_active_slab_count" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.uint32)
+    return np.asarray(
+        camera_out["intra_slab_depth_active_slab_count"],
+        dtype=np.uint32,
+        order="C",
+    )
+
+
+def get_forward_curvature_scale(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "curvature_scale" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.float32)
+    values = np.asarray(camera_out["curvature_scale"], dtype=np.float32, order="C")
+    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def get_forward_curvature_scale_active_slab_count(
+        forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    camera_out = forward_out[camera_name]
+    if "curvature_scale_active_slab_count" not in camera_out:
+        h, w = _infer_hw_from_forward(forward_out, camera_name)
+        return np.zeros((h, w), dtype=np.uint32)
+    return np.asarray(
+        camera_out["curvature_scale_active_slab_count"],
+        dtype=np.uint32,
+        order="C",
+    )
+
+
 def get_forward_visible_normal(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "visible_normal" not in camera_out:

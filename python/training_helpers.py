@@ -46,6 +46,10 @@ LOSS_VALUE_KEYS = (
     "total_normal_loss_weighted",
     "total_opacity_prior_loss_raw",
     "total_opacity_prior_loss_weighted",
+    "total_intra_slab_depth_loss_raw",
+    "total_intra_slab_depth_loss_weighted",
+    "total_curvature_scale_loss_raw",
+    "total_curvature_scale_loss_weighted",
     "total_loss_value",
 )
 
@@ -723,17 +727,26 @@ def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
     opacity_weighted = float(loss_state["total_opacity_prior_loss_weighted"])
+    intra_slab_weighted = float(loss_state["total_intra_slab_depth_loss_weighted"])
+    curvature_scale_weighted = float(loss_state["total_curvature_scale_loss_weighted"])
 
     after_depth = rgb_loss + depth_weighted
     after_normal = after_depth + normal_weighted
     after_opacity = after_normal + opacity_weighted
-    regularizer_total = depth_weighted + normal_weighted + opacity_weighted
+    after_intra_slab = after_opacity + intra_slab_weighted
+    after_curvature_scale = after_intra_slab + curvature_scale_weighted
+    regularizer_total = (
+        depth_weighted + normal_weighted + opacity_weighted +
+        intra_slab_weighted + curvature_scale_weighted
+    )
 
     return {
         "before_regularizers": rgb_loss,
         "after_depth_distortion": after_depth,
         "after_normal_consistency": after_normal,
         "after_opacity_prior": after_opacity,
+        "after_intra_slab_depth": after_intra_slab,
+        "after_curvature_scale": after_curvature_scale,
         "regularizer_total": regularizer_total,
         "total": float(loss_state["total_loss_value"]),
     }
@@ -744,12 +757,19 @@ def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
     opacity_weighted = float(loss_state["total_opacity_prior_loss_weighted"])
+    intra_slab_weighted = float(loss_state["total_intra_slab_depth_loss_weighted"])
+    curvature_scale_weighted = float(loss_state["total_curvature_scale_loss_weighted"])
     total_loss = float(loss_state["total_loss_value"])
 
     after_depth = rgb_loss + depth_weighted
     after_normal = after_depth + normal_weighted
     after_opacity = after_normal + opacity_weighted
-    regularizer_total = depth_weighted + normal_weighted + opacity_weighted
+    after_intra_slab = after_opacity + intra_slab_weighted
+    after_curvature_scale = after_intra_slab + curvature_scale_weighted
+    regularizer_total = (
+        depth_weighted + normal_weighted + opacity_weighted +
+        intra_slab_weighted + curvature_scale_weighted
+    )
     loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
     loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
 
@@ -764,6 +784,10 @@ def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
         f"(+{normal_weighted:.3e})\n"
         f"  {'+ opacity prior':<28} {after_opacity:>12.3e}  "
         f"(+{opacity_weighted:.3e})\n"
+        f"  {'+ intra-slab depth':<28} {after_intra_slab:>12.3e}  "
+        f"(+{intra_slab_weighted:.3e})\n"
+        f"  {'+ curvature scale':<28} {after_curvature_scale:>12.3e}  "
+        f"(+{curvature_scale_weighted:.3e})\n"
         f"  {'regularizer total':<28} {regularizer_total:>12.3e}\n"
         f"  {'total':<28} {total_loss:>12.3e}"
     )
@@ -831,6 +855,10 @@ def format_training_iteration_log(
         f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
         f" opacity_raw={loss_state['total_opacity_prior_loss_raw']:.3e}"
         f" opacity_w={loss_state['total_opacity_prior_loss_weighted']:.3e}"
+        f" intra_slab_raw={loss_state['total_intra_slab_depth_loss_raw']:.3e}"
+        f" intra_slab_w={loss_state['total_intra_slab_depth_loss_weighted']:.3e}"
+        f" curvature_scale_raw={loss_state['total_curvature_scale_loss_raw']:.3e}"
+        f" curvature_scale_w={loss_state['total_curvature_scale_loss_weighted']:.3e}"
         f" opacity_active_w={active_opacity_prior_weight:.3e}"
         f" total={loss_state['total_loss_value']:.3e}\n"
         f"  grad_rms:"
@@ -855,6 +883,8 @@ def format_gradient_source_balance(
         depth_regularizer_gradients: Dict[str, np.ndarray],
         normal_regularizer_gradients: Dict[str, np.ndarray],
         opacity_prior_gradients: Dict[str, np.ndarray],
+        intra_slab_depth_gradients: Dict[str, np.ndarray],
+        curvature_scale_gradients: Dict[str, np.ndarray],
         surface_regularizer_gradients: Dict[str, np.ndarray],
         total_gradients: Dict[str, np.ndarray],
 ) -> str:
@@ -874,10 +904,12 @@ def format_gradient_source_balance(
         f"{'loss_grad':>11}"
         f"{'reg_grad':>11}"
         f"{'total_grad':>11}"
-        f"{'reg_weight%':>8}"
+        f"{'reg_share%':>12}"
         f"{'depth%':>8}"
         f"{'normal%':>9}"
         f"{'opacity%':>10}"
+        f"{'intra%':>9}"
+        f"{'curv%':>8}"
         f"   {'source norms'}",
     ]
 
@@ -887,6 +919,8 @@ def format_gradient_source_balance(
         depth_norm = gradient_norm_for_key(depth_regularizer_gradients, key)
         normal_norm = gradient_norm_for_key(normal_regularizer_gradients, key)
         opacity_norm = gradient_norm_for_key(opacity_prior_gradients, key)
+        intra_slab_norm = gradient_norm_for_key(intra_slab_depth_gradients, key)
+        curvature_scale_norm = gradient_norm_for_key(curvature_scale_gradients, key)
 
         surface_regularizer_norm = gradient_norm_for_key(
             surface_regularizer_gradients,
@@ -906,6 +940,8 @@ def format_gradient_source_balance(
                 depth_norm
                 + normal_norm
                 + opacity_norm
+                + intra_slab_norm
+                + curvature_scale_norm
         )
 
         depth_percent = (
@@ -923,6 +959,16 @@ def format_gradient_source_balance(
             if component_denom > 1.0e-20
             else 0.0
         )
+        intra_slab_percent = (
+            100.0 * intra_slab_norm / component_denom
+            if component_denom > 1.0e-20
+            else 0.0
+        )
+        curvature_scale_percent = (
+            100.0 * curvature_scale_norm / component_denom
+            if component_denom > 1.0e-20
+            else 0.0
+        )
 
         lines.append(
             "  "
@@ -930,14 +976,18 @@ def format_gradient_source_balance(
             f"{loss_norm:>11.2e}"
             f"{surface_regularizer_norm:>11.2e}"
             f"{total_norm:>11.2e}"
-            f"{prior_percent:>7.1f}%"
+            f"{prior_percent:>11.1f}%"
             f"{depth_percent:>7.1f}%"
             f"{normal_percent:>8.1f}%"
             f"{opacity_percent:>9.1f}%"
+            f"{intra_slab_percent:>8.1f}%"
+            f"{curvature_scale_percent:>7.1f}%"
             f"   "
             f"depth={depth_norm:.2e}, "
             f"normal={normal_norm:.2e}, "
             f"opacity={opacity_norm:.2e}, "
+            f"intra={intra_slab_norm:.2e}, "
+            f"curvature={curvature_scale_norm:.2e}"
         )
 
     return "\n".join(lines)
@@ -1343,10 +1393,14 @@ def compute_initial_losses_and_save_outputs(
         depth_distortion_weight: float,
         normal_consistency_weight: float,
         opacity_prior_weight: float,
+        intra_slab_depth_weight: float,
+        curvature_scale_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
         use_opacity_prior: bool,
-) -> tuple[float, float, float, float, float, float, float, float]:
+        use_intra_slab_depth: bool,
+        use_curvature_scale: bool,
+) -> tuple[float, ...]:
     initial_points_path = output_dir / "initial_points.ply"
     save_gaussians_to_ply(
         initial_points_path,
@@ -1365,6 +1419,8 @@ def compute_initial_losses_and_save_outputs(
     initial_depth_distortion_loss_raw = 0.0
     initial_normal_loss_raw = 0.0
     initial_opacity_prior_loss_raw = 0.0
+    initial_intra_slab_depth_loss_raw = 0.0
+    initial_curvature_scale_loss_raw = 0.0
 
     for camera_name in all_camera_ids:
         img_np = get_forward_rgb(initial_images, camera_name)
@@ -1395,15 +1451,43 @@ def compute_initial_losses_and_save_outputs(
         if use_opacity_prior:
             initial_opacity_prior_loss_raw += float(get_forward_opacity_prior(initial_images, camera_name).mean())
 
+        if use_intra_slab_depth:
+            loss_map = get_forward_intra_slab_depth(initial_images, camera_name)
+            active_count = max(
+                1,
+                int(get_forward_intra_slab_depth_active_slab_count(
+                    initial_images, camera_name
+                ).sum(dtype=np.uint64)),
+            )
+            initial_intra_slab_depth_loss_raw += float(loss_map.sum() / active_count)
+
+        if use_curvature_scale:
+            loss_map = get_forward_curvature_scale(initial_images, camera_name)
+            active_count = max(
+                1,
+                int(get_forward_curvature_scale_active_slab_count(
+                    initial_images, camera_name
+                ).sum(dtype=np.uint64)),
+            )
+            initial_curvature_scale_loss_raw += float(loss_map.sum() / active_count)
+
     initial_depth_distortion_loss_weighted = depth_distortion_weight * initial_depth_distortion_loss_raw
     initial_normal_loss_weighted = normal_consistency_weight * initial_normal_loss_raw
     initial_opacity_prior_loss_weighted = opacity_prior_weight * initial_opacity_prior_loss_raw
+    initial_intra_slab_depth_loss_weighted = (
+        intra_slab_depth_weight * initial_intra_slab_depth_loss_raw
+    )
+    initial_curvature_scale_loss_weighted = (
+        curvature_scale_weight * initial_curvature_scale_loss_raw
+    )
 
     initial_total_loss = (
             initial_rgb_loss
             + initial_depth_distortion_loss_weighted
             + initial_normal_loss_weighted
             + initial_opacity_prior_loss_weighted
+            + initial_intra_slab_depth_loss_weighted
+            + initial_curvature_scale_loss_weighted
     )
 
     return (
@@ -1414,6 +1498,10 @@ def compute_initial_losses_and_save_outputs(
         initial_normal_loss_weighted,
         initial_opacity_prior_loss_raw,
         initial_opacity_prior_loss_weighted,
+        initial_intra_slab_depth_loss_raw,
+        initial_intra_slab_depth_loss_weighted,
+        initial_curvature_scale_loss_raw,
+        initial_curvature_scale_loss_weighted,
         initial_total_loss,
     )
 
@@ -1427,6 +1515,10 @@ def print_loss_summary(
         normal_loss_weighted: float,
         opacity_prior_loss_raw: float,
         opacity_prior_loss_weighted: float,
+        intra_slab_depth_loss_raw: float,
+        intra_slab_depth_loss_weighted: float,
+        curvature_scale_loss_raw: float,
+        curvature_scale_loss_weighted: float,
         total_loss: float,
 ) -> None:
     print(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
@@ -1436,6 +1528,10 @@ def print_loss_summary(
     print(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
     print(f"{prefix} opacity prior loss (raw)               : {opacity_prior_loss_raw:.6e}")
     print(f"{prefix} opacity prior loss (weighted)          : {opacity_prior_loss_weighted:.6e}")
+    print(f"{prefix} intra-slab depth loss (raw)            : {intra_slab_depth_loss_raw:.6e}")
+    print(f"{prefix} intra-slab depth loss (weighted)       : {intra_slab_depth_loss_weighted:.6e}")
+    print(f"{prefix} curvature scale loss (raw)             : {curvature_scale_loss_raw:.6e}")
+    print(f"{prefix} curvature scale loss (weighted)        : {curvature_scale_loss_weighted:.6e}")
     print(f"{prefix} total loss                             : {total_loss:.6e}")
 
 
@@ -1445,9 +1541,13 @@ def compute_surface_regularizer_losses_and_adjoints(
         depth_distortion_weight: float,
         normal_consistency_weight: float,
         opacity_prior_weight: float,
+        intra_slab_depth_weight: float,
+        curvature_scale_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
         use_opacity_prior: bool,
+        use_intra_slab_depth: bool,
+        use_curvature_scale: bool,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = make_zero_loss_values()
     result.update({
@@ -1455,6 +1555,10 @@ def compute_surface_regularizer_losses_and_adjoints(
         "visible_normal_adjoints": {},
         "depth_normal_adjoints": {},
         "depth_distortion_maps_for_logging": {},
+        "intra_slab_depth_grad_images": {},
+        "curvature_scale_grad_images": {},
+        "intra_slab_depth_maps_for_logging": {},
+        "curvature_scale_maps_for_logging": {},
         "per_camera_loss_values": {},
     })
 
@@ -1510,6 +1614,46 @@ def compute_surface_regularizer_losses_and_adjoints(
             camera_loss_values["total_opacity_prior_loss_raw"] = opacity_prior_loss_raw
             camera_loss_values["total_opacity_prior_loss_weighted"] = opacity_prior_loss_weighted
             camera_loss_values["total_loss_value"] += opacity_prior_loss_weighted
+
+        if use_intra_slab_depth:
+            intra_slab_depth_np = get_forward_intra_slab_depth(forward_out, camera_name)
+            active_slab_count_np = get_forward_intra_slab_depth_active_slab_count(
+                forward_out, camera_name
+            )
+            active_slab_count = max(1, int(active_slab_count_np.sum(dtype=np.uint64)))
+            intra_slab_depth_loss_raw = float(intra_slab_depth_np.sum() / active_slab_count)
+            intra_slab_depth_loss_weighted = (
+                intra_slab_depth_weight * intra_slab_depth_loss_raw
+            )
+            camera_loss_values["total_intra_slab_depth_loss_raw"] = intra_slab_depth_loss_raw
+            camera_loss_values["total_intra_slab_depth_loss_weighted"] = (
+                intra_slab_depth_loss_weighted
+            )
+            camera_loss_values["total_loss_value"] += intra_slab_depth_loss_weighted
+            result["intra_slab_depth_maps_for_logging"][camera_name] = intra_slab_depth_np
+            result["intra_slab_depth_grad_images"][camera_name] = np.where(
+                active_slab_count_np > 0,
+                intra_slab_depth_weight / float(active_slab_count),
+                0.0,
+            ).astype(np.float32, copy=False)
+
+        if use_curvature_scale:
+            curvature_scale_np = get_forward_curvature_scale(forward_out, camera_name)
+            active_slab_count_np = get_forward_curvature_scale_active_slab_count(
+                forward_out, camera_name
+            )
+            active_slab_count = max(1, int(active_slab_count_np.sum(dtype=np.uint64)))
+            curvature_scale_loss_raw = float(curvature_scale_np.sum() / active_slab_count)
+            curvature_scale_loss_weighted = curvature_scale_weight * curvature_scale_loss_raw
+            camera_loss_values["total_curvature_scale_loss_raw"] = curvature_scale_loss_raw
+            camera_loss_values["total_curvature_scale_loss_weighted"] = curvature_scale_loss_weighted
+            camera_loss_values["total_loss_value"] += curvature_scale_loss_weighted
+            result["curvature_scale_maps_for_logging"][camera_name] = curvature_scale_np
+            result["curvature_scale_grad_images"][camera_name] = np.where(
+                active_slab_count_np > 0,
+                curvature_scale_weight / float(active_slab_count),
+                0.0,
+            ).astype(np.float32, copy=False)
 
         for loss_key in LOSS_VALUE_KEYS:
             result[loss_key] += camera_loss_values[loss_key]
@@ -2117,6 +2261,10 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "loss_normal_consistency_weighted_mean",
             "loss_opacity_prior_raw_mean",
             "loss_opacity_prior_weighted_mean",
+            "loss_intra_slab_depth_raw_mean",
+            "loss_intra_slab_depth_weighted_mean",
+            "loss_curvature_scale_raw_mean",
+            "loss_curvature_scale_weighted_mean",
             "loss_total_mean",
             "num_points",
             "densification_new_points",

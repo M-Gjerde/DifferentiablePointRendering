@@ -380,6 +380,8 @@ namespace Pale {
             clearPointGradients(pkg.queue, pkg.depthDistortionGradients);
             clearPointGradients(pkg.queue, pkg.normalConsistencyGradients);
             clearPointGradients(pkg.queue, pkg.visibilityOpacityGradients);
+            clearPointGradients(pkg.queue, pkg.intraSlabDepthGradients);
+            clearPointGradients(pkg.queue, pkg.curvatureScaleGradients);
             pkg.queue.wait();
         }
 

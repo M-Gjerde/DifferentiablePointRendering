@@ -21,6 +21,12 @@ namespace Pale {
         float* depthDistortionBuffer = nullptr;
         float* depthDistortionAdjointBuffer = nullptr;
         float* visibilityWeightedOpacityBuffer = nullptr;
+        float* intraSlabDepthBuffer = nullptr;
+        float* intraSlabDepthAdjointBuffer = nullptr;
+        uint32_t* intraSlabDepthActiveSlabCountBuffer = nullptr;
+        float* curvatureScaleBuffer = nullptr;
+        float* curvatureScaleAdjointBuffer = nullptr;
+        uint32_t* curvatureScaleActiveSlabCountBuffer = nullptr;
 
         float*  medianDepthBuffer;        // scalar visualization depth
         float*  meanDepthBuffer;        // scalar visualization depth
@@ -106,6 +112,8 @@ namespace Pale {
         PointGradients depthDistortionGradients{};
         PointGradients normalConsistencyGradients{};
         PointGradients visibilityOpacityGradients{};
+        PointGradients intraSlabDepthGradients{};
+        PointGradients curvatureScaleGradients{};
         std::vector<SensorGPU> sensors{};
         DebugImages* debugImages{};
         uint32_t numSensors{};

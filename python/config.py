@@ -40,6 +40,8 @@ class RendererSettingsConfig:
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
             "opacity_prior_weight": config.opacity_prior_weight,
+            "intra_slab_depth_weight": config.intra_slab_depth_weight,
+            "curvature_scale_weight": config.curvature_scale_weight,
             "minimum_projected_footprint": config.minimum_projected_footprint,
             "minimum_projected_footprint_pixels": config.minimum_projected_footprint_pixels,
         }
@@ -73,7 +75,7 @@ class OptimizationConfig:
     # Position LR scheduling. The option names are kept for run-config compatibility.
     use_global_lr_schedule: bool = True
     global_lr_scale_init: float = 2.0
-    global_lr_scale_final: float = 0.5
+    global_lr_scale_final: float = 1.0
     global_lr_start_iteration: int = 0
     global_lr_max_steps: int = int(4_000)
 
@@ -82,6 +84,9 @@ class OptimizationConfig:
     normal_consistency_weight: float = 0.025
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
+    # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
+    intra_slab_depth_weight: float = 1.0e-3
+    curvature_scale_weight: float = 1.0e-4
     minimum_projected_footprint: bool = True
     minimum_projected_footprint_pixels: float = 0.707
 
@@ -92,13 +97,13 @@ class OptimizationConfig:
     # Densification becomes less frequent over the position LR schedule, giving
     # newly cloned surfels more optimization steps as their movement slows.
     densification_interval: int = 50
-    densification_interval_final: int = 100
+    densification_interval_final: int = 50
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 2.5e-4
+    densification_grad_abs_min_final: float = 1.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 4_000
     densification_scale_min: float = 3.0e-3
@@ -162,12 +167,12 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 1.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.001
-        factor_rotation = 0.05
-        factor_scale = 0.0008
-        factor_albedo = 0.005
+        factor_position = 0.0005
+        factor_rotation = 0.03
+        factor_scale = 0.0004
+        factor_albedo = 0.004
         factor_opacity = 0.00
-        factor_beta = 0.002
+        factor_beta = 0.005
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -378,6 +383,16 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument(
         "--opacity-prior-weight",
         dest="opacity_prior_weight",
+        type=float,
+    )
+    parser.add_argument(
+        "--intra-slab-depth-weight",
+        dest="intra_slab_depth_weight",
+        type=float,
+    )
+    parser.add_argument(
+        "--curvature-scale-weight",
+        dest="curvature_scale_weight",
         type=float,
     )
     parser.add_argument(

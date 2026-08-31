@@ -200,6 +200,12 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
     queue.fill(sensor.normalFromDepthBuffer, float4{0.0f}, pixelCount).wait();
     queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount).wait();
     queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount).wait();
+    queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount).wait();
     queue.fill(sensor.visibilityWeightedOpacityBuffer, 0.0f, pixelCount).wait();
     sycl::event kernelEvent3 = queue.parallel_for<class CameraGatherKernel>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
         constexpr float kAlphaEpsilon = 1.0e-8f;
@@ -263,8 +269,9 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         float accumulatedWeightedDepth = 0.0f;
         float3 accumulatedWeightedNormal{0.0f};
         float visibilityWeightedOpacityLoss = 0.0f;
+        float intraSlabDepthLossSum = 0.0f;
+        uint32_t intraSlabDepthActiveSlabCount = 0u;
         float previousDepthDistortionWeights[kMaxSplatEventsPerRay];
-        float previousDepthDistortionDepths[kMaxSplatEventsPerRay];
         float previousDepthDistortionNdcDepths[kMaxSplatEventsPerRay];
         uint32_t previousDepthDistortionHitCount = 0u;
         uint32_t regularizerHitIndex = 0u;
@@ -314,16 +321,12 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 profileDepthPairIterations += previousDepthDistortionHitCount;
             }
             for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
-                const float pairWeight = depthDistortionPairSeparationWeight(
-                    previousDepthDistortionDepths[previousIndex], depth);
-                if (pairWeight <= 0.0f) { continue; }
                 const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
-                distortion += pairWeight * previousDepthDistortionWeights[previousIndex] * compositeWeight *
+                distortion += previousDepthDistortionWeights[previousIndex] * compositeWeight *
                               depthDifference * depthDifference;
             }
             if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
                 previousDepthDistortionWeights[previousDepthDistortionHitCount] = compositeWeight;
-                previousDepthDistortionDepths[previousDepthDistortionHitCount] = depth;
                 previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
                 ++previousDepthDistortionHitCount;
             }
@@ -355,6 +358,41 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
 
             const LocalSurfelLayerHit &anchorHit = localLayer.hits[0];
             const float3 anchorPositionW = anchorHit.hitPositionW;
+            const PointCloudLocalLayerConsensus slabConsensus =
+                    computePointCloudLocalLayerConsensus(localLayer, originalRay, scene);
+            const float3 sharedSlabPositionW =
+                    slabConsensus.valid != 0u ? slabConsensus.pointW : anchorPositionW;
+
+            // Full, unblended point-to-plane consensus constraint:
+            //
+            //   x_Q = o + d * B_Q/A_Q
+            //   delta_i = n_i . (sg(x_Q) - p_i)
+            //   L_Q = 1/|Q| sum_i (delta_i/h)^2.
+            //
+            // A_Q and B_Q are reconstructed every forward pass, but x_Q is a
+            // detached target in the corresponding adjoint.
+            if (localLayer.hitCount > 1u && slabConsensus.valid != 0u) {
+                const float inverseMemberCount =
+                        1.0f / static_cast<float>(localLayer.hitCount);
+                const float inverseSlabThicknessSquared =
+                        1.0f / (localLayerDepthEpsilon * localLayerDepthEpsilon);
+                float slabLoss = 0.0f;
+                for (uint32_t localHitIndex = 0u;
+                     localHitIndex < localLayer.hitCount;
+                     ++localHitIndex) {
+                    const LocalSurfelLayerHit &localHit = localLayer.hits[localHitIndex];
+                    const Point &memberSurfel = scene.points[localHit.primitiveIndex];
+                    const float3 memberNormalW =
+                            normalize(cross(memberSurfel.tanU, memberSurfel.tanV));
+                    const float signedPlaneDistance =
+                            dot(memberNormalW, sharedSlabPositionW - memberSurfel.position);
+                    slabLoss += signedPlaneDistance * signedPlaneDistance *
+                                inverseSlabThicknessSquared;
+                }
+                intraSlabDepthLossSum += slabLoss * inverseMemberCount;
+                ++intraSlabDepthActiveSlabCount;
+            }
+
             float3 anchorNormalW = localLayer.referenceNormalW;
             if (dot(anchorNormalW, anchorNormalW) <= 1.0e-16f) {
                 const Point &anchorSurfel = scene.points[anchorHit.primitiveIndex];
@@ -415,7 +453,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
 
                 const Point &lightSurfel = scene.points[light.primitiveIndex];
                 const float3 lightPositionW = lightSurfel.position;
-                const float3 toLight = lightPositionW - anchorPositionW;
+                const float3 toLight = lightPositionW - sharedSlabPositionW;
                 const float distanceSquared = dot(toLight, toLight);
                 if (distanceSquared <= 1.0e-12f) {
                     continue;
@@ -427,7 +465,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                     traceShadowTransmissionToPoint(
                         scene,
                         settings,
-                        anchorPositionW,
+                        sharedSlabPositionW,
                         anchorNormalW,
                         lightPositionW,
                         sharedDirectLightEpsilon);
@@ -658,6 +696,9 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         // Store regularizer outputs.
         // =====================================================================
         sensor.depthDistortionBuffer[pixelIndex] = distortion;
+        sensor.intraSlabDepthBuffer[pixelIndex] = intraSlabDepthLossSum;
+        sensor.intraSlabDepthActiveSlabCountBuffer[pixelIndex] =
+                intraSlabDepthActiveSlabCount;
         if (accumulatedRegularizerWeight > 1.0e-6f) {
             sensor.meanDepthBuffer[pixelIndex] = accumulatedWeightedDepth / accumulatedRegularizerWeight;
         } else {
@@ -757,7 +798,174 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         sensor.normalFromDepthBuffer[pixelIndex] = float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
     });
     kernelEvent4.wait();
+
+    // -------------------------------------------------------------------------
+    // Pass 3: curvature-aware surfel-scale regularizer.
+    //
+    // Curvature is measured from the visibility-weighted surfel normal field.
+    // The stored visibleNormalBuffer is not assumed to be unit length, so each
+    // sample is normalized before finite differencing. World-space positions
+    // still come from the same mean/median pseudo-surface depth used elsewhere.
+    //
+    // The loss is evaluated only on the slab closest to that pseudo-surface:
+    //
+    //   r_i^2 = 0.5 * (s_u^2 + s_v^2)
+    //   v_i   = kappa * r_i^2 / (2 * gamma * h) - 1
+    //   e_i   = max(0, v_i)
+    //   L_Q   = mean_i(e_i^2)
+    //
+    // Curvature and the selected slab are treated as stop-gradient quantities
+    // by the adjoint pass.  Store the exact loss in a dedicated buffer so RGB
+    // rendering is never replaced by a diagnostic visualization.
+    // -------------------------------------------------------------------------
+    constexpr float visibleNormalLengthSquaredEpsilon = 1.0e-12f;
+    const float slabThickness = rendererDebugLocalLayerDepthEpsilon(settings);
+    sycl::event scaleCurvatureEvent = queue.parallel_for<class ScaleCurvatureRegularizerKernel2>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
+            const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
+            const uint32_t pixelX = pixelIndex % imageWidth;
+            const uint32_t pixelY = pixelIndex / imageWidth;
+
+            sensor.curvatureScaleBuffer[pixelIndex] = 0.0f;
+            sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 0u;
+
+            // N(x+1,y) and N(x,y+1) must exist. Their validity flag also rejects
+            // the border invalidated by SurfaceDepthNormalKernel.
+            if (pixelX + 1u >= imageWidth || pixelY + 1u >= imageHeight || slabThickness <= 0.0f) {
+                return;
+            }
+
+            const uint32_t rightPixelIndex = pixelY * imageWidth + (pixelX + 1u);
+            const uint32_t downPixelIndex = (pixelY + 1u) * imageWidth + pixelX;
+            const float4 centerVisibleNormal = sensor.visibleNormalBuffer[pixelIndex];
+            const float4 rightVisibleNormal = sensor.visibleNormalBuffer[rightPixelIndex];
+            const float4 downVisibleNormal = sensor.visibleNormalBuffer[downPixelIndex];
+
+            if (centerVisibleNormal.w() <= 0.0f || rightVisibleNormal.w() <= 0.0f || downVisibleNormal.w() <= 0.0f) {
+                return;
+            }
+
+            const float3 centerVisibleNormalRaw{
+                centerVisibleNormal.x(),
+                centerVisibleNormal.y(),
+                centerVisibleNormal.z()
+            };
+            const float3 rightVisibleNormalRaw{
+                rightVisibleNormal.x(),
+                rightVisibleNormal.y(),
+                rightVisibleNormal.z()
+            };
+            const float3 downVisibleNormalRaw{
+                downVisibleNormal.x(),
+                downVisibleNormal.y(),
+                downVisibleNormal.z()
+            };
+
+            const float centerVisibleNormalLengthSquared = dot(centerVisibleNormalRaw, centerVisibleNormalRaw);
+            const float rightVisibleNormalLengthSquared = dot(rightVisibleNormalRaw, rightVisibleNormalRaw);
+            const float downVisibleNormalLengthSquared = dot(downVisibleNormalRaw, downVisibleNormalRaw);
+
+            if (centerVisibleNormalLengthSquared <= visibleNormalLengthSquaredEpsilon ||
+                rightVisibleNormalLengthSquared <= visibleNormalLengthSquaredEpsilon ||
+                downVisibleNormalLengthSquared <= visibleNormalLengthSquaredEpsilon) {
+                return;
+            }
+
+            const float3 centerNormalW = centerVisibleNormalRaw / sycl::sqrt(centerVisibleNormalLengthSquared);
+            float3 rightNormalW = rightVisibleNormalRaw / sycl::sqrt(rightVisibleNormalLengthSquared);
+            float3 downNormalW = downVisibleNormalRaw / sycl::sqrt(downVisibleNormalLengthSquared);
+
+            const bool useMeanDepth = settings.normalFromDepthUseMeanDepth;
+            const float centerDepth = useMeanDepth ? sensor.meanDepthBuffer[pixelIndex] : sensor.medianDepthBuffer[pixelIndex];
+            const float rightDepth = useMeanDepth ? sensor.meanDepthBuffer[rightPixelIndex] : sensor.medianDepthBuffer[rightPixelIndex];
+            const float downDepth = useMeanDepth ? sensor.meanDepthBuffer[downPixelIndex] : sensor.medianDepthBuffer[downPixelIndex];
+            if (centerDepth <= 0.0f || rightDepth <= 0.0f || downDepth <= 0.0f) {
+                return;
+            }
+
+            const float3 centerPositionW = reconstructWorldPositionFromDepthCenter(sensor.camera, pixelX, pixelY, centerDepth);
+            const float3 rightPositionW = reconstructWorldPositionFromDepthCenter(sensor.camera, pixelX + 1u, pixelY, rightDepth);
+            const float3 downPositionW = reconstructWorldPositionFromDepthCenter(sensor.camera, pixelX, pixelY + 1u, downDepth);
+
+            // Curvature is orientation-independent. Avoid artificial spikes if a
+            // neighboring visible surfel normal happens to have opposite sign.
+            if (dot(centerNormalW, rightNormalW) < 0.0f) { rightNormalW = -rightNormalW; }
+            if (dot(centerNormalW, downNormalW) < 0.0f) { downNormalW = -downNormalW; }
+
+            const float3 rightNormalDifference = rightNormalW - centerNormalW;
+            const float3 downNormalDifference = downNormalW - centerNormalW;
+            const float3 rightPositionDifference = rightPositionW - centerPositionW;
+            const float3 downPositionDifference = downPositionW - centerPositionW;
+            const float rightNormalDifferenceLength = sycl::sqrt(dot(rightNormalDifference, rightNormalDifference));
+            const float downNormalDifferenceLength = sycl::sqrt(dot(downNormalDifference, downNormalDifference));
+            const float rightPositionDifferenceLength = sycl::sqrt(dot(rightPositionDifference, rightPositionDifference));
+            const float downPositionDifferenceLength = sycl::sqrt(dot(downPositionDifference, downPositionDifference));
+            const float curvatureX = rightNormalDifferenceLength /
+                                     (rightPositionDifferenceLength + CurvatureRegularizerDistanceEpsilon);
+            const float curvatureY = downNormalDifferenceLength /
+                                     (downPositionDifferenceLength + CurvatureRegularizerDistanceEpsilon);
+            const float curvature = sycl::fmax(curvatureX, curvatureY);
+
+            // Locate the local slab corresponding to the visible pseudo surface.
+            // Retrace the ray and select the slab closest to the pseudo-surface.
+            Ray scaleRegularizerRay = makePrimaryRayFromPixelJitteredFov(sensor.camera, static_cast<float>(pixelX), static_cast<float>(pixelY), 0.0f, 0.0f);
+            const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
+            const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
+            const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
+            const MinimumProjectedFootprintFilter minimumFootprintFilter = minimumProjectedFootprintFilterFromSettings(settings, sensor.camera, float2{static_cast<float>(pixelX), static_cast<float>(pixelY)});
+
+            float closestSurfaceDepthDifference = std::numeric_limits<float>::infinity();
+            float selectedSlabScaleLoss = 0.0f;
+            bool foundPointSlab = false;
+
+            for (uint32_t traversalIndex = 0u; traversalIndex < maxSplatEventsPerRay; ++traversalIndex) {
+                WorldHit worldHit{};
+                intersectScene(scaleRegularizerRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                if (!worldHit.hit) { break; }
+
+                buildIntersectionNormal(scene, worldHit);
+                const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+                if (instance.geometryType == GeometryType::Mesh) { break; }
+                if (instance.geometryType != GeometryType::PointCloud) { break; }
+
+                const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(scaleRegularizerRay, worldHit, instance, scene, slabThickness, maxLocalSurfelHits, localLayerNormalCosineThreshold, minimumFootprintFilter);
+                if (localLayer.hitCount == 0u) { break; }
+
+                const LocalSurfelLayerHit &anchorHit = localLayer.hits[0];
+                const float anchorSurfaceDepth = dot(anchorHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
+                const float surfaceDepthDifference = sycl::fabs(anchorSurfaceDepth - centerDepth);
+
+                if (surfaceDepthDifference < closestSurfaceDepthDifference) {
+                    float accumulatedScaleLoss = 0.0f;
+                    for (uint32_t localHitIndex = 0u; localHitIndex < localLayer.hitCount; ++localHitIndex) {
+                        const LocalSurfelLayerHit &localHit = localLayer.hits[localHitIndex];
+                        const Point &surfel = scene.points[localHit.primitiveIndex];
+                        const float scaleU = surfel.scale.x();
+                        const float scaleV = surfel.scale.y();
+                        const float radiusSquared = 0.5f * (scaleU * scaleU + scaleV * scaleV);
+                        const float normalizedViolation = curvature * radiusSquared /
+                                (2.0f * CurvatureScaleRegularizerGamma * slabThickness) - 1.0f;
+                        const float residual = sycl::fmax(0.0f, normalizedViolation);
+                        accumulatedScaleLoss += residual * residual;
+                    }
+
+                    selectedSlabScaleLoss = accumulatedScaleLoss / static_cast<float>(localLayer.hitCount);
+                    closestSurfaceDepthDifference = surfaceDepthDifference;
+                    foundPointSlab = true;
+                }
+
+                scaleRegularizerRay.origin += scaleRegularizerRay.direction * (localLayer.furthestT + RayEpsilon);
+            }
+
+            if (!foundPointSlab) {
+                return;
+            }
+
+            sensor.curvatureScaleBuffer[pixelIndex] = selectedSlabScaleLoss;
+            sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 1u;
+    });
+    scaleCurvatureEvent.wait();
 }
+
 void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPassIdx) {
     auto &queue = pkg.queue;
     auto &scene = pkg.scene;
@@ -775,6 +983,12 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
     queue.fill(sensor.normalFromDepthBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
     queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount).wait();
     queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount).wait();
+    queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount).wait();
+    queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount).wait();
     // -------------------------------------------------------------------------
     // Pass 1:
     //   - RGB gather
@@ -796,7 +1010,6 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
         float transmittance = 1.0f;
         // Depth distortion accumulation
         float previousDepthDistortionWeights[kMaxSplatEventsPerRay];
-        float previousDepthDistortionDepths[kMaxSplatEventsPerRay];
         float previousDepthDistortionNdcDepths[kMaxSplatEventsPerRay];
         uint32_t previousDepthDistortionHitCount = 0u;
         float distortion = 0.0f;
@@ -859,16 +1072,12 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
             accumulatedCompositeWeight += wi;
             const float ndcDepth = depthDistortionNdc01(zi);
             for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
-                const float pairWeight = depthDistortionPairSeparationWeight(
-                    previousDepthDistortionDepths[previousIndex], zi);
-                if (pairWeight <= 0.0f) { continue; }
                 const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
-                distortion += pairWeight * previousDepthDistortionWeights[previousIndex] * wi *
+                distortion += previousDepthDistortionWeights[previousIndex] * wi *
                               depthDifference * depthDifference;
             }
             if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
                 previousDepthDistortionWeights[previousDepthDistortionHitCount] = wi;
-                previousDepthDistortionDepths[previousDepthDistortionHitCount] = zi;
                 previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
                 ++previousDepthDistortionHitCount;
             }
@@ -1077,6 +1286,12 @@ void launchPointSampledPathTracingCameraKernel(
         queue.fill(sensor.normalFromDepthBuffer, float4{0.0f}, pixelCount);
         queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount);
         queue.fill(sensor.visibilityWeightedOpacityBuffer, 0.0f, pixelCount);
+        queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount);
+        queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
+        queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount);
+        queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount);
+        queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
+        queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount);
         queue.wait();
     }
     queue.submit([&](sycl::handler& cgh) {

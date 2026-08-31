@@ -636,6 +636,8 @@ namespace Pale {
         PointGradients &depthDistortionGradients,
         PointGradients &normalConsistencyGradients,
         PointGradients &visibilityOpacityGradients,
+        PointGradients &intraSlabDepthGradients,
+        PointGradients &curvatureScaleGradients,
         DebugImages *debugImages) {
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting surface regularizer backward pass");
@@ -651,6 +653,8 @@ namespace Pale {
             .depthDistortionGradients = depthDistortionGradients,
             .normalConsistencyGradients = normalConsistencyGradients,
             .visibilityOpacityGradients = visibilityOpacityGradients,
+            .intraSlabDepthGradients = intraSlabDepthGradients,
+            .curvatureScaleGradients = curvatureScaleGradients,
             .sensors = sensors,
             .debugImages = debugImages,
             .numSensors = static_cast<uint32_t>(sensors.size()),
