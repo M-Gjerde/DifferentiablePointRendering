@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 
@@ -9,9 +10,97 @@ import numpy as np
 import torch
 import OpenEXR
 import Imath
+from PIL import Image, ImageCms
 import json
 import math
 from dataclasses import asdict, is_dataclass
+
+
+SUPPORTED_TARGET_IMAGE_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+    ".webp",
+    ".exr",
+    ".hdr",
+)
+
+
+def srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
+    """Decode continuous sRGB values into linear-light sRGB/Rec.709."""
+    encoded = np.asarray(rgb, dtype=np.float32)
+    power_base = np.maximum((encoded + 0.055) / 1.055, 0.0)
+    linear = np.where(
+        encoded <= 0.04045,
+        encoded / 12.92,
+        np.power(power_base, 2.4),
+    )
+    return linear.astype(np.float32, copy=False)
+
+
+def linear_to_srgb(rgb: np.ndarray) -> np.ndarray:
+    """Encode linear-light sRGB/Rec.709 values with the sRGB transfer function."""
+    linear = np.asarray(rgb, dtype=np.float32)
+    non_negative = np.maximum(linear, 0.0)
+    encoded = np.where(
+        non_negative <= 0.0031308,
+        12.92 * non_negative,
+        1.055 * np.power(non_negative, 1.0 / 2.4) - 0.055,
+    )
+    return encoded.astype(np.float32, copy=False)
+
+
+def _normalize_image_samples(image: np.ndarray) -> np.ndarray:
+    samples = np.asarray(image)
+    if np.issubdtype(samples.dtype, np.bool_):
+        return samples.astype(np.float32)
+    if np.issubdtype(samples.dtype, np.integer):
+        info = np.iinfo(samples.dtype)
+        if info.min < 0 and samples.size and np.min(samples) >= 0:
+            observed_max = int(np.max(samples))
+            scale = 255.0 if observed_max <= 255 else 65535.0
+        else:
+            scale = float(info.max)
+        return samples.astype(np.float32) / scale
+    return samples.astype(np.float32)
+
+
+def _as_rgb_image(image: np.ndarray, path: Path) -> np.ndarray:
+    if image.ndim == 2:
+        image = np.stack([image, image, image], axis=-1)
+    elif image.ndim == 3 and image.shape[2] > 3:
+        image = image[..., :3]
+
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise RuntimeError(f"Target image '{path}' must be HxWx3, got shape {image.shape}")
+    return image
+
+
+def _load_icc_converted_srgb(path: Path) -> np.ndarray | None:
+    """Return ICC-managed sRGB samples, or None when the image has no profile."""
+    try:
+        with Image.open(path) as source_image:
+            icc_bytes = source_image.info.get("icc_profile")
+            if not icc_bytes:
+                return None
+            source_profile = ImageCms.ImageCmsProfile(io.BytesIO(icc_bytes))
+            srgb_profile = ImageCms.createProfile("sRGB")
+            converted = ImageCms.profileToProfile(
+                source_image.convert("RGB"),
+                source_profile,
+                srgb_profile,
+                outputMode="RGB",
+            )
+            return _normalize_image_samples(np.asarray(converted))
+    except (OSError, ImageCms.PyCMSError) as exception:
+        print(
+            f"Warning: could not apply embedded ICC profile for '{path}': {exception}. "
+            "Falling back to untagged sRGB interpretation."
+        )
+        return None
+
 
 def save_gradient_sign_png_py(
         file_path: Path,
@@ -50,25 +139,60 @@ def save_gradient_sign_png_py(
     return True
 
 
-def load_target_image(path: Path) -> np.ndarray:
+def load_target_image(path: Path, color_space: str = "auto") -> np.ndarray:
+    """Load a target into the canonical linear-light sRGB/Rec.709 working space.
+
+    ``auto`` honors embedded ICC profiles for ordinary images, treats untagged
+    integer images as sRGB, and treats floating-point/EXR/HDR images as linear.
+    ``srgb`` and ``linear`` explicitly override that inference.
     """
-    Load a target RGB image as float32 array (H,W,3).
-    """
-    img = iio.imread(path.as_posix())
-    img = np.asarray(img, dtype=np.float32)
+    path = Path(path)
+    requested_color_space = str(color_space).strip().lower()
+    if requested_color_space not in {"auto", "srgb", "linear"}:
+        raise ValueError(
+            f"Unsupported target color space '{color_space}'; expected auto, srgb, or linear"
+        )
 
-    if img.ndim == 2:
-        img = np.stack([img, img, img], axis=-1)
-    elif img.ndim == 3 and img.shape[2] > 3:
-        img = img[..., :3]
+    suffix = path.suffix.lower()
+    icc_srgb = None
+    if requested_color_space == "auto" and suffix not in {".exr", ".hdr"}:
+        icc_srgb = _load_icc_converted_srgb(path)
 
-    if img.ndim != 3 or img.shape[2] != 3:
-        raise RuntimeError(f"Target image must be HxWx3, got shape {img.shape}")
+    if icc_srgb is not None:
+        image = _as_rgb_image(icc_srgb, path)
+        interpreted_color_space = "srgb"
+        interpretation = "embedded ICC profile converted to sRGB"
+    else:
+        if suffix == ".exr":
+            raw_image = read_rgb_exr(path)
+        else:
+            raw_image = iio.imread(path.as_posix())
+        raw_image = _as_rgb_image(np.asarray(raw_image), path)
+        raw_is_floating_point = np.issubdtype(raw_image.dtype, np.floating)
+        image = _normalize_image_samples(raw_image)
 
-    if img.max() > 1.0:
-        img = img / 255.0
+        if requested_color_space == "auto":
+            interpreted_color_space = (
+                "linear" if suffix in {".exr", ".hdr"} or raw_is_floating_point else "srgb"
+            )
+            interpretation = (
+                "floating-point/HDR input"
+                if interpreted_color_space == "linear"
+                else "untagged integer input"
+            )
+        else:
+            interpreted_color_space = requested_color_space
+            interpretation = "explicit override"
 
-    return np.ascontiguousarray(img)
+    if interpreted_color_space == "srgb":
+        image = srgb_to_linear(image)
+
+    print(
+        f"    color: {interpretation} interpreted as {interpreted_color_space}; "
+        "training copy converted to linear sRGB"
+    )
+    return np.ascontiguousarray(image, dtype=np.float32)
+
 
 def read_rgb_exr(
         exr_path: Path,

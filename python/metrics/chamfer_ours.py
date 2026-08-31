@@ -16,14 +16,8 @@ except ModuleNotFoundError:
 
 try:
     from pytorch3d.loss import chamfer_distance
-except ModuleNotFoundError as exception:
-    raise ModuleNotFoundError(
-        "PyTorch3D is required for this script because it uses "
-        "pytorch3d.loss.chamfer_distance.\n\n"
-        "Install with one of:\n"
-        "  conda install pytorch3d -c pytorch3d\n"
-        "  pip install \"git+https://github.com/facebookresearch/pytorch3d.git@stable\"\n"
-    ) from exception
+except ModuleNotFoundError:
+    chamfer_distance = None
 
 
 def parse_run_timestamp(run_dir_name: str) -> datetime | None:
@@ -254,6 +248,148 @@ def load_points_from_ply(ply_path: Path, sample_count: int, use_vertices: bool) 
         ) from trimesh_exception
 
 
+def load_triangle_mesh_with_query_points(
+    ply_path: Path,
+    sample_count: int,
+    use_vertices: bool,
+) -> tuple[o3d.geometry.TriangleMesh, np.ndarray, str]:
+    """Load a triangle mesh and choose the points integrated by the metric.
+
+    The query points may be the raw mesh vertices or uniform surface samples.
+    Distances from those points are evaluated against the opposing mesh's
+    continuous triangle surface, never against its discrete query points.
+    """
+    if not ply_path.exists():
+        raise FileNotFoundError(f"File does not exist: {ply_path}")
+    if sample_count <= 0:
+        raise ValueError(f"sample_count must be positive, got {sample_count}")
+
+    mesh = o3d.io.read_triangle_mesh(str(ply_path))
+    if mesh.is_empty() or len(mesh.vertices) == 0 or len(mesh.triangles) == 0:
+        if trimesh is None:
+            raise ValueError(
+                f"Point-to-triangle evaluation requires a triangle mesh, but no "
+                f"triangles could be loaded from: {ply_path}"
+            )
+
+        loaded_object = trimesh.load(str(ply_path), force="mesh", process=False)
+        if isinstance(loaded_object, trimesh.Scene):
+            geometry_list = list(loaded_object.geometry.values())
+            if not geometry_list:
+                raise ValueError(f"Trimesh loaded an empty scene from: {ply_path}")
+            loaded_object = trimesh.util.concatenate(geometry_list)
+
+        if (
+            not isinstance(loaded_object, trimesh.Trimesh)
+            or len(loaded_object.vertices) == 0
+            or loaded_object.faces is None
+            or len(loaded_object.faces) == 0
+        ):
+            raise ValueError(
+                f"Point-to-triangle evaluation requires a triangle mesh, but no "
+                f"triangles could be loaded from: {ply_path}"
+            )
+
+        mesh = o3d.geometry.TriangleMesh(
+            vertices=o3d.utility.Vector3dVector(
+                np.asarray(loaded_object.vertices, dtype=np.float64)
+            ),
+            triangles=o3d.utility.Vector3iVector(
+                np.asarray(loaded_object.faces, dtype=np.int32)
+            ),
+        )
+
+    vertices = validate_points(np.asarray(mesh.vertices, dtype=np.float32), ply_path)
+    triangles = np.asarray(mesh.triangles)
+    if triangles.ndim != 2 or triangles.shape[1] != 3 or len(triangles) == 0:
+        raise ValueError(f"Expected triangular faces in {ply_path}, got shape {triangles.shape}")
+
+    if use_vertices:
+        return mesh, vertices, "open3d_vertices"
+
+    sampled_point_cloud = mesh.sample_points_uniformly(number_of_points=sample_count)
+    sampled_points = validate_points(
+        np.asarray(sampled_point_cloud.points, dtype=np.float32),
+        ply_path,
+    )
+    return mesh, sampled_points, "open3d_uniform_surface_sampling"
+
+
+def point_to_triangle_distances(
+    query_points: np.ndarray,
+    target_mesh: o3d.geometry.TriangleMesh,
+) -> np.ndarray:
+    """Return exact unsigned distances from points to the closest mesh triangles."""
+    query_points = np.ascontiguousarray(query_points, dtype=np.float32)
+    if query_points.ndim != 2 or query_points.shape[1] != 3 or len(query_points) == 0:
+        raise ValueError(f"Expected non-empty Nx3 query points, got shape {query_points.shape}")
+    if len(target_mesh.vertices) == 0 or len(target_mesh.triangles) == 0:
+        raise ValueError("Target mesh must contain vertices and triangles")
+
+    tensor_mesh = o3d.t.geometry.TriangleMesh.from_legacy(target_mesh)
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(tensor_mesh)
+    distances = scene.compute_distance(o3d.core.Tensor(query_points)).numpy()
+    distances = np.asarray(distances, dtype=np.float32).reshape(-1)
+
+    if distances.shape[0] != query_points.shape[0]:
+        raise RuntimeError(
+            "Point-to-triangle result length mismatch: "
+            f"{distances.shape[0]} vs {query_points.shape[0]}"
+        )
+    if not np.isfinite(distances).all():
+        raise RuntimeError("Point-to-triangle evaluation produced non-finite distances")
+
+    return distances
+
+
+def compute_paper_ready_point_to_triangle_distance(
+    reconstruction_points: np.ndarray,
+    reconstruction_mesh: o3d.geometry.TriangleMesh,
+    ground_truth_points: np.ndarray,
+    ground_truth_mesh: o3d.geometry.TriangleMesh,
+    scale: float,
+) -> dict[str, float]:
+    """Compute symmetric point-to-triangle accuracy, completion, and CD.
+
+    Accuracy measures reconstruction query points against the continuous GT
+    triangle surface. Completion measures GT query points against the continuous
+    reconstruction triangle surface.
+    """
+    reconstruction_to_gt = point_to_triangle_distances(
+        reconstruction_points,
+        ground_truth_mesh,
+    )
+    gt_to_reconstruction = point_to_triangle_distances(
+        ground_truth_points,
+        reconstruction_mesh,
+    )
+
+    accuracy_raw = float(np.mean(reconstruction_to_gt, dtype=np.float64))
+    completion_raw = float(np.mean(gt_to_reconstruction, dtype=np.float64))
+    cd_raw = 0.5 * (accuracy_raw + completion_raw)
+    scale = float(scale)
+
+    return {
+        "accuracy": accuracy_raw * scale,
+        "completion": completion_raw * scale,
+        "cd": cd_raw * scale,
+        "accuracy_raw": accuracy_raw,
+        "completion_raw": completion_raw,
+        "cd_raw": cd_raw,
+        "median_reconstruction_to_gt": float(np.median(reconstruction_to_gt)) * scale,
+        "median_gt_to_reconstruction": float(np.median(gt_to_reconstruction)) * scale,
+        "p95_reconstruction_to_gt": float(np.quantile(reconstruction_to_gt, 0.95)) * scale,
+        "p95_gt_to_reconstruction": float(np.quantile(gt_to_reconstruction, 0.95)) * scale,
+        "max_reconstruction_to_gt": float(np.max(reconstruction_to_gt)) * scale,
+        "max_gt_to_reconstruction": float(np.max(gt_to_reconstruction)) * scale,
+        "squared_loss_raw": float(
+            np.mean(np.square(reconstruction_to_gt), dtype=np.float64)
+            + np.mean(np.square(gt_to_reconstruction), dtype=np.float64)
+        ),
+    }
+
+
 def set_random_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -290,6 +426,13 @@ def compute_paper_ready_chamfer(
     device: torch.device,
     scale: float,
 ) -> dict[str, float]:
+    if chamfer_distance is None:
+        raise ModuleNotFoundError(
+            "Point-to-point Chamfer requires PyTorch3D. Install with one of:\n"
+            "  conda install pytorch3d -c pytorch3d\n"
+            "  pip install \"git+https://github.com/facebookresearch/pytorch3d.git@stable\""
+        )
+
     reconstruction_tensor = tensor_from_points(reconstruction_points, device)
     ground_truth_tensor = tensor_from_points(ground_truth_points, device)
 

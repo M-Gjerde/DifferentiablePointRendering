@@ -13,6 +13,7 @@ namespace Pale {
 
         float gammaCorrection = 1.0f;
         float exposureCorrection = 1.0f;
+        bool useSrgbEncoding = true;
         float* ldrFramebuffer = nullptr; // Low Dynamic Range framebuffer
         sycl::uchar4* outputFramebuffer = nullptr; // uint8 converted framebuffer
         char name[16];

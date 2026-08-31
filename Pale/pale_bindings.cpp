@@ -328,6 +328,8 @@ public:
             Pale::Log::PA_WARN("      Exposure / Gamma    : {} / {}",
                                s.exposureCorrection,
                                s.gammaCorrection);
+            Pale::Log::PA_WARN("      Output encoding     : {}",
+                               s.useSrgbEncoding ? "sRGB" : "power gamma");
         }
 
 

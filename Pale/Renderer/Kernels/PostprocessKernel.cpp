@@ -23,6 +23,7 @@ namespace Pale {
                 const float gammaCorrection = sensor.gammaCorrection;
                 const float inverseGamma =
                     (gammaCorrection > 0.0f) ? (1.0f / gammaCorrection) : 1.0f;
+                const bool useSrgbEncoding = sensor.useSrgbEncoding;
 
                 commandGroupHandler.parallel_for<class PostProcessKernelTag>(
                     sycl::range<1>(raysPerSet),
@@ -59,10 +60,21 @@ namespace Pale {
                         greenLinear = sycl::fmax(greenLinear, 0.0f);
                         blueLinear = sycl::fmax(blueLinear, 0.0f);
 
-                        // Apply gamma (convert to display space)
-                        redLinear = sycl::pow(redLinear, inverseGamma);
-                        greenLinear = sycl::pow(greenLinear, inverseGamma);
-                        blueLinear = sycl::pow(blueLinear, inverseGamma);
+                        // Convert linear renderer output to display space. Exact
+                        // IEC 61966-2-1 sRGB is the default; the legacy power
+                        // gamma remains available as an explicit viewer opt-out.
+                        auto encodeDisplayChannel = [=](float linearValue) -> float {
+                            if (!useSrgbEncoding) {
+                                return sycl::pow(linearValue, inverseGamma);
+                            }
+                            if (linearValue <= 0.0031308f) {
+                                return 12.92f * linearValue;
+                            }
+                            return 1.055f * sycl::pow(linearValue, 1.0f / 2.4f) - 0.055f;
+                        };
+                        redLinear = encodeDisplayChannel(redLinear);
+                        greenLinear = encodeDisplayChannel(greenLinear);
+                        blueLinear = encodeDisplayChannel(blueLinear);
 
                         // Clamp to [0,1] before quantization
                         redLinear = sycl::clamp(redLinear, 0.0f, 1.0f);

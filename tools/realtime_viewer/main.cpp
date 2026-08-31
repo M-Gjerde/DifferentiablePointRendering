@@ -2233,6 +2233,7 @@ int main(int argc, char** argv) {
         std::string surfelEditorStatus;
         float exposure = 1.0f;
         float gamma = 1.0f;
+        bool useSrgbEncoding = true;
         double lastRenderMs = 0.0;
         std::vector<float> renderFrameTimeHistory;
         renderFrameTimeHistory.reserve(kFrameTimeHistoryCapacity);
@@ -3080,6 +3081,7 @@ int main(int argc, char** argv) {
             sensor.camera = camera;
             sensor.exposureCorrection = exposure;
             sensor.gammaCorrection = gamma;
+            sensor.useSrgbEncoding = useSrgbEncoding;
             clearSensor(queue, sensor);
 
             Pale::ScopedTimerDetail::setProfilingEnabled(timerProfilingEnabled);
@@ -3454,7 +3456,11 @@ int main(int argc, char** argv) {
             if (ImGui::DragFloat("Exposure", &exposure, 0.01f, 0.001f, 100.0f, "%.3f")) {
                 renderRequested = true;
             }
-            if (ImGui::DragFloat("Gamma", &gamma, 0.01f, 0.1f, 5.0f, "%.3f")) {
+            if (ImGui::Checkbox("sRGB output", &useSrgbEncoding)) {
+                renderRequested = true;
+            }
+            if (!useSrgbEncoding &&
+                ImGui::DragFloat("Gamma", &gamma, 0.01f, 0.1f, 5.0f, "%.3f")) {
                 renderRequested = true;
             }
 

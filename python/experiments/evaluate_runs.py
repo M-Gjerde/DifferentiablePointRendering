@@ -16,7 +16,8 @@ os.environ.setdefault("MPLCONFIGDIR", str(Path("/tmp") / "matplotlib-cache"))
 
 import matplotlib
 
-matplotlib.use("Agg")
+if "matplotlib.pyplot" not in sys.modules:
+    matplotlib.use("Agg")
 import imageio.v3 as iio
 import matplotlib.pyplot as plt
 import numpy as np
@@ -84,7 +85,10 @@ class RunEvaluation:
     summary: dict[str, Any]
 
 
-GROUND_TRUTH_SAMPLE_CACHE: dict[tuple[str, int, bool, int], tuple[Any, str]] = {}
+GROUND_TRUTH_SAMPLE_CACHE: dict[
+    tuple[str, int, bool, int],
+    tuple[Any, Any, str],
+] = {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -118,11 +122,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Evaluate every mesh checkpoint. By default, evaluate mesh/fuse_post.ply.",
     )
-    parser.add_argument("--samples", type=int, default=50_000, help="Surface samples for Chamfer.")
-    parser.add_argument("--device", type=str, default="auto", help="Chamfer device: auto, cpu, cuda, cuda:0, ...")
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=500_000,
+        help="Uniform surface query samples used with --no-use-vertices.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        help="Retained for CLI compatibility; point-to-triangle evaluation uses Open3D on CPU.",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Sampling seed for Chamfer.")
     parser.add_argument("--scale", type=float, default=1.0, help="Scale applied to reported Chamfer metrics.")
-    parser.add_argument("--use-vertices", action="store_true", help="Use mesh vertices instead of surface samples.")
+    parser.add_argument(
+        "--use-vertices",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use raw mesh vertices as point-to-triangle queries (default). "
+            "Pass --no-use-vertices to use uniform surface queries instead."
+        ),
+    )
     parser.add_argument(
         "--reconstruction-name",
         type=str,
@@ -532,18 +554,21 @@ def lazy_chamfer_imports():
         sys.path.insert(0, str(METRICS_DIR))
     try:
         from chamfer_ours import (
-            compute_paper_ready_chamfer,
-            load_points_from_ply,
-            resolve_device,
+            compute_paper_ready_point_to_triangle_distance,
+            load_triangle_mesh_with_query_points,
             set_random_seed,
         )
     except ModuleNotFoundError as exception:
         raise RuntimeError(
             "Geometry evaluation requires the dependencies used by metrics/chamfer_ours.py "
-            "(notably open3d and pytorch3d). Loss-only evaluation works without them."
+            "(notably Open3D). Loss-only evaluation works without them."
         ) from exception
 
-    return compute_paper_ready_chamfer, load_points_from_ply, resolve_device, set_random_seed
+    return (
+        compute_paper_ready_point_to_triangle_distance,
+        load_triangle_mesh_with_query_points,
+        set_random_seed,
+    )
 
 
 def compute_geometry_rows(
@@ -561,13 +586,11 @@ def compute_geometry_rows(
         return []
 
     (
-        compute_paper_ready_chamfer,
-        load_points_from_ply,
-        resolve_device,
+        compute_paper_ready_point_to_triangle_distance,
+        load_triangle_mesh_with_query_points,
         set_random_seed,
     ) = lazy_chamfer_imports()
 
-    device = resolve_device(device_name)
     ground_truth_cache_key = (
         str(ground_truth_path.resolve()),
         int(samples),
@@ -575,15 +598,27 @@ def compute_geometry_rows(
         int(seed),
     )
     if ground_truth_cache_key in GROUND_TRUTH_SAMPLE_CACHE:
-        ground_truth_points, ground_truth_sampling = GROUND_TRUTH_SAMPLE_CACHE[ground_truth_cache_key]
+        (
+            ground_truth_mesh,
+            ground_truth_points,
+            ground_truth_sampling,
+        ) = GROUND_TRUTH_SAMPLE_CACHE[ground_truth_cache_key]
     else:
         set_random_seed(seed)
-        ground_truth_points, ground_truth_sampling = load_points_from_ply(
+        (
+            ground_truth_mesh,
+            ground_truth_points,
+            ground_truth_sampling,
+        ) = load_triangle_mesh_with_query_points(
             ply_path=ground_truth_path,
             sample_count=samples,
             use_vertices=use_vertices,
         )
-        GROUND_TRUTH_SAMPLE_CACHE[ground_truth_cache_key] = (ground_truth_points, ground_truth_sampling)
+        GROUND_TRUTH_SAMPLE_CACHE[ground_truth_cache_key] = (
+            ground_truth_mesh,
+            ground_truth_points,
+            ground_truth_sampling,
+        )
 
     rows: list[dict[str, Any]] = []
     best_row: dict[str, Any] | None = None
@@ -594,15 +629,20 @@ def compute_geometry_rows(
             flush=True,
         )
         set_random_seed(seed)
-        reconstruction_points, reconstruction_sampling = load_points_from_ply(
+        (
+            reconstruction_mesh,
+            reconstruction_points,
+            reconstruction_sampling,
+        ) = load_triangle_mesh_with_query_points(
             ply_path=checkpoint.mesh_path,
             sample_count=samples,
             use_vertices=use_vertices,
         )
-        metrics = compute_paper_ready_chamfer(
+        metrics = compute_paper_ready_point_to_triangle_distance(
             reconstruction_points=reconstruction_points,
+            reconstruction_mesh=reconstruction_mesh,
             ground_truth_points=ground_truth_points,
-            device=device,
+            ground_truth_mesh=ground_truth_mesh,
             scale=scale,
         )
         row = {
@@ -619,6 +659,8 @@ def compute_geometry_rows(
             "ground_truth_points": len(ground_truth_points),
             "reconstruction_sampling": reconstruction_sampling,
             "ground_truth_sampling": ground_truth_sampling,
+            "distance_mode": "symmetric_point_to_triangle",
+            "distance_backend": "open3d_raycasting_cpu",
             "reconstruction": str(checkpoint.mesh_path),
             "ground_truth": str(ground_truth_path),
         }

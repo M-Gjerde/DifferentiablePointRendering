@@ -55,6 +55,14 @@ def get_forward_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarra
     return get_forward_rgba(forward_out, camera_name)[..., :3]
 
 
+def get_forward_linear_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    return np.asarray(forward_out[camera_name]["raw"], dtype=np.float32, order="C")
+
+
+def get_forward_linear_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+    return get_forward_linear_rgba(forward_out, camera_name)[..., :3]
+
+
 def _infer_hw_from_forward(forward_out: Dict[str, dict], camera_name: str) -> tuple[int, int]:
     image = np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
     return int(image.shape[0]), int(image.shape[1])
@@ -461,8 +469,8 @@ def verify_beta_inplace(
     If trainable_surfel_mask is provided, only trainable surfels are verified.
     Frozen surfels are left untouched.
     """
-    min_beta_value = -2.0
-    max_beta_value = 5.0
+    min_beta_value = -2.5
+    max_beta_value = 0.0
     with torch.no_grad():
         beta_values = betas.data
 

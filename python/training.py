@@ -450,7 +450,11 @@ def compute_iteration_gradients(
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                      renderer_settings: RendererSettingsConfig) -> None:
-    target_images, training_camera_ids, all_camera_ids = load_target_images(renderer, Path(config.dataset_path))
+    target_images, training_camera_ids, all_camera_ids = load_target_images(
+        renderer,
+        Path(config.dataset_path),
+        target_color_space=config.target_color_space,
+    )
 
     depth_distortion_base_weight = float(getattr(config, "depth_distort_weight", 0.0))
     depth_distortion_start_iteration = int(getattr(config, "depth_distort_start_iteration", 0))
@@ -1116,9 +1120,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     grad_opacity_total_max = 0.0
 
                     save_interval = int(config.save_interval)
+                    is_first_iteration = iteration == 1
                     should_save_iteration_outputs = (
-                            save_interval > 0 and (
-                            global_iteration % save_interval == 0 or iteration == config.iterations)
+                            is_first_iteration
+                            or (
+                                save_interval > 0
+                                and (
+                                    global_iteration % save_interval == 0
+                                    or iteration == config.iterations
+                                )
+                            )
                     )
 
                     if should_save_iteration_outputs:
@@ -1147,6 +1158,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             save_visible_normal=config.save_snapshot_visible_normal,
                             save_normal_from_depth=config.save_snapshot_normal_from_depth,
                             save_grad=config.save_snapshot_grad,
+                            force=is_first_iteration,
                         )
 
                     iteration_point_cloud_path = None
@@ -1739,9 +1751,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     )
 
                 save_interval = int(config.save_interval)
+                is_first_iteration = iteration == 1
                 should_save_iteration_outputs = (
-                        save_interval > 0
-                        and (global_iteration % save_interval == 0 or iteration == config.iterations)
+                        is_first_iteration
+                        or (
+                            save_interval > 0
+                            and (
+                                global_iteration % save_interval == 0
+                                or iteration == config.iterations
+                            )
+                        )
                 )
 
                 if should_save_iteration_outputs:
@@ -1774,6 +1793,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         save_visible_normal=config.save_snapshot_visible_normal,
                         save_normal_from_depth=config.save_snapshot_normal_from_depth,
                         save_grad=config.save_snapshot_grad,
+                        force=is_first_iteration,
                     )
 
                 iteration_point_cloud_path = None
@@ -2028,8 +2048,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     for camera_name in training_camera_ids:
         img_np = get_forward_rgb(final_images, camera_name)
+        img_linear_np = get_forward_linear_rgb(final_images, camera_name)
         tgt_np = target_images[camera_name]
-        rgb_loss_cam = float(compute_l2_loss(img_np, tgt_np))
+        rgb_loss_cam = float(compute_l2_loss(img_linear_np, tgt_np))
         final_rgb_loss += rgb_loss_cam
         final_total_loss += rgb_loss_cam
         save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)

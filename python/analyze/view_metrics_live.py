@@ -18,8 +18,6 @@ from matplotlib.ticker import StrMethodFormatter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-METRICS_DIR = PROJECT_ROOT / "metrics"
-GROUND_TRUTH_SAMPLE_CACHE: dict[tuple[str, int, bool, int], tuple[Any, str]] = {}
 LEGEND_KWARGS = {
     "fontsize": "small",
     "framealpha": 0.85,
@@ -31,7 +29,6 @@ class GeometryEvaluationState:
     run_dir: Path | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
     evaluated_iterations: set[int] = field(default_factory=set)
-    printed_device_warning: bool = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,14 +88,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--geometry-samples",
         type=int,
-        default=50_000,
-        help="Surface samples for live Chamfer evaluation.",
+        default=500_000,
+        help="Uniform surface query samples used with --no-geometry-use-vertices.",
     )
     parser.add_argument(
         "--geometry-device",
         type=str,
         default="auto",
-        help="Chamfer device for live CD: auto, cpu, cuda, cuda:0, ...",
+        help="Retained for compatibility; point-to-triangle evaluation uses Open3D on CPU.",
     )
     parser.add_argument(
         "--geometry-seed",
@@ -114,8 +111,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--geometry-use-vertices",
-        action="store_true",
-        help="Use mesh vertices instead of surface samples for live Chamfer.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use raw mesh vertices as point-to-triangle queries (default). "
+            "Pass --no-geometry-use-vertices to use uniform surface queries."
+        ),
     )
     parser.add_argument(
         "--reconstruction-name",
@@ -282,36 +283,19 @@ def find_latest_run_dir(
     return candidate_run_dirs[index]["run_dir"]
 
 
-def lazy_chamfer_imports():
-    if str(METRICS_DIR) not in sys.path:
-        sys.path.insert(0, str(METRICS_DIR))
+def lazy_evaluate_runs_imports():
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
     try:
-        from chamfer_ours import (
-            compute_paper_ready_chamfer,
-            load_points_from_ply,
-            resolve_device,
-            set_random_seed,
-        )
+        from experiments.evaluate_runs import MeshCheckpoint, compute_geometry_rows
     except ModuleNotFoundError as exception:
         raise RuntimeError(
-            "Live CD evaluation requires additional libraries (PyTorch, PyTorch3D, Open3D).\n"
-            "\n"
-            "Install (GPU/CUDA recommended):\n"
-            "  1) Install CUDA-enabled PyTorch:\n"
-            "     conda install -c pytorch -c nvidia pytorch pytorch-cuda=12.1\n"
-            "  2) Install PyTorch3D and Open3D:\n"
-            "     pip install pytorch3d open3d\n"
-            "\n"
-            "Notes:\n"
-            "- Ensure your CUDA drivers/toolkit match the chosen PyTorch CUDA version.\n"
-            "- If PyTorch3D wheel is unavailable for your platform/PyTorch version, consult\n"
-            "  the PyTorch3D installation guide for compatible versions or source builds.\n"
-            "- If you cannot use a GPU, CPU-only evaluation is possible but slower.\n"
-            "\n"
+            "Live CD evaluation uses experiments/evaluate_runs.py and requires its "
+            "geometry dependencies (notably Open3D). "
             "Alternatively, run without --gt to view loss curves only."
         ) from exception
 
-    return compute_paper_ready_chamfer, load_points_from_ply, resolve_device, set_random_seed
+    return MeshCheckpoint, compute_geometry_rows
 
 
 def find_mesh_checkpoints(run_dir: Path, reconstruction_name: str) -> list[tuple[int, Path]]:
@@ -327,30 +311,6 @@ def find_mesh_checkpoints(run_dir: Path, reconstruction_name: str) -> list[tuple
         checkpoints.append((int(match.group(1)), mesh_path.resolve()))
 
     return sorted(checkpoints, key=lambda item: item[0])
-
-
-def get_ground_truth_points(
-        ground_truth_path: Path,
-        samples: int,
-        use_vertices: bool,
-        seed: int,
-        load_points_from_ply,
-        set_random_seed,
-):
-    cache_key = (
-        str(ground_truth_path.resolve()),
-        int(samples),
-        bool(use_vertices),
-        int(seed),
-    )
-    if cache_key not in GROUND_TRUTH_SAMPLE_CACHE:
-        set_random_seed(seed)
-        GROUND_TRUTH_SAMPLE_CACHE[cache_key] = load_points_from_ply(
-            ply_path=ground_truth_path,
-            sample_count=samples,
-            use_vertices=use_vertices,
-        )
-    return GROUND_TRUTH_SAMPLE_CACHE[cache_key]
 
 
 def update_geometry_evaluation_state(
@@ -389,62 +349,25 @@ def update_geometry_evaluation_state(
     if not eligible_checkpoints:
         return False
 
-    (
-        compute_paper_ready_chamfer,
-        load_points_from_ply,
-        resolve_device,
-        set_random_seed,
-    ) = lazy_chamfer_imports()
-
-    device = resolve_device(device_name)
-    if not state.printed_device_warning:
-        device_type = getattr(device, "type", str(device))
-        if not str(device_type).startswith("cuda"):
-            print(
-                "Warning: Live Chamfer distance is running on CPU. "
-                "For faster evaluation, use a CUDA-capable GPU (e.g., --geometry-device cuda or --geometry-device cuda:0). "
-                "If CUDA is unavailable, install a CUDA-enabled PyTorch and PyTorch3D to enable GPU evaluation.",
-                file=sys.stderr,
-                flush=True,
-            )
-        state.printed_device_warning = True
-
-    ground_truth_points, ground_truth_sampling = get_ground_truth_points(
+    MeshCheckpoint, compute_geometry_rows = lazy_evaluate_runs_imports()
+    new_rows = compute_geometry_rows(
+        run_dir=run_dir,
+        checkpoints=[
+            MeshCheckpoint(iteration=iteration, mesh_path=mesh_path)
+            for iteration, mesh_path in eligible_checkpoints
+        ],
         ground_truth_path=ground_truth_path.expanduser().resolve(),
         samples=samples,
-        use_vertices=use_vertices,
+        device_name=device_name,
         seed=seed,
-        load_points_from_ply=load_points_from_ply,
-        set_random_seed=set_random_seed,
+        scale=scale,
+        use_vertices=use_vertices,
+        print_each_score=False,
     )
 
-    for iteration, mesh_path in eligible_checkpoints:
-        set_random_seed(seed)
-        reconstruction_points, reconstruction_sampling = load_points_from_ply(
-            ply_path=mesh_path,
-            sample_count=samples,
-            use_vertices=use_vertices,
-        )
-        metrics = compute_paper_ready_chamfer(
-            reconstruction_points=reconstruction_points,
-            ground_truth_points=ground_truth_points,
-            device=device,
-            scale=scale,
-        )
-        state.rows.append(
-            {
-                "iteration": iteration,
-                "cd": metrics["cd"],
-                "accuracy": metrics["accuracy"],
-                "completion": metrics["completion"],
-                "reconstruction_points": len(reconstruction_points),
-                "ground_truth_points": len(ground_truth_points),
-                "reconstruction_sampling": reconstruction_sampling,
-                "ground_truth_sampling": ground_truth_sampling,
-                "reconstruction": str(mesh_path),
-                "ground_truth": str(ground_truth_path.expanduser().resolve()),
-            }
-        )
+    for metrics in new_rows:
+        iteration = int(metrics["iteration"])
+        state.rows.append(metrics)
         state.evaluated_iterations.add(iteration)
 
         # Print concise stats only at each CD update: loss, CD, completion, accuracy, points (split)

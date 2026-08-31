@@ -19,6 +19,8 @@ from density_control import (
     quaternion_to_tangent_frame_torch
 )
 from io_utils import (
+    SUPPORTED_TARGET_IMAGE_SUFFIXES,
+    linear_to_srgb,
     load_target_image,
     save_gaussians_to_ply,
     save_gradient_sign_png_py,
@@ -904,7 +906,7 @@ def format_gradient_source_balance(
         f"{'loss_grad':>11}"
         f"{'reg_grad':>11}"
         f"{'total_grad':>11}"
-        f"{'reg_share%':>12}"
+        f"{'loss%':>8}"
         f"{'depth%':>8}"
         f"{'normal%':>9}"
         f"{'opacity%':>10}"
@@ -928,45 +930,43 @@ def format_gradient_source_balance(
         )
         total_norm = gradient_norm_for_key(total_gradients, key)
 
-        prior_norm = surface_regularizer_norm
-        prior_denom = loss_norm + prior_norm
-        prior_percent = (
-            100.0 * prior_norm / prior_denom
-            if prior_denom > 1.0e-20
-            else 0.0
-        )
-
-        component_denom = (
-                depth_norm
+        source_norm_denom = (
+                loss_norm
+                + depth_norm
                 + normal_norm
                 + opacity_norm
                 + intra_slab_norm
                 + curvature_scale_norm
         )
 
+        loss_percent = (
+            100.0 * loss_norm / source_norm_denom
+            if source_norm_denom > 1.0e-20
+            else 0.0
+        )
         depth_percent = (
-            100.0 * depth_norm / component_denom
-            if component_denom > 1.0e-20
+            100.0 * depth_norm / source_norm_denom
+            if source_norm_denom > 1.0e-20
             else 0.0
         )
         normal_percent = (
-            100.0 * normal_norm / component_denom
-            if component_denom > 1.0e-20
+            100.0 * normal_norm / source_norm_denom
+            if source_norm_denom > 1.0e-20
             else 0.0
         )
         opacity_percent = (
-            100.0 * opacity_norm / component_denom
-            if component_denom > 1.0e-20
+            100.0 * opacity_norm / source_norm_denom
+            if source_norm_denom > 1.0e-20
             else 0.0
         )
         intra_slab_percent = (
-            100.0 * intra_slab_norm / component_denom
-            if component_denom > 1.0e-20
+            100.0 * intra_slab_norm / source_norm_denom
+            if source_norm_denom > 1.0e-20
             else 0.0
         )
         curvature_scale_percent = (
-            100.0 * curvature_scale_norm / component_denom
-            if component_denom > 1.0e-20
+            100.0 * curvature_scale_norm / source_norm_denom
+            if source_norm_denom > 1.0e-20
             else 0.0
         )
 
@@ -976,7 +976,7 @@ def format_gradient_source_balance(
             f"{loss_norm:>11.2e}"
             f"{surface_regularizer_norm:>11.2e}"
             f"{total_norm:>11.2e}"
-            f"{prior_percent:>11.1f}%"
+            f"{loss_percent:>7.1f}%"
             f"{depth_percent:>7.1f}%"
             f"{normal_percent:>8.1f}%"
             f"{opacity_percent:>9.1f}%"
@@ -1292,7 +1292,7 @@ def compute_snapshot_adjoint_images(
         if camera_name not in target_images:
             continue
 
-        current_rgb_np = get_forward_rgb(forward_out, camera_name)
+        current_rgb_np = get_forward_linear_rgb(forward_out, camera_name)
         target_rgb_np = target_images[camera_name]
         loss_grad_images[camera_name] = compute_l2_grad(current_rgb_np, target_rgb_np)
 
@@ -1306,6 +1306,7 @@ def compute_snapshot_adjoint_images(
 def load_target_images(
         renderer: pale.Renderer,
         dataset_path: Path,
+        target_color_space: str = "auto",
 ) -> tuple[Dict[str, np.ndarray], List[str], List[str]]:
     target_path = Path(dataset_path)
     if not target_path.is_dir():
@@ -1314,17 +1315,38 @@ def load_target_images(
     training_camera_ids = get_training_camera_names(renderer)
     all_camera_ids = get_all_camera_names(renderer)
     target_images: Dict[str, np.ndarray] = {}
+    images_path = target_path / "images"
+    if not images_path.is_dir():
+        raise RuntimeError(f"Target dataset is missing images directory: {images_path}")
 
     print(f"Loading target images from directory: {target_path}")
     for camera_name in training_camera_ids:
-        image_path = target_path / "images" / f"{camera_name}.png"
-        if not image_path.is_file():
-            raise RuntimeError(f"Missing target image for camera '{camera_name}': {image_path}")
+        candidates = sorted(
+            path for path in images_path.iterdir()
+            if path.is_file()
+            and path.stem == camera_name
+            and path.suffix.lower() in SUPPORTED_TARGET_IMAGE_SUFFIXES
+        )
+        if not candidates:
+            suffixes = ", ".join(SUPPORTED_TARGET_IMAGE_SUFFIXES)
+            raise RuntimeError(
+                f"Missing target image for camera '{camera_name}' in {images_path}; "
+                f"supported extensions: {suffixes}"
+            )
+        if len(candidates) > 1:
+            raise RuntimeError(
+                f"Multiple target images found for camera '{camera_name}': "
+                + ", ".join(str(path) for path in candidates)
+            )
+        image_path = candidates[0]
 
-        target_images[camera_name] = load_target_image(image_path)
+        print(f"  Camera '{camera_name}': loading target {image_path}")
+        target_images[camera_name] = load_target_image(
+            image_path,
+            color_space=target_color_space,
+        )
         print(
-            f"  Camera '{camera_name}': loaded target {image_path} "
-            f"with shape {target_images[camera_name].shape}"
+            f"    loaded linear training target with shape {target_images[camera_name].shape}"
         )
 
     return target_images, training_camera_ids, all_camera_ids
@@ -1424,6 +1446,7 @@ def compute_initial_losses_and_save_outputs(
 
     for camera_name in all_camera_ids:
         img_np = get_forward_rgb(initial_images, camera_name)
+        img_linear_np = get_forward_linear_rgb(initial_images, camera_name)
         (output_dir / camera_name).mkdir(parents=True, exist_ok=True)
         save_render(output_dir / f"render_initial_{camera_name}.png", img_np)
 
@@ -1432,8 +1455,11 @@ def compute_initial_losses_and_save_outputs(
             continue
 
         tgt_np = target_images[camera_name]
-        initial_rgb_loss += float(compute_l2_loss(img_np, tgt_np))
-        save_render(output_dir / f"render_target_{camera_name}.png", tgt_np)
+        initial_rgb_loss += float(compute_l2_loss(img_linear_np, tgt_np))
+        save_render(
+            output_dir / f"render_target_{camera_name}.png",
+            linear_to_srgb(tgt_np),
+        )
 
         if use_depth_distortion:
             initial_depth_distortion_loss_raw += float(get_forward_depth_distortion(initial_images, camera_name).mean())
@@ -2154,13 +2180,18 @@ def save_iteration_outputs(
         save_visible_normal: bool = False,
         save_normal_from_depth: bool = False,
         save_grad: bool = False,
+        force: bool = False,
 ) -> None:
     save_interval = int(save_interval)
 
-    if save_interval <= 0:
+    if save_interval <= 0 and not force:
         return
 
-    if iteration % save_interval != 0 and iteration != final_iteration:
+    if (
+            not force
+            and iteration % save_interval != 0
+            and iteration != final_iteration
+    ):
         return
 
     for camera_name in all_camera_ids:

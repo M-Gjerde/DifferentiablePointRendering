@@ -2007,7 +2007,7 @@ namespace Pale {
             sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
                 constexpr float kAlphaEpsilon = 1.0e-8f;
 
-                constexpr bool kDetachDepthDistortionWeights = true;
+                constexpr bool kDetachDepthDistortionWeights = false;
 
                 const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
                 const uint32_t pixelX = pixelIndex % imageWidth;

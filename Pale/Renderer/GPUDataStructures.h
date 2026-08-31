@@ -345,7 +345,7 @@ namespace Pale {
     constexpr float RayEpsilon2 = 1e-6f;
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
-    constexpr float LocalLayerDepthEpsilon = 7.50e-3f;
+    constexpr float LocalLayerDepthEpsilon = 5.00e-3f;
     constexpr float LocalLayerNormalCosineThreshold = -1.0f; // 45 degrees mismatch to stop blending slabs
     constexpr float IntraSlabConsensusDenominatorEpsilon = 1.0e-6f;
     constexpr float CurvatureScaleRegularizerGamma = 0.5f;

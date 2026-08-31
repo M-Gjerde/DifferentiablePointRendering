@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -53,6 +53,7 @@ class OptimizationConfig:
     scene_xml: str = "cbox_custom.xml"
     pointcloud_ply: str = "initial.ply"
     dataset_path: Path = Path("./Output/target")
+    target_color_space: str = "srgb"
     output_dir: Path = Path("OptimizationOutput")
     output_dir_is_explicit: bool = False
     scene_xml_is_explicit: bool = False
@@ -74,20 +75,20 @@ class OptimizationConfig:
     learning_rate_beta: float | None = None
     # Position LR scheduling. The option names are kept for run-config compatibility.
     use_global_lr_schedule: bool = True
-    global_lr_scale_init: float = 2.0
-    global_lr_scale_final: float = 1.0
+    global_lr_scale_init: float = 20.0
+    global_lr_scale_final: float = 0.75
     global_lr_start_iteration: int = 0
-    global_lr_max_steps: int = int(4_000)
+    global_lr_max_steps: int = int(3_000)
 
-    depth_distort_weight: float = 1e3
+    depth_distort_weight: float = 1
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.025
+    normal_consistency_weight: float = 0.002
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
-    intra_slab_depth_weight: float = 1.0e-3
-    curvature_scale_weight: float = 1.0e-4
-    minimum_projected_footprint: bool = True
+    intra_slab_depth_weight: float = 1.0e-4
+    curvature_scale_weight: float = 5.0e-6
+    minimum_projected_footprint: bool = False
     minimum_projected_footprint_pixels: float = 0.707
 
     # Density control / EV-splitting
@@ -96,20 +97,20 @@ class OptimizationConfig:
 
     # Densification becomes less frequent over the position LR schedule, giving
     # newly cloned surfels more optimization steps as their movement slows.
-    densification_interval: int = 50
-    densification_interval_final: int = 50
+    densification_interval: int = 25
+    densification_interval_final: int = 100
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 1.5e-4
+    densification_grad_abs_min: float = 1.0e-4
+    densification_grad_abs_min_final: float = 1.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 4_000
-    densification_scale_min: float = 3.0e-3
-    densification_split_offset_scale: float = 0.1
+    densification_grad_abs_min_decay_end_iteration: int = 3_000
+    densification_scale_min: float = 6.0e-3
+    densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
-    densification_exact_clone_percent_dense: float = 0.0
+    densification_exact_clone_percent_dense: float = 0.000
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
@@ -119,7 +120,7 @@ class OptimizationConfig:
     # Pruning
     opacity_prune_threshold: float = 0.0
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = math.pi * 5.0e-7
+    min_surfel_area: float = math.pi * 5.0e-6
     inactive_gradient_prune_cycles: int = 2  # One cycle is one loop through all training cameras
 
     # Misc scheduling
@@ -137,8 +138,8 @@ class OptimizationConfig:
 
     # Logging
     log_interval: int = 5
-    save_interval: int = 25
-    save_ply_files_interval: int = 25
+    save_interval: int = 10
+    save_ply_files_interval: int = save_interval
 
     # Mesh Extraction
     mesh_extraction_interval: int = 1_000
@@ -160,19 +161,19 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
     base_learning_rate = config.learning_rate
 
     if config.optimizer_type == "sgd":
-        factor_position = 0.2
-        factor_rotation = 0.1
-        factor_scale = 0.005
-        factor_albedo = 2.0
-        factor_opacity = 1.0
+        factor_position = 0.02
+        factor_rotation = 0.01
+        factor_scale = 0.0005
+        factor_albedo = 0.2
+        factor_opacity = 0.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 0.0005
-        factor_rotation = 0.03
-        factor_scale = 0.0004
-        factor_albedo = 0.004
-        factor_opacity = 0.00
-        factor_beta = 0.005
+        factor_position = 1.0e-4
+        factor_rotation = 1.0e-2
+        factor_scale = 2.0e-4
+        factor_albedo = 5.0e-4
+        factor_opacity = 0.0
+        factor_beta = 1.0e-3
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -297,6 +298,11 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
             raise KeyError(f"Checkpoint run_config.json is missing dataset_path: {checkpoint_dir / 'run_config.json'}")
         config.dataset_path = Path(dataset_path)
 
+    if "target_color_space" not in cli_overrides:
+        target_color_space = _checkpoint_config_value(run_config, "target_color_space")
+        if target_color_space is not None:
+            config.target_color_space = str(target_color_space)
+
     config.checkpoint = checkpoint_dir
     config.pointcloud_ply = str(checkpoint_points_path)
     config.pointcloud_ply_is_explicit = True
@@ -323,6 +329,14 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--scene", "--scene-xml", dest="scene_xml", type=str)
     parser.add_argument("--pointcloud", "--ply", dest="pointcloud_ply", type=str)
     parser.add_argument("-s", "--dataset-path", type=Path)
+    parser.add_argument(
+        "--target-color-space",
+        choices=["auto", "srgb", "linear"],
+        help=(
+            "Target image encoding. 'auto' uses ICC metadata and file/sample conventions; "
+            "all targets are converted to linear sRGB for optimization."
+        ),
+    )
     parser.add_argument("--output", "-o", "-m", "--output-dir", dest="output_dir", type=Path)
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--optimizer", dest="optimizer_type", type=str, default="adam", choices=["adam", "sgd"])
