@@ -103,7 +103,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
-    intra_slab_depth_weight: float = 1.0e-3
+    intra_slab_depth_weight: float = 1.0e-4
     curvature_scale_weight: float = 0.0
     # Use one consensus/anchor light-transport vertex and shadow connection per slab.
     share_local_layer_direct_lighting: bool = True
@@ -119,13 +119,13 @@ class OptimizationConfig:
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
-    densification_grad_quantile: float = 0.05
+    densification_grad_quantile: float = 0.3
     densification_grad_abs_min: float = 9.0e-4
     densification_grad_abs_min_final: float = 9.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 11.0
+    curvature_violation_threshold: float = 9.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
