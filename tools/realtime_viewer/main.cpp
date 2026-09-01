@@ -8,6 +8,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -1062,6 +1063,139 @@ namespace {
         return error ? std::filesystem::file_time_type::min() : time;
     }
 
+    struct PlyFileSnapshot {
+        std::uintmax_t size = 0u;
+        std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
+    };
+
+    [[nodiscard]] std::optional<PlyFileSnapshot> readPlyFileSnapshot(
+        const std::filesystem::path& path) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error) {
+            return std::nullopt;
+        }
+        const std::uintmax_t size = std::filesystem::file_size(path, error);
+        if (error) {
+            return std::nullopt;
+        }
+        const std::filesystem::file_time_type writeTime =
+            std::filesystem::last_write_time(path, error);
+        if (error) {
+            return std::nullopt;
+        }
+        return PlyFileSnapshot{.size = size, .writeTime = writeTime};
+    }
+
+    [[nodiscard]] bool samePlyFileSnapshot(
+        const PlyFileSnapshot& lhs,
+        const PlyFileSnapshot& rhs) {
+        return lhs.size == rhs.size && lhs.writeTime == rhs.writeTime;
+    }
+
+    [[nodiscard]] bool validatePlyReadyForLoad(
+        const std::filesystem::path& path,
+        PlyFileSnapshot& validatedSnapshot,
+        std::string& reason) {
+        const std::optional<PlyFileSnapshot> before = readPlyFileSnapshot(path);
+        if (!before || before->size == 0u) {
+            reason = "file is missing or empty";
+            return false;
+        }
+
+        std::ifstream input(path, std::ios::binary);
+        if (!input) {
+            reason = "file could not be opened";
+            return false;
+        }
+
+        std::string line;
+        if (!std::getline(input, line) || (line != "ply" && line != "ply\r")) {
+            reason = "PLY header is incomplete";
+            return false;
+        }
+
+        bool isAscii = false;
+        bool foundFormat = false;
+        bool foundEndHeader = false;
+        bool inVertexElement = false;
+        bool foundVertexElement = false;
+        std::uint64_t vertexCount = 0u;
+        std::size_t vertexPropertyCount = 0u;
+
+        while (std::getline(input, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            std::istringstream tokens(line);
+            std::string keyword;
+            tokens >> keyword;
+            if (keyword == "format") {
+                std::string format;
+                tokens >> format;
+                foundFormat = !format.empty();
+                isAscii = format == "ascii";
+            } else if (keyword == "element") {
+                std::string elementName;
+                std::uint64_t elementCount = 0u;
+                if (!(tokens >> elementName >> elementCount)) {
+                    reason = "PLY element declaration is incomplete";
+                    return false;
+                }
+                inVertexElement = elementName == "vertex";
+                if (inVertexElement) {
+                    foundVertexElement = true;
+                    vertexCount = elementCount;
+                    vertexPropertyCount = 0u;
+                }
+            } else if (keyword == "property" && inVertexElement) {
+                ++vertexPropertyCount;
+            } else if (keyword == "end_header") {
+                foundEndHeader = true;
+                break;
+            }
+        }
+
+        if (!foundFormat || !foundVertexElement || vertexPropertyCount == 0u || !foundEndHeader) {
+            reason = "PLY header is incomplete";
+            return false;
+        }
+
+        // Optimization snapshots are ASCII. Count and minimally validate every
+        // declared vertex before tinyply sees the file; an in-progress writer
+        // otherwise exposes the final filename after only the header exists.
+        if (isAscii) {
+            for (std::uint64_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex) {
+                if (!std::getline(input, line)) {
+                    reason =
+                        "only " + std::to_string(vertexIndex) + " of " +
+                        std::to_string(vertexCount) + " declared vertices are present";
+                    return false;
+                }
+                std::istringstream vertexTokens(line);
+                std::string token;
+                std::size_t tokenCount = 0u;
+                while (vertexTokens >> token) {
+                    ++tokenCount;
+                }
+                if (tokenCount < vertexPropertyCount) {
+                    reason =
+                        "vertex " + std::to_string(vertexIndex) + " is incomplete";
+                    return false;
+                }
+            }
+        }
+
+        input.close();
+        const std::optional<PlyFileSnapshot> after = readPlyFileSnapshot(path);
+        if (!after || !samePlyFileSnapshot(*before, *after)) {
+            reason = "file changed while it was being validated";
+            return false;
+        }
+
+        validatedSnapshot = *after;
+        return true;
+    }
+
     [[nodiscard]] bool equivalentPaths(const std::filesystem::path& lhs, const std::filesystem::path& rhs) {
         std::error_code error;
         if (std::filesystem::equivalent(lhs, rhs, error) && !error) {
@@ -1934,6 +2068,14 @@ namespace {
         Pale::AssetManager& assetManager,
         const std::filesystem::path& scenePath,
         const std::filesystem::path& pointCloudPath) {
+        PlyFileSnapshot validatedSnapshot{};
+        std::string readinessFailure;
+        if (!validatePlyReadyForLoad(pointCloudPath, validatedSnapshot, readinessFailure)) {
+            throw std::runtime_error(
+                "Point cloud is not ready to load (" + readinessFailure + "): " +
+                pointCloudPath.string());
+        }
+
         assetManager.registry().load("asset_registry.yaml");
 
         auto scene = std::make_shared<Pale::Scene>();
@@ -1949,9 +2091,17 @@ namespace {
         pointCloudEntity.addComponent<Pale::PointCloudComponent>().pointCloudID = pointCloudAssetHandle;
 
         Pale::AssetAccessFromManager assetAccessor(assetManager);
+        assetManager.invalidate(pointCloudAssetHandle);
         const auto pointCloudAsset = assetAccessor.getPointCloud(pointCloudAssetHandle);
         if (!pointCloudAsset || pointCloudAsset->points.empty()) {
             throw std::runtime_error("Point cloud failed to load or contains no point blocks: " + pointCloudPath.string());
+        }
+        const std::optional<PlyFileSnapshot> loadedSnapshot = readPlyFileSnapshot(pointCloudPath);
+        if (!loadedSnapshot || !samePlyFileSnapshot(validatedSnapshot, *loadedSnapshot)) {
+            assetManager.invalidate(pointCloudAssetHandle);
+            throw std::runtime_error(
+                "Point cloud changed while it was being loaded; retry after the writer finishes: " +
+                pointCloudPath.string());
         }
 
         Pale::Log::PA_INFO(
@@ -2844,7 +2994,9 @@ int main(int argc, char** argv) {
         ViewImageMode viewImageMode = ViewImageMode::Rendered;
         ScalarColorMap scalarColorMap = ScalarColorMap::Viridis;
         float curvatureViolationDisplayThreshold = 5.0f;
-        bool regularizerPrimitiveGradientMapsEnabled = false;
+        // Viewer-only diagnostic default. Optimization keeps its renderer-side
+        // debug allocations disabled unless explicitly requested there.
+        bool regularizerPrimitiveGradientMapsEnabled = true;
         bool ssimDebugMapsEnabled = false;
         float viewerSsimWeight = 0.2f;
         int viewerSsimWindowSize = 11;
@@ -2978,12 +3130,38 @@ int main(int argc, char** argv) {
                 return false;
             }
 
-            const Pale::AssetHandle pointCloudAssetHandle =
-                importPathAsType(assetManager.registry(), requestedPath, Pale::AssetType::PointCloud);
-            assetManager.invalidate(pointCloudAssetHandle);
-            const auto pointCloudAsset = assetAccessor.getPointCloud(pointCloudAssetHandle);
+            PlyFileSnapshot validatedSnapshot{};
+            std::string readinessFailure;
+            if (!validatePlyReadyForLoad(requestedPath, validatedSnapshot, readinessFailure)) {
+                pointCloudStatus =
+                    "PLY is not ready yet (" + readinessFailure + "): " + requestedPath.string();
+                return false;
+            }
+
+            Pale::AssetHandle pointCloudAssetHandle{};
+            Pale::AssetPtr<Pale::PointAsset> pointCloudAsset;
+            try {
+                pointCloudAssetHandle =
+                    importPathAsType(assetManager.registry(), requestedPath, Pale::AssetType::PointCloud);
+                assetManager.invalidate(pointCloudAssetHandle);
+                pointCloudAsset = assetAccessor.getPointCloud(pointCloudAssetHandle);
+            } catch (const std::exception& exception) {
+                pointCloudStatus =
+                    "Failed to load PLY without replacing the current scene: " +
+                    std::string(exception.what());
+                return false;
+            }
             if (!pointCloudAsset) {
                 pointCloudStatus = "Failed to load PLY: " + requestedPath.string();
+                return false;
+            }
+
+            const std::optional<PlyFileSnapshot> loadedSnapshot = readPlyFileSnapshot(requestedPath);
+            if (!loadedSnapshot || !samePlyFileSnapshot(validatedSnapshot, *loadedSnapshot)) {
+                assetManager.invalidate(pointCloudAssetHandle);
+                pointCloudStatus =
+                    "PLY changed while it was loading; kept the current scene. Try again: " +
+                    requestedPath.string();
                 return false;
             }
 
@@ -3901,6 +4079,34 @@ int main(int argc, char** argv) {
             updateDisplayTexture();
         };
 
+        const auto isViewImageModeAvailable = [&](ViewImageMode mode) {
+            return !(isRegularizerGradientView(mode) &&
+                     !regularizerPrimitiveGradientMapsEnabled) &&
+                   !(isSsimDebugView(mode) && !ssimDebugMapsEnabled);
+        };
+
+        const auto cycleViewImageMode = [&](int direction) {
+            const std::size_t modeCount = kViewImageModeShortcutOrder.size();
+            std::size_t currentIndex = 0u;
+            for (std::size_t index = 0u; index < modeCount; ++index) {
+                if (kViewImageModeShortcutOrder[index] == viewImageMode) {
+                    currentIndex = index;
+                    break;
+                }
+            }
+
+            for (std::size_t offset = 1u; offset <= modeCount; ++offset) {
+                const std::size_t nextIndex = direction > 0
+                    ? (currentIndex + offset) % modeCount
+                    : (currentIndex + modeCount - (offset % modeCount)) % modeCount;
+                const ViewImageMode nextMode = kViewImageModeShortcutOrder[nextIndex];
+                if (isViewImageModeAvailable(nextMode)) {
+                    setViewImageMode(nextMode);
+                    return;
+                }
+            }
+        };
+
         auto ensureViewerAdjointGradients = [&]() {
             const bool hasUsableGradients =
                 viewerAdjointGradients.gradPosition != nullptr &&
@@ -4321,6 +4527,18 @@ int main(int argc, char** argv) {
                         break;
                     }
                 }
+
+                const bool nextViewModePressed =
+                    ImGui::IsKeyPressed(ImGuiKey_KeypadAdd, false) ||
+                    (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Equal, false));
+                const bool previousViewModePressed =
+                    ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, false) ||
+                    ImGui::IsKeyPressed(ImGuiKey_Minus, false);
+                if (nextViewModePressed) {
+                    cycleViewImageMode(1);
+                } else if (previousViewModePressed) {
+                    cycleViewImageMode(-1);
+                }
             }
             std::vector<Pale::Entity> areaLights = collectAreaLights(scene);
             if (areaLights.empty()) {
@@ -4461,11 +4679,7 @@ int main(int argc, char** argv) {
             ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
             if (ImGui::BeginCombo("Display", viewImageModeLabel(viewImageMode))) {
                 for (const ViewImageMode candidateMode : kViewImageModeShortcutOrder) {
-                    if (isRegularizerGradientView(candidateMode) &&
-                        !regularizerPrimitiveGradientMapsEnabled) {
-                        continue;
-                    }
-                    if (isSsimDebugView(candidateMode) && !ssimDebugMapsEnabled) {
+                    if (!isViewImageModeAvailable(candidateMode)) {
                         continue;
                     }
                     const bool selected = viewImageMode == candidateMode;
@@ -4478,6 +4692,7 @@ int main(int argc, char** argv) {
                 }
                 ImGui::EndCombo();
             }
+            ImGui::TextDisabled("1-9 direct   +/- cycle display modes");
             if (viewImageMode == ViewImageMode::MeanDepth ||
                 viewImageMode == ViewImageMode::MedianDepth ||
                 viewImageMode == ViewImageMode::DepthDistortion ||
@@ -4860,7 +5075,7 @@ int main(int argc, char** argv) {
                     renderRequested = true;
                 }
                 ImGui::TextDisabled(
-                    "Off by default; allocates 3 gradient sets and runs the surface adjoint");
+                    "Viewer default; allocates 3 gradient sets and runs the surface adjoint");
                 if (regularizerPrimitiveGradientMapsEnabled) {
                     ImGui::Text(
                         "Last regularizer gradient maps: %.3f ms (unit loss weights)",

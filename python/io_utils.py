@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
 from pathlib import Path
 
 import imageio.v3 as iio
@@ -448,51 +449,72 @@ def save_gaussians_to_ply(
             "positions/rotations/scales/colors/opacities/betas/powers"
         )
 
-    with file_path.open("w", encoding="ascii") as f:
-        f.write("ply\n")
-        f.write("format ascii 1.0\n")
-        f.write("comment Quaternion surfels: position, rotation quaternion, scales, diffuse albedo, opacity\n")
-        f.write(f"element vertex {num_points}\n")
-        f.write("property float x\n")
-        f.write("property float y\n")
-        f.write("property float z\n")
-        f.write("property float rot_w\n")
-        f.write("property float rot_x\n")
-        f.write("property float rot_y\n")
-        f.write("property float rot_z\n")
-        f.write("property float su\n")
-        f.write("property float sv\n")
-        f.write("property float albedo_r\n")
-        f.write("property float albedo_g\n")
-        f.write("property float albedo_b\n")
-        f.write("property float opacity\n")
-        f.write("property float beta\n")
-        f.write("property float shape\n")
-        f.write("property float power\n")
-        if origin_values is not None:
-            # Stored as float for compatibility with the existing PLY float loader.
-            f.write("property float densification_origin\n")
-        f.write("end_header\n")
+    temporary_file_path: Path | None = None
+    try:
+        # Publish snapshots only after the complete file has been flushed and closed.
+        # The temporary file lives beside the destination so os.replace is atomic.
+        with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="ascii",
+                dir=file_path.parent,
+                prefix=f".{file_path.name}.",
+                suffix=".tmp",
+                delete=False,
+        ) as f:
+            temporary_file_path = Path(f.name)
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write("comment Quaternion surfels: position, rotation quaternion, scales, diffuse albedo, opacity\n")
+            f.write(f"element vertex {num_points}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write("property float rot_w\n")
+            f.write("property float rot_x\n")
+            f.write("property float rot_y\n")
+            f.write("property float rot_z\n")
+            f.write("property float su\n")
+            f.write("property float sv\n")
+            f.write("property float albedo_r\n")
+            f.write("property float albedo_g\n")
+            f.write("property float albedo_b\n")
+            f.write("property float opacity\n")
+            f.write("property float beta\n")
+            f.write("property float shape\n")
+            f.write("property float power\n")
+            if origin_values is not None:
+                # Stored as float for compatibility with the existing PLY float loader.
+                f.write("property float densification_origin\n")
+            f.write("end_header\n")
 
-        for i in range(num_points):
-            x, y, z = pos[i]
-            qw, qx, qy, qz = rot[i]
-            su_i, sv_i = sc[i, 0], sc[i, 1]
-            albedo_r, albedo_g, albedo_b = col[i]
+            for i in range(num_points):
+                x, y, z = pos[i]
+                qw, qx, qy, qz = rot[i]
+                su_i, sv_i = sc[i, 0], sc[i, 1]
+                albedo_r, albedo_g, albedo_b = col[i]
 
-            origin_suffix = (
-                f" {float(origin_values[i]):.1f}"
-                if origin_values is not None
-                else ""
-            )
-            f.write(
-                f"{x:.9g} {y:.9g} {z:.9g}  "
-                f"{qw:.9g} {qx:.9g} {qy:.9g} {qz:.9g}  "
-                f"{su_i:.9g} {sv_i:.9g}  "
-                f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
-                f"{opa[i]:.9g} {beta_values[i]:.9g} {shape_default:.9g} {power_values[i]:.9g}"
-                f"{origin_suffix}\n"
-            )
+                origin_suffix = (
+                    f" {float(origin_values[i]):.1f}"
+                    if origin_values is not None
+                    else ""
+                )
+                f.write(
+                    f"{x:.9g} {y:.9g} {z:.9g}  "
+                    f"{qw:.9g} {qx:.9g} {qy:.9g} {qz:.9g}  "
+                    f"{su_i:.9g} {sv_i:.9g}  "
+                    f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
+                    f"{opa[i]:.9g} {beta_values[i]:.9g} {shape_default:.9g} {power_values[i]:.9g}"
+                    f"{origin_suffix}\n"
+                )
+
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(temporary_file_path, file_path)
+        temporary_file_path = None
+    finally:
+        if temporary_file_path is not None:
+            temporary_file_path.unlink(missing_ok=True)
 
 def _jsonify_value(value):
     if isinstance(value, Path):

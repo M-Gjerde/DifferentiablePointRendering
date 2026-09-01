@@ -268,6 +268,10 @@ public:
                     get_b(settingsDict, "enable_adjoint_shadow_rays", m_settings.enableAdjointDirectLight);
             m_settings.numAdjointPathShadowRays =
                     get_i(settingsDict, "adjoint_shadow_path_rays", m_settings.numAdjointPathShadowRays);
+            m_settings.sampling.qNull =
+                    get_f(settingsDict, "adjoint_q_null", m_settings.sampling.qNull);
+            m_settings.sampling.qReflect =
+                    get_f(settingsDict, "adjoint_q_reflect", m_settings.sampling.qReflect);
             m_settings.depthDistortionWeight =
                     get_f(settingsDict, "depth_distort_weight", m_settings.depthDistortionWeight);
 
@@ -288,6 +292,10 @@ public:
                     get_f(settingsDict,
                           "curvature_scale_weight",
                           m_settings.curvatureScaleRegularizerWeight);
+            m_settings.rendererDebugShareLocalLayerDirectLighting =
+                    get_b(settingsDict,
+                          "share_local_layer_direct_lighting",
+                          m_settings.rendererDebugShareLocalLayerDirectLighting);
             curvatureDensificationEnabled =
                     get_b(settingsDict, "enable_curvature_densification", false);
             m_settings.rendererDebugMinimumProjectedFootprint =
@@ -298,6 +306,33 @@ public:
                     get_f(settingsDict,
                           "minimum_projected_footprint_pixels",
                           m_settings.rendererDebugMinimumProjectedFootprintPixels);
+            // Finite-difference/debug controls. Exposing these through the
+            // regular settings dictionary lets tests exercise both the batched
+            // and scalar intersection paths with identical scene data.
+            m_settings.rendererDebugLocalLayerDepthEpsilon =
+                    get_f(settingsDict,
+                          "local_layer_depth_epsilon",
+                          m_settings.rendererDebugLocalLayerDepthEpsilon);
+            m_settings.rendererDebugLocalLayerNormalCosineThreshold =
+                    get_f(settingsDict,
+                          "local_layer_normal_cosine_threshold",
+                          m_settings.rendererDebugLocalLayerNormalCosineThreshold);
+            m_settings.rendererDebugMaxSplatEventsPerRay =
+                    get_i(settingsDict,
+                          "max_splat_events_per_ray",
+                          m_settings.rendererDebugMaxSplatEventsPerRay);
+            m_settings.rendererDebugMaxLocalSurfelHits =
+                    get_i(settingsDict,
+                          "max_local_surfel_hits",
+                          m_settings.rendererDebugMaxLocalSurfelHits);
+            m_settings.rendererDebugPointHitBatchSize =
+                    get_i(settingsDict,
+                          "point_hit_batch_size",
+                          m_settings.rendererDebugPointHitBatchSize);
+            m_settings.rendererDebugPointHitBatchLookahead =
+                    get_b(settingsDict,
+                          "point_hit_batch_lookahead",
+                          m_settings.rendererDebugPointHitBatchLookahead);
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
 
@@ -330,14 +365,24 @@ public:
         Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", m_settings.adjointSamplesPerPixel);
         Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", m_settings.enableAdjointDirectLight);
         Pale::Log::PA_WARN("  Adjoint Shadow ray count  : {}", m_settings.numAdjointPathShadowRays);
+        Pale::Log::PA_WARN("  Adjoint q(null/reflect)   : {}/{}",
+                           m_settings.sampling.qNull,
+                           m_settings.sampling.qReflect);
         Pale::Log::PA_WARN("  Visibility opacity weight : {}", m_settings.visibilityWeightedOpacityRegularizerWeight);
         Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", m_settings.depthDistortionWeight);
         Pale::Log::PA_WARN("  Normal Consistency Weight : {}", m_settings.normalConsistencyWeight);
         Pale::Log::PA_WARN("  Intra-slab depth weight   : {}", m_settings.intraSlabDepthRegularizerWeight);
         Pale::Log::PA_WARN("  Curvature scale weight    : {}", m_settings.curvatureScaleRegularizerWeight);
+        Pale::Log::PA_WARN("  Shared slab direct light  : {}", m_settings.rendererDebugShareLocalLayerDirectLighting);
         Pale::Log::PA_WARN("  Curvature densification   : {}", curvatureDensificationEnabled);
         Pale::Log::PA_WARN("  Minimum footprint enabled : {}", m_settings.rendererDebugMinimumProjectedFootprint);
         Pale::Log::PA_WARN("  Minimum footprint sigma px: {}", m_settings.rendererDebugMinimumProjectedFootprintPixels);
+        Pale::Log::PA_WARN("  Local layer depth epsilon : {}", m_settings.rendererDebugLocalLayerDepthEpsilon);
+        Pale::Log::PA_WARN("  Local layer normal cosine : {}", m_settings.rendererDebugLocalLayerNormalCosineThreshold);
+        Pale::Log::PA_WARN("  Max splat events per ray  : {}", m_settings.rendererDebugMaxSplatEventsPerRay);
+        Pale::Log::PA_WARN("  Max local surfel hits     : {}", m_settings.rendererDebugMaxLocalSurfelHits);
+        Pale::Log::PA_WARN("  Point-hit batch size      : {}", m_settings.rendererDebugPointHitBatchSize);
+        Pale::Log::PA_WARN("  Point-hit lookahead       : {}", m_settings.rendererDebugPointHitBatchLookahead);
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorsForward.size(); ++i) {
             const auto &s = sensorsForward[i];
@@ -3775,6 +3820,7 @@ public:
         }
 
         pointGeometry.albedos[index][axis] = newIntensity;
+        rebuild_bvh();
     }
 
     static inline void orthonormalizeFrame(glm::vec3 &tanU, glm::vec3 &tanV) {

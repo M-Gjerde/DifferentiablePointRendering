@@ -1,0 +1,447 @@
+{
+  "schema_version": 2,
+  "description": "Progressive deterministic direct point-light adjoint finite-difference suite.",
+  "defaults": {
+    "scene": "fd_direct",
+    "camera": "camera",
+    "objective": {
+      "type": "linear",
+      "channel_weights": [1.0, -0.65, 0.35]
+    },
+    "epsilons": [0.001, 0.0003],
+    "settings": {
+      "photons": 1,
+      "bounces": 1,
+      "forward_passes": 1,
+      "primal_shadow_rays": 1,
+      "adjoint_shadow_rays": 1,
+      "gather_passes": 1,
+      "adjoint_bounces": 1,
+      "adjoint_passes": 8,
+      "logging": 4,
+      "seed": 42,
+      "enable_adjoint_shadow_rays": true,
+      "adjoint_shadow_path_rays": 1,
+      "adjoint_q_null": 0.0,
+      "adjoint_q_reflect": 1.0,
+      "share_local_layer_direct_lighting": false,
+      "minimum_projected_footprint": false,
+      "minimum_projected_footprint_pixels": 0.707,
+      "local_layer_depth_epsilon": 0.02,
+      "local_layer_normal_cosine_threshold": 0.5,
+      "max_splat_events_per_ray": 8,
+      "max_local_surfel_hits": 8,
+      "point_hit_batch_size": 6,
+      "point_hit_batch_lookahead": true
+    },
+    "check": {
+      "relative_tolerance": 0.06,
+      "absolute_tolerance": 5e-7,
+      "minimum_signal": 2e-6,
+      "fd_consistency_relative_tolerance": 0.08,
+      "repeatability_tolerance": 0.0,
+      "allow_zero_signal": false
+    }
+  },
+  "cases": [
+    {
+      "name": "01_single_albedo_r_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "albedo_r",
+      "index": 1,
+      "values": [0.42, 0.72]
+    },
+    {
+      "name": "02_single_opacity_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "opacity",
+      "index": 1,
+      "values": [0.40, 0.74]
+    },
+    {
+      "name": "03_single_beta_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "beta",
+      "index": 1,
+      "values": [-1.4, -0.7]
+    },
+    {
+      "name": "04_single_scale_u_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "scale_u",
+      "index": 1,
+      "values": [0.46, 0.58]
+    },
+    {
+      "name": "05_single_translation_x_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "translation_x",
+      "index": 1,
+      "values": [-0.03, 0.04]
+    },
+    {
+      "name": "06_single_translation_z_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "translation_z",
+      "index": 1,
+      "values": [-0.025, 0.025]
+    },
+    {
+      "name": "07_single_rotation_x_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "rotation_x",
+      "index": 1,
+      "values": [-7.0, 7.0],
+      "epsilons": [0.05, 0.02],
+      "check": {
+        "relative_tolerance": 0.08,
+        "minimum_signal": 2e-7,
+        "fd_consistency_relative_tolerance": 0.12
+      }
+    },
+    {
+      "name": "07b_single_translation_y_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "translation_y",
+      "index": 1,
+      "values": [-0.04, 0.02]
+    },
+    {
+      "name": "07c_single_rotation_y_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "rotation_y",
+      "index": 1,
+      "values": [-7.0, 7.0],
+      "epsilons": [0.05, 0.02],
+      "check": {
+        "relative_tolerance": 0.08,
+        "minimum_signal": 2e-7,
+        "fd_consistency_relative_tolerance": 0.12
+      }
+    },
+    {
+      "name": "07d_single_rotation_z_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "rotation_z",
+      "index": 1,
+      "values": [-9.0, 9.0],
+      "epsilons": [0.05, 0.02],
+      "check": {
+        "relative_tolerance": 0.08,
+        "minimum_signal": 2e-7,
+        "fd_consistency_relative_tolerance": 0.12
+      }
+    },
+    {
+      "name": "07e_single_scale_v_linear",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "scale_v",
+      "index": 1,
+      "values": [0.36, 0.47]
+    },
+    {
+      "name": "08_single_albedo_l2_ssim_seed",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "albedo_g",
+      "index": 1,
+      "values": [0.43],
+      "objective": {
+        "type": "l2_ssim",
+        "target_channels": [0.12, 0.18, 0.08],
+        "ssim_weight": 0.2,
+        "window_size": 5,
+        "sigma": 0.75
+      },
+      "check": {
+        "relative_tolerance": 0.08,
+        "fd_consistency_relative_tolerance": 0.12
+      }
+    },
+    {
+      "name": "09_single_albedo_without_visibility_edges",
+      "stage": "single_surfel",
+      "ply": "single_surfel",
+      "parameter": "albedo_b",
+      "index": 1,
+      "values": [0.24, 0.50],
+      "settings": {
+        "enable_adjoint_shadow_rays": false
+      }
+    },
+
+    {
+      "name": "10_slab_opacity_per_member_light",
+      "stage": "single_slab",
+      "ply": "single_slab",
+      "parameter": "opacity",
+      "index": 1,
+      "values": [0.42, 0.62]
+    },
+    {
+      "name": "11_slab_albedo_per_member_light",
+      "stage": "single_slab",
+      "ply": "single_slab",
+      "parameter": "albedo_g",
+      "index": 2,
+      "values": [0.48, 0.72]
+    },
+    {
+      "name": "12_slab_translation_per_member_light",
+      "stage": "single_slab",
+      "ply": "single_slab",
+      "parameter": "translation_x",
+      "index": 1,
+      "values": [-0.06, -0.035]
+    },
+    {
+      "name": "13_slab_opacity_shared_light",
+      "stage": "single_slab",
+      "ply": "single_slab",
+      "parameter": "opacity",
+      "index": 1,
+      "values": [0.42, 0.62],
+      "settings": {
+        "share_local_layer_direct_lighting": true
+      }
+    },
+    {
+      "name": "14_slab_albedo_shared_light",
+      "stage": "single_slab",
+      "ply": "single_slab",
+      "parameter": "albedo_g",
+      "index": 2,
+      "values": [0.48, 0.72],
+      "settings": {
+        "share_local_layer_direct_lighting": true
+      }
+    },
+    {
+      "name": "15_slab_no_lookahead_opacity",
+      "stage": "single_slab",
+      "ply": "single_slab",
+      "parameter": "opacity",
+      "index": 2,
+      "values": [0.40, 0.57],
+      "settings": {
+        "point_hit_batch_lookahead": false
+      }
+    },
+
+    {
+      "name": "20_multi_slab_front_opacity",
+      "stage": "multiple_slabs",
+      "ply": "multiple_slabs",
+      "parameter": "opacity",
+      "index": 1,
+      "values": [0.26, 0.40],
+      "settings": {
+        "adjoint_passes": 32,
+        "adjoint_q_null": 0.5,
+        "adjoint_q_reflect": 0.5
+      },
+      "check": {
+        "relative_tolerance": 0.10,
+        "fd_consistency_relative_tolerance": 0.12
+      }
+    },
+    {
+      "name": "21_multi_slab_rear_albedo",
+      "stage": "multiple_slabs",
+      "ply": "multiple_slabs",
+      "parameter": "albedo_b",
+      "index": 3,
+      "values": [0.55, 0.82],
+      "settings": {
+        "adjoint_passes": 32,
+        "adjoint_q_null": 0.5,
+        "adjoint_q_reflect": 0.5
+      },
+      "check": {
+        "relative_tolerance": 0.10,
+        "fd_consistency_relative_tolerance": 0.12
+      }
+    },
+    {
+      "name": "22_multi_slab_rear_translation",
+      "stage": "multiple_slabs",
+      "ply": "multiple_slabs",
+      "parameter": "translation_x",
+      "index": 3,
+      "values": [-0.05, -0.025],
+      "settings": {
+        "adjoint_passes": 32,
+        "adjoint_q_null": 0.5,
+        "adjoint_q_reflect": 0.5
+      },
+      "check": {
+        "relative_tolerance": 0.12,
+        "fd_consistency_relative_tolerance": 0.15
+      }
+    },
+
+    {
+      "name": "30_occluder_opacity_batched",
+      "stage": "shadow_occlusion",
+      "ply": "occlusion",
+      "parameter": "opacity",
+      "index": 2,
+      "values": [0.36, 0.62]
+    },
+    {
+      "name": "31_occluder_translation_x_batched",
+      "stage": "shadow_occlusion",
+      "ply": "occlusion",
+      "parameter": "translation_x",
+      "index": 2,
+      "values": [0.31, 0.34],
+      "epsilons": [0.0005, 0.0002],
+      "check": {
+        "relative_tolerance": 0.10,
+        "fd_consistency_relative_tolerance": 0.14
+      }
+    },
+    {
+      "name": "32_occluder_scale_u_scalar_traversal",
+      "stage": "shadow_occlusion",
+      "ply": "occlusion",
+      "parameter": "scale_u",
+      "index": 2,
+      "values": [0.12, 0.16],
+      "settings": {
+        "point_hit_batch_size": 1
+      },
+      "check": {
+        "relative_tolerance": 0.10,
+        "fd_consistency_relative_tolerance": 0.14
+      }
+    },
+    {
+      "name": "33_occluder_beta_scalar_traversal",
+      "stage": "shadow_occlusion",
+      "ply": "occlusion",
+      "parameter": "beta",
+      "index": 2,
+      "values": [-1.0, -0.5],
+      "settings": {
+        "point_hit_batch_size": 1
+      },
+      "check": {
+        "relative_tolerance": 0.10,
+        "fd_consistency_relative_tolerance": 0.14
+      }
+    },
+
+    {
+      "name": "40_slab_occluder_opacity_per_member_light",
+      "stage": "slab_occlusion",
+      "ply": "slab_occlusion",
+      "parameter": "opacity",
+      "index": 3,
+      "values": [0.34, 0.58]
+    },
+    {
+      "name": "41_slab_target_opacity_per_member_light",
+      "stage": "slab_occlusion",
+      "ply": "slab_occlusion",
+      "parameter": "opacity",
+      "index": 1,
+      "values": [0.44, 0.62]
+    },
+    {
+      "name": "42_slab_occluder_opacity_shared_light",
+      "stage": "slab_occlusion",
+      "ply": "slab_occlusion",
+      "parameter": "opacity",
+      "index": 3,
+      "values": [0.34, 0.58],
+      "settings": {
+        "share_local_layer_direct_lighting": true
+      }
+    },
+    {
+      "name": "43_slab_target_albedo_shared_light",
+      "stage": "slab_occlusion",
+      "ply": "slab_occlusion",
+      "parameter": "albedo_r",
+      "index": 1,
+      "values": [0.58, 0.78],
+      "settings": {
+        "share_local_layer_direct_lighting": true
+      }
+    },
+
+    {
+      "name": "50_subpixel_lowpass_disabled_zero",
+      "stage": "minimum_footprint",
+      "ply": "subpixel_surfel",
+      "parameter": "albedo_r",
+      "index": 1,
+      "values": [0.42, 0.72],
+      "check": {
+        "minimum_signal": 1e-8,
+        "allow_zero_signal": true
+      }
+    },
+    {
+      "name": "51_subpixel_lowpass_enabled_albedo",
+      "stage": "minimum_footprint",
+      "ply": "subpixel_surfel",
+      "parameter": "albedo_r",
+      "index": 1,
+      "values": [0.42, 0.72],
+      "settings": {
+        "minimum_projected_footprint": true
+      },
+      "check": {
+        "relative_tolerance": 0.08,
+        "minimum_signal": 1e-8,
+        "fd_consistency_relative_tolerance": 0.12
+      }
+    },
+    {
+      "name": "52_subpixel_lowpass_enabled_opacity",
+      "stage": "minimum_footprint",
+      "ply": "subpixel_surfel",
+      "parameter": "opacity",
+      "index": 1,
+      "values": [0.42, 0.74],
+      "settings": {
+        "minimum_projected_footprint": true
+      },
+      "check": {
+        "relative_tolerance": 0.08,
+        "minimum_signal": 1e-8,
+        "fd_consistency_relative_tolerance": 0.12
+      }
+    },
+    {
+      "name": "53_subpixel_lowpass_enabled_translation",
+      "stage": "minimum_footprint",
+      "ply": "subpixel_surfel",
+      "parameter": "translation_x",
+      "index": 1,
+      "values": [0.006, 0.012],
+      "epsilons": [0.0003, 0.0001],
+      "settings": {
+        "minimum_projected_footprint": true
+      },
+      "check": {
+        "relative_tolerance": 0.12,
+        "minimum_signal": 1e-8,
+        "fd_consistency_relative_tolerance": 0.18
+      }
+    }
+  ]
+}

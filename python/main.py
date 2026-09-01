@@ -112,6 +112,7 @@ def main() -> None:
     print(f"  pointcloud           : {config.pointcloud_ply}")
     print(f"  dataset_path         : {config.dataset_path}")
     print(f"  target_color_space   : {config.target_color_space} -> linear sRGB training")
+    print(f"  shared_slab_lighting : {config.share_local_layer_direct_lighting}")
     print(f"  iterations           : {config.iterations}")
     print(f"  resume_iteration_offset: {config.resume_iteration_offset}")
     print(f"  final_global_iteration: {config.resume_iteration_offset + config.iterations}")

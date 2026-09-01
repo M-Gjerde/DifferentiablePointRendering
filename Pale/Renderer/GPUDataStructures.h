@@ -608,6 +608,10 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface[kMaxLocalSurfelHits];
         float layerWeights[kMaxLocalSurfelHits];
         float directLightEps[kMaxLocalSurfelHits];
+        float3 sharedDirectLightPositionW{0.0f};
+        float3 sharedDirectLightAnchorNormalW{0.0f};
+        float sharedDirectLightEps = 0.0f;
+        uint32_t sharedDirectLightVertexValid = 0u;
         uint32_t surfelSlabCount = 0;
         float transmission{};
         float3 xPathThroughput;
@@ -635,6 +639,10 @@ namespace Pale {
         PointCloudSurfaceRecord xSurface[kMaxLocalSurfelHits];
         float layerWeights[kMaxLocalSurfelHits];
         float directLightEps[kMaxLocalSurfelHits];
+        float3 sharedDirectLightPositionW{0.0f};
+        float3 sharedDirectLightAnchorNormalW{0.0f};
+        float sharedDirectLightEps = 0.0f;
+        uint32_t sharedDirectLightVertexValid = 0u;
 
         uint32_t surfelSlabCount = 0u;
 

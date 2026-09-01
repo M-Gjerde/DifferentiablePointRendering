@@ -42,6 +42,7 @@ class RendererSettingsConfig:
             "opacity_prior_weight": config.opacity_prior_weight,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
             "curvature_scale_weight": config.curvature_scale_weight,
+            "share_local_layer_direct_lighting": config.share_local_layer_direct_lighting,
             "enable_curvature_densification": (
                 config.curvature_violation_threshold > 0.0
                 and config.densification_interval > 0
@@ -86,21 +87,23 @@ class OptimizationConfig:
     position_lr_scale_init: float = 10.0
     position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = int(7_000)
+    lr_decay_max_steps: int = int(20_000)
 
     # RGB objective: (1 - ssim_weight) * half-MSE + ssim_weight * (1 - SSIM).
     # The 0.2 / 11 / 1.5 defaults mirror the DSSIM weight and window used by 3DGS.
     ssim_weight: float = 0.004
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
-    depth_distort_weight: float = 1.0
+    depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.0025
+    normal_consistency_weight: float = 0.001
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
-    intra_slab_depth_weight: float = 5.0e-3
-    curvature_scale_weight: float = 0.0e-6
+    intra_slab_depth_weight: float = 1.0e-3
+    curvature_scale_weight: float = 5.0e-7
+    # Use one consensus/anchor light-transport vertex and shadow connection per slab.
+    share_local_layer_direct_lighting: bool = True
     minimum_projected_footprint: bool = False
     minimum_projected_footprint_pixels: float = 0.707
 
@@ -113,13 +116,13 @@ class OptimizationConfig:
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
-    densification_grad_quantile: float = 0.0
+    densification_grad_quantile: float = 0.3
     densification_grad_abs_min: float = 9.0e-4
     densification_grad_abs_min_final: float = 9.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 5.0
+    curvature_violation_threshold: float = 12.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
@@ -133,7 +136,7 @@ class OptimizationConfig:
     # Pruning
     opacity_prune_threshold: float = 0.0
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = math.pi * 5.0e-6
+    min_surfel_area: float = math.pi * 6.0e-5
     inactive_gradient_prune_cycles: int = 1  # One cycle is one loop through all training cameras
 
     # Misc scheduling
@@ -181,9 +184,9 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_opacity = 0.0
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
-        factor_position = 1.0e-4
+        factor_position = 1.5e-4
         factor_rotation = 3.0e-2
-        factor_scale = 3.5e-4
+        factor_scale = 4.5e-4
         factor_albedo = 8.0e-4
         factor_opacity = 0.0
         factor_beta = 3.0e-3
@@ -424,6 +427,13 @@ def parse_args() -> OptimizationConfig:
         "--curvature-scale-weight",
         dest="curvature_scale_weight",
         type=float,
+    )
+    parser.add_argument(
+        "--share-local-layer-direct-lighting",
+        dest="share_local_layer_direct_lighting",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Share one point-light transport vertex and shadow connection across each local slab.",
     )
     parser.add_argument(
         "--minimum-projected-footprint",
