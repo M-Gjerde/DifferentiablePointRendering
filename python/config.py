@@ -86,7 +86,7 @@ class OptimizationConfig:
     position_lr_scale_init: float = 10.0
     position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = int(15_000)
+    lr_decay_max_steps: int = int(7_000)
 
     # RGB objective: (1 - ssim_weight) * half-MSE + ssim_weight * (1 - SSIM).
     # The 0.2 / 11 / 1.5 defaults mirror the DSSIM weight and window used by 3DGS.
@@ -95,7 +95,7 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
     depth_distort_weight: float = 10.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.001
+    normal_consistency_weight: float = 0.0025
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
@@ -114,8 +114,8 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 9.0e-4
-    densification_grad_abs_min_final: float = 9.0e-4
+    densification_grad_abs_min: float = 1.5e-4
+    densification_grad_abs_min_final: float = 1.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
