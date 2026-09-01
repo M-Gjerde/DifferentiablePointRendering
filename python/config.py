@@ -42,6 +42,10 @@ class RendererSettingsConfig:
             "opacity_prior_weight": config.opacity_prior_weight,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
             "curvature_scale_weight": config.curvature_scale_weight,
+            "enable_curvature_densification": (
+                config.curvature_violation_threshold > 0.0
+                and config.densification_interval > 0
+            ),
             "minimum_projected_footprint": config.minimum_projected_footprint,
             "minimum_projected_footprint_pixels": config.minimum_projected_footprint_pixels,
         }
@@ -73,21 +77,30 @@ class OptimizationConfig:
     learning_rate_albedo: float | None = None
     learning_rate_opacity: float | None = None
     learning_rate_beta: float | None = None
-    # Position LR scheduling. The option names are kept for run-config compatibility.
-    use_global_lr_schedule: bool = True
-    global_lr_scale_init: float = 10.0
+    # Multiplicative learning-rate decay. All parameter groups receive the
+    # global scale; position optionally receives a second position-only scale.
+    use_global_lr_decay: bool = True
+    global_lr_scale_init: float = 2.0
     global_lr_scale_final: float = 1.0
-    global_lr_start_iteration: int = 0
-    global_lr_max_steps: int = int(8_000)
+    use_position_lr_decay: bool = True
+    position_lr_scale_init: float = 10.0
+    position_lr_scale_final: float = 0.5
+    lr_decay_start_iteration: int = 0
+    lr_decay_max_steps: int = int(15_000)
 
-    depth_distort_weight: float = 1.0
+    # RGB objective: (1 - ssim_weight) * half-MSE + ssim_weight * (1 - SSIM).
+    # The 0.2 / 11 / 1.5 defaults mirror the DSSIM weight and window used by 3DGS.
+    ssim_weight: float = 0.004
+    ssim_window_size: int = 5
+    ssim_sigma: float = 0.75
+    depth_distort_weight: float = 10.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.002
+    normal_consistency_weight: float = 0.001
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
-    intra_slab_depth_weight: float = 1.0e-4
-    curvature_scale_weight: float = 2.0e-6
+    intra_slab_depth_weight: float = 5.0e-3
+    curvature_scale_weight: float = 0.0e-6
     minimum_projected_footprint: bool = False
     minimum_projected_footprint_pixels: float = 0.707
 
@@ -95,18 +108,18 @@ class OptimizationConfig:
     # Ignore stats from the first half of each densification interval after cloning/pruning.
     densification_stats_skip_interval_start: bool = True
 
-    # Densification becomes less frequent over the position LR schedule, giving
-    # newly cloned surfels more optimization steps as their movement slows.
-    densification_interval: int = 25
-    densification_interval_final: int = 100
+    # Densification cadence is independent of learning-rate decay.
+    densification_interval: int = 50
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 2.0e-3
-    densification_grad_abs_min_final: float = 7.5e-4
+    densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min_final: float = 1.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
+    # A non-positive value disables curvature-triggered densification.
+    curvature_violation_threshold: float = 4.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
@@ -121,7 +134,7 @@ class OptimizationConfig:
     opacity_prune_threshold: float = 0.0
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 5.0e-6
-    inactive_gradient_prune_cycles: int = 2  # One cycle is one loop through all training cameras
+    inactive_gradient_prune_cycles: int = 1  # One cycle is one loop through all training cameras
 
     # Misc scheduling
     reset_opacity_interval: int = 0
@@ -169,11 +182,11 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
         factor_position = 1.0e-4
-        factor_rotation = 1.0e-2
-        factor_scale = 2.0e-4
-        factor_albedo = 5.0e-4
+        factor_rotation = 3.0e-2
+        factor_scale = 3.5e-4
+        factor_albedo = 8.0e-4
         factor_opacity = 0.0
-        factor_beta = 1.0e-3
+        factor_beta = 3.0e-3
     else:
         raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
@@ -189,24 +202,6 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         config.learning_rate_opacity = factor_opacity * base_learning_rate
     if config.learning_rate_beta is None:
         config.learning_rate_beta = factor_beta * base_learning_rate
-
-
-def scheduled_iteration_interval(
-        initial_interval: int,
-        final_interval: int,
-        iteration: int,
-        start_iteration: int,
-        max_steps: int,
-) -> int:
-    if initial_interval <= 0:
-        return initial_interval
-    if final_interval <= 0:
-        raise ValueError(f"final_interval must be positive, got {final_interval}")
-    if max_steps <= 0:
-        return initial_interval if iteration < start_iteration else final_interval
-
-    progress = min(max(float(iteration - start_iteration) / float(max_steps), 0.0), 1.0)
-    return max(1, round(initial_interval * (1.0 - progress) + final_interval * progress))
 
 
 def _load_checkpoint_run_config(checkpoint_dir: Path) -> dict:
@@ -383,12 +378,33 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--lr-albedo", dest="learning_rate_albedo", type=float)
     parser.add_argument("--lr-opacity", dest="learning_rate_opacity", type=float)
     parser.add_argument("--lr-beta", dest="learning_rate_beta", type=float)
-    parser.add_argument("--global-lr-schedule", dest="use_global_lr_schedule",
+    parser.add_argument("--global-lr-decay", dest="use_global_lr_decay",
                         action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
     parser.add_argument("--global-lr-scale-init", type=float)
     parser.add_argument("--global-lr-scale-final", type=float)
-    parser.add_argument("--global-lr-start-iteration", type=int)
-    parser.add_argument("--global-lr-max-steps", type=int)
+    parser.add_argument("--position-lr-decay", dest="use_position_lr_decay",
+                        action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
+    parser.add_argument("--position-lr-scale-init", type=float)
+    parser.add_argument("--position-lr-scale-final", type=float)
+    parser.add_argument(
+        "--lr-decay-start-iteration",
+        "--global-lr-start-iteration",
+        dest="lr_decay_start_iteration",
+        type=int,
+    )
+    parser.add_argument(
+        "--lr-decay-max-steps",
+        "--global-lr-max-steps",
+        dest="lr_decay_max_steps",
+        type=int,
+    )
+    parser.add_argument(
+        "--ssim-weight",
+        type=float,
+        help="DSSIM mixture weight in [0,1]; 0 restores the previous half-MSE-only RGB loss.",
+    )
+    parser.add_argument("--ssim-window-size", type=int)
+    parser.add_argument("--ssim-sigma", type=float)
     parser.add_argument("--normal-consistency-weight", dest="normal_consistency_weight", type=float)
     parser.add_argument("--normal-from-depth-use-mean-depth", dest="normal_from_depth_use_mean_depth",
                         action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
@@ -424,7 +440,6 @@ def parse_args() -> OptimizationConfig:
     )
     # Density control / EV-splitting
     parser.add_argument("--densification-interval", type=int)
-    parser.add_argument("--densification-interval-final", type=int)
     parser.add_argument("--prune-interval", type=int)
     parser.add_argument("--densify-after", type=int)
     parser.add_argument("--prune-after", type=int)
@@ -432,6 +447,14 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--densification-grad-quantile", type=float)
     parser.add_argument("--densification-grad-abs-min", type=float)
     parser.add_argument("--densification-grad-abs-min-final", type=float)
+    parser.add_argument(
+        "--curvature-violation-threshold",
+        type=float,
+        help=(
+            "Mean raw curvature-scale violation required to split a surfel; "
+            "a non-positive value disables curvature densification."
+        ),
+    )
     parser.add_argument("--densification-scale-min", type=float)
     parser.add_argument("--densification-split-offset-scale", type=float)
     parser.add_argument("--densification-split-scale-factor", type=float)

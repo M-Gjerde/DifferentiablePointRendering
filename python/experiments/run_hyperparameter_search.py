@@ -33,11 +33,14 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "learning_rate_albedo": "--lr-albedo",
     "learning_rate_opacity": "--lr-opacity",
     "learning_rate_beta": "--lr-beta",
-    "use_global_lr_schedule": ("--global-lr-schedule", "--no-global-lr-schedule"),
+    "use_global_lr_decay": ("--global-lr-decay", "--no-global-lr-decay"),
     "global_lr_scale_init": "--global-lr-scale-init",
     "global_lr_scale_final": "--global-lr-scale-final",
-    "global_lr_start_iteration": "--global-lr-start-iteration",
-    "global_lr_max_steps": "--global-lr-max-steps",
+    "use_position_lr_decay": ("--position-lr-decay", "--no-position-lr-decay"),
+    "position_lr_scale_init": "--position-lr-scale-init",
+    "position_lr_scale_final": "--position-lr-scale-final",
+    "lr_decay_start_iteration": "--lr-decay-start-iteration",
+    "lr_decay_max_steps": "--lr-decay-max-steps",
     "normal_consistency_weight": "--normal-consistency-weight",
     "normal_from_depth_use_mean_depth": (
         "--normal-from-depth-use-mean-depth",
@@ -172,7 +175,8 @@ def trial_run_name(index: int, parameters: dict[str, Any]) -> str:
         f"n{slug_value(parameters.get('normal_consistency_weight', 'x'))}",
         f"d{slug_value(parameters.get('depth_distort_weight', 'x'))}",
         f"o{slug_value(parameters.get('opacity_prior_weight', 'x'))}",
-        f"glr{slug_value(parameters.get('use_global_lr_schedule', 'default'))}",
+        f"gdec{slug_value(parameters.get('use_global_lr_decay', 'default'))}",
+        f"pdec{slug_value(parameters.get('use_position_lr_decay', 'default'))}",
         parameter_digest(parameters),
     ]
     return "_".join(parts)[:180]

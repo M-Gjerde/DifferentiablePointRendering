@@ -28,6 +28,9 @@ namespace Pale {
         float* curvatureScaleBuffer = nullptr;
         float* curvatureScaleAdjointBuffer = nullptr;
         uint32_t* curvatureScaleActiveSlabCountBuffer = nullptr;
+        // Optional debug output: dominant primitive from the exact visible slab
+        // selected by the curvature-scale regularizer, or UINT32_MAX.
+        uint32_t* curvaturePrimitiveIndexBuffer = nullptr;
 
         float*  medianDepthBuffer;        // scalar visualization depth
         float*  meanDepthBuffer;        // scalar visualization depth
@@ -67,6 +70,17 @@ namespace Pale {
 
         size_t numPoints{0};
         size_t cameraSlotCount{0};
+    };
+
+    // Forward-only structural statistics used by Python densification. These
+    // are not adjoints and are reset once at the start of every forward render.
+    struct CurvatureDensificationStats {
+        float *violationSum = nullptr;
+        uint32_t *violationCount = nullptr;
+        float *directionTensorUu = nullptr;
+        float *directionTensorUv = nullptr;
+        float *directionTensorVv = nullptr;
+        size_t numPoints{0};
     };
 
     struct Storage {
@@ -115,6 +129,7 @@ namespace Pale {
         PointGradients visibilityOpacityGradients{};
         PointGradients intraSlabDepthGradients{};
         PointGradients curvatureScaleGradients{};
+        CurvatureDensificationStats curvatureDensificationStats{};
         std::vector<SensorGPU> sensors{};
         DebugImages* debugImages{};
         uint32_t numSensors{};

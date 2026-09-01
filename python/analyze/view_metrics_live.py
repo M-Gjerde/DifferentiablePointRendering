@@ -437,6 +437,8 @@ def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
     averaged_loss_columns = (
         "loss_total_mean",
         "loss_rgb_mean",
+        "loss_rgb_l2_mean",
+        "loss_rgb_dssim_mean",
     )
 
     if any(column_name in dataframe.columns for column_name in averaged_loss_columns):
@@ -496,6 +498,12 @@ def prepare_metrics_dataframe(
             )
 
         dataframe = dataframe.tail(last_iterations).reset_index(drop=True)
+
+    if "loss_rgb_dssim_mean" in dataframe.columns:
+        dssim_values = pd.to_numeric(
+            dataframe["loss_rgb_dssim_mean"], errors="coerce"
+        )
+        dataframe["rgb_ssim_mean"] = 1.0 - dssim_values
 
     return dataframe
 
@@ -571,6 +579,9 @@ def select_loss_column(
     preferred_columns = [
         "loss_total_mean",
         "loss_rgb_mean",
+        "loss_rgb_l2_mean",
+        "loss_rgb_dssim_mean",
+        "rgb_ssim_mean",
         "loss_bsdf_decay_weighted_mean",
         "loss_opacity_prior_weighted_mean",
         "loss_intra_slab_depth_weighted_mean",
@@ -635,41 +646,33 @@ def plot_linear_columns(
         )
 
 
-def plot_top_loss_columns_with_dual_axis(
+def plot_top_loss_columns_with_rgb_axis(
         left_axis,
         dataframe: pd.DataFrame,
-        columns: list[str],
+        loss_columns: list[str],
+        dssim_columns: list[str],
         style_map: dict[str, dict[str, Any]],
 ):
     rgb_column_names = {
         "loss_rgb_mean",
+        "loss_rgb_l2_mean",
         "loss_rgb_sum",
     }
-    total_column_names = {
-        "loss_total_mean",
-        "loss_total_sum",
-    }
-
     rgb_columns = [
         column_name
-        for column_name in columns
+        for column_name in loss_columns
         if column_name in rgb_column_names
     ]
-    total_columns = [
+    left_loss_columns = [
         column_name
-        for column_name in columns
-        if column_name in total_column_names
-    ]
-    extra_columns = [
-        column_name
-        for column_name in columns
-        if column_name not in rgb_column_names | total_column_names
+        for column_name in loss_columns
+        if column_name not in rgb_column_names
     ]
 
     plot_linear_columns(
         left_axis,
         dataframe,
-        total_columns + extra_columns,
+        left_loss_columns + dssim_columns,
         style_map,
     )
 
@@ -803,6 +806,25 @@ def compact_point_count_label(point_count_windowed: bool, point_count_row_count:
     if point_count_windowed:
         return "windowed"
     return f"aligned ({point_count_row_count} rows loaded)"
+
+
+def format_compact_point_count(value: float) -> str:
+    if not np.isfinite(value):
+        return "n/a"
+
+    absolute_value = abs(float(value))
+    if absolute_value < 1_000.0:
+        return f"{int(round(value))}"
+
+    value_in_thousands = float(value) / 1_000.0
+    decimals = 1 if abs(value_in_thousands) < 100.0 else 0
+    return f"{value_in_thousands:.{decimals}f}k"
+
+
+def point_count_series_label(base_label: str, values: np.ndarray) -> str:
+    finite_values = values[np.isfinite(values)]
+    latest_value = float(finite_values[-1]) if finite_values.size > 0 else float("nan")
+    return f"{base_label} ({format_compact_point_count(latest_value)})"
 
 
 def shorten_middle(text: str, max_chars: int) -> str:
@@ -948,7 +970,15 @@ def draw_metrics_figure(
         loss_dataframe,
         [
             ("loss_rgb_mean", "loss_rgb_sum"),
+            ("loss_rgb_l2_mean",),
             ("loss_total_mean", "loss_total_sum"),
+        ],
+    )
+
+    dssim_top_columns = get_available_columns(
+        loss_dataframe,
+        [
+            "loss_rgb_dssim_mean",
         ],
     )
 
@@ -991,26 +1021,68 @@ def draw_metrics_figure(
             "point_count",
         ],
     )
-    point_growth_active_columns = get_available_columns(
+    point_clone_active_columns = get_available_columns(
         point_count_dataframe,
         [
             "densification_clone_points_active",
-            "densification_split_points_active",
         ],
     )
-    point_growth_total_columns = get_available_columns(
+    point_split_trigger_active_columns = get_available_columns(
+        point_count_dataframe,
+        [
+            "densification_position_split_points_active",
+            "densification_curvature_split_points_active",
+        ],
+    )
+    point_growth_active_columns = point_clone_active_columns + (
+        point_split_trigger_active_columns
+        if point_split_trigger_active_columns
+        else get_available_columns(
+            point_count_dataframe,
+            ["densification_split_points_active"],
+        )
+    )
+    point_clone_total_columns = get_available_columns(
         point_count_dataframe,
         [
             "densification_clone_points_total",
-            "densification_split_points_total",
         ],
     )
-    point_growth_event_columns = get_available_columns(
+    point_split_trigger_total_columns = get_available_columns(
+        point_count_dataframe,
+        [
+            "densification_position_split_points_total",
+            "densification_curvature_split_points_total",
+        ],
+    )
+    point_growth_total_columns = point_clone_total_columns + (
+        point_split_trigger_total_columns
+        if point_split_trigger_total_columns
+        else get_available_columns(
+            point_count_dataframe,
+            ["densification_split_points_total"],
+        )
+    )
+    point_clone_event_columns = get_available_columns(
         point_count_dataframe,
         [
             "densification_clone_points",
-            "densification_split_points",
         ],
+    )
+    point_split_trigger_event_columns = get_available_columns(
+        point_count_dataframe,
+        [
+            "densification_position_split_points",
+            "densification_curvature_split_points",
+        ],
+    )
+    point_growth_event_columns = point_clone_event_columns + (
+        point_split_trigger_event_columns
+        if point_split_trigger_event_columns
+        else get_available_columns(
+            point_count_dataframe,
+            ["densification_split_points"],
+        )
     )
     point_prune_event_columns = get_available_columns(
         point_count_dataframe,
@@ -1022,6 +1094,7 @@ def draw_metrics_figure(
 
     if (
             not top_columns
+            and not dssim_top_columns
             and not weighted_regularizer_columns
             and not raw_diagnostic_columns
             and not point_count_columns
@@ -1038,6 +1111,17 @@ def draw_metrics_figure(
 
     style_map = {
         "loss_rgb_mean": dict(color="tab:blue", linewidth=2.5, alpha=1.0),
+        "loss_rgb_l2_mean": dict(
+            color="tab:cyan",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
+        "loss_rgb_dssim_mean": dict(
+            color="tab:red",
+            linewidth=2.2,
+            alpha=1.0,
+        ),
         "loss_total_mean": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
 
         "loss_depth_distortion_weighted_mean": dict(
@@ -1119,6 +1203,18 @@ def draw_metrics_figure(
             linestyle="--",
             alpha=0.95,
         ),
+        "densification_position_split_points_active": dict(
+            color="tab:blue",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
+        "densification_curvature_split_points_active": dict(
+            color="tab:red",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
         "densification_clone_points_total": dict(
             color="tab:green",
             linewidth=1.8,
@@ -1127,6 +1223,18 @@ def draw_metrics_figure(
         ),
         "densification_split_points_total": dict(
             color="tab:purple",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
+        "densification_position_split_points_total": dict(
+            color="tab:blue",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+        ),
+        "densification_curvature_split_points_total": dict(
+            color="tab:red",
             linewidth=1.8,
             linestyle="--",
             alpha=0.95,
@@ -1154,7 +1262,12 @@ def draw_metrics_figure(
             or len(point_growth_event_columns) > 0
             or len(point_prune_event_columns) > 0
     )
-    num_panels = 2 + int(include_raw_panel) + int(include_geometry_panel) + int(include_point_count_panel)
+    num_panels = (
+        2
+        + int(include_raw_panel)
+        + int(include_geometry_panel)
+        + int(include_point_count_panel)
+    )
 
     height_ratios = [1.2, 1.0]
     if include_raw_panel:
@@ -1173,8 +1286,9 @@ def draw_metrics_figure(
     axes = np.atleast_1d(axes).tolist()
 
     ax_top = axes[0]
-    ax_weighted = axes[1]
-    next_axis_index = 2
+    next_axis_index = 1
+    ax_weighted = axes[next_axis_index]
+    next_axis_index += 1
     ax_raw = axes[next_axis_index] if include_raw_panel else None
     if include_raw_panel:
         next_axis_index += 1
@@ -1183,10 +1297,11 @@ def draw_metrics_figure(
         next_axis_index += 1
     ax_point_count = axes[next_axis_index] if include_point_count_panel else None
 
-    ax_top_right = plot_top_loss_columns_with_dual_axis(
+    ax_top_right = plot_top_loss_columns_with_rgb_axis(
         ax_top,
         loss_dataframe,
         top_columns,
+        dssim_top_columns,
         style_map,
     )
 
@@ -1208,20 +1323,29 @@ def draw_metrics_figure(
 
     apply_loss_y_scale(ax_top, loss_y_scale)
     apply_loss_y_scale(ax_weighted, loss_y_scale)
-
     if ax_top_right is not None:
         apply_loss_y_scale(ax_top_right, loss_y_scale)
 
-    if any(
+    has_total_loss = any(
             column_name in {"loss_total_mean", "loss_total_sum"}
             for column_name in top_columns
-    ):
+    )
+    if has_total_loss and dssim_top_columns:
+        ax_top.set_ylabel(f"Mean total / DSSIM loss ({loss_y_scale})")
+    elif has_total_loss:
         ax_top.set_ylabel(f"Mean total loss ({loss_y_scale})")
+    elif dssim_top_columns:
+        ax_top.set_ylabel(f"Mean DSSIM loss ({loss_y_scale})")
     else:
         ax_top.set_ylabel(f"Mean image loss ({loss_y_scale})")
 
     if ax_top_right is not None:
-        ax_top_right.set_ylabel(f"Mean RGB loss ({loss_y_scale})")
+        rgb_axis_color = style_map["loss_rgb_mean"]["color"]
+        ax_top_right.set_ylabel(
+            f"Mean RGB objective / half-MSE ({loss_y_scale})",
+            color=rgb_axis_color,
+        )
+        ax_top_right.tick_params(axis="y", labelcolor=rgb_axis_color)
 
     latest_iteration = int(loss_dataframe["iteration"].iloc[-1])
     loss_row_count = len(loss_dataframe)
@@ -1268,29 +1392,19 @@ def draw_metrics_figure(
     )
 
     if ax_top_right is not None:
-        # A twinned RGB axis is drawn over the base axis. Relying on only the
-        # twin's default grid can make the grid disappear depending on axis
-        # draw order/backend. Split ownership explicitly: x grid lines come
-        # from the shared base axis and y grid lines follow the RGB scale.
+        # Total loss and DSSIM own the left scale; RGB objective and half-MSE
+        # use the independent right scale.
         ax_top.set_axisbelow(True)
         ax_top_right.set_axisbelow(True)
         ax_top_right.patch.set_visible(False)
         ax_top.grid(
             True,
             which="both",
-            axis="x",
             color="0.72",
             linewidth=0.8,
             alpha=0.55,
         )
-        ax_top_right.grid(
-            True,
-            which="both",
-            axis="y",
-            color="0.72",
-            linewidth=0.8,
-            alpha=0.55,
-        )
+        ax_top_right.grid(False)
     else:
         ax_top.set_axisbelow(True)
         ax_top.grid(
@@ -1329,7 +1443,7 @@ def draw_metrics_figure(
                 point_count_dataframe["iteration"],
                 point_values,
                 where="post",
-                label=point_count_column,
+                label=point_count_series_label("points", point_values),
                 **style_map.get(point_count_column, {}),
             )
 
@@ -1338,17 +1452,24 @@ def draw_metrics_figure(
             point_growth_labels = {
                 "densification_clone_points_active": "clone-created active",
                 "densification_split_points_active": "split-created active",
+                "densification_position_split_points_active": "position-split active",
+                "densification_curvature_split_points_active": "curvature-split active",
             }
         else:
             point_growth_columns = point_growth_total_columns
             point_growth_labels = {
                 "densification_clone_points_total": "clone additions total",
                 "densification_split_points_total": "split additions total",
+                "densification_position_split_points_total": "position-split additions total",
+                "densification_curvature_split_points_total": "curvature-split additions total",
             }
 
         for column_name in point_growth_columns:
             values = dataframe_column_as_float_array(point_count_dataframe, column_name)
-            label = point_growth_labels.get(column_name, column_name)
+            label = point_count_series_label(
+                point_growth_labels.get(column_name, column_name),
+                values,
+            )
             ax_point_count.step(
                 point_count_dataframe["iteration"],
                 values,
@@ -1365,15 +1486,17 @@ def draw_metrics_figure(
                         nan=0.0,
                     )
                 )
-                label = {
+                base_label = {
                     "densification_clone_points": "clone additions total",
                     "densification_split_points": "split additions total",
+                    "densification_position_split_points": "position-split additions total",
+                    "densification_curvature_split_points": "curvature-split additions total",
                 }.get(column_name, f"{column_name} total")
                 ax_point_count.step(
                     point_count_dataframe["iteration"],
                     values,
                     where="post",
-                    label=label,
+                    label=point_count_series_label(base_label, values),
                     **style_map.get(f"{column_name}_total", {}),
                 )
 
@@ -1392,7 +1515,10 @@ def draw_metrics_figure(
                 point_count_dataframe["iteration"],
                 values,
                 where="post",
-                label=point_prune_labels.get(column_name, f"{column_name} total"),
+                label=point_count_series_label(
+                    point_prune_labels.get(column_name, f"{column_name} total"),
+                    values,
+                ),
                 **style_map.get(f"{column_name}_total", {}),
             )
 
@@ -1413,6 +1539,7 @@ def draw_metrics_figure(
 
     plotted_columns = (
         top_columns
+        + dssim_top_columns
         + weighted_regularizer_columns
         + raw_diagnostic_columns
         + point_count_columns
@@ -1468,7 +1595,7 @@ def main() -> None:
     plt.ion()
     plt.rcParams["figure.raise_window"] = False
 
-    figure = plt.figure(figsize=(12, 7))
+    figure = plt.figure(figsize=(12, 9))
     previous_dataframe: pd.DataFrame | None = None
     previous_file_state: tuple[float, int] | None = None
     previous_run_dir: Path | None = None

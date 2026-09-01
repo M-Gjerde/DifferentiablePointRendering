@@ -348,6 +348,80 @@ export namespace Pale {
         return out;
     }
 
+    CurvatureDensificationStats makeCurvatureDensificationStatsForScene(
+        sycl::queue queue,
+        const SceneBuild::BuildProducts &buildProducts) {
+        CurvatureDensificationStats out{};
+        out.numPoints = buildProducts.points.size();
+        if (out.numPoints == 0u) {
+            return out;
+        }
+
+        out.violationSum = sycl::malloc_device<float>(out.numPoints, queue);
+        out.violationCount = sycl::malloc_device<uint32_t>(out.numPoints, queue);
+        out.directionTensorUu = sycl::malloc_device<float>(out.numPoints, queue);
+        out.directionTensorUv = sycl::malloc_device<float>(out.numPoints, queue);
+        out.directionTensorVv = sycl::malloc_device<float>(out.numPoints, queue);
+
+        if (!out.violationSum || !out.violationCount ||
+            !out.directionTensorUu || !out.directionTensorUv || !out.directionTensorVv) {
+            const auto freeDevicePtr = [&queue]<typename T>(T *&devicePtr) {
+                if (devicePtr) {
+                    sycl::free(devicePtr, queue);
+                    devicePtr = nullptr;
+                }
+            };
+            freeDevicePtr(out.violationSum);
+            freeDevicePtr(out.violationCount);
+            freeDevicePtr(out.directionTensorUu);
+            freeDevicePtr(out.directionTensorUv);
+            freeDevicePtr(out.directionTensorVv);
+            out.numPoints = 0u;
+            throw std::runtime_error(
+                "makeCurvatureDensificationStatsForScene: failed to allocate buffers");
+        }
+
+        queue.fill(out.violationSum, 0.0f, out.numPoints);
+        queue.fill(out.violationCount, 0u, out.numPoints);
+        queue.fill(out.directionTensorUu, 0.0f, out.numPoints);
+        queue.fill(out.directionTensorUv, 0.0f, out.numPoints);
+        queue.fill(out.directionTensorVv, 0.0f, out.numPoints);
+        queue.wait();
+        return out;
+    }
+
+    void clearCurvatureDensificationStats(
+        sycl::queue queue,
+        const CurvatureDensificationStats &stats) {
+        if (stats.numPoints == 0u) {
+            return;
+        }
+        queue.fill(stats.violationSum, 0.0f, stats.numPoints);
+        queue.fill(stats.violationCount, 0u, stats.numPoints);
+        queue.fill(stats.directionTensorUu, 0.0f, stats.numPoints);
+        queue.fill(stats.directionTensorUv, 0.0f, stats.numPoints);
+        queue.fill(stats.directionTensorVv, 0.0f, stats.numPoints);
+        queue.wait();
+    }
+
+    void freeCurvatureDensificationStats(
+        sycl::queue queue,
+        CurvatureDensificationStats &stats) {
+        const auto freeDevicePtr = [&queue]<typename T>(T *&devicePtr) {
+            if (devicePtr) {
+                sycl::free(devicePtr, queue);
+                devicePtr = nullptr;
+            }
+        };
+        freeDevicePtr(stats.violationSum);
+        freeDevicePtr(stats.violationCount);
+        freeDevicePtr(stats.directionTensorUu);
+        freeDevicePtr(stats.directionTensorUv);
+        freeDevicePtr(stats.directionTensorVv);
+        stats.numPoints = 0u;
+        queue.wait();
+    }
+
     inline std::vector<float>
     downloadSensorLDR(sycl::queue queue, const SensorGPU &sensorGpu) {
         // Total number of float elements = width * height * 4 (RGBa channels)

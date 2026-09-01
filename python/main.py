@@ -122,13 +122,29 @@ def main() -> None:
     print(f"  lr_color             : {config.learning_rate_albedo}")
     print(f"  lr_opacity           : {config.learning_rate_opacity}")
     print(f"  lr_beta              : {config.learning_rate_beta}")
+    print(
+        "  global_lr_decay      : "
+        f"{config.use_global_lr_decay} "
+        f"({config.global_lr_scale_init} -> {config.global_lr_scale_final})"
+    )
+    print(
+        "  position_lr_decay    : "
+        f"{config.use_position_lr_decay} "
+        f"({config.position_lr_scale_init} -> {config.position_lr_scale_final})"
+    )
+    print(
+        "  lr_decay_timeline    : "
+        f"start={config.lr_decay_start_iteration}, steps={config.lr_decay_max_steps}"
+    )
+    print(f"  ssim_weight          : {config.ssim_weight}")
+    print(f"  ssim_window/sigma    : {config.ssim_window_size} / {config.ssim_sigma}")
     print(f"  depth_distort_weight : {config.depth_distort_weight}")
     print(f"  opacity_prior_weight : {config.opacity_prior_weight}")
     print(f"  densification_interval: {config.densification_interval}")
-    print(f"  densification_interval_final: {config.densification_interval_final}")
     print(f"  prune_interval       : {config.prune_interval}")
     print(f"  densify_grad_abs_min : {config.densification_grad_abs_min}")
     print(f"  densify_grad_abs_min_final: {config.densification_grad_abs_min_final}")
+    print(f"  curvature_violation_threshold: {config.curvature_violation_threshold}")
     print(
         "  densify_grad_abs_min_decay: "
         f"{config.densification_grad_abs_min_decay_start_iteration} -> "

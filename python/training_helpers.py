@@ -6,7 +6,7 @@ import math
 import select
 import sys
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib
 
@@ -26,7 +26,11 @@ from io_utils import (
     save_gradient_sign_png_py,
     save_render,
 )
-from losses import compute_l2_grad, compute_l2_loss
+from losses import (
+    compute_l2_grad,
+    compute_l2_ssim_loss_and_grad,
+    compute_l2_ssim_metrics,
+)
 from optimizers import create_masked_optimizer
 from render_hooks import *
 
@@ -42,6 +46,8 @@ PARAMETER_NAMES = (
 
 LOSS_VALUE_KEYS = (
     "total_rgb_loss_value",
+    "total_rgb_l2_loss_value",
+    "total_rgb_dssim_loss_value",
     "total_depth_distortion_loss_raw",
     "total_depth_distortion_loss_weighted",
     "total_normal_loss_raw",
@@ -813,6 +819,8 @@ def format_training_iteration_log(
         num_points: int,
         loss_state: Dict[str, Any],
         lr_position: float,
+        global_lr_scale: float,
+        position_lr_scale: float,
         active_densification_interval: int,
         active_prune_interval: int,
         active_densification_grad_abs_min: float,
@@ -841,7 +849,9 @@ def format_training_iteration_log(
         f"\n[Iter {iteration:04d}/{total_iterations}] "
         f"time={iteration_time:.3f}s total={total_time:.1f}s "
         f"it/s={iteration_rate:.2f} pts={num_points} "
-        f"adaptive_lr_pos={lr_position} "
+        f"adaptive_lr_pos={lr_position:.3e} "
+        f"lr_global_scale={global_lr_scale:.3e} "
+        f"lr_pos_scale={position_lr_scale:.3e} "
         f"densify_interval={active_densification_interval} "
         f"prune_interval={active_prune_interval} "
         f"densify_thr={active_densification_grad_abs_min:.3e} "
@@ -851,6 +861,8 @@ def format_training_iteration_log(
         f"split_min_scale={minimum_splittable_scale:.3e}\n"
         f"  losses_mean[{loss_camera_count}/{loss_camera_expected_count} cameras]:"
         f" rgb={loss_state['total_rgb_loss_value']:.3e}"
+        f" rgb_l2={loss_state['total_rgb_l2_loss_value']:.3e}"
+        f" dssim={loss_state['total_rgb_dssim_loss_value']:.3e}"
         f" depth_raw={loss_state['total_depth_distortion_loss_raw']:.3e}"
         f" depth_w={loss_state['total_depth_distortion_loss_weighted']:.3e}"
         f" normal_raw={loss_state['total_normal_loss_raw']:.3e}"
@@ -1285,6 +1297,9 @@ def compute_snapshot_adjoint_images(
         forward_out: Dict[str, dict],
         target_images: Dict[str, np.ndarray],
         camera_ids: List[str],
+        ssim_weight: float = 0.0,
+        ssim_window_size: int = 11,
+        ssim_sigma: float = 1.5,
 ) -> Dict[str, Any]:
     loss_grad_images: Dict[str, np.ndarray] = {}
 
@@ -1294,7 +1309,16 @@ def compute_snapshot_adjoint_images(
 
         current_rgb_np = get_forward_linear_rgb(forward_out, camera_name)
         target_rgb_np = target_images[camera_name]
-        loss_grad_images[camera_name] = compute_l2_grad(current_rgb_np, target_rgb_np)
+        if ssim_weight > 0.0:
+            _, loss_grad_images[camera_name], _ = compute_l2_ssim_loss_and_grad(
+                current_rgb_np,
+                target_rgb_np,
+                ssim_weight=ssim_weight,
+                window_size=ssim_window_size,
+                sigma=ssim_sigma,
+            )
+        else:
+            loss_grad_images[camera_name] = compute_l2_grad(current_rgb_np, target_rgb_np)
 
     if not loss_grad_images:
         return {}
@@ -1412,6 +1436,9 @@ def compute_initial_losses_and_save_outputs(
         opacities: torch.Tensor,
         betas: torch.Tensor,
         powers: torch.Tensor,
+        ssim_weight: float,
+        ssim_window_size: int,
+        ssim_sigma: float,
         depth_distortion_weight: float,
         normal_consistency_weight: float,
         opacity_prior_weight: float,
@@ -1455,7 +1482,14 @@ def compute_initial_losses_and_save_outputs(
             continue
 
         tgt_np = target_images[camera_name]
-        initial_rgb_loss += float(compute_l2_loss(img_linear_np, tgt_np))
+        rgb_loss_value, _, _ = compute_l2_ssim_metrics(
+            img_linear_np,
+            tgt_np,
+            ssim_weight=ssim_weight,
+            window_size=ssim_window_size,
+            sigma=ssim_sigma,
+        )
+        initial_rgb_loss += rgb_loss_value
         save_render(
             output_dir / f"render_target_{camera_name}.png",
             linear_to_srgb(tgt_np),
@@ -1909,6 +1943,107 @@ def update_densification_statistics(
     )
 
 
+CURVATURE_DENSIFICATION_STAT_KEYS = (
+    "violation_sum",
+    "violation_count",
+    "direction_tensor_uu",
+    "direction_tensor_uv",
+    "direction_tensor_vv",
+)
+
+
+def make_curvature_densification_accumulators(point_count: int) -> Dict[str, np.ndarray]:
+    return {
+        "violation_sum": np.zeros((point_count,), dtype=np.float32),
+        "violation_count": np.zeros((point_count,), dtype=np.uint64),
+        "direction_tensor_uu": np.zeros((point_count,), dtype=np.float32),
+        "direction_tensor_uv": np.zeros((point_count,), dtype=np.float32),
+        "direction_tensor_vv": np.zeros((point_count,), dtype=np.float32),
+    }
+
+
+def update_curvature_densification_statistics(
+        iteration: int,
+        densification_interval: int,
+        densification_cycle_start_iteration: int,
+        densification_stats_skip_iterations: int,
+        renderer_stats: Dict[str, np.ndarray],
+        accumulators: Dict[str, np.ndarray],
+) -> None:
+    """Accumulate scalar curvature, but retain only the latest direction tensor.
+
+    The scalar violation is basis-independent and remains useful across a full
+    densification cycle. Tensor components live in the surfel's current local
+    tangent frame, so summing them across optimizer iterations would mix frames
+    whenever the surfel rotates.
+    """
+    if densification_interval <= 0:
+        return
+
+    densification_phase = max(0, int(iteration) - int(densification_cycle_start_iteration))
+    should_accumulate = (
+            densification_interval <= 1
+            or (
+                    densification_phase >= densification_stats_skip_iterations
+                    and densification_phase != 0
+            )
+    )
+    if not should_accumulate:
+        return
+
+    missing_keys = [
+        key for key in CURVATURE_DENSIFICATION_STAT_KEYS
+        if key not in renderer_stats or key not in accumulators
+    ]
+    if missing_keys:
+        raise RuntimeError(
+            "Curvature densification statistics are missing keys: "
+            + ", ".join(missing_keys)
+        )
+
+    violation_sum = np.asarray(renderer_stats["violation_sum"], dtype=np.float32).reshape(-1)
+    violation_count = np.asarray(renderer_stats["violation_count"], dtype=np.uint64).reshape(-1)
+    tensor_uu = np.asarray(renderer_stats["direction_tensor_uu"], dtype=np.float32).reshape(-1)
+    tensor_uv = np.asarray(renderer_stats["direction_tensor_uv"], dtype=np.float32).reshape(-1)
+    tensor_vv = np.asarray(renderer_stats["direction_tensor_vv"], dtype=np.float32).reshape(-1)
+
+    point_count = accumulators["violation_sum"].shape[0]
+    for key, values in (
+            ("violation_sum", violation_sum),
+            ("violation_count", violation_count),
+            ("direction_tensor_uu", tensor_uu),
+            ("direction_tensor_uv", tensor_uv),
+            ("direction_tensor_vv", tensor_vv),
+    ):
+        if values.shape != (point_count,):
+            raise RuntimeError(
+                f"Curvature densification {key} shape mismatch: "
+                f"expected {(point_count,)}, got {values.shape}"
+            )
+
+    valid_observation = (
+            (violation_count > 0)
+            & np.isfinite(violation_sum)
+            & (violation_sum >= 0.0)
+    )
+    accumulators["violation_sum"][valid_observation] += violation_sum[valid_observation]
+    accumulators["violation_count"][valid_observation] += violation_count[valid_observation]
+
+    # K_uu/K_uv/K_vv are expressed in the *current* local tangent frame. Keep
+    # this renderer iteration as a snapshot rather than accumulating components
+    # from older frames. Clearing unobserved entries also prevents stale axes
+    # from directing a split when a surfel has no current curvature observation.
+    for key, values in (
+            ("direction_tensor_uu", tensor_uu),
+            ("direction_tensor_uv", tensor_uv),
+            ("direction_tensor_vv", tensor_vv),
+    ):
+        accumulators[key].fill(0.0)
+        accumulators[key][valid_observation] = np.nan_to_num(
+            values[valid_observation], nan=0.0, posinf=0.0, neginf=0.0
+        )
+
+
 def maybe_make_densification_result(
         iteration: int,
         config: OptimizationConfig,
@@ -1928,6 +2063,7 @@ def maybe_make_densification_result(
         densification_verbose: bool,
         densification_grad_quantile: float,
         densification_grad_abs_min: float,
+        densify_curvature_stats_accum: Optional[Dict[str, np.ndarray]] = None,
         force_densification: bool = False,
 ) -> Optional[Dict[str, np.ndarray]]:
     if densification_interval <= 0:
@@ -1984,14 +2120,89 @@ def maybe_make_densification_result(
             neginf=0.0,
         )
 
-        trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool)
+        trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
         finite_grad = np.isfinite(grad_pos_norm_np)
-        candidate_mask_np = (
+        position_abs_candidate_mask_np = (
                 valid_denom_np
                 & finite_grad
                 & trainable_np
                 & (grad_pos_norm_np >= densification_grad_abs_min)
         )
+
+        curvature_violation_threshold = float(
+            getattr(config, "curvature_violation_threshold", 0.0)
+        )
+        curvature_enabled = (
+                np.isfinite(curvature_violation_threshold)
+                and curvature_violation_threshold > 0.0
+                and densify_curvature_stats_accum is not None
+        )
+        curvature_violation_mean_np = np.zeros((positions.shape[0],), dtype=np.float32)
+        curvature_tensor_uu_np = np.zeros_like(curvature_violation_mean_np)
+        curvature_tensor_uv_np = np.zeros_like(curvature_violation_mean_np)
+        curvature_tensor_vv_np = np.zeros_like(curvature_violation_mean_np)
+        valid_curvature_observation_np = np.zeros((positions.shape[0],), dtype=bool)
+
+        if curvature_enabled:
+            missing_keys = [
+                key for key in CURVATURE_DENSIFICATION_STAT_KEYS
+                if key not in densify_curvature_stats_accum
+            ]
+            if missing_keys:
+                raise RuntimeError(
+                    "Curvature densification accumulators are missing keys: "
+                    + ", ".join(missing_keys)
+                )
+
+            curvature_sum_np = np.asarray(
+                densify_curvature_stats_accum["violation_sum"], dtype=np.float32
+            ).reshape(-1)
+            curvature_count_np = np.asarray(
+                densify_curvature_stats_accum["violation_count"], dtype=np.uint64
+            ).reshape(-1)
+            curvature_tensor_uu_np = np.asarray(
+                densify_curvature_stats_accum["direction_tensor_uu"], dtype=np.float32
+            ).reshape(-1)
+            curvature_tensor_uv_np = np.asarray(
+                densify_curvature_stats_accum["direction_tensor_uv"], dtype=np.float32
+            ).reshape(-1)
+            curvature_tensor_vv_np = np.asarray(
+                densify_curvature_stats_accum["direction_tensor_vv"], dtype=np.float32
+            ).reshape(-1)
+
+            curvature_arrays = (
+                curvature_sum_np,
+                curvature_count_np,
+                curvature_tensor_uu_np,
+                curvature_tensor_uv_np,
+                curvature_tensor_vv_np,
+            )
+            if any(array.shape != (positions.shape[0],) for array in curvature_arrays):
+                raise RuntimeError(
+                    "Curvature densification accumulator length does not match the point count"
+                )
+
+            valid_curvature_observation_np = (
+                    (curvature_count_np > 0)
+                    & np.isfinite(curvature_sum_np)
+                    & (curvature_sum_np >= 0.0)
+            )
+            curvature_violation_mean_np[valid_curvature_observation_np] = (
+                    curvature_sum_np[valid_curvature_observation_np]
+                    / curvature_count_np[valid_curvature_observation_np].astype(np.float32)
+            )
+            curvature_violation_mean_np = np.nan_to_num(
+                curvature_violation_mean_np, nan=0.0, posinf=0.0, neginf=0.0
+            )
+            curvature_tensor_uu_np = np.nan_to_num(
+                curvature_tensor_uu_np, nan=0.0, posinf=0.0, neginf=0.0
+            )
+            curvature_tensor_uv_np = np.nan_to_num(
+                curvature_tensor_uv_np, nan=0.0, posinf=0.0, neginf=0.0
+            )
+            curvature_tensor_vv_np = np.nan_to_num(
+                curvature_tensor_vv_np, nan=0.0, posinf=0.0, neginf=0.0
+            )
 
         densification_result = None
         densify_reason = "not_attempted"
@@ -2000,8 +2211,9 @@ def maybe_make_densification_result(
         finite_count = int(np.count_nonzero(finite_grad))
         trainable_count = int(np.count_nonzero(trainable_np))
         above_abs_count = int(np.count_nonzero(grad_pos_norm_np >= densification_grad_abs_min))
-        candidate_count = int(np.count_nonzero(candidate_mask_np))
+        position_abs_candidate_count = int(np.count_nonzero(position_abs_candidate_mask_np))
         valid_denom_count = int(np.count_nonzero(valid_denom_np))
+        valid_curvature_count = int(np.count_nonzero(valid_curvature_observation_np))
 
         grad_threshold = float("nan")
         grad_quantile_threshold = float("nan")
@@ -2033,16 +2245,44 @@ def maybe_make_densification_result(
         else:
             signal_min = signal_p50 = signal_p90 = signal_p95 = signal_p98 = signal_max = 0.0
 
-        if not np.any(valid_denom_np):
-            densify_reason = "no_density_samples"
-        elif candidate_count == 0:
-            densify_reason = "no_candidates_after_grad_trainable"
-        else:
-            active_grad = grad_pos_norm_np[candidate_mask_np]
+        if position_abs_candidate_count > 0:
+            active_grad = grad_pos_norm_np[position_abs_candidate_mask_np]
             grad_quantile_threshold = float(np.quantile(active_grad, densification_grad_quantile))
-            grad_threshold = max(float(densification_grad_abs_min), grad_quantile_threshold)
+            grad_threshold = max(
+                float(densification_grad_abs_min),
+                grad_quantile_threshold,
+                float(np.finfo(np.float32).tiny),
+            )
+        else:
+            grad_threshold = max(
+                float(densification_grad_abs_min),
+                float(np.finfo(np.float32).tiny),
+            )
 
-            densify_mask_torch = torch.as_tensor(candidate_mask_np, device=positions.device, dtype=torch.bool)
+        position_candidate_mask_np = (
+                valid_denom_np
+                & finite_grad
+                & trainable_np
+                & (grad_pos_norm_np >= grad_threshold)
+        )
+        curvature_candidate_mask_np = (
+                valid_curvature_observation_np
+                & trainable_np
+                & (curvature_violation_mean_np >= curvature_violation_threshold)
+        ) if curvature_enabled else np.zeros_like(trainable_np)
+        combined_candidate_mask_np = position_candidate_mask_np | curvature_candidate_mask_np
+
+        position_candidate_count = int(np.count_nonzero(position_candidate_mask_np))
+        curvature_candidate_count = int(np.count_nonzero(curvature_candidate_mask_np))
+        candidate_count = int(np.count_nonzero(combined_candidate_mask_np))
+
+        if candidate_count == 0:
+            if not np.any(valid_denom_np) and not np.any(valid_curvature_observation_np):
+                densify_reason = "no_density_samples"
+            else:
+                densify_reason = "no_candidates_after_position_or_curvature"
+        else:
+
             densification_result = make_under_reconstruction_clones(
                 positions=positions,
                 rotations=rotations,
@@ -2053,13 +2293,18 @@ def maybe_make_densification_result(
                 powers=powers,
                 grad_position_np=avg_density_grad_vector_np,
                 selection_score_np=grad_pos_norm_np,
-                trainable_surfel_mask=densify_mask_torch,
+                trainable_surfel_mask=trainable_surfel_mask,
                 grad_threshold=grad_threshold,
                 max_clone_fraction=float(getattr(config, "densification_max_new_fraction", 1.0)),
                 clone_offset_scale=split_offset_scale,
                 clone_scale_factor=float(getattr(config, "densification_split_scale_factor", math.sqrt(2.0))),
                 min_clone_scale=float(getattr(config, "densification_scale_min", 8.0e-3)),
                 exact_clone_scale_threshold=exact_clone_scale_threshold,
+                curvature_violation_np=curvature_violation_mean_np,
+                curvature_direction_uu_np=curvature_tensor_uu_np,
+                curvature_direction_uv_np=curvature_tensor_uv_np,
+                curvature_direction_vv_np=curvature_tensor_vv_np,
+                curvature_violation_threshold=curvature_violation_threshold,
             )
 
             if densification_result is not None:
@@ -2068,7 +2313,17 @@ def maybe_make_densification_result(
                     n_new_from_densification = int(new_block["position"].shape[0])
                     clone_count = int(densification_result.get("clone_count", 0))
                     split_count = int(densification_result.get("split_count", 0))
-                    densify_reason = f"densified_clone={clone_count}_split={split_count}"
+                    position_split_count = int(
+                        densification_result.get("position_split_count", 0)
+                    )
+                    curvature_split_count = int(
+                        densification_result.get("curvature_split_count", 0)
+                    )
+                    densify_reason = (
+                        f"densified_clone={clone_count}_split={split_count}"
+                        f"_position={position_split_count}"
+                        f"_curvature={curvature_split_count}"
+                    )
                 else:
                     densify_reason = "densification_result_without_new_block"
             else:
@@ -2081,10 +2336,13 @@ def maybe_make_densification_result(
                 f"added={n_new_from_densification}, "
                 f"pts={positions.shape[0]}, "
                 f"valid_denom={valid_denom_count}, "
+                f"valid_curvature={valid_curvature_count}, "
                 f"finite={finite_count}, "
                 f"trainable={trainable_count}, "
                 f"above_abs={above_abs_count}, "
-                f"candidates={candidate_count}, "
+                f"position_candidates={position_candidate_count}, "
+                f"curvature_candidates={curvature_candidate_count}, "
+                f"combined_candidates={candidate_count}, "
                 f"signal_min={signal_min:.3e}, "
                 f"signal_p50={signal_p50:.3e}, "
                 f"signal_p90={signal_p90:.3e}, "
@@ -2094,6 +2352,7 @@ def maybe_make_densification_result(
                 f"grad_q_thr={grad_quantile_threshold:.3e}, "
                 f"grad_thr={grad_threshold:.3e}, "
                 f"abs_thr={densification_grad_abs_min:.3e}, "
+                f"curvature_thr={curvature_violation_threshold:.3e}, "
                 f"scene_extent={scene_extent:.3e}, "
                 f"exact_clone_scale_thr={exact_clone_scale_threshold:.3e}, "
                 f"split_offset={split_offset_scale:.3e}"
@@ -2102,11 +2361,20 @@ def maybe_make_densification_result(
             if config.densification_verbose:
                 clone_count = int(densification_result.get("clone_count", 0)) if densification_result is not None else 0
                 split_count = int(densification_result.get("split_count", 0)) if densification_result is not None else 0
+                position_split_count = int(
+                    densification_result.get("position_split_count", 0)
+                ) if densification_result is not None else 0
+                curvature_split_count = int(
+                    densification_result.get("curvature_split_count", 0)
+                ) if densification_result is not None else 0
                 print(
                     f"[Iter {iteration:04d}] Tangent split densification: "
                     f"adding {n_new_from_densification} surfels "
-                    f"(clone={clone_count}, split={split_count}) | "
+                    f"(clone={clone_count}, split={split_count}, "
+                    f"position={position_split_count}, "
+                    f"curvature={curvature_split_count}) | "
                     f"grad_thr={grad_threshold:.3e}, "
+                    f"curvature_thr={curvature_violation_threshold:.3e}, "
                     f"exact_clone_scale_thr={exact_clone_scale_threshold:.3e}, "
                     f"split_offset={split_offset_scale:.3e}, "
                     f"abs_thr={densification_grad_abs_min:.3e}, "
@@ -2286,6 +2554,8 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "loss_average_expected_camera_count",
             "loss_average_is_complete",
             "loss_rgb_mean",
+            "loss_rgb_l2_mean",
+            "loss_rgb_dssim_mean",
             "loss_depth_distortion_raw_mean",
             "loss_depth_distortion_weighted_mean",
             "loss_normal_consistency_raw_mean",
@@ -2301,10 +2571,16 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "densification_new_points",
             "densification_clone_points",
             "densification_split_points",
+            "densification_position_split_points",
+            "densification_curvature_split_points",
             "densification_clone_points_total",
             "densification_split_points_total",
+            "densification_position_split_points_total",
+            "densification_curvature_split_points_total",
             "densification_clone_points_active",
             "densification_split_points_active",
+            "densification_position_split_points_active",
+            "densification_curvature_split_points_active",
             "prune_scale_area_points",
             "prune_inactive_gradient_points",
             "iteration_time_sec",

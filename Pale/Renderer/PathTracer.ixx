@@ -20,6 +20,10 @@ export namespace Pale {
 
         void setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp);
 
+        void setCurvatureDensificationStats(CurvatureDensificationStats *stats) {
+            m_curvatureDensificationStats = stats;
+        }
+
         void renderForward(std::vector<SensorGPU> &sensors);
 
         void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages *debugImages);
@@ -62,6 +66,7 @@ export namespace Pale {
         GPUSceneBuffers m_sceneGPU{};
         RenderIntermediatesGPU m_intermediates{};
         PathTracerSettings m_settings{};
+        CurvatureDensificationStats *m_curvatureDensificationStats = nullptr;
         uint32_t m_rayQueueCapacity = 0;
         uint64_t m_sessionSeed = 42;
     };

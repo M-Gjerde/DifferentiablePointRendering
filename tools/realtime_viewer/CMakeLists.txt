@@ -260,6 +260,9 @@ target_compile_options(PaleRealtimeViewer
 target_compile_definitions(PaleRealtimeViewer
         PRIVATE
         PALE_DEFAULT_ASSET_DIR=\"${PALE_ROOT}/Assets\")
+target_include_directories(PaleRealtimeViewer
+        PRIVATE
+        "${PALE_ROOT}/vendor/stb_image")
 target_link_libraries(PaleRealtimeViewer
         PRIVATE
         PaleLibRealtime

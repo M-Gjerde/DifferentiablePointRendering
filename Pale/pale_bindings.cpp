@@ -138,7 +138,23 @@ class PythonRenderer {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         Pale::float4 *rgba = nullptr;
+        // [combined RGB objective, half-MSE, DSSIM].
         float *loss = nullptr;
+    };
+
+    struct RgbLossOptions {
+        float ssimWeight = 0.0f;
+        int ssimWindowSize = 11;
+        float ssimSigma = 1.5f;
+    };
+
+    struct RgbSsimScratch {
+        std::size_t pixelCapacity = 0;
+        Pale::float4 *renderedMean = nullptr;
+        Pale::float4 *targetMean = nullptr;
+        Pale::float4 *derivativeMean = nullptr;
+        Pale::float4 *derivativeVariance = nullptr;
+        Pale::float4 *derivativeCovariance = nullptr;
     };
 
     struct DeviceTrainingStepOptions {
@@ -272,6 +288,8 @@ public:
                     get_f(settingsDict,
                           "curvature_scale_weight",
                           m_settings.curvatureScaleRegularizerWeight);
+            curvatureDensificationEnabled =
+                    get_b(settingsDict, "enable_curvature_densification", false);
             m_settings.rendererDebugMinimumProjectedFootprint =
                     get_b(settingsDict,
                           "minimum_projected_footprint",
@@ -296,6 +314,10 @@ public:
         visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         intraSlabDepthGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         curvatureScaleGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        if (curvatureDensificationEnabled) {
+            curvatureDensificationStats = Pale::makeCurvatureDensificationStatsForScene(
+                deviceSelector->getQueue(), buildProducts);
+        }
 
         // Print summary
         Pale::Log::PA_WARN("=== Renderer Settings ===");
@@ -313,6 +335,7 @@ public:
         Pale::Log::PA_WARN("  Normal Consistency Weight : {}", m_settings.normalConsistencyWeight);
         Pale::Log::PA_WARN("  Intra-slab depth weight   : {}", m_settings.intraSlabDepthRegularizerWeight);
         Pale::Log::PA_WARN("  Curvature scale weight    : {}", m_settings.curvatureScaleRegularizerWeight);
+        Pale::Log::PA_WARN("  Curvature densification   : {}", curvatureDensificationEnabled);
         Pale::Log::PA_WARN("  Minimum footprint enabled : {}", m_settings.rendererDebugMinimumProjectedFootprint);
         Pale::Log::PA_WARN("  Minimum footprint sigma px: {}", m_settings.rendererDebugMinimumProjectedFootprintPixels);
         Pale::Log::PA_WARN("=== Sensors (Forward) ===");
@@ -335,6 +358,8 @@ public:
 
         pathTracer = std::make_unique<Pale::PathTracer>(deviceSelector->getQueue(), m_settings);
         pathTracer->setScene(sceneGpu, buildProducts);
+        pathTracer->setCurvatureDensificationStats(
+            curvatureDensificationEnabled ? &curvatureDensificationStats : nullptr);
     }
 
     ~PythonRenderer() {
@@ -347,9 +372,11 @@ public:
             Pale::freeGradientsForScene(queue, visibilityOpacityGradients);
             Pale::freeGradientsForScene(queue, intraSlabDepthGradients);
             Pale::freeGradientsForScene(queue, curvatureScaleGradients);
+            Pale::freeCurvatureDensificationStats(queue, curvatureDensificationStats);
 
             Pale::freeDebugImagesForScene(queue, debugImages.data(), debugImages.size());
             freeTrainingTargets(queue);
+            freeRgbSsimScratch(queue);
             freeDeviceTrainingState(queue);
             queue.wait();
         }
@@ -612,11 +639,13 @@ public:
         syclQueue.wait_and_throw();
     }
 
-    py::tuple render_rgb_loss_backward(const py::list &cameraNamesList) {
+    py::tuple render_rgb_loss_backward(const py::list &cameraNamesList,
+                                       const py::dict &optionsDictionary = py::dict()) {
         auto syclQueue = deviceSelector->getQueue();
 
         SelectedTrainingBatch selectedBatch =
                 selectTrainingBatch(cameraNamesList, "render_rgb_loss_backward");
+        const RgbLossOptions rgbLossOptions = parseRgbLossOptions(optionsDictionary);
 
         {
             py::gil_scoped_release release;
@@ -626,7 +655,8 @@ public:
                 launchRgbLossAdjointKernel(
                     syclQueue,
                     selectedBatch.sensors[cameraIndex],
-                    *selectedBatch.targets[cameraIndex]);
+                    *selectedBatch.targets[cameraIndex],
+                    rgbLossOptions);
             }
             syclQueue.wait_and_throw();
 
@@ -637,17 +667,26 @@ public:
         }
 
         py::dict lossValues;
+        py::dict l2LossValues;
+        py::dict dssimLossValues;
         for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
-            float lossValue = 0.0f;
-            syclQueue.memcpy(&lossValue, selectedBatch.targets[cameraIndex]->loss, sizeof(float)).wait();
+            std::array<float, 3> lossComponents{};
+            syclQueue.memcpy(
+                lossComponents.data(),
+                selectedBatch.targets[cameraIndex]->loss,
+                lossComponents.size() * sizeof(float)).wait();
             const std::string cameraName(
                 selectedBatch.sensors[cameraIndex].name,
                 strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
-            lossValues[py::str(cameraName)] = lossValue;
+            lossValues[py::str(cameraName)] = lossComponents[0];
+            l2LossValues[py::str(cameraName)] = lossComponents[1];
+            dssimLossValues[py::str(cameraName)] = lossComponents[2];
         }
 
         py::dict adjointImages;
         adjointImages["loss_values"] = std::move(lossValues);
+        adjointImages["l2_loss_values"] = std::move(l2LossValues);
+        adjointImages["dssim_loss_values"] = std::move(dssimLossValues);
         adjointImages["gradient_stats"] = makeGradientStatsDictionary(gradients);
 
         return py::make_tuple(makeGradientDictionary(gradients), adjointImages);
@@ -660,6 +699,7 @@ public:
         SelectedTrainingBatch selectedBatch =
                 selectTrainingBatch(cameraNamesList, "render_rgb_training_step");
         DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
+        const RgbLossOptions rgbLossOptions = parseRgbLossOptions(optionsDictionary);
         const bool returnGradientStats =
                 get_b(optionsDictionary, "return_gradient_stats", false);
 
@@ -672,7 +712,8 @@ public:
                 launchRgbLossAdjointKernel(
                     syclQueue,
                     selectedBatch.sensors[cameraIndex],
-                    *selectedBatch.targets[cameraIndex]);
+                    *selectedBatch.targets[cameraIndex],
+                    rgbLossOptions);
             }
             syclQueue.wait_and_throw();
 
@@ -690,17 +731,26 @@ public:
         }
 
         py::dict lossValues;
+        py::dict l2LossValues;
+        py::dict dssimLossValues;
         for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
-            float lossValue = 0.0f;
-            syclQueue.memcpy(&lossValue, selectedBatch.targets[cameraIndex]->loss, sizeof(float)).wait();
+            std::array<float, 3> lossComponents{};
+            syclQueue.memcpy(
+                lossComponents.data(),
+                selectedBatch.targets[cameraIndex]->loss,
+                lossComponents.size() * sizeof(float)).wait();
             const std::string cameraName(
                 selectedBatch.sensors[cameraIndex].name,
                 strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
-            lossValues[py::str(cameraName)] = lossValue;
+            lossValues[py::str(cameraName)] = lossComponents[0];
+            l2LossValues[py::str(cameraName)] = lossComponents[1];
+            dssimLossValues[py::str(cameraName)] = lossComponents[2];
         }
 
         py::dict result;
         result["loss_values"] = std::move(lossValues);
+        result["l2_loss_values"] = std::move(l2LossValues);
+        result["dssim_loss_values"] = std::move(dssimLossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
         if (returnGradientStats) {
@@ -715,6 +765,7 @@ public:
 
         SelectedTrainingBatch selectedBatch =
                 selectTrainingBatch(cameraNamesList, "render_rgb_backward_from_current_forward");
+        const RgbLossOptions rgbLossOptions = parseRgbLossOptions(optionsDictionary);
         const bool returnGradientStats =
                 get_b(optionsDictionary, "return_gradient_stats", false);
 
@@ -725,7 +776,8 @@ public:
                 launchRgbLossAdjointKernel(
                     syclQueue,
                     selectedBatch.sensors[cameraIndex],
-                    *selectedBatch.targets[cameraIndex]);
+                    *selectedBatch.targets[cameraIndex],
+                    rgbLossOptions);
             }
             syclQueue.wait_and_throw();
 
@@ -736,17 +788,26 @@ public:
         }
 
         py::dict lossValues;
+        py::dict l2LossValues;
+        py::dict dssimLossValues;
         for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
-            float lossValue = 0.0f;
-            syclQueue.memcpy(&lossValue, selectedBatch.targets[cameraIndex]->loss, sizeof(float)).wait();
+            std::array<float, 3> lossComponents{};
+            syclQueue.memcpy(
+                lossComponents.data(),
+                selectedBatch.targets[cameraIndex]->loss,
+                lossComponents.size() * sizeof(float)).wait();
             const std::string cameraName(
                 selectedBatch.sensors[cameraIndex].name,
                 strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
-            lossValues[py::str(cameraName)] = lossValue;
+            lossValues[py::str(cameraName)] = lossComponents[0];
+            l2LossValues[py::str(cameraName)] = lossComponents[1];
+            dssimLossValues[py::str(cameraName)] = lossComponents[2];
         }
 
         py::dict result;
         result["loss_values"] = std::move(lossValues);
+        result["l2_loss_values"] = std::move(l2LossValues);
+        result["dssim_loss_values"] = std::move(dssimLossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         if (returnGradientStats) {
             result["gradient_stats"] = makeGradientStatsDictionary(gradients);
@@ -3173,6 +3234,65 @@ public:
         return parameterDictionary;
     }
 
+    py::dict get_curvature_densification_stats() {
+        const std::size_t pointCount = curvatureDensificationStats.numPoints;
+        py::array_t<float> violationSum(pointCount);
+        py::array_t<std::uint32_t> violationCount(pointCount);
+        py::array_t<float> directionTensorUu(pointCount);
+        py::array_t<float> directionTensorUv(pointCount);
+        py::array_t<float> directionTensorVv(pointCount);
+
+        if (pointCount > 0u) {
+            if (!curvatureDensificationStats.violationSum ||
+                !curvatureDensificationStats.violationCount ||
+                !curvatureDensificationStats.directionTensorUu ||
+                !curvatureDensificationStats.directionTensorUv ||
+                !curvatureDensificationStats.directionTensorVv) {
+                throw std::runtime_error(
+                    "get_curvature_densification_stats: enabled buffers are incomplete");
+            }
+
+            auto syclQueue = deviceSelector->getQueue();
+            float *violationSumHost = violationSum.mutable_data();
+            std::uint32_t *violationCountHost = violationCount.mutable_data();
+            float *directionTensorUuHost = directionTensorUu.mutable_data();
+            float *directionTensorUvHost = directionTensorUv.mutable_data();
+            float *directionTensorVvHost = directionTensorVv.mutable_data();
+            {
+                py::gil_scoped_release release;
+                syclQueue.memcpy(
+                    violationSumHost,
+                    curvatureDensificationStats.violationSum,
+                    pointCount * sizeof(float));
+                syclQueue.memcpy(
+                    violationCountHost,
+                    curvatureDensificationStats.violationCount,
+                    pointCount * sizeof(std::uint32_t));
+                syclQueue.memcpy(
+                    directionTensorUuHost,
+                    curvatureDensificationStats.directionTensorUu,
+                    pointCount * sizeof(float));
+                syclQueue.memcpy(
+                    directionTensorUvHost,
+                    curvatureDensificationStats.directionTensorUv,
+                    pointCount * sizeof(float));
+                syclQueue.memcpy(
+                    directionTensorVvHost,
+                    curvatureDensificationStats.directionTensorVv,
+                    pointCount * sizeof(float));
+                syclQueue.wait_and_throw();
+            }
+        }
+
+        py::dict result;
+        result["violation_sum"] = std::move(violationSum);
+        result["violation_count"] = std::move(violationCount);
+        result["direction_tensor_uu"] = std::move(directionTensorUu);
+        result["direction_tensor_uv"] = std::move(directionTensorUv);
+        result["direction_tensor_vv"] = std::move(directionTensorVv);
+        return result;
+    }
+
 
     void apply_point_optimization(const py::dict &parameterDictionary) {
         if (!parameterDictionary.contains("position")) return;
@@ -3290,6 +3410,8 @@ public:
         Pale::freeGradientsForScene(deviceSelector->getQueue(), visibilityOpacityGradients);
         Pale::freeGradientsForScene(deviceSelector->getQueue(), intraSlabDepthGradients);
         Pale::freeGradientsForScene(deviceSelector->getQueue(), curvatureScaleGradients);
+        Pale::freeCurvatureDensificationStats(
+            deviceSelector->getQueue(), curvatureDensificationStats);
         Pale::freeDebugImagesForScene(deviceSelector->getQueue(), debugImages.data(), debugImages.size());
         debugImages.clear();
         debugImages.resize(sensorsForward.size());
@@ -3299,7 +3421,13 @@ public:
         visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         intraSlabDepthGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         curvatureScaleGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
+        if (curvatureDensificationEnabled) {
+            curvatureDensificationStats = Pale::makeCurvatureDensificationStatsForScene(
+                deviceSelector->getQueue(), buildProducts);
+        }
         pathTracer->setScene(sceneGpu, buildProducts);
+        pathTracer->setCurvatureDensificationStats(
+            curvatureDensificationEnabled ? &curvatureDensificationStats : nullptr);
         devicePointParametersDirty = false;
     }
 
@@ -3869,6 +3997,28 @@ private:
         options.epsilon = get_f(optionsDictionary, "adam_epsilon", options.epsilon);
         options.maxRotationStepRadians =
                 get_f(optionsDictionary, "max_rotation_step_radians", options.maxRotationStepRadians);
+        return options;
+    }
+
+    static RgbLossOptions parseRgbLossOptions(const py::dict &optionsDictionary) {
+        RgbLossOptions options;
+        options.ssimWeight = get_f(optionsDictionary, "ssim_weight", options.ssimWeight);
+        options.ssimWindowSize = get_i(
+            optionsDictionary, "ssim_window_size", options.ssimWindowSize);
+        options.ssimSigma = get_f(optionsDictionary, "ssim_sigma", options.ssimSigma);
+
+        if (!std::isfinite(options.ssimWeight) ||
+            options.ssimWeight < 0.0f || options.ssimWeight > 1.0f) {
+            throw std::runtime_error("ssim_weight must be finite and in [0, 1]");
+        }
+        if (options.ssimWindowSize <= 0 ||
+            options.ssimWindowSize > 31 ||
+            (options.ssimWindowSize & 1) == 0) {
+            throw std::runtime_error("ssim_window_size must be odd and in [1, 31]");
+        }
+        if (!std::isfinite(options.ssimSigma) || options.ssimSigma <= 0.0f) {
+            throw std::runtime_error("ssim_sigma must be finite and positive");
+        }
         return options;
     }
 
@@ -5240,15 +5390,59 @@ private:
 
         const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
         target.rgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-        target.loss = sycl::malloc_device<float>(1u, queue);
+        target.loss = sycl::malloc_device<float>(3u, queue);
         if (!target.rgba || !target.loss) {
             throw std::runtime_error("ensureTrainingTargetCapacity: failed to allocate device target buffers");
         }
     }
 
-    static void launchRgbLossAdjointKernel(sycl::queue queue,
-                                           const Pale::SensorGPU &sensor,
-                                           TrainingTargetDevice &target) {
+    void freeRgbSsimScratch(sycl::queue queue) {
+        auto release = [&queue](Pale::float4 *&pointer) {
+            if (pointer) {
+                sycl::free(pointer, queue);
+                pointer = nullptr;
+            }
+        };
+        release(rgbSsimScratch.renderedMean);
+        release(rgbSsimScratch.targetMean);
+        release(rgbSsimScratch.derivativeMean);
+        release(rgbSsimScratch.derivativeVariance);
+        release(rgbSsimScratch.derivativeCovariance);
+        rgbSsimScratch.pixelCapacity = 0;
+    }
+
+    void ensureRgbSsimScratchCapacity(std::size_t pixelCount, sycl::queue queue) {
+        if (rgbSsimScratch.pixelCapacity >= pixelCount &&
+            rgbSsimScratch.renderedMean && rgbSsimScratch.targetMean &&
+            rgbSsimScratch.derivativeMean && rgbSsimScratch.derivativeVariance &&
+            rgbSsimScratch.derivativeCovariance) {
+            return;
+        }
+
+        // A multi-camera batch reuses this storage serially. If a later camera is
+        // larger, finish the already queued SSIM pass before replacing its storage.
+        if (rgbSsimScratch.pixelCapacity > 0u) {
+            queue.wait_and_throw();
+        }
+        freeRgbSsimScratch(queue);
+        rgbSsimScratch.renderedMean = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+        rgbSsimScratch.targetMean = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+        rgbSsimScratch.derivativeMean = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+        rgbSsimScratch.derivativeVariance = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+        rgbSsimScratch.derivativeCovariance = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+        if (!rgbSsimScratch.renderedMean || !rgbSsimScratch.targetMean ||
+            !rgbSsimScratch.derivativeMean || !rgbSsimScratch.derivativeVariance ||
+            !rgbSsimScratch.derivativeCovariance) {
+            freeRgbSsimScratch(queue);
+            throw std::runtime_error("ensureRgbSsimScratchCapacity: failed to allocate SSIM scratch buffers");
+        }
+        rgbSsimScratch.pixelCapacity = pixelCount;
+    }
+
+    void launchRgbLossAdjointKernel(sycl::queue queue,
+                                    const Pale::SensorGPU &sensor,
+                                    TrainingTargetDevice &target,
+                                    const RgbLossOptions &options) {
         if (!sensor.framebuffer || !target.rgba || !target.loss) {
             throw std::runtime_error("launchRgbLossAdjointKernel: missing framebuffer or target buffer");
         }
@@ -5261,34 +5455,274 @@ private:
                                           ? 1.0f / (static_cast<float>(pixelCount) * 3.0f)
                                           : 0.0f;
 
-        queue.fill(target.loss, 0.0f, 1u);
-        queue.parallel_for<class RgbLossAdjointKernelTag>(
+        queue.fill(target.loss, 0.0f, 3u);
+        if (options.ssimWeight <= 0.0f) {
+            queue.parallel_for<class RgbLossAdjointKernelTag>(
+                sycl::range<1>(pixelCount),
+                [framebuffer = sensor.framebuffer,
+                 targetRgba = target.rgba,
+                 lossOut = target.loss,
+                 invElementCount](sycl::id<1> pixelId) {
+                    const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
+                    const Pale::float4 rendered = framebuffer[pixelIndex];
+                    const Pale::float4 targetPixel = targetRgba[pixelIndex];
+
+                    const float diffR = rendered.x() - targetPixel.x();
+                    const float diffG = rendered.y() - targetPixel.y();
+                    const float diffB = rendered.z() - targetPixel.z();
+                    const float l2Contribution =
+                            0.5f * (diffR * diffR + diffG * diffG + diffB * diffB) * invElementCount;
+
+                    auto combinedAtomic = sycl::atomic_ref<
+                        float,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(lossOut[0]);
+                    combinedAtomic.fetch_add(l2Contribution);
+                    auto l2Atomic = sycl::atomic_ref<
+                        float,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space>(lossOut[1]);
+                    l2Atomic.fetch_add(l2Contribution);
+
+                    framebuffer[pixelIndex] = Pale::float4{
+                        diffR * invElementCount,
+                        diffG * invElementCount,
+                        diffB * invElementCount,
+                        0.0f
+                    };
+                });
+            return;
+        }
+
+        ensureRgbSsimScratchCapacity(pixelCount, queue);
+
+        const int windowRadius = options.ssimWindowSize / 2;
+        const float gaussianExponentScale =
+                -0.5f / (options.ssimSigma * options.ssimSigma);
+        float gaussianSum = 0.0f;
+        for (int offset = -windowRadius; offset <= windowRadius; ++offset) {
+            gaussianSum += std::exp(
+                static_cast<float>(offset * offset) * gaussianExponentScale);
+        }
+        const float invGaussian2dSum = 1.0f / (gaussianSum * gaussianSum);
+        constexpr float C1 = 0.01f * 0.01f;
+        constexpr float C2 = 0.03f * 0.03f;
+
+        // Pass 1 computes each SSIM window and the three local partial derivatives
+        // needed by the transposed Gaussian convolution in the image adjoint.
+        queue.parallel_for<class RgbSsimStatisticsKernelTag>(
             sycl::range<1>(pixelCount),
             [framebuffer = sensor.framebuffer,
              targetRgba = target.rgba,
              lossOut = target.loss,
-             invElementCount](sycl::id<1> pixelId) {
+             renderedMeanOut = rgbSsimScratch.renderedMean,
+             targetMeanOut = rgbSsimScratch.targetMean,
+             derivativeMeanOut = rgbSsimScratch.derivativeMean,
+             derivativeVarianceOut = rgbSsimScratch.derivativeVariance,
+             derivativeCovarianceOut = rgbSsimScratch.derivativeCovariance,
+             width = sensor.width,
+             height = sensor.height,
+             windowRadius,
+             gaussianExponentScale,
+             invGaussian2dSum,
+             invElementCount,
+             ssimWeight = options.ssimWeight](sycl::id<1> pixelId) {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
+                const int centerX = static_cast<int>(pixelIndex % width);
+                const int centerY = static_cast<int>(pixelIndex / width);
+
+                Pale::float4 renderedMean{0.0f, 0.0f, 0.0f, 0.0f};
+                Pale::float4 targetMean{0.0f, 0.0f, 0.0f, 0.0f};
+                Pale::float4 renderedSecondMoment{0.0f, 0.0f, 0.0f, 0.0f};
+                Pale::float4 targetSecondMoment{0.0f, 0.0f, 0.0f, 0.0f};
+                Pale::float4 crossMoment{0.0f, 0.0f, 0.0f, 0.0f};
+
+                for (int offsetY = -windowRadius; offsetY <= windowRadius; ++offsetY) {
+                    const int sampleY = centerY + offsetY;
+                    if (sampleY < 0 || sampleY >= static_cast<int>(height)) continue;
+                    for (int offsetX = -windowRadius; offsetX <= windowRadius; ++offsetX) {
+                        const int sampleX = centerX + offsetX;
+                        if (sampleX < 0 || sampleX >= static_cast<int>(width)) continue;
+                        const float radiusSquared = static_cast<float>(
+                            offsetX * offsetX + offsetY * offsetY);
+                        const float weight =
+                            sycl::exp(radiusSquared * gaussianExponentScale) * invGaussian2dSum;
+                        const std::uint32_t sampleIndex =
+                            static_cast<std::uint32_t>(sampleY) * width +
+                            static_cast<std::uint32_t>(sampleX);
+                        const Pale::float4 renderedSample = framebuffer[sampleIndex];
+                        const Pale::float4 targetSample = targetRgba[sampleIndex];
+                        renderedMean += renderedSample * weight;
+                        targetMean += targetSample * weight;
+                        renderedSecondMoment += Pale::float4{
+                            renderedSample.x() * renderedSample.x(),
+                            renderedSample.y() * renderedSample.y(),
+                            renderedSample.z() * renderedSample.z(),
+                            0.0f
+                        } * weight;
+                        targetSecondMoment += Pale::float4{
+                            targetSample.x() * targetSample.x(),
+                            targetSample.y() * targetSample.y(),
+                            targetSample.z() * targetSample.z(),
+                            0.0f
+                        } * weight;
+                        crossMoment += Pale::float4{
+                            renderedSample.x() * targetSample.x(),
+                            renderedSample.y() * targetSample.y(),
+                            renderedSample.z() * targetSample.z(),
+                            0.0f
+                        } * weight;
+                    }
+                }
+
+                const Pale::float4 renderedVariance{
+                    renderedSecondMoment.x() - renderedMean.x() * renderedMean.x(),
+                    renderedSecondMoment.y() - renderedMean.y() * renderedMean.y(),
+                    renderedSecondMoment.z() - renderedMean.z() * renderedMean.z(),
+                    0.0f
+                };
+                const Pale::float4 targetVariance{
+                    targetSecondMoment.x() - targetMean.x() * targetMean.x(),
+                    targetSecondMoment.y() - targetMean.y() * targetMean.y(),
+                    targetSecondMoment.z() - targetMean.z() * targetMean.z(),
+                    0.0f
+                };
+                const Pale::float4 covariance{
+                    crossMoment.x() - renderedMean.x() * targetMean.x(),
+                    crossMoment.y() - renderedMean.y() * targetMean.y(),
+                    crossMoment.z() - renderedMean.z() * targetMean.z(),
+                    0.0f
+                };
+                Pale::float4 derivativeMean{0.0f, 0.0f, 0.0f, 0.0f};
+                Pale::float4 derivativeVariance{0.0f, 0.0f, 0.0f, 0.0f};
+                Pale::float4 derivativeCovariance{0.0f, 0.0f, 0.0f, 0.0f};
+                float ssimSum = 0.0f;
+
+                for (int channel = 0; channel < 3; ++channel) {
+                    const float meanRendered = renderedMean[channel];
+                    const float meanTarget = targetMean[channel];
+                    const float luminanceNumerator =
+                        2.0f * meanRendered * meanTarget + C1;
+                    const float luminanceDenominator = sycl::fmax(
+                        meanRendered * meanRendered + meanTarget * meanTarget + C1,
+                        1.0e-12f);
+                    const float contrastNumerator = 2.0f * covariance[channel] + C2;
+                    const float contrastDenominator = sycl::fmax(
+                        renderedVariance[channel] + targetVariance[channel] + C2,
+                        1.0e-12f);
+                    const float luminance = luminanceNumerator / luminanceDenominator;
+                    const float contrast = contrastNumerator / contrastDenominator;
+                    ssimSum += luminance * contrast;
+
+                    derivativeMean[channel] = contrast * (
+                        2.0f * meanTarget * luminanceDenominator -
+                        2.0f * meanRendered * luminanceNumerator) /
+                        (luminanceDenominator * luminanceDenominator);
+                    derivativeVariance[channel] =
+                        -luminance * contrastNumerator /
+                        (contrastDenominator * contrastDenominator);
+                    derivativeCovariance[channel] =
+                        2.0f * luminance / contrastDenominator;
+                }
+
+                renderedMeanOut[pixelIndex] = renderedMean;
+                targetMeanOut[pixelIndex] = targetMean;
+                derivativeMeanOut[pixelIndex] = derivativeMean;
+                derivativeVarianceOut[pixelIndex] = derivativeVariance;
+                derivativeCovarianceOut[pixelIndex] = derivativeCovariance;
+
                 const Pale::float4 rendered = framebuffer[pixelIndex];
-                const Pale::float4 target = targetRgba[pixelIndex];
+                const Pale::float4 targetPixel = targetRgba[pixelIndex];
+                const float diffR = rendered.x() - targetPixel.x();
+                const float diffG = rendered.y() - targetPixel.y();
+                const float diffB = rendered.z() - targetPixel.z();
+                const float l2Contribution =
+                    0.5f * (diffR * diffR + diffG * diffG + diffB * diffB) *
+                    invElementCount;
+                const float dssimContribution =
+                    (3.0f - ssimSum) * invElementCount;
+                const float combinedContribution =
+                    (1.0f - ssimWeight) * l2Contribution +
+                    ssimWeight * dssimContribution;
 
-                const float diffR = rendered.x() - target.x();
-                const float diffG = rendered.y() - target.y();
-                const float diffB = rendered.z() - target.z();
-                const float lossContribution =
-                        0.5f * (diffR * diffR + diffG * diffG + diffB * diffB) * invElementCount;
-
-                auto lossAtomic = sycl::atomic_ref<
+                auto combinedAtomic = sycl::atomic_ref<
                     float,
                     sycl::memory_order::relaxed,
                     sycl::memory_scope::device,
-                    sycl::access::address_space::global_space>(*lossOut);
-                lossAtomic.fetch_add(lossContribution);
+                    sycl::access::address_space::global_space>(lossOut[0]);
+                combinedAtomic.fetch_add(combinedContribution);
+                auto l2Atomic = sycl::atomic_ref<
+                    float,
+                    sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(lossOut[1]);
+                l2Atomic.fetch_add(l2Contribution);
+                auto dssimAtomic = sycl::atomic_ref<
+                    float,
+                    sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(lossOut[2]);
+                dssimAtomic.fetch_add(dssimContribution);
+            });
+
+        // Pass 2 applies the transpose of the Gaussian window. For each image sample i:
+        // dSSIM/dx_i = sum_j w_ji [S_mu + 2(x_i-mu_j)S_var + (y_i-muy_j)S_cov].
+        queue.parallel_for<class RgbSsimAdjointKernelTag>(
+            sycl::range<1>(pixelCount),
+            [framebuffer = sensor.framebuffer,
+             targetRgba = target.rgba,
+             renderedMean = rgbSsimScratch.renderedMean,
+             targetMean = rgbSsimScratch.targetMean,
+             derivativeMean = rgbSsimScratch.derivativeMean,
+             derivativeVariance = rgbSsimScratch.derivativeVariance,
+             derivativeCovariance = rgbSsimScratch.derivativeCovariance,
+             width = sensor.width,
+             height = sensor.height,
+             windowRadius,
+             gaussianExponentScale,
+             invGaussian2dSum,
+             invElementCount,
+             ssimWeight = options.ssimWeight](sycl::id<1> pixelId) {
+                const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
+                const int sampleX = static_cast<int>(pixelIndex % width);
+                const int sampleY = static_cast<int>(pixelIndex / width);
+                const Pale::float4 rendered = framebuffer[pixelIndex];
+                const Pale::float4 targetPixel = targetRgba[pixelIndex];
+                Pale::float4 ssimGradient{0.0f, 0.0f, 0.0f, 0.0f};
+
+                for (int offsetY = -windowRadius; offsetY <= windowRadius; ++offsetY) {
+                    const int centerY = sampleY + offsetY;
+                    if (centerY < 0 || centerY >= static_cast<int>(height)) continue;
+                    for (int offsetX = -windowRadius; offsetX <= windowRadius; ++offsetX) {
+                        const int centerX = sampleX + offsetX;
+                        if (centerX < 0 || centerX >= static_cast<int>(width)) continue;
+                        const float radiusSquared = static_cast<float>(
+                            offsetX * offsetX + offsetY * offsetY);
+                        const float weight =
+                            sycl::exp(radiusSquared * gaussianExponentScale) * invGaussian2dSum;
+                        const std::uint32_t centerIndex =
+                            static_cast<std::uint32_t>(centerY) * width +
+                            static_cast<std::uint32_t>(centerX);
+                        for (int channel = 0; channel < 3; ++channel) {
+                            ssimGradient[channel] += weight * (
+                                derivativeMean[centerIndex][channel] +
+                                2.0f * (rendered[channel] - renderedMean[centerIndex][channel]) *
+                                    derivativeVariance[centerIndex][channel] +
+                                (targetPixel[channel] - targetMean[centerIndex][channel]) *
+                                    derivativeCovariance[centerIndex][channel]);
+                        }
+                    }
+                }
 
                 framebuffer[pixelIndex] = Pale::float4{
-                    diffR * invElementCount,
-                    diffG * invElementCount,
-                    diffB * invElementCount,
+                    ((1.0f - ssimWeight) * (rendered.x() - targetPixel.x()) -
+                     ssimWeight * ssimGradient.x()) * invElementCount,
+                    ((1.0f - ssimWeight) * (rendered.y() - targetPixel.y()) -
+                     ssimWeight * ssimGradient.y()) * invElementCount,
+                    ((1.0f - ssimWeight) * (rendered.z() - targetPixel.z()) -
+                     ssimWeight * ssimGradient.z()) * invElementCount,
                     0.0f
                 };
             });
@@ -5313,7 +5747,10 @@ private:
     Pale::PointGradients visibilityOpacityGradients{};
     Pale::PointGradients intraSlabDepthGradients{};
     Pale::PointGradients curvatureScaleGradients{};
+    Pale::CurvatureDensificationStats curvatureDensificationStats{};
+    bool curvatureDensificationEnabled{false};
     std::unordered_map<std::string, TrainingTargetDevice> trainingTargets{};
+    RgbSsimScratch rgbSsimScratch{};
     DeviceAdamState deviceTrainingState{};
     bool devicePointParametersDirty{false};
 
@@ -5344,7 +5781,8 @@ PYBIND11_MODULE(pale, m) {
                  py::arg("target_images"))
             .def("render_rgb_loss_backward",
                  &PythonRenderer::render_rgb_loss_backward,
-                 py::arg("camera_names"))
+                 py::arg("camera_names"),
+                 py::arg("options") = py::dict())
             .def("render_rgb_training_step",
                  &PythonRenderer::render_rgb_training_step,
                  py::arg("camera_names"),
@@ -5378,6 +5816,8 @@ PYBIND11_MODULE(pale, m) {
                  py::arg("visibleNormalGrad32f"),
                  py::arg("normalFromDepthGrad32f"))
             .def("get_point_parameters", &PythonRenderer::get_point_parameters)
+            .def("get_curvature_densification_stats",
+                 &PythonRenderer::get_curvature_densification_stats)
             .def("sync_point_parameters_from_gpu", &PythonRenderer::sync_point_parameters_from_gpu)
             .def("capture_device_adam_state", &PythonRenderer::capture_device_adam_state)
             .def("upload_device_adam_state",

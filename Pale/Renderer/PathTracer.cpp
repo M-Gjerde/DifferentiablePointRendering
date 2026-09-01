@@ -518,6 +518,9 @@ namespace Pale {
         ScopedTimer forwardTimer("Rendering time", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
 
+        if (m_curvatureDensificationStats) {
+            clearCurvatureDensificationStats(m_queue, *m_curvatureDensificationStats);
+        }
 
         RenderPackage renderPackage{
             .queue = m_queue,
@@ -526,6 +529,9 @@ namespace Pale {
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .gradients = {},
+            .curvatureDensificationStats = m_curvatureDensificationStats
+                ? *m_curvatureDensificationStats
+                : CurvatureDensificationStats{},
             .sensors = sensor,
             .debugImages = nullptr,
             .numSensors = static_cast<uint32_t>(sensor.size())

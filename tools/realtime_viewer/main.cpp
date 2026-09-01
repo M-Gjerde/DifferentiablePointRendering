@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <iomanip>
@@ -31,6 +32,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <sycl/sycl.hpp>
+#include <stb_image.h>
 
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/RenderPackage.h"
@@ -89,9 +91,18 @@ namespace {
         DepthDistortion,
         IntraSlabDepth,
         CurvatureScale,
+        CurvaturePrimitiveScore,
+        DepthPositionGradient,
+        NormalPositionGradient,
+        IntraSlabPositionGradient,
+        SsimTarget,
+        RgbHalfMse,
+        SsimIndex,
+        Dssim,
+        RgbObjectiveGradient,
     };
 
-    constexpr std::array<ViewImageMode, 8> kViewImageModeShortcutOrder = {
+    constexpr std::array<ViewImageMode, 17> kViewImageModeShortcutOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -100,9 +111,18 @@ namespace {
         ViewImageMode::DepthNormal,
         ViewImageMode::IntraSlabDepth,
         ViewImageMode::CurvatureScale,
+        ViewImageMode::CurvaturePrimitiveScore,
+        ViewImageMode::DepthPositionGradient,
+        ViewImageMode::NormalPositionGradient,
+        ViewImageMode::IntraSlabPositionGradient,
+        ViewImageMode::SsimTarget,
+        ViewImageMode::RgbHalfMse,
+        ViewImageMode::SsimIndex,
+        ViewImageMode::Dssim,
+        ViewImageMode::RgbObjectiveGradient,
     };
 
-    constexpr std::array<const char*, 8> kViewImageModeLabels = {
+    constexpr std::array<const char*, 17> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -111,16 +131,39 @@ namespace {
         "6 Depth normal",
         "7 Intra-slab depth",
         "8 Curvature scale",
+        "9 Curvature primitive score",
+        "Depth distortion |grad position|",
+        "Normal consistency |grad position|",
+        "Intra-slab consensus |grad position|",
+        "SSIM target RGB",
+        "RGB half-MSE per pixel",
+        "SSIM index per pixel",
+        "DSSIM per pixel",
+        "RGB objective |dL/dRGB|",
     };
 
-    int viewImageModeShortcutIndex(ViewImageMode mode) {
+    [[nodiscard]] const char* viewImageModeLabel(ViewImageMode mode) {
         for (std::size_t index = 0; index < kViewImageModeShortcutOrder.size(); ++index) {
             if (kViewImageModeShortcutOrder[index] == mode) {
-                return static_cast<int>(index);
+                return kViewImageModeLabels[index];
             }
         }
 
-        return 0;
+        return "Rendered";
+    }
+
+    [[nodiscard]] bool isRegularizerGradientView(ViewImageMode mode) {
+        return mode == ViewImageMode::DepthPositionGradient ||
+               mode == ViewImageMode::NormalPositionGradient ||
+               mode == ViewImageMode::IntraSlabPositionGradient;
+    }
+
+    [[nodiscard]] bool isSsimDebugView(ViewImageMode mode) {
+        return mode == ViewImageMode::SsimTarget ||
+               mode == ViewImageMode::RgbHalfMse ||
+               mode == ViewImageMode::SsimIndex ||
+               mode == ViewImageMode::Dssim ||
+               mode == ViewImageMode::RgbObjectiveGradient;
     }
 
     enum class ScalarColorMap {
@@ -138,6 +181,12 @@ namespace {
         bool depthDistortionValid = false;
         bool intraSlabDepthValid = false;
         bool curvatureScaleValid = false;
+        bool curvaturePrimitiveScoreValid = false;
+        bool visiblePrimitiveIndicesValid = false;
+        bool depthPositionGradientValid = false;
+        bool normalPositionGradientValid = false;
+        bool intraSlabPositionGradientValid = false;
+        bool ssimDebugValid = false;
         std::vector<float> meanDepth;
         std::vector<float> medianDepth;
         std::vector<float> visibleNormal;
@@ -145,6 +194,23 @@ namespace {
         std::vector<float> depthDistortion;
         std::vector<float> intraSlabDepth;
         std::vector<float> curvatureScale;
+        std::vector<float> curvaturePrimitiveScore;
+        std::vector<float> curvatureObservedPrimitiveScores;
+        std::vector<uint32_t> visiblePrimitiveIndices;
+        std::vector<float> depthPositionGradient;
+        std::vector<float> normalPositionGradient;
+        std::vector<float> intraSlabPositionGradient;
+        std::vector<float> ssimTargetLinearRgba;
+        std::vector<float> rgbHalfMse;
+        std::vector<float> ssimIndex;
+        std::vector<float> dssim;
+        std::vector<float> rgbObjectiveGradient;
+        std::size_t curvatureObservedPrimitiveCount = 0u;
+        float curvaturePrimitiveScoreMax = 0.0f;
+        float rgbHalfMseMean = 0.0f;
+        float ssimMean = 0.0f;
+        float dssimMean = 0.0f;
+        float rgbObjectiveMean = 0.0f;
 
         void invalidate() {
             width = 0;
@@ -156,6 +222,12 @@ namespace {
             depthDistortionValid = false;
             intraSlabDepthValid = false;
             curvatureScaleValid = false;
+            curvaturePrimitiveScoreValid = false;
+            visiblePrimitiveIndicesValid = false;
+            depthPositionGradientValid = false;
+            normalPositionGradientValid = false;
+            intraSlabPositionGradientValid = false;
+            ssimDebugValid = false;
             meanDepth.clear();
             medianDepth.clear();
             visibleNormal.clear();
@@ -163,6 +235,23 @@ namespace {
             depthDistortion.clear();
             intraSlabDepth.clear();
             curvatureScale.clear();
+            curvaturePrimitiveScore.clear();
+            curvatureObservedPrimitiveScores.clear();
+            visiblePrimitiveIndices.clear();
+            depthPositionGradient.clear();
+            normalPositionGradient.clear();
+            intraSlabPositionGradient.clear();
+            ssimTargetLinearRgba.clear();
+            rgbHalfMse.clear();
+            ssimIndex.clear();
+            dssim.clear();
+            rgbObjectiveGradient.clear();
+            curvatureObservedPrimitiveCount = 0u;
+            curvaturePrimitiveScoreMax = 0.0f;
+            rgbHalfMseMean = 0.0f;
+            ssimMean = 0.0f;
+            dssimMean = 0.0f;
+            rgbObjectiveMean = 0.0f;
         }
 
         void prepareFor(uint32_t nextWidth, uint32_t nextHeight) {
@@ -173,6 +262,34 @@ namespace {
             invalidate();
             width = nextWidth;
             height = nextHeight;
+        }
+
+        void releaseSsimDebug() {
+            ssimDebugValid = false;
+            std::vector<float>().swap(ssimTargetLinearRgba);
+            std::vector<float>().swap(rgbHalfMse);
+            std::vector<float>().swap(ssimIndex);
+            std::vector<float>().swap(dssim);
+            std::vector<float>().swap(rgbObjectiveGradient);
+            rgbHalfMseMean = 0.0f;
+            ssimMean = 0.0f;
+            dssimMean = 0.0f;
+            rgbObjectiveMean = 0.0f;
+        }
+    };
+
+    struct SsimTargetCache {
+        std::filesystem::path path;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        std::vector<float> linearRgba;
+        std::string status = "SSIM debug maps are disabled";
+
+        void invalidate() {
+            path.clear();
+            width = 0u;
+            height = 0u;
+            std::vector<float>().swap(linearRgba);
         }
     };
 
@@ -1081,6 +1198,291 @@ namespace {
         return scenePath;
     }
 
+    [[nodiscard]] std::optional<std::filesystem::path> targetPngForOptimizationPointCloud(
+        const std::filesystem::path& pointCloudPath,
+        const std::string& cameraName) {
+        std::filesystem::path runDirectory = pointCloudPath.parent_path();
+        if (runDirectory.filename() == "points") {
+            runDirectory = runDirectory.parent_path();
+        }
+        if (runDirectory.empty() || cameraName.empty()) {
+            return std::nullopt;
+        }
+
+        const std::filesystem::path targetPath =
+            runDirectory / ("render_target_" + cameraName + ".png");
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(targetPath, error) || error) {
+            return std::nullopt;
+        }
+        return targetPath;
+    }
+
+    [[nodiscard]] float srgbToLinear(float value) {
+        const float clamped = std::clamp(value, 0.0f, 1.0f);
+        return clamped <= 0.04045f
+                   ? clamped / 12.92f
+                   : std::pow((clamped + 0.055f) / 1.055f, 2.4f);
+    }
+
+    bool ensureLinearSsimTarget(
+        const std::filesystem::path& targetPath,
+        uint32_t expectedWidth,
+        uint32_t expectedHeight,
+        SsimTargetCache& cache) {
+        if (cache.path == targetPath &&
+            cache.width == expectedWidth &&
+            cache.height == expectedHeight &&
+            cache.linearRgba.size() ==
+                static_cast<std::size_t>(expectedWidth) * expectedHeight * 4u) {
+            return true;
+        }
+
+        cache.invalidate();
+        int imageWidth = 0;
+        int imageHeight = 0;
+        int sourceChannels = 0;
+        stbi_uc* image = stbi_load(
+            targetPath.string().c_str(), &imageWidth, &imageHeight, &sourceChannels, 4);
+        if (image == nullptr) {
+            cache.status = "Could not load target PNG: " + targetPath.string();
+            return false;
+        }
+
+        if (imageWidth != static_cast<int>(expectedWidth) ||
+            imageHeight != static_cast<int>(expectedHeight)) {
+            cache.status =
+                "Target resolution " + std::to_string(imageWidth) + "x" +
+                std::to_string(imageHeight) + " does not match render " +
+                std::to_string(expectedWidth) + "x" + std::to_string(expectedHeight);
+            stbi_image_free(image);
+            return false;
+        }
+
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(expectedWidth) * expectedHeight;
+        cache.linearRgba.resize(pixelCount * 4u);
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4u;
+            cache.linearRgba[baseIndex + 0u] =
+                srgbToLinear(static_cast<float>(image[baseIndex + 0u]) / 255.0f);
+            cache.linearRgba[baseIndex + 1u] =
+                srgbToLinear(static_cast<float>(image[baseIndex + 1u]) / 255.0f);
+            cache.linearRgba[baseIndex + 2u] =
+                srgbToLinear(static_cast<float>(image[baseIndex + 2u]) / 255.0f);
+            cache.linearRgba[baseIndex + 3u] = 1.0f;
+        }
+        stbi_image_free(image);
+
+        cache.path = targetPath;
+        cache.width = expectedWidth;
+        cache.height = expectedHeight;
+        cache.status = "Loaded " + targetPath.string();
+        return true;
+    }
+
+    [[nodiscard]] std::vector<float> makeGaussianKernel1d(int windowSize, float sigma) {
+        const int radius = windowSize / 2;
+        const float exponentScale = -0.5f / (sigma * sigma);
+        std::vector<float> kernel(static_cast<std::size_t>(windowSize), 0.0f);
+        float sum = 0.0f;
+        for (int offset = -radius; offset <= radius; ++offset) {
+            const float value = std::exp(static_cast<float>(offset * offset) * exponentScale);
+            kernel[static_cast<std::size_t>(offset + radius)] = value;
+            sum += value;
+        }
+        const float inverseSum = 1.0f / std::max(sum, 1.0e-12f);
+        for (float& value : kernel) {
+            value *= inverseSum;
+        }
+        return kernel;
+    }
+
+    // Symmetric zero-padded Gaussian convolution, matching the training SSIM window.
+    [[nodiscard]] std::vector<float> convolveRgbZeroPadded(
+        const std::vector<float>& source,
+        uint32_t width,
+        uint32_t height,
+        const std::vector<float>& kernel) {
+        const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
+        std::vector<float> temporary(pixelCount * 3u, 0.0f);
+        std::vector<float> result(pixelCount * 3u, 0.0f);
+        const int radius = static_cast<int>(kernel.size() / 2u);
+
+        for (uint32_t y = 0u; y < height; ++y) {
+            for (uint32_t x = 0u; x < width; ++x) {
+                const std::size_t outputBase =
+                    (static_cast<std::size_t>(y) * width + x) * 3u;
+                for (int offset = -radius; offset <= radius; ++offset) {
+                    const int sourceX = static_cast<int>(x) + offset;
+                    if (sourceX < 0 || sourceX >= static_cast<int>(width)) {
+                        continue;
+                    }
+                    const float weight = kernel[static_cast<std::size_t>(offset + radius)];
+                    const std::size_t sourceBase =
+                        (static_cast<std::size_t>(y) * width +
+                         static_cast<uint32_t>(sourceX)) * 3u;
+                    for (std::size_t channel = 0u; channel < 3u; ++channel) {
+                        temporary[outputBase + channel] += weight * source[sourceBase + channel];
+                    }
+                }
+            }
+        }
+
+        for (uint32_t y = 0u; y < height; ++y) {
+            for (uint32_t x = 0u; x < width; ++x) {
+                const std::size_t outputBase =
+                    (static_cast<std::size_t>(y) * width + x) * 3u;
+                for (int offset = -radius; offset <= radius; ++offset) {
+                    const int sourceY = static_cast<int>(y) + offset;
+                    if (sourceY < 0 || sourceY >= static_cast<int>(height)) {
+                        continue;
+                    }
+                    const float weight = kernel[static_cast<std::size_t>(offset + radius)];
+                    const std::size_t sourceBase =
+                        (static_cast<std::size_t>(sourceY) * width + x) * 3u;
+                    for (std::size_t channel = 0u; channel < 3u; ++channel) {
+                        result[outputBase + channel] += weight * temporary[sourceBase + channel];
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    void computeSsimDebugBuffers(
+        const std::vector<float>& renderedRgba,
+        const std::vector<float>& targetRgba,
+        uint32_t width,
+        uint32_t height,
+        float ssimWeight,
+        int windowSize,
+        float sigma,
+        DebugDisplayBuffers& buffers) {
+        const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
+        if (pixelCount == 0u || renderedRgba.size() != pixelCount * 4u ||
+            targetRgba.size() != pixelCount * 4u) {
+            return;
+        }
+
+        std::vector<float> rendered(pixelCount * 3u);
+        std::vector<float> target(pixelCount * 3u);
+        std::vector<float> renderedSquared(pixelCount * 3u);
+        std::vector<float> targetSquared(pixelCount * 3u);
+        std::vector<float> renderedTarget(pixelCount * 3u);
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            for (std::size_t channel = 0u; channel < 3u; ++channel) {
+                const std::size_t rgbIndex = pixelIndex * 3u + channel;
+                const std::size_t rgbaIndex = pixelIndex * 4u + channel;
+                const float x = renderedRgba[rgbaIndex];
+                const float y = targetRgba[rgbaIndex];
+                rendered[rgbIndex] = x;
+                target[rgbIndex] = y;
+                renderedSquared[rgbIndex] = x * x;
+                targetSquared[rgbIndex] = y * y;
+                renderedTarget[rgbIndex] = x * y;
+            }
+        }
+
+        const std::vector<float> kernel = makeGaussianKernel1d(windowSize, sigma);
+        const std::vector<float> muX = convolveRgbZeroPadded(rendered, width, height, kernel);
+        const std::vector<float> muY = convolveRgbZeroPadded(target, width, height, kernel);
+        const std::vector<float> expectedX2 =
+            convolveRgbZeroPadded(renderedSquared, width, height, kernel);
+        const std::vector<float> expectedY2 =
+            convolveRgbZeroPadded(targetSquared, width, height, kernel);
+        const std::vector<float> expectedXY =
+            convolveRgbZeroPadded(renderedTarget, width, height, kernel);
+
+        constexpr float c1 = 0.01f * 0.01f;
+        constexpr float c2 = 0.03f * 0.03f;
+        std::vector<float> dMean(pixelCount * 3u);
+        std::vector<float> dVariance(pixelCount * 3u);
+        std::vector<float> dCovariance(pixelCount * 3u);
+        std::vector<float> muXDVariance(pixelCount * 3u);
+        std::vector<float> muYDCovariance(pixelCount * 3u);
+        std::vector<float> channelSsim(pixelCount * 3u);
+
+        for (std::size_t index = 0u; index < pixelCount * 3u; ++index) {
+            const float varianceX = expectedX2[index] - muX[index] * muX[index];
+            const float varianceY = expectedY2[index] - muY[index] * muY[index];
+            const float covariance = expectedXY[index] - muX[index] * muY[index];
+            const float a = 2.0f * muX[index] * muY[index] + c1;
+            const float b = std::max(
+                muX[index] * muX[index] + muY[index] * muY[index] + c1,
+                1.0e-12f);
+            const float c = 2.0f * covariance + c2;
+            const float d = std::max(varianceX + varianceY + c2, 1.0e-12f);
+            const float luminance = a / b;
+            const float contrast = c / d;
+            channelSsim[index] = luminance * contrast;
+            dMean[index] = contrast *
+                (2.0f * muY[index] * b - 2.0f * muX[index] * a) / (b * b);
+            dVariance[index] = -luminance * c / (d * d);
+            dCovariance[index] = luminance * 2.0f / d;
+            muXDVariance[index] = muX[index] * dVariance[index];
+            muYDCovariance[index] = muY[index] * dCovariance[index];
+        }
+
+        const std::vector<float> convolvedDMean =
+            convolveRgbZeroPadded(dMean, width, height, kernel);
+        const std::vector<float> convolvedDVariance =
+            convolveRgbZeroPadded(dVariance, width, height, kernel);
+        const std::vector<float> convolvedMuXDVariance =
+            convolveRgbZeroPadded(muXDVariance, width, height, kernel);
+        const std::vector<float> convolvedDCovariance =
+            convolveRgbZeroPadded(dCovariance, width, height, kernel);
+        const std::vector<float> convolvedMuYDCovariance =
+            convolveRgbZeroPadded(muYDCovariance, width, height, kernel);
+
+        buffers.ssimTargetLinearRgba = targetRgba;
+        buffers.rgbHalfMse.assign(pixelCount, 0.0f);
+        buffers.ssimIndex.assign(pixelCount, 0.0f);
+        buffers.dssim.assign(pixelCount, 0.0f);
+        buffers.rgbObjectiveGradient.assign(pixelCount, 0.0f);
+        const float inverseRgbElementCount =
+            1.0f / static_cast<float>(pixelCount * 3u);
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            float squaredError = 0.0f;
+            float ssimSum = 0.0f;
+            float gradientSquaredNorm = 0.0f;
+            for (std::size_t channel = 0u; channel < 3u; ++channel) {
+                const std::size_t index = pixelIndex * 3u + channel;
+                const float difference = rendered[index] - target[index];
+                squaredError += difference * difference;
+                ssimSum += channelSsim[index];
+                const float ssimGradient =
+                    convolvedDMean[index] +
+                    2.0f * rendered[index] * convolvedDVariance[index] -
+                    2.0f * convolvedMuXDVariance[index] +
+                    target[index] * convolvedDCovariance[index] -
+                    convolvedMuYDCovariance[index];
+                const float objectiveGradient =
+                    ((1.0f - ssimWeight) * difference - ssimWeight * ssimGradient) *
+                    inverseRgbElementCount;
+                gradientSquaredNorm += objectiveGradient * objectiveGradient;
+            }
+
+            buffers.rgbHalfMse[pixelIndex] = squaredError / 6.0f;
+            buffers.ssimIndex[pixelIndex] = ssimSum / 3.0f;
+            buffers.dssim[pixelIndex] = 1.0f - buffers.ssimIndex[pixelIndex];
+            buffers.rgbObjectiveGradient[pixelIndex] = std::sqrt(
+                std::max(gradientSquaredNorm, 0.0f));
+            buffers.rgbHalfMseMean += buffers.rgbHalfMse[pixelIndex];
+            buffers.ssimMean += buffers.ssimIndex[pixelIndex];
+            buffers.dssimMean += buffers.dssim[pixelIndex];
+        }
+
+        const float inversePixelCount = 1.0f / static_cast<float>(pixelCount);
+        buffers.rgbHalfMseMean *= inversePixelCount;
+        buffers.ssimMean *= inversePixelCount;
+        buffers.dssimMean *= inversePixelCount;
+        buffers.rgbObjectiveMean =
+            (1.0f - ssimWeight) * buffers.rgbHalfMseMean +
+            ssimWeight * buffers.dssimMean;
+        buffers.ssimDebugValid = true;
+    }
+
     bool drawPlyBrowser(
         const char* popupTitle,
         const char* childId,
@@ -1573,6 +1975,7 @@ namespace {
         sensor.curvatureScaleBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.curvatureScaleAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.curvatureScaleActiveSlabCountBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
+        sensor.curvaturePrimitiveIndexBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
         sensor.medianDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.meanDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.medianDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
@@ -1585,7 +1988,8 @@ namespace {
         if (!sensor.framebuffer || !sensor.outputFramebuffer || !sensor.ldrFramebuffer ||
             !sensor.intraSlabDepthBuffer || !sensor.intraSlabDepthAdjointBuffer ||
             !sensor.intraSlabDepthActiveSlabCountBuffer || !sensor.curvatureScaleBuffer ||
-            !sensor.curvatureScaleAdjointBuffer || !sensor.curvatureScaleActiveSlabCountBuffer) {
+            !sensor.curvatureScaleAdjointBuffer || !sensor.curvatureScaleActiveSlabCountBuffer ||
+            !sensor.curvaturePrimitiveIndexBuffer) {
             throw std::runtime_error("Failed to allocate realtime sensor framebuffers");
         }
         return sensor;
@@ -1606,6 +2010,7 @@ namespace {
         queue.memset(sensor.curvatureScaleBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.curvatureScaleAdjointBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.curvatureScaleActiveSlabCountBuffer, 0, pixelCount * sizeof(std::uint32_t));
+        queue.fill(sensor.curvaturePrimitiveIndexBuffer, UINT32_MAX, pixelCount);
         queue.memset(sensor.medianDepthBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.meanDepthBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.medianDepthAdjointBuffer, 0, pixelCount * sizeof(float));
@@ -1638,6 +2043,7 @@ namespace {
         freeDevicePtr(queue, sensor.curvatureScaleBuffer);
         freeDevicePtr(queue, sensor.curvatureScaleAdjointBuffer);
         freeDevicePtr(queue, sensor.curvatureScaleActiveSlabCountBuffer);
+        freeDevicePtr(queue, sensor.curvaturePrimitiveIndexBuffer);
         freeDevicePtr(queue, sensor.medianDepthBuffer);
         freeDevicePtr(queue, sensor.meanDepthBuffer);
         freeDevicePtr(queue, sensor.medianDepthAdjointBuffer);
@@ -1678,6 +2084,87 @@ namespace {
             framebuffer[rgbaIndex + 3u] = 0.0f;
         }
         Pale::uploadSensorRGBA(queue, sensor, std::move(framebuffer));
+    }
+
+    void prepareRealtimeViewerSurfaceRegularizerAdjoints(
+        sycl::queue queue,
+        const Pale::SensorGPU& sensor) {
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(sensor.width) * static_cast<std::size_t>(sensor.height);
+        if (pixelCount == 0u) {
+            return;
+        }
+
+        // Debug each source with unit loss weight while retaining the exact
+        // production normalizations used by training.
+        queue.fill(
+            sensor.depthDistortionAdjointBuffer,
+            1.0f / static_cast<float>(pixelCount),
+            pixelCount);
+        queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
+        queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount);
+
+        const std::vector<uint32_t> intraSlabCounts = Pale::downloadUint32Buffer(
+            queue, sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
+        uint64_t totalActiveSlabs = 0u;
+        for (const uint32_t count : intraSlabCounts) {
+            totalActiveSlabs += count;
+        }
+        const float inverseActiveSlabCount =
+            1.0f / static_cast<float>(std::max<uint64_t>(totalActiveSlabs, 1u));
+        std::vector<float> intraSlabAdjoints(pixelCount, 0.0f);
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            if (intraSlabCounts[pixelIndex] > 0u) {
+                intraSlabAdjoints[pixelIndex] = inverseActiveSlabCount;
+            }
+        }
+        queue.memcpy(
+            sensor.intraSlabDepthAdjointBuffer,
+            intraSlabAdjoints.data(),
+            pixelCount * sizeof(float));
+
+        const std::vector<float> visibleNormals = Pale::downloadFloat4Buffer(
+            queue, sensor.visibleNormalBuffer, pixelCount);
+        const std::vector<float> depthNormals = Pale::downloadFloat4Buffer(
+            queue, sensor.normalFromDepthBuffer, pixelCount);
+        uint32_t validNormalCount = 0u;
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4u;
+            if (visibleNormals[baseIndex + 3u] > 0.0f &&
+                depthNormals[baseIndex + 3u] > 0.0f) {
+                ++validNormalCount;
+            }
+        }
+        const float inverseValidNormalCount =
+            1.0f / static_cast<float>(std::max(validNormalCount, 1u));
+        std::vector<Pale::float4> visibleNormalAdjoints(pixelCount, Pale::float4{0.0f});
+        std::vector<Pale::float4> depthNormalAdjoints(pixelCount, Pale::float4{0.0f});
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4u;
+            if (visibleNormals[baseIndex + 3u] <= 0.0f ||
+                depthNormals[baseIndex + 3u] <= 0.0f) {
+                continue;
+            }
+            visibleNormalAdjoints[pixelIndex] = Pale::float4{
+                -inverseValidNormalCount * depthNormals[baseIndex + 0u],
+                -inverseValidNormalCount * depthNormals[baseIndex + 1u],
+                -inverseValidNormalCount * depthNormals[baseIndex + 2u],
+                0.0f};
+            depthNormalAdjoints[pixelIndex] = Pale::float4{
+                -inverseValidNormalCount * visibleNormals[baseIndex + 0u],
+                -inverseValidNormalCount * visibleNormals[baseIndex + 1u],
+                -inverseValidNormalCount * visibleNormals[baseIndex + 2u],
+                0.0f};
+        }
+        queue.memcpy(
+            sensor.visibleNormalAdjointBuffer,
+            visibleNormalAdjoints.data(),
+            pixelCount * sizeof(Pale::float4));
+        queue.memcpy(
+            sensor.normalFromDepthAdjointBuffer,
+            depthNormalAdjoints.data(),
+            pixelCount * sizeof(Pale::float4));
+        queue.wait();
     }
 
     Pale::PathTracerSettings makeDefaultSettings() {
@@ -2064,6 +2551,98 @@ namespace {
         }
     }
 
+    void colorizeScalarBufferFixedRange(
+        const std::vector<float>& values,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        float displayMinimum,
+        float displayMaximum,
+        ScalarColorMap colorMap,
+        std::vector<uint8_t>& displayPixels) {
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        displayPixels.assign(pixelCount * 4u, 0u);
+        if (values.size() < pixelCount) {
+            return;
+        }
+
+        const float inverseRange =
+            1.0f / std::max(displayMaximum - displayMinimum, 1.0e-12f);
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4u;
+            displayPixels[baseIndex + 3u] = 255u;
+            if (!std::isfinite(values[pixelIndex])) {
+                continue;
+            }
+            const float normalized = std::clamp(
+                (values[pixelIndex] - displayMinimum) * inverseRange, 0.0f, 1.0f);
+            const glm::vec3 color = scalarColor(normalized, colorMap);
+            displayPixels[baseIndex + 0u] = channelToByte(color.r);
+            displayPixels[baseIndex + 1u] = channelToByte(color.g);
+            displayPixels[baseIndex + 2u] = channelToByte(color.b);
+        }
+    }
+
+    [[nodiscard]] float linearToSrgb(float value) {
+        const float clamped = std::clamp(value, 0.0f, 1.0f);
+        return clamped <= 0.0031308f
+                   ? 12.92f * clamped
+                   : 1.055f * std::pow(clamped, 1.0f / 2.4f) - 0.055f;
+    }
+
+    void displayLinearRgbaAsSrgb(
+        const std::vector<float>& linearRgba,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        std::vector<uint8_t>& displayPixels) {
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        displayPixels.assign(pixelCount * 4u, 0u);
+        if (linearRgba.size() < pixelCount * 4u) {
+            return;
+        }
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4u;
+            displayPixels[baseIndex + 0u] = channelToByte(linearToSrgb(linearRgba[baseIndex + 0u]));
+            displayPixels[baseIndex + 1u] = channelToByte(linearToSrgb(linearRgba[baseIndex + 1u]));
+            displayPixels[baseIndex + 2u] = channelToByte(linearToSrgb(linearRgba[baseIndex + 2u]));
+            displayPixels[baseIndex + 3u] = 255u;
+        }
+    }
+
+    void colorizeCurvaturePrimitiveScores(
+        const std::vector<float>& values,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        float splitThreshold,
+        ScalarColorMap colorMap,
+        std::vector<uint8_t>& displayPixels) {
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        displayPixels.assign(pixelCount * 4u, 0u);
+        if (values.size() < pixelCount) {
+            return;
+        }
+
+        const float safeThreshold =
+            std::isfinite(splitThreshold) && splitThreshold > 1.0e-12f
+                ? splitThreshold
+                : 1.0f;
+        for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::size_t baseIndex = pixelIndex * 4u;
+            displayPixels[baseIndex + 3u] = 255u;
+            const float value = values[pixelIndex];
+            if (!std::isfinite(value) || value < 0.0f) {
+                continue;
+            }
+            const float normalized = std::clamp(value / safeThreshold, 0.0f, 1.0f);
+            const glm::vec3 color = scalarColor(normalized, colorMap);
+            displayPixels[baseIndex + 0u] = channelToByte(color.r);
+            displayPixels[baseIndex + 1u] = channelToByte(color.g);
+            displayPixels[baseIndex + 2u] = channelToByte(color.b);
+        }
+    }
+
     void colorizeNormalBuffer(
         const std::vector<float>& values,
         uint32_t renderWidth,
@@ -2202,6 +2781,9 @@ int main(int argc, char** argv) {
 
         Pale::PathTracerSettings settings = makeDefaultSettings();
         Pale::PathTracer tracer(queue, settings);
+        Pale::CurvatureDensificationStats curvatureDensificationStats =
+            Pale::makeCurvatureDensificationStatsForScene(queue, buildProducts);
+        tracer.setCurvatureDensificationStats(&curvatureDensificationStats);
         Pale::SceneBuild::BuildProducts renderBuildProducts = buildProducts;
         renderBuildProducts.cameraGPUs.clear();
         Pale::SensorGPU sensor{};
@@ -2216,6 +2798,12 @@ int main(int argc, char** argv) {
         bool showViewportGrid = false;
         ViewImageMode viewImageMode = ViewImageMode::Rendered;
         ScalarColorMap scalarColorMap = ScalarColorMap::Viridis;
+        float curvatureViolationDisplayThreshold = 5.0f;
+        bool regularizerPrimitiveGradientMapsEnabled = false;
+        bool ssimDebugMapsEnabled = false;
+        float viewerSsimWeight = 0.2f;
+        int viewerSsimWindowSize = 11;
+        float viewerSsimSigma = 1.5f;
         int selectedLightIndex = 0;
         bool showLightGizmo = true;
         ImGuizmo::OPERATION lightGizmoOperation = ImGuizmo::TRANSLATE;
@@ -2245,9 +2833,12 @@ int main(int argc, char** argv) {
         double lastViewerAdjointMs = 0.0;
         float lastViewerAdjointLoss = 0.0f;
         std::string viewerAdjointStatus = "Adjoint profiling is off";
+        double lastRegularizerGradientMapMs = 0.0;
+        double lastSsimDebugMapMs = 0.0;
         std::vector<uint8_t> renderPixels;
         std::vector<uint8_t> pixels;
         DebugDisplayBuffers debugDisplayBuffers;
+        SsimTargetCache ssimTargetCache;
         OrbitCamera displayedOrbit = orbit;
         SceneBounds displayedBounds = bounds;
         CameraSource displayedCameraSource = cameraSource;
@@ -2268,6 +2859,9 @@ int main(int argc, char** argv) {
         }
         queue.memset(deviceProfilingCounters, 0, sizeof(Pale::RenderProfilingCounters)).wait();
         Pale::PointGradients viewerAdjointGradients{};
+        Pale::PointGradients viewerDepthRegularizerGradients{};
+        Pale::PointGradients viewerNormalRegularizerGradients{};
+        Pale::PointGradients viewerIntraSlabRegularizerGradients{};
 
         if (!glfwInit()) {
             throw std::runtime_error("Failed to initialize GLFW");
@@ -2307,6 +2901,12 @@ int main(int argc, char** argv) {
         auto rebuildSceneGpu = [&]() {
             buildProducts = Pale::SceneBuild::build(scene, assetAccessor, buildOptions);
             Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, queue);
+            if (curvatureDensificationStats.numPoints != buildProducts.points.size()) {
+                Pale::freeCurvatureDensificationStats(queue, curvatureDensificationStats);
+                curvatureDensificationStats =
+                    Pale::makeCurvatureDensificationStatsForScene(queue, buildProducts);
+                tracer.setCurvatureDensificationStats(&curvatureDensificationStats);
+            }
             sceneGpu.profileCounters =
                 gpuCounterProfilingEnabled ? deviceProfilingCounters : nullptr;
             renderBuildProducts = buildProducts;
@@ -2805,6 +3405,55 @@ int main(int argc, char** argv) {
             const std::size_t pixelCount =
                 static_cast<std::size_t>(displayedRenderWidth) * static_cast<std::size_t>(displayedRenderHeight);
 
+            const auto ensureVisiblePrimitiveIndices = [&]() -> bool {
+                if (!sensor.curvaturePrimitiveIndexBuffer) {
+                    return false;
+                }
+                if (!debugDisplayBuffers.visiblePrimitiveIndicesValid) {
+                    debugDisplayBuffers.visiblePrimitiveIndices =
+                        Pale::downloadUint32Buffer(
+                            queue, sensor.curvaturePrimitiveIndexBuffer, pixelCount);
+                    debugDisplayBuffers.visiblePrimitiveIndicesValid = true;
+                }
+                return true;
+            };
+
+            const auto makePositionGradientMap = [&](const Pale::PointGradients& gradients) {
+                std::vector<float> map(pixelCount, -1.0f);
+                if (!ensureVisiblePrimitiveIndices() ||
+                    !gradients.gradPosition ||
+                    gradients.numPoints != sceneGpu.pointCount) {
+                    return map;
+                }
+                std::vector<Pale::float3> hostGradients(gradients.numPoints);
+                queue.memcpy(
+                    hostGradients.data(),
+                    gradients.gradPosition,
+                    gradients.numPoints * sizeof(Pale::float3)).wait();
+                std::vector<float> gradientNorms(gradients.numPoints, 0.0f);
+                for (std::size_t primitiveIndex = 0u;
+                     primitiveIndex < gradients.numPoints;
+                     ++primitiveIndex) {
+                    const Pale::float3 gradient = hostGradients[primitiveIndex];
+                    const float normSquared =
+                        gradient.x() * gradient.x() +
+                        gradient.y() * gradient.y() +
+                        gradient.z() * gradient.z();
+                    gradientNorms[primitiveIndex] =
+                        std::isfinite(normSquared) && normSquared >= 0.0f
+                            ? std::sqrt(normSquared)
+                            : 0.0f;
+                }
+                for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+                    const uint32_t primitiveIndex =
+                        debugDisplayBuffers.visiblePrimitiveIndices[pixelIndex];
+                    if (primitiveIndex < gradientNorms.size()) {
+                        map[pixelIndex] = gradientNorms[primitiveIndex];
+                    }
+                }
+                return map;
+            };
+
             switch (mode) {
                 case ViewImageMode::MeanDepth:
                     if (!debugDisplayBuffers.meanDepthValid) {
@@ -2855,6 +3504,99 @@ int main(int argc, char** argv) {
                         debugDisplayBuffers.curvatureScaleValid = true;
                     }
                     return true;
+                case ViewImageMode::CurvaturePrimitiveScore:
+                    if (!debugDisplayBuffers.curvaturePrimitiveScoreValid) {
+                        if (!ensureVisiblePrimitiveIndices()) {
+                            return false;
+                        }
+                        const std::vector<float> violationSums =
+                            Pale::downloadFloatBuffer(
+                                queue,
+                                curvatureDensificationStats.violationSum,
+                                curvatureDensificationStats.numPoints);
+                        const std::vector<uint32_t> violationCounts =
+                            Pale::downloadUint32Buffer(
+                                queue,
+                                curvatureDensificationStats.violationCount,
+                                curvatureDensificationStats.numPoints);
+
+                        std::vector<float> primitiveScores(
+                            curvatureDensificationStats.numPoints, -1.0f);
+                        debugDisplayBuffers.curvatureObservedPrimitiveScores.clear();
+                        debugDisplayBuffers.curvatureObservedPrimitiveScores.reserve(
+                            curvatureDensificationStats.numPoints);
+                        debugDisplayBuffers.curvatureObservedPrimitiveCount = 0u;
+                        debugDisplayBuffers.curvaturePrimitiveScoreMax = 0.0f;
+                        for (std::size_t primitiveIndex = 0u;
+                             primitiveIndex < curvatureDensificationStats.numPoints;
+                             ++primitiveIndex) {
+                            const uint32_t observationCount = violationCounts[primitiveIndex];
+                            if (observationCount == 0u ||
+                                !std::isfinite(violationSums[primitiveIndex])) {
+                                continue;
+                            }
+                            const float score = violationSums[primitiveIndex] /
+                                static_cast<float>(observationCount);
+                            if (!std::isfinite(score) || score < 0.0f) {
+                                continue;
+                            }
+                            primitiveScores[primitiveIndex] = score;
+                            debugDisplayBuffers.curvatureObservedPrimitiveScores.push_back(score);
+                            ++debugDisplayBuffers.curvatureObservedPrimitiveCount;
+                            debugDisplayBuffers.curvaturePrimitiveScoreMax = std::max(
+                                debugDisplayBuffers.curvaturePrimitiveScoreMax, score);
+                        }
+
+                        debugDisplayBuffers.curvaturePrimitiveScore.assign(pixelCount, -1.0f);
+                        for (std::size_t pixelIndex = 0u;
+                             pixelIndex < pixelCount;
+                             ++pixelIndex) {
+                            const uint32_t primitiveIndex =
+                                debugDisplayBuffers.visiblePrimitiveIndices[pixelIndex];
+                            if (primitiveIndex < primitiveScores.size()) {
+                                debugDisplayBuffers.curvaturePrimitiveScore[pixelIndex] =
+                                    primitiveScores[primitiveIndex];
+                            }
+                        }
+                        debugDisplayBuffers.curvaturePrimitiveScoreValid = true;
+                    }
+                    return true;
+                case ViewImageMode::DepthPositionGradient:
+                    if (!regularizerPrimitiveGradientMapsEnabled) {
+                        return false;
+                    }
+                    if (!debugDisplayBuffers.depthPositionGradientValid) {
+                        debugDisplayBuffers.depthPositionGradient =
+                            makePositionGradientMap(viewerDepthRegularizerGradients);
+                        debugDisplayBuffers.depthPositionGradientValid = true;
+                    }
+                    return true;
+                case ViewImageMode::NormalPositionGradient:
+                    if (!regularizerPrimitiveGradientMapsEnabled) {
+                        return false;
+                    }
+                    if (!debugDisplayBuffers.normalPositionGradientValid) {
+                        debugDisplayBuffers.normalPositionGradient =
+                            makePositionGradientMap(viewerNormalRegularizerGradients);
+                        debugDisplayBuffers.normalPositionGradientValid = true;
+                    }
+                    return true;
+                case ViewImageMode::IntraSlabPositionGradient:
+                    if (!regularizerPrimitiveGradientMapsEnabled) {
+                        return false;
+                    }
+                    if (!debugDisplayBuffers.intraSlabPositionGradientValid) {
+                        debugDisplayBuffers.intraSlabPositionGradient =
+                            makePositionGradientMap(viewerIntraSlabRegularizerGradients);
+                        debugDisplayBuffers.intraSlabPositionGradientValid = true;
+                    }
+                    return true;
+                case ViewImageMode::SsimTarget:
+                case ViewImageMode::RgbHalfMse:
+                case ViewImageMode::SsimIndex:
+                case ViewImageMode::Dssim:
+                case ViewImageMode::RgbObjectiveGradient:
+                    return ssimDebugMapsEnabled && debugDisplayBuffers.ssimDebugValid;
                 case ViewImageMode::Rendered:
                     return true;
             }
@@ -2937,6 +3679,92 @@ int main(int argc, char** argv) {
                             scalarColorMap,
                             pixels);
                         break;
+                    case ViewImageMode::CurvaturePrimitiveScore:
+                        colorizeCurvaturePrimitiveScores(
+                            debugDisplayBuffers.curvaturePrimitiveScore,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            curvatureViolationDisplayThreshold,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::DepthPositionGradient:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.depthPositionGradient,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::NormalPositionGradient:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.normalPositionGradient,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::IntraSlabPositionGradient:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.intraSlabPositionGradient,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::SsimTarget:
+                        displayLinearRgbaAsSrgb(
+                            debugDisplayBuffers.ssimTargetLinearRgba,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            pixels);
+                        break;
+                    case ViewImageMode::RgbHalfMse:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.rgbHalfMse,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::SsimIndex:
+                        colorizeScalarBufferFixedRange(
+                            debugDisplayBuffers.ssimIndex,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            0.0f,
+                            1.0f,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::Dssim:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.dssim,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::RgbObjectiveGradient:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.rgbObjectiveGradient,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false,
+                            true,
+                            scalarColorMap,
+                            pixels);
+                        break;
                     case ViewImageMode::Rendered:
                         break;
                 }
@@ -2988,6 +3816,71 @@ int main(int argc, char** argv) {
             adjointBuildProducts.cameraGPUs.push_back(sensor.camera);
             viewerAdjointGradients =
                 Pale::makeGradientsForScene(queue, adjointBuildProducts, nullptr);
+        };
+
+        auto freeViewerRegularizerGradients = [&]() {
+            Pale::freeGradientsForScene(queue, viewerDepthRegularizerGradients);
+            Pale::freeGradientsForScene(queue, viewerNormalRegularizerGradients);
+            Pale::freeGradientsForScene(queue, viewerIntraSlabRegularizerGradients);
+        };
+
+        auto ensureViewerRegularizerGradients = [&]() {
+            const bool hasUsableGradients =
+                viewerDepthRegularizerGradients.gradPosition != nullptr &&
+                viewerNormalRegularizerGradients.gradPosition != nullptr &&
+                viewerIntraSlabRegularizerGradients.gradPosition != nullptr &&
+                viewerDepthRegularizerGradients.numPoints == sceneGpu.pointCount &&
+                viewerNormalRegularizerGradients.numPoints == sceneGpu.pointCount &&
+                viewerIntraSlabRegularizerGradients.numPoints == sceneGpu.pointCount;
+            if (hasUsableGradients) {
+                return;
+            }
+
+            freeViewerRegularizerGradients();
+            Pale::SceneBuild::BuildProducts gradientBuildProducts = renderBuildProducts;
+            gradientBuildProducts.cameraGPUs.clear();
+            gradientBuildProducts.cameraGPUs.push_back(sensor.camera);
+            viewerDepthRegularizerGradients =
+                Pale::makeGradientsForScene(queue, gradientBuildProducts, nullptr);
+            viewerNormalRegularizerGradients =
+                Pale::makeGradientsForScene(queue, gradientBuildProducts, nullptr);
+            viewerIntraSlabRegularizerGradients =
+                Pale::makeGradientsForScene(queue, gradientBuildProducts, nullptr);
+        };
+
+        auto runViewerRegularizerGradientPass = [&](std::vector<Pale::SensorGPU>& renderSensors) {
+            if (!regularizerPrimitiveGradientMapsEnabled ||
+                !hasSensor || sceneGpu.pointCount == 0u) {
+                return;
+            }
+
+            const auto start = std::chrono::steady_clock::now();
+            ensureViewerRegularizerGradients();
+            prepareRealtimeViewerSurfaceRegularizerAdjoints(queue, sensor);
+
+            Pale::PathTracerSettings regularizerSettings = settings;
+            regularizerSettings.depthDistortionWeight = 1.0f;
+            regularizerSettings.normalConsistencyWeight = 1.0f;
+            regularizerSettings.visibilityWeightedOpacityRegularizerWeight = 0.0f;
+            regularizerSettings.intraSlabDepthRegularizerWeight = 1.0f;
+            regularizerSettings.curvatureScaleRegularizerWeight = 0.0f;
+            tracer.getSettings() = regularizerSettings;
+            Pale::PointGradients unusedOpacityGradients{};
+            Pale::PointGradients unusedCurvatureGradients{};
+            tracer.renderSurfaceRegularizersBackward(
+                renderSensors,
+                viewerDepthRegularizerGradients,
+                viewerNormalRegularizerGradients,
+                unusedOpacityGradients,
+                viewerIntraSlabRegularizerGradients,
+                unusedCurvatureGradients,
+                nullptr);
+            tracer.getSettings() = settings;
+            queue.wait();
+
+            const auto stop = std::chrono::steady_clock::now();
+            lastRegularizerGradientMapMs =
+                std::chrono::duration<double, std::milli>(stop - start).count();
         };
 
         auto runViewerAdjointPass = [&](std::vector<Pale::SensorGPU>& renderSensors) {
@@ -3124,6 +4017,14 @@ int main(int argc, char** argv) {
             std::vector<Pale::SensorGPU> renderSensors{sensor};
             const auto start = std::chrono::steady_clock::now();
             tracer.renderForward(renderSensors);
+            // Adjoint profiling reuses the raw framebuffer as its source. Capture
+            // the primal linear RGB first so SSIM diagnostics always describe the
+            // displayed forward render.
+            std::vector<float> ssimRenderedLinearRgba;
+            if (ssimDebugMapsEnabled && cameraSource == CameraSource::SceneXml) {
+                ssimRenderedLinearRgba = Pale::downloadSensorRGBARAW(queue, sensor);
+            }
+            runViewerRegularizerGradientPass(renderSensors);
             runViewerAdjointPass(renderSensors);
             const auto stop = std::chrono::steady_clock::now();
             lastRenderMs =
@@ -3150,6 +4051,41 @@ int main(int argc, char** argv) {
             displayedCamera = camera;
             displayedRenderWidth = renderWidth;
             displayedRenderHeight = renderHeight;
+            if (ssimDebugMapsEnabled) {
+                const auto ssimStart = std::chrono::steady_clock::now();
+                if (cameraSource != CameraSource::SceneXml) {
+                    ssimTargetCache.status =
+                        "SSIM maps require a Scene XML camera aligned with its training target";
+                } else {
+                    const std::string cameraName(
+                        camera.name, strnlen(camera.name, sizeof(camera.name)));
+                    const auto targetPath = targetPngForOptimizationPointCloud(
+                        currentPointCloudPath, cameraName);
+                    if (!targetPath) {
+                        ssimTargetCache.status =
+                            "No render_target_" + cameraName +
+                            ".png beside this optimization point cloud";
+                    } else if (ensureLinearSsimTarget(
+                                   *targetPath,
+                                   renderWidth,
+                                   renderHeight,
+                                   ssimTargetCache)) {
+                        debugDisplayBuffers.prepareFor(renderWidth, renderHeight);
+                        computeSsimDebugBuffers(
+                            ssimRenderedLinearRgba,
+                            ssimTargetCache.linearRgba,
+                            renderWidth,
+                            renderHeight,
+                            viewerSsimWeight,
+                            viewerSsimWindowSize,
+                            viewerSsimSigma,
+                            debugDisplayBuffers);
+                    }
+                }
+                const auto ssimStop = std::chrono::steady_clock::now();
+                lastSsimDebugMapMs =
+                    std::chrono::duration<double, std::milli>(ssimStop - ssimStart).count();
+            }
             updateDisplayTexture();
             cameraDirty = false;
             renderRequested = false;
@@ -3261,7 +4197,7 @@ int main(int argc, char** argv) {
                     stepLatestOptimizationSnapshot(-1);
                 }
 
-                constexpr std::array<ImGuiKey, 8> viewImageModeShortcutKeys = {
+                constexpr std::array<ImGuiKey, 9> viewImageModeShortcutKeys = {
                     ImGuiKey_1,
                     ImGuiKey_2,
                     ImGuiKey_3,
@@ -3270,6 +4206,7 @@ int main(int argc, char** argv) {
                     ImGuiKey_6,
                     ImGuiKey_7,
                     ImGuiKey_8,
+                    ImGuiKey_9,
                 };
 
                 for (std::size_t shortcutIndex = 0;
@@ -3418,19 +4355,38 @@ int main(int argc, char** argv) {
             }
 
             ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
-            int viewImageModeIndex = viewImageModeShortcutIndex(viewImageMode);
-            if (ImGui::Combo(
-                    "Display",
-                    &viewImageModeIndex,
-                    kViewImageModeLabels.data(),
-                    static_cast<int>(kViewImageModeLabels.size()))) {
-                setViewImageMode(kViewImageModeShortcutOrder[static_cast<std::size_t>(viewImageModeIndex)]);
+            if (ImGui::BeginCombo("Display", viewImageModeLabel(viewImageMode))) {
+                for (const ViewImageMode candidateMode : kViewImageModeShortcutOrder) {
+                    if (isRegularizerGradientView(candidateMode) &&
+                        !regularizerPrimitiveGradientMapsEnabled) {
+                        continue;
+                    }
+                    if (isSsimDebugView(candidateMode) && !ssimDebugMapsEnabled) {
+                        continue;
+                    }
+                    const bool selected = viewImageMode == candidateMode;
+                    if (ImGui::Selectable(viewImageModeLabel(candidateMode), selected)) {
+                        setViewImageMode(candidateMode);
+                    }
+                    if (selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
             }
             if (viewImageMode == ViewImageMode::MeanDepth ||
                 viewImageMode == ViewImageMode::MedianDepth ||
                 viewImageMode == ViewImageMode::DepthDistortion ||
                 viewImageMode == ViewImageMode::IntraSlabDepth ||
-                viewImageMode == ViewImageMode::CurvatureScale) {
+                viewImageMode == ViewImageMode::CurvatureScale ||
+                viewImageMode == ViewImageMode::CurvaturePrimitiveScore ||
+                viewImageMode == ViewImageMode::DepthPositionGradient ||
+                viewImageMode == ViewImageMode::NormalPositionGradient ||
+                viewImageMode == ViewImageMode::IntraSlabPositionGradient ||
+                viewImageMode == ViewImageMode::RgbHalfMse ||
+                viewImageMode == ViewImageMode::SsimIndex ||
+                viewImageMode == ViewImageMode::Dssim ||
+                viewImageMode == ViewImageMode::RgbObjectiveGradient) {
                 int scalarColorMapIndex = static_cast<int>(scalarColorMap);
                 const char* scalarColorMaps[] = {"Viridis", "Jet"};
                 if (ImGui::Combo(
@@ -3441,6 +4397,35 @@ int main(int argc, char** argv) {
                     scalarColorMap = static_cast<ScalarColorMap>(scalarColorMapIndex);
                     updateDisplayTexture();
                 }
+            }
+            if (viewImageMode == ViewImageMode::CurvaturePrimitiveScore) {
+                if (ImGui::SliderFloat(
+                        "Curvature split threshold",
+                        &curvatureViolationDisplayThreshold,
+                        1.0e-6f,
+                        1.0e6f,
+                        "%.4g",
+                        ImGuiSliderFlags_Logarithmic)) {
+                    curvatureViolationDisplayThreshold = std::max(
+                        curvatureViolationDisplayThreshold, 1.0e-6f);
+                    updateDisplayTexture();
+                }
+
+                ImGui::TextDisabled(
+                    "Color = C_i / threshold; saturation is the split boundary");
+
+                const std::size_t splitCandidateCount = static_cast<std::size_t>(
+                    std::count_if(
+                        debugDisplayBuffers.curvatureObservedPrimitiveScores.begin(),
+                        debugDisplayBuffers.curvatureObservedPrimitiveScores.end(),
+                        [&](float score) {
+                            return score >= curvatureViolationDisplayThreshold;
+                        }));
+                ImGui::Text(
+                    "Observed: %zu   above threshold: %zu   max C_i: %.4g",
+                    debugDisplayBuffers.curvatureObservedPrimitiveCount,
+                    splitCandidateCount,
+                    debugDisplayBuffers.curvaturePrimitiveScoreMax);
             }
             if (cameraSource == CameraSource::Viewport) {
                 if (ImGui::DragFloat("FOV", &orbit.fovyDegrees, 0.25f, 5.0f, 160.0f, "%.1f deg")) {
@@ -3739,7 +4724,7 @@ int main(int argc, char** argv) {
             }
 
             ImGui::Separator();
-            if (ImGui::CollapsingHeader("Renderer debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader("Renderer debug")) {
                 int cameraGatherKernelIndex =
                     settings.cameraGatherKernelKind == Pale::CameraGatherKernelKind::CameraGatherKernel2 ? 1 : 0;
 
@@ -3753,7 +4738,78 @@ int main(int argc, char** argv) {
                     renderRequested = true;
                     }
 
-                if (ImGui::CollapsingHeader("Adjoint profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox(
+                        "Regularizer primitive gradient maps",
+                        &regularizerPrimitiveGradientMapsEnabled)) {
+                    if (!regularizerPrimitiveGradientMapsEnabled) {
+                        freeViewerRegularizerGradients();
+                        if (viewImageMode == ViewImageMode::DepthPositionGradient ||
+                            viewImageMode == ViewImageMode::NormalPositionGradient ||
+                            viewImageMode == ViewImageMode::IntraSlabPositionGradient) {
+                            setViewImageMode(ViewImageMode::Rendered);
+                        }
+                    }
+                    renderRequested = true;
+                }
+                ImGui::TextDisabled(
+                    "Off by default; allocates 3 gradient sets and runs the surface adjoint");
+                if (regularizerPrimitiveGradientMapsEnabled) {
+                    ImGui::Text(
+                        "Last regularizer gradient maps: %.3f ms (unit loss weights)",
+                        lastRegularizerGradientMapMs);
+                }
+
+                ImGui::SeparatorText("SSIM diagnostics");
+                if (ImGui::Checkbox("SSIM debug maps", &ssimDebugMapsEnabled)) {
+                    if (!ssimDebugMapsEnabled) {
+                        debugDisplayBuffers.releaseSsimDebug();
+                        ssimTargetCache.invalidate();
+                        ssimTargetCache.status = "SSIM debug maps are disabled";
+                        if (isSsimDebugView(viewImageMode)) {
+                            setViewImageMode(ViewImageMode::Rendered);
+                        }
+                    }
+                    renderRequested = true;
+                }
+                ImGui::TextDisabled(
+                    "Off by default; loads the saved target and computes CPU SSIM maps");
+                if (ssimDebugMapsEnabled) {
+                    bool ssimSettingsChanged = false;
+                    ssimSettingsChanged |= ImGui::SliderFloat(
+                        "SSIM weight", &viewerSsimWeight, 0.0f, 1.0f, "%.3f");
+                    if (ImGui::SliderInt(
+                            "SSIM window", &viewerSsimWindowSize, 1, 31)) {
+                        if ((viewerSsimWindowSize & 1) == 0) {
+                            viewerSsimWindowSize = std::min(viewerSsimWindowSize + 1, 31);
+                        }
+                        ssimSettingsChanged = true;
+                    }
+                    ssimSettingsChanged |= ImGui::SliderFloat(
+                        "SSIM sigma", &viewerSsimSigma, 0.1f, 5.0f, "%.3f");
+                    if (ssimSettingsChanged) {
+                        viewerSsimWeight = std::clamp(viewerSsimWeight, 0.0f, 1.0f);
+                        viewerSsimSigma = std::max(viewerSsimSigma, 0.1f);
+                        renderRequested = true;
+                    }
+                    if (ImGui::Button("Reload SSIM target")) {
+                        ssimTargetCache.invalidate();
+                        renderRequested = true;
+                    }
+                    ImGui::TextWrapped("%s", ssimTargetCache.status.c_str());
+                    if (debugDisplayBuffers.ssimDebugValid) {
+                        ImGui::Text(
+                            "RGB: combined %.6g   half-MSE %.6g",
+                            debugDisplayBuffers.rgbObjectiveMean,
+                            debugDisplayBuffers.rgbHalfMseMean);
+                        ImGui::Text(
+                            "SSIM %.6g   DSSIM %.6g   maps %.3f ms",
+                            debugDisplayBuffers.ssimMean,
+                            debugDisplayBuffers.dssimMean,
+                            lastSsimDebugMapMs);
+                    }
+                }
+
+                if (ImGui::CollapsingHeader("Adjoint profiling")) {
                     if (ImGui::Button("Run adjoint once")) {
                         runAdjointNextRender = true;
                         tracerDirty = true;
@@ -3788,7 +4844,7 @@ int main(int argc, char** argv) {
                     ImGui::TextWrapped("%s", viewerAdjointStatus.c_str());
                 }
 
-                if (ImGui::CollapsingHeader("Point BVH", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::CollapsingHeader("Point BVH")) {
                     bool pointBvhBuildChanged = false;
 
                     int pointBvhMaxLeafPoints = static_cast<int>(buildOptions.bvhMaxLeafPoints);
@@ -3834,7 +4890,7 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                if (ImGui::CollapsingHeader("Surfel traversal", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::CollapsingHeader("Surfel traversal")) {
                     float localLayerDepthEpsilon = settings.rendererDebugLocalLayerDepthEpsilon;
                     if (ImGui::DragFloat(
                             "Local layer depth epsilon",
@@ -4363,12 +5419,15 @@ int main(int argc, char** argv) {
         if (hasSensor) {
             destroySensor(queue, sensor);
         }
+        tracer.setCurvatureDensificationStats(nullptr);
+        Pale::freeCurvatureDensificationStats(queue, curvatureDensificationStats);
         Pale::SceneUpload::freeBuffers(sceneGpu, queue);
         if (deviceProfilingCounters != nullptr) {
             sycl::free(deviceProfilingCounters, queue);
             deviceProfilingCounters = nullptr;
         }
         Pale::freeGradientsForScene(queue, viewerAdjointGradients);
+        freeViewerRegularizerGradients();
         texture.destroy();
 
         ImGui_ImplOpenGL3_Shutdown();

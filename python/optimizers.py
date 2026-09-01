@@ -331,20 +331,32 @@ def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, obje
         "power": 0.0,
     }
 
-    use_position_lr_schedule = bool(getattr(config, "use_global_lr_schedule", False))
-    if use_position_lr_schedule:
-        position_lr_scale_func = make_exponential_scale_func(
+    decay_start_iteration = int(getattr(config, "lr_decay_start_iteration", 0))
+    decay_max_steps = int(getattr(config, "lr_decay_max_steps", 0))
+
+    if bool(getattr(config, "use_global_lr_decay", False)):
+        global_lr_scale_func = make_exponential_scale_func(
             scale_init=float(getattr(config, "global_lr_scale_init", 1.0)),
             scale_final=float(getattr(config, "global_lr_scale_final", 1.0)),
-            start_iteration=int(getattr(config, "global_lr_start_iteration", 0)),
-            max_steps=int(getattr(config, "global_lr_max_steps", 0)),
+            start_iteration=decay_start_iteration,
+            max_steps=decay_max_steps,
+        )
+    else:
+        global_lr_scale_func = make_constant_scale_func()
+
+    if bool(getattr(config, "use_position_lr_decay", False)):
+        position_lr_scale_func = make_exponential_scale_func(
+            scale_init=float(getattr(config, "position_lr_scale_init", 1.0)),
+            scale_final=float(getattr(config, "position_lr_scale_final", 1.0)),
+            start_iteration=decay_start_iteration,
+            max_steps=decay_max_steps,
         )
     else:
         position_lr_scale_func = make_constant_scale_func()
 
     return {
         "base_learning_rates": base_learning_rates,
-        "global_lr_scale_func": make_constant_scale_func(),
+        "global_lr_scale_func": global_lr_scale_func,
         "parameter_lr_scale_funcs": {
             "position": position_lr_scale_func,
         },
@@ -392,5 +404,6 @@ def update_optimizer_learning_rates(
 
         parameter_group["lr"] = learning_rate
         active_learning_rates[group_name] = learning_rate
+        active_learning_rates[f"{group_name}_lr_scale"] = parameter_lr_scale
 
     return active_learning_rates

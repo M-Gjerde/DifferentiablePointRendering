@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
-from config import scheduled_iteration_interval
 from optimizers import (create_learning_rate_schedules, update_optimizer_learning_rates, )
 from training_helpers import *
 from density_control import *
@@ -93,7 +92,8 @@ class IterationGradientResult:
 
 DENSIFICATION_ORIGIN_INITIAL = np.uint8(0)
 DENSIFICATION_ORIGIN_CLONE = np.uint8(1)
-DENSIFICATION_ORIGIN_SPLIT = np.uint8(2)
+DENSIFICATION_ORIGIN_POSITION_SPLIT = np.uint8(2)
+DENSIFICATION_ORIGIN_CURVATURE_SPLIT = np.uint8(3)
 
 
 def make_new_densification_origin_np(densification_result: dict | None, n_new: int) -> np.ndarray:
@@ -109,33 +109,41 @@ def make_new_densification_origin_np(densification_result: dict | None, n_new: i
     if clone_count > 0:
         new_origin_np[:clone_count] = DENSIFICATION_ORIGIN_CLONE
     if split_count > 0:
-        new_origin_np[clone_count:clone_count + split_count] = DENSIFICATION_ORIGIN_SPLIT
+        split_origins = np.full(
+            (split_count,),
+            DENSIFICATION_ORIGIN_POSITION_SPLIT,
+            dtype=np.uint8,
+        )
+        curvature_mask = np.asarray(
+            densification_result.get(
+                "split_trigger_is_curvature",
+                np.zeros((split_count,), dtype=bool),
+            ),
+            dtype=bool,
+        ).reshape(-1)
+        if curvature_mask.shape[0] == split_count:
+            split_origins[curvature_mask] = DENSIFICATION_ORIGIN_CURVATURE_SPLIT
+        new_origin_np[clone_count:clone_count + split_count] = split_origins
 
     return new_origin_np
 
 
-def active_densification_origin_counts(densification_origin_np: np.ndarray) -> tuple[int, int]:
-    return (
-        int(np.count_nonzero(densification_origin_np == DENSIFICATION_ORIGIN_CLONE)),
-        int(np.count_nonzero(densification_origin_np == DENSIFICATION_ORIGIN_SPLIT)),
+def active_densification_origin_counts(
+        densification_origin_np: np.ndarray,
+) -> tuple[int, int, int, int]:
+    clone_count = int(np.count_nonzero(densification_origin_np == DENSIFICATION_ORIGIN_CLONE))
+    position_split_count = int(
+        np.count_nonzero(densification_origin_np == DENSIFICATION_ORIGIN_POSITION_SPLIT)
     )
-
-
-def active_densification_interval_for_iteration(
-        config: OptimizationConfig,
-        base_densification_interval: int,
-        final_densification_interval: int,
-        iteration: int,
-) -> int:
-    if config.use_global_lr_schedule:
-        return scheduled_iteration_interval(
-            initial_interval=base_densification_interval,
-            final_interval=final_densification_interval,
-            iteration=iteration,
-            start_iteration=int(config.global_lr_start_iteration),
-            max_steps=int(config.global_lr_max_steps),
-        )
-    return base_densification_interval
+    curvature_split_count = int(
+        np.count_nonzero(densification_origin_np == DENSIFICATION_ORIGIN_CURVATURE_SPLIT)
+    )
+    return (
+        clone_count,
+        position_split_count + curvature_split_count,
+        position_split_count,
+        curvature_split_count,
+    )
 
 
 def densification_stats_skip_for_interval(config: OptimizationConfig, densification_interval: int) -> int:
@@ -181,13 +189,21 @@ def make_rgb_loss_state(
     })
 
     rgb_loss_values = adjoint_images.get("loss_values", {})
+    rgb_l2_loss_values = adjoint_images.get("l2_loss_values", rgb_loss_values)
+    rgb_dssim_loss_values = adjoint_images.get("dssim_loss_values", {})
     for camera_name in active_training_camera_ids:
         rgb_loss_value = float(rgb_loss_values[camera_name])
+        rgb_l2_loss_value = float(rgb_l2_loss_values[camera_name])
+        rgb_dssim_loss_value = float(rgb_dssim_loss_values.get(camera_name, 0.0))
         camera_loss_values = make_zero_loss_values()
         camera_loss_values["total_rgb_loss_value"] = rgb_loss_value
+        camera_loss_values["total_rgb_l2_loss_value"] = rgb_l2_loss_value
+        camera_loss_values["total_rgb_dssim_loss_value"] = rgb_dssim_loss_value
         camera_loss_values["total_loss_value"] = rgb_loss_value
         loss_state["per_camera_loss_values"][camera_name] = camera_loss_values
         loss_state["total_rgb_loss_value"] += rgb_loss_value
+        loss_state["total_rgb_l2_loss_value"] += rgb_l2_loss_value
+        loss_state["total_rgb_dssim_loss_value"] += rgb_dssim_loss_value
         loss_state["total_loss_value"] += rgb_loss_value
 
     return loss_state
@@ -198,7 +214,10 @@ def add_regularizer_loss_state(
         regularizer_loss_state: Dict[str, Any],
 ) -> None:
     for loss_key in LOSS_VALUE_KEYS:
-        loss_state[loss_key] += regularizer_loss_state[loss_key]
+        # Device regularizer results contain only regularizer terms. RGB-only
+        # diagnostics such as the half-MSE and DSSIM components are therefore
+        # intentionally absent and contribute zero during this merge.
+        loss_state[loss_key] += float(regularizer_loss_state.get(loss_key, 0.0))
 
     for camera_name, camera_loss_values in regularizer_loss_state["per_camera_loss_values"].items():
         existing_camera_loss_values = loss_state["per_camera_loss_values"].setdefault(
@@ -206,7 +225,9 @@ def add_regularizer_loss_state(
             make_zero_loss_values(),
         )
         for loss_key in LOSS_VALUE_KEYS:
-            existing_camera_loss_values[loss_key] += camera_loss_values[loss_key]
+            existing_camera_loss_values[loss_key] += float(
+                camera_loss_values.get(loss_key, 0.0)
+            )
 
     loss_state["depth_distortion_grad_images"] = regularizer_loss_state["depth_distortion_grad_images"]
     loss_state["visible_normal_adjoints"] = regularizer_loss_state["visible_normal_adjoints"]
@@ -258,6 +279,9 @@ def make_device_training_step_options(
             float(config.learning_rate_beta),
         ),
         "camera_batch_scale": camera_batch_scale,
+        "ssim_weight": float(config.ssim_weight),
+        "ssim_window_size": int(config.ssim_window_size),
+        "ssim_sigma": float(config.ssim_sigma),
         "return_gradient_stats": return_gradient_stats,
         "include_depth_distortion": include_depth_distortion,
         "include_normal_consistency": include_normal_consistency,
@@ -308,6 +332,9 @@ def compute_iteration_gradients(
         use_opacity_prior: bool,
         use_intra_slab_depth: bool,
         use_curvature_scale: bool,
+        ssim_weight: float,
+        ssim_window_size: int,
+        ssim_sigma: float,
         active_depth_distortion_weight: float,
         normal_consistency_weight: float,
         active_opacity_prior_weight: float,
@@ -319,7 +346,12 @@ def compute_iteration_gradients(
         one_camera_per_iteration,
     )
     photo_gradients, adjoint_images = renderer.render_rgb_loss_backward(
-        list(active_training_camera_ids)
+        list(active_training_camera_ids),
+        {
+            "ssim_weight": ssim_weight,
+            "ssim_window_size": ssim_window_size,
+            "ssim_sigma": ssim_sigma,
+        },
     )
     loss_state = make_rgb_loss_state(active_training_camera_ids, adjoint_images)
 
@@ -456,6 +488,18 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         target_color_space=config.target_color_space,
     )
 
+    ssim_weight = float(getattr(config, "ssim_weight", 0.0))
+    ssim_window_size = int(getattr(config, "ssim_window_size", 11))
+    ssim_sigma = float(getattr(config, "ssim_sigma", 1.5))
+    if not 0.0 <= ssim_weight <= 1.0:
+        raise ValueError(f"ssim_weight must be in [0, 1], got {ssim_weight}")
+    if ssim_window_size <= 0 or ssim_window_size % 2 == 0 or ssim_window_size > 31:
+        raise ValueError(
+            f"ssim_window_size must be odd and in [1, 31], got {ssim_window_size}"
+        )
+    if not np.isfinite(ssim_sigma) or ssim_sigma <= 0.0:
+        raise ValueError(f"ssim_sigma must be finite and positive, got {ssim_sigma}")
+
     depth_distortion_base_weight = float(getattr(config, "depth_distort_weight", 0.0))
     depth_distortion_start_iteration = int(getattr(config, "depth_distort_start_iteration", 0))
 
@@ -463,6 +507,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     opacity_prior_weight = float(getattr(config, "opacity_prior_weight", 0.0))
     intra_slab_depth_weight = float(getattr(config, "intra_slab_depth_weight", 0.0))
     curvature_scale_weight = float(getattr(config, "curvature_scale_weight", 0.0))
+    curvature_violation_threshold = float(
+        getattr(config, "curvature_violation_threshold", 0.0)
+    )
+    use_curvature_densification = (
+            curvature_violation_threshold > 0.0
+            and int(config.densification_interval) > 0
+    )
     save_ply_files_interval = int(config.save_ply_files_interval)
     mesh_extraction_interval = int(getattr(config, "mesh_extraction_interval", 1_000))
 
@@ -479,14 +530,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     print(
         "Loss terms: "
+        f"rgb=(1-{ssim_weight:.3f})*half_MSE+{ssim_weight:.3f}*DSSIM "
+        f"SSIM_window={ssim_window_size} sigma={ssim_sigma:.3f}, "
         f"depth_distortion={use_depth_distortion} "
         f"base_weight={depth_distortion_base_weight:.3e} "
         f"start_iter={depth_distortion_start_iteration}, "
         f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
         f"opacity_prior={use_opacity_prior} weight={opacity_prior_weight:.3e}, "
         f"intra_slab_depth={use_intra_slab_depth} weight={intra_slab_depth_weight:.3e}, "
-        f"curvature_scale={use_curvature_scale} weight={curvature_scale_weight:.3e}"
+        f"curvature_scale={use_curvature_scale} weight={curvature_scale_weight:.3e}, "
+        f"curvature_densification={use_curvature_densification} "
+        f"threshold={curvature_violation_threshold:.3e}"
     )
+    if use_curvature_densification and not hasattr(
+            renderer, "get_curvature_densification_stats"):
+        raise RuntimeError(
+            "Curvature densification is enabled, but the renderer binding does not "
+            "expose get_curvature_densification_stats(). Rebuild the pale module."
+        )
     renderer.upload_training_targets(target_images)
 
     initial_params = fetch_parameters(renderer)
@@ -547,6 +608,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         output_dir=config.output_dir, initial_images=initial_images, target_images=target_images,
         all_camera_ids=all_camera_ids, positions=positions, rotations=rotations,
         scales=scales, albedos=albedos, opacities=opacities, betas=betas, powers=powers,
+        ssim_weight=ssim_weight,
+        ssim_window_size=ssim_window_size,
+        ssim_sigma=ssim_sigma,
         depth_distortion_weight=initial_depth_distortion_weight,
         normal_consistency_weight=normal_consistency_weight,
         opacity_prior_weight=opacity_prior_weight,
@@ -561,14 +625,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     print_loss_summary("Initial", *initial_loss_tuple)
 
-    base_densification_interval = int(config.densification_interval)
-    final_densification_interval = int(config.densification_interval_final)
-    densification_interval = active_densification_interval_for_iteration(
-        config=config,
-        base_densification_interval=base_densification_interval,
-        final_densification_interval=final_densification_interval,
-        iteration=resume_iteration_offset,
-    )
+    densification_interval = int(config.densification_interval)
     prune_interval = int(config.prune_interval)
     densify_after = config.densify_after if config.densify_after >= 0 else densification_interval
     prune_after = config.prune_after if config.prune_after >= 0 else prune_interval
@@ -636,6 +693,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     # Stores local tangent coordinates (u, v, 0); converted to world space at clone time.
     densify_position_grad_vector_accum_np = np.zeros(tuple(positions.shape), dtype=np.float32)
+    densify_curvature_stats_accum = make_curvature_densification_accumulators(
+        int(positions.shape[0])
+    )
     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool)
     inactive_gradient_cycle_count_np = np.zeros((positions.shape[0],), dtype=np.uint32, )
     densification_origin_np = np.full(
@@ -653,6 +713,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     latest_loss_values_by_camera: Dict[str, Dict[str, float]] = {}
     densification_clone_points_total = 0
     densification_split_points_total = 0
+    densification_position_split_points_total = 0
+    densification_curvature_split_points_total = 0
 
     with open(metrics_csv_path, "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
@@ -662,13 +724,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             for iteration in range(1, config.iterations + 1):
                 iteration_start = time.perf_counter()
                 global_iteration = resume_iteration_offset + iteration
-
-                densification_interval = active_densification_interval_for_iteration(
-                    config=config,
-                    base_densification_interval=base_densification_interval,
-                    final_densification_interval=final_densification_interval,
-                    iteration=global_iteration,
-                )
 
                 active_training_camera_ids = select_active_training_camera_ids(
                     training_camera_ids=training_camera_ids,
@@ -743,7 +798,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
                         adjoint_images = renderer.render_rgb_backward_from_current_forward(
                             list(active_training_camera_ids),
-                            {"return_gradient_stats": needs_gradient_stats},
+                            {
+                                "return_gradient_stats": needs_gradient_stats,
+                                "ssim_weight": ssim_weight,
+                                "ssim_window_size": ssim_window_size,
+                                "ssim_sigma": ssim_sigma,
+                            },
                         )
                     else:
                         adjoint_images = renderer.render_rgb_training_step(
@@ -818,6 +878,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                         densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
                     )
+                    if use_curvature_densification:
+                        update_curvature_densification_statistics(
+                            iteration=global_iteration,
+                            densification_interval=densification_cycle_interval,
+                            densification_cycle_start_iteration=densification_cycle_start_iteration,
+                            densification_stats_skip_iterations=densification_stats_skip_iterations,
+                            renderer_stats=renderer.get_curvature_densification_stats(),
+                            accumulators=densify_curvature_stats_accum,
+                        )
 
                     scheduled_opacity_reset = (
                             reset_opacity_interval > 0
@@ -894,6 +963,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densification_verbose=densification_verbose,
                                 densification_grad_quantile=densification_grad_quantile,
                                 densification_grad_abs_min=active_densification_grad_abs_min,
+                                densify_curvature_stats_accum=densify_curvature_stats_accum,
                                 force_densification=True,
                             )
 
@@ -990,6 +1060,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
                             densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                             densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
+                            densify_curvature_stats_accum = {
+                                key: values[keep_mask_np]
+                                for key, values in densify_curvature_stats_accum.items()
+                            }
                             active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
                             inactive_gradient_cycle_count_np = inactive_gradient_cycle_count_np[keep_mask_np]
                             densification_origin_np = densification_origin_np[keep_mask_np]
@@ -1016,6 +1090,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densify_position_grad_vector_accum_np = np.concatenate(
                                     [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)],
                                     axis=0)
+                                for key, values in densify_curvature_stats_accum.items():
+                                    densify_curvature_stats_accum[key] = np.concatenate(
+                                        [values, np.zeros((n_new,), dtype=values.dtype)],
+                                        axis=0,
+                                    )
                                 active_during_camera_cycle_np = np.concatenate(
                                     [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
                                 inactive_gradient_cycle_count_np = np.concatenate(
@@ -1045,6 +1124,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 "Densification vector accumulator length mismatch after topology change: "
                                 f"{densify_position_grad_vector_accum_np.shape[0]} vs {positions.shape[0]}"
                             )
+
+                        for key, values in densify_curvature_stats_accum.items():
+                            if values.shape[0] != positions.shape[0]:
+                                raise RuntimeError(
+                                    f"Curvature densification accumulator {key} length mismatch "
+                                    f"after topology change: {values.shape[0]} vs {positions.shape[0]}"
+                                )
 
                         if densification_origin_np.shape[0] != positions.shape[0]:
                             raise RuntimeError(
@@ -1098,6 +1184,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_accum_np[:] = 0.0
                         densify_position_grad_denom_np[:] = 0.0
                         densify_position_grad_vector_accum_np[:] = 0.0
+                        for values in densify_curvature_stats_accum.values():
+                            values[:] = 0
                         densification_cycle_start_iteration = global_iteration
                         densification_cycle_interval = densification_interval
                         densification_stats_skip_iterations = densification_stats_skip_for_interval(
@@ -1141,6 +1229,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 forward_out=save_forward_out,
                                 target_images=target_images,
                                 camera_ids=training_camera_ids,
+                                ssim_weight=ssim_weight,
+                                ssim_window_size=ssim_window_size,
+                                ssim_sigma=ssim_sigma,
                             )
 
                         save_iteration_outputs(
@@ -1231,12 +1322,26 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         if densification_result is not None
                         else 0
                     )
+                    densification_position_split_points = (
+                        int(densification_result.get("position_split_count", 0))
+                        if densification_result is not None
+                        else 0
+                    )
+                    densification_curvature_split_points = (
+                        int(densification_result.get("curvature_split_count", 0))
+                        if densification_result is not None
+                        else 0
+                    )
                     densification_new_points = densification_clone_points + densification_split_points
                     densification_clone_points_total += densification_clone_points
                     densification_split_points_total += densification_split_points
+                    densification_position_split_points_total += densification_position_split_points
+                    densification_curvature_split_points_total += densification_curvature_split_points
                     (
                         densification_clone_points_active,
                         densification_split_points_active,
+                        densification_position_split_points_active,
+                        densification_curvature_split_points_active,
                     ) = active_densification_origin_counts(densification_origin_np)
 
                     csv_writer.writerow(
@@ -1248,6 +1353,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             averaged_loss_state["loss_metric_expected_camera_count"],
                             averaged_loss_state["loss_metric_is_complete"],
                             averaged_loss_state["total_rgb_loss_value"],
+                            averaged_loss_state["total_rgb_l2_loss_value"],
+                            averaged_loss_state["total_rgb_dssim_loss_value"],
                             averaged_loss_state["total_depth_distortion_loss_raw"],
                             averaged_loss_state["total_depth_distortion_loss_weighted"],
                             averaged_loss_state["total_normal_loss_raw"],
@@ -1263,10 +1370,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densification_new_points,
                             densification_clone_points,
                             densification_split_points,
+                            densification_position_split_points,
+                            densification_curvature_split_points,
                             densification_clone_points_total,
                             densification_split_points_total,
+                            densification_position_split_points_total,
+                            densification_curvature_split_points_total,
                             densification_clone_points_active,
                             densification_split_points_active,
+                            densification_position_split_points_active,
+                            densification_curvature_split_points_active,
                             prune_scale_area_points,
                             prune_inactive_gradient_points,
                             iteration_time,
@@ -1308,6 +1421,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 num_points=num_points,
                                 loss_state=averaged_loss_state,
                                 lr_position=lr_position,
+                                global_lr_scale=active_learning_rates.get("global_lr_scale", 1.0),
+                                position_lr_scale=active_learning_rates.get("position_lr_scale", 1.0),
                                 active_densification_interval=densification_interval,
                                 active_prune_interval=prune_interval,
                                 active_densification_grad_abs_min=active_densification_grad_abs_min,
@@ -1375,6 +1490,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     use_opacity_prior=use_opacity_prior,
                     use_intra_slab_depth=use_intra_slab_depth,
                     use_curvature_scale=use_curvature_scale,
+                    ssim_weight=ssim_weight,
+                    ssim_window_size=ssim_window_size,
+                    ssim_sigma=ssim_sigma,
                     active_depth_distortion_weight=active_depth_distortion_weight,
                     normal_consistency_weight=normal_consistency_weight,
                     active_opacity_prior_weight=active_opacity_prior_weight,
@@ -1483,6 +1601,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                     densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
                 )
+                if use_curvature_densification:
+                    update_curvature_densification_statistics(
+                        iteration=global_iteration,
+                        densification_interval=densification_cycle_interval,
+                        densification_cycle_start_iteration=densification_cycle_start_iteration,
+                        densification_stats_skip_iterations=densification_stats_skip_iterations,
+                        renderer_stats=renderer.get_curvature_densification_stats(),
+                        accumulators=densify_curvature_stats_accum,
+                    )
 
                 optimizer.zero_grad(set_to_none=True)
 
@@ -1557,6 +1684,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densification_interval=densification_interval, densification_verbose=densification_verbose,
                             densification_grad_quantile=densification_grad_quantile,
                             densification_grad_abs_min=active_densification_grad_abs_min,
+                            densify_curvature_stats_accum=densify_curvature_stats_accum,
                             force_densification=True,
                         )
 
@@ -1644,6 +1772,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
                         densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                         densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
+                        densify_curvature_stats_accum = {
+                            key: values[keep_mask_np]
+                            for key, values in densify_curvature_stats_accum.items()
+                        }
                         active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
                         inactive_gradient_cycle_count_np = (inactive_gradient_cycle_count_np[keep_mask_np])
                         densification_origin_np = densification_origin_np[keep_mask_np]
@@ -1669,6 +1801,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 [densify_position_grad_denom_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
                             densify_position_grad_vector_accum_np = np.concatenate(
                                 [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)], axis=0)
+                            for key, values in densify_curvature_stats_accum.items():
+                                densify_curvature_stats_accum[key] = np.concatenate(
+                                    [values, np.zeros((n_new,), dtype=values.dtype)],
+                                    axis=0,
+                                )
                             active_during_camera_cycle_np = np.concatenate(
                                 [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
                             inactive_gradient_cycle_count_np = np.concatenate(
@@ -1698,6 +1835,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             "Densification vector accumulator length mismatch after topology change: "
                             f"{densify_position_grad_vector_accum_np.shape[0]} vs {positions.shape[0]}"
                         )
+
+                    for key, values in densify_curvature_stats_accum.items():
+                        if values.shape[0] != positions.shape[0]:
+                            raise RuntimeError(
+                                f"Curvature densification accumulator {key} length mismatch "
+                                f"after topology change: {values.shape[0]} vs {positions.shape[0]}"
+                            )
 
                     if densification_origin_np.shape[0] != positions.shape[0]:
                         raise RuntimeError(
@@ -1738,6 +1882,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
                     densify_position_grad_vector_accum_np[:] = 0.0
+                    for values in densify_curvature_stats_accum.values():
+                        values[:] = 0
                     densification_cycle_start_iteration = global_iteration
                     densification_cycle_interval = densification_interval
                     densification_stats_skip_iterations = densification_stats_skip_for_interval(
@@ -1776,6 +1922,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             forward_out=save_forward_out,
                             target_images=target_images,
                             camera_ids=training_camera_ids,
+                            ssim_weight=ssim_weight,
+                            ssim_window_size=ssim_window_size,
+                            ssim_sigma=ssim_sigma,
                         )
 
                     save_iteration_outputs(
@@ -1845,12 +1994,26 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     if densification_result is not None
                     else 0
                 )
+                densification_position_split_points = (
+                    int(densification_result.get("position_split_count", 0))
+                    if densification_result is not None
+                    else 0
+                )
+                densification_curvature_split_points = (
+                    int(densification_result.get("curvature_split_count", 0))
+                    if densification_result is not None
+                    else 0
+                )
                 densification_new_points = densification_clone_points + densification_split_points
                 densification_clone_points_total += densification_clone_points
                 densification_split_points_total += densification_split_points
+                densification_position_split_points_total += densification_position_split_points
+                densification_curvature_split_points_total += densification_curvature_split_points
                 (
                     densification_clone_points_active,
                     densification_split_points_active,
+                    densification_position_split_points_active,
+                    densification_curvature_split_points_active,
                 ) = active_densification_origin_counts(densification_origin_np)
 
                 csv_writer.writerow(
@@ -1862,6 +2025,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["loss_metric_expected_camera_count"],
                         averaged_loss_state["loss_metric_is_complete"],
                         averaged_loss_state["total_rgb_loss_value"],
+                        averaged_loss_state["total_rgb_l2_loss_value"],
+                        averaged_loss_state["total_rgb_dssim_loss_value"],
                         averaged_loss_state["total_depth_distortion_loss_raw"],
                         averaged_loss_state["total_depth_distortion_loss_weighted"],
                         averaged_loss_state["total_normal_loss_raw"],
@@ -1877,10 +2042,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densification_new_points,
                         densification_clone_points,
                         densification_split_points,
+                        densification_position_split_points,
+                        densification_curvature_split_points,
                         densification_clone_points_total,
                         densification_split_points_total,
+                        densification_position_split_points_total,
+                        densification_curvature_split_points_total,
                         densification_clone_points_active,
                         densification_split_points_active,
+                        densification_position_split_points_active,
+                        densification_curvature_split_points_active,
                         prune_scale_area_points,
                         prune_inactive_gradient_points,
                         iteration_time,
@@ -1943,6 +2114,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             num_points=num_points,
                             loss_state=averaged_loss_state,
                             lr_position=lr_position,
+                            global_lr_scale=active_learning_rates.get("global_lr_scale", 1.0),
+                            position_lr_scale=active_learning_rates.get("position_lr_scale", 1.0),
                             active_densification_interval=densification_interval,
                             active_prune_interval=prune_interval,
                             active_densification_grad_abs_min=active_densification_grad_abs_min,
@@ -2050,7 +2223,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         img_np = get_forward_rgb(final_images, camera_name)
         img_linear_np = get_forward_linear_rgb(final_images, camera_name)
         tgt_np = target_images[camera_name]
-        rgb_loss_cam = float(compute_l2_loss(img_linear_np, tgt_np))
+        rgb_loss_cam, _, _ = compute_l2_ssim_metrics(
+            img_linear_np,
+            tgt_np,
+            ssim_weight=ssim_weight,
+            window_size=ssim_window_size,
+            sigma=ssim_sigma,
+        )
         final_rgb_loss += rgb_loss_cam
         final_total_loss += rgb_loss_cam
         save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
