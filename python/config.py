@@ -80,7 +80,7 @@ class OptimizationConfig:
     # Multiplicative learning-rate decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = True
-    global_lr_scale_init: float = 2.0
+    global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 1.0
     use_position_lr_decay: bool = True
     position_lr_scale_init: float = 10.0
@@ -109,21 +109,21 @@ class OptimizationConfig:
     densification_stats_skip_interval_start: bool = True
 
     # Densification cadence is independent of learning-rate decay.
-    densification_interval: int = 50
+    densification_interval: int = 100
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 1.0e-3
+    densification_grad_abs_min: float = 9.0e-4
+    densification_grad_abs_min_final: float = 9.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 4.0
+    curvature_violation_threshold: float = 6.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
-    densification_exact_clone_percent_dense: float = 0.000
+    densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
 
