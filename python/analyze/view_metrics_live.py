@@ -1210,7 +1210,7 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "densification_curvature_split_points_active": dict(
-            color="tab:red",
+            color="tab:purple",
             linewidth=1.8,
             linestyle="--",
             alpha=0.95,
@@ -1234,7 +1234,7 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "densification_curvature_split_points_total": dict(
-            color="tab:red",
+            color="tab:purple",
             linewidth=1.8,
             linestyle="--",
             alpha=0.95,
