@@ -2586,7 +2586,7 @@ def write_metrics_header(csv_writer: csv.writer) -> None:
             "densification_position_split_points_active",
             "densification_curvature_split_points_active",
             "prune_scale_area_points",
-            "prune_inactive_gradient_points",
+            "prune_inactive_transport_points",
             "iteration_time_sec",
             "total_time_sec",
             "grad_position_renderer_norm",

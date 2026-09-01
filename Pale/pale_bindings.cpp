@@ -298,6 +298,8 @@ public:
                           m_settings.rendererDebugShareLocalLayerDirectLighting);
             curvatureDensificationEnabled =
                     get_b(settingsDict, "enable_curvature_densification", false);
+            primalActivityTrackingEnabled =
+                    get_b(settingsDict, "enable_primal_activity_tracking", false);
             m_settings.rendererDebugMinimumProjectedFootprint =
                     get_b(settingsDict,
                           "minimum_projected_footprint",
@@ -353,6 +355,10 @@ public:
             curvatureDensificationStats = Pale::makeCurvatureDensificationStatsForScene(
                 deviceSelector->getQueue(), buildProducts);
         }
+        if (primalActivityTrackingEnabled) {
+            primalActivityStats = Pale::makePrimalActivityStatsForScene(
+                deviceSelector->getQueue(), buildProducts);
+        }
 
         // Print summary
         Pale::Log::PA_WARN("=== Renderer Settings ===");
@@ -375,6 +381,7 @@ public:
         Pale::Log::PA_WARN("  Curvature scale weight    : {}", m_settings.curvatureScaleRegularizerWeight);
         Pale::Log::PA_WARN("  Shared slab direct light  : {}", m_settings.rendererDebugShareLocalLayerDirectLighting);
         Pale::Log::PA_WARN("  Curvature densification   : {}", curvatureDensificationEnabled);
+        Pale::Log::PA_WARN("  Primal activity tracking  : {}", primalActivityTrackingEnabled);
         Pale::Log::PA_WARN("  Minimum footprint enabled : {}", m_settings.rendererDebugMinimumProjectedFootprint);
         Pale::Log::PA_WARN("  Minimum footprint sigma px: {}", m_settings.rendererDebugMinimumProjectedFootprintPixels);
         Pale::Log::PA_WARN("  Local layer depth epsilon : {}", m_settings.rendererDebugLocalLayerDepthEpsilon);
@@ -405,6 +412,8 @@ public:
         pathTracer->setScene(sceneGpu, buildProducts);
         pathTracer->setCurvatureDensificationStats(
             curvatureDensificationEnabled ? &curvatureDensificationStats : nullptr);
+        pathTracer->setPrimalActivityStats(
+            primalActivityTrackingEnabled ? &primalActivityStats : nullptr);
     }
 
     ~PythonRenderer() {
@@ -418,6 +427,7 @@ public:
             Pale::freeGradientsForScene(queue, intraSlabDepthGradients);
             Pale::freeGradientsForScene(queue, curvatureScaleGradients);
             Pale::freeCurvatureDensificationStats(queue, curvatureDensificationStats);
+            Pale::freePrimalActivityStats(queue, primalActivityStats);
 
             Pale::freeDebugImagesForScene(queue, debugImages.data(), debugImages.size());
             freeTrainingTargets(queue);
@@ -3345,6 +3355,38 @@ public:
         return result;
     }
 
+    py::dict get_primal_activity_stats() {
+        const std::size_t pointCount = primalActivityStats.numPoints;
+        py::array_t<std::uint32_t> cameraSurfaceHitCount(pointCount);
+        py::array_t<std::uint32_t> shadowOccluderHitCount(pointCount);
+
+        if (pointCount > 0u) {
+            if (!primalActivityStats.cameraSurfaceHitCount ||
+                !primalActivityStats.shadowOccluderHitCount) {
+                throw std::runtime_error(
+                    "get_primal_activity_stats: buffers are incomplete");
+            }
+            auto syclQueue = deviceSelector->getQueue();
+            {
+                py::gil_scoped_release release;
+                syclQueue.memcpy(
+                    cameraSurfaceHitCount.mutable_data(),
+                    primalActivityStats.cameraSurfaceHitCount,
+                    pointCount * sizeof(std::uint32_t));
+                syclQueue.memcpy(
+                    shadowOccluderHitCount.mutable_data(),
+                    primalActivityStats.shadowOccluderHitCount,
+                    pointCount * sizeof(std::uint32_t));
+                syclQueue.wait_and_throw();
+            }
+        }
+
+        py::dict result;
+        result["camera_surface_hit_count"] = std::move(cameraSurfaceHitCount);
+        result["shadow_occluder_hit_count"] = std::move(shadowOccluderHitCount);
+        return result;
+    }
+
 
     void apply_point_optimization(const py::dict &parameterDictionary) {
         if (!parameterDictionary.contains("position")) return;
@@ -3464,6 +3506,8 @@ public:
         Pale::freeGradientsForScene(deviceSelector->getQueue(), curvatureScaleGradients);
         Pale::freeCurvatureDensificationStats(
             deviceSelector->getQueue(), curvatureDensificationStats);
+        Pale::freePrimalActivityStats(
+            deviceSelector->getQueue(), primalActivityStats);
         Pale::freeDebugImagesForScene(deviceSelector->getQueue(), debugImages.data(), debugImages.size());
         debugImages.clear();
         debugImages.resize(sensorsForward.size());
@@ -3477,9 +3521,15 @@ public:
             curvatureDensificationStats = Pale::makeCurvatureDensificationStatsForScene(
                 deviceSelector->getQueue(), buildProducts);
         }
+        if (primalActivityTrackingEnabled) {
+            primalActivityStats = Pale::makePrimalActivityStatsForScene(
+                deviceSelector->getQueue(), buildProducts);
+        }
         pathTracer->setScene(sceneGpu, buildProducts);
         pathTracer->setCurvatureDensificationStats(
             curvatureDensificationEnabled ? &curvatureDensificationStats : nullptr);
+        pathTracer->setPrimalActivityStats(
+            primalActivityTrackingEnabled ? &primalActivityStats : nullptr);
         devicePointParametersDirty = false;
     }
 
@@ -5810,6 +5860,8 @@ private:
     Pale::PointGradients intraSlabDepthGradients{};
     Pale::PointGradients curvatureScaleGradients{};
     Pale::CurvatureDensificationStats curvatureDensificationStats{};
+    Pale::PrimalActivityStats primalActivityStats{};
+    bool primalActivityTrackingEnabled{false};
     bool curvatureDensificationEnabled{false};
     std::unordered_map<std::string, TrainingTargetDevice> trainingTargets{};
     RgbSsimScratch rgbSsimScratch{};
@@ -5880,6 +5932,8 @@ PYBIND11_MODULE(pale, m) {
             .def("get_point_parameters", &PythonRenderer::get_point_parameters)
             .def("get_curvature_densification_stats",
                  &PythonRenderer::get_curvature_densification_stats)
+            .def("get_primal_activity_stats",
+                 &PythonRenderer::get_primal_activity_stats)
             .def("sync_point_parameters_from_gpu", &PythonRenderer::sync_point_parameters_from_gpu)
             .def("capture_device_adam_state", &PythonRenderer::capture_device_adam_state)
             .def("upload_device_adam_state",

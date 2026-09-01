@@ -1088,7 +1088,7 @@ def draw_metrics_figure(
         point_count_dataframe,
         [
             "prune_scale_area_points",
-            "prune_inactive_gradient_points",
+            "prune_inactive_transport_points",
         ],
     )
 
@@ -1245,7 +1245,7 @@ def draw_metrics_figure(
             linestyle="-.",
             alpha=0.95,
         ),
-        "prune_inactive_gradient_points_total": dict(
+        "prune_inactive_transport_points_total": dict(
             color="#111111",
             linewidth=2.1,
             linestyle=":",
@@ -1502,7 +1502,7 @@ def draw_metrics_figure(
 
         point_prune_labels = {
             "prune_scale_area_points": "pruned: small area total",
-            "prune_inactive_gradient_points": "pruned: inactive gradient total",
+            "prune_inactive_transport_points": "pruned: inactive transport total",
         }
         for column_name in point_prune_event_columns:
             values = np.nancumsum(

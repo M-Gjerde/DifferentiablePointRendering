@@ -291,32 +291,35 @@ def make_device_training_step_options(
     }
 
 
-def active_surfel_mask_from_position_records(
-        photo_gradient_surfel_stats: Dict[str, Any],
+def active_surfel_mask_from_primal_transport(
+        primal_activity_stats: Dict[str, Any],
         point_count: int,
 ) -> np.ndarray:
-    position_record_count_per_camera_np = photo_gradient_surfel_stats.get(
-        "position_record_count_per_camera",
-        None,
+    camera_surface_hit_count_np = primal_activity_stats.get(
+        "camera_surface_hit_count", None
     )
-    if position_record_count_per_camera_np is None:
+    shadow_occluder_hit_count_np = primal_activity_stats.get(
+        "shadow_occluder_hit_count", None
+    )
+    if camera_surface_hit_count_np is None or shadow_occluder_hit_count_np is None:
         raise RuntimeError(
             "Inactive-surfel pruning requires "
-            "adjoint_images['gradient_stats']['position_record_count_per_camera']."
+            "renderer.get_primal_activity_stats() to return camera-surface and "
+            "shadow-occluder hit counts."
         )
 
-    position_record_count_per_camera_np = np.asarray(position_record_count_per_camera_np)
-
-    if position_record_count_per_camera_np.shape[0] != point_count:
+    camera_surface_hit_count_np = np.asarray(camera_surface_hit_count_np).reshape(-1)
+    shadow_occluder_hit_count_np = np.asarray(shadow_occluder_hit_count_np).reshape(-1)
+    if (camera_surface_hit_count_np.shape[0] != point_count or
+            shadow_occluder_hit_count_np.shape[0] != point_count):
         raise RuntimeError(
-            "Position-record-count shape mismatch: "
-            f"expected {point_count}, got {position_record_count_per_camera_np.shape[0]}"
+            "Primal-activity shape mismatch: "
+            f"expected {point_count}, got camera={camera_surface_hit_count_np.shape[0]}, "
+            f"shadow={shadow_occluder_hit_count_np.shape[0]}"
         )
 
-    if position_record_count_per_camera_np.ndim == 1:
-        return position_record_count_per_camera_np > 0
-
-    return np.any(position_record_count_per_camera_np > 0, axis=1)
+    return ((camera_surface_hit_count_np > 0) |
+            (shadow_occluder_hit_count_np > 0))
 
 
 def compute_iteration_gradients(
@@ -548,6 +551,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             "Curvature densification is enabled, but the renderer binding does not "
             "expose get_curvature_densification_stats(). Rebuild the pale module."
         )
+    if (int(config.inactive_transport_prune_cycles) > 0 and
+            not hasattr(renderer, "get_primal_activity_stats")):
+        raise RuntimeError(
+            "Inactive-surfel pruning now requires deterministic forward activity "
+            "statistics. Rebuild the pale module to expose "
+            "get_primal_activity_stats()."
+        )
     renderer.upload_training_targets(target_images)
 
     initial_params = fetch_parameters(renderer)
@@ -643,7 +653,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     opacity_prune_threshold = float(config.opacity_prune_threshold)
     max_prune_fraction = float(config.max_prune_fraction)
-    inactive_gradient_prune_cycles = int(config.inactive_gradient_prune_cycles)
+    inactive_transport_prune_cycles = int(config.inactive_transport_prune_cycles)
     reset_opacity_interval = int(config.reset_opacity_interval)
     reset_opacity_value = float(config.reset_opacity_value)
     densification_verbose = bool(config.densification_verbose)
@@ -697,7 +707,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         int(positions.shape[0])
     )
     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool)
-    inactive_gradient_cycle_count_np = np.zeros((positions.shape[0],), dtype=np.uint32, )
+    inactive_transport_cycle_count_np = np.zeros((positions.shape[0],), dtype=np.uint32, )
     loaded_densification_origin_np = np.asarray(
         initial_params.get(
             "densification_origin",
@@ -782,10 +792,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             or use_intra_slab_depth
                             or use_curvature_scale
                     )
-                    needs_gradient_stats = (
-                            densification_interval > 0
-                            or inactive_gradient_prune_cycles > 0
-                    )
+                    needs_gradient_stats = densification_interval > 0
                     device_step_options = make_device_training_step_options(
                         config=config,
                         active_learning_rates=active_learning_rates,
@@ -860,12 +867,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         expected_camera_ids=list(training_camera_ids),
                     )
 
-                    photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
-                    if inactive_gradient_prune_cycles > 0:
-                        active_during_camera_cycle_np |= active_surfel_mask_from_position_records(
-                            photo_gradient_surfel_stats,
+                    if inactive_transport_prune_cycles > 0:
+                        active_during_camera_cycle_np |= active_surfel_mask_from_primal_transport(
+                            renderer.get_primal_activity_stats(),
                             point_count=int(positions.shape[0]),
                         )
+                    photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
                     visited_training_camera_ids_this_cycle.update(active_training_camera_ids)
                     camera_cycle_complete = (
                             len(visited_training_camera_ids_this_cycle) == len(training_camera_ids)
@@ -930,7 +937,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             not did_reset_opacity
                             and camera_cycle_complete
                             and global_iteration >= prune_after
-                            and inactive_gradient_prune_cycles > 0
+                            and inactive_transport_prune_cycles > 0
                     )
                     if (
                             should_check_densification
@@ -961,7 +968,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     indices_to_remove_list = []
                     inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
                     prune_scale_area_points = 0
-                    prune_inactive_gradient_points = 0
+                    prune_inactive_transport_points = 0
 
                     if not did_reset_opacity:
                         if should_check_densification:
@@ -995,13 +1002,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
                             active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
                             inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
-                            inactive_gradient_cycle_count_np[active_this_cycle_np] = 0
-                            inactive_gradient_cycle_count_np[inactive_this_cycle_np] = np.minimum(
-                                inactive_gradient_cycle_count_np[inactive_this_cycle_np] + 1,
-                                inactive_gradient_prune_cycles,
+                            inactive_transport_cycle_count_np[active_this_cycle_np] = 0
+                            inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
+                                inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
+                                inactive_transport_prune_cycles,
                             )
                             inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
-                                    inactive_gradient_cycle_count_np >= inactive_gradient_prune_cycles)).astype(
+                                    inactive_transport_cycle_count_np >= inactive_transport_prune_cycles)).astype(
                                 np.int64)
 
                             if inactive_camera_cycle_indices.size > 0:
@@ -1055,15 +1062,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
                             removed_index_set = set(int(index) for index in indices_to_remove)
                             prune_scale_area_points = len(scale_prune_set & removed_index_set)
-                            prune_inactive_gradient_points = len(inactive_cycle_prune_set & removed_index_set)
+                            prune_inactive_transport_points = len(inactive_cycle_prune_set & removed_index_set)
 
                             if config.densification_verbose:
                                 print(
                                     f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                     f"scale={len(scale_prune_set)}, "
                                     f"opacity={len(opacity_prune_set)}, "
-                                    f"inactive_gradient={len(inactive_cycle_prune_set)} "
-                                    f"(threshold={inactive_gradient_prune_cycles} cycles), "
+                                    f"inactive_transport={len(inactive_cycle_prune_set)} "
+                                    f"(threshold={inactive_transport_prune_cycles} cycles), "
                                     f"both_scale_opacity={len(overlap_set)}, "
                                     f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
                                     f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
@@ -1079,7 +1086,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 for key, values in densify_curvature_stats_accum.items()
                             }
                             active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
-                            inactive_gradient_cycle_count_np = inactive_gradient_cycle_count_np[keep_mask_np]
+                            inactive_transport_cycle_count_np = inactive_transport_cycle_count_np[keep_mask_np]
                             densification_origin_np = densification_origin_np[keep_mask_np]
 
                         source_index_for_new_np = None
@@ -1111,8 +1118,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     )
                                 active_during_camera_cycle_np = np.concatenate(
                                     [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
-                                inactive_gradient_cycle_count_np = np.concatenate(
-                                    [inactive_gradient_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0)
+                                inactive_transport_cycle_count_np = np.concatenate(
+                                    [inactive_transport_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0)
                                 densification_origin_np = np.concatenate(
                                     [
                                         densification_origin_np,
@@ -1397,7 +1404,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densification_position_split_points_active,
                             densification_curvature_split_points_active,
                             prune_scale_area_points,
-                            prune_inactive_gradient_points,
+                            prune_inactive_transport_points,
                             iteration_time,
                             total_time,
                             grad_position_renderer_norm,
@@ -1532,12 +1539,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 adjoint_images = iteration_gradients.adjoint_images
                 photo_gradient_surfel_stats = iteration_gradients.photo_gradient_surfel_stats
 
-                # Any positive per-camera record means the surfel contributed at least one
-                # position-gradient record during this render-backward call.
-                active_during_camera_cycle_np |= active_surfel_mask_from_position_records(
-                    photo_gradient_surfel_stats,
-                    point_count=int(positions.shape[0]),
-                )
+                if inactive_transport_prune_cycles > 0:
+                    # Liveness comes from deterministic camera/slab and point-light
+                    # shadow traversal, never from stochastic adjoint event selection.
+                    active_during_camera_cycle_np |= active_surfel_mask_from_primal_transport(
+                        renderer.get_primal_activity_stats(),
+                        point_count=int(positions.shape[0]),
+                    )
                 visited_training_camera_ids_this_cycle.update(active_training_camera_ids)
                 camera_cycle_complete = (len(visited_training_camera_ids_this_cycle) == len(training_camera_ids))
 
@@ -1686,7 +1694,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 indices_to_remove_list = []
                 inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
                 prune_scale_area_points = 0
-                prune_inactive_gradient_points = 0
+                prune_inactive_transport_points = 0
 
                 if not did_reset_opacity:
                     if densification_is_due:
@@ -1715,7 +1723,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     if (
                             camera_cycle_complete
                             and global_iteration >= prune_after
-                            and inactive_gradient_prune_cycles > 0
+                            and inactive_transport_prune_cycles > 0
                     ):
                         trainable_surfel_mask_np = (
                             trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
@@ -1723,14 +1731,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
                         # A surfel with any position-gradient record in this
                         # complete camera cycle is no longer considered inactive.
-                        inactive_gradient_cycle_count_np[active_this_cycle_np] = 0
+                        inactive_transport_cycle_count_np[active_this_cycle_np] = 0
                         # Count consecutive complete cycles with no position-gradient
                         # record. Saturate at the threshold; larger values are irrelevant.
-                        inactive_gradient_cycle_count_np[inactive_this_cycle_np] = np.minimum(
-                            inactive_gradient_cycle_count_np[inactive_this_cycle_np] + 1,
-                            inactive_gradient_prune_cycles, )
+                        inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
+                            inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
+                            inactive_transport_prune_cycles, )
                         inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
-                                inactive_gradient_cycle_count_np >= inactive_gradient_prune_cycles)).astype(
+                                inactive_transport_cycle_count_np >= inactive_transport_prune_cycles)).astype(
                             np.int64)
 
                         if inactive_camera_cycle_indices.size > 0:
@@ -1771,14 +1779,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
                         removed_index_set = set(int(index) for index in indices_to_remove)
                         prune_scale_area_points = len(scale_prune_set & removed_index_set)
-                        prune_inactive_gradient_points = len(inactive_cycle_prune_set & removed_index_set)
+                        prune_inactive_transport_points = len(inactive_cycle_prune_set & removed_index_set)
                         if config.densification_verbose:
                             print(
                                 f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                 f"scale={len(scale_prune_set)}, "
                                 f"opacity={len(opacity_prune_set)}, "
-                                f"inactive_gradient={len(inactive_cycle_prune_set)} "
-                                f"(threshold={inactive_gradient_prune_cycles} cycles), "
+                                f"inactive_transport={len(inactive_cycle_prune_set)} "
+                                f"(threshold={inactive_transport_prune_cycles} cycles), "
                                 f"both_scale_opacity={len(overlap_set)}, "
                                 f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
                                 f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
@@ -1794,7 +1802,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             for key, values in densify_curvature_stats_accum.items()
                         }
                         active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
-                        inactive_gradient_cycle_count_np = (inactive_gradient_cycle_count_np[keep_mask_np])
+                        inactive_transport_cycle_count_np = (inactive_transport_cycle_count_np[keep_mask_np])
                         densification_origin_np = densification_origin_np[keep_mask_np]
                     source_index_for_new_np = None
 
@@ -1825,8 +1833,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 )
                             active_during_camera_cycle_np = np.concatenate(
                                 [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
-                            inactive_gradient_cycle_count_np = np.concatenate(
-                                [inactive_gradient_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0, )
+                            inactive_transport_cycle_count_np = np.concatenate(
+                                [inactive_transport_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0, )
                             densification_origin_np = np.concatenate(
                                 [
                                     densification_origin_np,
@@ -2072,7 +2080,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densification_position_split_points_active,
                         densification_curvature_split_points_active,
                         prune_scale_area_points,
-                        prune_inactive_gradient_points,
+                        prune_inactive_transport_points,
                         iteration_time,
                         total_time,
                         grad_position_renderer_norm,

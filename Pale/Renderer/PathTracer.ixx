@@ -24,6 +24,10 @@ export namespace Pale {
             m_curvatureDensificationStats = stats;
         }
 
+        void setPrimalActivityStats(PrimalActivityStats *stats) {
+            m_primalActivityStats = stats;
+        }
+
         void renderForward(std::vector<SensorGPU> &sensors);
 
         void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages *debugImages);
@@ -67,6 +71,7 @@ export namespace Pale {
         RenderIntermediatesGPU m_intermediates{};
         PathTracerSettings m_settings{};
         CurvatureDensificationStats *m_curvatureDensificationStats = nullptr;
+        PrimalActivityStats *m_primalActivityStats = nullptr;
         uint32_t m_rayQueueCapacity = 0;
         uint64_t m_sessionSeed = 42;
     };

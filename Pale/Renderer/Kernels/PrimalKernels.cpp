@@ -187,6 +187,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
     auto &queue = pkg.queue;
     auto &scene = pkg.scene;
     auto &settings = pkg.settings;
+    const PrimalActivityStats primalActivityStats = pkg.primalActivityStats;
     auto &photonMap = pkg.intermediates.map;
     SensorGPU sensor = pkg.sensors[cameraIndex];
     const uint32_t imageWidth = sensor.camera.width;
@@ -356,6 +357,24 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 return;
             }
 
+            // A camera ray deterministically reached this physical slab before
+            // opacity termination. Mark every member of the exact slab used by
+            // rendering; this liveness statistic is independent of adjoint
+            // qNull/qReflect sampling and of the loss value.
+            if (primalActivityStats.cameraSurfaceHitCount != nullptr &&
+                primalActivityStats.numPoints == scene.pointCount) {
+                for (uint32_t localHitIndex = 0u;
+                     localHitIndex < localLayer.hitCount;
+                     ++localHitIndex) {
+                    const uint32_t primitiveIndex =
+                        localLayer.hits[localHitIndex].primitiveIndex;
+                    if (primitiveIndex < primalActivityStats.numPoints) {
+                        incrementPrimalActivityCounter(
+                            primalActivityStats.cameraSurfaceHitCount[primitiveIndex]);
+                    }
+                }
+            }
+
             const LocalSurfelLayerHit &anchorHit = localLayer.hits[0];
             const float3 anchorPositionW = anchorHit.hitPositionW;
             const PointCloudLocalLayerConsensus slabConsensus =
@@ -431,7 +450,9 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                         localHit.hitPositionW,
                         normalW,
                         surfel.alpha_r * surfel.albedo,
-                        localLayer.directLightEpsilon[localHitIndex]);
+                        localLayer.directLightEpsilon[localHitIndex],
+                        primalActivityStats.shadowOccluderHitCount,
+                        primalActivityStats.numPoints);
                 }
                 accumulatedRadianceRGB += compositeWeight * (emittedRadiance + indirectRadiance + directRadiance);
             }
@@ -468,7 +489,9 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                         sharedSlabPositionW,
                         anchorNormalW,
                         lightPositionW,
-                        sharedDirectLightEpsilon);
+                        sharedDirectLightEpsilon,
+                        primalActivityStats.shadowOccluderHitCount,
+                        primalActivityStats.numPoints);
                 if (shadowTransmission <= 0.0f) {
                     continue;
                 }

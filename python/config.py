@@ -47,6 +47,9 @@ class RendererSettingsConfig:
                 config.curvature_violation_threshold > 0.0
                 and config.densification_interval > 0
             ),
+            "enable_primal_activity_tracking": (
+                config.inactive_transport_prune_cycles > 0
+            ),
             "minimum_projected_footprint": config.minimum_projected_footprint,
             "minimum_projected_footprint_pixels": config.minimum_projected_footprint_pixels,
         }
@@ -72,12 +75,12 @@ class OptimizationConfig:
     optimizer_type: str = "adam"
     # Learning rates
     learning_rate: float = 1.0
-    learning_rate_position: float | None = None
-    learning_rate_rotation: float | None = None
-    learning_rate_scale: float | None = None
-    learning_rate_albedo: float | None = None
-    learning_rate_opacity: float | None = None
-    learning_rate_beta: float | None = None
+    learning_rate_position: float | None = 1.5e-4
+    learning_rate_rotation: float | None = 3.0e-2
+    learning_rate_scale: float | None = 4.5e-4
+    learning_rate_albedo: float | None = 8.0e-4
+    learning_rate_opacity: float | None = 0.0
+    learning_rate_beta: float | None = 3.0e-3
     # Multiplicative learning-rate decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = True
@@ -94,14 +97,14 @@ class OptimizationConfig:
     ssim_weight: float = 0.004
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
-    depth_distort_weight: float = 100.0
+    depth_distort_weight: float = 20.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.001
+    normal_consistency_weight: float = 0.005
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
     intra_slab_depth_weight: float = 1.0e-3
-    curvature_scale_weight: float = 5.0e-7
+    curvature_scale_weight: float = 0.0
     # Use one consensus/anchor light-transport vertex and shadow connection per slab.
     share_local_layer_direct_lighting: bool = True
     minimum_projected_footprint: bool = False
@@ -116,13 +119,13 @@ class OptimizationConfig:
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
-    densification_grad_quantile: float = 0.3
+    densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 9.0e-4
     densification_grad_abs_min_final: float = 9.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 12.0
+    curvature_violation_threshold: float = 6.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
@@ -137,7 +140,9 @@ class OptimizationConfig:
     opacity_prune_threshold: float = 0.0
     max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 6.0e-5
-    inactive_gradient_prune_cycles: int = 1  # One cycle is one loop through all training cameras
+    # Activity is deterministic primal camera/slab or point-light shadow
+    # traversal. One cycle is one loop through all training cameras.
+    inactive_transport_prune_cycles: int = 1
 
     # Misc scheduling
     reset_opacity_interval: int = 0
@@ -509,7 +514,7 @@ def parse_args() -> OptimizationConfig:
     parser.add_argument("--reset-opacity-interval", type=int)
     parser.add_argument("--reset-opacity-value", type=float)
     parser.add_argument("--rebuild-bvh-interval", type=int)
-    parser.add_argument("--inactive-gradient-prune-cycles", type=int)
+    parser.add_argument("--inactive-transport-prune-cycles", type=int)
     parser.add_argument(
         "--device-training-step",
         dest="use_device_training_step",
@@ -528,7 +533,9 @@ def parse_args() -> OptimizationConfig:
             raise RuntimeError(f"CLI argument produced unknown config field: {parameter_name}")
         setattr(config, parameter_name, parameter_value)
 
-    config.output_dir_is_explicit = "output_dir" in cli_overrides
+    config.output_dir_is_explicit = (
+        config.output_dir_is_explicit or "output_dir" in cli_overrides
+    )
     config.scene_xml_is_explicit = "scene_xml" in cli_overrides
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 

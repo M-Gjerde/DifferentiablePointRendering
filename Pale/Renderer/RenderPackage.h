@@ -83,6 +83,16 @@ namespace Pale {
         size_t numPoints{0};
     };
 
+    // Deterministic forward-transport liveness used by topology pruning.
+    // These counters are structural statistics, not adjoints. They are reset
+    // before each forward render and accumulated atomically by camera/slab and
+    // point-light shadow traversal.
+    struct PrimalActivityStats {
+        uint32_t *cameraSurfaceHitCount = nullptr;
+        uint32_t *shadowOccluderHitCount = nullptr;
+        size_t numPoints{0};
+    };
+
     struct Storage {
         float *distortionBuffer = nullptr;
         float pixelCount;
@@ -130,6 +140,7 @@ namespace Pale {
         PointGradients intraSlabDepthGradients{};
         PointGradients curvatureScaleGradients{};
         CurvatureDensificationStats curvatureDensificationStats{};
+        PrimalActivityStats primalActivityStats{};
         std::vector<SensorGPU> sensors{};
         DebugImages* debugImages{};
         uint32_t numSensors{};

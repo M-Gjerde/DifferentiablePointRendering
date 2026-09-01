@@ -26,6 +26,15 @@ namespace Pale {
         atomicCounter.fetch_add(amount);
     }
 
+    SYCL_EXTERNAL inline void incrementPrimalActivityCounter(uint32_t &counter) {
+        sycl::atomic_ref<
+            uint32_t,
+            sycl::memory_order::relaxed,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space> atomicCounter(counter);
+        atomicCounter.fetch_add(1u);
+    }
+
     SYCL_EXTERNAL inline void flushMeshBvhProfile(
         const GPUSceneBuffers &scene,
         uint64_t nodeTests,
@@ -2469,7 +2478,9 @@ namespace Pale {
         const float3 &shadingPositionW,
         const float3 &shadingNormalW,
         const float3 &lightPositionW,
-        const float eps) {
+        const float eps,
+        uint32_t *shadowOccluderHitCount = nullptr,
+        size_t shadowActivityPointCount = 0u) {
         const uint32_t maxSplatEventsPerRay =
                 rendererDebugMaxSplatEventsPerRay(settings);
         const uint32_t maxLocalSurfelHits =
@@ -2530,6 +2541,11 @@ namespace Pale {
                     }
 
                     furthestConsumedT = sycl::fmax(furthestConsumedT, pointHit.tWorld);
+                    if (shadowOccluderHitCount != nullptr &&
+                        pointHit.primitiveIndex < shadowActivityPointCount) {
+                        incrementPrimalActivityCounter(
+                            shadowOccluderHitCount[pointHit.primitiveIndex]);
+                    }
                     const Point &surfel = scene.points[pointHit.primitiveIndex];
                     const float alphaEff = sycl::clamp(
                         surfel.opacity * pointHit.alphaGeom,
@@ -2656,6 +2672,12 @@ namespace Pale {
                     furthestLayerT,
                     localHit.tWorld);
 
+                if (shadowOccluderHitCount != nullptr &&
+                    localHit.primitiveIndex < shadowActivityPointCount) {
+                    incrementPrimalActivityCounter(
+                        shadowOccluderHitCount[localHit.primitiveIndex]);
+                }
+
                 const Point &surfel =
                         scene.points[localHit.primitiveIndex];
 
@@ -2766,7 +2788,9 @@ namespace Pale {
         const float3 &surfacePositionW,
         const float3 &surfaceNormalW,
         const float3 &diffuseAlbedo,
-        const float eps = RayEpsilon) {
+        const float eps = RayEpsilon,
+        uint32_t *shadowOccluderHitCount = nullptr,
+        size_t shadowActivityPointCount = 0u) {
         float3 accumulatedRadiance(0.0f);
 
         const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
@@ -2808,7 +2832,10 @@ namespace Pale {
                         settings,
                         surfacePositionW,
                         surfaceNormalW,
-                        lightPositionW, eps);
+                        lightPositionW,
+                        eps,
+                        shadowOccluderHitCount,
+                        shadowActivityPointCount);
 
 
             if (shadowTransmission <= 0.0f) {

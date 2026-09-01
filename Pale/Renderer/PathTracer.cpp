@@ -521,6 +521,9 @@ namespace Pale {
         if (m_curvatureDensificationStats) {
             clearCurvatureDensificationStats(m_queue, *m_curvatureDensificationStats);
         }
+        if (m_primalActivityStats) {
+            clearPrimalActivityStats(m_queue, *m_primalActivityStats);
+        }
 
         RenderPackage renderPackage{
             .queue = m_queue,
@@ -532,6 +535,9 @@ namespace Pale {
             .curvatureDensificationStats = m_curvatureDensificationStats
                 ? *m_curvatureDensificationStats
                 : CurvatureDensificationStats{},
+            .primalActivityStats = m_primalActivityStats
+                ? *m_primalActivityStats
+                : PrimalActivityStats{},
             .sensors = sensor,
             .debugImages = nullptr,
             .numSensors = static_cast<uint32_t>(sensor.size())

@@ -422,6 +422,53 @@ export namespace Pale {
         queue.wait();
     }
 
+    PrimalActivityStats makePrimalActivityStatsForScene(
+        sycl::queue queue,
+        const SceneBuild::BuildProducts &buildProducts) {
+        PrimalActivityStats out{};
+        out.numPoints = buildProducts.points.size();
+        if (out.numPoints == 0u) {
+            return out;
+        }
+
+        out.cameraSurfaceHitCount = sycl::malloc_device<uint32_t>(out.numPoints, queue);
+        out.shadowOccluderHitCount = sycl::malloc_device<uint32_t>(out.numPoints, queue);
+        if (!out.cameraSurfaceHitCount || !out.shadowOccluderHitCount) {
+            if (out.cameraSurfaceHitCount) sycl::free(out.cameraSurfaceHitCount, queue);
+            if (out.shadowOccluderHitCount) sycl::free(out.shadowOccluderHitCount, queue);
+            out = {};
+            throw std::runtime_error(
+                "makePrimalActivityStatsForScene: failed to allocate buffers");
+        }
+
+        queue.fill(out.cameraSurfaceHitCount, 0u, out.numPoints);
+        queue.fill(out.shadowOccluderHitCount, 0u, out.numPoints);
+        queue.wait();
+        return out;
+    }
+
+    void clearPrimalActivityStats(
+        sycl::queue queue,
+        const PrimalActivityStats &stats) {
+        if (stats.numPoints == 0u) return;
+        queue.fill(stats.cameraSurfaceHitCount, 0u, stats.numPoints);
+        queue.fill(stats.shadowOccluderHitCount, 0u, stats.numPoints);
+        queue.wait();
+    }
+
+    void freePrimalActivityStats(
+        sycl::queue queue,
+        PrimalActivityStats &stats) {
+        if (stats.cameraSurfaceHitCount) {
+            sycl::free(stats.cameraSurfaceHitCount, queue);
+        }
+        if (stats.shadowOccluderHitCount) {
+            sycl::free(stats.shadowOccluderHitCount, queue);
+        }
+        stats = {};
+        queue.wait();
+    }
+
     inline std::vector<float>
     downloadSensorLDR(sycl::queue queue, const SensorGPU &sensorGpu) {
         // Total number of float elements = width * height * 4 (RGBa channels)
