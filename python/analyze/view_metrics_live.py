@@ -1135,7 +1135,7 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "loss_opacity_prior_weighted_mean": dict(
-            color="tab:purple",
+            color="#A020F0",
             linewidth=1.8,
             alpha=0.95,
         ),
@@ -1169,7 +1169,7 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "loss_opacity_prior_weighted_sum": dict(
-            color="tab:purple",
+            color="#A020F0",
             linewidth=1.8,
             alpha=0.95,
         ),
@@ -1198,7 +1198,7 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "densification_split_points_active": dict(
-            color="tab:purple",
+            color="#A020F0",
             linewidth=1.8,
             linestyle="--",
             alpha=0.95,
@@ -1210,7 +1210,7 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "densification_curvature_split_points_active": dict(
-            color="tab:purple",
+            color="#A020F0",
             linewidth=1.8,
             linestyle="--",
             alpha=0.95,
@@ -1222,7 +1222,7 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "densification_split_points_total": dict(
-            color="tab:purple",
+            color="#A020F0",
             linewidth=1.8,
             linestyle="--",
             alpha=0.95,
@@ -1234,7 +1234,7 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "densification_curvature_split_points_total": dict(
-            color="tab:purple",
+            color="#A020F0",
             linewidth=1.8,
             linestyle="--",
             alpha=0.95,
@@ -1246,10 +1246,10 @@ def draw_metrics_figure(
             alpha=0.95,
         ),
         "prune_inactive_gradient_points_total": dict(
-            color="tab:gray",
-            linewidth=1.8,
-            linestyle="-.",
-            alpha=0.95,
+            color="#111111",
+            linewidth=2.1,
+            linestyle=":",
+            alpha=1.0,
         ),
     }
 

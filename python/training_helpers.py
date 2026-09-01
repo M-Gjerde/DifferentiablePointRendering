@@ -1203,6 +1203,7 @@ def save_manual_snapshot(
         betas: torch.Tensor,
         powers: torch.Tensor,
         camera_ids: List[str],
+        densification_origins: np.ndarray | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     final_images = renderer.render_forward()
@@ -1252,6 +1253,7 @@ def save_manual_snapshot(
         betas,
         powers,
         shape_default=0.0,
+        densification_origins=densification_origins,
     )
 
     print(
@@ -1273,6 +1275,7 @@ def save_iteration_point_cloud_snapshot(
         opacities: torch.Tensor,
         betas: torch.Tensor,
         powers: torch.Tensor,
+        densification_origins: np.ndarray | None = None,
 ) -> Path:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
@@ -1287,6 +1290,7 @@ def save_iteration_point_cloud_snapshot(
         betas,
         powers,
         shape_default=0.0,
+        densification_origins=densification_origins,
     )
     #print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
     return ply_path

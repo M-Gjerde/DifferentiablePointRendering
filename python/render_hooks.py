@@ -175,6 +175,7 @@ def fetch_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
         "beta"     : (N,)
         "shape"    : (N,)
         "power"    : (N,)
+        "densification_origin" : (N,), optional diagnostic provenance
     """
     params = renderer.get_point_parameters()
     out: Dict[str, np.ndarray] = {}

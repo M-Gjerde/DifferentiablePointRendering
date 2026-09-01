@@ -400,6 +400,7 @@ def save_gaussians_to_ply(
         betas: torch.Tensor,
         powers: torch.Tensor,
         shape_default: float = 0.0,
+        densification_origins: np.ndarray | None = None,
 ) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -412,6 +413,14 @@ def save_gaussians_to_ply(
     power_values = np.asarray(powers.detach().cpu().numpy(), dtype=np.float32, order="C").reshape(-1)
 
     num_points = pos.shape[0]
+    origin_values: np.ndarray | None = None
+    if densification_origins is not None:
+        origin_values = np.asarray(densification_origins, dtype=np.uint8).reshape(-1)
+        if origin_values.shape[0] != num_points:
+            raise ValueError(
+                "Expected densification_origins to have one value per point, got "
+                f"{origin_values.shape[0]} for {num_points} points"
+            )
 
     if pos.ndim != 2 or pos.shape[1] != 3:
         raise ValueError(f"Expected positions to have shape (N,3), got {pos.shape}")
@@ -460,6 +469,9 @@ def save_gaussians_to_ply(
         f.write("property float beta\n")
         f.write("property float shape\n")
         f.write("property float power\n")
+        if origin_values is not None:
+            # Stored as float for compatibility with the existing PLY float loader.
+            f.write("property float densification_origin\n")
         f.write("end_header\n")
 
         for i in range(num_points):
@@ -468,12 +480,18 @@ def save_gaussians_to_ply(
             su_i, sv_i = sc[i, 0], sc[i, 1]
             albedo_r, albedo_g, albedo_b = col[i]
 
+            origin_suffix = (
+                f" {float(origin_values[i]):.1f}"
+                if origin_values is not None
+                else ""
+            )
             f.write(
                 f"{x:.9g} {y:.9g} {z:.9g}  "
                 f"{qw:.9g} {qx:.9g} {qy:.9g} {qz:.9g}  "
                 f"{su_i:.9g} {sv_i:.9g}  "
                 f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
-                f"{opa[i]:.9g} {beta_values[i]:.9g} {shape_default:.9g} {power_values[i]:.9g}\n"
+                f"{opa[i]:.9g} {beta_values[i]:.9g} {shape_default:.9g} {power_values[i]:.9g}"
+                f"{origin_suffix}\n"
             )
 
 def _jsonify_value(value):

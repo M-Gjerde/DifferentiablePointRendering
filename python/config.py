@@ -114,12 +114,12 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 2.5e-4
-    densification_grad_abs_min_final: float = 2.5e-4
+    densification_grad_abs_min: float = 9.0e-4
+    densification_grad_abs_min_final: float = 9.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 25.0
+    curvature_violation_threshold: float = 5.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)

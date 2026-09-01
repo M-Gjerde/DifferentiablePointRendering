@@ -698,11 +698,25 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool)
     inactive_gradient_cycle_count_np = np.zeros((positions.shape[0],), dtype=np.uint32, )
-    densification_origin_np = np.full(
-        (positions.shape[0],),
-        DENSIFICATION_ORIGIN_INITIAL,
-        dtype=np.uint8,
-    )
+    loaded_densification_origin_np = np.asarray(
+        initial_params.get(
+            "densification_origin",
+            np.full((positions.shape[0],), DENSIFICATION_ORIGIN_INITIAL, dtype=np.uint8),
+        ),
+        dtype=np.float32,
+    ).reshape(-1)
+    if loaded_densification_origin_np.shape[0] == positions.shape[0]:
+        densification_origin_np = np.clip(
+            np.rint(np.nan_to_num(loaded_densification_origin_np, nan=0.0)),
+            DENSIFICATION_ORIGIN_INITIAL,
+            DENSIFICATION_ORIGIN_CURVATURE_SPLIT,
+        ).astype(np.uint8)
+    else:
+        densification_origin_np = np.full(
+            (positions.shape[0],),
+            DENSIFICATION_ORIGIN_INITIAL,
+            dtype=np.uint8,
+        )
     visited_training_camera_ids_this_cycle: set[str] = set()
 
     metrics_csv_path = config.output_dir / "metrics.csv"
@@ -1291,6 +1305,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             opacities,
                             betas,
                             powers,
+                            densification_origins=densification_origin_np,
                         )
 
                     if should_extract_mesh_checkpoint:
@@ -1305,6 +1320,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 opacities,
                                 betas,
                                 powers,
+                                densification_origins=densification_origin_np,
                             )
                         extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
 
@@ -1469,6 +1485,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 betas,
                                 powers,
                                 training_camera_ids,
+                                densification_origins=densification_origin_np,
                             )
                             extract_mesh_checkpoint(config, global_iteration, manual_points_path)
                         elif hotkey == "g":
@@ -1962,6 +1979,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         opacities,
                         betas,
                         powers,
+                        densification_origins=densification_origin_np,
                     )
 
                 if should_extract_mesh_checkpoint:
@@ -1976,6 +1994,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             opacities,
                             betas,
                             powers,
+                            densification_origins=densification_origin_np,
                         )
 
                     extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
@@ -2175,6 +2194,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             betas,
                             powers,
                             training_camera_ids,
+                            densification_origins=densification_origin_np,
                         )
                         extract_mesh_checkpoint(config, global_iteration, manual_points_path)
                     elif hotkey == "g":
@@ -2327,7 +2347,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
     ply_path = config.output_dir / "points_final.ply"
     save_gaussians_to_ply(ply_path, positions, rotations, scales, albedos, opacities, betas, powers,
-                          shape_default=0.0)
+                          shape_default=0.0,
+                          densification_origins=densification_origin_np)
 
     print(f"Final parameters written to PLY: {ply_path}")
     if bool(getattr(config, "save_final_mesh", True)):
