@@ -9,6 +9,7 @@ module;
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <limits>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -111,6 +112,7 @@ export namespace Pale {
             });
             const bool hasDensificationOrigin =
                 vertexProps.contains("densification_origin");
+            const bool hasPrimitiveAge = vertexProps.contains("primitive_age");
             if (!looksQuaternionSurfel) {
                 Log::PA_ERROR("PLYPointLoader: unsupported vertex schema. Expected quaternion surfel format: x y z rot_w rot_x rot_y rot_z su sv albedo_r albedo_g albedo_b opacity beta shape power.");
                 return {};
@@ -125,9 +127,14 @@ export namespace Pale {
             std::shared_ptr<tinyply::PlyData> shapeData = plyFile.request_properties_from_element("vertex", {"shape"});
             std::shared_ptr<tinyply::PlyData> powerData = plyFile.request_properties_from_element("vertex", {"power"});
             std::shared_ptr<tinyply::PlyData> densificationOriginData;
+            std::shared_ptr<tinyply::PlyData> primitiveAgeData;
             if (hasDensificationOrigin) {
                 densificationOriginData =
                     plyFile.request_properties_from_element("vertex", {"densification_origin"});
+            }
+            if (hasPrimitiveAge) {
+                primitiveAgeData =
+                    plyFile.request_properties_from_element("vertex", {"primitive_age"});
             }
 
             try { plyFile.read(inputFile); } catch (const std::exception &e) {
@@ -149,8 +156,9 @@ export namespace Pale {
             };
             if (!(sameCount("rot_*", rotData) && sameCount("su,sv", scaleData) && sameCount("albedo_*", colorData) && sameCount("opacity", opacityData) && sameCount("beta", betaData) && sameCount("shape", shapeData) && sameCount("power", powerData))) return {};
             if (hasDensificationOrigin && !sameCount("densification_origin", densificationOriginData)) return {};
+            if (hasPrimitiveAge && !sameCount("primitive_age", primitiveAgeData)) return {};
 
-            std::vector<float> posFloats, rotFloats, scaleFloats, colorFloats, opacityFloats, betaFloats, shapeFloats, powerFloats, densificationOriginFloats;
+            std::vector<float> posFloats, rotFloats, scaleFloats, colorFloats, opacityFloats, betaFloats, shapeFloats, powerFloats, densificationOriginFloats, primitiveAgeFloats;
             bool ok = true;
             ok &= ply_detail::copyScalarsToFloatVector(*posData, posFloats, 3);
             ok &= ply_detail::copyScalarsToFloatVector(*rotData, rotFloats, 4);
@@ -163,6 +171,10 @@ export namespace Pale {
             if (hasDensificationOrigin) {
                 ok &= ply_detail::copyScalarsToFloatVector(
                     *densificationOriginData, densificationOriginFloats, 1);
+            }
+            if (hasPrimitiveAge) {
+                ok &= ply_detail::copyScalarsToFloatVector(
+                    *primitiveAgeData, primitiveAgeFloats, 1);
             }
             if (!ok) {
                 Log::PA_ERROR("PLYPointLoader: failed to unpack quaternion surfel streams");
@@ -181,6 +193,9 @@ export namespace Pale {
             geometry.shapes.resize(vertexCount);
             geometry.powers.resize(vertexCount);
             geometry.densificationOrigins.resize(vertexCount, 0u);
+            if (hasPrimitiveAge) {
+                geometry.primitiveAges.resize(vertexCount, 0u);
+            }
 
             for (std::size_t i = 0; i < vertexCount; ++i) {
                 const std::size_t i2 = i * 2, i3 = i * 3, i4 = i * 4;
@@ -196,6 +211,13 @@ export namespace Pale {
                     std::isfinite(densificationOriginFloats[i])) {
                     geometry.densificationOrigins[i] = static_cast<std::uint8_t>(
                         std::clamp(std::lround(densificationOriginFloats[i]), 0l, 3l));
+                }
+                if (hasPrimitiveAge && std::isfinite(primitiveAgeFloats[i])) {
+                    const double age = std::clamp(
+                        static_cast<double>(primitiveAgeFloats[i]),
+                        0.0,
+                        static_cast<double>(std::numeric_limits<std::uint32_t>::max()));
+                    geometry.primitiveAges[i] = static_cast<std::uint32_t>(std::llround(age));
                 }
             }
 

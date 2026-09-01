@@ -97,9 +97,9 @@ class OptimizationConfig:
     ssim_weight: float = 0.004
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
-    depth_distort_weight: float = 20.0
+    depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
+    normal_consistency_weight: float = 0.0025
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
@@ -119,13 +119,13 @@ class OptimizationConfig:
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
-    densification_grad_quantile: float = 0.0
+    densification_grad_quantile: float = 0.05
     densification_grad_abs_min: float = 9.0e-4
     densification_grad_abs_min_final: float = 9.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 6.0
+    curvature_violation_threshold: float = 11.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
@@ -142,7 +142,7 @@ class OptimizationConfig:
     min_surfel_area: float = math.pi * 6.0e-5
     # Activity is deterministic primal camera/slab or point-light shadow
     # traversal. One cycle is one loop through all training cameras.
-    inactive_transport_prune_cycles: int = 1
+    inactive_transport_prune_cycles: int = 3
 
     # Misc scheduling
     reset_opacity_interval: int = 0

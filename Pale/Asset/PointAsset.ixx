@@ -28,6 +28,9 @@ export namespace Pale {
         // 0=initial/unknown, 1=clone, 2=position-gradient split, 3=curvature split.
         // This is diagnostic metadata; rendering does not use it.
         std::vector<std::uint8_t> densificationOrigins{};
+        // Number of optimization iterations since this primitive was created
+        // or last split. Diagnostic metadata only.
+        std::vector<std::uint32_t> primitiveAges{};
     };
 
 

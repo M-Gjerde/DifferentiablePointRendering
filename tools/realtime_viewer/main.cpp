@@ -94,6 +94,7 @@ namespace {
         CurvatureScale,
         CurvaturePrimitiveScore,
         DensificationOrigin,
+        PrimitiveAge,
         DepthPositionGradient,
         NormalPositionGradient,
         IntraSlabPositionGradient,
@@ -104,7 +105,7 @@ namespace {
         RgbObjectiveGradient,
     };
 
-    constexpr std::array<ViewImageMode, 18> kViewImageModeShortcutOrder = {
+    constexpr std::array<ViewImageMode, 19> kViewImageModeShortcutOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -115,6 +116,7 @@ namespace {
         ViewImageMode::CurvatureScale,
         ViewImageMode::CurvaturePrimitiveScore,
         ViewImageMode::DensificationOrigin,
+        ViewImageMode::PrimitiveAge,
         ViewImageMode::DepthPositionGradient,
         ViewImageMode::NormalPositionGradient,
         ViewImageMode::IntraSlabPositionGradient,
@@ -125,7 +127,7 @@ namespace {
         ViewImageMode::RgbObjectiveGradient,
     };
 
-    constexpr std::array<const char*, 18> kViewImageModeLabels = {
+    constexpr std::array<const char*, 19> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -136,6 +138,7 @@ namespace {
         "8 Curvature scale",
         "9 Curvature primitive score",
         "Densification split origin",
+        "Primitive age",
         "Depth distortion |grad position|",
         "Normal consistency |grad position|",
         "Intra-slab consensus |grad position|",
@@ -187,6 +190,7 @@ namespace {
         bool curvatureScaleValid = false;
         bool curvaturePrimitiveScoreValid = false;
         bool densificationOriginValid = false;
+        bool primitiveAgeValid = false;
         bool visiblePrimitiveIndicesValid = false;
         bool depthPositionGradientValid = false;
         bool normalPositionGradientValid = false;
@@ -202,6 +206,7 @@ namespace {
         std::vector<float> curvaturePrimitiveScore;
         std::vector<float> curvatureObservedPrimitiveScores;
         std::vector<std::uint8_t> densificationOrigin;
+        std::vector<std::uint32_t> primitiveAge;
         std::vector<uint32_t> visiblePrimitiveIndices;
         std::vector<float> depthPositionGradient;
         std::vector<float> normalPositionGradient;
@@ -230,6 +235,7 @@ namespace {
             curvatureScaleValid = false;
             curvaturePrimitiveScoreValid = false;
             densificationOriginValid = false;
+            primitiveAgeValid = false;
             visiblePrimitiveIndicesValid = false;
             depthPositionGradientValid = false;
             normalPositionGradientValid = false;
@@ -245,6 +251,7 @@ namespace {
             curvaturePrimitiveScore.clear();
             curvatureObservedPrimitiveScores.clear();
             densificationOrigin.clear();
+            primitiveAge.clear();
             visiblePrimitiveIndices.clear();
             depthPositionGradient.clear();
             normalPositionGradient.clear();
@@ -2838,6 +2845,41 @@ namespace {
         }
     }
 
+    void colorizePrimitiveAges(
+        const std::vector<std::uint32_t>& ages,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        std::uint32_t coldAfterIterations,
+        std::vector<uint8_t>& displayPixels) {
+        constexpr std::uint32_t kNoVisibleSurfel =
+            std::numeric_limits<std::uint32_t>::max();
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        displayPixels.assign(pixelCount * 4u, 0u);
+        if (ages.size() < pixelCount) {
+            return;
+        }
+
+        const float safeRange = static_cast<float>(std::max(coldAfterIterations, 1u));
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::uint32_t age = ages[pixelIndex];
+            if (age == kNoVisibleSurfel) {
+                continue;
+            }
+
+            // Age zero is hot/red. Primitives at or beyond the selected range
+            // are cold/blue; Jet makes this convention visually explicit.
+            const float hotness = 1.0f - std::clamp(
+                static_cast<float>(age) / safeRange, 0.0f, 1.0f);
+            const glm::vec3 color = scalarColor(hotness, ScalarColorMap::Jet);
+            const std::size_t baseIndex = pixelIndex * 4u;
+            displayPixels[baseIndex + 0u] = channelToByte(color.r);
+            displayPixels[baseIndex + 1u] = channelToByte(color.g);
+            displayPixels[baseIndex + 2u] = channelToByte(color.b);
+            displayPixels[baseIndex + 3u] = 255u;
+        }
+    }
+
     void colorizeNormalBuffer(
         const std::vector<float>& values,
         uint32_t renderWidth,
@@ -2994,6 +3036,7 @@ int main(int argc, char** argv) {
         ViewImageMode viewImageMode = ViewImageMode::Rendered;
         ScalarColorMap scalarColorMap = ScalarColorMap::Viridis;
         float curvatureViolationDisplayThreshold = 5.0f;
+        int primitiveAgeColdAfterIterations = 1000;
         // Viewer-only diagnostic default. Optimization keeps its renderer-side
         // debug allocations disabled unless explicitly requested there.
         bool regularizerPrimitiveGradientMapsEnabled = true;
@@ -3722,6 +3765,51 @@ int main(int argc, char** argv) {
                 return map;
             };
 
+            const auto makePrimitiveAgeMap = [&]() {
+                constexpr std::uint32_t kNoVisibleSurfel =
+                    std::numeric_limits<std::uint32_t>::max();
+                constexpr std::uint32_t kUnknownAge = kNoVisibleSurfel - 1u;
+                std::vector<std::uint32_t> map(pixelCount, kNoVisibleSurfel);
+                if (!ensureVisiblePrimitiveIndices()) {
+                    return map;
+                }
+
+                const std::optional<Pale::AssetHandle> pointCloudHandle =
+                    firstPointCloudHandle(scene);
+                const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
+                    pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
+                if (!pointCloudAsset) {
+                    return map;
+                }
+
+                std::vector<std::uint32_t> primitiveAges;
+                primitiveAges.reserve(sceneGpu.pointCount);
+                for (const Pale::PointGeometry& geometry : pointCloudAsset->points) {
+                    if (geometry.primitiveAges.size() == geometry.positions.size()) {
+                        primitiveAges.insert(
+                            primitiveAges.end(),
+                            geometry.primitiveAges.begin(),
+                            geometry.primitiveAges.end());
+                    } else {
+                        // A PLY predating primitive_age is treated as fully cold.
+                        primitiveAges.insert(
+                            primitiveAges.end(), geometry.positions.size(), kUnknownAge);
+                    }
+                }
+
+                if (primitiveAges.size() != sceneGpu.pointCount) {
+                    return map;
+                }
+                for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+                    const std::uint32_t primitiveIndex =
+                        debugDisplayBuffers.visiblePrimitiveIndices[pixelIndex];
+                    if (primitiveIndex < primitiveAges.size()) {
+                        map[pixelIndex] = primitiveAges[primitiveIndex];
+                    }
+                }
+                return map;
+            };
+
             switch (mode) {
                 case ViewImageMode::MeanDepth:
                     if (!debugDisplayBuffers.meanDepthValid) {
@@ -3834,6 +3922,12 @@ int main(int argc, char** argv) {
                         debugDisplayBuffers.densificationOrigin =
                             makeDensificationOriginMap();
                         debugDisplayBuffers.densificationOriginValid = true;
+                    }
+                    return true;
+                case ViewImageMode::PrimitiveAge:
+                    if (!debugDisplayBuffers.primitiveAgeValid) {
+                        debugDisplayBuffers.primitiveAge = makePrimitiveAgeMap();
+                        debugDisplayBuffers.primitiveAgeValid = true;
                     }
                     return true;
                 case ViewImageMode::DepthPositionGradient:
@@ -3968,6 +4062,15 @@ int main(int argc, char** argv) {
                             debugDisplayBuffers.densificationOrigin,
                             displayedRenderWidth,
                             displayedRenderHeight,
+                            pixels);
+                        break;
+                    case ViewImageMode::PrimitiveAge:
+                        colorizePrimitiveAges(
+                            debugDisplayBuffers.primitiveAge,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            static_cast<std::uint32_t>(
+                                std::max(primitiveAgeColdAfterIterations, 1)),
                             pixels);
                         break;
                     case ViewImageMode::DepthPositionGradient:
@@ -4749,6 +4852,21 @@ int main(int argc, char** argv) {
             if (viewImageMode == ViewImageMode::DensificationOrigin) {
                 ImGui::TextDisabled(
                     "gray: initial/unknown  green: clone  blue: position split  purple: curvature split");
+            }
+            if (viewImageMode == ViewImageMode::PrimitiveAge) {
+                if (ImGui::SliderInt(
+                        "Cold after iterations",
+                        &primitiveAgeColdAfterIterations,
+                        1,
+                        100000,
+                        "%d",
+                        ImGuiSliderFlags_Logarithmic)) {
+                    primitiveAgeColdAfterIterations = std::max(
+                        primitiveAgeColdAfterIterations, 1);
+                    updateDisplayTexture();
+                }
+                ImGui::TextDisabled(
+                    "red: created/split now  blue: age >= selected range");
             }
             if (cameraSource == CameraSource::Viewport) {
                 if (ImGui::DragFloat("FOV", &orbit.fovyDegrees, 0.25f, 5.0f, 160.0f, "%.1f deg")) {

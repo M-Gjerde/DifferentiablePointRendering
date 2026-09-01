@@ -96,6 +96,37 @@ DENSIFICATION_ORIGIN_POSITION_SPLIT = np.uint8(2)
 DENSIFICATION_ORIGIN_CURVATURE_SPLIT = np.uint8(3)
 
 
+def primitive_ages_from_birth_iterations(
+        birth_iterations: np.ndarray,
+        current_iteration: int,
+) -> np.ndarray:
+    """Return checkpoint-safe uint32 ages without unsigned underflow."""
+    birth = np.asarray(birth_iterations, dtype=np.uint64).reshape(-1)
+    now = np.uint64(max(0, int(current_iteration)))
+    ages = np.where(birth <= now, now - birth, np.uint64(0))
+    return np.minimum(ages, np.iinfo(np.uint32).max).astype(np.uint32)
+
+
+def mark_split_sources_as_new(
+        primitive_birth_iteration_np: np.ndarray,
+        densification_result: dict | None,
+        current_iteration: int,
+) -> None:
+    """A split changes the retained source as well as creating a child."""
+    if densification_result is None:
+        return
+    update_source = densification_result.get("update_source")
+    if not isinstance(update_source, dict):
+        return
+    indices = np.asarray(
+        update_source.get("index", np.zeros((0,), dtype=np.int64)),
+        dtype=np.int64,
+    ).reshape(-1)
+    valid = indices[(indices >= 0) & (indices < primitive_birth_iteration_np.shape[0])]
+    if valid.size > 0:
+        primitive_birth_iteration_np[valid] = np.uint32(max(0, int(current_iteration)))
+
+
 def make_new_densification_origin_np(densification_result: dict | None, n_new: int) -> np.ndarray:
     new_origin_np = np.full((int(n_new),), DENSIFICATION_ORIGIN_INITIAL, dtype=np.uint8)
     if densification_result is None or n_new <= 0:
@@ -727,6 +758,31 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             DENSIFICATION_ORIGIN_INITIAL,
             dtype=np.uint8,
         )
+    loaded_primitive_age_np = initial_params.get("primitive_age")
+    if loaded_primitive_age_np is not None:
+        loaded_primitive_age_np = np.asarray(
+            loaded_primitive_age_np, dtype=np.float64,
+        ).reshape(-1)
+    if (
+            loaded_primitive_age_np is not None
+            and loaded_primitive_age_np.shape[0] == positions.shape[0]
+    ):
+        loaded_primitive_age_np = np.nan_to_num(
+            loaded_primitive_age_np,
+            nan=0.0,
+            posinf=float(resume_iteration_offset),
+            neginf=0.0,
+        )
+        loaded_primitive_age_np = np.clip(
+            np.rint(loaded_primitive_age_np), 0, max(0, resume_iteration_offset),
+        ).astype(np.uint64)
+        primitive_birth_iteration_np = (
+            np.uint64(max(0, resume_iteration_offset)) - loaded_primitive_age_np
+        ).astype(np.uint32)
+    else:
+        # Initial primitives predate iteration zero. Old PLYs without age metadata
+        # therefore remain correctly cold after a checkpoint continuation.
+        primitive_birth_iteration_np = np.zeros((positions.shape[0],), dtype=np.uint32)
     visited_training_camera_ids_this_cycle: set[str] = set()
 
     metrics_csv_path = config.output_dir / "metrics.csv"
@@ -1044,6 +1100,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densification_result, positions, rotations, scales,
                                 albedos, opacities, betas, powers,
                             )
+                            mark_split_sources_as_new(
+                                primitive_birth_iteration_np,
+                                densification_result,
+                                global_iteration,
+                            )
                             verify_parameters_inplane(
                                 positions, rotations, scales, albedos, opacities, betas,
                                 trainable_surfel_mask=trainable_surfel_mask,
@@ -1088,6 +1149,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
                             inactive_transport_cycle_count_np = inactive_transport_cycle_count_np[keep_mask_np]
                             densification_origin_np = densification_origin_np[keep_mask_np]
+                            primitive_birth_iteration_np = primitive_birth_iteration_np[keep_mask_np]
 
                         source_index_for_new_np = None
                         if densification_result is not None:
@@ -1127,6 +1189,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     ],
                                     axis=0,
                                 )
+                                primitive_birth_iteration_np = np.concatenate(
+                                    [
+                                        primitive_birth_iteration_np,
+                                        np.full(
+                                            (n_new,),
+                                            global_iteration,
+                                            dtype=np.uint32,
+                                        ),
+                                    ],
+                                    axis=0,
+                                )
 
                         rebuild_bvh(renderer)
                         positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
@@ -1157,6 +1230,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             raise RuntimeError(
                                 "Densification origin length mismatch after topology change: "
                                 f"{densification_origin_np.shape[0]} vs {positions.shape[0]}"
+                            )
+                        if primitive_birth_iteration_np.shape[0] != positions.shape[0]:
+                            raise RuntimeError(
+                                "Primitive birth-iteration length mismatch after topology change: "
+                                f"{primitive_birth_iteration_np.shape[0]} vs {positions.shape[0]}"
                             )
 
                         trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
@@ -1313,6 +1391,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             betas,
                             powers,
                             densification_origins=densification_origin_np,
+                            primitive_ages=primitive_ages_from_birth_iterations(
+                                primitive_birth_iteration_np, global_iteration,
+                            ),
                         )
 
                     if should_extract_mesh_checkpoint:
@@ -1328,6 +1409,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 betas,
                                 powers,
                                 densification_origins=densification_origin_np,
+                                primitive_ages=primitive_ages_from_birth_iterations(
+                                    primitive_birth_iteration_np, global_iteration,
+                                ),
                             )
                         extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
 
@@ -1493,6 +1577,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 powers,
                                 training_camera_ids,
                                 densification_origins=densification_origin_np,
+                                primitive_ages=primitive_ages_from_birth_iterations(
+                                    primitive_birth_iteration_np, global_iteration,
+                                ),
                             )
                             extract_mesh_checkpoint(config, global_iteration, manual_points_path)
                         elif hotkey == "g":
@@ -1765,6 +1852,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     if densification_result is not None:
                         apply_densification_source_updates_inplace(densification_result, positions, rotations, scales,
                                                                    albedos, opacities, betas, powers, )
+                        mark_split_sources_as_new(
+                            primitive_birth_iteration_np,
+                            densification_result,
+                            global_iteration,
+                        )
                         verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
                                                   trainable_surfel_mask=trainable_surfel_mask, )
                         apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
@@ -1804,6 +1896,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
                         inactive_transport_cycle_count_np = (inactive_transport_cycle_count_np[keep_mask_np])
                         densification_origin_np = densification_origin_np[keep_mask_np]
+                        primitive_birth_iteration_np = primitive_birth_iteration_np[keep_mask_np]
                     source_index_for_new_np = None
 
                     if densification_result is not None:
@@ -1842,6 +1935,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 ],
                                 axis=0,
                             )
+                            primitive_birth_iteration_np = np.concatenate(
+                                [
+                                    primitive_birth_iteration_np,
+                                    np.full(
+                                        (n_new,),
+                                        global_iteration,
+                                        dtype=np.uint32,
+                                    ),
+                                ],
+                                axis=0,
+                            )
 
                     rebuild_bvh(renderer)
                     positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
@@ -1872,6 +1976,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         raise RuntimeError(
                             "Densification origin length mismatch after topology change: "
                             f"{densification_origin_np.shape[0]} vs {positions.shape[0]}"
+                        )
+                    if primitive_birth_iteration_np.shape[0] != positions.shape[0]:
+                        raise RuntimeError(
+                            "Primitive birth-iteration length mismatch after topology change: "
+                            f"{primitive_birth_iteration_np.shape[0]} vs {positions.shape[0]}"
                         )
 
                     trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
@@ -1988,6 +2097,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         betas,
                         powers,
                         densification_origins=densification_origin_np,
+                        primitive_ages=primitive_ages_from_birth_iterations(
+                            primitive_birth_iteration_np, global_iteration,
+                        ),
                     )
 
                 if should_extract_mesh_checkpoint:
@@ -2003,6 +2115,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             betas,
                             powers,
                             densification_origins=densification_origin_np,
+                            primitive_ages=primitive_ages_from_birth_iterations(
+                                primitive_birth_iteration_np, global_iteration,
+                            ),
                         )
 
                     extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
@@ -2203,6 +2318,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             powers,
                             training_camera_ids,
                             densification_origins=densification_origin_np,
+                            primitive_ages=primitive_ages_from_birth_iterations(
+                                primitive_birth_iteration_np, global_iteration,
+                            ),
                         )
                         extract_mesh_checkpoint(config, global_iteration, manual_points_path)
                     elif hotkey == "g":
@@ -2356,7 +2474,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     ply_path = config.output_dir / "points_final.ply"
     save_gaussians_to_ply(ply_path, positions, rotations, scales, albedos, opacities, betas, powers,
                           shape_default=0.0,
-                          densification_origins=densification_origin_np)
+                          densification_origins=densification_origin_np,
+                          primitive_ages=primitive_ages_from_birth_iterations(
+                              primitive_birth_iteration_np,
+                              resume_iteration_offset + int(iteration),
+                          ))
 
     print(f"Final parameters written to PLY: {ply_path}")
     if bool(getattr(config, "save_final_mesh", True)):

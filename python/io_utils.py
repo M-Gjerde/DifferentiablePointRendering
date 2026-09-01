@@ -402,6 +402,7 @@ def save_gaussians_to_ply(
         powers: torch.Tensor,
         shape_default: float = 0.0,
         densification_origins: np.ndarray | None = None,
+        primitive_ages: np.ndarray | None = None,
 ) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -421,6 +422,14 @@ def save_gaussians_to_ply(
             raise ValueError(
                 "Expected densification_origins to have one value per point, got "
                 f"{origin_values.shape[0]} for {num_points} points"
+            )
+    age_values: np.ndarray | None = None
+    if primitive_ages is not None:
+        age_values = np.asarray(primitive_ages, dtype=np.uint32).reshape(-1)
+        if age_values.shape[0] != num_points:
+            raise ValueError(
+                "Expected primitive_ages to have one value per point, got "
+                f"{age_values.shape[0]} for {num_points} points"
             )
 
     if pos.ndim != 2 or pos.shape[1] != 3:
@@ -485,6 +494,9 @@ def save_gaussians_to_ply(
             if origin_values is not None:
                 # Stored as float for compatibility with the existing PLY float loader.
                 f.write("property float densification_origin\n")
+            if age_values is not None:
+                # Stored as float for compatibility with the existing PLY scalar loader.
+                f.write("property float primitive_age\n")
             f.write("end_header\n")
 
             for i in range(num_points):
@@ -498,13 +510,18 @@ def save_gaussians_to_ply(
                     if origin_values is not None
                     else ""
                 )
+                age_suffix = (
+                    f" {float(age_values[i]):.1f}"
+                    if age_values is not None
+                    else ""
+                )
                 f.write(
                     f"{x:.9g} {y:.9g} {z:.9g}  "
                     f"{qw:.9g} {qx:.9g} {qy:.9g} {qz:.9g}  "
                     f"{su_i:.9g} {sv_i:.9g}  "
                     f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
                     f"{opa[i]:.9g} {beta_values[i]:.9g} {shape_default:.9g} {power_values[i]:.9g}"
-                    f"{origin_suffix}\n"
+                    f"{origin_suffix}{age_suffix}\n"
                 )
 
             f.flush()
