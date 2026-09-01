@@ -3183,6 +3183,7 @@ public:
         std::vector<float> betaHost(pointCount);
         std::vector<float> shapeHost(pointCount);
         std::vector<float> powerHost(pointCount);
+        std::vector<float> densificationOriginHost(pointCount, 0.0f);
         for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
             const glm::quat q = normalizeQuaternionOrIdentity(pointGeometry.quat[pointIndex]);
             positionHost[pointIndex] = pointGeometry.positions[pointIndex];
@@ -3197,6 +3198,10 @@ public:
             betaHost[pointIndex] = pointGeometry.betas[pointIndex];
             shapeHost[pointIndex] = pointGeometry.shapes.size() == pointCount ? pointGeometry.shapes[pointIndex] : 0.0f;
             powerHost[pointIndex] = pointGeometry.powers[pointIndex];
+            if (pointGeometry.densificationOrigins.size() == pointCount) {
+                densificationOriginHost[pointIndex] = static_cast<float>(
+                    pointGeometry.densificationOrigins[pointIndex]);
+            }
         }
         auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector, std::size_t count) -> py::array {
             auto *owner = new std::vector<Pale::float3>(std::move(hostVector));
@@ -3231,6 +3236,8 @@ public:
         parameterDictionary["beta"] = makeFloat1Array(betaHost, pointCount);
         parameterDictionary["shape"] = makeFloat1Array(shapeHost, pointCount);
         parameterDictionary["power"] = makeFloat1Array(powerHost, pointCount);
+        parameterDictionary["densification_origin"] =
+            makeFloat1Array(densificationOriginHost, pointCount);
         return parameterDictionary;
     }
 
@@ -3557,6 +3564,9 @@ public:
         filterVectorInPlace(pointGeometry.shapes);
         filterVectorInPlace(pointGeometry.betas);
         filterVectorInPlace(pointGeometry.powers);
+        if (pointGeometry.densificationOrigins.size() == currentPointCount) {
+            filterVectorInPlace(pointGeometry.densificationOrigins);
+        }
 
         Pale::Log::PA_INFO(
             "remove_points: removed {} points, new point count = {}",
@@ -3639,6 +3649,9 @@ public:
         reserveAttribute(pointGeometry.shapes);
         reserveAttribute(pointGeometry.betas);
         reserveAttribute(pointGeometry.powers);
+        if (!pointGeometry.densificationOrigins.empty()) {
+            reserveAttribute(pointGeometry.densificationOrigins);
+        }
         for (std::size_t pointIndex = 0; pointIndex < newPointCount; ++pointIndex) {
             const std::size_t i3 = pointIndex * 3u;
             const std::size_t i4 = pointIndex * 4u;
@@ -3651,6 +3664,9 @@ public:
             pointGeometry.betas.push_back(betaData[pointIndex]);
             pointGeometry.powers.push_back(hasPower ? powerData[pointIndex] : 0.0f);
             pointGeometry.shapes.push_back(0.0f);
+            if (!pointGeometry.densificationOrigins.empty()) {
+                pointGeometry.densificationOrigins.push_back(0u);
+            }
         }
         Pale::Log::PA_INFO("add_new_points: final point count in geometry = {} (added {} new points)", pointGeometry.positions.size(), newPointCount);
         rebuild_bvh();

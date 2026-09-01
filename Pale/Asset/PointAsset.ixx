@@ -1,4 +1,5 @@
 module;
+#include <cstdint>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -24,6 +25,9 @@ export namespace Pale {
         std::vector<float>     betas{};
         std::vector<float>     shapes{};
         std::vector<float>     powers{};
+        // 0=initial/unknown, 1=clone, 2=position-gradient split, 3=curvature split.
+        // This is diagnostic metadata; rendering does not use it.
+        std::vector<std::uint8_t> densificationOrigins{};
     };
 
 

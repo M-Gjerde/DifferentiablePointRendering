@@ -4,6 +4,8 @@
 module;
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -107,6 +109,8 @@ export namespace Pale {
             const bool looksQuaternionSurfel = ply_detail::hasAll(vertexProps, {
                 "x", "y", "z", "rot_w", "rot_x", "rot_y", "rot_z", "su", "sv", "albedo_r", "albedo_g", "albedo_b", "opacity", "beta", "shape", "power"
             });
+            const bool hasDensificationOrigin =
+                vertexProps.contains("densification_origin");
             if (!looksQuaternionSurfel) {
                 Log::PA_ERROR("PLYPointLoader: unsupported vertex schema. Expected quaternion surfel format: x y z rot_w rot_x rot_y rot_z su sv albedo_r albedo_g albedo_b opacity beta shape power.");
                 return {};
@@ -120,6 +124,11 @@ export namespace Pale {
             std::shared_ptr<tinyply::PlyData> betaData = plyFile.request_properties_from_element("vertex", {"beta"});
             std::shared_ptr<tinyply::PlyData> shapeData = plyFile.request_properties_from_element("vertex", {"shape"});
             std::shared_ptr<tinyply::PlyData> powerData = plyFile.request_properties_from_element("vertex", {"power"});
+            std::shared_ptr<tinyply::PlyData> densificationOriginData;
+            if (hasDensificationOrigin) {
+                densificationOriginData =
+                    plyFile.request_properties_from_element("vertex", {"densification_origin"});
+            }
 
             try { plyFile.read(inputFile); } catch (const std::exception &e) {
                 Log::PA_ERROR("PLYPointLoader: read failed: {}", e.what());
@@ -139,8 +148,9 @@ export namespace Pale {
                 return true;
             };
             if (!(sameCount("rot_*", rotData) && sameCount("su,sv", scaleData) && sameCount("albedo_*", colorData) && sameCount("opacity", opacityData) && sameCount("beta", betaData) && sameCount("shape", shapeData) && sameCount("power", powerData))) return {};
+            if (hasDensificationOrigin && !sameCount("densification_origin", densificationOriginData)) return {};
 
-            std::vector<float> posFloats, rotFloats, scaleFloats, colorFloats, opacityFloats, betaFloats, shapeFloats, powerFloats;
+            std::vector<float> posFloats, rotFloats, scaleFloats, colorFloats, opacityFloats, betaFloats, shapeFloats, powerFloats, densificationOriginFloats;
             bool ok = true;
             ok &= ply_detail::copyScalarsToFloatVector(*posData, posFloats, 3);
             ok &= ply_detail::copyScalarsToFloatVector(*rotData, rotFloats, 4);
@@ -150,6 +160,10 @@ export namespace Pale {
             ok &= ply_detail::copyScalarsToFloatVector(*betaData, betaFloats, 1);
             ok &= ply_detail::copyScalarsToFloatVector(*shapeData, shapeFloats, 1);
             ok &= ply_detail::copyScalarsToFloatVector(*powerData, powerFloats, 1);
+            if (hasDensificationOrigin) {
+                ok &= ply_detail::copyScalarsToFloatVector(
+                    *densificationOriginData, densificationOriginFloats, 1);
+            }
             if (!ok) {
                 Log::PA_ERROR("PLYPointLoader: failed to unpack quaternion surfel streams");
                 return {};
@@ -166,6 +180,7 @@ export namespace Pale {
             geometry.betas.resize(vertexCount);
             geometry.shapes.resize(vertexCount);
             geometry.powers.resize(vertexCount);
+            geometry.densificationOrigins.resize(vertexCount, 0u);
 
             for (std::size_t i = 0; i < vertexCount; ++i) {
                 const std::size_t i2 = i * 2, i3 = i * 3, i4 = i * 4;
@@ -177,6 +192,11 @@ export namespace Pale {
                 geometry.betas[i] = betaFloats[i];
                 geometry.shapes[i] = shapeFloats[i];
                 geometry.powers[i] = powerFloats[i];
+                if (hasDensificationOrigin &&
+                    std::isfinite(densificationOriginFloats[i])) {
+                    geometry.densificationOrigins[i] = static_cast<std::uint8_t>(
+                        std::clamp(std::lround(densificationOriginFloats[i]), 0l, 3l));
+                }
             }
 
             Log::PA_INFO("PLYPointLoader: loaded {} quaternion surfels", vertexCount);

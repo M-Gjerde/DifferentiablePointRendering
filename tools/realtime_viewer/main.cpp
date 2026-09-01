@@ -92,6 +92,7 @@ namespace {
         IntraSlabDepth,
         CurvatureScale,
         CurvaturePrimitiveScore,
+        DensificationOrigin,
         DepthPositionGradient,
         NormalPositionGradient,
         IntraSlabPositionGradient,
@@ -102,7 +103,7 @@ namespace {
         RgbObjectiveGradient,
     };
 
-    constexpr std::array<ViewImageMode, 17> kViewImageModeShortcutOrder = {
+    constexpr std::array<ViewImageMode, 18> kViewImageModeShortcutOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -112,6 +113,7 @@ namespace {
         ViewImageMode::IntraSlabDepth,
         ViewImageMode::CurvatureScale,
         ViewImageMode::CurvaturePrimitiveScore,
+        ViewImageMode::DensificationOrigin,
         ViewImageMode::DepthPositionGradient,
         ViewImageMode::NormalPositionGradient,
         ViewImageMode::IntraSlabPositionGradient,
@@ -122,7 +124,7 @@ namespace {
         ViewImageMode::RgbObjectiveGradient,
     };
 
-    constexpr std::array<const char*, 17> kViewImageModeLabels = {
+    constexpr std::array<const char*, 18> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -132,6 +134,7 @@ namespace {
         "7 Intra-slab depth",
         "8 Curvature scale",
         "9 Curvature primitive score",
+        "Densification split origin",
         "Depth distortion |grad position|",
         "Normal consistency |grad position|",
         "Intra-slab consensus |grad position|",
@@ -182,6 +185,7 @@ namespace {
         bool intraSlabDepthValid = false;
         bool curvatureScaleValid = false;
         bool curvaturePrimitiveScoreValid = false;
+        bool densificationOriginValid = false;
         bool visiblePrimitiveIndicesValid = false;
         bool depthPositionGradientValid = false;
         bool normalPositionGradientValid = false;
@@ -196,6 +200,7 @@ namespace {
         std::vector<float> curvatureScale;
         std::vector<float> curvaturePrimitiveScore;
         std::vector<float> curvatureObservedPrimitiveScores;
+        std::vector<std::uint8_t> densificationOrigin;
         std::vector<uint32_t> visiblePrimitiveIndices;
         std::vector<float> depthPositionGradient;
         std::vector<float> normalPositionGradient;
@@ -223,6 +228,7 @@ namespace {
             intraSlabDepthValid = false;
             curvatureScaleValid = false;
             curvaturePrimitiveScoreValid = false;
+            densificationOriginValid = false;
             visiblePrimitiveIndicesValid = false;
             depthPositionGradientValid = false;
             normalPositionGradientValid = false;
@@ -237,6 +243,7 @@ namespace {
             curvatureScale.clear();
             curvaturePrimitiveScore.clear();
             curvatureObservedPrimitiveScores.clear();
+            densificationOrigin.clear();
             visiblePrimitiveIndices.clear();
             depthPositionGradient.clear();
             normalPositionGradient.clear();
@@ -2643,6 +2650,44 @@ namespace {
         }
     }
 
+    void colorizeDensificationOrigins(
+        const std::vector<std::uint8_t>& origins,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
+        std::vector<uint8_t>& displayPixels) {
+        constexpr std::uint8_t kNoVisibleSurfel = 255u;
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
+        displayPixels.assign(pixelCount * 4u, 0u);
+        if (origins.size() < pixelCount) {
+            return;
+        }
+
+        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+            const std::uint8_t origin = origins[pixelIndex];
+            if (origin == kNoVisibleSurfel) {
+                continue;
+            }
+
+            // Provenance is categorical: 0=initial/unknown, 1=clone,
+            // 2=position-gradient split, 3=curvature-violation split.
+            glm::vec3 color{0.40f};
+            if (origin == 1u) {
+                color = glm::vec3(0.15f, 0.78f, 0.30f);
+            } else if (origin == 2u) {
+                color = glm::vec3(0.18f, 0.48f, 1.00f);
+            } else if (origin == 3u) {
+                color = glm::vec3(0.82f, 0.26f, 0.92f);
+            }
+
+            const std::size_t baseIndex = pixelIndex * 4u;
+            displayPixels[baseIndex + 0u] = channelToByte(color.r);
+            displayPixels[baseIndex + 1u] = channelToByte(color.g);
+            displayPixels[baseIndex + 2u] = channelToByte(color.b);
+            displayPixels[baseIndex + 3u] = 255u;
+        }
+    }
+
     void colorizeNormalBuffer(
         const std::vector<float>& values,
         uint32_t renderWidth,
@@ -3454,6 +3499,51 @@ int main(int argc, char** argv) {
                 return map;
             };
 
+            const auto makeDensificationOriginMap = [&]() {
+                constexpr std::uint8_t kNoVisibleSurfel = 255u;
+                std::vector<std::uint8_t> map(pixelCount, kNoVisibleSurfel);
+                if (!ensureVisiblePrimitiveIndices()) {
+                    return map;
+                }
+
+                const std::optional<Pale::AssetHandle> pointCloudHandle =
+                    firstPointCloudHandle(scene);
+                const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
+                    pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
+                if (!pointCloudAsset) {
+                    return map;
+                }
+
+                std::vector<std::uint8_t> primitiveOrigins;
+                primitiveOrigins.reserve(sceneGpu.pointCount);
+                for (const Pale::PointGeometry& geometry : pointCloudAsset->points) {
+                    if (geometry.densificationOrigins.size() == geometry.positions.size()) {
+                        primitiveOrigins.insert(
+                            primitiveOrigins.end(),
+                            geometry.densificationOrigins.begin(),
+                            geometry.densificationOrigins.end());
+                    } else {
+                        // PLYs predating this field are intentionally shown as initial/unknown.
+                        primitiveOrigins.insert(
+                            primitiveOrigins.end(), geometry.positions.size(), 0u);
+                    }
+                }
+
+                // Visible primitive indices are scene-GPU indices.  Only color when this
+                // point asset is exactly the rendered point stream.
+                if (primitiveOrigins.size() != sceneGpu.pointCount) {
+                    return map;
+                }
+                for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+                    const uint32_t primitiveIndex =
+                        debugDisplayBuffers.visiblePrimitiveIndices[pixelIndex];
+                    if (primitiveIndex < primitiveOrigins.size()) {
+                        map[pixelIndex] = primitiveOrigins[primitiveIndex];
+                    }
+                }
+                return map;
+            };
+
             switch (mode) {
                 case ViewImageMode::MeanDepth:
                     if (!debugDisplayBuffers.meanDepthValid) {
@@ -3559,6 +3649,13 @@ int main(int argc, char** argv) {
                             }
                         }
                         debugDisplayBuffers.curvaturePrimitiveScoreValid = true;
+                    }
+                    return true;
+                case ViewImageMode::DensificationOrigin:
+                    if (!debugDisplayBuffers.densificationOriginValid) {
+                        debugDisplayBuffers.densificationOrigin =
+                            makeDensificationOriginMap();
+                        debugDisplayBuffers.densificationOriginValid = true;
                     }
                     return true;
                 case ViewImageMode::DepthPositionGradient:
@@ -3686,6 +3783,13 @@ int main(int argc, char** argv) {
                             displayedRenderHeight,
                             curvatureViolationDisplayThreshold,
                             scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::DensificationOrigin:
+                        colorizeDensificationOrigins(
+                            debugDisplayBuffers.densificationOrigin,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
                             pixels);
                         break;
                     case ViewImageMode::DepthPositionGradient:
@@ -4426,6 +4530,10 @@ int main(int argc, char** argv) {
                     debugDisplayBuffers.curvatureObservedPrimitiveCount,
                     splitCandidateCount,
                     debugDisplayBuffers.curvaturePrimitiveScoreMax);
+            }
+            if (viewImageMode == ViewImageMode::DensificationOrigin) {
+                ImGui::TextDisabled(
+                    "gray: initial/unknown  green: clone  blue: position split  purple: curvature split");
             }
             if (cameraSource == CameraSource::Viewport) {
                 if (ImGui::DragFloat("FOV", &orbit.fovyDegrees, 0.25f, 5.0f, 160.0f, "%.1f deg")) {
