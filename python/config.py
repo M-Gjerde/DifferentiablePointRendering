@@ -85,26 +85,26 @@ class OptimizationConfig:
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = True
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 1.0
+    global_lr_scale_final: float = 0.3
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
-    position_lr_scale_final: float = 0.5
+    position_lr_scale_init: float = 5.0
+    position_lr_scale_final: float = 0.2
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = int(20_000)
 
     # RGB objective: (1 - ssim_weight) * half-MSE + ssim_weight * (1 - SSIM).
     # The 0.2 / 11 / 1.5 defaults mirror the DSSIM weight and window used by 3DGS.
-    ssim_weight: float = 0.004
+    ssim_weight: float = 0.00
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
     depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.0025
+    normal_consistency_weight: float = 0.005
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
-    intra_slab_depth_weight: float = 1.0e-4
-    curvature_scale_weight: float = 0.0
+    intra_slab_depth_weight: float = 5.0e-5
+    curvature_scale_weight: float = 1.0e-7
     # Use one consensus/anchor light-transport vertex and shadow connection per slab.
     share_local_layer_direct_lighting: bool = True
     minimum_projected_footprint: bool = False
@@ -119,13 +119,13 @@ class OptimizationConfig:
     prune_interval: int = 100
     densify_after: int = 0
     prune_after: int = 0
-    densification_grad_quantile: float = 0.3
+    densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 9.0e-4
     densification_grad_abs_min_final: float = 9.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 9.0
+    curvature_violation_threshold: float = 15.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
@@ -158,15 +158,32 @@ class OptimizationConfig:
     scale_single_camera_gradients: bool = False
 
     # Logging
-    log_interval: int = 5
-    save_interval: int = 25
+    log_interval: int = 25
+    save_interval: int = 50
     save_ply_files_interval: int = save_interval
 
     # Mesh Extraction
     mesh_extraction_interval: int = 1_000
+    mesh_extraction_method: str = "tsdf"
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 50
+    mesh_extraction_poisson_samples: int = 500_000
+    mesh_extraction_poisson_depth: int = 8
+    mesh_extraction_poisson_scale: float = 1.1
+    mesh_extraction_poisson_linear_fit: bool = True
+    mesh_extraction_poisson_threads: int = -1
+    mesh_extraction_poisson_seed: int = 0
+    mesh_extraction_poisson_opacity_threshold: float = 1.0e-3
+    mesh_extraction_poisson_emitter_power_epsilon: float = 1.0e-8
+    mesh_extraction_poisson_min_samples_per_surfel: int = 0
+    mesh_extraction_poisson_beta_profile: bool = True
+    mesh_extraction_poisson_normal_orientation: str = "consistent-camera"
+    mesh_extraction_poisson_orientation_neighbors: int = 20
+    mesh_extraction_poisson_density_quantile: float = 0.01
+    mesh_extraction_poisson_coverage_trim_cells: float = 4.0
+    mesh_extraction_poisson_crop_padding_cells: float = 4.0
+    mesh_extraction_poisson_save_samples: bool = False
     save_final_mesh: bool = True
     # Iteration snapshot content
     save_snapshot_rgb: bool = True
@@ -357,8 +374,41 @@ def parse_args() -> OptimizationConfig:
         help="Save a mesh checkpoint every N iterations. Use 0 to disable intermediate mesh checkpoints.",
     )
     parser.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
+    parser.add_argument("--mesh-extraction-method", type=str, choices=["tsdf", "poisson"])
     parser.add_argument("--mesh-extraction-mesh-res", type=int)
     parser.add_argument("--mesh-extraction-num-cluster", type=int)
+    parser.add_argument("--mesh-extraction-poisson-samples", type=int)
+    parser.add_argument("--mesh-extraction-poisson-depth", type=int)
+    parser.add_argument("--mesh-extraction-poisson-scale", type=float)
+    parser.add_argument(
+        "--mesh-extraction-poisson-linear-fit",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+    )
+    parser.add_argument("--mesh-extraction-poisson-threads", type=int)
+    parser.add_argument("--mesh-extraction-poisson-seed", type=int)
+    parser.add_argument("--mesh-extraction-poisson-opacity-threshold", type=float)
+    parser.add_argument("--mesh-extraction-poisson-emitter-power-epsilon", type=float)
+    parser.add_argument("--mesh-extraction-poisson-min-samples-per-surfel", type=int)
+    parser.add_argument(
+        "--mesh-extraction-poisson-beta-profile",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mesh-extraction-poisson-normal-orientation",
+        type=str,
+        choices=["surfel", "camera", "consistent", "consistent-camera"],
+    )
+    parser.add_argument("--mesh-extraction-poisson-orientation-neighbors", type=int)
+    parser.add_argument("--mesh-extraction-poisson-density-quantile", type=float)
+    parser.add_argument("--mesh-extraction-poisson-coverage-trim-cells", type=float)
+    parser.add_argument("--mesh-extraction-poisson-crop-padding-cells", type=float)
+    parser.add_argument(
+        "--mesh-extraction-poisson-save-samples",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+    )
     parser.add_argument("--save-final-mesh", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
     parser.add_argument(
         "--checkpoint",

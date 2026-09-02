@@ -13,8 +13,8 @@ from chamfer_ours import (
 )
 
 
-DEFAULT_OUTPUT_ROOT = Path("/home/magnus-desktop/Downloads")
-DEFAULT_GROUND_TRUTH_ROOT = Path("/home/magnus-desktop/phd/models")
+DEFAULT_OUTPUT_ROOT = Path("/home/magnus/projects/2D-GS-Viser-Viewer/output")
+DEFAULT_GROUND_TRUTH_ROOT = Path("/home/magnus/phd/models")
 DEFAULT_DATASETS = ("dragon", "horse", "lego", "plant", "teapot")
 
 

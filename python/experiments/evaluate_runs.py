@@ -25,6 +25,7 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 METRICS_DIR = PROJECT_ROOT / "metrics"
+DEFAULT_RECONSTRUCTION_NAMES = ("fuse_post.ply", "poisson_post.ply")
 
 RUN_CONFIG_PARAMETERS = [
     "iterations",
@@ -99,7 +100,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Evaluate optimization run folders. Produces loss plots from metrics.csv "
-            "and optional Chamfer scores from mesh/fuse_post.ply or checkpoint meshes."
+            "and optional Chamfer scores from final or checkpoint meshes."
         )
     )
     parser.add_argument("--run-dir", type=Path, action="append", default=[], help="Run directory to evaluate.")
@@ -124,7 +125,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Evaluate every mesh checkpoint. By default, evaluate mesh/fuse_post.ply.",
+        help="Evaluate every mesh checkpoint. By default, evaluate final meshes in mesh/.",
     )
     parser.add_argument(
         "--samples",
@@ -152,8 +153,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reconstruction-name",
         type=str,
-        default="fuse_post.ply",
-        help="Mesh filename inside each mesh checkpoint folder.",
+        default=None,
+        help=(
+            "Evaluate only this mesh filename inside each mesh folder. "
+            "By default, evaluate fuse_post.ply and poisson_post.ply when present."
+        ),
     )
     parser.add_argument(
         "--complete-loss-only",
@@ -424,19 +428,29 @@ def common_parent(paths: list[Path]) -> Path:
     return Path(os.path.commonpath([str(path) for path in paths]))
 
 
-def find_mesh_checkpoints(run_dir: Path, reconstruction_name: str) -> list[MeshCheckpoint]:
+def normalize_reconstruction_names(reconstruction_names: str | tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(reconstruction_names, str):
+        return (reconstruction_names,)
+    return reconstruction_names
+
+
+def find_mesh_checkpoints(
+    run_dir: Path,
+    reconstruction_name: str | tuple[str, ...],
+) -> list[MeshCheckpoint]:
     checkpoint_root = run_dir / "mesh_checkpoints"
     if not checkpoint_root.is_dir():
         return []
 
     checkpoints: list[MeshCheckpoint] = []
-    for mesh_path in checkpoint_root.glob(f"iter_*/{reconstruction_name}"):
-        match = re.search(r"iter_(\d+)", mesh_path.parent.name)
-        if match is None:
-            continue
-        checkpoints.append(MeshCheckpoint(iteration=int(match.group(1)), mesh_path=mesh_path.resolve()))
+    for candidate_name in normalize_reconstruction_names(reconstruction_name):
+        for mesh_path in checkpoint_root.glob(f"iter_*/{candidate_name}"):
+            match = re.search(r"iter_(\d+)", mesh_path.parent.name)
+            if match is None:
+                continue
+            checkpoints.append(MeshCheckpoint(iteration=int(match.group(1)), mesh_path=mesh_path.resolve()))
 
-    return sorted(checkpoints, key=lambda checkpoint: checkpoint.iteration)
+    return sorted(checkpoints, key=lambda checkpoint: (checkpoint.iteration, checkpoint.mesh_path.name))
 
 
 def final_iteration_from_rows(loss_rows: list[dict[str, str]], run_config: dict[str, Any]) -> int:
@@ -452,12 +466,17 @@ def final_iteration_from_rows(loss_rows: list[dict[str, str]], run_config: dict[
     return 0
 
 
-def find_main_mesh(run_dir: Path, reconstruction_name: str, iteration: int) -> list[MeshCheckpoint]:
-    mesh_path = run_dir / "mesh" / reconstruction_name
-    if not mesh_path.is_file():
-        print(f"Warning: main mesh not found, skipping default geometry evaluation: {mesh_path}")
-        return []
-    return [MeshCheckpoint(iteration=int(iteration), mesh_path=mesh_path.resolve())]
+def find_main_mesh(
+    run_dir: Path,
+    reconstruction_name: str | tuple[str, ...],
+    iteration: int,
+) -> list[MeshCheckpoint]:
+    checkpoints: list[MeshCheckpoint] = []
+    for candidate_name in normalize_reconstruction_names(reconstruction_name):
+        mesh_path = run_dir / "mesh" / candidate_name
+        if mesh_path.is_file():
+            checkpoints.append(MeshCheckpoint(iteration=int(iteration), mesh_path=mesh_path.resolve()))
+    return checkpoints
 
 
 def select_mesh_checkpoints(
@@ -652,6 +671,7 @@ def compute_geometry_rows(
         row = {
             "run_name": run_dir.name,
             "iteration": checkpoint.iteration,
+            "reconstruction_name": checkpoint.mesh_path.name,
             "cd": metrics["cd"],
             "accuracy": metrics["accuracy"],
             "completion": metrics["completion"],
@@ -716,29 +736,48 @@ def read_existing_geometry_rows(csv_path: Path) -> list[dict[str, Any]]:
     return converted_rows
 
 
+def reconstruction_name_from_row(row: dict[str, Any]) -> str:
+    reconstruction_name = str(row.get("reconstruction_name", "")).strip()
+    if reconstruction_name:
+        return reconstruction_name
+    reconstruction_path = str(row.get("reconstruction", "")).strip()
+    return Path(reconstruction_path).name if reconstruction_path else "reconstruction"
+
+
 def plot_geometry_curve(run_dir: Path, rows: list[dict[str, Any]], output_path: Path) -> None:
     if not rows:
         return
 
-    sorted_rows = sorted(rows, key=lambda row: int(row["iteration"]))
-    iterations = [int(row["iteration"]) for row in sorted_rows]
-
     fig, axis = plt.subplots(figsize=(9.0, 4.8), dpi=130)
-    axis.plot(iterations, [float(row["cd"]) for row in sorted_rows], marker="o", linewidth=1.8, label="CD")
-    axis.plot(
-        iterations,
-        [float(row["accuracy"]) for row in sorted_rows],
-        marker="o",
-        linewidth=1.2,
-        label="accuracy",
-    )
-    axis.plot(
-        iterations,
-        [float(row["completion"]) for row in sorted_rows],
-        marker="o",
-        linewidth=1.2,
-        label="completion",
-    )
+    reconstruction_names = sorted({reconstruction_name_from_row(row) for row in rows})
+    for reconstruction_name in reconstruction_names:
+        reconstruction_rows = sorted(
+            (row for row in rows if reconstruction_name_from_row(row) == reconstruction_name),
+            key=lambda row: int(row["iteration"]),
+        )
+        iterations = [int(row["iteration"]) for row in reconstruction_rows]
+        label_prefix = f"{reconstruction_name}: " if len(reconstruction_names) > 1 else ""
+        axis.plot(
+            iterations,
+            [float(row["cd"]) for row in reconstruction_rows],
+            marker="o",
+            linewidth=1.8,
+            label=f"{label_prefix}CD",
+        )
+        axis.plot(
+            iterations,
+            [float(row["accuracy"]) for row in reconstruction_rows],
+            marker="o",
+            linewidth=1.2,
+            label=f"{label_prefix}accuracy",
+        )
+        axis.plot(
+            iterations,
+            [float(row["completion"]) for row in reconstruction_rows],
+            marker="o",
+            linewidth=1.2,
+            label=f"{label_prefix}completion",
+        )
     axis.set_title(f"Geometry - {run_dir.name}")
     axis.set_xlabel("Iteration")
     axis.set_ylabel("Chamfer distance")
@@ -767,10 +806,6 @@ def plot_loss_geometry_curve(
     if not rgb_xs and not total_xs:
         return
 
-    sorted_geometry_rows = sorted(geometry_rows, key=lambda row: int(row["iteration"]))
-    geometry_iterations = [int(row["iteration"]) for row in sorted_geometry_rows]
-    cds = [float(row["cd"]) for row in sorted_geometry_rows]
-
     fig, loss_axis = plt.subplots(figsize=(9.5, 5.4), dpi=130)
     geometry_axis = loss_axis.twinx()
 
@@ -797,14 +832,22 @@ def plot_loss_geometry_curve(
             )
         )
 
-    geometry_lines = geometry_axis.plot(
-        geometry_iterations,
-        cds,
-        color="tab:red",
-        marker="o",
-        linewidth=1.5,
-        label="CD",
-    )
+    geometry_lines = []
+    reconstruction_names = sorted({reconstruction_name_from_row(row) for row in geometry_rows})
+    for reconstruction_name in reconstruction_names:
+        reconstruction_rows = sorted(
+            (row for row in geometry_rows if reconstruction_name_from_row(row) == reconstruction_name),
+            key=lambda row: int(row["iteration"]),
+        )
+        geometry_lines.extend(
+            geometry_axis.plot(
+                [int(row["iteration"]) for row in reconstruction_rows],
+                [float(row["cd"]) for row in reconstruction_rows],
+                marker="o",
+                linewidth=1.5,
+                label=f"CD ({reconstruction_name})" if len(reconstruction_names) > 1 else "CD",
+            )
+        )
 
     loss_axis.set_title(f"Image Loss vs Geometry - {run_dir.name}")
     loss_axis.set_xlabel("Iteration")
@@ -861,14 +904,20 @@ def make_summary(
     if geometry_rows:
         sorted_rows = sorted(geometry_rows, key=lambda row: int(row["iteration"]))
         best_row = min(sorted_rows, key=lambda row: float(row["cd"]))
-        final_row = sorted_rows[-1]
+        final_iteration = int(sorted_rows[-1]["iteration"])
+        final_row = min(
+            (row for row in sorted_rows if int(row["iteration"]) == final_iteration),
+            key=lambda row: float(row["cd"]),
+        )
         summary.update(
             {
                 "best_cd": best_row["cd"],
                 "best_cd_iteration": best_row["iteration"],
+                "best_reconstruction": reconstruction_name_from_row(best_row),
                 "final_cd": final_row["cd"],
                 "final_accuracy": final_row["accuracy"],
                 "final_completion": final_row["completion"],
+                "final_reconstruction": reconstruction_name_from_row(final_row),
             }
         )
 
@@ -903,15 +952,20 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
         if geometry_csv_path.exists() and not args.force:
             geometry_rows = read_existing_geometry_rows(geometry_csv_path)
         else:
+            reconstruction_names = (
+                (args.reconstruction_name,)
+                if args.reconstruction_name is not None
+                else DEFAULT_RECONSTRUCTION_NAMES
+            )
             if args.full:
                 checkpoints = select_mesh_checkpoints(
-                    find_mesh_checkpoints(run_dir, args.reconstruction_name),
+                    find_mesh_checkpoints(run_dir, reconstruction_names),
                     full=True,
                 )
             else:
                 checkpoints = find_main_mesh(
                     run_dir=run_dir,
-                    reconstruction_name=args.reconstruction_name,
+                    reconstruction_name=reconstruction_names,
                     iteration=final_iteration_from_rows(loss_rows, run_config),
                 )
             geometry_rows = compute_geometry_rows(
@@ -923,7 +977,7 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
                 seed=args.seed,
                 scale=args.scale,
                 use_vertices=args.use_vertices,
-                print_each_score=args.full,
+                print_each_score=args.full or len(checkpoints) > 1,
             )
             write_dict_csv(geometry_csv_path, geometry_rows)
 
@@ -976,11 +1030,22 @@ def plot_geometry_comparison(evaluations: list[RunEvaluation], output_path: Path
 
     fig, axis = plt.subplots(figsize=(10.5, 6.0), dpi=130)
     for evaluation in selected:
-        rows = sorted(evaluation.geometry_rows, key=lambda row: int(row["iteration"]))
-        iterations = [int(row["iteration"]) for row in rows]
-        cds = [float(row["cd"]) for row in rows]
-        label = f"{evaluation.run_dir.name} best={min(cds):.4g}"
-        axis.plot(iterations, cds, marker="o", linewidth=1.4, label=label)
+        reconstruction_names = sorted(
+            {reconstruction_name_from_row(row) for row in evaluation.geometry_rows}
+        )
+        for reconstruction_name in reconstruction_names:
+            rows = sorted(
+                (
+                    row
+                    for row in evaluation.geometry_rows
+                    if reconstruction_name_from_row(row) == reconstruction_name
+                ),
+                key=lambda row: int(row["iteration"]),
+            )
+            iterations = [int(row["iteration"]) for row in rows]
+            cds = [float(row["cd"]) for row in rows]
+            label = f"{evaluation.run_dir.name}/{reconstruction_name} best={min(cds):.4g}"
+            axis.plot(iterations, cds, marker="o", linewidth=1.4, label=label)
 
     axis.set_title("Chamfer comparison")
     axis.set_xlabel("Iteration")
@@ -1023,11 +1088,12 @@ def plot_loss_comparison(evaluations: list[RunEvaluation], output_path: Path, ma
     plt.close(fig)
 
 
-def representative_geometry_row(evaluation: RunEvaluation) -> dict[str, Any] | None:
+def representative_geometry_rows(evaluation: RunEvaluation) -> list[dict[str, Any]]:
     if not evaluation.geometry_rows:
-        return None
+        return []
     rows = sorted(evaluation.geometry_rows, key=lambda row: int(row["iteration"]))
-    return rows[-1]
+    final_iteration = int(rows[-1]["iteration"])
+    return [row for row in rows if int(row["iteration"]) == final_iteration]
 
 
 def print_geometry_table(evaluations: list[RunEvaluation], full: bool) -> None:
@@ -1036,8 +1102,8 @@ def print_geometry_table(evaluations: list[RunEvaluation], full: bool) -> None:
         return
 
     print()
-    print("| Run | Iteration | CD ↓ | Accuracy ↓ | Completion ↓ |")
-    print("|---|---:|---:|---:|---:|")
+    print("| Run | Reconstruction | Iteration | CD ↓ | Accuracy ↓ | Completion ↓ |")
+    print("|---|---|---:|---:|---:|---:|")
 
     table_rows: list[tuple[str, dict[str, Any]]] = []
 
@@ -1047,13 +1113,13 @@ def print_geometry_table(evaluations: list[RunEvaluation], full: bool) -> None:
                 table_rows.append((evaluation.run_dir.name, row))
     else:
         for evaluation in sorted(geometry_evaluations, key=summary_sort_key):
-            row = representative_geometry_row(evaluation)
-            if row is not None:
+            for row in representative_geometry_rows(evaluation):
                 table_rows.append((evaluation.run_dir.name, row))
 
     for run_name, row in table_rows:
         print(
             f"| {run_name} "
+            f"| {reconstruction_name_from_row(row)} "
             f"| {int(row['iteration'])} "
             f"| {format_metric(row['cd'])} "
             f"| {format_metric(row['accuracy'])} "
@@ -1066,6 +1132,7 @@ def print_geometry_table(evaluations: list[RunEvaluation], full: bool) -> None:
         mean_completion = sum(float(row["completion"]) for _, row in table_rows) / len(table_rows)
         print(
             f"| **Mean** "
+            f"|  "
             f"|  "
             f"| **{format_metric(mean_cd)}** "
             f"| **{format_metric(mean_accuracy)}** "
@@ -1081,6 +1148,7 @@ def print_geometry_table(evaluations: list[RunEvaluation], full: bool) -> None:
             "Best geometry: "
             f"{best_evaluation.run_dir.name} "
             f"iter={best_iteration} "
+            f"reconstruction={best_evaluation.summary.get('best_reconstruction', '')} "
             f"CD={format_metric(best_cd)}"
         )
 
@@ -1153,9 +1221,11 @@ def main() -> None:
         "run_name",
         "best_cd",
         "best_cd_iteration",
+        "best_reconstruction",
         "final_cd",
         "final_accuracy",
         "final_completion",
+        "final_reconstruction",
         "final_psnr_3dgs",
         "psnr_camera_count",
         "final_loss_total",
