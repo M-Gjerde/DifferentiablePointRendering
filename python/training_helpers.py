@@ -1758,6 +1758,7 @@ def update_densification_statistics(
         densify_bsdf_gamma: float,
         densify_position_grad_per_camera_np: np.ndarray,
         densify_position_grad_per_camera_count_np: np.ndarray,
+        densification_downweight_normal_gradients: bool = False,
 ) -> None:
     if densification_interval <= 0:
         return
@@ -1864,41 +1865,45 @@ def update_densification_statistics(
     per_camera_tangent_grad_norm_np = np.sqrt(
         np.square(dot_u_np[:, :, 0]) + np.square(dot_v_np[:, :, 0])
     ).astype(np.float32)
-    per_camera_normal_grad_abs_np = np.abs(dot_w_np).astype(np.float32)
-    per_camera_local_grad_norm_np = np.sqrt(
-        np.square(per_camera_tangent_grad_norm_np) + np.square(per_camera_normal_grad_abs_np)
-    ).astype(np.float32)
-    normal_direction_downweight_np = (
-            per_camera_tangent_grad_norm_np
-            / np.maximum(per_camera_local_grad_norm_np, 1.0e-12)
-    ).astype(np.float32)
     per_camera_tangent_grad_norm_np = np.nan_to_num(
         per_camera_tangent_grad_norm_np,
         nan=0.0,
         posinf=0.0,
         neginf=0.0,
     )
-    normal_direction_downweight_np = np.nan_to_num(
-        normal_direction_downweight_np,
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
 
     visible_mask_float_np = visible_camera_mask_np.astype(np.float32)
-    visible_downweight_np = visible_mask_float_np * normal_direction_downweight_np
+    if densification_downweight_normal_gradients:
+        per_camera_normal_grad_abs_np = np.abs(dot_w_np).astype(np.float32)
+        per_camera_local_grad_norm_np = np.sqrt(
+            np.square(per_camera_tangent_grad_norm_np)
+            + np.square(per_camera_normal_grad_abs_np)
+        ).astype(np.float32)
+        normal_direction_downweight_np = (
+            per_camera_tangent_grad_norm_np
+            / np.maximum(per_camera_local_grad_norm_np, 1.0e-12)
+        ).astype(np.float32)
+        normal_direction_downweight_np = np.nan_to_num(
+            normal_direction_downweight_np,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        visible_downweight_np = visible_mask_float_np * normal_direction_downweight_np
+    else:
+        visible_downweight_np = visible_mask_float_np
 
     safe_active_camera_count_np = np.maximum(active_camera_count_np, 1.0)
 
     # Scalar score:
-    #     mean_visible(||project_tangent(g_camera)|| * tangent_fraction(g_camera))
-    # where tangent_fraction suppresses clone pressure from mostly-normal motion.
+    #     mean_visible(||project_tangent(g_camera)|| * optional_tangent_fraction(g_camera))
+    # The optional tangent fraction suppresses clone pressure from mostly-normal motion.
     densify_position_signal_np = (
                                          per_camera_tangent_grad_norm_np * visible_downweight_np
                                  ).sum(axis=1, keepdims=True) / safe_active_camera_count_np
 
     # Signed vector direction:
-    #     mean_visible((dot_u, dot_v, 0) * tangent_fraction(g_camera))
+    #     mean_visible((dot_u, dot_v, 0) * optional_tangent_fraction(g_camera))
     # Accumulating local tangent coordinates keeps the direction stable if the surfel rotates.
     density_grad_position_vector_np = (
                                               per_camera_local_tangent_grad_np * visible_downweight_np[:, :, None]

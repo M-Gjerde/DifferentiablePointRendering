@@ -30,55 +30,11 @@ def extract_mesh_from_point_cloud(
         str(mesh_output_subdir),
         "--depth-key",
         str(config.mesh_extraction_depth_key),
-        "--method",
-        str(config.mesh_extraction_method),
         "--mesh-res",
         str(int(config.mesh_extraction_mesh_res)),
         "--num-cluster",
         str(int(config.mesh_extraction_num_cluster)),
-        "--poisson-samples",
-        str(int(config.mesh_extraction_poisson_samples)),
-        "--poisson-depth",
-        str(int(config.mesh_extraction_poisson_depth)),
-        "--poisson-scale",
-        str(float(config.mesh_extraction_poisson_scale)),
-        "--poisson-threads",
-        str(int(config.mesh_extraction_poisson_threads)),
-        "--poisson-seed",
-        str(int(config.mesh_extraction_poisson_seed)),
-        "--poisson-opacity-threshold",
-        str(float(config.mesh_extraction_poisson_opacity_threshold)),
-        "--poisson-emitter-power-epsilon",
-        str(float(config.mesh_extraction_poisson_emitter_power_epsilon)),
-        "--poisson-min-samples-per-surfel",
-        str(int(config.mesh_extraction_poisson_min_samples_per_surfel)),
-        "--poisson-normal-orientation",
-        str(config.mesh_extraction_poisson_normal_orientation),
-        "--poisson-orientation-neighbors",
-        str(int(config.mesh_extraction_poisson_orientation_neighbors)),
-        "--poisson-density-quantile",
-        str(float(config.mesh_extraction_poisson_density_quantile)),
-        "--poisson-coverage-trim-cells",
-        str(float(config.mesh_extraction_poisson_coverage_trim_cells)),
-        "--poisson-crop-padding-cells",
-        str(float(config.mesh_extraction_poisson_crop_padding_cells)),
     ]
-
-    command.append(
-        "--poisson-linear-fit"
-        if config.mesh_extraction_poisson_linear_fit
-        else "--no-poisson-linear-fit"
-    )
-    command.append(
-        "--poisson-beta-profile"
-        if config.mesh_extraction_poisson_beta_profile
-        else "--no-poisson-beta-profile"
-    )
-    command.append(
-        "--poisson-save-samples"
-        if config.mesh_extraction_poisson_save_samples
-        else "--no-poisson-save-samples"
-    )
 
     print(
         f"{log_prefix} Extracting mesh to "
@@ -737,6 +693,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     densification_grad_abs_min_final = float(config.densification_grad_abs_min_final)
     densification_grad_abs_min_decay_start_iteration = int(config.densification_grad_abs_min_decay_start_iteration)
     densification_grad_abs_min_decay_end_iteration = int(config.densification_grad_abs_min_decay_end_iteration)
+    densification_downweight_normal_gradients = bool(
+        getattr(config, "densification_downweight_normal_gradients", False)
+    )
     densify_bsdf_floor = float(config.densify_bsdf_floor)
     densify_bsdf_gamma = float(config.densify_bsdf_gamma)
     rebuild_bvh_interval = max(int(config.rebuild_bvh_interval), 1)
@@ -998,6 +957,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_bsdf_gamma=densify_bsdf_gamma,
                         densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                         densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
+                        densification_downweight_normal_gradients=densification_downweight_normal_gradients,
                     )
                     if use_curvature_densification:
                         update_curvature_densification_statistics(
@@ -1756,6 +1716,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_bsdf_gamma=densify_bsdf_gamma,
                     densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                     densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
+                    densification_downweight_normal_gradients=densification_downweight_normal_gradients,
                 )
                 if use_curvature_densification:
                     update_curvature_densification_statistics(

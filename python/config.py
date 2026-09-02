@@ -99,12 +99,12 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
     depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
+    normal_consistency_weight: float = 0.001
     normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
     # Normalized by h^2, so weight 1 is already a strong snap-to-anchor term.
     intra_slab_depth_weight: float = 5.0e-5
-    curvature_scale_weight: float = 1.0e-7
+    curvature_scale_weight: float = 0.0e-0
     # Use one consensus/anchor light-transport vertex and shadow connection per slab.
     share_local_layer_direct_lighting: bool = True
     minimum_projected_footprint: bool = False
@@ -113,6 +113,8 @@ class OptimizationConfig:
     # Density control / EV-splitting
     # Ignore stats from the first half of each densification interval after cloning/pruning.
     densification_stats_skip_interval_start: bool = True
+    # Suppress densification evidence when position gradients point mostly along the surfel normal.
+    densification_downweight_normal_gradients: bool = False
 
     # Densification cadence is independent of learning-rate decay.
     densification_interval: int = 100
@@ -120,12 +122,12 @@ class OptimizationConfig:
     densify_after: int = 0
     prune_after: int = 0
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 9.0e-4
-    densification_grad_abs_min_final: float = 9.0e-4
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 15.0
+    curvature_violation_threshold: float = 35.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
@@ -164,33 +166,16 @@ class OptimizationConfig:
 
     # Mesh Extraction
     mesh_extraction_interval: int = 1_000
-    mesh_extraction_method: str = "tsdf"
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 50
-    mesh_extraction_poisson_samples: int = 500_000
-    mesh_extraction_poisson_depth: int = 8
-    mesh_extraction_poisson_scale: float = 1.1
-    mesh_extraction_poisson_linear_fit: bool = True
-    mesh_extraction_poisson_threads: int = -1
-    mesh_extraction_poisson_seed: int = 0
-    mesh_extraction_poisson_opacity_threshold: float = 1.0e-3
-    mesh_extraction_poisson_emitter_power_epsilon: float = 1.0e-8
-    mesh_extraction_poisson_min_samples_per_surfel: int = 0
-    mesh_extraction_poisson_beta_profile: bool = True
-    mesh_extraction_poisson_normal_orientation: str = "consistent-camera"
-    mesh_extraction_poisson_orientation_neighbors: int = 20
-    mesh_extraction_poisson_density_quantile: float = 0.01
-    mesh_extraction_poisson_coverage_trim_cells: float = 4.0
-    mesh_extraction_poisson_crop_padding_cells: float = 4.0
-    mesh_extraction_poisson_save_samples: bool = False
     save_final_mesh: bool = True
     # Iteration snapshot content
     save_snapshot_rgb: bool = True
-    save_snapshot_median_depth: bool = True
+    save_snapshot_median_depth: bool = False
     save_snapshot_depth_distortion: bool = False
     save_snapshot_visible_normal: bool = False
-    save_snapshot_normal_from_depth: bool = True
+    save_snapshot_normal_from_depth: bool = False
     save_snapshot_grad: bool = False
     densification_verbose: bool = False
 
@@ -207,8 +192,8 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         factor_beta = 0.00
     elif config.optimizer_type == "adam":
         factor_position = 1.5e-4
-        factor_rotation = 3.0e-2
-        factor_scale = 4.5e-4
+        factor_rotation = 8.0e-3
+        factor_scale = 1.0e-2
         factor_albedo = 8.0e-4
         factor_opacity = 0.0
         factor_beta = 3.0e-3
@@ -374,41 +359,8 @@ def parse_args() -> OptimizationConfig:
         help="Save a mesh checkpoint every N iterations. Use 0 to disable intermediate mesh checkpoints.",
     )
     parser.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
-    parser.add_argument("--mesh-extraction-method", type=str, choices=["tsdf", "poisson"])
     parser.add_argument("--mesh-extraction-mesh-res", type=int)
     parser.add_argument("--mesh-extraction-num-cluster", type=int)
-    parser.add_argument("--mesh-extraction-poisson-samples", type=int)
-    parser.add_argument("--mesh-extraction-poisson-depth", type=int)
-    parser.add_argument("--mesh-extraction-poisson-scale", type=float)
-    parser.add_argument(
-        "--mesh-extraction-poisson-linear-fit",
-        action=argparse.BooleanOptionalAction,
-        default=argparse.SUPPRESS,
-    )
-    parser.add_argument("--mesh-extraction-poisson-threads", type=int)
-    parser.add_argument("--mesh-extraction-poisson-seed", type=int)
-    parser.add_argument("--mesh-extraction-poisson-opacity-threshold", type=float)
-    parser.add_argument("--mesh-extraction-poisson-emitter-power-epsilon", type=float)
-    parser.add_argument("--mesh-extraction-poisson-min-samples-per-surfel", type=int)
-    parser.add_argument(
-        "--mesh-extraction-poisson-beta-profile",
-        action=argparse.BooleanOptionalAction,
-        default=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--mesh-extraction-poisson-normal-orientation",
-        type=str,
-        choices=["surfel", "camera", "consistent", "consistent-camera"],
-    )
-    parser.add_argument("--mesh-extraction-poisson-orientation-neighbors", type=int)
-    parser.add_argument("--mesh-extraction-poisson-density-quantile", type=float)
-    parser.add_argument("--mesh-extraction-poisson-coverage-trim-cells", type=float)
-    parser.add_argument("--mesh-extraction-poisson-crop-padding-cells", type=float)
-    parser.add_argument(
-        "--mesh-extraction-poisson-save-samples",
-        action=argparse.BooleanOptionalAction,
-        default=argparse.SUPPRESS,
-    )
     parser.add_argument("--save-final-mesh", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
     parser.add_argument(
         "--checkpoint",
@@ -553,6 +505,15 @@ def parse_args() -> OptimizationConfig:
             "Ignore densification gradient stats from the first half of each "
             "densification interval. The older --densification-stats-warmup "
             "spelling is accepted as an alias."
+        ),
+    )
+    parser.add_argument(
+        "--densification-downweight-normal-gradients",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help=(
+            "Downweight tangent densification statistics when position gradients "
+            "point mostly along the surfel normal. Disabled by default."
         ),
     )
     parser.add_argument("--densify-bsdf-floor", type=float)

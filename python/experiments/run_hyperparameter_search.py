@@ -71,6 +71,10 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
         "--densification-stats-skip-interval-start",
         "--no-densification-stats-skip-interval-start",
     ),
+    "densification_downweight_normal_gradients": (
+        "--densification-downweight-normal-gradients",
+        "--no-densification-downweight-normal-gradients",
+    ),
     "densify_bsdf_floor": "--densify-bsdf-floor",
     "densify_bsdf_gamma": "--densify-bsdf-gamma",
     "opacity_prune_threshold": "--opacity-prune-threshold",

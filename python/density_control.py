@@ -166,7 +166,7 @@ def make_under_reconstruction_clones(
         min_split_coherence=0.05,
         normal_perturbation_min=0.0,
         normal_perturbation_max=0.0,
-        tangent_project_position_grad=True,
+        tangent_project_position_grad=False,
         normal_shift_on_clone=False,
         normal_shift_scale=0.0,
         max_normal_shift_fraction=0.50,

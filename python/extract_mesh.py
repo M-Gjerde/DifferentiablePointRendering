@@ -12,15 +12,8 @@ import numpy as np
 import open3d as o3d
 import imageio.v3 as iio
 
-from poisson_reconstruction import (
-    PoissonReconstructionSettings,
-    PoissonSamplingSettings,
-    load_quaternion_surfel_cloud,
-    orient_surfel_normals,
-    quaternion_tangent_frames_wxyz,
-    reconstruct_screened_poisson,
-    sample_opacity_weighted_surfel_surfaces,
-)
+import pale
+from render_hooks import get_training_camera_names
 
 def parse_vector3(value: str) -> np.ndarray:
     values = [float(part.strip()) for part in value.split(",")]
@@ -418,19 +411,13 @@ def validate_quaternion_surfel_ply(points_path: Path) -> None:
             + ". Expected x y z rot_w rot_x rot_y rot_z su sv albedo_r albedo_g albedo_b opacity beta shape power."
         )
 
-def load_run_config(run_dir: Path) -> dict:
+def load_renderer(run_dir: Path, points_path: Path):
     config_path = run_dir / "run_config.json"
     if not config_path.is_file():
         raise FileNotFoundError(f"Missing {config_path}")
 
     with config_path.open("r", encoding="utf-8") as file:
-        return json.load(file)
-
-
-def load_renderer(run_dir: Path, points_path: Path):
-    import pale
-
-    run_config = load_run_config(run_dir)
+        run_config = json.load(file)
 
     assets_root = Path(run_config["assets_root"]).resolve()
     scene_xml = run_config["scene_xml"]
@@ -443,16 +430,6 @@ def load_renderer(run_dir: Path, points_path: Path):
         pointcloud_path,
         renderer_settings,
     ), run_config
-
-
-def camera_world_positions(cameras: dict[str, Open3DCamera]) -> np.ndarray:
-    positions = []
-    for camera in cameras.values():
-        camera_to_world = np.linalg.inv(camera.world_to_camera)
-        positions.append(camera_to_world[:3, 3])
-    if not positions:
-        raise ValueError("Cannot orient Poisson normals without any cameras")
-    return np.ascontiguousarray(np.stack(positions, axis=0), dtype=np.float64)
 
 
 def infer_cameras_json(args: argparse.Namespace, run_config: dict) -> Path:
@@ -555,8 +532,6 @@ def load_point_radius(points_path: Path) -> float:
 
 
 def get_camera_names(renderer, args: argparse.Namespace) -> list[str]:
-    from render_hooks import get_training_camera_names
-
     if args.camera_names is not None:
         return [name.strip() for name in args.camera_names.split(",") if name.strip()]
 
@@ -617,9 +592,6 @@ def save_extraction_render_images(
 
 
 def post_process_mesh(mesh: o3d.geometry.TriangleMesh, cluster_to_keep: int) -> o3d.geometry.TriangleMesh:
-    if cluster_to_keep < 0:
-        raise ValueError(f"cluster_to_keep must be non-negative, got {cluster_to_keep}")
-
     mesh = o3d.geometry.TriangleMesh(mesh)
 
     mesh.remove_duplicated_vertices()
@@ -630,32 +602,16 @@ def post_process_mesh(mesh: o3d.geometry.TriangleMesh, cluster_to_keep: int) -> 
     if len(mesh.triangles) == 0:
         return mesh
 
-    if cluster_to_keep > 0:
-        triangle_clusters, cluster_triangle_counts, _ = mesh.cluster_connected_triangles()
-        triangle_clusters = np.asarray(triangle_clusters)
-        cluster_triangle_counts = np.asarray(cluster_triangle_counts)
+    triangle_clusters, cluster_triangle_counts, _ = mesh.cluster_connected_triangles()
+    triangle_clusters = np.asarray(triangle_clusters)
+    cluster_triangle_counts = np.asarray(cluster_triangle_counts)
 
-        keep_count = min(cluster_to_keep, len(cluster_triangle_counts))
-        keep_clusters = np.argsort(cluster_triangle_counts)[-keep_count:]
+    keep_count = min(cluster_to_keep, len(cluster_triangle_counts))
+    keep_clusters = np.argsort(cluster_triangle_counts)[-keep_count:]
 
-        remove_mask = ~np.isin(triangle_clusters, keep_clusters)
-        mesh.remove_triangles_by_mask(remove_mask.tolist())
+    remove_mask = ~np.isin(triangle_clusters, keep_clusters)
+    mesh.remove_triangles_by_mask(remove_mask.tolist())
     mesh.remove_unreferenced_vertices()
-
-    # Edge cleanup can leave a few bow-tie vertices. Removing their incident
-    # triangles is deterministic, terminates because every pass removes at
-    # least one vertex, and produces a genuinely manifold supported mesh.
-    while len(mesh.vertices) > 0:
-        non_manifold_vertices = np.asarray(
-            mesh.get_non_manifold_vertices(), dtype=np.int64
-        )
-        if non_manifold_vertices.size == 0:
-            break
-        vertex_mask = np.zeros(len(mesh.vertices), dtype=bool)
-        vertex_mask[non_manifold_vertices] = True
-        mesh.remove_vertices_by_mask(vertex_mask.tolist())
-        mesh.remove_unreferenced_vertices()
-
     mesh.compute_vertex_normals()
 
     return mesh
@@ -787,7 +743,7 @@ class PaleExtractor:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="PALE surfel mesh extraction")
+    parser = argparse.ArgumentParser(description="PALE 2DGS-style mesh extraction")
 
     parser.add_argument("--output-root", "-o", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
@@ -819,51 +775,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-trunc", default=-1.0, type=float)
     parser.add_argument("--sdf-trunc", default=-1.0, type=float)
     parser.add_argument("--num-cluster", default=50, type=int)
-    parser.add_argument("--mesh-res", default=2048, type=int)
-    parser.add_argument(
-        "--method",
-        "--reconstruction-method",
-        choices=["tsdf", "poisson"],
-        default="tsdf",
-        help="Use camera-depth TSDF fusion or opacity-weighted surfel Screened Poisson reconstruction.",
-    )
-
-    parser.add_argument("--poisson-samples", type=int, default=500_000)
-    parser.add_argument("--poisson-depth", type=int, default=8)
-    parser.add_argument("--poisson-scale", type=float, default=1.1)
-    parser.add_argument(
-        "--poisson-linear-fit",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use linear interpolation for Poisson iso-vertex positions.",
-    )
-    parser.add_argument("--poisson-threads", type=int, default=-1)
-    parser.add_argument("--poisson-seed", type=int, default=0)
-    parser.add_argument("--poisson-opacity-threshold", type=float, default=1.0e-3)
-    parser.add_argument("--poisson-emitter-power-epsilon", type=float, default=1.0e-8)
-    parser.add_argument("--poisson-min-samples-per-surfel", type=int, default=0)
-    parser.add_argument(
-        "--poisson-beta-profile",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Sample the full beta opacity profile instead of uniformly sampling each ellipse.",
-    )
-    parser.add_argument(
-        "--poisson-normal-orientation",
-        choices=["surfel", "camera", "consistent", "consistent-camera"],
-        default="consistent-camera",
-        help="How to make two-sided surfel normals globally usable by Poisson.",
-    )
-    parser.add_argument("--poisson-orientation-neighbors", type=int, default=20)
-    parser.add_argument("--poisson-density-quantile", type=float, default=0.01)
-    parser.add_argument("--poisson-coverage-trim-cells", type=float, default=4.0)
-    parser.add_argument("--poisson-crop-padding-cells", type=float, default=4.0)
-    parser.add_argument(
-        "--poisson-save-samples",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Save the oriented opacity-weighted Poisson input samples for inspection.",
-    )
+    parser.add_argument("--mesh-res", default=1024, type=int)
 
     parser.add_argument("--depth-key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
     parser.add_argument(
@@ -915,170 +827,56 @@ if __name__ == "__main__":
 
     validate_quaternion_surfel_ply(points_path)
 
-    run_config = load_run_config(run_dir)
+    renderer, run_config = load_renderer(run_dir, points_path)
+
     cameras_path = infer_cameras_xml(args, run_config)
     cameras = load_scene_xml_cameras(cameras_path)
+    camera_names = get_camera_names(renderer, args)
 
     print(f"Using cameras {cameras_path}")
+
     print(f"Extracting mesh from {run_dir}")
     print(f"Using point cloud {points_path}")
+    #print(f"Using cameras {args.cameras_xml}")
+    print(f"Rendering {len(camera_names)} cameras")
+
+    radius = load_point_radius(points_path)
+
+    pale_extractor = PaleExtractor(
+        renderer=renderer,
+        cameras=cameras,
+        camera_names=camera_names,
+        radius=radius,
+        depth_key=args.depth_key,
+    )
 
     if not args.skip_mesh:
-        if args.method == "poisson":
-            print("Sampling opacity-weighted surfel surfaces for Screened Poisson reconstruction ...")
-            cloud, load_report = load_quaternion_surfel_cloud(
-                points_path,
-                opacity_threshold=args.poisson_opacity_threshold,
-                emitter_power_epsilon=args.poisson_emitter_power_epsilon,
-            )
-            _, _, raw_normals = quaternion_tangent_frames_wxyz(cloud.quaternions_wxyz)
+        print("export mesh ...")
 
-            orientation_cameras = cameras
-            if args.camera_names is not None:
-                requested_camera_names = [
-                    name.strip() for name in args.camera_names.split(",") if name.strip()
-                ]
-                missing_camera_names = [
-                    name for name in requested_camera_names if name not in cameras
-                ]
-                if missing_camera_names:
-                    raise ValueError(
-                        "Unknown Poisson orientation cameras: "
-                        + ", ".join(missing_camera_names)
-                    )
-                orientation_cameras = {
-                    name: cameras[name] for name in requested_camera_names
-                }
+        pale_extractor.reconstruction()
 
-            oriented_normals, orientation_report = orient_surfel_normals(
-                positions=cloud.positions,
-                normals=raw_normals,
-                mode=args.poisson_normal_orientation,
-                consistent_neighbor_count=args.poisson_orientation_neighbors,
-                camera_positions=(
-                    camera_world_positions(orientation_cameras)
-                    if args.poisson_normal_orientation in {"camera", "consistent-camera"}
-                    else None
-                ),
-            )
-            sampling_settings = PoissonSamplingSettings(
-                sample_count=args.poisson_samples,
-                seed=args.poisson_seed,
-                minimum_samples_per_surfel=args.poisson_min_samples_per_surfel,
-                use_beta_profile=args.poisson_beta_profile,
-            )
-            poisson_samples, sampling_report = sample_opacity_weighted_surfel_surfaces(
-                cloud=cloud,
-                oriented_normals=oriented_normals,
-                settings=sampling_settings,
-            )
+        depth_trunc = pale_extractor.infer_depth_trunc() if args.depth_trunc < 0 else args.depth_trunc
+        voxel_size = (2.0 * pale_extractor.radius) / args.mesh_res if args.voxel_size < 0 else args.voxel_size
+        sdf_trunc = 10.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
+        print(
+            f"TSDF settings: depth_trunc={depth_trunc:.6g}, "
+            f"voxel_size={voxel_size:.6g}, sdf_trunc={sdf_trunc:.6g}"
+        )
 
-            if args.poisson_save_samples:
-                samples_path = mesh_dir / f"poisson_samples{mesh_name_suffix}.ply"
-                if not o3d.io.write_point_cloud(str(samples_path), poisson_samples):
-                    raise RuntimeError(f"Failed to save Poisson samples to {samples_path}")
-                print(f"Poisson samples saved at {samples_path}")
+        mesh = pale_extractor.extract_mesh_bounded(
+            voxel_size=voxel_size,
+            sdf_trunc=sdf_trunc,
+            depth_trunc=depth_trunc,
+            render_output_dir=mesh_dir,
+            render_name_suffix=mesh_name_suffix.lstrip("_"),
+        )
 
-            reconstruction_settings = PoissonReconstructionSettings(
-                depth=args.poisson_depth,
-                scale=args.poisson_scale,
-                linear_fit=args.poisson_linear_fit,
-                n_threads=args.poisson_threads,
-                density_quantile=args.poisson_density_quantile,
-                coverage_trim_cells=args.poisson_coverage_trim_cells,
-                crop_padding_cells=args.poisson_crop_padding_cells,
-            )
-            print(
-                f"Poisson settings: samples={args.poisson_samples}, depth={args.poisson_depth}, "
-                f"scale={args.poisson_scale:.4g}, density_quantile={args.poisson_density_quantile:.4g}, "
-                f"coverage_cells={args.poisson_coverage_trim_cells:.4g}"
-            )
-            poisson_raw, poisson_trimmed, reconstruction_report = reconstruct_screened_poisson(
-                samples=poisson_samples,
-                settings=reconstruction_settings,
-            )
+        mesh_path = mesh_dir / f"fuse{mesh_name_suffix}.ply"
+        o3d.io.write_triangle_mesh(str(mesh_path), mesh)
+        print(f"mesh saved at {mesh_path}")
 
-            mesh_path = mesh_dir / f"poisson{mesh_name_suffix}.ply"
-            if not o3d.io.write_triangle_mesh(str(mesh_path), poisson_raw):
-                raise RuntimeError(f"Failed to save raw Poisson mesh to {mesh_path}")
-            print(f"raw Poisson mesh saved at {mesh_path}")
+        mesh_post = post_process_mesh(mesh, cluster_to_keep=args.num_cluster)
 
-            poisson_post = post_process_mesh(
-                poisson_trimmed,
-                cluster_to_keep=args.num_cluster,
-            )
-            mesh_post_path = mesh_dir / f"poisson_post{mesh_name_suffix}.ply"
-            if not o3d.io.write_triangle_mesh(str(mesh_post_path), poisson_post):
-                raise RuntimeError(f"Failed to save post-processed Poisson mesh to {mesh_post_path}")
-            print(f"post-processed Poisson mesh saved at {mesh_post_path}")
-
-            report = {
-                "method": "screened_poisson",
-                "source_point_cloud": str(points_path),
-                "camera_file": str(cameras_path),
-                "orientation_camera_count": len(orientation_cameras),
-                "load": load_report,
-                "normal_orientation": orientation_report,
-                "sampling": sampling_report,
-                "reconstruction": reconstruction_report,
-                "post_process": {
-                    "clusters_to_keep": int(args.num_cluster),
-                    "vertices": int(len(poisson_post.vertices)),
-                    "triangles": int(len(poisson_post.triangles)),
-                    "connected_components": int(
-                        len(poisson_post.cluster_connected_triangles()[1])
-                        if len(poisson_post.triangles) > 0
-                        else 0
-                    ),
-                    "edge_manifold_allow_boundary": bool(
-                        poisson_post.is_edge_manifold(allow_boundary_edges=True)
-                    ),
-                    "vertex_manifold": bool(poisson_post.is_vertex_manifold()),
-                },
-            }
-            report_path = mesh_dir / f"poisson_report{mesh_name_suffix}.json"
-            with report_path.open("w", encoding="utf-8") as report_file:
-                json.dump(report, report_file, indent=2)
-            print(f"Poisson extraction report saved at {report_path}")
-        else:
-            renderer, _ = load_renderer(run_dir, points_path)
-            camera_names = get_camera_names(renderer, args)
-            print(f"Rendering {len(camera_names)} cameras")
-
-            radius = load_point_radius(points_path)
-            pale_extractor = PaleExtractor(
-                renderer=renderer,
-                cameras=cameras,
-                camera_names=camera_names,
-                radius=radius,
-                depth_key=args.depth_key,
-            )
-
-            print("Exporting TSDF mesh ...")
-            pale_extractor.reconstruction()
-
-            depth_trunc = pale_extractor.infer_depth_trunc() if args.depth_trunc < 0 else args.depth_trunc
-            voxel_size = (2.0 * pale_extractor.radius) / args.mesh_res if args.voxel_size < 0 else args.voxel_size
-            sdf_trunc = 10.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
-            print(
-                f"TSDF settings: depth_trunc={depth_trunc:.6g}, "
-                f"voxel_size={voxel_size:.6g}, sdf_trunc={sdf_trunc:.6g}"
-            )
-
-            mesh = pale_extractor.extract_mesh_bounded(
-                voxel_size=voxel_size,
-                sdf_trunc=sdf_trunc,
-                depth_trunc=depth_trunc,
-                render_output_dir=mesh_dir,
-                render_name_suffix=mesh_name_suffix.lstrip("_"),
-            )
-
-            mesh_path = mesh_dir / f"fuse{mesh_name_suffix}.ply"
-            o3d.io.write_triangle_mesh(str(mesh_path), mesh)
-            print(f"mesh saved at {mesh_path}")
-
-            mesh_post = post_process_mesh(mesh, cluster_to_keep=args.num_cluster)
-
-            mesh_post_path = mesh_dir / f"fuse_post{mesh_name_suffix}.ply"
-            o3d.io.write_triangle_mesh(str(mesh_post_path), mesh_post)
-            print(f"mesh post processed saved at {mesh_post_path}")
+        mesh_post_path = mesh_dir / f"fuse_post{mesh_name_suffix}.ply"
+        o3d.io.write_triangle_mesh(str(mesh_post_path), mesh_post)
+        print(f"mesh post processed saved at {mesh_post_path}")
