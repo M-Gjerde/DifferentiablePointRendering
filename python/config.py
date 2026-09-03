@@ -62,12 +62,12 @@ class OptimizationConfig:
     optimizer_type: str = "adam"
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float | None = 1.5e-4
-    learning_rate_rotation: float | None = 3.0e-2
-    learning_rate_scale: float | None = 4.5e-4
-    learning_rate_albedo: float | None = 8.0e-4
-    learning_rate_opacity: float | None = 0.0
-    learning_rate_beta: float | None = 3.0e-3
+    learning_rate_position: float = 0.00005
+    learning_rate_rotation: float = 0.005
+    learning_rate_scale: float = 0.005
+    learning_rate_albedo: float = 0.0008
+    learning_rate_opacity: float = 0.001
+    learning_rate_beta: float = 0.003
     # Multiplicative learning-rate decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = False
@@ -87,9 +87,8 @@ class OptimizationConfig:
     depth_distort_weight: float = 0.0
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.00
-    normal_from_depth_use_mean_depth: bool = False
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 0.0e-5
+    intra_slab_depth_weight: float = 1.0e-4
     curvature_scale_weight: float = 0.0e-6
 
     # Rendering and camera sampling
@@ -100,6 +99,7 @@ class OptimizationConfig:
     camera_sampling_mode: str = "round_robin"  # "round_robin" or "random"
     camera_sampling_seed: int = 0
     scale_single_camera_gradients: bool = False
+    normal_from_depth_use_mean_depth: bool = False
 
     # Densification
     densification_interval: int = 100
@@ -181,12 +181,7 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         raise ValueError(f"learning_rate must be finite and non-negative, got {multiplier}")
 
     for field_name in learning_rate_fields:
-        base_learning_rate = getattr(config, field_name)
-        if base_learning_rate is None:
-            raise ValueError(
-                f"{field_name} must define a base learning rate before applying --lr."
-            )
-        base_learning_rate = float(base_learning_rate)
+        base_learning_rate = float(getattr(config, field_name))
         if not math.isfinite(base_learning_rate) or base_learning_rate < 0.0:
             raise ValueError(
                 f"{field_name} must be finite and non-negative, got {base_learning_rate}"

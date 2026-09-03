@@ -393,6 +393,12 @@ def save_normal_map_snapshot(
         np.save(output_path_png.with_suffix(".npy"), normal_rgba)
 
 
+def renders_output_dir(output_dir: Path) -> Path:
+    renders_dir = output_dir / "renders"
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    return renders_dir
+
+
 def save_depth_distortion_snapshot(
         output_path_png: Path,
         depth_distortion: np.ndarray,
@@ -1151,15 +1157,16 @@ def save_manual_snapshot(
         primitive_ages: np.ndarray | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
+    renders_dir = renders_output_dir(output_dir)
     final_images = renderer.render_forward()
 
     for camera_name in camera_ids:
         img_np = render.get_forward_rgb(final_images, camera_name)
-        io_utils.save_render(output_dir / f"render_final_{camera_name}.png", img_np)
+        io_utils.save_render(renders_dir / f"render_final_{camera_name}.png", img_np)
 
         depth_np = render.get_forward_depth_distortion(final_images, camera_name)
         save_depth_distortion_snapshot(
-            output_dir / f"depth_distortion_final_{camera_name}.png",
+            renders_dir / f"depth_distortion_final_{camera_name}.png",
             depth_np,
             quantile=0.99,
             save_npy=False,
@@ -1167,7 +1174,7 @@ def save_manual_snapshot(
 
         median_depth_np = render.get_forward_median_depth(final_images, camera_name)
         save_median_depth_snapshot(
-            output_dir / f"median_depth_final_{camera_name}.png",
+            renders_dir / f"median_depth_final_{camera_name}.png",
             median_depth_np,
             quantile=0.99,
             save_npy=False,
@@ -1175,14 +1182,14 @@ def save_manual_snapshot(
 
         visible_normal_np = render.get_forward_visible_normal(final_images, camera_name)
         save_normal_map_snapshot(
-            output_dir / f"visible_normal_final_{camera_name}.png",
+            renders_dir / f"visible_normal_final_{camera_name}.png",
             visible_normal_np,
             save_npy=False,
         )
 
         normal_from_depth_np = render.get_forward_normal_from_depth(final_images, camera_name)
         save_normal_map_snapshot(
-            output_dir / f"normal_from_depth_final_{camera_name}.png",
+            renders_dir / f"normal_from_depth_final_{camera_name}.png",
             normal_from_depth_np,
             save_npy=False,
         )
@@ -1403,11 +1410,12 @@ def compute_initial_losses_and_save_outputs(
     initial_intra_slab_depth_loss_raw = 0.0
     initial_curvature_scale_loss_raw = 0.0
 
+    renders_dir = renders_output_dir(output_dir)
     for camera_name in all_camera_ids:
         img_np = render.get_forward_rgb(initial_images, camera_name)
         img_linear_np = render.get_forward_linear_rgb(initial_images, camera_name)
-        (output_dir / camera_name).mkdir(parents=True, exist_ok=True)
-        io_utils.save_render(output_dir / f"render_initial_{camera_name}.png", img_np)
+        (renders_dir / camera_name).mkdir(parents=True, exist_ok=True)
+        io_utils.save_render(renders_dir / f"render_initial_{camera_name}.png", img_np)
 
         if camera_name not in target_images:
             print(f"Warning: no target image found for camera '{camera_name}', skipping target save and loss.")
@@ -1423,7 +1431,7 @@ def compute_initial_losses_and_save_outputs(
         )
         initial_rgb_loss += rgb_loss_value
         io_utils.save_render(
-            output_dir / f"render_target_{camera_name}.png",
+            renders_dir / f"render_target_{camera_name}.png",
             io_utils.linear_to_srgb(tgt_np),
         )
 
@@ -2397,8 +2405,9 @@ def save_iteration_outputs(
     ):
         return
 
+    renders_dir = renders_output_dir(output_dir)
     for camera_name in all_camera_ids:
-        camera_base_dir = output_dir / camera_name
+        camera_base_dir = renders_dir / camera_name
 
         if save_rgb:
             camera_render_dir = camera_base_dir / "render"

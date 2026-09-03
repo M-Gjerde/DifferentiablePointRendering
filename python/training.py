@@ -2425,6 +2425,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         start_iteration=depth_distortion_start_iteration,
     )
 
+    renders_dir = helpers.renders_output_dir(config.output_dir)
     for camera_name in training_camera_ids:
         img_np = render.get_forward_rgb(final_images, camera_name)
         img_linear_np = render.get_forward_linear_rgb(final_images, camera_name)
@@ -2438,7 +2439,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         )
         final_rgb_loss += rgb_loss_cam
         final_total_loss += rgb_loss_cam
-        io_utils.save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
+        io_utils.save_render(renders_dir / f"render_final_{camera_name}.png", img_np)
 
         if use_depth_distortion:
             dist_np = render.get_forward_depth_distortion(final_images, camera_name)
@@ -2447,7 +2448,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_depth_distortion_loss_raw += dist_loss_cam_raw
             final_depth_distortion_loss_weighted += dist_loss_cam_weighted
             final_total_loss += dist_loss_cam_weighted
-            helpers.save_depth_distortion_snapshot(config.output_dir / f"depth_distortion_final_{camera_name}.png", dist_np,
+            helpers.save_depth_distortion_snapshot(renders_dir / f"depth_distortion_final_{camera_name}.png", dist_np,
                                            quantile=0.99, save_npy=False)
 
         if use_normal_consistency:
@@ -2462,11 +2463,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_normal_loss_weighted += normal_loss_cam_weighted
             final_total_loss += normal_loss_cam_weighted
 
-            helpers.save_median_depth_snapshot(config.output_dir / f"median_depth_final_{camera_name}.png", median_depth,
+            helpers.save_median_depth_snapshot(renders_dir / f"median_depth_final_{camera_name}.png", median_depth,
                                        save_npy=False)
-            helpers.save_normal_map_snapshot(config.output_dir / f"visible_normal_final_{camera_name}.png", visible_normal,
+            helpers.save_normal_map_snapshot(renders_dir / f"visible_normal_final_{camera_name}.png", visible_normal,
                                      save_npy=False)
-            helpers.save_normal_map_snapshot(config.output_dir / f"normal_from_depth_final_{camera_name}.png",
+            helpers.save_normal_map_snapshot(renders_dir / f"normal_from_depth_final_{camera_name}.png",
                                      normal_from_depth, save_npy=False)
 
         if use_opacity_prior:

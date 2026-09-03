@@ -318,7 +318,7 @@ def run_trial(
 def run_evaluation(output_root: Path, args: argparse.Namespace, ground_truth: Path | None) -> None:
     command = [
         sys.executable,
-        str(PROJECT_ROOT / "experiments/evaluate_runs.py"),
+        str(PROJECT_ROOT / "metrics/evaluate_runs.py"),
         "--run-root",
         str(output_root),
         "--output-dir",

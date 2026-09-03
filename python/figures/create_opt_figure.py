@@ -294,8 +294,10 @@ def select_loss_column(dataframe: pd.DataFrame, explicit_loss_column: str | None
 
 def discover_camera_names(run_dir: Path) -> List[str]:
     camera_names = set()
+    renders_dir = run_dir / "renders"
+    render_root = renders_dir if renders_dir.is_dir() else run_dir
 
-    for child in sorted(run_dir.iterdir()):
+    for child in sorted(render_root.iterdir()):
         if not child.is_dir():
             continue
 
@@ -311,7 +313,7 @@ def discover_camera_names(run_dir: Path) -> List[str]:
     ]
 
     for pattern in final_image_patterns:
-        for image_path in run_dir.glob(pattern):
+        for image_path in render_root.glob(pattern):
             match = re.match(
                 r"^(?:render_target|render_final|median_depth_final|normal_from_depth_final)_(.+)\.png$",
                 image_path.name,
@@ -625,17 +627,20 @@ def build_gif(
     slow_start_until_iteration: int,
     slow_start_frame_stride: int,
 ) -> Path:
-    target_path = run_dir / f"render_target_{camera_name}.png"
-    final_path = run_dir / f"render_final_{camera_name}.png"
-    final_median_depth_path = run_dir / f"median_depth_final_{camera_name}.png"
-    final_normal_from_depth_path = run_dir / f"normal_from_depth_final_{camera_name}.png"
+    renders_dir = run_dir / "renders"
+    render_read_root = renders_dir if renders_dir.is_dir() else run_dir
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    target_path = render_read_root / f"render_target_{camera_name}.png"
+    final_path = render_read_root / f"render_final_{camera_name}.png"
+    final_median_depth_path = render_read_root / f"median_depth_final_{camera_name}.png"
+    final_normal_from_depth_path = render_read_root / f"normal_from_depth_final_{camera_name}.png"
 
-    render_dir = run_dir / camera_name / "render"
-    median_depth_dir = run_dir / camera_name / "median_depth"
-    normal_from_depth_dir = run_dir / camera_name / "normal_from_depth"
+    render_dir = render_read_root / camera_name / "render"
+    median_depth_dir = render_read_root / camera_name / "median_depth"
+    normal_from_depth_dir = render_read_root / camera_name / "normal_from_depth"
 
     metrics_csv_path = run_dir / "metrics.csv"
-    loss_curve_path = run_dir / "loss_curve_for_gif.png"
+    loss_curve_path = renders_dir / "loss_curve_for_gif.png"
 
     try:
         font = ImageFont.truetype("DejaVuSans.ttf", 20)
@@ -713,7 +718,7 @@ def build_gif(
         font,
     )
 
-    output_path = run_dir / output_name
+    output_path = renders_dir / output_name
 
     base_duration_ms = max(1, int(round(1000.0 / max(fps, 1.0e-6))))
 

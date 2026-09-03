@@ -98,8 +98,13 @@ def load_image_bgr_safely(image_path: Path, wait_time: float = 0.03) -> Optional
     return cv2.imread(str(image_path), cv2.IMREAD_COLOR)
 
 
+def render_root_for_read(run_dir: Path) -> Path:
+    renders_dir = run_dir / "renders"
+    return renders_dir if renders_dir.is_dir() else run_dir
+
+
 def has_matching_target_image(run_dir: Path, camera_name: str) -> bool:
-    return (run_dir / f"render_target_{camera_name}.png").exists()
+    return (render_root_for_read(run_dir) / f"render_target_{camera_name}.png").exists()
 
 
 def discover_camera_dirs(run_dir: Path) -> List[Path]:
@@ -107,7 +112,7 @@ def discover_camera_dirs(run_dir: Path) -> List[Path]:
         raise RuntimeError(f"output-path '{run_dir}' must be a directory.")
 
     camera_dirs: List[Path] = []
-    for path in sorted(run_dir.iterdir()):
+    for path in sorted(render_root_for_read(run_dir).iterdir()):
         if not path.is_dir():
             continue
 
@@ -125,7 +130,7 @@ def discover_camera_names(run_dir: Path) -> List[str]:
 
 
 def get_latest_render_path(run_dir: Path, camera_name: str) -> Optional[Path]:
-    render_dir = run_dir / camera_name / "render"
+    render_dir = render_root_for_read(run_dir) / camera_name / "render"
     return get_latest_png(render_dir)
 
 
@@ -184,7 +189,7 @@ def get_latest_png(render_directory: Path) -> Optional[Path]:
 
 
 def get_target_path(run_dir: Path, camera_name: str) -> Optional[Path]:
-    candidate = run_dir / f"render_target_{camera_name}.png"
+    candidate = render_root_for_read(run_dir) / f"render_target_{camera_name}.png"
     return candidate if candidate.exists() else None
 
 

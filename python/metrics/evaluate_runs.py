@@ -25,7 +25,6 @@ import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-METRICS_DIR = PROJECT_ROOT / "metrics"
 
 RUN_CONFIG_PARAMETERS = [
     "iterations",
@@ -403,7 +402,9 @@ def resolve_dataset_path(run_dir: Path, run_config: dict[str, Any]) -> Path | No
 
 
 def find_target_image_for_camera(run_dir: Path, dataset_path: Path | None, camera_name: str) -> Path | None:
-    saved_target_path = run_dir / f"render_target_{camera_name}.png"
+    renders_dir = run_dir / "renders"
+    render_root = renders_dir if renders_dir.is_dir() else run_dir
+    saved_target_path = render_root / f"render_target_{camera_name}.png"
     if saved_target_path.is_file():
         return saved_target_path
 
@@ -418,8 +419,10 @@ def find_target_image_for_camera(run_dir: Path, dataset_path: Path | None, camer
 def compute_final_psnr_rows(run_dir: Path, run_config: dict[str, Any]) -> list[dict[str, Any]]:
     dataset_path = resolve_dataset_path(run_dir, run_config)
     rows: list[dict[str, Any]] = []
+    renders_dir = run_dir / "renders"
+    render_root = renders_dir if renders_dir.is_dir() else run_dir
 
-    for render_path in sorted(run_dir.glob("render_final_*.png")):
+    for render_path in sorted(render_root.glob("render_final_*.png")):
         camera_name = camera_name_from_final_render(render_path)
         if camera_name is None:
             continue
@@ -655,18 +658,18 @@ def plot_loss_curve(
 
 
 def lazy_chamfer_imports():
-    if str(METRICS_DIR) not in sys.path:
-        sys.path.insert(0, str(METRICS_DIR))
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
     try:
-        from chamfer_ours import (
+        from metrics.chamfer_ours import (
             compute_paper_ready_point_to_triangle_distance,
             load_triangle_mesh_with_query_points,
             set_random_seed,
         )
     except ModuleNotFoundError as exception:
         raise RuntimeError(
-            "Geometry evaluation requires the dependencies used by metrics/chamfer_ours.py "
-            "(notably Open3D). Loss-only evaluation works without them."
+            "Geometry evaluation could not import metrics/chamfer_ours.py: "
+            f"missing module {exception.name!r}. Loss-only evaluation works without it."
         ) from exception
 
     return (
