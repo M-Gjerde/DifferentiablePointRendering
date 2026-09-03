@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,13 @@ METRICS_DIR = PROJECT_ROOT / "metrics"
 
 RUN_CONFIG_PARAMETERS = [
     "iterations",
+    "optimizer_type",
+    "learning_rate",
     "densification_interval",
+    "prune_interval",
+    "densify_after",
+    "prune_after",
+    "densification_grad_quantile",
     "densification_grad_abs_min",
     "densification_grad_abs_min_final",
     "densification_grad_abs_min_decay_start_iteration",
@@ -39,9 +46,15 @@ RUN_CONFIG_PARAMETERS = [
     "densification_exact_clone_percent_dense",
     "densification_scene_extent",
     "densification_max_new_fraction",
+    "curvature_violation_threshold",
+    "ssim_weight",
+    "ssim_window_size",
+    "ssim_sigma",
     "normal_consistency_weight",
     "depth_distort_weight",
     "opacity_prior_weight",
+    "intra_slab_depth_weight",
+    "curvature_scale_weight",
     "use_global_lr_decay",
     "global_lr_scale_init",
     "global_lr_scale_final",
@@ -59,6 +72,17 @@ RUN_CONFIG_PARAMETERS = [
     "densify_bsdf_floor",
     "densify_bsdf_gamma",
     "densification_downweight_normal_gradients",
+    "inactive_transport_prune_cycles",
+    "opacity_prune_threshold",
+    "max_prune_fraction",
+    "min_surfel_area",
+    "ground_truth",
+    "geometry_samples",
+    "geometry_seed",
+    "geometry_scale",
+    "geometry_use_vertices",
+    "enable_metrics",
+    "enable_image_preview",
     "mesh_extraction_interval",
 ]
 
@@ -91,7 +115,7 @@ class RunEvaluation:
 
 
 GROUND_TRUTH_SAMPLE_CACHE: dict[
-    tuple[str, int, bool, int],
+    tuple[str, int, int, int, bool, int],
     tuple[Any, Any, str],
 ] = {}
 
@@ -126,6 +150,16 @@ def parse_args() -> argparse.Namespace:
         "--full",
         action="store_true",
         help="Evaluate every mesh checkpoint. By default, evaluate mesh/fuse_post.ply.",
+    )
+    parser.add_argument(
+        "--checkpoint-iteration",
+        type=int,
+        action="append",
+        default=[],
+        help=(
+            "With --full, evaluate only this mesh-checkpoint iteration. May be "
+            "passed more than once. Existing compatible results are retained."
+        ),
     )
     parser.add_argument(
         "--samples",
@@ -179,8 +213,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Recompute geometry CSVs instead of reusing cached results.",
+        default=False,
+        help="Recompute selected geometry checkpoints instead of reusing compatible cached results.",
     )
     return parser.parse_args()
 
@@ -207,11 +241,32 @@ def safe_float(value: Any) -> float | None:
     return number
 
 
+def safe_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if text == "":
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        number = safe_float(value)
+        if number is None or not number.is_integer():
+            return None
+        return int(number)
+
+
 def csv_value_is_true(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
 def format_number(value: Any) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
     number = safe_float(value)
     if number is None:
         return "" if value is None else str(value)
@@ -247,11 +302,26 @@ def write_dict_csv(csv_path: Path, rows: list[dict[str, Any]], fieldnames: list[
             fields.update(row.keys())
         fieldnames = sorted(fields)
 
-    with csv_path.open("w", encoding="utf-8", newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: format_number(row.get(field, "")) for field in fieldnames})
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=csv_path.parent,
+            prefix=f".{csv_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as csv_file:
+            temporary_path = Path(csv_file.name)
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: format_number(row.get(field, "")) for field in fieldnames})
+        temporary_path.replace(csv_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def load_run_config(run_dir: Path) -> dict[str, Any]:
@@ -431,10 +501,19 @@ def find_mesh_checkpoints(run_dir: Path, reconstruction_name: str) -> list[MeshC
         return []
 
     checkpoints: list[MeshCheckpoint] = []
+    checkpoint_paths_by_iteration: dict[int, Path] = {}
     for mesh_path in checkpoint_root.glob(f"iter_*/{reconstruction_name}"):
-        match = re.search(r"iter_(\d+)", mesh_path.parent.name)
+        match = re.fullmatch(r"iter_(\d+)", mesh_path.parent.name)
         if match is None:
             continue
+        iteration = int(match.group(1))
+        previous_path = checkpoint_paths_by_iteration.get(iteration)
+        if previous_path is not None:
+            raise RuntimeError(
+                f"Duplicate mesh checkpoint iteration {iteration}: "
+                f"{previous_path} and {mesh_path.resolve()}"
+            )
+        checkpoint_paths_by_iteration[iteration] = mesh_path.resolve()
         checkpoints.append(MeshCheckpoint(iteration=int(match.group(1)), mesh_path=mesh_path.resolve()))
 
     return sorted(checkpoints, key=lambda checkpoint: checkpoint.iteration)
@@ -470,6 +549,27 @@ def select_mesh_checkpoints(
     if not checkpoints:
         return []
     return [checkpoints[-1]]
+
+
+def filter_mesh_checkpoints_by_iteration(
+    checkpoints: list[MeshCheckpoint],
+    requested_iterations: list[int],
+) -> list[MeshCheckpoint]:
+    if not requested_iterations:
+        return checkpoints
+
+    requested = {int(iteration) for iteration in requested_iterations}
+    available = {checkpoint.iteration for checkpoint in checkpoints}
+    missing = sorted(requested - available)
+    if missing:
+        available_text = ", ".join(str(iteration) for iteration in sorted(available)) or "none"
+        raise FileNotFoundError(
+            "Requested mesh checkpoint iteration(s) not found: "
+            f"{', '.join(str(iteration) for iteration in missing)}. "
+            f"Available iterations: {available_text}."
+        )
+
+    return [checkpoint for checkpoint in checkpoints if checkpoint.iteration in requested]
 
 
 def filtered_loss_rows(rows: list[dict[str, str]], complete_only: bool) -> list[dict[str, str]]:
@@ -596,8 +696,12 @@ def compute_geometry_rows(
         set_random_seed,
     ) = lazy_chamfer_imports()
 
+    resolved_ground_truth_path = ground_truth_path.resolve()
+    ground_truth_stat = resolved_ground_truth_path.stat()
     ground_truth_cache_key = (
-        str(ground_truth_path.resolve()),
+        str(resolved_ground_truth_path),
+        int(ground_truth_stat.st_size),
+        int(ground_truth_stat.st_mtime_ns),
         int(samples),
         bool(use_vertices),
         int(seed),
@@ -650,6 +754,7 @@ def compute_geometry_rows(
             ground_truth_mesh=ground_truth_mesh,
             scale=scale,
         )
+        reconstruction_stat = checkpoint.mesh_path.stat()
         row = {
             "run_name": run_dir.name,
             "iteration": checkpoint.iteration,
@@ -667,7 +772,13 @@ def compute_geometry_rows(
             "distance_mode": "symmetric_point_to_triangle",
             "distance_backend": "open3d_raycasting_cpu",
             "reconstruction": str(checkpoint.mesh_path),
+            "reconstruction_size": int(reconstruction_stat.st_size),
+            "reconstruction_mtime_ns": int(reconstruction_stat.st_mtime_ns),
             "ground_truth": str(ground_truth_path),
+            "evaluation_samples": int(samples),
+            "evaluation_seed": int(seed),
+            "evaluation_scale": float(scale),
+            "evaluation_use_vertices": bool(use_vertices),
         }
         rows.append(row)
 
@@ -709,12 +820,111 @@ def read_existing_geometry_rows(csv_path: Path) -> list[dict[str, Any]]:
             "p95_gt_to_reconstruction",
             "reconstruction_points",
             "ground_truth_points",
+            "reconstruction_size",
+            "reconstruction_mtime_ns",
+            "evaluation_samples",
+            "evaluation_seed",
         ]:
-            value = safe_float(row.get(key))
-            if value is not None:
-                converted[key] = int(value) if key.endswith("points") or key == "iteration" else value
+            integer_field = (
+                key.endswith("points")
+                or key.endswith("_size")
+                or key.endswith("_mtime_ns")
+                or key in {"iteration", "evaluation_samples", "evaluation_seed"}
+            )
+            if integer_field:
+                integer_value = safe_int(row.get(key))
+                if integer_value is not None:
+                    converted[key] = integer_value
+            else:
+                value = safe_float(row.get(key))
+                if value is not None:
+                    converted[key] = value
         converted_rows.append(converted)
     return converted_rows
+
+
+def cached_geometry_iterations(
+    rows: list[dict[str, Any]],
+    checkpoints: list[MeshCheckpoint],
+) -> set[int]:
+    checkpoints_by_iteration = {
+        checkpoint.iteration: checkpoint for checkpoint in checkpoints
+    }
+    reusable: set[int] = set()
+    for row in rows:
+        iteration_value = safe_float(row.get("iteration"))
+        if iteration_value is None:
+            continue
+        iteration = int(iteration_value)
+        checkpoint = checkpoints_by_iteration.get(iteration)
+        if checkpoint is None or not checkpoint.mesh_path.is_file():
+            continue
+        checkpoint_stat = checkpoint.mesh_path.stat()
+        cached_size = safe_int(row.get("reconstruction_size"))
+        cached_mtime_ns = safe_int(row.get("reconstruction_mtime_ns"))
+        if (
+            cached_size is not None
+            and cached_mtime_ns is not None
+            and int(cached_size) == int(checkpoint_stat.st_size)
+            and int(cached_mtime_ns) == int(checkpoint_stat.st_mtime_ns)
+        ):
+            reusable.add(iteration)
+    return reusable
+
+
+GEOMETRY_CACHE_VERSION = 1
+
+
+def geometry_cache_metadata(
+    ground_truth_path: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    resolved_ground_truth = ground_truth_path.expanduser().resolve()
+    ground_truth_stat = resolved_ground_truth.stat()
+    return {
+        "version": GEOMETRY_CACHE_VERSION,
+        "ground_truth": str(resolved_ground_truth),
+        "ground_truth_size": int(ground_truth_stat.st_size),
+        "ground_truth_mtime_ns": int(ground_truth_stat.st_mtime_ns),
+        "samples": int(args.samples),
+        "seed": int(args.seed),
+        "scale": float(args.scale),
+        "use_vertices": bool(args.use_vertices),
+        "reconstruction_name": str(args.reconstruction_name),
+    }
+
+
+def read_json_dict(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as json_file:
+            payload = json.load(json_file)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def write_json_dict(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    with temporary_path.open("w", encoding="utf-8") as json_file:
+        json.dump(payload, json_file, indent=2, sort_keys=True)
+        json_file.write("\n")
+    temporary_path.replace(path)
+
+
+def merge_geometry_rows(
+    cached_rows: list[dict[str, Any]],
+    computed_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_iteration: dict[int, dict[str, Any]] = {}
+    for row in [*cached_rows, *computed_rows]:
+        iteration = safe_float(row.get("iteration"))
+        if iteration is None:
+            continue
+        rows_by_iteration[int(iteration)] = row
+    return [rows_by_iteration[iteration] for iteration in sorted(rows_by_iteration)]
 
 
 def plot_geometry_curve(run_dir: Path, rows: list[dict[str, Any]], output_path: Path) -> None:
@@ -901,32 +1111,67 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
     loss_geometry_plot_path = evaluation_dir / f"loss_geometry_curve_{geometry_mode}.png"
 
     if args.ground_truth is not None:
-        if geometry_csv_path.exists() and not args.force:
-            geometry_rows = read_existing_geometry_rows(geometry_csv_path)
-        else:
-            if args.full:
-                checkpoints = select_mesh_checkpoints(
-                    find_mesh_checkpoints(run_dir, args.reconstruction_name),
-                    full=True,
-                )
-            else:
-                checkpoints = find_main_mesh(
-                    run_dir=run_dir,
-                    reconstruction_name=args.reconstruction_name,
-                    iteration=final_iteration_from_rows(loss_rows, run_config),
-                )
-            geometry_rows = compute_geometry_rows(
-                run_dir=run_dir,
-                checkpoints=checkpoints,
-                ground_truth_path=resolve_path(args.ground_truth),
-                samples=args.samples,
-                device_name=args.device,
-                seed=args.seed,
-                scale=args.scale,
-                use_vertices=args.use_vertices,
-                print_each_score=args.full,
+        resolved_ground_truth = resolve_path(args.ground_truth)
+        cache_metadata_path = evaluation_dir / f"mesh_checkpoint_metrics_{geometry_mode}.meta.json"
+        expected_cache_metadata = geometry_cache_metadata(resolved_ground_truth, args)
+        cache_is_compatible = (
+            geometry_csv_path.is_file()
+            and read_json_dict(cache_metadata_path) == expected_cache_metadata
+        )
+
+        if args.full:
+            all_checkpoints = select_mesh_checkpoints(
+                find_mesh_checkpoints(run_dir, args.reconstruction_name),
+                full=True,
             )
-            write_dict_csv(geometry_csv_path, geometry_rows)
+            requested_checkpoints = filter_mesh_checkpoints_by_iteration(
+                all_checkpoints,
+                args.checkpoint_iteration,
+            )
+        else:
+            all_checkpoints = find_main_mesh(
+                run_dir=run_dir,
+                reconstruction_name=args.reconstruction_name,
+                iteration=final_iteration_from_rows(loss_rows, run_config),
+            )
+            requested_checkpoints = all_checkpoints
+
+        cached_rows = (
+            read_existing_geometry_rows(geometry_csv_path)
+            if cache_is_compatible
+            else []
+        )
+        if geometry_csv_path.is_file() and not cache_is_compatible:
+            # Legacy or differently configured cache: refresh every available
+            # checkpoint once so the rewritten cache has a single meaning.
+            requested_checkpoints = all_checkpoints
+
+        cached_iterations = cached_geometry_iterations(cached_rows, all_checkpoints)
+        cached_rows = [
+            row
+            for row in cached_rows
+            if safe_float(row.get("iteration")) is not None
+            and int(float(row["iteration"])) in cached_iterations
+        ]
+        checkpoints_to_compute = [
+            checkpoint
+            for checkpoint in requested_checkpoints
+            if args.force or checkpoint.iteration not in cached_iterations
+        ]
+        computed_rows = compute_geometry_rows(
+            run_dir=run_dir,
+            checkpoints=checkpoints_to_compute,
+            ground_truth_path=resolved_ground_truth,
+            samples=args.samples,
+            device_name=args.device,
+            seed=args.seed,
+            scale=args.scale,
+            use_vertices=args.use_vertices,
+            print_each_score=args.full,
+        )
+        geometry_rows = merge_geometry_rows(cached_rows, computed_rows)
+        write_dict_csv(geometry_csv_path, geometry_rows)
+        write_json_dict(cache_metadata_path, expected_cache_metadata)
 
         plot_geometry_curve(run_dir, geometry_rows, geometry_plot_path)
         plot_loss_geometry_curve(
@@ -1124,6 +1369,10 @@ def print_psnr_table(evaluations: list[RunEvaluation]) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.checkpoint_iteration and not args.full:
+        raise SystemExit("--checkpoint-iteration requires --full.")
+    if args.checkpoint_iteration and args.ground_truth is None:
+        raise SystemExit("--checkpoint-iteration requires --ground-truth/--gt.")
     run_dirs = find_run_dirs(args.run_dir, args.run_root, args.recursive)
     if not run_dirs and not args.run_dir and not args.run_root:
         run_root = default_run_root()

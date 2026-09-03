@@ -1,7 +1,7 @@
+import math
+
 import numpy as np
 import torch
-from typing import Optional, Any
-import math
 
 
 def normalize_quaternions_torch(q: torch.Tensor, eps: float = 1.0e-12) -> torch.Tensor:
@@ -66,7 +66,7 @@ def quaternion_exp_from_local_delta(delta: torch.Tensor, eps: float = 1.0e-12) -
 def apply_local_rotation_update_to_quaternions_inplace(
         rotations: torch.Tensor,
         rotation_delta: torch.Tensor,
-        trainable_surfel_mask: Optional[torch.Tensor] = None,
+        trainable_surfel_mask: torch.Tensor | None = None,
         max_rotation_step_radians: float = 0.0,
 ) -> dict[str, float]:
     if rotations.ndim != 2 or rotations.shape[1] != 4:
@@ -91,61 +91,6 @@ def apply_local_rotation_update_to_quaternions_inplace(
             "max_quat_norm_error": float((torch.linalg.norm(rotations, dim=1) - 1.0).abs().max().item()),
             "max_delta_norm": float(torch.linalg.norm(delta, dim=1).max().item()) if delta.numel() else 0.0,
         }
-
-
-def quaternion_from_tangent_frame_torch(tangent_u: torch.Tensor, tangent_v: torch.Tensor) -> torch.Tensor:
-    eps = 1.0e-12
-    u = torch.nn.functional.normalize(tangent_u, dim=1, eps=eps)
-    v = tangent_v - torch.sum(tangent_v * u, dim=1, keepdim=True) * u
-    v = torch.nn.functional.normalize(v, dim=1, eps=eps)
-    w = torch.nn.functional.normalize(torch.cross(u, v, dim=1), dim=1, eps=eps)
-    m00, m01, m02 = u[:, 0], v[:, 0], w[:, 0]
-    m10, m11, m12 = u[:, 1], v[:, 1], w[:, 1]
-    m20, m21, m22 = u[:, 2], v[:, 2], w[:, 2]
-    q = torch.zeros((u.shape[0], 4), device=u.device, dtype=u.dtype)
-    trace = m00 + m11 + m22
-    mask = trace > 0.0
-    if mask.any():
-        s = torch.sqrt(trace[mask] + 1.0) * 2.0
-        q[mask, 0] = 0.25 * s
-        q[mask, 1] = (m21[mask] - m12[mask]) / s
-        q[mask, 2] = (m02[mask] - m20[mask]) / s
-        q[mask, 3] = (m10[mask] - m01[mask]) / s
-    mask_x = (~mask) & (m00 > m11) & (m00 > m22)
-    if mask_x.any():
-        s = torch.sqrt(1.0 + m00[mask_x] - m11[mask_x] - m22[mask_x]) * 2.0
-        q[mask_x, 0] = (m21[mask_x] - m12[mask_x]) / s
-        q[mask_x, 1] = 0.25 * s
-        q[mask_x, 2] = (m01[mask_x] + m10[mask_x]) / s
-        q[mask_x, 3] = (m02[mask_x] + m20[mask_x]) / s
-    mask_y = (~mask) & (~mask_x) & (m11 > m22)
-    if mask_y.any():
-        s = torch.sqrt(1.0 + m11[mask_y] - m00[mask_y] - m22[mask_y]) * 2.0
-        q[mask_y, 0] = (m02[mask_y] - m20[mask_y]) / s
-        q[mask_y, 1] = (m01[mask_y] + m10[mask_y]) / s
-        q[mask_y, 2] = 0.25 * s
-        q[mask_y, 3] = (m12[mask_y] + m21[mask_y]) / s
-    mask_z = (~mask) & (~mask_x) & (~mask_y)
-    if mask_z.any():
-        s = torch.sqrt(1.0 + m22[mask_z] - m00[mask_z] - m11[mask_z]) * 2.0
-        q[mask_z, 0] = (m10[mask_z] - m01[mask_z]) / s
-        q[mask_z, 1] = (m02[mask_z] + m20[mask_z]) / s
-        q[mask_z, 2] = (m12[mask_z] + m21[mask_z]) / s
-        q[mask_z, 3] = 0.25 * s
-    return normalize_quaternions_torch(q)
-
-
-def project_gradient_to_surfel_tangent_plane_np(
-        grad_position_np: np.ndarray,
-        rotations: torch.Tensor,
-) -> np.ndarray:
-    grad_np = np.asarray(grad_position_np, dtype=np.float32, order="C")
-    with torch.no_grad():
-        device = rotations.device
-        g = torch.as_tensor(grad_np, device=device, dtype=torch.float32)
-        tu, tv, _ = quaternion_to_tangent_frame_torch(rotations.detach())
-        projected = torch.sum(g * tu, dim=1, keepdim=True) * tu + torch.sum(g * tv, dim=1, keepdim=True) * tv
-        return projected.detach().cpu().numpy().astype(np.float32)
 
 
 def make_under_reconstruction_clones(
@@ -552,40 +497,6 @@ def make_under_reconstruction_clones(
         return result
 
 
-def add_densification_stats_np(
-        grad_position_np: np.ndarray,
-        trainable_surfel_mask: torch.Tensor,
-        accum_np: np.ndarray,
-        denom_np: np.ndarray,
-        update_only_nonzero: bool = True,
-) -> None:
-    """
-    Accumulate per-primitive position-gradient magnitudes for densification.
-
-    This is a density-control statistic, not the optimizer gradient.
-    Recommended input: photo_gradients["position"], not total_gradients["position"].
-    """
-    grad_position_np = np.asarray(grad_position_np, dtype=np.float32, order="C")
-
-    grad_norm_np = np.linalg.norm(grad_position_np, axis=1, keepdims=True)
-    grad_norm_np = np.nan_to_num(
-        grad_norm_np,
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
-
-    trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1, 1)
-
-    update_mask_np = trainable_np & np.isfinite(grad_norm_np)
-
-    if update_only_nonzero:
-        update_mask_np = update_mask_np & (grad_norm_np > 0.0)
-
-    accum_np[update_mask_np] += grad_norm_np[update_mask_np]
-    denom_np[update_mask_np] += 1.0
-
-
 def compute_prune_indices_by_opacity(
         opacities: torch.Tensor,
         min_opacity: float,
@@ -657,7 +568,7 @@ def compute_prune_indices_by_degenerate_area(
         scales: torch.Tensor,
         *,
         min_area: float = math.pi * 1.0e-10,
-        trainable_mask: Optional[torch.Tensor] = None,
+        trainable_mask: torch.Tensor | None = None,
         min_points_to_keep: int = 1,
 ) -> np.ndarray:
     """

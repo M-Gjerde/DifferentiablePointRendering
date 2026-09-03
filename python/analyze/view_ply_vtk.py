@@ -362,28 +362,6 @@ def numpy_to_vtk_float_array(
     return array_handle
 
 
-def numpy_rgb01_to_vtk_u8_rgb(
-    name: str,
-    rgb01: np.ndarray,
-) -> vtk.vtkUnsignedCharArray:
-    rgb_u8 = (np.asarray(rgb01, dtype=np.float32).clip(0.0, 1.0) * 255.0).astype(np.uint8)
-
-    array_handle = vtk.vtkUnsignedCharArray()
-    array_handle.SetName(name)
-    array_handle.SetNumberOfComponents(3)
-    array_handle.SetNumberOfTuples(rgb_u8.shape[0])
-
-    for point_index in range(rgb_u8.shape[0]):
-        array_handle.SetTuple3(
-            point_index,
-            int(rgb_u8[point_index, 0]),
-            int(rgb_u8[point_index, 1]),
-            int(rgb_u8[point_index, 2]),
-        )
-
-    return array_handle
-
-
 def build_poly_data_from_ply(
     ply_path: Path,
     args: argparse.Namespace,

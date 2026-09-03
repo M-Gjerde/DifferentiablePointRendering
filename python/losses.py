@@ -7,21 +7,6 @@ import torch
 import torch.nn.functional as F
 
 
-def compute_l2_loss(rendered: np.ndarray, target: np.ndarray) -> float:
-    """
-    L2 loss (1/2 * mean squared error) between rendered and target RGB images.
-
-    rendered, target: (H, W, 3) float32 arrays.
-    """
-    if rendered.shape != target.shape:
-        raise RuntimeError(
-            f"Shape mismatch: rendered {rendered.shape}, target {target.shape}"
-        )
-
-    diff = rendered - target                       # residuals r_i = p_i - t_i
-    loss = 0.5 * np.mean(diff * diff)              # 1/2 * mean(r^2)
-    return float(loss)
-
 def compute_l2_grad(rendered: np.ndarray, target: np.ndarray) -> np.ndarray:
     """
     Maple loss per element:
@@ -40,40 +25,6 @@ def compute_l2_grad(rendered: np.ndarray, target: np.ndarray) -> np.ndarray:
     diff = rendered - target
     grad = diff / diff.size
     return grad.astype(np.float32)
-
-
-def compute_l2_loss_and_grad(
-    rendered: np.ndarray,
-    target: np.ndarray,
-    return_loss_image: bool = False,
-):
-    """
-    Discrete approximation using mean over all elements (pixels * channels):
-
-        C = mean( 1/2 * (rendered - target)^2 )
-        dC/d(rendered) = (rendered - target) / N
-
-    If return_loss_image=True:
-        loss_image is per-element: 1/2 * (rendered - target)^2
-    """
-    if rendered.shape != target.shape:
-        raise RuntimeError(
-            f"Shape mismatch: rendered {rendered.shape}, target {target.shape}"
-        )
-
-    diff = rendered - target
-
-    loss_image = 0.5 * diff * diff
-    loss = float(np.mean(loss_image))
-
-    num_elements = diff.size
-    grad_image = diff / float(num_elements)
-
-    if return_loss_image:
-        return loss, grad_image.astype(np.float32), loss_image.astype(np.float32)
-
-    return loss, grad_image.astype(np.float32)
-
 
 
 def _create_gaussian_window(window_size: int, sigma: float, channels: int) -> torch.Tensor:

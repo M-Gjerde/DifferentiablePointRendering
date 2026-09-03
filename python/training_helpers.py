@@ -2,37 +2,23 @@ from __future__ import annotations
 
 import copy
 import csv
-import math
 import select
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import matplotlib
+import numpy as np
+import pale
+import torch
 
+import density_control as density
+import io_utils
+import losses
+import optimizers
+import render_hooks as render
 from config import OptimizationConfig, RendererSettingsConfig
-from density_control import (
-    compute_prune_indices_by_degenerate_area,
-    compute_prune_indices_by_opacity,
-    make_under_reconstruction_clones,
-    normalize_quaternions_torch,
-    quaternion_to_tangent_frame_torch
-)
-from io_utils import (
-    SUPPORTED_TARGET_IMAGE_SUFFIXES,
-    linear_to_srgb,
-    load_target_image,
-    save_gaussians_to_ply,
-    save_gradient_sign_png_py,
-    save_render,
-)
-from losses import (
-    compute_l2_grad,
-    compute_l2_ssim_loss_and_grad,
-    compute_l2_ssim_metrics,
-)
-from optimizers import create_masked_optimizer
-from render_hooks import *
+from metrics_schema import METRICS_COLUMNS
 
 PARAMETER_NAMES = (
     "position",
@@ -62,14 +48,14 @@ LOSS_VALUE_KEYS = (
 )
 
 
-def make_zero_loss_values() -> Dict[str, float]:
+def make_zero_loss_values() -> dict[str, float]:
     return {loss_key: 0.0 for loss_key in LOSS_VALUE_KEYS}
 
 
 def make_averaged_loss_state_from_camera_cache(
-        latest_loss_values_by_camera: Dict[str, Dict[str, float]],
-        expected_camera_ids: List[str],
-) -> Dict[str, Any]:
+        latest_loss_values_by_camera: dict[str, dict[str, float]],
+        expected_camera_ids: list[str],
+) -> dict[str, Any]:
     available_camera_ids = [
         camera_name
         for camera_name in expected_camera_ids
@@ -79,7 +65,7 @@ def make_averaged_loss_state_from_camera_cache(
     if not available_camera_ids:
         raise RuntimeError("Cannot compute averaged loss: no camera losses have been recorded.")
 
-    averaged_loss_state: Dict[str, Any] = {}
+    averaged_loss_state: dict[str, Any] = {}
 
     for loss_key in LOSS_VALUE_KEYS:
         averaged_loss_state[loss_key] = float(np.mean([
@@ -135,7 +121,7 @@ def make_named_parameter_dict(
         opacities: torch.nn.Parameter,
         betas: torch.nn.Parameter,
         powers: torch.nn.Parameter,
-) -> Dict[str, torch.nn.Parameter]:
+) -> dict[str, torch.nn.Parameter]:
     return {
         "position": positions,
         "rotation": rotation_delta,
@@ -186,7 +172,7 @@ def repair_nonfinite_gradient_array_inplace(
 
 def repair_nonfinite_gradient_dict_inplace(
         tag: str,
-        gradient_dict: Dict[str, np.ndarray],
+        gradient_dict: dict[str, np.ndarray],
         iteration: int,
 ) -> int:
     total_bad_count = 0
@@ -201,7 +187,7 @@ def repair_nonfinite_gradient_dict_inplace(
 
 
 def apply_densification_source_updates_inplace(
-        densification_result: Optional[Dict[str, Any]],
+        densification_result: dict[str, Any] | None,
         positions: torch.nn.Parameter,
         rotations: torch.Tensor,
         scales: torch.nn.Parameter,
@@ -225,7 +211,7 @@ def apply_densification_source_updates_inplace(
             positions.data[idx] = v.view_as(positions.data[idx])
         if "rotation" in update:
             v = torch.as_tensor(update["rotation"], device=device, dtype=rotations.dtype)
-            rotations.data[idx] = normalize_quaternions_torch(v.view_as(rotations.data[idx]))
+            rotations.data[idx] = density.normalize_quaternions_torch(v.view_as(rotations.data[idx]))
         if "scale" in update:
             v = torch.as_tensor(update["scale"], device=device, dtype=scales.dtype)
             scales.data[idx] = v.view_as(scales.data[idx])
@@ -246,13 +232,13 @@ def apply_densification_source_updates_inplace(
 def rebuild_optimizer_preserving_state(
         config: OptimizationConfig,
         old_optimizer: torch.optim.Optimizer,
-        old_params: Dict[str, torch.nn.Parameter],
-        new_params: Dict[str, torch.nn.Parameter],
+        old_params: dict[str, torch.nn.Parameter],
+        new_params: dict[str, torch.nn.Parameter],
         keep_mask_np: np.ndarray,
-        source_index_for_new_np: Optional[np.ndarray] = None,
+        source_index_for_new_np: np.ndarray | None = None,
         copy_source_state_to_new: bool = True,
 ) -> torch.optim.Optimizer:
-    new_optimizer = create_masked_optimizer(
+    new_optimizer = optimizers.create_masked_optimizer(
         config,
         new_params["position"],
         new_params["rotation"],
@@ -327,12 +313,12 @@ DEVICE_ADAM_STATE_ARRAY_KEYS = (
 
 
 def migrate_device_adam_state_snapshot(
-        snapshot: Optional[Dict[str, Any]],
+        snapshot: dict[str, Any] | None,
         keep_mask_np: np.ndarray,
         new_point_count: int,
-        source_index_for_new_np: Optional[np.ndarray] = None,
+        source_index_for_new_np: np.ndarray | None = None,
         copy_source_state_to_new: bool = False,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     if not snapshot:
         return None
 
@@ -359,7 +345,7 @@ def migrate_device_adam_state_snapshot(
         if source_index_for_new_np.shape[0] != n_new:
             source_index_for_new_np = None
 
-    migrated: Dict[str, Any] = {
+    migrated: dict[str, Any] = {
         "point_count": new_n,
         "step": int(snapshot.get("step", 0)),
     }
@@ -401,7 +387,7 @@ def save_normal_map_snapshot(
 
     vis = 0.5 * (normal_rgb + 1.0)
     vis[~valid] = 0.0
-    save_render(output_path_png, vis)
+    io_utils.save_render(output_path_png, vis)
 
     if save_npy:
         np.save(output_path_png.with_suffix(".npy"), normal_rgba)
@@ -431,7 +417,7 @@ def save_depth_distortion_snapshot(
         vis_scalar = np.clip(depth / vmax, 0.0, 1.0)
         vis = matplotlib.colormaps[cmap](vis_scalar)[..., :3].astype(np.float32, copy=False)
 
-    save_render(output_path_png, vis)
+    io_utils.save_render(output_path_png, vis)
 
 
 def save_median_depth_snapshot(
@@ -466,7 +452,7 @@ def save_median_depth_snapshot(
         vis = matplotlib.colormaps[cmap](vis_scalar)[..., :3].astype(np.float32, copy=False)
         vis[~valid] = 0.0
 
-    save_render(output_path_png, vis)
+    io_utils.save_render(output_path_png, vis)
 
 
 def make_trainable_surfel_mask_from_powers(
@@ -510,12 +496,12 @@ def make_mean_reduction_adjoint_image(
     return np.full(image_2d.shape, loss_weight / float(pixel_count), dtype=np.float32)
 
 
-def sum_gradient_dicts(*gradient_dicts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+def sum_gradient_dicts(*gradient_dicts: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     active = [gradient_dict for gradient_dict in gradient_dicts if gradient_dict]
     if not active:
         return {}
 
-    result: Dict[str, np.ndarray] = {
+    result: dict[str, np.ndarray] = {
         key: np.asarray(value, dtype=np.float32, order="C").copy()
         for key, value in active[0].items()
     }
@@ -536,7 +522,7 @@ def sum_gradient_dicts(*gradient_dicts: Dict[str, np.ndarray]) -> Dict[str, np.n
     return result
 
 
-def poll_hotkey() -> Optional[str]:
+def poll_hotkey() -> str | None:
     if not sys.stdin.isatty():
         return None
 
@@ -581,7 +567,7 @@ def rms_point(x: np.ndarray) -> float:
 
 
 def position_gradient_norm_stats_or_zero(
-        gradient_dict: Dict[str, np.ndarray],
+        gradient_dict: dict[str, np.ndarray],
 ) -> tuple[float, float]:
     if not gradient_dict or "position" not in gradient_dict:
         return 0.0, 0.0
@@ -590,8 +576,8 @@ def position_gradient_norm_stats_or_zero(
     return gradient_l2_norm(grad_position), max_point_norm(grad_position)
 
 
-def gradient_stats_from_dict(gradient_dict: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
-    stats: Dict[str, Dict[str, float]] = {}
+def gradient_stats_from_dict(gradient_dict: dict[str, np.ndarray]) -> dict[str, dict[str, float]]:
+    stats: dict[str, dict[str, float]] = {}
 
     for key, value in gradient_dict.items():
         gradient_array = np.asarray(value, dtype=np.float32, order="C")
@@ -603,7 +589,7 @@ def gradient_stats_from_dict(gradient_dict: Dict[str, np.ndarray]) -> Dict[str, 
     return stats
 
 
-def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
+def format_gradient_stats(tag: str, stats: dict[str, dict[str, float]]) -> str:
     def format_stat(name: str) -> str:
         if name not in stats:
             return f"{name}=NA"
@@ -620,17 +606,7 @@ def format_gradient_stats(tag: str, stats: Dict[str, Dict[str, float]]) -> str:
     )
 
 
-def zero_optimizer_state_for_parameter(optimizer, parameter: torch.Tensor) -> None:
-    optimizer_state = optimizer.state.get(parameter, None)
-    if not optimizer_state:
-        return
-
-    for state_value in optimizer_state.values():
-        if torch.is_tensor(state_value):
-            state_value.zero_()
-
-
-def scale_gradient_dict(gradient_dict: Dict[str, np.ndarray], scale: float) -> Dict[str, np.ndarray]:
+def scale_gradient_dict(gradient_dict: dict[str, np.ndarray], scale: float) -> dict[str, np.ndarray]:
     return {name: gradient * scale for name, gradient in gradient_dict.items()}
 
 
@@ -677,9 +653,9 @@ def scheduled_densification_grad_abs_min(
 def densification_scene_extent_for_positions(
         config: OptimizationConfig,
         positions,
-        trainable_surfel_mask: Optional[torch.Tensor] = None,
+        trainable_surfel_mask: torch.Tensor | None = None,
 ) -> float:
-    scene_extent = float(getattr(config, "densification_scene_extent", 0.0))
+    scene_extent = float(config.densification_scene_extent)
     if scene_extent > 0.0:
         return scene_extent
 
@@ -706,11 +682,9 @@ def densification_scene_extent_for_positions(
 def exact_clone_scale_threshold_for_positions(
         config: OptimizationConfig,
         positions,
-        trainable_surfel_mask: Optional[torch.Tensor] = None,
+        trainable_surfel_mask: torch.Tensor | None = None,
 ) -> float:
-    exact_clone_percent_dense = float(
-        getattr(config, "densification_exact_clone_percent_dense", 0.0)
-    )
+    exact_clone_percent_dense = float(config.densification_exact_clone_percent_dense)
     if exact_clone_percent_dense <= 0.0:
         return 0.0
 
@@ -723,44 +697,14 @@ def exact_clone_scale_threshold_for_positions(
 
 def minimum_splittable_scale_for_config(config: OptimizationConfig) -> float:
     split_scale_factor = max(
-        float(getattr(config, "densification_split_scale_factor", math.sqrt(2.0))),
+        float(config.densification_split_scale_factor),
         1.0,
     )
-    min_clone_scale = float(getattr(config, "densification_scale_min", 8.0e-3))
+    min_clone_scale = float(config.densification_scale_min)
     return min_clone_scale * split_scale_factor * (1.0 + 1.0e-4)
 
 
-def make_loss_breakdown(loss_state: Dict[str, Any]) -> Dict[str, float]:
-    rgb_loss = float(loss_state["total_rgb_loss_value"])
-    depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
-    normal_weighted = float(loss_state["total_normal_loss_weighted"])
-    opacity_weighted = float(loss_state["total_opacity_prior_loss_weighted"])
-    intra_slab_weighted = float(loss_state["total_intra_slab_depth_loss_weighted"])
-    curvature_scale_weighted = float(loss_state["total_curvature_scale_loss_weighted"])
-
-    after_depth = rgb_loss + depth_weighted
-    after_normal = after_depth + normal_weighted
-    after_opacity = after_normal + opacity_weighted
-    after_intra_slab = after_opacity + intra_slab_weighted
-    after_curvature_scale = after_intra_slab + curvature_scale_weighted
-    regularizer_total = (
-        depth_weighted + normal_weighted + opacity_weighted +
-        intra_slab_weighted + curvature_scale_weighted
-    )
-
-    return {
-        "before_regularizers": rgb_loss,
-        "after_depth_distortion": after_depth,
-        "after_normal_consistency": after_normal,
-        "after_opacity_prior": after_opacity,
-        "after_intra_slab_depth": after_intra_slab,
-        "after_curvature_scale": after_curvature_scale,
-        "regularizer_total": regularizer_total,
-        "total": float(loss_state["total_loss_value"]),
-    }
-
-
-def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
+def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
@@ -802,7 +746,7 @@ def format_loss_breakdown(loss_state: Dict[str, Any]) -> str:
 
 
 def gradient_norm_for_key(
-        gradient_dict: Dict[str, np.ndarray],
+        gradient_dict: dict[str, np.ndarray],
         key: str,
 ) -> float:
     if not gradient_dict or key not in gradient_dict:
@@ -817,7 +761,7 @@ def format_training_iteration_log(
         iteration_rate: float,
         total_time: float,
         num_points: int,
-        loss_state: Dict[str, Any],
+        loss_state: dict[str, Any],
         lr_position: float,
         global_lr_scale: float,
         position_lr_scale: float,
@@ -893,14 +837,14 @@ def format_training_iteration_log(
 
 
 def format_gradient_source_balance(
-        loss_gradients: Dict[str, np.ndarray],
-        depth_regularizer_gradients: Dict[str, np.ndarray],
-        normal_regularizer_gradients: Dict[str, np.ndarray],
-        opacity_prior_gradients: Dict[str, np.ndarray],
-        intra_slab_depth_gradients: Dict[str, np.ndarray],
-        curvature_scale_gradients: Dict[str, np.ndarray],
-        surface_regularizer_gradients: Dict[str, np.ndarray],
-        total_gradients: Dict[str, np.ndarray],
+        loss_gradients: dict[str, np.ndarray],
+        depth_regularizer_gradients: dict[str, np.ndarray],
+        normal_regularizer_gradients: dict[str, np.ndarray],
+        opacity_prior_gradients: dict[str, np.ndarray],
+        intra_slab_depth_gradients: dict[str, np.ndarray],
+        curvature_scale_gradients: dict[str, np.ndarray],
+        surface_regularizer_gradients: dict[str, np.ndarray],
+        total_gradients: dict[str, np.ndarray],
 ) -> str:
     keys = [
         ("position", "pos"),
@@ -1039,8 +983,8 @@ def compute_normal_consistency_loss_and_adjoints(
 
 
 def summarize_depth_distortion_maps(
-        depth_maps: Dict[str, np.ndarray],
-        adjoint_maps: Dict[str, np.ndarray],
+        depth_maps: dict[str, np.ndarray],
+        adjoint_maps: dict[str, np.ndarray],
 ) -> str:
     if not depth_maps:
         return "depth_distortion: no cameras"
@@ -1074,8 +1018,8 @@ def summarize_depth_distortion_maps(
 def refetch_parameters_as_torch(
         renderer: pale.Renderer,
         device: torch.device,
-) -> Tuple[torch.nn.Parameter, ...]:
-    updated = fetch_parameters(renderer)
+) -> tuple[torch.nn.Parameter, ...]:
+    updated = render.fetch_parameters(renderer)
     positions = torch.nn.Parameter(torch.tensor(updated["position"], device=device, dtype=torch.float32))
     rotations = torch.nn.Parameter(torch.tensor(updated["rotation"], device=device, dtype=torch.float32),
                                    requires_grad=False)
@@ -1091,7 +1035,7 @@ def refetch_parameters_as_torch(
 def verify_rotations_inplace(rotations: torch.Tensor) -> dict[str, float]:
     with torch.no_grad():
         before_norm = torch.linalg.norm(rotations.data, dim=1)
-        rotations.data.copy_(normalize_quaternions_torch(rotations.data))
+        rotations.data.copy_(density.normalize_quaternions_torch(rotations.data))
         after_norm = torch.linalg.norm(rotations.data, dim=1)
         return {
             "before_min_norm": float(before_norm.min().item()),
@@ -1108,14 +1052,14 @@ def verify_parameters_inplane(
         albedos: torch.Tensor,
         opacities: torch.Tensor,
         betas: torch.Tensor,
-        trainable_surfel_mask: Optional[torch.Tensor] = None,
+        trainable_surfel_mask: torch.Tensor | None = None,
 ) -> None:
     verify_rotations_inplace(rotations)
-    verify_scales_inplace(scales)
-    verify_positions_inplace(positions)
-    verify_albedos_inplace(albedos)
-    verify_opacities_inplace(opacities)
-    verify_beta_inplace(betas, trainable_surfel_mask=trainable_surfel_mask)
+    render.verify_scales_inplace(scales)
+    render.verify_positions_inplace(positions)
+    render.verify_albedos_inplace(albedos)
+    render.verify_opacities_inplace(opacities)
+    render.verify_beta_inplace(betas, trainable_surfel_mask=trainable_surfel_mask)
 
 
 def assign_numpy_gradients_to_tensors(
@@ -1202,7 +1146,7 @@ def save_manual_snapshot(
         opacities: torch.Tensor,
         betas: torch.Tensor,
         powers: torch.Tensor,
-        camera_ids: List[str],
+        camera_ids: list[str],
         densification_origins: np.ndarray | None = None,
         primitive_ages: np.ndarray | None = None,
 ) -> Path:
@@ -1210,10 +1154,10 @@ def save_manual_snapshot(
     final_images = renderer.render_forward()
 
     for camera_name in camera_ids:
-        img_np = get_forward_rgb(final_images, camera_name)
-        save_render(output_dir / f"render_final_{camera_name}.png", img_np)
+        img_np = render.get_forward_rgb(final_images, camera_name)
+        io_utils.save_render(output_dir / f"render_final_{camera_name}.png", img_np)
 
-        depth_np = get_forward_depth_distortion(final_images, camera_name)
+        depth_np = render.get_forward_depth_distortion(final_images, camera_name)
         save_depth_distortion_snapshot(
             output_dir / f"depth_distortion_final_{camera_name}.png",
             depth_np,
@@ -1221,7 +1165,7 @@ def save_manual_snapshot(
             save_npy=False,
         )
 
-        median_depth_np = get_forward_median_depth(final_images, camera_name)
+        median_depth_np = render.get_forward_median_depth(final_images, camera_name)
         save_median_depth_snapshot(
             output_dir / f"median_depth_final_{camera_name}.png",
             median_depth_np,
@@ -1229,14 +1173,14 @@ def save_manual_snapshot(
             save_npy=False,
         )
 
-        visible_normal_np = get_forward_visible_normal(final_images, camera_name)
+        visible_normal_np = render.get_forward_visible_normal(final_images, camera_name)
         save_normal_map_snapshot(
             output_dir / f"visible_normal_final_{camera_name}.png",
             visible_normal_np,
             save_npy=False,
         )
 
-        normal_from_depth_np = get_forward_normal_from_depth(final_images, camera_name)
+        normal_from_depth_np = render.get_forward_normal_from_depth(final_images, camera_name)
         save_normal_map_snapshot(
             output_dir / f"normal_from_depth_final_{camera_name}.png",
             normal_from_depth_np,
@@ -1244,7 +1188,7 @@ def save_manual_snapshot(
         )
 
     ply_path = output_dir / "points_final.ply"
-    save_gaussians_to_ply(
+    io_utils.save_gaussians_to_ply(
         ply_path,
         positions,
         rotations,
@@ -1283,7 +1227,7 @@ def save_iteration_point_cloud_snapshot(
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
     ply_path = points_dir / f"iter_{iteration:05d}_points.ply"
-    save_gaussians_to_ply(
+    io_utils.save_gaussians_to_ply(
         ply_path,
         positions,
         rotations,
@@ -1302,23 +1246,23 @@ def save_iteration_point_cloud_snapshot(
 
 def compute_snapshot_adjoint_images(
         renderer: pale.Renderer,
-        forward_out: Dict[str, dict],
-        target_images: Dict[str, np.ndarray],
-        camera_ids: List[str],
+        forward_out: dict[str, dict],
+        target_images: dict[str, np.ndarray],
+        camera_ids: list[str],
         ssim_weight: float = 0.0,
         ssim_window_size: int = 11,
         ssim_sigma: float = 1.5,
-) -> Dict[str, Any]:
-    loss_grad_images: Dict[str, np.ndarray] = {}
+) -> dict[str, Any]:
+    loss_grad_images: dict[str, np.ndarray] = {}
 
     for camera_name in camera_ids:
         if camera_name not in target_images:
             continue
 
-        current_rgb_np = get_forward_linear_rgb(forward_out, camera_name)
+        current_rgb_np = render.get_forward_linear_rgb(forward_out, camera_name)
         target_rgb_np = target_images[camera_name]
         if ssim_weight > 0.0:
-            _, loss_grad_images[camera_name], _ = compute_l2_ssim_loss_and_grad(
+            _, loss_grad_images[camera_name], _ = losses.compute_l2_ssim_loss_and_grad(
                 current_rgb_np,
                 target_rgb_np,
                 ssim_weight=ssim_weight,
@@ -1326,7 +1270,7 @@ def compute_snapshot_adjoint_images(
                 sigma=ssim_sigma,
             )
         else:
-            loss_grad_images[camera_name] = compute_l2_grad(current_rgb_np, target_rgb_np)
+            loss_grad_images[camera_name] = losses.compute_l2_grad(current_rgb_np, target_rgb_np)
 
     if not loss_grad_images:
         return {}
@@ -1339,14 +1283,14 @@ def load_target_images(
         renderer: pale.Renderer,
         dataset_path: Path,
         target_color_space: str = "auto",
-) -> tuple[Dict[str, np.ndarray], List[str], List[str]]:
+) -> tuple[dict[str, np.ndarray], list[str], list[str]]:
     target_path = Path(dataset_path)
     if not target_path.is_dir():
         raise RuntimeError(f"Target path '{target_path}' must be a directory when multiple cameras are used.")
 
-    training_camera_ids = get_training_camera_names(renderer)
-    all_camera_ids = get_all_camera_names(renderer)
-    target_images: Dict[str, np.ndarray] = {}
+    training_camera_ids = render.get_training_camera_names(renderer)
+    all_camera_ids = render.get_all_camera_names(renderer)
+    target_images: dict[str, np.ndarray] = {}
     images_path = target_path / "images"
     if not images_path.is_dir():
         raise RuntimeError(f"Target dataset is missing images directory: {images_path}")
@@ -1357,10 +1301,10 @@ def load_target_images(
             path for path in images_path.iterdir()
             if path.is_file()
             and path.stem == camera_name
-            and path.suffix.lower() in SUPPORTED_TARGET_IMAGE_SUFFIXES
+            and path.suffix.lower() in io_utils.SUPPORTED_TARGET_IMAGE_SUFFIXES
         )
         if not candidates:
-            suffixes = ", ".join(SUPPORTED_TARGET_IMAGE_SUFFIXES)
+            suffixes = ", ".join(io_utils.SUPPORTED_TARGET_IMAGE_SUFFIXES)
             raise RuntimeError(
                 f"Missing target image for camera '{camera_name}' in {images_path}; "
                 f"supported extensions: {suffixes}"
@@ -1373,7 +1317,7 @@ def load_target_images(
         image_path = candidates[0]
 
         print(f"  Camera '{camera_name}': loading target {image_path}")
-        target_images[camera_name] = load_target_image(
+        target_images[camera_name] = io_utils.load_target_image(
             image_path,
             color_space=target_color_space,
         )
@@ -1385,9 +1329,9 @@ def load_target_images(
 
 
 def create_torch_parameters_from_initial(
-        initial_params: Dict[str, np.ndarray],
+        initial_params: dict[str, np.ndarray],
         device: torch.device,
-) -> Tuple[torch.nn.Parameter, ...]:
+) -> tuple[torch.nn.Parameter, ...]:
     positions = torch.nn.Parameter(torch.tensor(initial_params["position"], device=device, dtype=torch.float32))
     rotations = torch.nn.Parameter(torch.tensor(initial_params["rotation"], device=device, dtype=torch.float32),
                                    requires_grad=False)
@@ -1400,7 +1344,7 @@ def create_torch_parameters_from_initial(
     return positions, rotations, scales, albedos, opacities, betas, powers
 
 
-def make_initial_params_reference(initial_params: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+def make_initial_params_reference(initial_params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {
         "position": initial_params["position"].copy(),
         "rotation": initial_params["rotation"].copy(),
@@ -1412,31 +1356,11 @@ def make_initial_params_reference(initial_params: Dict[str, np.ndarray]) -> Dict
     }
 
 
-def current_params_as_numpy(
-        positions: torch.Tensor,
-        rotations: torch.Tensor,
-        scales: torch.Tensor,
-        albedos: torch.Tensor,
-        opacities: torch.Tensor,
-        betas: torch.Tensor,
-        powers: torch.Tensor,
-) -> Dict[str, np.ndarray]:
-    return {
-        "position": positions.detach().cpu().numpy(),
-        "rotation": rotations.detach().cpu().numpy(),
-        "scale": scales.detach().cpu().numpy(),
-        "albedo": albedos.detach().cpu().numpy(),
-        "opacity": opacities.detach().cpu().numpy(),
-        "beta": betas.detach().cpu().numpy(),
-        "power": powers.detach().cpu().numpy(),
-    }
-
-
 def compute_initial_losses_and_save_outputs(
         output_dir: Path,
-        initial_images: Dict[str, dict],
-        target_images: Dict[str, np.ndarray],
-        all_camera_ids: List[str],
+        initial_images: dict[str, dict],
+        target_images: dict[str, np.ndarray],
+        all_camera_ids: list[str],
         positions: torch.Tensor,
         rotations: torch.Tensor,
         scales: torch.Tensor,
@@ -1459,7 +1383,7 @@ def compute_initial_losses_and_save_outputs(
         use_curvature_scale: bool,
 ) -> tuple[float, ...]:
     initial_points_path = output_dir / "initial_points.ply"
-    save_gaussians_to_ply(
+    io_utils.save_gaussians_to_ply(
         initial_points_path,
         positions,
         rotations,
@@ -1480,17 +1404,17 @@ def compute_initial_losses_and_save_outputs(
     initial_curvature_scale_loss_raw = 0.0
 
     for camera_name in all_camera_ids:
-        img_np = get_forward_rgb(initial_images, camera_name)
-        img_linear_np = get_forward_linear_rgb(initial_images, camera_name)
+        img_np = render.get_forward_rgb(initial_images, camera_name)
+        img_linear_np = render.get_forward_linear_rgb(initial_images, camera_name)
         (output_dir / camera_name).mkdir(parents=True, exist_ok=True)
-        save_render(output_dir / f"render_initial_{camera_name}.png", img_np)
+        io_utils.save_render(output_dir / f"render_initial_{camera_name}.png", img_np)
 
         if camera_name not in target_images:
             print(f"Warning: no target image found for camera '{camera_name}', skipping target save and loss.")
             continue
 
         tgt_np = target_images[camera_name]
-        rgb_loss_value, _, _ = compute_l2_ssim_metrics(
+        rgb_loss_value, _, _ = losses.compute_l2_ssim_metrics(
             img_linear_np,
             tgt_np,
             ssim_weight=ssim_weight,
@@ -1498,17 +1422,17 @@ def compute_initial_losses_and_save_outputs(
             sigma=ssim_sigma,
         )
         initial_rgb_loss += rgb_loss_value
-        save_render(
+        io_utils.save_render(
             output_dir / f"render_target_{camera_name}.png",
-            linear_to_srgb(tgt_np),
+            io_utils.linear_to_srgb(tgt_np),
         )
 
         if use_depth_distortion:
-            initial_depth_distortion_loss_raw += float(get_forward_depth_distortion(initial_images, camera_name).mean())
+            initial_depth_distortion_loss_raw += float(render.get_forward_depth_distortion(initial_images, camera_name).mean())
 
         if use_normal_consistency:
-            visible_normal = get_forward_visible_normal(initial_images, camera_name)
-            normal_from_depth = get_forward_normal_from_depth(initial_images, camera_name)
+            visible_normal = render.get_forward_visible_normal(initial_images, camera_name)
+            normal_from_depth = render.get_forward_normal_from_depth(initial_images, camera_name)
             raw_normal_loss_value, _, _ = compute_normal_consistency_loss_and_adjoints(
                 visible_normal,
                 normal_from_depth,
@@ -1517,23 +1441,23 @@ def compute_initial_losses_and_save_outputs(
             initial_normal_loss_raw += raw_normal_loss_value
 
         if use_opacity_prior:
-            initial_opacity_prior_loss_raw += float(get_forward_opacity_prior(initial_images, camera_name).mean())
+            initial_opacity_prior_loss_raw += float(render.get_forward_opacity_prior(initial_images, camera_name).mean())
 
         if use_intra_slab_depth:
-            loss_map = get_forward_intra_slab_depth(initial_images, camera_name)
+            loss_map = render.get_forward_intra_slab_depth(initial_images, camera_name)
             active_count = max(
                 1,
-                int(get_forward_intra_slab_depth_active_slab_count(
+                int(render.get_forward_intra_slab_depth_active_slab_count(
                     initial_images, camera_name
                 ).sum(dtype=np.uint64)),
             )
             initial_intra_slab_depth_loss_raw += float(loss_map.sum() / active_count)
 
         if use_curvature_scale:
-            loss_map = get_forward_curvature_scale(initial_images, camera_name)
+            loss_map = render.get_forward_curvature_scale(initial_images, camera_name)
             active_count = max(
                 1,
-                int(get_forward_curvature_scale_active_slab_count(
+                int(render.get_forward_curvature_scale_active_slab_count(
                     initial_images, camera_name
                 ).sum(dtype=np.uint64)),
             )
@@ -1604,8 +1528,8 @@ def print_loss_summary(
 
 
 def compute_surface_regularizer_losses_and_adjoints(
-        forward_out: Dict[str, dict],
-        training_camera_ids: List[str],
+        forward_out: dict[str, dict],
+        training_camera_ids: list[str],
         depth_distortion_weight: float,
         normal_consistency_weight: float,
         opacity_prior_weight: float,
@@ -1616,8 +1540,8 @@ def compute_surface_regularizer_losses_and_adjoints(
         use_opacity_prior: bool,
         use_intra_slab_depth: bool,
         use_curvature_scale: bool,
-) -> Dict[str, Any]:
-    result: Dict[str, Any] = make_zero_loss_values()
+) -> dict[str, Any]:
+    result: dict[str, Any] = make_zero_loss_values()
     result.update({
         "depth_distortion_grad_images": {},
         "visible_normal_adjoints": {},
@@ -1634,7 +1558,7 @@ def compute_surface_regularizer_losses_and_adjoints(
         camera_loss_values = make_zero_loss_values()
 
         if use_depth_distortion:
-            current_depth_distortion_np = get_forward_depth_distortion(forward_out, camera_name)
+            current_depth_distortion_np = render.get_forward_depth_distortion(forward_out, camera_name)
             depth_distortion_loss_raw = float(current_depth_distortion_np.mean())
             depth_distortion_loss_weighted = depth_distortion_weight * depth_distortion_loss_raw
 
@@ -1649,8 +1573,8 @@ def compute_surface_regularizer_losses_and_adjoints(
             )
 
         if use_normal_consistency:
-            visible_normal = get_forward_visible_normal(forward_out, camera_name)
-            normal_from_depth = get_forward_normal_from_depth(forward_out, camera_name)
+            visible_normal = render.get_forward_visible_normal(forward_out, camera_name)
+            normal_from_depth = render.get_forward_normal_from_depth(forward_out, camera_name)
 
             normal_loss_raw, visible_normal_adjoint, depth_normal_adjoint = (
                 compute_normal_consistency_loss_and_adjoints(
@@ -1675,7 +1599,7 @@ def compute_surface_regularizer_losses_and_adjoints(
             ).astype(np.float32, copy=False)
 
         if use_opacity_prior:
-            opacity_prior_np = get_forward_opacity_prior(forward_out, camera_name)
+            opacity_prior_np = render.get_forward_opacity_prior(forward_out, camera_name)
             opacity_prior_loss_raw = float(opacity_prior_np.mean())
             opacity_prior_loss_weighted = opacity_prior_weight * opacity_prior_loss_raw
 
@@ -1684,8 +1608,8 @@ def compute_surface_regularizer_losses_and_adjoints(
             camera_loss_values["total_loss_value"] += opacity_prior_loss_weighted
 
         if use_intra_slab_depth:
-            intra_slab_depth_np = get_forward_intra_slab_depth(forward_out, camera_name)
-            active_slab_count_np = get_forward_intra_slab_depth_active_slab_count(
+            intra_slab_depth_np = render.get_forward_intra_slab_depth(forward_out, camera_name)
+            active_slab_count_np = render.get_forward_intra_slab_depth_active_slab_count(
                 forward_out, camera_name
             )
             active_slab_count = max(1, int(active_slab_count_np.sum(dtype=np.uint64)))
@@ -1706,8 +1630,8 @@ def compute_surface_regularizer_losses_and_adjoints(
             ).astype(np.float32, copy=False)
 
         if use_curvature_scale:
-            curvature_scale_np = get_forward_curvature_scale(forward_out, camera_name)
-            active_slab_count_np = get_forward_curvature_scale_active_slab_count(
+            curvature_scale_np = render.get_forward_curvature_scale(forward_out, camera_name)
+            active_slab_count_np = render.get_forward_curvature_scale_active_slab_count(
                 forward_out, camera_name
             )
             active_slab_count = max(1, int(active_slab_count_np.sum(dtype=np.uint64)))
@@ -1732,8 +1656,8 @@ def compute_surface_regularizer_losses_and_adjoints(
 
 
 def extract_total_gradient_arrays(
-        total_gradients: Dict[str, np.ndarray],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        total_gradients: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
     grad_rotation_np = np.asarray(total_gradients["rotation"], dtype=np.float32, order="C")
     grad_scales_np = np.asarray(total_gradients["scale"], dtype=np.float32, order="C")
@@ -1822,7 +1746,7 @@ def update_densification_statistics(
         )
 
     with torch.no_grad():
-        tangent_u, tangent_v, tangent_w = quaternion_to_tangent_frame_torch(rotations.detach())
+        tangent_u, tangent_v, tangent_w = density.quaternion_to_tangent_frame_torch(rotations.detach())
         tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
         tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
         tangent_w_np = tangent_w.detach().cpu().numpy().astype(np.float32)
@@ -1965,7 +1889,7 @@ CURVATURE_DENSIFICATION_STAT_KEYS = (
 )
 
 
-def make_curvature_densification_accumulators(point_count: int) -> Dict[str, np.ndarray]:
+def make_curvature_densification_accumulators(point_count: int) -> dict[str, np.ndarray]:
     return {
         "violation_sum": np.zeros((point_count,), dtype=np.float32),
         "violation_count": np.zeros((point_count,), dtype=np.uint64),
@@ -1980,8 +1904,8 @@ def update_curvature_densification_statistics(
         densification_interval: int,
         densification_cycle_start_iteration: int,
         densification_stats_skip_iterations: int,
-        renderer_stats: Dict[str, np.ndarray],
-        accumulators: Dict[str, np.ndarray],
+        renderer_stats: dict[str, np.ndarray],
+        accumulators: dict[str, np.ndarray],
 ) -> None:
     """Accumulate scalar curvature, but retain only the latest direction tensor.
 
@@ -2076,9 +2000,9 @@ def maybe_make_densification_result(
         densification_verbose: bool,
         densification_grad_quantile: float,
         densification_grad_abs_min: float,
-        densify_curvature_stats_accum: Optional[Dict[str, np.ndarray]] = None,
+        densify_curvature_stats_accum: dict[str, np.ndarray] | None = None,
         force_densification: bool = False,
-) -> Optional[Dict[str, np.ndarray]]:
+) -> dict[str, np.ndarray] | None:
     if densification_interval <= 0:
         return None
 
@@ -2112,7 +2036,7 @@ def maybe_make_densification_result(
             neginf=0.0,
         )
 
-        tangent_u, tangent_v, _ = quaternion_to_tangent_frame_torch(rotations.detach())
+        tangent_u, tangent_v, _ = density.quaternion_to_tangent_frame_torch(rotations.detach())
         tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
         tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
         avg_density_grad_vector_np = (
@@ -2142,9 +2066,7 @@ def maybe_make_densification_result(
                 & (grad_pos_norm_np >= densification_grad_abs_min)
         )
 
-        curvature_violation_threshold = float(
-            getattr(config, "curvature_violation_threshold", 0.0)
-        )
+        curvature_violation_threshold = float(config.curvature_violation_threshold)
         curvature_enabled = (
                 np.isfinite(curvature_violation_threshold)
                 and curvature_violation_threshold > 0.0
@@ -2240,7 +2162,7 @@ def maybe_make_densification_result(
             positions=positions,
             trainable_surfel_mask=trainable_surfel_mask,
         )
-        split_offset_scale = float(getattr(config, "densification_split_offset_scale", 0.3))
+        split_offset_scale = float(config.densification_split_offset_scale)
 
         finite_signal_np = (
             grad_pos_norm_np[np.isfinite(grad_pos_norm_np)]
@@ -2296,7 +2218,7 @@ def maybe_make_densification_result(
                 densify_reason = "no_candidates_after_position_or_curvature"
         else:
 
-            densification_result = make_under_reconstruction_clones(
+            densification_result = density.make_under_reconstruction_clones(
                 positions=positions,
                 rotations=rotations,
                 scales=scales,
@@ -2308,10 +2230,10 @@ def maybe_make_densification_result(
                 selection_score_np=grad_pos_norm_np,
                 trainable_surfel_mask=trainable_surfel_mask,
                 grad_threshold=grad_threshold,
-                max_clone_fraction=float(getattr(config, "densification_max_new_fraction", 1.0)),
+                max_clone_fraction=float(config.densification_max_new_fraction),
                 clone_offset_scale=split_offset_scale,
-                clone_scale_factor=float(getattr(config, "densification_split_scale_factor", math.sqrt(2.0))),
-                min_clone_scale=float(getattr(config, "densification_scale_min", 8.0e-3)),
+                clone_scale_factor=float(config.densification_split_scale_factor),
+                min_clone_scale=float(config.densification_scale_min),
                 exact_clone_scale_threshold=exact_clone_scale_threshold,
                 curvature_violation_np=curvature_violation_mean_np,
                 curvature_direction_uu_np=curvature_tensor_uu_np,
@@ -2408,10 +2330,10 @@ def maybe_make_prune_indices(
         reset_opacity_interval: int,
         opacity_prune_threshold: float,
         max_prune_fraction: float,
-) -> tuple[np.ndarray, np.ndarray, List[int]]:
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
     scale_prune_indices = np.zeros((0,), dtype=np.int64)
     opacity_prune_indices = np.zeros((0,), dtype=np.int64)
-    indices_to_remove_list: List[int] = []
+    indices_to_remove_list: list[int] = []
 
     is_reset_iteration = (
             reset_opacity_interval > 0
@@ -2424,7 +2346,7 @@ def maybe_make_prune_indices(
     if not (iteration >= prune_after and iteration % prune_interval == 0 and not is_reset_iteration):
         return scale_prune_indices, opacity_prune_indices, indices_to_remove_list
 
-    area_prune_indices = compute_prune_indices_by_degenerate_area(
+    area_prune_indices = density.compute_prune_indices_by_degenerate_area(
         scales,
         min_area=config.min_surfel_area,
         trainable_mask=trainable_surfel_mask,
@@ -2434,7 +2356,7 @@ def maybe_make_prune_indices(
     if scale_prune_indices.size > 0:
         indices_to_remove_list.extend(int(i) for i in scale_prune_indices)
 
-    opacity_prune_indices = compute_prune_indices_by_opacity(
+    opacity_prune_indices = density.compute_prune_indices_by_opacity(
         opacities,
         min_opacity=opacity_prune_threshold,
         use_quantile=False,
@@ -2451,9 +2373,9 @@ def save_iteration_outputs(
         iteration: int,
         save_interval: int,
         final_iteration: int,
-        all_camera_ids: List[str],
-        forward_out: Dict[str, dict],
-        adjoint_images: Dict[str, Any],
+        all_camera_ids: list[str],
+        forward_out: dict[str, dict],
+        adjoint_images: dict[str, Any],
         renderer_settings: RendererSettingsConfig,
         save_rgb: bool = True,
         save_median_depth: bool = True,
@@ -2482,9 +2404,9 @@ def save_iteration_outputs(
             camera_render_dir = camera_base_dir / "render"
             camera_render_dir.mkdir(parents=True, exist_ok=True)
 
-            save_render(
+            io_utils.save_render(
                 camera_render_dir / f"{iteration:04d}_render.png",
-                get_forward_rgb(forward_out, camera_name),
+                render.get_forward_rgb(forward_out, camera_name),
             )
 
         if save_median_depth:
@@ -2493,7 +2415,7 @@ def save_iteration_outputs(
 
             save_median_depth_snapshot(
                 camera_median_depth_dir / f"{iteration:04d}_median_depth.png",
-                get_forward_median_depth(forward_out, camera_name),
+                render.get_forward_median_depth(forward_out, camera_name),
                 quantile=0.99,
                 save_npy=False,
             )
@@ -2504,7 +2426,7 @@ def save_iteration_outputs(
 
             save_depth_distortion_snapshot(
                 camera_depth_dir / f"{iteration:04d}_depth_distortion.png",
-                get_forward_depth_distortion(forward_out, camera_name),
+                render.get_forward_depth_distortion(forward_out, camera_name),
                 quantile=0.99,
                 save_npy=False,
             )
@@ -2515,7 +2437,7 @@ def save_iteration_outputs(
 
             save_normal_map_snapshot(
                 camera_visible_normal_dir / f"{iteration:04d}_visible_normal.png",
-                get_forward_visible_normal(forward_out, camera_name),
+                render.get_forward_visible_normal(forward_out, camera_name),
                 save_npy=False,
             )
 
@@ -2525,7 +2447,7 @@ def save_iteration_outputs(
 
             save_normal_map_snapshot(
                 camera_depth_normal_dir / f"{iteration:04d}_normal_from_depth.png",
-                get_forward_normal_from_depth(forward_out, camera_name),
+                render.get_forward_normal_from_depth(forward_out, camera_name),
                 save_npy=False,
             )
 
@@ -2548,7 +2470,7 @@ def save_iteration_outputs(
                     neginf=0.0,
                 )
 
-                save_gradient_sign_png_py(
+                io_utils.save_gradient_sign_png_py(
                     camera_grad_dir / f"{iteration:04d}_grad_099.png",
                     grad_img_np,
                     adjoint_spp=renderer_settings.adjoint_passes,
@@ -2558,53 +2480,4 @@ def save_iteration_outputs(
 
 
 def write_metrics_header(csv_writer: csv.writer) -> None:
-    csv_writer.writerow(
-        [
-            "iteration",
-            "active_camera_name",
-            "active_camera_count",
-            "loss_average_camera_count",
-            "loss_average_expected_camera_count",
-            "loss_average_is_complete",
-            "loss_rgb_mean",
-            "loss_rgb_l2_mean",
-            "loss_rgb_dssim_mean",
-            "loss_depth_distortion_raw_mean",
-            "loss_depth_distortion_weighted_mean",
-            "loss_normal_consistency_raw_mean",
-            "loss_normal_consistency_weighted_mean",
-            "loss_opacity_prior_raw_mean",
-            "loss_opacity_prior_weighted_mean",
-            "loss_intra_slab_depth_raw_mean",
-            "loss_intra_slab_depth_weighted_mean",
-            "loss_curvature_scale_raw_mean",
-            "loss_curvature_scale_weighted_mean",
-            "loss_total_mean",
-            "num_points",
-            "densification_new_points",
-            "densification_clone_points",
-            "densification_split_points",
-            "densification_position_split_points",
-            "densification_curvature_split_points",
-            "densification_clone_points_total",
-            "densification_split_points_total",
-            "densification_position_split_points_total",
-            "densification_curvature_split_points_total",
-            "densification_clone_points_active",
-            "densification_split_points_active",
-            "densification_position_split_points_active",
-            "densification_curvature_split_points_active",
-            "prune_scale_area_points",
-            "prune_inactive_transport_points",
-            "iteration_time_sec",
-            "total_time_sec",
-            "grad_position_renderer_norm",
-            "grad_position_renderer_max",
-            "grad_position_surface_regularizer_norm",
-            "grad_position_surface_regularizer_max",
-            "grad_position_total_norm",
-            "grad_position_total_max",
-            "grad_opacity_total_norm",
-            "grad_opacity_total_max",
-        ]
-    )
+    csv_writer.writerow(METRICS_COLUMNS)

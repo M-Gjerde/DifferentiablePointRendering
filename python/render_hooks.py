@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict
-
 import numpy as np
 import torch
 
@@ -46,29 +44,28 @@ def _assert_positive_np(name: str, array: np.ndarray, min_value: float) -> None:
     )
 
 
-
-def get_forward_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_rgba(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     return np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
 
 
-def get_forward_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_rgb(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     return get_forward_rgba(forward_out, camera_name)[..., :3]
 
 
-def get_forward_linear_rgba(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_linear_rgba(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     return np.asarray(forward_out[camera_name]["raw"], dtype=np.float32, order="C")
 
 
-def get_forward_linear_rgb(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_linear_rgb(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     return get_forward_linear_rgba(forward_out, camera_name)[..., :3]
 
 
-def _infer_hw_from_forward(forward_out: Dict[str, dict], camera_name: str) -> tuple[int, int]:
+def _infer_hw_from_forward(forward_out: dict[str, dict], camera_name: str) -> tuple[int, int]:
     image = np.asarray(forward_out[camera_name]["image"], dtype=np.float32, order="C")
     return int(image.shape[0]), int(image.shape[1])
 
 
-def get_forward_depth_distortion(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_depth_distortion(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "depth_distortion" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -78,7 +75,7 @@ def get_forward_depth_distortion(forward_out: Dict[str, dict], camera_name: str)
     return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def get_forward_opacity_prior(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_opacity_prior(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "opacity_prior" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -88,7 +85,7 @@ def get_forward_opacity_prior(forward_out: Dict[str, dict], camera_name: str) ->
     return np.nan_to_num(opacity_prior, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def get_forward_intra_slab_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_intra_slab_depth(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "intra_slab_depth" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -98,7 +95,7 @@ def get_forward_intra_slab_depth(forward_out: Dict[str, dict], camera_name: str)
 
 
 def get_forward_intra_slab_depth_active_slab_count(
-        forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+        forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "intra_slab_depth_active_slab_count" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -110,7 +107,7 @@ def get_forward_intra_slab_depth_active_slab_count(
     )
 
 
-def get_forward_curvature_scale(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_curvature_scale(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "curvature_scale" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -120,7 +117,7 @@ def get_forward_curvature_scale(forward_out: Dict[str, dict], camera_name: str) 
 
 
 def get_forward_curvature_scale_active_slab_count(
-        forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+        forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "curvature_scale_active_slab_count" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -132,7 +129,7 @@ def get_forward_curvature_scale_active_slab_count(
     )
 
 
-def get_forward_visible_normal(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_visible_normal(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "visible_normal" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -142,7 +139,7 @@ def get_forward_visible_normal(forward_out: Dict[str, dict], camera_name: str) -
     return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def get_forward_normal_from_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_normal_from_depth(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "normal_from_depth" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -152,7 +149,7 @@ def get_forward_normal_from_depth(forward_out: Dict[str, dict], camera_name: str
     return np.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def get_forward_median_depth(forward_out: Dict[str, dict], camera_name: str) -> np.ndarray:
+def get_forward_median_depth(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
     camera_out = forward_out[camera_name]
     if "median_depth" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)
@@ -162,7 +159,7 @@ def get_forward_median_depth(forward_out: Dict[str, dict], camera_name: str) -> 
     return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def fetch_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
+def fetch_parameters(renderer: pale.Renderer) -> dict[str, np.ndarray]:
     """
     Fetch all point parameters from the renderer as a dict of NumPy arrays.
 
@@ -179,178 +176,11 @@ def fetch_parameters(renderer: pale.Renderer) -> Dict[str, np.ndarray]:
         "primitive_age" : (N,), optional iterations since creation/last split
     """
     params = renderer.get_point_parameters()
-    out: Dict[str, np.ndarray] = {}
+    out: dict[str, np.ndarray] = {}
     for key, value in params.items():
         out[key] = np.asarray(value, dtype=np.float32, order="C")
     return out
 
-def orthonormalize_tangents_inplace(
-    tangentU: torch.Tensor,
-    tangentV: torch.Tensor,
-    referenceDirection: Optional[torch.Tensor] = None,
-) -> Dict[str, float]:
-    if tangentU.ndim != 2 or tangentU.shape[1] != 3:
-        raise ValueError(f"tangentU must be (N, 3), got {tuple(tangentU.shape)}")
-    if tangentV.ndim != 2 or tangentV.shape[1] != 3:
-        raise ValueError(f"tangentV must be (N, 3), got {tuple(tangentV.shape)}")
-    if tangentU.shape != tangentV.shape:
-        raise ValueError(
-            f"tangentU and tangentV must have same shape, got "
-            f"{tuple(tangentU.shape)} and {tuple(tangentV.shape)}"
-        )
-
-    with torch.no_grad():
-        eps = 1.0e-8
-        device = tangentU.device
-        dtype = tangentU.dtype
-
-        oldU = tangentU.clone()
-        oldV = tangentV.clone()
-
-        oldNormal = torch.cross(oldU, oldV, dim=1)
-        oldNormalNorm = oldNormal.norm(dim=1, keepdim=True)
-        hasValidOldNormal = oldNormalNorm.squeeze(1) > eps
-        oldNormal = oldNormal / oldNormalNorm.clamp_min(eps)
-
-        uNorm = tangentU.norm(dim=1, keepdim=True)
-        badU = uNorm.squeeze(1) < eps
-
-        if badU.any():
-            tangentU[badU] = torch.tensor(
-                [1.0, 0.0, 0.0],
-                device=device,
-                dtype=dtype,
-            )
-            uNorm = tangentU.norm(dim=1, keepdim=True)
-
-        u = tangentU / uNorm.clamp_min(eps)
-
-        v = tangentV - (tangentV * u).sum(dim=1, keepdim=True) * u
-        vNorm = v.norm(dim=1, keepdim=True)
-        badV = vNorm.squeeze(1) < eps
-
-        if badV.any():
-            uBad = u[badV]
-
-            useXAxis = torch.abs(uBad[:, 0]) < 0.9
-            aux = torch.zeros_like(uBad)
-            aux[useXAxis] = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=dtype)
-            aux[~useXAxis] = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype)
-
-            aux = aux - (aux * uBad).sum(dim=1, keepdim=True) * uBad
-            aux = torch.nn.functional.normalize(aux, dim=1, eps=eps)
-            v[badV] = aux
-            vNorm = v.norm(dim=1, keepdim=True)
-
-        v = v / vNorm.clamp_min(eps)
-
-        # Preserve the original normal orientation, if the old frame had one.
-        newNormal = torch.cross(u, v, dim=1)
-        newNormal = newNormal / newNormal.norm(dim=1, keepdim=True).clamp_min(eps)
-
-        preserveMask = hasValidOldNormal
-        flipMask = preserveMask & ((newNormal * oldNormal).sum(dim=1) < 0.0)
-
-        v[flipMask] = -v[flipMask]
-        newNormal[flipMask] = -newNormal[flipMask]
-
-        # Optional explicit orientation only when requested.
-        if referenceDirection is not None:
-            ref = referenceDirection.to(device=device, dtype=dtype)
-
-            if ref.ndim == 1:
-                ref = ref.view(1, 3)
-            if ref.shape[0] == 1:
-                ref = ref.expand_as(u)
-            if ref.shape != u.shape:
-                raise ValueError(
-                    f"referenceDirection must be (3,), (1,3), or (N,3), got {tuple(referenceDirection.shape)}"
-                )
-
-            ref = ref / ref.norm(dim=1, keepdim=True).clamp_min(eps)
-            newNormal = torch.cross(u, v, dim=1)
-            newNormal = newNormal / newNormal.norm(dim=1, keepdim=True).clamp_min(eps)
-
-            refFlipMask = (newNormal * ref).sum(dim=1) < 0.0
-            v[refFlipMask] = -v[refFlipMask]
-            newNormal[refFlipMask] = -newNormal[refFlipMask]
-
-        tangentU.copy_(u)
-        tangentV.copy_(v)
-
-        dotUV = (tangentU * tangentV).sum(dim=1)
-        normU = tangentU.norm(dim=1)
-        normV = tangentV.norm(dim=1)
-        crossProduct = torch.cross(tangentU, tangentV, dim=1)
-        crossNorm = crossProduct.norm(dim=1)
-
-        return {
-            "max_dev_norm_u": float((normU - 1.0).abs().max().item()),
-            "max_dev_norm_v": float((normV - 1.0).abs().max().item()),
-            "max_abs_dot_uv": float(dotUV.abs().max().item()),
-            "min_cross_norm": float(crossNorm.min().item()),
-        }
-
-def verify_tangents_inplace(
-    tangent_u: torch.Tensor,
-    tangent_v: torch.Tensor,
-    eps: float = 1e-8,
-) -> None:
-    """
-    Enforce an orthonormal in-plane frame in-place:
-    - normalize tangent_u
-    - make tangent_v orthogonal to tangent_u
-    - normalize tangent_v
-
-    Expects shape [N, 3].
-    """
-
-    if tangent_u.ndim != 2 or tangent_v.ndim != 2 or tangent_u.shape != tangent_v.shape:
-        raise ValueError(
-            f"Expected tangent_u and tangent_v to have same shape [N, 3], "
-            f"got {tangent_u.shape=} and {tangent_v.shape=}"
-        )
-    if tangent_u.shape[1] != 3:
-        raise ValueError(f"Expected tangent tensors of shape [N, 3], got {tangent_u.shape}")
-
-    with torch.no_grad():
-        # Normalize u, with fallback for degenerate rows
-        u_norm = torch.linalg.norm(tangent_u, dim=1, keepdim=True)
-        bad_u = u_norm.squeeze(1) < eps
-
-        if bad_u.any():
-            tangent_u[bad_u] = torch.tensor(
-                [1.0, 0.0, 0.0], device=tangent_u.device, dtype=tangent_u.dtype
-            )
-            u_norm = torch.linalg.norm(tangent_u, dim=1, keepdim=True)
-
-        tangent_u.div_(u_norm.clamp_min(eps))
-
-        # Remove projection of v onto u: v <- v - (u·v)u
-        proj = torch.sum(tangent_v * tangent_u, dim=1, keepdim=True)
-        tangent_v.sub_(proj * tangent_u)
-
-        # Normalize v, with fallback if v became degenerate
-        v_norm = torch.linalg.norm(tangent_v, dim=1, keepdim=True)
-        bad_v = v_norm.squeeze(1) < eps
-
-        if bad_v.any():
-            u_bad = tangent_u[bad_v]
-
-            # Build a safe auxiliary axis not parallel to u
-            use_x = torch.abs(u_bad[:, 0]) < 0.9
-            aux = torch.zeros_like(u_bad)
-            aux[use_x] = torch.tensor([1.0, 0.0, 0.0], device=tangent_v.device, dtype=tangent_v.dtype)
-            aux[~use_x] = torch.tensor([0.0, 1.0, 0.0], device=tangent_v.device, dtype=tangent_v.dtype)
-
-            # Project aux into plane orthogonal to u
-            aux = aux - torch.sum(aux * u_bad, dim=1, keepdim=True) * u_bad
-            aux = F.normalize(aux, dim=1, eps=eps)
-
-            tangent_v[bad_v] = aux
-            v_norm = torch.linalg.norm(tangent_v, dim=1, keepdim=True)
-
-        tangent_v.div_(v_norm.clamp_min(eps))
 
 def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
     """

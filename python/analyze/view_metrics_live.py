@@ -28,7 +28,7 @@ LEGEND_KWARGS = {
 class GeometryEvaluationState:
     run_dir: Path | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
-    evaluated_iterations: set[int] = field(default_factory=set)
+    file_state: tuple[float, int] | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,52 +77,58 @@ def parse_args() -> argparse.Namespace:
         "--gt",
         type=Path,
         default=None,
-        help="Optional GT PLY. When provided, live symmetric CD is evaluated from mesh checkpoints.",
+        help=(
+            "Deprecated viewer option. Pass --gt to main.py; this viewer reads "
+            "the resulting geometry_metrics.csv without recomputing Chamfer."
+        ),
+    )
+    parser.add_argument(
+        "--geometry-metrics-name",
+        type=str,
+        default="geometry_metrics.csv",
+        help="Geometry trail written by main.py inside the run directory.",
     )
     parser.add_argument(
         "--geometry-every",
         type=int,
         default=500,
-        help="Evaluate available mesh checkpoints whose iteration is a multiple of this value.",
+        help="Deprecated and ignored; configure main.py --mesh-extraction-interval instead.",
     )
     parser.add_argument(
         "--geometry-samples",
         type=int,
         default=500_000,
-        help="Uniform surface query samples used with --no-geometry-use-vertices.",
+        help="Deprecated and ignored; configure main.py --geometry-samples instead.",
     )
     parser.add_argument(
         "--geometry-device",
         type=str,
         default="auto",
-        help="Retained for compatibility; point-to-triangle evaluation uses Open3D on CPU.",
+        help="Deprecated and ignored; main.py owns geometry evaluation.",
     )
     parser.add_argument(
         "--geometry-seed",
         type=int,
         default=0,
-        help="Sampling seed for live Chamfer evaluation.",
+        help="Deprecated and ignored; configure main.py --geometry-seed instead.",
     )
     parser.add_argument(
         "--geometry-scale",
         type=float,
         default=1.0,
-        help="Scale applied to live Chamfer metrics.",
+        help="Deprecated and ignored; configure main.py --geometry-scale instead.",
     )
     parser.add_argument(
         "--geometry-use-vertices",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=(
-            "Use raw mesh vertices as point-to-triangle queries (default). "
-            "Pass --no-geometry-use-vertices to use uniform surface queries."
-        ),
+        help="Deprecated and ignored; configure main.py geometry evaluation instead.",
     )
     parser.add_argument(
         "--reconstruction-name",
         type=str,
         default="fuse_post.ply",
-        help="Mesh filename inside each mesh checkpoint folder.",
+        help="Deprecated and ignored; main.py records the evaluated reconstruction path.",
     )
     parser.add_argument(
         "--plot-all-losses",
@@ -283,146 +289,40 @@ def find_latest_run_dir(
     return candidate_run_dirs[index]["run_dir"]
 
 
-def lazy_evaluate_runs_imports():
-    if str(PROJECT_ROOT) not in sys.path:
-        sys.path.insert(0, str(PROJECT_ROOT))
-    try:
-        from experiments.evaluate_runs import MeshCheckpoint, compute_geometry_rows
-    except ModuleNotFoundError as exception:
-        raise RuntimeError(
-            "Live CD evaluation uses experiments/evaluate_runs.py and requires its "
-            "geometry dependencies (notably Open3D). "
-            "Alternatively, run without --gt to view loss curves only."
-        ) from exception
-
-    return MeshCheckpoint, compute_geometry_rows
-
-
-def find_mesh_checkpoints(run_dir: Path, reconstruction_name: str) -> list[tuple[int, Path]]:
-    checkpoint_root = run_dir / "mesh_checkpoints"
-    if not checkpoint_root.is_dir():
-        return []
-
-    checkpoints: list[tuple[int, Path]] = []
-    for mesh_path in checkpoint_root.glob(f"iter_*/{reconstruction_name}"):
-        match = re.search(r"iter_(\d+)", mesh_path.parent.name)
-        if match is None:
-            continue
-        checkpoints.append((int(match.group(1)), mesh_path.resolve()))
-
-    return sorted(checkpoints, key=lambda item: item[0])
-
-
-def update_geometry_evaluation_state(
+def update_geometry_metrics_state(
         state: GeometryEvaluationState,
         run_dir: Path,
-        latest_iteration: int,
-        ground_truth_path: Path | None,
-        geometry_every: int,
-        reconstruction_name: str,
-        samples: int,
-        device_name: str,
-        seed: int,
-        scale: float,
-        use_vertices: bool,
-        metrics_dataframe: pd.DataFrame | None,
+        geometry_metrics_path: Path,
 ) -> bool:
     if state.run_dir != run_dir:
         state.run_dir = run_dir
         state.rows = []
-        state.evaluated_iterations = set()
+        state.file_state = None
 
-    if ground_truth_path is None:
-        return False
-    if geometry_every <= 0:
-        raise ValueError(f"--geometry-every must be positive, got: {geometry_every}")
-
-    eligible_checkpoints = [
-        (iteration, mesh_path)
-        for iteration, mesh_path in find_mesh_checkpoints(run_dir, reconstruction_name)
-        if (
-                iteration <= latest_iteration
-                and iteration % geometry_every == 0
-                and iteration not in state.evaluated_iterations
-        )
-    ]
-    if not eligible_checkpoints:
+    file_state = get_file_state(geometry_metrics_path)
+    if file_state is None or file_state == state.file_state:
         return False
 
-    MeshCheckpoint, compute_geometry_rows = lazy_evaluate_runs_imports()
-    new_rows = compute_geometry_rows(
-        run_dir=run_dir,
-        checkpoints=[
-            MeshCheckpoint(iteration=iteration, mesh_path=mesh_path)
-            for iteration, mesh_path in eligible_checkpoints
-        ],
-        ground_truth_path=ground_truth_path.expanduser().resolve(),
-        samples=samples,
-        device_name=device_name,
-        seed=seed,
-        scale=scale,
-        use_vertices=use_vertices,
-        print_each_score=False,
+    dataframe = read_metrics_csv_safely(
+        metrics_csv_path=geometry_metrics_path,
+        previous_dataframe=None,
     )
+    if dataframe is None:
+        return False
 
-    for metrics in new_rows:
-        iteration = int(metrics["iteration"])
-        state.rows.append(metrics)
-        state.evaluated_iterations.add(iteration)
+    required_columns = ("iteration", "cd", "accuracy", "completion")
+    if any(column_name not in dataframe.columns for column_name in required_columns):
+        return False
 
-        # Print concise stats only at each CD update: loss, CD, completion, accuracy, points (split)
-        loss_text = "n/a"
-        points_text = "n/a"
-        split_text = "n/a"
-        try:
-            if metrics_dataframe is not None and "iteration" in metrics_dataframe.columns:
-                row_df = metrics_dataframe.loc[
-                    metrics_dataframe["iteration"].astype(np.int64) == int(iteration)
-                ]
-                if not row_df.empty:
-                    # Loss selection (prefer total mean, then RGB mean, else first available from selection logic)
-                    try:
-                        loss_column = select_loss_column(metrics_dataframe, explicit_loss_column=None)
-                    except Exception:
-                        loss_column = None
-                    if loss_column is not None and loss_column in row_df.columns:
-                        loss_val = pd.to_numeric(row_df[loss_column].iloc[-1], errors="coerce")
-                        if np.isfinite(loss_val):
-                            loss_text = f"{float(loss_val):.6g}"
+    dataframe = dataframe.copy()
+    for column_name in required_columns:
+        dataframe[column_name] = pd.to_numeric(dataframe[column_name], errors="coerce")
+    dataframe = dataframe.dropna(subset=list(required_columns))
+    dataframe = dataframe.drop_duplicates(subset=["iteration"], keep="last")
+    dataframe = dataframe.sort_values("iteration")
 
-                    # Point count (prefer num_points, then point_count)
-                    for pc_name in ("num_points", "point_count"):
-                        if pc_name in row_df.columns:
-                            pc_val = pd.to_numeric(row_df[pc_name].iloc[-1], errors="coerce")
-                            if np.isfinite(pc_val):
-                                points_text = f"{int(pc_val)}"
-                                break
-
-                    # Split count (prefer total, then active, then per-iter events)
-                    for sc in ("densification_split_points_total",
-                               "densification_split_points_active",
-                               "densification_split_points"):
-                        if sc in row_df.columns:
-                            sv = pd.to_numeric(row_df[sc].iloc[-1], errors="coerce")
-                            if np.isfinite(sv):
-                                try:
-                                    split_text = f"{int(sv)}"
-                                except Exception:
-                                    split_text = f"{float(sv):.6g}"
-                                break
-        except Exception:
-            pass
-
-        print(
-            f"loss={loss_text} | "
-            f"CD={float(metrics['cd']):.6g} | "
-            f"completion={float(metrics['completion']):.6g} | "
-            f"accuracy={float(metrics['accuracy']):.6g} | "
-            f"points={points_text} (split={split_text})",
-            flush=True,
-        )
-
-    state.rows.sort(key=lambda row: int(row["iteration"]))
+    state.rows = dataframe.to_dict(orient="records")
+    state.file_state = file_state
     return True
 
 
@@ -618,12 +518,30 @@ def dataframe_column_as_float_array(
     ).to_numpy(dtype=np.float64)
 
 
+def axis_has_positive_finite_line_values(axis) -> bool:
+    for line in axis.get_lines():
+        try:
+            values = np.asarray(line.get_ydata(), dtype=np.float64)
+        except (TypeError, ValueError):
+            continue
+        if np.any(np.isfinite(values) & (values > 0.0)):
+            return True
+    return False
+
+
 def apply_loss_y_scale(axis, loss_y_scale: str) -> None:
     if loss_y_scale == "linear":
         return
 
     if loss_y_scale == "log":
-        axis.set_yscale("log", nonpositive="mask")
+        if axis_has_positive_finite_line_values(axis):
+            axis.set_yscale("log", nonpositive="mask")
+        else:
+            # Matplotlib warns on every live redraw when a log-scaled axis has
+            # only zeros, negative values, or NaNs. Keep that temporarily empty
+            # series readable on a linear axis; a later redraw will switch to
+            # log as soon as the metric becomes positive.
+            axis.set_yscale("linear")
         return
 
     axis.set_yscale("symlog", linthresh=1.0e-8)
@@ -1587,10 +1505,6 @@ def main() -> None:
         raise ValueError(
             f"--refresh-seconds must be positive, got: {args.refresh_seconds}"
         )
-    if args.geometry_every <= 0:
-        raise ValueError(f"--geometry-every must be positive, got: {args.geometry_every}")
-    if args.ground_truth is not None and not args.ground_truth.expanduser().is_file():
-        raise FileNotFoundError(f"--gt does not exist: {args.ground_truth.expanduser()}")
 
     plt.ion()
     plt.rcParams["figure.raise_window"] = False
@@ -1610,13 +1524,17 @@ def main() -> None:
     print(f"Loss y-scale       : {args.loss_y_scale}")
     print(f"Point count window : {args.point_count_windowed}")
     if args.ground_truth is not None:
-        print(f"Live CD GT         : {args.ground_truth.expanduser().resolve()}")
-        print(f"Live CD interval   : {args.geometry_every} iterations")
+        print(
+            "Note: view_metrics_live.py no longer computes Chamfer. "
+            "Pass --gt to main.py; the viewer will read geometry_metrics.csv.",
+            file=sys.stderr,
+        )
 
     try:
         while plt.fignum_exists(figure.number):
             run_dir = resolve_run_dir(args)
             metrics_csv_path = run_dir / args.metrics_name
+            geometry_metrics_path = run_dir / args.geometry_metrics_name
 
             if previous_run_dir != run_dir:
                 previous_run_dir = run_dir
@@ -1627,6 +1545,7 @@ def main() -> None:
                 print()
                 print(f"Watching run       : {run_dir}")
                 print(f"Metrics file       : {metrics_csv_path}")
+                print(f"Geometry trail     : {geometry_metrics_path}")
 
             file_state = get_file_state(metrics_csv_path)
 
@@ -1648,31 +1567,11 @@ def main() -> None:
                     previous_file_state = file_state
 
             if previous_dataframe is not None:
-                try:
-                    geometry_dataframe = prepare_metrics_dataframe(
-                        dataframe=previous_dataframe,
-                        from_iteration=None,
-                        last_iterations=None,
-                        skip_opacity_reset_noise=0,
-                    )
-                    if not geometry_dataframe.empty:
-                        geometry_latest_iteration = int(geometry_dataframe["iteration"].iloc[-1])
-                        geometry_changed = update_geometry_evaluation_state(
-                            state=geometry_state,
-                            run_dir=run_dir,
-                            latest_iteration=geometry_latest_iteration,
-                            ground_truth_path=args.ground_truth,
-                            geometry_every=args.geometry_every,
-                            reconstruction_name=args.reconstruction_name,
-                            samples=args.geometry_samples,
-                            device_name=args.geometry_device,
-                            seed=args.geometry_seed,
-                            scale=args.geometry_scale,
-                            use_vertices=args.geometry_use_vertices,
-                            metrics_dataframe=geometry_dataframe,
-                        )
-                except ValueError:
-                    pass
+                geometry_changed = update_geometry_metrics_state(
+                    state=geometry_state,
+                    run_dir=run_dir,
+                    geometry_metrics_path=geometry_metrics_path,
+                )
 
             if previous_dataframe is not None and (file_changed or geometry_changed):
                 try:

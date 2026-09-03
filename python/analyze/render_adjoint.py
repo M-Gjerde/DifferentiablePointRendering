@@ -4,7 +4,6 @@ from pathlib import Path
 import numpy as np
 import imageio.v3 as iio
 import matplotlib
-from matplotlib import cm  # noqa: F401
 
 import pale
 

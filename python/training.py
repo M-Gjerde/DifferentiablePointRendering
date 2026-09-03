@@ -1,16 +1,28 @@
 from __future__ import annotations
 
+import csv
 import shlex
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any
 
-from optimizers import (create_learning_rate_schedules, update_optimizer_learning_rates, )
-from training_helpers import *
-from density_control import *
+import numpy as np
+import pale
+import torch
+
+import density_control as density
+import io_utils
+import losses
+import optimizers
+import render_hooks as render
+import training_helpers as helpers
+from config import OptimizationConfig, RendererSettingsConfig
+from geometry_metrics import GeometryMetricsTrail
+from metrics_schema import METRICS_COLUMNS, MetricsCSVWriter
 
 
 def extract_mesh_from_point_cloud(
@@ -18,7 +30,7 @@ def extract_mesh_from_point_cloud(
         points_path: Path,
         mesh_output_subdir: Path,
         log_prefix: str,
-) -> None:
+) -> Path | None:
     extract_mesh_script = Path(__file__).resolve().with_name("extract_mesh.py")
 
     command = [
@@ -52,10 +64,17 @@ def extract_mesh_from_point_cloud(
             f"{log_prefix} Mesh extraction failed "
             f"with exit code {result.returncode}: {shlex.join(command)}"
         )
+        return None
+
+    mesh_path = config.output_dir / mesh_output_subdir / "fuse_post.ply"
+    if not mesh_path.is_file():
+        print(f"{log_prefix} Mesh extraction completed but did not create {mesh_path}")
+        return None
+    return mesh_path
 
 
-def extract_mesh_checkpoint(config: OptimizationConfig, iteration: int, points_path: Path) -> None:
-    extract_mesh_from_point_cloud(
+def extract_mesh_checkpoint(config: OptimizationConfig, iteration: int, points_path: Path) -> Path | None:
+    return extract_mesh_from_point_cloud(
         config=config,
         points_path=points_path,
         mesh_output_subdir=Path("mesh_checkpoints") / f"iter_{iteration:05d}",
@@ -63,8 +82,8 @@ def extract_mesh_checkpoint(config: OptimizationConfig, iteration: int, points_p
     )
 
 
-def extract_final_mesh(config: OptimizationConfig, points_path: Path) -> None:
-    extract_mesh_from_point_cloud(
+def extract_final_mesh(config: OptimizationConfig, points_path: Path) -> Path | None:
+    return extract_mesh_from_point_cloud(
         config=config,
         points_path=points_path,
         mesh_output_subdir=Path("mesh"),
@@ -72,22 +91,41 @@ def extract_final_mesh(config: OptimizationConfig, points_path: Path) -> None:
     )
 
 
+def log_geometry_checkpoint(
+        geometry_metrics: GeometryMetricsTrail | None,
+        config: OptimizationConfig,
+        mesh_path: Path | None,
+        iteration: int,
+) -> None:
+    if geometry_metrics is None:
+        return
+    geometry_metrics.evaluate(
+        mesh_path=mesh_path,
+        ground_truth_path=config.ground_truth,
+        iteration=iteration,
+        samples=int(config.geometry_samples),
+        seed=int(config.geometry_seed),
+        scale=float(config.geometry_scale),
+        use_vertices=bool(config.geometry_use_vertices),
+    )
+
+
 @dataclass
 class IterationGradientResult:
     active_camera_name: str
-    forward_out: Optional[Dict[str, dict]]
-    loss_state: Dict[str, Any]
-    averaged_loss_state: Dict[str, Any]
-    photo_gradients: Dict[str, np.ndarray]
-    depth_regularizer_gradients: Dict[str, np.ndarray]
-    normal_regularizer_gradients: Dict[str, np.ndarray]
-    opacity_prior_gradients: Dict[str, np.ndarray]
-    intra_slab_depth_gradients: Dict[str, np.ndarray]
-    curvature_scale_gradients: Dict[str, np.ndarray]
-    surface_regularizer_gradients: Dict[str, np.ndarray]
-    total_gradients: Dict[str, np.ndarray]
-    adjoint_images: Dict[str, Any]
-    photo_gradient_surfel_stats: Dict[str, Any]
+    forward_out: dict[str, dict] | None
+    loss_state: dict[str, Any]
+    averaged_loss_state: dict[str, Any]
+    photo_gradients: dict[str, np.ndarray]
+    depth_regularizer_gradients: dict[str, np.ndarray]
+    normal_regularizer_gradients: dict[str, np.ndarray]
+    opacity_prior_gradients: dict[str, np.ndarray]
+    intra_slab_depth_gradients: dict[str, np.ndarray]
+    curvature_scale_gradients: dict[str, np.ndarray]
+    surface_regularizer_gradients: dict[str, np.ndarray]
+    total_gradients: dict[str, np.ndarray]
+    adjoint_images: dict[str, Any]
+    photo_gradient_surfel_stats: dict[str, Any]
 
 
 DENSIFICATION_ORIGIN_INITIAL = np.uint8(0)
@@ -178,13 +216,7 @@ def active_densification_origin_counts(
 
 
 def densification_stats_skip_for_interval(config: OptimizationConfig, densification_interval: int) -> int:
-    if not bool(
-            getattr(
-                config,
-                "densification_stats_skip_interval_start",
-                getattr(config, "densification_stats_warmup", True),
-            )
-    ):
+    if not config.densification_stats_skip_interval_start:
         return 0
     return max(int(densification_interval) // 2, 0)
 
@@ -193,7 +225,7 @@ def next_densification_iteration_after(
         current_iteration: int,
         densify_after: int,
         densification_interval: int,
-) -> Optional[int]:
+) -> int | None:
     if densification_interval <= 0:
         return None
     return max(int(densify_after), int(current_iteration) + max(int(densification_interval), 1))
@@ -208,9 +240,9 @@ def active_camera_name_for_iteration(
 
 def make_rgb_loss_state(
         active_training_camera_ids: Sequence[str],
-        adjoint_images: Dict[str, Any],
-) -> Dict[str, Any]:
-    loss_state = make_zero_loss_values()
+        adjoint_images: dict[str, Any],
+) -> dict[str, Any]:
+    loss_state = helpers.make_zero_loss_values()
     loss_state.update({
         "depth_distortion_grad_images": {},
         "visible_normal_adjoints": {},
@@ -226,7 +258,7 @@ def make_rgb_loss_state(
         rgb_loss_value = float(rgb_loss_values[camera_name])
         rgb_l2_loss_value = float(rgb_l2_loss_values[camera_name])
         rgb_dssim_loss_value = float(rgb_dssim_loss_values.get(camera_name, 0.0))
-        camera_loss_values = make_zero_loss_values()
+        camera_loss_values = helpers.make_zero_loss_values()
         camera_loss_values["total_rgb_loss_value"] = rgb_loss_value
         camera_loss_values["total_rgb_l2_loss_value"] = rgb_l2_loss_value
         camera_loss_values["total_rgb_dssim_loss_value"] = rgb_dssim_loss_value
@@ -241,10 +273,10 @@ def make_rgb_loss_state(
 
 
 def add_regularizer_loss_state(
-        loss_state: Dict[str, Any],
-        regularizer_loss_state: Dict[str, Any],
+        loss_state: dict[str, Any],
+        regularizer_loss_state: dict[str, Any],
 ) -> None:
-    for loss_key in LOSS_VALUE_KEYS:
+    for loss_key in helpers.LOSS_VALUE_KEYS:
         # Device regularizer results contain only regularizer terms. RGB-only
         # diagnostics such as the half-MSE and DSSIM components are therefore
         # intentionally absent and contribute zero during this merge.
@@ -253,9 +285,9 @@ def add_regularizer_loss_state(
     for camera_name, camera_loss_values in regularizer_loss_state["per_camera_loss_values"].items():
         existing_camera_loss_values = loss_state["per_camera_loss_values"].setdefault(
             camera_name,
-            make_zero_loss_values(),
+            helpers.make_zero_loss_values(),
         )
-        for loss_key in LOSS_VALUE_KEYS:
+        for loss_key in helpers.LOSS_VALUE_KEYS:
             existing_camera_loss_values[loss_key] += float(
                 camera_loss_values.get(loss_key, 0.0)
             )
@@ -274,7 +306,7 @@ def add_regularizer_loss_state(
 
 def make_device_training_step_options(
         config: OptimizationConfig,
-        active_learning_rates: Dict[str, float],
+        active_learning_rates: dict[str, float],
         camera_batch_scale: float,
         return_gradient_stats: bool = False,
         include_depth_distortion: bool = False,
@@ -282,7 +314,7 @@ def make_device_training_step_options(
         include_opacity_prior: bool = False,
         include_intra_slab_depth: bool = False,
         include_curvature_scale: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return {
         "optimizer": config.optimizer_type,
         "learning_rate_position": active_learning_rates.get(
@@ -323,7 +355,7 @@ def make_device_training_step_options(
 
 
 def active_surfel_mask_from_primal_transport(
-        primal_activity_stats: Dict[str, Any],
+        primal_activity_stats: dict[str, Any],
         point_count: int,
 ) -> np.ndarray:
     camera_surface_hit_count_np = primal_activity_stats.get(
@@ -356,7 +388,7 @@ def active_surfel_mask_from_primal_transport(
 def compute_iteration_gradients(
         renderer: pale.Renderer,
         active_training_camera_ids: Sequence[str],
-        latest_loss_values_by_camera: Dict[str, Dict[str, float]],
+        latest_loss_values_by_camera: dict[str, dict[str, float]],
         training_camera_ids: Sequence[str],
         iteration: int,
         one_camera_per_iteration: bool,
@@ -390,12 +422,12 @@ def compute_iteration_gradients(
     loss_state = make_rgb_loss_state(active_training_camera_ids, adjoint_images)
 
     forward_out = None
-    depth_regularizer_gradients: Dict[str, np.ndarray] = {}
-    normal_regularizer_gradients: Dict[str, np.ndarray] = {}
-    opacity_prior_gradients: Dict[str, np.ndarray] = {}
-    intra_slab_depth_gradients: Dict[str, np.ndarray] = {}
-    curvature_scale_gradients: Dict[str, np.ndarray] = {}
-    surface_regularizer_gradients: Dict[str, np.ndarray] = {}
+    depth_regularizer_gradients: dict[str, np.ndarray] = {}
+    normal_regularizer_gradients: dict[str, np.ndarray] = {}
+    opacity_prior_gradients: dict[str, np.ndarray] = {}
+    intra_slab_depth_gradients: dict[str, np.ndarray] = {}
+    curvature_scale_gradients: dict[str, np.ndarray] = {}
+    surface_regularizer_gradients: dict[str, np.ndarray] = {}
 
     if (use_depth_distortion_gradients or use_normal_consistency or use_opacity_prior or
             use_intra_slab_depth or use_curvature_scale):
@@ -431,7 +463,7 @@ def compute_iteration_gradients(
                 else renderer.render_forward()
             )
 
-            regularizer_loss_state = compute_surface_regularizer_losses_and_adjoints(
+            regularizer_loss_state = helpers.compute_surface_regularizer_losses_and_adjoints(
                 forward_out=forward_out,
                 training_camera_ids=list(active_training_camera_ids),
                 depth_distortion_weight=active_depth_distortion_weight,
@@ -461,16 +493,16 @@ def compute_iteration_gradients(
         intra_slab_depth_gradients = surface_regularizer_components.get("intra_slab_depth", {})
         curvature_scale_gradients = surface_regularizer_components.get("curvature_scale", {})
 
-        repair_nonfinite_gradient_dict_inplace("depth_regularizer_gradients", depth_regularizer_gradients, iteration)
-        repair_nonfinite_gradient_dict_inplace("normal_regularizer_gradients", normal_regularizer_gradients, iteration)
-        repair_nonfinite_gradient_dict_inplace("opacity_prior_gradients", opacity_prior_gradients, iteration)
-        repair_nonfinite_gradient_dict_inplace(
+        helpers.repair_nonfinite_gradient_dict_inplace("depth_regularizer_gradients", depth_regularizer_gradients, iteration)
+        helpers.repair_nonfinite_gradient_dict_inplace("normal_regularizer_gradients", normal_regularizer_gradients, iteration)
+        helpers.repair_nonfinite_gradient_dict_inplace("opacity_prior_gradients", opacity_prior_gradients, iteration)
+        helpers.repair_nonfinite_gradient_dict_inplace(
             "intra_slab_depth_gradients", intra_slab_depth_gradients, iteration
         )
-        repair_nonfinite_gradient_dict_inplace(
+        helpers.repair_nonfinite_gradient_dict_inplace(
             "curvature_scale_gradients", curvature_scale_gradients, iteration
         )
-        surface_regularizer_gradients = sum_gradient_dicts(
+        surface_regularizer_gradients = helpers.sum_gradient_dicts(
             depth_regularizer_gradients,
             normal_regularizer_gradients,
             opacity_prior_gradients,
@@ -480,18 +512,18 @@ def compute_iteration_gradients(
 
     photo_gradient_surfel_stats = adjoint_images.get("gradient_stats", {})
 
-    repair_nonfinite_gradient_dict_inplace("photo_gradients", photo_gradients, iteration)
-    repair_nonfinite_gradient_dict_inplace(
+    helpers.repair_nonfinite_gradient_dict_inplace("photo_gradients", photo_gradients, iteration)
+    helpers.repair_nonfinite_gradient_dict_inplace(
         "surface_regularizer_gradients",
         surface_regularizer_gradients,
         iteration,
     )
-    total_gradients = sum_gradient_dicts(photo_gradients, surface_regularizer_gradients)
+    total_gradients = helpers.sum_gradient_dicts(photo_gradients, surface_regularizer_gradients)
 
     for camera_name, camera_loss_values in loss_state["per_camera_loss_values"].items():
         latest_loss_values_by_camera[camera_name] = dict(camera_loss_values)
 
-    averaged_loss_state = make_averaged_loss_state_from_camera_cache(
+    averaged_loss_state = helpers.make_averaged_loss_state_from_camera_cache(
         latest_loss_values_by_camera=latest_loss_values_by_camera,
         expected_camera_ids=list(training_camera_ids),
     )
@@ -516,15 +548,15 @@ def compute_iteration_gradients(
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                      renderer_settings: RendererSettingsConfig) -> None:
-    target_images, training_camera_ids, all_camera_ids = load_target_images(
+    target_images, training_camera_ids, all_camera_ids = helpers.load_target_images(
         renderer,
         Path(config.dataset_path),
         target_color_space=config.target_color_space,
     )
 
-    ssim_weight = float(getattr(config, "ssim_weight", 0.0))
-    ssim_window_size = int(getattr(config, "ssim_window_size", 11))
-    ssim_sigma = float(getattr(config, "ssim_sigma", 1.5))
+    ssim_weight = float(config.ssim_weight)
+    ssim_window_size = int(config.ssim_window_size)
+    ssim_sigma = float(config.ssim_sigma)
     if not 0.0 <= ssim_weight <= 1.0:
         raise ValueError(f"ssim_weight must be in [0, 1], got {ssim_weight}")
     if ssim_window_size <= 0 or ssim_window_size % 2 == 0 or ssim_window_size > 31:
@@ -534,22 +566,20 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     if not np.isfinite(ssim_sigma) or ssim_sigma <= 0.0:
         raise ValueError(f"ssim_sigma must be finite and positive, got {ssim_sigma}")
 
-    depth_distortion_base_weight = float(getattr(config, "depth_distort_weight", 0.0))
-    depth_distortion_start_iteration = int(getattr(config, "depth_distort_start_iteration", 0))
+    depth_distortion_base_weight = float(config.depth_distort_weight)
+    depth_distortion_start_iteration = int(config.depth_distort_start_iteration)
 
-    normal_consistency_weight = float(getattr(config, "normal_consistency_weight", 0.0))
-    opacity_prior_weight = float(getattr(config, "opacity_prior_weight", 0.0))
-    intra_slab_depth_weight = float(getattr(config, "intra_slab_depth_weight", 0.0))
-    curvature_scale_weight = float(getattr(config, "curvature_scale_weight", 0.0))
-    curvature_violation_threshold = float(
-        getattr(config, "curvature_violation_threshold", 0.0)
-    )
+    normal_consistency_weight = float(config.normal_consistency_weight)
+    opacity_prior_weight = float(config.opacity_prior_weight)
+    intra_slab_depth_weight = float(config.intra_slab_depth_weight)
+    curvature_scale_weight = float(config.curvature_scale_weight)
+    curvature_violation_threshold = float(config.curvature_violation_threshold)
     use_curvature_densification = (
             curvature_violation_threshold > 0.0
             and int(config.densification_interval) > 0
     )
     save_ply_files_interval = int(config.save_ply_files_interval)
-    mesh_extraction_interval = int(getattr(config, "mesh_extraction_interval", 1_000))
+    mesh_extraction_interval = int(config.mesh_extraction_interval)
 
     if save_ply_files_interval < 0:
         raise ValueError(f"save_ply_files_interval must be >= 0, got {save_ply_files_interval}")
@@ -591,21 +621,21 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         )
     renderer.upload_training_targets(target_images)
 
-    initial_params = fetch_parameters(renderer)
-    initial_params_reference = make_initial_params_reference(initial_params)
+    initial_params = render.fetch_parameters(renderer)
+    initial_params_reference = helpers.make_initial_params_reference(initial_params)
     print(f"Fetched {initial_params['position'].shape[0]} initial points from PLY.")
 
     device = torch.device(config.device)
 
-    positions, rotations, scales, albedos, opacities, betas, powers = create_torch_parameters_from_initial(
+    positions, rotations, scales, albedos, opacities, betas, powers = helpers.create_torch_parameters_from_initial(
         initial_params, device)
     rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
 
-    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+    trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
     frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
     print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
-    verify_parameters_inplane(
+    helpers.verify_parameters_inplane(
         positions,
         rotations,
         scales,
@@ -615,16 +645,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         trainable_surfel_mask=trainable_surfel_mask,
     )
 
-    apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
-    rebuild_bvh(renderer)
+    render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
+    render.rebuild_bvh(renderer)
 
-    positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(renderer, device)
+    positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(renderer, device)
     rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    optimizer = create_masked_optimizer(config, positions, rotation_delta, scales, albedos, opacities, betas, powers)
-    learning_rate_schedules = create_learning_rate_schedules(config)
-    resume_iteration_offset = max(0, int(getattr(config, "resume_iteration_offset", 0)))
+    geometry_metrics = (
+        GeometryMetricsTrail(config.output_dir)
+        if config.ground_truth is not None
+        else None
+    )
+    if geometry_metrics is not None:
+        print(f"Geometry metrics trail: {geometry_metrics.path}")
+
+    optimizer = optimizers.create_masked_optimizer(config, positions, rotation_delta, scales, albedos, opacities, betas, powers)
+    learning_rate_schedules = optimizers.create_learning_rate_schedules(config)
+    resume_iteration_offset = max(0, int(config.resume_iteration_offset))
     final_global_iteration = resume_iteration_offset + int(config.iterations)
     if resume_iteration_offset > 0:
         print(
@@ -632,20 +670,20 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             f"iteration {resume_iteration_offset}; this run will end at "
             f"global iteration {final_global_iteration}."
         )
-    active_learning_rates = update_optimizer_learning_rates(
+    active_learning_rates = optimizers.update_optimizer_learning_rates(
         optimizer,
         learning_rate_schedules,
         resume_iteration_offset,
     )
 
     initial_images = renderer.render_forward()
-    initial_depth_distortion_weight = scheduled_regularizer_weight(
+    initial_depth_distortion_weight = helpers.scheduled_regularizer_weight(
         depth_distortion_base_weight,
         iteration=resume_iteration_offset,
         start_iteration=depth_distortion_start_iteration,
     )
 
-    initial_loss_tuple = compute_initial_losses_and_save_outputs(
+    initial_loss_tuple = helpers.compute_initial_losses_and_save_outputs(
         output_dir=config.output_dir, initial_images=initial_images, target_images=target_images,
         all_camera_ids=all_camera_ids, positions=positions, rotations=rotations,
         scales=scales, albedos=albedos, opacities=opacities, betas=betas, powers=powers,
@@ -664,7 +702,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         use_curvature_scale=use_curvature_scale,
     )
 
-    print_loss_summary("Initial", *initial_loss_tuple)
+    helpers.print_loss_summary("Initial", *initial_loss_tuple)
 
     densification_interval = int(config.densification_interval)
     prune_interval = int(config.prune_interval)
@@ -688,18 +726,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     reset_opacity_interval = int(config.reset_opacity_interval)
     reset_opacity_value = float(config.reset_opacity_value)
     densification_verbose = bool(config.densification_verbose)
-    densification_grad_quantile = as_config_float(config.densification_grad_quantile)
+    densification_grad_quantile = helpers.as_config_float(config.densification_grad_quantile)
     densification_grad_abs_min = float(config.densification_grad_abs_min)
     densification_grad_abs_min_final = float(config.densification_grad_abs_min_final)
     densification_grad_abs_min_decay_start_iteration = int(config.densification_grad_abs_min_decay_start_iteration)
     densification_grad_abs_min_decay_end_iteration = int(config.densification_grad_abs_min_decay_end_iteration)
-    densification_downweight_normal_gradients = bool(
-        getattr(config, "densification_downweight_normal_gradients", False)
-    )
+    densification_downweight_normal_gradients = config.densification_downweight_normal_gradients
     densify_bsdf_floor = float(config.densify_bsdf_floor)
     densify_bsdf_gamma = float(config.densify_bsdf_gamma)
     rebuild_bvh_interval = max(int(config.rebuild_bvh_interval), 1)
-    use_device_training_step = bool(getattr(config, "use_device_training_step", True))
+    use_device_training_step = config.use_device_training_step
     device_training_disabled_reasons: list[str] = []
     required_device_training_methods = (
         "render_rgb_training_step",
@@ -727,7 +763,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     use_device_training_step = use_device_training_step and not device_training_disabled_reasons
     if use_device_training_step:
         print("[device-training-step] Enabled device-resident optimizer path.")
-    elif bool(getattr(config, "use_device_training_step", True)):
+    elif config.use_device_training_step:
         print(
             "[device-training-step] Disabled: "
             + "; ".join(device_training_disabled_reasons)
@@ -737,7 +773,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     # Stores local tangent coordinates (u, v, 0); converted to world space at clone time.
     densify_position_grad_vector_accum_np = np.zeros(tuple(positions.shape), dtype=np.float32)
-    densify_curvature_stats_accum = make_curvature_densification_accumulators(
+    densify_curvature_stats_accum = helpers.make_curvature_densification_accumulators(
         int(positions.shape[0])
     )
     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool)
@@ -793,7 +829,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     last_log_iteration = 0
     last_log_time = total_start_time
     iteration = 0
-    latest_loss_values_by_camera: Dict[str, Dict[str, float]] = {}
+    latest_loss_values_by_camera: dict[str, dict[str, float]] = {}
     densification_clone_points_total = 0
     densification_split_points_total = 0
     densification_position_split_points_total = 0
@@ -801,26 +837,27 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     with open(metrics_csv_path, "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
-        write_metrics_header(csv_writer)
+        helpers.write_metrics_header(csv_writer)
+        metrics_writer = MetricsCSVWriter(csv_writer, METRICS_COLUMNS)
 
         try:
             for iteration in range(1, config.iterations + 1):
                 iteration_start = time.perf_counter()
                 global_iteration = resume_iteration_offset + iteration
 
-                active_training_camera_ids = select_active_training_camera_ids(
+                active_training_camera_ids = helpers.select_active_training_camera_ids(
                     training_camera_ids=training_camera_ids,
                     iteration=global_iteration,
                     config=config,
                 )
 
-                active_depth_distortion_weight = scheduled_regularizer_weight(
+                active_depth_distortion_weight = helpers.scheduled_regularizer_weight(
                     depth_distortion_base_weight,
                     iteration=global_iteration,
                     start_iteration=depth_distortion_start_iteration,
                 )
                 active_opacity_prior_weight = opacity_prior_weight
-                active_densification_grad_abs_min = scheduled_densification_grad_abs_min(
+                active_densification_grad_abs_min = helpers.scheduled_densification_grad_abs_min(
                     initial_threshold=densification_grad_abs_min,
                     final_threshold=densification_grad_abs_min_final,
                     iteration=global_iteration,
@@ -830,7 +867,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 use_depth_distortion_gradients = active_depth_distortion_weight != 0.0
                 if use_device_training_step:
-                    active_learning_rates = update_optimizer_learning_rates(
+                    active_learning_rates = optimizers.update_optimizer_learning_rates(
                         optimizer,
                         learning_rate_schedules,
                         global_iteration,
@@ -921,7 +958,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     for camera_name, camera_loss_values in loss_state["per_camera_loss_values"].items():
                         latest_loss_values_by_camera[camera_name] = dict(camera_loss_values)
 
-                    averaged_loss_state = make_averaged_loss_state_from_camera_cache(
+                    averaged_loss_state = helpers.make_averaged_loss_state_from_camera_cache(
                         latest_loss_values_by_camera=latest_loss_values_by_camera,
                         expected_camera_ids=list(training_camera_ids),
                     )
@@ -942,7 +979,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         "clone_signal_record_count_per_camera",
                         None,
                     )
-                    update_densification_statistics(
+                    helpers.update_densification_statistics(
                         iteration=global_iteration,
                         densification_interval=densification_cycle_interval,
                         densification_cycle_start_iteration=densification_cycle_start_iteration,
@@ -960,7 +997,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densification_downweight_normal_gradients=densification_downweight_normal_gradients,
                     )
                     if use_curvature_densification:
-                        update_curvature_densification_statistics(
+                        helpers.update_curvature_densification_statistics(
                             iteration=global_iteration,
                             densification_interval=densification_cycle_interval,
                             densification_cycle_start_iteration=densification_cycle_start_iteration,
@@ -1006,13 +1043,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     ):
                         renderer.sync_point_parameters_from_gpu()
                         positions, rotations, scales, albedos, opacities, betas, powers = (
-                            refetch_parameters_as_torch(renderer, device)
+                            helpers.refetch_parameters_as_torch(renderer, device)
                         )
                         rotation_delta = torch.nn.Parameter(
                             torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
                         )
-                        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
-                        verify_parameters_inplane(
+                        trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
+                        helpers.verify_parameters_inplane(
                             positions,
                             rotations,
                             scales,
@@ -1032,7 +1069,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     if not did_reset_opacity:
                         if should_check_densification:
-                            densification_result = maybe_make_densification_result(
+                            densification_result = helpers.maybe_make_densification_result(
                                 iteration=global_iteration, config=config, positions=positions, rotations=rotations,
                                 scales=scales, albedos=albedos, opacities=opacities,
                                 betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
@@ -1049,7 +1086,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             )
 
                         if should_check_prune:
-                            scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
+                            scale_prune_indices, opacity_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
                                 iteration=global_iteration, config=config, scales=scales, opacities=opacities,
                                 trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
                                 prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
@@ -1100,7 +1137,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             device_adam_state_snapshot = renderer.capture_device_adam_state()
 
                         if densification_result is not None:
-                            apply_densification_source_updates_inplace(
+                            helpers.apply_densification_source_updates_inplace(
                                 densification_result, positions, rotations, scales,
                                 albedos, opacities, betas, powers,
                             )
@@ -1109,11 +1146,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densification_result,
                                 global_iteration,
                             )
-                            verify_parameters_inplane(
+                            helpers.verify_parameters_inplane(
                                 positions, rotations, scales, albedos, opacities, betas,
                                 trainable_surfel_mask=trainable_surfel_mask,
                             )
-                            apply_point_parameters(
+                            render.apply_point_parameters(
                                 renderer, positions, rotations, scales,
                                 albedos, opacities, betas, powers,
                             )
@@ -1142,7 +1179,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 )
 
                             keep_mask_np[indices_to_remove] = False
-                            remove_points(renderer, indices_to_remove)
+                            render.remove_points(renderer, indices_to_remove)
                             densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
                             densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                             densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
@@ -1160,7 +1197,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             new_block = densification_result.get("new", None)
                             if new_block is not None:
                                 n_new = int(new_block["position"].shape[0])
-                                add_new_points(renderer, densification_result)
+                                render.add_new_points(renderer, densification_result)
 
                                 source_index_for_new_np = np.asarray(
                                     densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
@@ -1205,8 +1242,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     axis=0,
                                 )
 
-                        rebuild_bvh(renderer)
-                        positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
+                        render.rebuild_bvh(renderer)
+                        positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(
                             renderer, device)
                         rotation_delta = torch.nn.Parameter(
                             torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
@@ -1241,16 +1278,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 f"{primitive_birth_iteration_np.shape[0]} vs {positions.shape[0]}"
                             )
 
-                        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
-                        verify_parameters_inplane(
+                        trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
+                        helpers.verify_parameters_inplane(
                             positions, rotations, scales, albedos, opacities, betas,
                             trainable_surfel_mask=trainable_surfel_mask,
                         )
-                        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
+                        render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
                                                powers)
-                        rebuild_bvh(renderer)
+                        render.rebuild_bvh(renderer)
 
-                        migrated_device_adam_state = migrate_device_adam_state_snapshot(
+                        migrated_device_adam_state = helpers.migrate_device_adam_state_snapshot(
                             device_adam_state_snapshot,
                             keep_mask_np=keep_mask_np,
                             new_point_count=int(positions.shape[0]),
@@ -1260,7 +1297,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         if migrated_device_adam_state is not None:
                             renderer.upload_device_adam_state(migrated_device_adam_state)
 
-                        optimizer = create_masked_optimizer(
+                        optimizer = optimizers.create_masked_optimizer(
                             config,
                             positions,
                             rotation_delta,
@@ -1270,12 +1307,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             betas,
                             powers,
                         )
-                        active_learning_rates = update_optimizer_learning_rates(
+                        active_learning_rates = optimizers.update_optimizer_learning_rates(
                             optimizer,
                             learning_rate_schedules,
                             global_iteration,
                         )
-                        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                        trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
                         frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
                         #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
@@ -1327,7 +1364,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         save_forward_out = renderer.render_forward()
                         snapshot_adjoint_images = adjoint_images
                         if config.save_snapshot_grad:
-                            snapshot_adjoint_images = compute_snapshot_adjoint_images(
+                            snapshot_adjoint_images = helpers.compute_snapshot_adjoint_images(
                                 renderer=renderer,
                                 forward_out=save_forward_out,
                                 target_images=target_images,
@@ -1337,7 +1374,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 ssim_sigma=ssim_sigma,
                             )
 
-                        save_iteration_outputs(
+                        helpers.save_iteration_outputs(
                             output_dir=config.output_dir,
                             iteration=global_iteration,
                             save_interval=config.save_interval,
@@ -1354,7 +1391,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             save_grad=config.save_snapshot_grad,
                             force=is_first_iteration,
                         )
-
                     iteration_point_cloud_path = None
                     should_extract_mesh_checkpoint = (
                             mesh_extraction_interval > 0
@@ -1367,13 +1403,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     if needs_parameter_snapshot:
                         renderer.sync_point_parameters_from_gpu()
                         positions, rotations, scales, albedos, opacities, betas, powers = (
-                            refetch_parameters_as_torch(renderer, device)
+                            helpers.refetch_parameters_as_torch(renderer, device)
                         )
                         rotation_delta = torch.nn.Parameter(
                             torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
                         )
-                        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
-                        verify_parameters_inplane(
+                        trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
+                        helpers.verify_parameters_inplane(
                             positions,
                             rotations,
                             scales,
@@ -1384,7 +1420,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
 
                     if save_ply_files_interval > 0 and global_iteration % save_ply_files_interval == 0:
-                        iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                        iteration_point_cloud_path = helpers.save_iteration_point_cloud_snapshot(
                             config.output_dir,
                             global_iteration,
                             positions,
@@ -1402,7 +1438,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     if should_extract_mesh_checkpoint:
                         if iteration_point_cloud_path is None:
-                            iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                            iteration_point_cloud_path = helpers.save_iteration_point_cloud_snapshot(
                                 config.output_dir,
                                 global_iteration,
                                 positions,
@@ -1417,7 +1453,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     primitive_birth_iteration_np, global_iteration,
                                 ),
                             )
-                        extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
+                        checkpoint_mesh_path = extract_mesh_checkpoint(
+                            config, global_iteration, iteration_point_cloud_path,
+                        )
+                        log_geometry_checkpoint(
+                            geometry_metrics, config, checkpoint_mesh_path, global_iteration,
+                        )
 
                     num_points = int(positions.shape[0])
                     iteration_end = time.perf_counter()
@@ -1455,7 +1496,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densification_curvature_split_points_active,
                     ) = active_densification_origin_counts(densification_origin_np)
 
-                    csv_writer.writerow(
+                    metrics_writer.writerow(
                         [
                             global_iteration,
                             active_camera_name,
@@ -1516,14 +1557,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         last_log_time = iteration_end
 
                         lr_position = active_learning_rates.get("position", float(config.learning_rate_position))
-                        exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
+                        exact_clone_scale_threshold = helpers.exact_clone_scale_threshold_for_positions(
                             config=config,
                             positions=positions,
                             trainable_surfel_mask=trainable_surfel_mask,
                         )
-                        minimum_splittable_scale = minimum_splittable_scale_for_config(config)
+                        minimum_splittable_scale = helpers.minimum_splittable_scale_for_config(config)
                         print(
-                            format_training_iteration_log(
+                            helpers.format_training_iteration_log(
                                 iteration=global_iteration,
                                 total_iterations=final_global_iteration,
                                 iteration_time=iteration_time,
@@ -1556,19 +1597,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 grad_beta_max=0.0,
                             )
                         )
-                        print(format_loss_breakdown(averaged_loss_state))
+                        print(helpers.format_loss_breakdown(averaged_loss_state))
                         # print("[device-training-step] Host gradient arrays skipped in fixed-topology path.")
 
-                        hotkey = poll_hotkey()
+                        hotkey = helpers.poll_hotkey()
                         if hotkey == "s":
                             renderer.sync_point_parameters_from_gpu()
                             positions, rotations, scales, albedos, opacities, betas, powers = (
-                                refetch_parameters_as_torch(renderer, device)
+                                helpers.refetch_parameters_as_torch(renderer, device)
                             )
                             rotation_delta = torch.nn.Parameter(
                                 torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
                             )
-                            manual_points_path = save_manual_snapshot(
+                            manual_points_path = helpers.save_manual_snapshot(
                                 renderer,
                                 config.output_dir,
                                 global_iteration,
@@ -1585,7 +1626,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     primitive_birth_iteration_np, global_iteration,
                                 ),
                             )
-                            extract_mesh_checkpoint(config, global_iteration, manual_points_path)
+                            manual_mesh_path = extract_mesh_checkpoint(
+                                config, global_iteration, manual_points_path,
+                            )
+                            log_geometry_checkpoint(
+                                geometry_metrics, config, manual_mesh_path, global_iteration,
+                            )
                         elif hotkey == "g":
                             print(
                                 "[device-training-step] Gradient snapshot skipped; host gradients were not downloaded.")
@@ -1647,50 +1693,50 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 )
 
                 if camera_batch_scale != 1.0:
-                    photo_gradients = scale_gradient_dict(photo_gradients, camera_batch_scale)
-                    depth_regularizer_gradients = scale_gradient_dict(
+                    photo_gradients = helpers.scale_gradient_dict(photo_gradients, camera_batch_scale)
+                    depth_regularizer_gradients = helpers.scale_gradient_dict(
                         depth_regularizer_gradients,
                         camera_batch_scale,
                     )
-                    normal_regularizer_gradients = scale_gradient_dict(
+                    normal_regularizer_gradients = helpers.scale_gradient_dict(
                         normal_regularizer_gradients,
                         camera_batch_scale,
                     )
-                    opacity_prior_gradients = scale_gradient_dict(
+                    opacity_prior_gradients = helpers.scale_gradient_dict(
                         opacity_prior_gradients,
                         camera_batch_scale,
                     )
-                    intra_slab_depth_gradients = scale_gradient_dict(
+                    intra_slab_depth_gradients = helpers.scale_gradient_dict(
                         intra_slab_depth_gradients,
                         camera_batch_scale,
                     )
-                    curvature_scale_gradients = scale_gradient_dict(
+                    curvature_scale_gradients = helpers.scale_gradient_dict(
                         curvature_scale_gradients,
                         camera_batch_scale,
                     )
-                    surface_regularizer_gradients = scale_gradient_dict(
+                    surface_regularizer_gradients = helpers.scale_gradient_dict(
                         surface_regularizer_gradients,
                         camera_batch_scale,
                     )
-                    total_gradients = sum_gradient_dicts(
+                    total_gradients = helpers.sum_gradient_dicts(
                         photo_gradients,
                         surface_regularizer_gradients,
                     )
 
                 (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np,
-                 grad_betas_np,) = extract_total_gradient_arrays(total_gradients)
+                 grad_betas_np,) = helpers.extract_total_gradient_arrays(total_gradients)
 
-                grad_opacity_total_norm = gradient_l2_norm(grad_opacities_np)
-                grad_opacity_total_max = max_point_norm(grad_opacities_np)
+                grad_opacity_total_norm = helpers.gradient_l2_norm(grad_opacities_np)
+                grad_opacity_total_max = helpers.max_point_norm(grad_opacities_np)
 
-                grad_position_renderer_norm, grad_position_renderer_max = position_gradient_norm_stats_or_zero(
+                grad_position_renderer_norm, grad_position_renderer_max = helpers.position_gradient_norm_stats_or_zero(
                     photo_gradients)
 
-                grad_position_surface_regularizer_norm, grad_position_surface_regularizer_max = position_gradient_norm_stats_or_zero(
+                grad_position_surface_regularizer_norm, grad_position_surface_regularizer_max = helpers.position_gradient_norm_stats_or_zero(
                     surface_regularizer_gradients
                 )
-                grad_position_total_norm = gradient_l2_norm(grad_position_np)
-                grad_position_total_max = max_point_norm(grad_position_np)
+                grad_position_total_norm = helpers.gradient_l2_norm(grad_position_np)
+                grad_position_total_max = helpers.max_point_norm(grad_position_np)
 
                 if grad_position_np.shape != tuple(positions.shape):
                     raise RuntimeError(
@@ -1701,7 +1747,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     "clone_signal_record_count_per_camera",
                     None,
                 )
-                update_densification_statistics(
+                helpers.update_densification_statistics(
                     iteration=global_iteration,
                     densification_interval=densification_cycle_interval,
                     densification_cycle_start_iteration=densification_cycle_start_iteration,
@@ -1719,7 +1765,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densification_downweight_normal_gradients=densification_downweight_normal_gradients,
                 )
                 if use_curvature_densification:
-                    update_curvature_densification_statistics(
+                    helpers.update_curvature_densification_statistics(
                         iteration=global_iteration,
                         densification_interval=densification_cycle_interval,
                         densification_cycle_start_iteration=densification_cycle_start_iteration,
@@ -1730,24 +1776,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 optimizer.zero_grad(set_to_none=True)
 
-                zero_frozen_surfel_gradients_np(
+                helpers.zero_frozen_surfel_gradients_np(
                     trainable_surfel_mask, grad_position_np, grad_rotation_np,
                     grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np,
                 )
 
-                assign_numpy_gradients_to_tensors(
+                helpers.assign_numpy_gradients_to_tensors(
                     device, positions, rotation_delta, scales, albedos, opacities, betas,
                     grad_position_np, grad_rotation_np, grad_scales_np,
                     grad_albedos_np, grad_opacities_np, grad_betas_np,
                 )
 
-                active_learning_rates = update_optimizer_learning_rates(
+                active_learning_rates = optimizers.update_optimizer_learning_rates(
                     optimizer,
                     learning_rate_schedules,
                     global_iteration,
                 )
                 optimizer.step()
-                apply_local_rotation_update_to_quaternions_inplace(
+                density.apply_local_rotation_update_to_quaternions_inplace(
                     rotations,
                     rotation_delta,
                     trainable_surfel_mask=trainable_surfel_mask,
@@ -1773,12 +1819,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         and global_iteration >= next_densification_iteration
                 )
 
-                verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                helpers.verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
                                           trainable_surfel_mask=trainable_surfel_mask)
-                apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
+                render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
 
                 if global_iteration % rebuild_bvh_interval == 0:
-                    rebuild_bvh(renderer)
+                    render.rebuild_bvh(renderer)
 
                 densification_result = None
                 scale_prune_indices = []
@@ -1790,7 +1836,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 if not did_reset_opacity:
                     if densification_is_due:
-                        densification_result = maybe_make_densification_result(
+                        densification_result = helpers.maybe_make_densification_result(
                             iteration=global_iteration, config=config, positions=positions, rotations=rotations,
                             scales=scales, albedos=albedos, opacities=opacities,
                             betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
@@ -1805,7 +1851,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             force_densification=True,
                         )
 
-                    scale_prune_indices, opacity_prune_indices, indices_to_remove_list = maybe_make_prune_indices(
+                    scale_prune_indices, opacity_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
                         iteration=global_iteration, config=config, scales=scales, opacities=opacities,
                         trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
                         prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
@@ -1839,7 +1885,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     print(f"[Iter {global_iteration:04d}] Skipping densification/pruning due to opacity reset")
 
                 if indices_to_remove_list or densification_result is not None:
-                    old_params_for_optimizer = make_named_parameter_dict(positions, rotation_delta, scales, albedos,
+                    old_params_for_optimizer = helpers.make_named_parameter_dict(positions, rotation_delta, scales, albedos,
                                                                          opacities, betas, powers, )
                     old_optimizer_for_migration = optimizer
                     old_point_count_for_migration = int(positions.shape[0])
@@ -1855,16 +1901,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                                       int(i) not in protected_set]
 
                     if densification_result is not None:
-                        apply_densification_source_updates_inplace(densification_result, positions, rotations, scales,
+                        helpers.apply_densification_source_updates_inplace(densification_result, positions, rotations, scales,
                                                                    albedos, opacities, betas, powers, )
                         mark_split_sources_as_new(
                             primitive_birth_iteration_np,
                             densification_result,
                             global_iteration,
                         )
-                        verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                        helpers.verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
                                                   trainable_surfel_mask=trainable_surfel_mask, )
-                        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
+                        render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas,
                                                powers, )
 
                     if indices_to_remove_list:
@@ -1890,7 +1936,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             )
 
                         keep_mask_np[indices_to_remove] = False
-                        remove_points(renderer, indices_to_remove)
+                        render.remove_points(renderer, indices_to_remove)
                         densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
                         densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                         densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
@@ -1908,7 +1954,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         new_block = densification_result.get("new", None)
                         if new_block is not None:
                             n_new = int(new_block["position"].shape[0])
-                            add_new_points(renderer, densification_result)
+                            render.add_new_points(renderer, densification_result)
 
                             source_index_for_new_np = np.asarray(
                                 densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
@@ -1952,8 +1998,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 axis=0,
                             )
 
-                    rebuild_bvh(renderer)
-                    positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(
+                    render.rebuild_bvh(renderer)
+                    positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(
                         renderer, device)
                     rotation_delta = torch.nn.Parameter(
                         torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
@@ -1988,28 +2034,28 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             f"{primitive_birth_iteration_np.shape[0]} vs {positions.shape[0]}"
                         )
 
-                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
-                    verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
+                    trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
+                    helpers.verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
                                               trainable_surfel_mask=trainable_surfel_mask, )
 
-                    apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers, )
-                    rebuild_bvh(renderer)
+                    render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers, )
+                    render.rebuild_bvh(renderer)
 
-                    new_params_for_optimizer = make_named_parameter_dict(positions, rotation_delta, scales, albedos,
+                    new_params_for_optimizer = helpers.make_named_parameter_dict(positions, rotation_delta, scales, albedos,
                                                                          opacities, betas, powers, )
-                    optimizer = rebuild_optimizer_preserving_state(
+                    optimizer = helpers.rebuild_optimizer_preserving_state(
                         config=config, old_optimizer=old_optimizer_for_migration,
                         old_params=old_params_for_optimizer, new_params=new_params_for_optimizer,
                         keep_mask_np=keep_mask_np, source_index_for_new_np=source_index_for_new_np,
                         copy_source_state_to_new=False,
                     )
 
-                    active_learning_rates = update_optimizer_learning_rates(
+                    active_learning_rates = optimizers.update_optimizer_learning_rates(
                         optimizer,
                         learning_rate_schedules,
                         global_iteration,
                     )
-                    trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+                    trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
                     frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
                     #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
@@ -2056,7 +2102,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     snapshot_adjoint_images = adjoint_images
                     if config.save_snapshot_grad:
-                        snapshot_adjoint_images = compute_snapshot_adjoint_images(
+                        snapshot_adjoint_images = helpers.compute_snapshot_adjoint_images(
                             renderer=renderer,
                             forward_out=save_forward_out,
                             target_images=target_images,
@@ -2066,7 +2112,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             ssim_sigma=ssim_sigma,
                         )
 
-                    save_iteration_outputs(
+                    helpers.save_iteration_outputs(
                         output_dir=config.output_dir,
                         iteration=global_iteration,
                         save_interval=config.save_interval,
@@ -2083,7 +2129,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         save_grad=config.save_snapshot_grad,
                         force=is_first_iteration,
                     )
-
                 iteration_point_cloud_path = None
                 should_extract_mesh_checkpoint = (
                         mesh_extraction_interval > 0
@@ -2091,7 +2136,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 )
 
                 if save_ply_files_interval > 0 and global_iteration % save_ply_files_interval == 0:
-                    iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                    iteration_point_cloud_path = helpers.save_iteration_point_cloud_snapshot(
                         config.output_dir,
                         global_iteration,
                         positions,
@@ -2109,7 +2154,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 if should_extract_mesh_checkpoint:
                     if iteration_point_cloud_path is None:
-                        iteration_point_cloud_path = save_iteration_point_cloud_snapshot(
+                        iteration_point_cloud_path = helpers.save_iteration_point_cloud_snapshot(
                             config.output_dir,
                             global_iteration,
                             positions,
@@ -2125,7 +2170,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             ),
                         )
 
-                    extract_mesh_checkpoint(config, global_iteration, iteration_point_cloud_path)
+                    checkpoint_mesh_path = extract_mesh_checkpoint(
+                        config, global_iteration, iteration_point_cloud_path,
+                    )
+                    log_geometry_checkpoint(
+                        geometry_metrics, config, checkpoint_mesh_path, global_iteration,
+                    )
 
                 num_points = positions.shape[0]
                 iteration_end = time.perf_counter()
@@ -2163,7 +2213,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densification_curvature_split_points_active,
                 ) = active_densification_origin_counts(densification_origin_np)
 
-                csv_writer.writerow(
+                metrics_writer.writerow(
                     [
                         global_iteration,
                         active_camera_name,
@@ -2224,35 +2274,35 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     last_log_iteration = iteration
                     last_log_time = iteration_end
 
-                    grad_pos_rms = rms_point(grad_position_np)
-                    grad_rotation_rms = rms_point(grad_rotation_np)
-                    grad_scale_rms = rms_point(grad_scales_np)
-                    grad_albedo_rms = rms_point(grad_albedos_np)
-                    grad_opacity_rms = rms_point(grad_opacities_np)
-                    grad_beta_rms = rms_point(grad_betas_np)
+                    grad_pos_rms = helpers.rms_point(grad_position_np)
+                    grad_rotation_rms = helpers.rms_point(grad_rotation_np)
+                    grad_scale_rms = helpers.rms_point(grad_scales_np)
+                    grad_albedo_rms = helpers.rms_point(grad_albedos_np)
+                    grad_opacity_rms = helpers.rms_point(grad_opacities_np)
+                    grad_beta_rms = helpers.rms_point(grad_betas_np)
 
-                    grad_pos_max = max_point_norm(grad_position_np)
-                    grad_rotation_max = max_point_norm(grad_rotation_np)
-                    grad_scale_max = max_point_norm(grad_scales_np)
-                    grad_albedo_max = max_point_norm(grad_albedos_np)
-                    grad_opacity_max = max_point_norm(grad_opacities_np)
-                    grad_beta_max = max_point_norm(grad_betas_np)
+                    grad_pos_max = helpers.max_point_norm(grad_position_np)
+                    grad_rotation_max = helpers.max_point_norm(grad_rotation_np)
+                    grad_scale_max = helpers.max_point_norm(grad_scales_np)
+                    grad_albedo_max = helpers.max_point_norm(grad_albedos_np)
+                    grad_opacity_max = helpers.max_point_norm(grad_opacities_np)
+                    grad_beta_max = helpers.max_point_norm(grad_betas_np)
                     lr_position = active_learning_rates.get("position", float(config.learning_rate_position))
-                    photo_gradient_stats = gradient_stats_from_dict(photo_gradients)
+                    photo_gradient_stats = helpers.gradient_stats_from_dict(photo_gradients)
                     surface_regularizer_gradient_stats = (
-                        gradient_stats_from_dict(surface_regularizer_gradients)
+                        helpers.gradient_stats_from_dict(surface_regularizer_gradients)
                         if surface_regularizer_gradients
                         else {}
                     )
 
-                    exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
+                    exact_clone_scale_threshold = helpers.exact_clone_scale_threshold_for_positions(
                         config=config,
                         positions=positions,
                         trainable_surfel_mask=trainable_surfel_mask,
                     )
-                    minimum_splittable_scale = minimum_splittable_scale_for_config(config)
+                    minimum_splittable_scale = helpers.minimum_splittable_scale_for_config(config)
                     print(
-                        format_training_iteration_log(
+                        helpers.format_training_iteration_log(
                             iteration=global_iteration,
                             total_iterations=final_global_iteration,
                             iteration_time=iteration_time,
@@ -2286,10 +2336,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
                     )
 
-                    print(format_loss_breakdown(averaged_loss_state))
+                    print(helpers.format_loss_breakdown(averaged_loss_state))
 
                     print(
-                        format_gradient_source_balance(
+                        helpers.format_gradient_source_balance(
                             loss_gradients=photo_gradients,
                             depth_regularizer_gradients=depth_regularizer_gradients,
                             normal_regularizer_gradients=normal_regularizer_gradients,
@@ -2300,17 +2350,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             total_gradients=total_gradients,
                         )
                     )
-                    print(format_gradient_stats("render_grads", photo_gradient_stats))
+                    print(helpers.format_gradient_stats("render_grads", photo_gradient_stats))
 
                     if surface_regularizer_gradients:
-                        print(format_gradient_stats("surface_regularizers", surface_regularizer_gradient_stats))
+                        print(helpers.format_gradient_stats("surface_regularizers", surface_regularizer_gradient_stats))
                     if use_depth_distortion and loss_state["depth_distortion_maps_for_logging"]:
-                        print(summarize_depth_distortion_maps(loss_state["depth_distortion_maps_for_logging"],
+                        print(helpers.summarize_depth_distortion_maps(loss_state["depth_distortion_maps_for_logging"],
                                                               loss_state["depth_distortion_grad_images"]))
 
-                    hotkey = poll_hotkey()
+                    hotkey = helpers.poll_hotkey()
                     if hotkey == "s":
-                        manual_points_path = save_manual_snapshot(
+                        manual_points_path = helpers.save_manual_snapshot(
                             renderer,
                             config.output_dir,
                             global_iteration,
@@ -2327,9 +2377,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 primitive_birth_iteration_np, global_iteration,
                             ),
                         )
-                        extract_mesh_checkpoint(config, global_iteration, manual_points_path)
+                        manual_mesh_path = extract_mesh_checkpoint(
+                            config, global_iteration, manual_points_path,
+                        )
+                        log_geometry_checkpoint(
+                            geometry_metrics, config, manual_mesh_path, global_iteration,
+                        )
                     elif hotkey == "g":
-                        save_gradients_snapshot(config.output_dir, global_iteration, grad_position_np, grad_rotation_np,
+                        helpers.save_gradients_snapshot(config.output_dir, global_iteration, grad_position_np, grad_rotation_np,
                                                 grad_scales_np, grad_albedos_np, grad_opacities_np,
                                                 grad_betas_np)
 
@@ -2344,11 +2399,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     if use_device_training_step:
         renderer.sync_point_parameters_from_gpu()
-        positions, rotations, scales, albedos, opacities, betas, powers = refetch_parameters_as_torch(renderer, device)
+        positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(renderer, device)
         rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
-        trainable_surfel_mask = make_trainable_surfel_mask_from_powers(powers)
+        trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
     else:
-        apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
+        render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
     final_images = renderer.render_forward()
 
     final_rgb_loss = 0.0
@@ -2364,17 +2419,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     final_curvature_scale_loss_weighted = 0.0
     final_total_loss = 0.0
 
-    final_depth_distortion_weight = scheduled_regularizer_weight(
+    final_depth_distortion_weight = helpers.scheduled_regularizer_weight(
         depth_distortion_base_weight,
         iteration=resume_iteration_offset + int(iteration),
         start_iteration=depth_distortion_start_iteration,
     )
 
     for camera_name in training_camera_ids:
-        img_np = get_forward_rgb(final_images, camera_name)
-        img_linear_np = get_forward_linear_rgb(final_images, camera_name)
+        img_np = render.get_forward_rgb(final_images, camera_name)
+        img_linear_np = render.get_forward_linear_rgb(final_images, camera_name)
         tgt_np = target_images[camera_name]
-        rgb_loss_cam, _, _ = compute_l2_ssim_metrics(
+        rgb_loss_cam, _, _ = losses.compute_l2_ssim_metrics(
             img_linear_np,
             tgt_np,
             ssim_weight=ssim_weight,
@@ -2383,23 +2438,23 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         )
         final_rgb_loss += rgb_loss_cam
         final_total_loss += rgb_loss_cam
-        save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
+        io_utils.save_render(config.output_dir / f"render_final_{camera_name}.png", img_np)
 
         if use_depth_distortion:
-            dist_np = get_forward_depth_distortion(final_images, camera_name)
+            dist_np = render.get_forward_depth_distortion(final_images, camera_name)
             dist_loss_cam_raw = float(dist_np.mean())
             dist_loss_cam_weighted = final_depth_distortion_weight * dist_loss_cam_raw
             final_depth_distortion_loss_raw += dist_loss_cam_raw
             final_depth_distortion_loss_weighted += dist_loss_cam_weighted
             final_total_loss += dist_loss_cam_weighted
-            save_depth_distortion_snapshot(config.output_dir / f"depth_distortion_final_{camera_name}.png", dist_np,
+            helpers.save_depth_distortion_snapshot(config.output_dir / f"depth_distortion_final_{camera_name}.png", dist_np,
                                            quantile=0.99, save_npy=False)
 
         if use_normal_consistency:
-            median_depth = get_forward_median_depth(final_images, camera_name)
-            visible_normal = get_forward_visible_normal(final_images, camera_name)
-            normal_from_depth = get_forward_normal_from_depth(final_images, camera_name)
-            normal_loss_cam_raw, _, _ = compute_normal_consistency_loss_and_adjoints(visible_normal, normal_from_depth,
+            median_depth = render.get_forward_median_depth(final_images, camera_name)
+            visible_normal = render.get_forward_visible_normal(final_images, camera_name)
+            normal_from_depth = render.get_forward_normal_from_depth(final_images, camera_name)
+            normal_loss_cam_raw, _, _ = helpers.compute_normal_consistency_loss_and_adjoints(visible_normal, normal_from_depth,
                                                                                      1.0)
             normal_loss_cam_weighted = normal_consistency_weight * normal_loss_cam_raw
 
@@ -2407,15 +2462,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_normal_loss_weighted += normal_loss_cam_weighted
             final_total_loss += normal_loss_cam_weighted
 
-            save_median_depth_snapshot(config.output_dir / f"median_depth_final_{camera_name}.png", median_depth,
+            helpers.save_median_depth_snapshot(config.output_dir / f"median_depth_final_{camera_name}.png", median_depth,
                                        save_npy=False)
-            save_normal_map_snapshot(config.output_dir / f"visible_normal_final_{camera_name}.png", visible_normal,
+            helpers.save_normal_map_snapshot(config.output_dir / f"visible_normal_final_{camera_name}.png", visible_normal,
                                      save_npy=False)
-            save_normal_map_snapshot(config.output_dir / f"normal_from_depth_final_{camera_name}.png",
+            helpers.save_normal_map_snapshot(config.output_dir / f"normal_from_depth_final_{camera_name}.png",
                                      normal_from_depth, save_npy=False)
 
         if use_opacity_prior:
-            opacity_prior_cam_raw = float(get_forward_opacity_prior(final_images, camera_name).mean())
+            opacity_prior_cam_raw = float(render.get_forward_opacity_prior(final_images, camera_name).mean())
             opacity_prior_cam_weighted = opacity_prior_weight * opacity_prior_cam_raw
 
             final_opacity_prior_loss_raw += opacity_prior_cam_raw
@@ -2423,10 +2478,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_total_loss += opacity_prior_cam_weighted
 
         if use_intra_slab_depth:
-            intra_slab_depth_map = get_forward_intra_slab_depth(final_images, camera_name)
+            intra_slab_depth_map = render.get_forward_intra_slab_depth(final_images, camera_name)
             intra_slab_active_count = max(
                 1,
-                int(get_forward_intra_slab_depth_active_slab_count(
+                int(render.get_forward_intra_slab_depth_active_slab_count(
                     final_images,
                     camera_name,
                 ).sum(dtype=np.uint64)),
@@ -2442,10 +2497,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_total_loss += intra_slab_depth_cam_weighted
 
         if use_curvature_scale:
-            curvature_scale_map = get_forward_curvature_scale(final_images, camera_name)
+            curvature_scale_map = render.get_forward_curvature_scale(final_images, camera_name)
             curvature_scale_active_count = max(
                 1,
-                int(get_forward_curvature_scale_active_slab_count(
+                int(render.get_forward_curvature_scale_active_slab_count(
                     final_images,
                     camera_name,
                 ).sum(dtype=np.uint64)),
@@ -2460,8 +2515,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_curvature_scale_loss_weighted += curvature_scale_cam_weighted
             final_total_loss += curvature_scale_cam_weighted
 
-    print_loss_summary("Initial", *initial_loss_tuple)
-    print_loss_summary(
+    helpers.print_loss_summary("Initial", *initial_loss_tuple)
+    helpers.print_loss_summary(
         "Final",
         final_rgb_loss,
         final_depth_distortion_loss_raw,
@@ -2477,7 +2532,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_total_loss,
     )
     ply_path = config.output_dir / "points_final.ply"
-    save_gaussians_to_ply(ply_path, positions, rotations, scales, albedos, opacities, betas, powers,
+    io_utils.save_gaussians_to_ply(ply_path, positions, rotations, scales, albedos, opacities, betas, powers,
                           shape_default=0.0,
                           densification_origins=densification_origin_np,
                           primitive_ages=primitive_ages_from_birth_iterations(
@@ -2486,8 +2541,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                           ))
 
     print(f"Final parameters written to PLY: {ply_path}")
-    if bool(getattr(config, "save_final_mesh", True)):
-        extract_final_mesh(config, ply_path)
+    final_mesh_path = None
+    if config.save_final_mesh:
+        final_mesh_path = extract_final_mesh(config, ply_path)
+
+    completed_global_iteration = resume_iteration_offset + int(iteration)
+    log_geometry_checkpoint(
+        geometry_metrics,
+        config,
+        final_mesh_path,
+        completed_global_iteration,
+    )
 
     print("\nOptimization completed.")
     print(f"Outputs saved in: {config.output_dir.resolve()}")

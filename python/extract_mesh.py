@@ -344,15 +344,6 @@ def write_points_with_property_overrides(points_path: Path, output_path: Path, p
     return output_path
 
 
-def write_points_with_forced_opacity(points_path: Path, output_path: Path) -> Path:
-    return write_points_with_property_overrides(
-        points_path=points_path,
-        output_path=output_path,
-        property_values={"opacity": 1.0},
-    )
-
-
-
 def validate_quaternion_surfel_ply(points_path: Path) -> None:
     points_path = points_path.resolve()
 
@@ -430,94 +421,6 @@ def load_renderer(run_dir: Path, points_path: Path):
         pointcloud_path,
         renderer_settings,
     ), run_config
-
-
-def infer_cameras_json(args: argparse.Namespace, run_config: dict) -> Path:
-    if args.cameras_json is not None:
-        return args.cameras_json.resolve()
-
-    if "cameras_json" in run_config:
-        return Path(run_config["cameras_json"]).resolve()
-
-    assets_root = Path(run_config["assets_root"]).resolve()
-    candidates = [
-        assets_root / "transforms_train.json",
-        assets_root / "transforms.json",
-    ]
-
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
-    raise FileNotFoundError(
-        "Could not infer cameras JSON. Pass --cameras_json /path/to/transforms.json"
-    )
-
-
-def load_nerf_cameras(cameras_json: Path) -> dict[str, Open3DCamera]:
-    with cameras_json.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-
-    if "frames" not in data:
-        raise ValueError("This simplified extractor expects a NeRF/2DGS-style transforms JSON with frames[].")
-
-    top_width = data.get("w", data.get("width"))
-    top_height = data.get("h", data.get("height"))
-    top_fx = data.get("fl_x", data.get("fx"))
-    top_fy = data.get("fl_y", data.get("fy"))
-    top_cx = data.get("cx")
-    top_cy = data.get("cy")
-    top_angle_x = data.get("camera_angle_x")
-
-    cameras: dict[str, Open3DCamera] = {}
-
-    for frame_index, frame in enumerate(data["frames"]):
-        file_path = frame.get("file_path", f"{frame_index:04d}")
-        camera_name = frame.get("camera_name", frame.get("name", Path(file_path).stem))
-
-        width = int(frame.get("w", frame.get("width", top_width)))
-        height = int(frame.get("h", frame.get("height", top_height)))
-
-        fx = frame.get("fl_x", frame.get("fx", top_fx))
-        fy = frame.get("fl_y", frame.get("fy", top_fy))
-
-        if fx is None:
-            angle_x = frame.get("camera_angle_x", top_angle_x)
-            if angle_x is None:
-                raise ValueError(f"Camera {camera_name} is missing fl_x/fx/camera_angle_x")
-            fx = 0.5 * width / np.tan(0.5 * float(angle_x))
-
-        if fy is None:
-            fy = fx
-
-        cx = float(frame.get("cx", top_cx if top_cx is not None else 0.5 * (width - 1)))
-        cy = float(frame.get("cy", top_cy if top_cy is not None else 0.5 * (height - 1)))
-
-        c2w = np.asarray(frame["transform_matrix"], dtype=np.float64).reshape(4, 4)
-
-        # NeRF/Blender/OpenGL c2w:
-        #   +X right, +Y up, -Z forward.
-        # Open3D/OpenCV depth convention:
-        #   +X right, +Y down, +Z forward.
-        opengl_to_opencv = np.eye(4, dtype=np.float64)
-        opengl_to_opencv[1, 1] = -1.0
-        opengl_to_opencv[2, 2] = -1.0
-
-        opencv_c2w = c2w @ opengl_to_opencv
-        world_to_camera = np.linalg.inv(opencv_c2w)
-
-        cameras[camera_name] = Open3DCamera(
-            name=camera_name,
-            width=width,
-            height=height,
-            fx=float(fx),
-            fy=float(fy),
-            cx=cx,
-            cy=cy,
-            world_to_camera=world_to_camera,
-        )
-
-    return cameras
 
 
 def load_point_radius(points_path: Path) -> float:

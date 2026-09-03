@@ -1,41 +1,11 @@
 from __future__ import annotations
 
-import torch
-
-from typing import Any, Callable, Iterable, Optional
-from config import OptimizationConfig
+from collections.abc import Callable, Iterable
 
 import numpy as np
+import torch
 
-
-def create_optimizer(
-    config: OptimizationConfig,
-    positions: torch.nn.Parameter,
-    rotation: torch.nn.Parameter,
-    scales: torch.nn.Parameter,
-    albedos: torch.nn.Parameter,
-    opacities: torch.nn.Parameter,
-    betas: torch.nn.Parameter,
-) -> torch.optim.Optimizer:
-    """Create an optimizer with per-parameter learning rates."""
-    opt_type = config.optimizer_type.lower()
-    param_groups = [
-        {"params": [positions], "lr": config.learning_rate_position, "name": "position"},
-        {"params": [rotation], "lr": config.learning_rate_rotation, "name": "rotation"},
-        {"params": [scales], "lr": config.learning_rate_scale, "name": "scale"},
-        {"params": [albedos], "lr": config.learning_rate_albedo, "name": "albedo"},
-        {"params": [opacities], "lr": config.learning_rate_opacity, "name": "opacity"},
-        {"params": [betas], "lr": config.learning_rate_beta, "name": "beta"},
-    ]
-    if opt_type == "sgd":
-        return torch.optim.SGD(param_groups, momentum=0.5)
-    if opt_type == "adam":
-        return torch.optim.Adam(param_groups)
-    raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
-
-
-
-
+from config import OptimizationConfig
 class MaskedAdam(torch.optim.Optimizer):
     """
     Adam that supports per-surfel masked updates.
@@ -70,7 +40,7 @@ class MaskedAdam(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
     @torch.no_grad()
-    def step(self, closure: Optional[callable] = None):
+    def step(self, closure: callable | None = None):
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -175,74 +145,6 @@ class MaskedAdam(torch.optim.Optimizer):
                     param.copy_(torch.where(update_mask, param - update, param))
 
         return loss
-
-def compute_surfel_update_mask(
-    grad_position_np: np.ndarray,
-    grad_rotation_np: np.ndarray,
-    grad_scales_np: np.ndarray,
-    grad_albedos_np: np.ndarray,
-    grad_opacities_np: np.ndarray,
-    grad_betas_np: np.ndarray,
-    eps: float = 0.0,
-) -> np.ndarray:
-    """Return a per-surfel update mask based on all gradient blocks."""
-    sq = np.zeros((grad_position_np.shape[0],), dtype=np.float32)
-
-    def add_sq(a: np.ndarray) -> None:
-        aa = np.asarray(a, dtype=np.float32)
-        if aa.ndim == 1:
-            sq[:] += aa * aa
-        else:
-            sq[:] += np.sum(aa * aa, axis=1)
-
-    add_sq(grad_position_np)
-    add_sq(grad_rotation_np)
-    add_sq(grad_scales_np)
-    add_sq(grad_albedos_np)
-    add_sq(grad_opacities_np.reshape(-1))
-    add_sq(grad_betas_np.reshape(-1))
-
-    if eps <= 0.0:
-        return sq != 0.0
-    return sq > (eps * eps)
-
-
-def assign_numpy_gradients_to_tensors_masked(
-    device: torch.device,
-    positions: torch.nn.Parameter,
-    rotation: torch.nn.Parameter,
-    scales: torch.nn.Parameter,
-    albedos: torch.nn.Parameter,
-    opacities: torch.nn.Parameter,
-    betas: torch.nn.Parameter,
-    grad_position_np: np.ndarray,
-    grad_rotation_np: np.ndarray,
-    grad_scales_np: np.ndarray,
-    grad_albedos_np: np.ndarray,
-    grad_opacities_np: np.ndarray,
-    grad_betas_np: np.ndarray,
-    surfel_update_mask_np: np.ndarray,
-) -> None:
-    """Copy numpy gradients into .grad and attach a per-surfel update mask."""
-    surfel_update_mask_t = torch.tensor(surfel_update_mask_np, device=device, dtype=torch.bool)
-
-    def set_grad_and_mask(param: torch.nn.Parameter, grad_np: np.ndarray) -> None:
-        grad_t = torch.tensor(grad_np, device=device, dtype=torch.float32)
-        param.grad = grad_t
-        param.surfelMask = surfel_update_mask_t
-        if grad_t.ndim == 1:
-            param.updateMask = surfel_update_mask_t
-        else:
-            expand_shape = (surfel_update_mask_t.shape[0],) + (1,) * (grad_t.ndim - 1)
-            param.updateMask = surfel_update_mask_t.view(expand_shape).expand_as(grad_t)
-
-    set_grad_and_mask(positions, grad_position_np)
-    set_grad_and_mask(rotation, grad_rotation_np)
-    set_grad_and_mask(scales, grad_scales_np)
-    set_grad_and_mask(albedos, grad_albedos_np)
-    set_grad_and_mask(opacities, grad_opacities_np.reshape(-1))
-    set_grad_and_mask(betas, grad_betas_np.reshape(-1))
-
 
 
 def create_masked_optimizer(

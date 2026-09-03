@@ -11,15 +11,15 @@
     "mesh_extraction_depth_key": "median_depth",
     "mesh_extraction_mesh_res": 1024,
     "mesh_extraction_num_cluster": 50,
+    "enable_image_preview": false,
     "densification_stats_skip_interval_start": true
   },
   "search_space": {
-    "learning_rate": [0.5, 1.0, 2.0],
+    "learning_rate_position": [0.000075, 0.00015, 0.0003],
     "densification_interval": [25, 100],
     "densify_bsdf_gamma": [0.0, 1.0],
     "densification_grad_abs_min": [0.0008, 0.0005],
     "normal_consistency_weight": [0.0, 0.005, 0.01, 0.02],
-    "depth_distort_weight": [0.0, 10.0, 1000.0],
-    "opacity_prior_weight": [0.0, 0.01, 0.1]
+    "depth_distort_weight": [0.0, 10.0, 1000.0]
   }
 }

@@ -14,4 +14,6 @@ dependencies:
   - open3d
   - vtk
   - openexr-python
+  - optuna>=4.9,<5
+  - optuna-dashboard
   # Install PyTorch/PyTorch3D after activation with install_torch_cu128.sh.

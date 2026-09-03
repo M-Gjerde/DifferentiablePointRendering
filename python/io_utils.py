@@ -13,7 +13,6 @@ import OpenEXR
 import Imath
 from PIL import Image, ImageCms
 import json
-import math
 from dataclasses import asdict, is_dataclass
 
 
@@ -248,10 +247,6 @@ def read_rgb_exr(
 
     return img
 
-def save_positions_numpy(path: Path, positions: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, np.asarray(positions, dtype=np.float32, order="C"))
-
 
 def save_render(path: Path, rgb: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -261,114 +256,6 @@ def save_render(path: Path, rgb: np.ndarray) -> None:
     iio.imwrite(path.as_posix(), img_u8)
 
 
-def save_loss_image(
-        output_dir: Path,
-        loss_image: np.ndarray,
-        iteration: int,
-) -> None:
-    loss_image = np.asarray(loss_image, dtype=np.float32)
-
-    # If a multi-channel residual image is passed, reduce it to one value per pixel
-    # for visualization.
-    if loss_image.ndim == 3:
-        if loss_image.shape[2] == 1:
-            loss_image = loss_image[..., 0]
-        else:
-            loss_image = np.mean(loss_image, axis=2)
-
-    finite_mask = np.isfinite(loss_image)
-
-    # Default to white image
-    height, width = loss_image.shape
-    loss_image_rgb = np.ones((height, width, 3), dtype=np.float32)
-
-    if np.any(finite_mask):
-        scale = np.percentile(np.abs(loss_image[finite_mask]), 99.0)
-
-        if scale > 1.0e-12:
-            normalized_loss = np.clip(loss_image / scale, -1.0, 1.0)
-
-            positive_mask = normalized_loss > 0.0
-            negative_mask = normalized_loss < 0.0
-
-            positive_strength = normalized_loss[positive_mask]          # 0 .. 1
-            negative_strength = -normalized_loss[negative_mask]         # 0 .. 1
-
-            # Positive residuals: white -> red
-            # [1, 1, 1] -> [1, 0, 0]
-            loss_image_rgb[positive_mask, 1] = 1.0 - positive_strength
-            loss_image_rgb[positive_mask, 2] = 1.0 - positive_strength
-
-            # Negative residuals: white -> blue
-            # [1, 1, 1] -> [0, 0, 1]
-            loss_image_rgb[negative_mask, 0] = 1.0 - negative_strength
-            loss_image_rgb[negative_mask, 1] = 1.0 - negative_strength
-
-    loss_image_u8 = (np.clip(loss_image_rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
-
-    os.makedirs(output_dir / "loss", exist_ok=True)
-    iio.imwrite(
-        (output_dir / "loss" / f"loss_image_iter_{iteration:04d}.png").as_posix(),
-        loss_image_u8,
-    )
-
-def _normalize_np(v: np.ndarray, fallback: np.ndarray, eps: float = 1.0e-12) -> np.ndarray:
-    v = np.asarray(v, dtype=np.float64)
-    n = float(np.linalg.norm(v))
-    if not np.isfinite(n) or n <= eps:
-        return np.asarray(fallback, dtype=np.float64)
-    return v / n
-
-def _quat_from_rotation_matrix(R: np.ndarray) -> tuple[float, float, float, float]:
-    R = np.asarray(R, dtype=np.float64)
-    m00, m01, m02 = R[0, 0], R[0, 1], R[0, 2]
-    m10, m11, m12 = R[1, 0], R[1, 1], R[1, 2]
-    m20, m21, m22 = R[2, 0], R[2, 1], R[2, 2]
-    trace = m00 + m11 + m22
-    if trace > 0.0:
-        s = math.sqrt(trace + 1.0) * 2.0
-        qw = 0.25 * s
-        qx = (m21 - m12) / s
-        qy = (m02 - m20) / s
-        qz = (m10 - m01) / s
-    elif m00 > m11 and m00 > m22:
-        s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
-        qw = (m21 - m12) / s
-        qx = 0.25 * s
-        qy = (m01 + m10) / s
-        qz = (m02 + m20) / s
-    elif m11 > m22:
-        s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
-        qw = (m02 - m20) / s
-        qx = (m01 + m10) / s
-        qy = 0.25 * s
-        qz = (m12 + m21) / s
-    else:
-        s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
-        qw = (m10 - m01) / s
-        qx = (m02 + m20) / s
-        qy = (m12 + m21) / s
-        qz = 0.25 * s
-    q = np.array([qw, qx, qy, qz], dtype=np.float64)
-    n = float(np.linalg.norm(q))
-    if not np.isfinite(n) or n <= 1.0e-12:
-        return 1.0, 0.0, 0.0, 0.0
-    q /= n
-    if q[0] < 0.0:
-        q = -q
-    return float(q[0]), float(q[1]), float(q[2]), float(q[3])
-
-def _quat_from_tangents(tangent_u: np.ndarray, tangent_v: np.ndarray) -> tuple[float, float, float, float]:
-    u = _normalize_np(tangent_u, np.array([1.0, 0.0, 0.0], dtype=np.float64))
-    v_raw = np.asarray(tangent_v, dtype=np.float64)
-    v = v_raw - float(np.dot(v_raw, u)) * u
-    if float(np.linalg.norm(v)) <= 1.0e-12:
-        aux = np.array([0.0, 1.0, 0.0], dtype=np.float64) if abs(float(u[1])) < 0.9 else np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        v = aux - float(np.dot(aux, u)) * u
-    v = _normalize_np(v, np.array([0.0, 1.0, 0.0], dtype=np.float64))
-    w = _normalize_np(np.cross(u, v), np.array([0.0, 0.0, 1.0], dtype=np.float64))
-    R = np.column_stack((u, v, w))
-    return _quat_from_rotation_matrix(R)
 def _normalize_quaternions_np(q: np.ndarray, eps: float = 1.0e-12) -> np.ndarray:
     q = np.asarray(q, dtype=np.float32, order="C")
 
@@ -579,16 +466,8 @@ def configure_paths_from_dataset_folder(config) -> None:
 
     config.dataset_path = dataset_folder
 
-def get_python_project_dir() -> Path:
-    return Path(__file__).resolve().parent
-
-
-def get_python_project_dir() -> Path:
-    return Path(__file__).resolve().parent
-
-
 def resolve_output_dir(output_dir: Path, output_dir_is_explicit: bool) -> Path:
-    python_project_dir = get_python_project_dir()
+    python_project_dir = Path(__file__).resolve().parent
     output_dir = Path(output_dir).expanduser()
 
     if output_dir.is_absolute():

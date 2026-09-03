@@ -176,3 +176,14 @@ cmake -S . -B build \
 
 cmake --build build -j"$(nproc)"
 ```
+
+### Monitor optimization metrics
+
+Pass `--metrics` to launch the live metrics viewer alongside training. When
+`--gt` is present, `main.py` computes geometry scores at mesh extraction
+checkpoints and writes them to `geometry_metrics.csv`; the viewer reads that
+trail instead of repeating the Chamfer calculation:
+
+```bash
+python python/main.py -s dataset -o output --metrics --gt ground_truth.ply
+```

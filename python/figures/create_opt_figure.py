@@ -380,43 +380,6 @@ def load_optional_image_rgb(path: Path, label: str) -> Image.Image | None:
     return load_image_rgb(path)
 
 
-def make_placeholder_image(
-    text: str,
-    width: int,
-    height: int,
-    font: ImageFont.ImageFont,
-) -> Image.Image:
-    image = Image.new("RGB", (width, height), (20, 20, 20))
-    draw = ImageDraw.Draw(image)
-
-    lines = text.split("\n")
-    line_heights = []
-
-    for line in lines:
-        try:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_heights.append(bbox[3] - bbox[1])
-        except Exception:
-            _, line_height = draw.textsize(line, font=font)
-            line_heights.append(line_height)
-
-    total_height = sum(line_heights) + max(0, len(lines) - 1) * 8
-    y = (height - total_height) // 2
-
-    for line, line_height in zip(lines, line_heights):
-        try:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            text_width = bbox[2] - bbox[0]
-        except Exception:
-            text_width, _ = draw.textsize(line, font=font)
-
-        x = (width - text_width) // 2
-        draw.text((x, y), line, fill=(220, 220, 220), font=font)
-        y += line_height + 8
-
-    return image
-
-
 def fit_image_to_panel(image: Image.Image, panel_width: int, panel_height: int) -> Image.Image:
     src_width, src_height = image.size
 

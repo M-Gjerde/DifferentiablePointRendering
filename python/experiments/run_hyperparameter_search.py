@@ -16,11 +16,21 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
+    "device": "--device",
+    "target_color_space": "--target-color-space",
     "checkpoint": "--checkpoint",
     "iterations": "--iterations",
+    "optimizer_type": "--optimizer",
     "log_interval": "--log-interval",
     "save_interval": "--save-interval",
     "save_ply_files_interval": "--save-ply-files-interval",
+    "enable_image_preview": ("--image-preview", "--no-image-preview"),
+    "ground_truth": "--gt",
+    "geometry_samples": "--geometry-samples",
+    "geometry_seed": "--geometry-seed",
+    "geometry_scale": "--geometry-scale",
+    "geometry_use_vertices": ("--geometry-use-vertices", "--no-geometry-use-vertices"),
+    "enable_metrics": ("--metrics", "--no-metrics"),
     "mesh_extraction_interval": "--mesh-extraction-interval",
     "mesh_extraction_depth_key": "--mesh-extraction-depth-key",
     "mesh_extraction_mesh_res": "--mesh-extraction-mesh-res",
@@ -41,6 +51,9 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "position_lr_scale_final": "--position-lr-scale-final",
     "lr_decay_start_iteration": "--lr-decay-start-iteration",
     "lr_decay_max_steps": "--lr-decay-max-steps",
+    "ssim_weight": "--ssim-weight",
+    "ssim_window_size": "--ssim-window-size",
+    "ssim_sigma": "--ssim-sigma",
     "normal_consistency_weight": "--normal-consistency-weight",
     "normal_from_depth_use_mean_depth": (
         "--normal-from-depth-use-mean-depth",
@@ -49,6 +62,17 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "depth_distort_weight": "--depth-distort-weight",
     "depth_distort_start_iteration": "--depth-distort-start-iteration",
     "opacity_prior_weight": "--opacity-prior-weight",
+    "intra_slab_depth_weight": "--intra-slab-depth-weight",
+    "curvature_scale_weight": "--curvature-scale-weight",
+    "share_local_layer_direct_lighting": (
+        "--share-local-layer-direct-lighting",
+        "--no-share-local-layer-direct-lighting",
+    ),
+    "minimum_projected_footprint": (
+        "--minimum-projected-footprint",
+        "--no-minimum-projected-footprint",
+    ),
+    "minimum_projected_footprint_pixels": "--minimum-projected-footprint-pixels",
     "densification_interval": "--densification-interval",
     "prune_interval": "--prune-interval",
     "densify_after": "--densify-after",
@@ -59,14 +83,13 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "densification_grad_abs_min_final": "--densification-grad-abs-min-final",
     "densification_grad_abs_min_decay_start_iteration": "--densification-grad-abs-min-decay-start-iteration",
     "densification_grad_abs_min_decay_end_iteration": "--densification-grad-abs-min-decay-end-iteration",
+    "curvature_violation_threshold": "--curvature-violation-threshold",
     "densification_scale_min": "--densification-scale-min",
     "densification_split_offset_scale": "--densification-split-offset-scale",
     "densification_split_scale_factor": "--densification-split-scale-factor",
     "densification_exact_clone_percent_dense": "--densification-exact-clone-percent-dense",
     "densification_scene_extent": "--densification-scene-extent",
     "densification_max_new_fraction": "--densification-max-new-fraction",
-    "densification_grad_abs_min_iter_start": "--densification-grad-abs-min-iter-start",
-    "densification_grad_abs_min_iter_end": "--densification-grad-abs-min-iter-end",
     "densification_stats_skip_interval_start": (
         "--densification-stats-skip-interval-start",
         "--no-densification-stats-skip-interval-start",
@@ -79,9 +102,15 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "densify_bsdf_gamma": "--densify-bsdf-gamma",
     "opacity_prune_threshold": "--opacity-prune-threshold",
     "max_prune_fraction": "--max-prune-fraction",
+    "min_surfel_area": "--min-surfel-area",
     "reset_opacity_interval": "--reset-opacity-interval",
     "reset_opacity_value": "--reset-opacity-value",
     "rebuild_bvh_interval": "--rebuild-bvh-interval",
+    "inactive_transport_prune_cycles": "--inactive-transport-prune-cycles",
+    "use_device_training_step": (
+        "--device-training-step",
+        "--no-device-training-step",
+    ),
 }
 
 

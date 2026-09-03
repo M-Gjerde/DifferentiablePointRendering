@@ -76,16 +76,10 @@ def selected_dataset_names(dataset_filter: str | None) -> list[str]:
     if dataset_filter is None:
         return list(DEFAULT_DATASETS)
 
-    selected = [name.strip().lower() for name in dataset_filter.split(",") if name.strip()]
-    unknown = sorted(set(selected) - set(DEFAULT_DATASETS))
-    if unknown:
-        raise ValueError(
-            "Unknown datasets: "
-            + ", ".join(unknown)
-            + ". Expected any of: "
-            + ", ".join(DEFAULT_DATASETS)
-        )
-    return [name for name in DEFAULT_DATASETS if name in selected]
+    selected = [name.strip() for name in dataset_filter.split(",") if name.strip()]
+    if not selected:
+        raise ValueError("--datasets must contain at least one dataset name")
+    return selected
 
 
 def resolve_datasets(args: argparse.Namespace) -> list[Dataset]:
@@ -94,7 +88,8 @@ def resolve_datasets(args: argparse.Namespace) -> list[Dataset]:
 
     datasets: list[Dataset] = []
     for name in selected_dataset_names(args.datasets):
-        dataset_root = output_root / f"2dgs_{name}_{args.view_count}"
+        view_count_suffix = f"_{args.view_count}" if args.view_count is not None else ""
+        dataset_root = output_root / f"2dgs_{name}{view_count_suffix}"
         if not dataset_root.is_dir():
             raise NotADirectoryError(f"Could not find 2DGS dataset directory: {dataset_root}")
         datasets.append(
@@ -208,7 +203,7 @@ def print_markdown_table(rows: list[dict[str, object]], digits: int) -> None:
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate all five 2DGS datasets and every train/ours_*/fuse_post.ply "
+            "Evaluate 2DGS datasets and every train/ours_*/fuse_post.ply "
             "reconstruction using symmetric point-to-triangle mesh distance."
         )
     )
@@ -227,14 +222,20 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--view-count",
         type=int,
-        default=10,
-        help="2DGS dataset suffix to evaluate; defaults to the five *_10 datasets.",
+        default=None,
+        help=(
+            "Optional 2DGS dataset suffix. By default, evaluate 2dgs_<dataset>; "
+            "pass N to evaluate 2dgs_<dataset>_N."
+        ),
     )
     parser.add_argument(
         "--datasets",
         type=str,
         default=None,
-        help="Optional comma-separated subset of dragon,horse,lego,plant,teapot.",
+        help=(
+            "Optional comma-separated dataset names; defaults to "
+            "dragon,horse,lego,plant,teapot."
+        ),
     )
     parser.add_argument(
         "--reconstruction-name",
