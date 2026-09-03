@@ -661,14 +661,14 @@ def lazy_chamfer_imports():
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     try:
-        from metrics.chamfer_ours import (
+        from metrics.old.chamfer_ours import (
             compute_paper_ready_point_to_triangle_distance,
             load_triangle_mesh_with_query_points,
             set_random_seed,
         )
     except ModuleNotFoundError as exception:
         raise RuntimeError(
-            "Geometry evaluation could not import metrics/chamfer_ours.py: "
+            "Geometry evaluation could not import metrics/old/chamfer_ours.py: "
             f"missing module {exception.name!r}. Loss-only evaluation works without it."
         ) from exception
 

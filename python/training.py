@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import pale
 import torch
+from tqdm import tqdm
 
 import density_control as density
 import io_utils
@@ -23,6 +24,7 @@ import training_helpers as helpers
 from config import OptimizationConfig, RendererSettingsConfig
 from geometry_metrics import GeometryMetricsTrail
 from metrics_schema import METRICS_COLUMNS, MetricsCSVWriter
+from training_progress import make_training_progress_postfix
 
 
 def extract_mesh_from_point_cloud(
@@ -826,8 +828,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     metrics_csv_path = config.output_dir / "metrics.csv"
     total_start_time = time.perf_counter()
-    last_log_iteration = 0
-    last_log_time = total_start_time
     iteration = 0
     latest_loss_values_by_camera: dict[str, dict[str, float]] = {}
     densification_clone_points_total = 0
@@ -839,9 +839,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         csv_writer = csv.writer(csv_file)
         helpers.write_metrics_header(csv_writer)
         metrics_writer = MetricsCSVWriter(csv_writer, METRICS_COLUMNS)
+        progress_bar = tqdm(
+            range(1, config.iterations + 1),
+            desc="Optimizing",
+            initial=resume_iteration_offset,
+            total=final_global_iteration,
+            unit="iter",
+            dynamic_ncols=True,
+        )
 
         try:
-            for iteration in range(1, config.iterations + 1):
+            for iteration in progress_bar:
                 iteration_start = time.perf_counter()
                 global_iteration = resume_iteration_offset + iteration
 
@@ -1549,57 +1557,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     csv_file.flush()
 
                     log_interval = int(config.log_interval)
-                    if iteration == 1 or (log_interval > 0 and iteration % log_interval == 0):
-                        logged_iteration_count = iteration - last_log_iteration
-                        log_elapsed_time = iteration_end - last_log_time
-                        iteration_rate = float(logged_iteration_count) / max(log_elapsed_time, 1.0e-12)
-                        last_log_iteration = iteration
-                        last_log_time = iteration_end
-
-                        lr_position = active_learning_rates.get("position", float(config.learning_rate_position))
-                        exact_clone_scale_threshold = helpers.exact_clone_scale_threshold_for_positions(
-                            config=config,
-                            positions=positions,
-                            trainable_surfel_mask=trainable_surfel_mask,
-                        )
-                        minimum_splittable_scale = helpers.minimum_splittable_scale_for_config(config)
-                        print(
-                            helpers.format_training_iteration_log(
-                                iteration=global_iteration,
-                                total_iterations=final_global_iteration,
-                                iteration_time=iteration_time,
-                                iteration_rate=iteration_rate,
-                                total_time=total_time,
-                                num_points=num_points,
-                                loss_state=averaged_loss_state,
-                                lr_position=lr_position,
-                                global_lr_scale=active_learning_rates.get("global_lr_scale", 1.0),
-                                position_lr_scale=active_learning_rates.get("position_lr_scale", 1.0),
-                                active_densification_interval=densification_interval,
-                                active_prune_interval=prune_interval,
-                                active_densification_grad_abs_min=active_densification_grad_abs_min,
-                                active_depth_distortion_weight=active_depth_distortion_weight,
-                                active_normal_consistency_weight=normal_consistency_weight,
-                                active_opacity_prior_weight=active_opacity_prior_weight,
-                                exact_clone_scale_threshold=exact_clone_scale_threshold,
-                                minimum_splittable_scale=minimum_splittable_scale,
-                                grad_pos_rms=0.0,
-                                grad_rotation_rms=0.0,
-                                grad_scale_rms=0.0,
-                                grad_albedo_rms=0.0,
-                                grad_opacity_rms=0.0,
-                                grad_beta_rms=0.0,
-                                grad_pos_max=0.0,
-                                grad_rotation_max=0.0,
-                                grad_scale_max=0.0,
-                                grad_albedo_max=0.0,
-                                grad_opacity_max=0.0,
-                                grad_beta_max=0.0,
-                            )
-                        )
-                        print(helpers.format_loss_breakdown(averaged_loss_state))
-                        # print("[device-training-step] Host gradient arrays skipped in fixed-topology path.")
-
+                    if (
+                            iteration == 1
+                            or iteration == config.iterations
+                            or (log_interval > 0 and iteration % log_interval == 0)
+                    ):
                         hotkey = helpers.poll_hotkey()
                         if hotkey == "s":
                             renderer.sync_point_parameters_from_gpu()
@@ -1635,6 +1597,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         elif hotkey == "g":
                             print(
                                 "[device-training-step] Gradient snapshot skipped; host gradients were not downloaded.")
+
+                        progress_bar.set_postfix(
+                            make_training_progress_postfix(
+                                averaged_loss_state,
+                                geometry_metrics.latest_row if geometry_metrics is not None else None,
+                            ),
+                            refresh=False,
+                        )
 
                     continue
 
@@ -2267,97 +2237,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 csv_file.flush()
 
                 log_interval = int(config.log_interval)
-                if iteration == 1 or (log_interval > 0 and iteration % log_interval == 0):
-                    logged_iteration_count = iteration - last_log_iteration
-                    log_elapsed_time = iteration_end - last_log_time
-                    iteration_rate = float(logged_iteration_count) / max(log_elapsed_time, 1.0e-12)
-                    last_log_iteration = iteration
-                    last_log_time = iteration_end
-
-                    grad_pos_rms = helpers.rms_point(grad_position_np)
-                    grad_rotation_rms = helpers.rms_point(grad_rotation_np)
-                    grad_scale_rms = helpers.rms_point(grad_scales_np)
-                    grad_albedo_rms = helpers.rms_point(grad_albedos_np)
-                    grad_opacity_rms = helpers.rms_point(grad_opacities_np)
-                    grad_beta_rms = helpers.rms_point(grad_betas_np)
-
-                    grad_pos_max = helpers.max_point_norm(grad_position_np)
-                    grad_rotation_max = helpers.max_point_norm(grad_rotation_np)
-                    grad_scale_max = helpers.max_point_norm(grad_scales_np)
-                    grad_albedo_max = helpers.max_point_norm(grad_albedos_np)
-                    grad_opacity_max = helpers.max_point_norm(grad_opacities_np)
-                    grad_beta_max = helpers.max_point_norm(grad_betas_np)
-                    lr_position = active_learning_rates.get("position", float(config.learning_rate_position))
-                    photo_gradient_stats = helpers.gradient_stats_from_dict(photo_gradients)
-                    surface_regularizer_gradient_stats = (
-                        helpers.gradient_stats_from_dict(surface_regularizer_gradients)
-                        if surface_regularizer_gradients
-                        else {}
-                    )
-
-                    exact_clone_scale_threshold = helpers.exact_clone_scale_threshold_for_positions(
-                        config=config,
-                        positions=positions,
-                        trainable_surfel_mask=trainable_surfel_mask,
-                    )
-                    minimum_splittable_scale = helpers.minimum_splittable_scale_for_config(config)
-                    print(
-                        helpers.format_training_iteration_log(
-                            iteration=global_iteration,
-                            total_iterations=final_global_iteration,
-                            iteration_time=iteration_time,
-                            iteration_rate=iteration_rate,
-                            total_time=total_time,
-                            num_points=num_points,
-                            loss_state=averaged_loss_state,
-                            lr_position=lr_position,
-                            global_lr_scale=active_learning_rates.get("global_lr_scale", 1.0),
-                            position_lr_scale=active_learning_rates.get("position_lr_scale", 1.0),
-                            active_densification_interval=densification_interval,
-                            active_prune_interval=prune_interval,
-                            active_densification_grad_abs_min=active_densification_grad_abs_min,
-                            active_depth_distortion_weight=active_depth_distortion_weight,
-                            active_normal_consistency_weight=normal_consistency_weight,
-                            active_opacity_prior_weight=active_opacity_prior_weight,
-                            exact_clone_scale_threshold=exact_clone_scale_threshold,
-                            minimum_splittable_scale=minimum_splittable_scale,
-                            grad_pos_rms=grad_pos_rms,
-                            grad_rotation_rms=grad_rotation_rms,
-                            grad_scale_rms=grad_scale_rms,
-                            grad_albedo_rms=grad_albedo_rms,
-                            grad_opacity_rms=grad_opacity_rms,
-                            grad_beta_rms=grad_beta_rms,
-                            grad_pos_max=grad_pos_max,
-                            grad_rotation_max=grad_rotation_max,
-                            grad_scale_max=grad_scale_max,
-                            grad_albedo_max=grad_albedo_max,
-                            grad_opacity_max=grad_opacity_max,
-                            grad_beta_max=grad_beta_max,
-                        )
-                    )
-
-                    print(helpers.format_loss_breakdown(averaged_loss_state))
-
-                    print(
-                        helpers.format_gradient_source_balance(
-                            loss_gradients=photo_gradients,
-                            depth_regularizer_gradients=depth_regularizer_gradients,
-                            normal_regularizer_gradients=normal_regularizer_gradients,
-                            opacity_prior_gradients=opacity_prior_gradients,
-                            intra_slab_depth_gradients=intra_slab_depth_gradients,
-                            curvature_scale_gradients=curvature_scale_gradients,
-                            surface_regularizer_gradients=surface_regularizer_gradients,
-                            total_gradients=total_gradients,
-                        )
-                    )
-                    print(helpers.format_gradient_stats("render_grads", photo_gradient_stats))
-
-                    if surface_regularizer_gradients:
-                        print(helpers.format_gradient_stats("surface_regularizers", surface_regularizer_gradient_stats))
-                    if use_depth_distortion and loss_state["depth_distortion_maps_for_logging"]:
-                        print(helpers.summarize_depth_distortion_maps(loss_state["depth_distortion_maps_for_logging"],
-                                                              loss_state["depth_distortion_grad_images"]))
-
+                if (
+                        iteration == 1
+                        or iteration == config.iterations
+                        or (log_interval > 0 and iteration % log_interval == 0)
+                ):
                     hotkey = helpers.poll_hotkey()
                     if hotkey == "s":
                         manual_points_path = helpers.save_manual_snapshot(
@@ -2388,7 +2272,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                                 grad_scales_np, grad_albedos_np, grad_opacities_np,
                                                 grad_betas_np)
 
+                    progress_bar.set_postfix(
+                        make_training_progress_postfix(
+                            averaged_loss_state,
+                            geometry_metrics.latest_row if geometry_metrics is not None else None,
+                        ),
+                        refresh=False,
+                    )
+
         except KeyboardInterrupt:
+            progress_bar.close()
             elapsed = time.perf_counter() - total_start_time
             stopped_global_iteration = resume_iteration_offset + int(iteration)
             print(
@@ -2396,6 +2289,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 f"Total elapsed time: {elapsed:.1f} s. "
                 "Stopping optimization loop and saving current result..."
             )
+        finally:
+            progress_bar.close()
 
     if use_device_training_step:
         renderer.sync_point_parameters_from_gpu()

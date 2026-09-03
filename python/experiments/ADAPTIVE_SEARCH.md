@@ -20,10 +20,11 @@ python experiments/run_adaptive_search.py
 ```
 
 The default spec is `experiments/teapot_adaptive_search.json`. Phase one searches
-only the uniform `--lr` multiplier from 0.25 to 4.0. The relative component
+only the uniform `--lr` multiplier from 0.1 to 5.0. The relative component
 learning rates are defined once in `config.py`; `--lr 1` uses them unchanged.
-Every regularizer is disabled, while densification and pruning use the current
-`config.py` defaults. It runs at most 18 trials, evaluates Chamfer distance at
+The fixed training settings in `base_args` mirror the current
+`OptimizationConfig` defaults, including its regularizers, densification, and
+pruning. It runs at most 18 trials, evaluates Chamfer distance at
 iterations 2000, 4000, 7000, and 10000, and uses the fixed-iteration 10000 score
 as the objective. The initial multipliers are 1.0, 0.5, and 2.0; later trials use
 a TPE sampler and median pruning. Only one trial runs at a time. Both the metrics

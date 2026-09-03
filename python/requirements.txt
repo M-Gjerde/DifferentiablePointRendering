@@ -10,4 +10,5 @@ OpenEXR
 Imath
 optuna>=4.9,<5
 optuna-dashboard
+tqdm
 # Install PyTorch/PyTorch3D after activation with install_torch_cu128.sh.

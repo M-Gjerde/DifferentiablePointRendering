@@ -339,17 +339,17 @@ class SpecValidationTests(unittest.TestCase):
         spec_path = Path(__file__).with_name("teapot_adaptive_search.json")
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         self.assertEqual({"learning_rate"}, set(spec["search_space"]))
+        self.assertEqual(0.1, spec["search_space"]["learning_rate"]["low"])
+        self.assertEqual(5.0, spec["search_space"]["learning_rate"]["high"])
         self.assertTrue(spec["base_args"]["enable_metrics"])
         self.assertTrue(spec["base_args"]["enable_image_preview"])
-        for name in (
-            "ssim_weight",
-            "depth_distort_weight",
-            "normal_consistency_weight",
-            "opacity_prior_weight",
-            "intra_slab_depth_weight",
-            "curvature_scale_weight",
-        ):
-            self.assertEqual(0.0, spec["base_args"][name])
+        defaults = OptimizationConfig()
+        for name, value in spec["base_args"].items():
+            self.assertEqual(
+                getattr(defaults, name),
+                value,
+                msg=f"base_args.{name} is stale relative to OptimizationConfig",
+            )
 
     def test_uniform_learning_rate_multiplier_is_a_valid_dimension(self) -> None:
         spec = {

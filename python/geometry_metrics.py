@@ -43,6 +43,12 @@ class GeometryMetricsTrail:
                     key: value for key, value in row.items() if key is not None
                 }
 
+    @property
+    def latest_row(self) -> Mapping[str, Any] | None:
+        if not self._rows_by_iteration:
+            return None
+        return self._rows_by_iteration[max(self._rows_by_iteration)]
+
     def _write(self) -> None:
         rows = [
             self._rows_by_iteration[iteration]
@@ -125,15 +131,7 @@ class GeometryMetricsTrail:
                 warnings.warn(f"No geometry metrics were produced for {mesh_path}", stacklevel=2)
                 return None
 
-            row = self.record(rows[0], iteration=iteration)
-            print(
-                f"[Geometry {iteration:04d}] "
-                f"CD={float(row['cd']):.6g} "
-                f"accuracy={float(row['accuracy']):.6g} "
-                f"completion={float(row['completion']):.6g}",
-                flush=True,
-            )
-            return row
+            return self.record(rows[0], iteration=iteration)
         except Exception as exception:
             warnings.warn(
                 f"Geometry evaluation failed for {mesh_path}: {exception}",

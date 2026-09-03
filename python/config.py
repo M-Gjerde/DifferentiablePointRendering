@@ -62,9 +62,9 @@ class OptimizationConfig:
     optimizer_type: str = "adam"
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float = 0.00005
+    learning_rate_position: float = 0.0005
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.005
+    learning_rate_scale: float = 0.001
     learning_rate_albedo: float = 0.0008
     learning_rate_opacity: float = 0.001
     learning_rate_beta: float = 0.003
@@ -84,12 +84,12 @@ class OptimizationConfig:
     ssim_weight: float = 0.00
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
-    depth_distort_weight: float = 0.0
+    depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.00
+    normal_consistency_weight: float = 0.0005
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 1.0e-4
-    curvature_scale_weight: float = 0.0e-6
+    intra_slab_depth_weight: float = 1.0e-5
+    curvature_scale_weight: float = 1.0e-7
 
     # Rendering and camera sampling
     share_local_layer_direct_lighting: bool = True
@@ -107,12 +107,12 @@ class OptimizationConfig:
     densification_stats_skip_interval_start: bool = False
     densification_downweight_normal_gradients: bool = False
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 5.0e-4
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min: float = 2.5e-4
+    densification_grad_abs_min_final: float = 2.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 8_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = -50.0
+    curvature_violation_threshold: float = 35.0
     densification_scale_min: float = 6.0e-3
     densification_split_offset_scale: float = 0.7
     densification_split_scale_factor: float = math.sqrt(2)
