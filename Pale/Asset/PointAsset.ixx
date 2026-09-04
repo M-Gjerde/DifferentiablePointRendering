@@ -31,6 +31,11 @@ export namespace Pale {
         // Number of optimization iterations since this primitive was created
         // or last split. Diagnostic metadata only.
         std::vector<std::uint32_t> primitiveAges{};
+        // Exact optimizer position-densification statistics at snapshot time.
+        // These are diagnostic metadata and are not consumed by rendering.
+        std::vector<float> densificationPositionSignals{};
+        std::vector<std::uint32_t> densificationPositionSampleCounts{};
+        std::vector<float> densificationPositionThresholds{};
     };
 
 

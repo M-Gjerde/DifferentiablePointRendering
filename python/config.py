@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
+    adjoint_passes: int = 2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -58,23 +58,24 @@ class OptimizationConfig:
 
     # Execution and optimizer
     device: str = "cpu"
-    iterations: int = 10_000
+    iterations: int = 20_000
     optimizer_type: str = "adam"
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float = 0.0005
+    # Calibrated from the photometric-only global LR search (0.11x).
+    learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.001
-    learning_rate_albedo: float = 0.0008
-    learning_rate_opacity: float = 0.001
-    learning_rate_beta: float = 0.003
+    learning_rate_scale: float = 0.00011
+    learning_rate_albedo: float = 0.000088
+    learning_rate_opacity: float = 0.00011
+    learning_rate_beta: float = 0.00033
     # Multiplicative learning-rate decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.3
-    use_position_lr_decay: bool = False
-    position_lr_scale_init: float = 5.0
+    use_position_lr_decay: bool = True
+    position_lr_scale_init: float = 50.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 10_000
@@ -86,10 +87,10 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
     depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.0005
+    normal_consistency_weight: float = 0.002
     opacity_prior_weight: float = 0.0
     intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 1.0e-7
+    curvature_scale_weight: float = 0.0e-6
 
     # Rendering and camera sampling
     share_local_layer_direct_lighting: bool = True
@@ -106,15 +107,18 @@ class OptimizationConfig:
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = False
     densification_downweight_normal_gradients: bool = False
+    # When false, position-triggered densification may displace children along
+    # the full 3D gradient, including the surfel normal direction.
+    densification_tangent_only: bool = False
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 2.5e-4
-    densification_grad_abs_min_final: float = 2.5e-4
+    densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min_final: float = 1.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 8_000
+    densification_grad_abs_min_decay_end_iteration: int = 5_000
     # A non-positive value disables curvature-triggered densification.
     curvature_violation_threshold: float = 35.0
     densification_scale_min: float = 6.0e-3
-    densification_split_offset_scale: float = 0.7
+    densification_split_offset_scale: float = 0.2
     densification_split_scale_factor: float = math.sqrt(2)
     densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
@@ -508,6 +512,15 @@ def parse_args() -> OptimizationConfig:
         help=(
             "Downweight tangent densification statistics when position gradients "
             "point mostly along the surfel normal. Disabled by default."
+        ),
+    )
+    _add_boolean_argument(
+        densification,
+        "--densification-tangent-only",
+        help=(
+            "Restrict position-triggered densification displacement to the surfel "
+            "tangent plane. Use --no-densification-tangent-only to retain the "
+            "full 3D gradient direction."
         ),
     )
     _add_boolean_argument(densification, "--densification-verbose")

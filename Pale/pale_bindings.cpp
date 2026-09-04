@@ -361,49 +361,49 @@ public:
         }
 
         // Print summary
-        Pale::Log::PA_WARN("=== Renderer Settings ===");
-        Pale::Log::PA_WARN("  Photons per launch        : {}", m_settings.photonsPerLaunch);
-        Pale::Log::PA_WARN("  Max bounces               : {}", m_settings.maxBounces);
-        Pale::Log::PA_WARN("  Forward passes            : {}", m_settings.numForwardPasses);
-        Pale::Log::PA_WARN("  Shadow Rays               : {}", m_settings.numShadowRays);
-        Pale::Log::PA_WARN("  Adjoint Shadow Rays       : {}", m_settings.numAdjointShadowRays);
-        Pale::Log::PA_WARN("  Adjoint bounces           : {}", m_settings.maxAdjointBounces);
-        Pale::Log::PA_WARN("  Adjoint samples per pixel : {}", m_settings.adjointSamplesPerPixel);
-        Pale::Log::PA_WARN("  Using Adjoint Shadow rays : {}", m_settings.enableAdjointDirectLight);
-        Pale::Log::PA_WARN("  Adjoint Shadow ray count  : {}", m_settings.numAdjointPathShadowRays);
-        Pale::Log::PA_WARN("  Adjoint q(null/reflect)   : {}/{}",
+        Pale::Log::PA_INFO("=== Renderer Settings ===");
+        Pale::Log::PA_INFO("  Photons per launch        : {}", m_settings.photonsPerLaunch);
+        Pale::Log::PA_INFO("  Max bounces               : {}", m_settings.maxBounces);
+        Pale::Log::PA_INFO("  Forward passes            : {}", m_settings.numForwardPasses);
+        Pale::Log::PA_INFO("  Shadow Rays               : {}", m_settings.numShadowRays);
+        Pale::Log::PA_INFO("  Adjoint Shadow Rays       : {}", m_settings.numAdjointShadowRays);
+        Pale::Log::PA_INFO("  Adjoint bounces           : {}", m_settings.maxAdjointBounces);
+        Pale::Log::PA_INFO("  Adjoint samples per pixel : {}", m_settings.adjointSamplesPerPixel);
+        Pale::Log::PA_INFO("  Using Adjoint Shadow rays : {}", m_settings.enableAdjointDirectLight);
+        Pale::Log::PA_INFO("  Adjoint Shadow ray count  : {}", m_settings.numAdjointPathShadowRays);
+        Pale::Log::PA_INFO("  Adjoint q(null/reflect)   : {}/{}",
                            m_settings.sampling.qNull,
                            m_settings.sampling.qReflect);
-        Pale::Log::PA_WARN("  Visibility opacity weight : {}", m_settings.visibilityWeightedOpacityRegularizerWeight);
-        Pale::Log::PA_WARN("  Depth Distortion Weight   : {}", m_settings.depthDistortionWeight);
-        Pale::Log::PA_WARN("  Normal Consistency Weight : {}", m_settings.normalConsistencyWeight);
-        Pale::Log::PA_WARN("  Intra-slab depth weight   : {}", m_settings.intraSlabDepthRegularizerWeight);
-        Pale::Log::PA_WARN("  Curvature scale weight    : {}", m_settings.curvatureScaleRegularizerWeight);
-        Pale::Log::PA_WARN("  Shared slab direct light  : {}", m_settings.rendererDebugShareLocalLayerDirectLighting);
-        Pale::Log::PA_WARN("  Curvature densification   : {}", curvatureDensificationEnabled);
-        Pale::Log::PA_WARN("  Primal activity tracking  : {}", primalActivityTrackingEnabled);
-        Pale::Log::PA_WARN("  Minimum footprint enabled : {}", m_settings.rendererDebugMinimumProjectedFootprint);
-        Pale::Log::PA_WARN("  Minimum footprint sigma px: {}", m_settings.rendererDebugMinimumProjectedFootprintPixels);
-        Pale::Log::PA_WARN("  Local layer depth epsilon : {}", m_settings.rendererDebugLocalLayerDepthEpsilon);
-        Pale::Log::PA_WARN("  Local layer normal cosine : {}", m_settings.rendererDebugLocalLayerNormalCosineThreshold);
-        Pale::Log::PA_WARN("  Max splat events per ray  : {}", m_settings.rendererDebugMaxSplatEventsPerRay);
-        Pale::Log::PA_WARN("  Max local surfel hits     : {}", m_settings.rendererDebugMaxLocalSurfelHits);
-        Pale::Log::PA_WARN("  Point-hit batch size      : {}", m_settings.rendererDebugPointHitBatchSize);
-        Pale::Log::PA_WARN("  Point-hit lookahead       : {}", m_settings.rendererDebugPointHitBatchLookahead);
-        Pale::Log::PA_WARN("=== Sensors (Forward) ===");
+        Pale::Log::PA_INFO("  Visibility opacity weight : {}", m_settings.visibilityWeightedOpacityRegularizerWeight);
+        Pale::Log::PA_INFO("  Depth Distortion Weight   : {}", m_settings.depthDistortionWeight);
+        Pale::Log::PA_INFO("  Normal Consistency Weight : {}", m_settings.normalConsistencyWeight);
+        Pale::Log::PA_INFO("  Intra-slab depth weight   : {}", m_settings.intraSlabDepthRegularizerWeight);
+        Pale::Log::PA_INFO("  Curvature scale weight    : {}", m_settings.curvatureScaleRegularizerWeight);
+        Pale::Log::PA_INFO("  Shared slab direct light  : {}", m_settings.rendererDebugShareLocalLayerDirectLighting);
+        Pale::Log::PA_INFO("  Curvature densification   : {}", curvatureDensificationEnabled);
+        Pale::Log::PA_INFO("  Primal activity tracking  : {}", primalActivityTrackingEnabled);
+        Pale::Log::PA_INFO("  Minimum footprint enabled : {}", m_settings.rendererDebugMinimumProjectedFootprint);
+        Pale::Log::PA_INFO("  Minimum footprint sigma px: {}", m_settings.rendererDebugMinimumProjectedFootprintPixels);
+        Pale::Log::PA_INFO("  Local layer depth epsilon : {}", m_settings.rendererDebugLocalLayerDepthEpsilon);
+        Pale::Log::PA_INFO("  Local layer normal cosine : {}", m_settings.rendererDebugLocalLayerNormalCosineThreshold);
+        Pale::Log::PA_INFO("  Max splat events per ray  : {}", m_settings.rendererDebugMaxSplatEventsPerRay);
+        Pale::Log::PA_INFO("  Max local surfel hits     : {}", m_settings.rendererDebugMaxLocalSurfelHits);
+        Pale::Log::PA_INFO("  Point-hit batch size      : {}", m_settings.rendererDebugPointHitBatchSize);
+        Pale::Log::PA_INFO("  Point-hit lookahead       : {}", m_settings.rendererDebugPointHitBatchLookahead);
+        Pale::Log::PA_INFO("=== Sensors (Forward) ===");
         for (size_t i = 0; i < sensorsForward.size(); ++i) {
             const auto &s = sensorsForward[i];
 
-            Pale::Log::PA_WARN("  --- Sensor {} ---", i);
-            Pale::Log::PA_WARN("      Name                : {}", s.name);
-            Pale::Log::PA_WARN("      Resolution          : {} x {}", s.width, s.height);
+            Pale::Log::PA_INFO("  --- Sensor {} ---", i);
+            Pale::Log::PA_INFO("      Name                : {}", s.name);
+            Pale::Log::PA_INFO("      Resolution          : {} x {}", s.width, s.height);
 
-            Pale::Log::PA_WARN("      Camera Position     : ({}, {}, {})",
+            Pale::Log::PA_INFO("      Camera Position     : ({}, {}, {})",
                                s.camera.pos.x(), s.camera.pos.y(), s.camera.pos.z());
-            Pale::Log::PA_WARN("      Exposure / Gamma    : {} / {}",
+            Pale::Log::PA_INFO("      Exposure / Gamma    : {} / {}",
                                s.exposureCorrection,
                                s.gammaCorrection);
-            Pale::Log::PA_WARN("      Output encoding     : {}",
+            Pale::Log::PA_INFO("      Output encoding     : {}",
                                s.useSrgbEncoding ? "sRGB" : "power gamma");
         }
 

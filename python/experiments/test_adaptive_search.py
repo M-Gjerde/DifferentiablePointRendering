@@ -27,6 +27,7 @@ from metrics.evaluate_runs import (
     write_dict_csv,
 )
 from experiments.run_adaptive_search import (
+    apply_initial_trial_overrides,
     apply_linked_parameters,
     first_point_cap_excess,
     import_baseline_run,
@@ -36,7 +37,7 @@ from experiments.run_adaptive_search import (
     repair_densification_parameters,
     validate_spec,
 )
-from experiments.run_hyperparameter_search import build_train_command
+from experiments.search_common import build_train_command
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -57,6 +58,24 @@ class ConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(200, parameters["rebuild_bvh_interval"])
         self.assertEqual(0.001, parameters["densification_grad_abs_min_final"])
+
+    def test_derived_parameters_apply_scale_and_offset(self) -> None:
+        parameters = apply_linked_parameters(
+            {"densification_grad_abs_min": 0.001},
+            {
+                "derived_parameters": {
+                    "densification_grad_abs_min_final": {
+                        "source": "densification_grad_abs_min",
+                        "scale": 0.1,
+                        "offset": 0.00001,
+                    }
+                }
+            },
+        )
+        self.assertAlmostEqual(
+            0.00011,
+            parameters["densification_grad_abs_min_final"],
+        )
 
     def test_unattended_command_disables_preview(self) -> None:
         command = build_train_command(
@@ -100,6 +119,22 @@ class ConfigurationTests(unittest.TestCase):
                 2.0 * getattr(base_config, field_name),
                 getattr(config, field_name),
             )
+
+    def test_lr_one_preserves_calibrated_component_defaults(self) -> None:
+        expected = {
+            "learning_rate_position": 0.000055,
+            "learning_rate_rotation": 0.005,
+            "learning_rate_scale": 0.00011,
+            "learning_rate_albedo": 0.000088,
+            "learning_rate_opacity": 0.00011,
+            "learning_rate_beta": 0.00033,
+        }
+        with mock.patch("sys.argv", ["main.py", "--lr", "1.0"]):
+            config = parse_args()
+
+        self.assertEqual(1.0, config.learning_rate)
+        for field_name, expected_value in expected.items():
+            self.assertEqual(expected_value, getattr(config, field_name))
 
 
 class PointGuardrailTests(unittest.TestCase):
@@ -335,12 +370,47 @@ class GeometryCheckpointTests(unittest.TestCase):
 
 
 class SpecValidationTests(unittest.TestCase):
-    def test_teapot_phase_one_searches_only_uniform_lr_multiplier(self) -> None:
+    def test_teapot_weekend_search_has_coherent_lr_and_densification_space(self) -> None:
         spec_path = Path(__file__).with_name("teapot_adaptive_search.json")
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
-        self.assertEqual({"learning_rate"}, set(spec["search_space"]))
-        self.assertEqual(0.1, spec["search_space"]["learning_rate"]["low"])
-        self.assertEqual(5.0, spec["search_space"]["learning_rate"]["high"])
+        self.assertEqual(
+            {
+                "learning_rate",
+                "learning_rate_position",
+                "learning_rate_scale",
+                "position_lr_scale_init",
+                "lr_decay_max_steps",
+                "densification_grad_abs_min",
+                "densification_interval",
+            },
+            set(spec["search_space"]),
+        )
+        self.assertEqual(0.4, spec["search_space"]["learning_rate"]["low"])
+        self.assertEqual(10.0, spec["search_space"]["learning_rate"]["high"])
+        self.assertEqual(5.5e-6, spec["search_space"]["learning_rate_position"]["low"])
+        self.assertEqual(5.5e-4, spec["search_space"]["learning_rate_position"]["high"])
+        self.assertEqual(80, spec["max_trials"])
+        self.assertEqual(16, spec["sampler_startup_trials"])
+        self.assertEqual(20_000, spec["base_args"]["iterations"])
+        self.assertEqual(20_000, spec["evaluation_iterations"][-1])
+        self.assertEqual(20_000, spec["pruner_warmup_iteration"])
+        self.assertEqual(
+            "lr_decay_max_steps",
+            spec["linked_parameters"][
+                "densification_grad_abs_min_decay_end_iteration"
+            ],
+        )
+        self.assertEqual(
+            "densification_interval",
+            spec["linked_parameters"]["rebuild_bvh_interval"],
+        )
+        self.assertEqual(
+            {
+                "source": "densification_grad_abs_min",
+                "scale": 0.1,
+            },
+            spec["derived_parameters"]["densification_grad_abs_min_final"],
+        )
         self.assertTrue(spec["base_args"]["enable_metrics"])
         self.assertTrue(spec["base_args"]["enable_image_preview"])
         defaults = OptimizationConfig()
@@ -350,6 +420,49 @@ class SpecValidationTests(unittest.TestCase):
                 value,
                 msg=f"base_args.{name} is stale relative to OptimizationConfig",
             )
+        for name, value in spec["initial_trials"][0].items():
+            self.assertEqual(
+                getattr(defaults, name),
+                value,
+                msg=f"initial_trials[0].{name} is not the config baseline",
+            )
+        validate_spec(spec, check_paths=False)
+
+        resolved = apply_linked_parameters(
+            dict(spec["base_args"], **spec["initial_trials"][0]),
+            spec,
+        )
+        baseline = apply_initial_trial_overrides(
+            resolved,
+            mock.Mock(
+                user_attrs={
+                    "initial_parameter_overrides": spec[
+                        "initial_trial_overrides"
+                    ][0]
+                }
+            ),
+        )
+        self.assertEqual(0.0001, resolved["densification_grad_abs_min_final"])
+        self.assertEqual(
+            defaults.densification_grad_abs_min_decay_end_iteration,
+            baseline["densification_grad_abs_min_decay_end_iteration"],
+        )
+        self.assertEqual(
+            defaults.densification_grad_abs_min_final,
+            baseline["densification_grad_abs_min_final"],
+        )
+        self.assertEqual(
+            defaults.rebuild_bvh_interval,
+            baseline["rebuild_bvh_interval"],
+        )
+        self.assertEqual(
+            resolved["lr_decay_max_steps"],
+            resolved["densification_grad_abs_min_decay_end_iteration"],
+        )
+        self.assertEqual(
+            resolved["densification_interval"],
+            resolved["rebuild_bvh_interval"],
+        )
 
     def test_uniform_learning_rate_multiplier_is_a_valid_dimension(self) -> None:
         spec = {

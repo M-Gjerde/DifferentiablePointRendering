@@ -71,6 +71,7 @@ RUN_CONFIG_PARAMETERS = [
     "densify_bsdf_floor",
     "densify_bsdf_gamma",
     "densification_downweight_normal_gradients",
+    "densification_tangent_only",
     "inactive_transport_prune_cycles",
     "opacity_prune_threshold",
     "max_prune_fraction",

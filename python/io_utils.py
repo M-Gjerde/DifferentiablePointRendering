@@ -290,6 +290,9 @@ def save_gaussians_to_ply(
         shape_default: float = 0.0,
         densification_origins: np.ndarray | None = None,
         primitive_ages: np.ndarray | None = None,
+        densification_position_signals: np.ndarray | None = None,
+        densification_position_sample_counts: np.ndarray | None = None,
+        densification_position_threshold: float | None = None,
 ) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -317,6 +320,45 @@ def save_gaussians_to_ply(
             raise ValueError(
                 "Expected primitive_ages to have one value per point, got "
                 f"{age_values.shape[0]} for {num_points} points"
+            )
+    position_signal_values: np.ndarray | None = None
+    position_sample_count_values: np.ndarray | None = None
+    position_threshold_value: float | None = None
+    position_metadata = (
+        densification_position_signals is not None
+        or densification_position_sample_counts is not None
+        or densification_position_threshold is not None
+    )
+    if position_metadata:
+        if (
+            densification_position_signals is None
+            or densification_position_sample_counts is None
+            or densification_position_threshold is None
+        ):
+            raise ValueError(
+                "Position densification metadata requires signals, sample counts, and threshold"
+            )
+        position_signal_values = np.asarray(
+            densification_position_signals, dtype=np.float32,
+        ).reshape(-1)
+        position_sample_count_values = np.asarray(
+            densification_position_sample_counts, dtype=np.uint32,
+        ).reshape(-1)
+        if position_signal_values.shape[0] != num_points:
+            raise ValueError(
+                "Expected densification_position_signals to have one value per point, got "
+                f"{position_signal_values.shape[0]} for {num_points} points"
+            )
+        if position_sample_count_values.shape[0] != num_points:
+            raise ValueError(
+                "Expected densification_position_sample_counts to have one value per point, got "
+                f"{position_sample_count_values.shape[0]} for {num_points} points"
+            )
+        position_threshold_value = float(densification_position_threshold)
+        if not np.isfinite(position_threshold_value) or position_threshold_value <= 0.0:
+            raise ValueError(
+                "densification_position_threshold must be finite and positive, got "
+                f"{position_threshold_value}"
             )
 
     if pos.ndim != 2 or pos.shape[1] != 3:
@@ -384,6 +426,10 @@ def save_gaussians_to_ply(
             if age_values is not None:
                 # Stored as float for compatibility with the existing PLY scalar loader.
                 f.write("property float primitive_age\n")
+            if position_signal_values is not None:
+                f.write("property float densification_position_signal\n")
+                f.write("property float densification_position_sample_count\n")
+                f.write("property float densification_position_threshold\n")
             f.write("end_header\n")
 
             for i in range(num_points):
@@ -402,13 +448,22 @@ def save_gaussians_to_ply(
                     if age_values is not None
                     else ""
                 )
+                position_metadata_suffix = (
+                    f" {position_signal_values[i]:.9g}"
+                    f" {float(position_sample_count_values[i]):.9g}"
+                    f" {position_threshold_value:.9g}"
+                    if position_signal_values is not None
+                    and position_sample_count_values is not None
+                    and position_threshold_value is not None
+                    else ""
+                )
                 f.write(
                     f"{x:.9g} {y:.9g} {z:.9g}  "
                     f"{qw:.9g} {qx:.9g} {qy:.9g} {qz:.9g}  "
                     f"{su_i:.9g} {sv_i:.9g}  "
                     f"{albedo_r:.9g} {albedo_g:.9g} {albedo_b:.9g}  "
                     f"{opa[i]:.9g} {beta_values[i]:.9g} {shape_default:.9g} {power_values[i]:.9g}"
-                    f"{origin_suffix}{age_suffix}\n"
+                    f"{origin_suffix}{age_suffix}{position_metadata_suffix}\n"
                 )
 
             f.flush()

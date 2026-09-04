@@ -1155,6 +1155,9 @@ def save_manual_snapshot(
         camera_ids: list[str],
         densification_origins: np.ndarray | None = None,
         primitive_ages: np.ndarray | None = None,
+        densification_position_signals: np.ndarray | None = None,
+        densification_position_sample_counts: np.ndarray | None = None,
+        densification_position_threshold: float | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     renders_dir = renders_output_dir(output_dir)
@@ -1207,6 +1210,9 @@ def save_manual_snapshot(
         shape_default=0.0,
         densification_origins=densification_origins,
         primitive_ages=primitive_ages,
+        densification_position_signals=densification_position_signals,
+        densification_position_sample_counts=densification_position_sample_counts,
+        densification_position_threshold=densification_position_threshold,
     )
 
     print(
@@ -1230,6 +1236,9 @@ def save_iteration_point_cloud_snapshot(
         powers: torch.Tensor,
         densification_origins: np.ndarray | None = None,
         primitive_ages: np.ndarray | None = None,
+        densification_position_signals: np.ndarray | None = None,
+        densification_position_sample_counts: np.ndarray | None = None,
+        densification_position_threshold: float | None = None,
 ) -> Path:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
@@ -1246,6 +1255,9 @@ def save_iteration_point_cloud_snapshot(
         shape_default=0.0,
         densification_origins=densification_origins,
         primitive_ages=primitive_ages,
+        densification_position_signals=densification_position_signals,
+        densification_position_sample_counts=densification_position_sample_counts,
+        densification_position_threshold=densification_position_threshold,
     )
     #print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
     return ply_path
@@ -1691,6 +1703,7 @@ def update_densification_statistics(
         densify_position_grad_per_camera_np: np.ndarray,
         densify_position_grad_per_camera_count_np: np.ndarray,
         densification_downweight_normal_gradients: bool = False,
+        densification_tangent_only: bool = True,
 ) -> None:
     if densification_interval <= 0:
         return
@@ -1782,11 +1795,13 @@ def update_densification_statistics(
     dot_v_np = np.sum(per_camera_grad_np * tangent_v_unit_np[:, None, :], axis=2, keepdims=True)
     dot_w_np = np.sum(per_camera_grad_np * tangent_w_unit_np[:, None, :], axis=2)
 
-    per_camera_local_tangent_grad_np = np.concatenate(
+    per_camera_local_grad_np = np.concatenate(
         [
             dot_u_np,
             dot_v_np,
-            np.zeros_like(dot_u_np),
+            np.zeros_like(dot_u_np)
+            if densification_tangent_only
+            else dot_w_np[:, :, None],
         ],
         axis=2,
     )
@@ -1835,10 +1850,11 @@ def update_densification_statistics(
                                  ).sum(axis=1, keepdims=True) / safe_active_camera_count_np
 
     # Signed vector direction:
-    #     mean_visible((dot_u, dot_v, 0) * optional_tangent_fraction(g_camera))
-    # Accumulating local tangent coordinates keeps the direction stable if the surfel rotates.
+    #     mean_visible((dot_u, dot_v, dot_w) * optional_tangent_fraction(g_camera))
+    # dot_w is zeroed in tangent-only mode. Accumulating local coordinates keeps
+    # the direction stable if the surfel rotates.
     density_grad_position_vector_np = (
-                                              per_camera_local_tangent_grad_np * visible_downweight_np[:, :, None]
+                                              per_camera_local_grad_np * visible_downweight_np[:, :, None]
                                       ).sum(axis=1) / safe_active_camera_count_np
 
     density_grad_position_vector_np[active_camera_count_np[:, 0] == 0.0] = 0.0
@@ -1989,6 +2005,59 @@ def update_curvature_densification_statistics(
         )
 
 
+def position_densification_snapshot_statistics(
+        densify_position_grad_accum_np: np.ndarray,
+        densify_position_grad_denom_np: np.ndarray,
+        trainable_surfel_mask: torch.Tensor,
+        densification_grad_quantile: float,
+        densification_grad_abs_min: float,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """Return the exact scalar signal and effective threshold used for position splits."""
+    accum = np.asarray(densify_position_grad_accum_np, dtype=np.float32).reshape(-1)
+    denom = np.asarray(densify_position_grad_denom_np, dtype=np.float32).reshape(-1)
+    trainable = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
+    if accum.shape != denom.shape or accum.shape != trainable.shape:
+        raise RuntimeError(
+            "Position densification snapshot arrays must have matching point counts: "
+            f"accum={accum.shape}, denom={denom.shape}, trainable={trainable.shape}"
+        )
+
+    valid = np.isfinite(denom) & (denom > 0.0)
+    signal = np.zeros(accum.shape, dtype=np.float32)
+    signal[valid] = accum[valid] / denom[valid]
+    signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+    finite_signal = np.isfinite(signal)
+    absolute_minimum = max(
+        float(densification_grad_abs_min),
+        float(np.finfo(np.float32).tiny),
+    )
+    absolute_candidates = (
+        valid
+        & finite_signal
+        & trainable
+        & (signal >= absolute_minimum)
+    )
+    if np.any(absolute_candidates):
+        quantile_threshold = float(np.quantile(
+            signal[absolute_candidates],
+            float(densification_grad_quantile),
+        ))
+        threshold = max(absolute_minimum, quantile_threshold)
+    else:
+        quantile_threshold = float("nan")
+        threshold = absolute_minimum
+
+    sample_counts = np.clip(
+        np.rint(np.nan_to_num(denom, nan=0.0, posinf=0.0, neginf=0.0)),
+        0.0,
+        float(np.iinfo(np.uint32).max),
+    ).astype(np.uint32)
+    # Persist and compare the same float32 threshold so the PLY round-trip cannot
+    # move a primitive across the split boundary by rounding the scalar later.
+    threshold = float(np.float32(threshold))
+    return signal, sample_counts, threshold, quantile_threshold
+
+
 def maybe_make_densification_result(
         iteration: int,
         config: OptimizationConfig,
@@ -2024,14 +2093,20 @@ def maybe_make_densification_result(
         return None
 
     with torch.no_grad():
-        valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
-        avg_density_grad_norm_np = np.zeros((positions.shape[0],), dtype=np.float32)
-        avg_density_grad_vector_local_np = np.zeros(tuple(positions.shape), dtype=np.float32)
-
-        avg_density_grad_norm_np[valid_denom_np] = (
-                densify_position_grad_accum_np.reshape(-1)[valid_denom_np]
-                / densify_position_grad_denom_np.reshape(-1)[valid_denom_np]
+        (
+            avg_density_grad_norm_np,
+            _position_sample_counts_np,
+            grad_threshold,
+            grad_quantile_threshold,
+        ) = position_densification_snapshot_statistics(
+            densify_position_grad_accum_np=densify_position_grad_accum_np,
+            densify_position_grad_denom_np=densify_position_grad_denom_np,
+            trainable_surfel_mask=trainable_surfel_mask,
+            densification_grad_quantile=densification_grad_quantile,
+            densification_grad_abs_min=densification_grad_abs_min,
         )
+        valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
+        avg_density_grad_vector_local_np = np.zeros(tuple(positions.shape), dtype=np.float32)
 
         avg_density_grad_vector_local_np[valid_denom_np] = (
                 densify_position_grad_vector_accum_np[valid_denom_np]
@@ -2044,12 +2119,14 @@ def maybe_make_densification_result(
             neginf=0.0,
         )
 
-        tangent_u, tangent_v, _ = density.quaternion_to_tangent_frame_torch(rotations.detach())
+        tangent_u, tangent_v, tangent_w = density.quaternion_to_tangent_frame_torch(rotations.detach())
         tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
         tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
+        tangent_w_np = tangent_w.detach().cpu().numpy().astype(np.float32)
         avg_density_grad_vector_np = (
                 avg_density_grad_vector_local_np[:, 0:1] * tangent_u_np
                 + avg_density_grad_vector_local_np[:, 1:2] * tangent_v_np
+                + avg_density_grad_vector_local_np[:, 2:3] * tangent_w_np
         ).astype(np.float32)
         avg_density_grad_vector_np = np.nan_to_num(
             avg_density_grad_vector_np,
@@ -2158,8 +2235,6 @@ def maybe_make_densification_result(
         valid_denom_count = int(np.count_nonzero(valid_denom_np))
         valid_curvature_count = int(np.count_nonzero(valid_curvature_observation_np))
 
-        grad_threshold = float("nan")
-        grad_quantile_threshold = float("nan")
         scene_extent = densification_scene_extent_for_positions(
             config=config,
             positions=positions,
@@ -2187,20 +2262,6 @@ def maybe_make_densification_result(
             signal_max = float(np.max(finite_signal_np))
         else:
             signal_min = signal_p50 = signal_p90 = signal_p95 = signal_p98 = signal_max = 0.0
-
-        if position_abs_candidate_count > 0:
-            active_grad = grad_pos_norm_np[position_abs_candidate_mask_np]
-            grad_quantile_threshold = float(np.quantile(active_grad, densification_grad_quantile))
-            grad_threshold = max(
-                float(densification_grad_abs_min),
-                grad_quantile_threshold,
-                float(np.finfo(np.float32).tiny),
-            )
-        else:
-            grad_threshold = max(
-                float(densification_grad_abs_min),
-                float(np.finfo(np.float32).tiny),
-            )
 
         position_candidate_mask_np = (
                 valid_denom_np
@@ -2248,6 +2309,7 @@ def maybe_make_densification_result(
                 curvature_direction_uv_np=curvature_tensor_uv_np,
                 curvature_direction_vv_np=curvature_tensor_vv_np,
                 curvature_violation_threshold=curvature_violation_threshold,
+                split_tangent_only=bool(config.densification_tangent_only),
             )
 
             if densification_result is not None:
@@ -2311,7 +2373,7 @@ def maybe_make_densification_result(
                     densification_result.get("curvature_split_count", 0)
                 ) if densification_result is not None else 0
                 print(
-                    f"[Iter {iteration:04d}] Tangent split densification: "
+                    f"[Iter {iteration:04d}] Split densification: "
                     f"adding {n_new_from_densification} surfels "
                     f"(clone={clone_count}, split={split_count}, "
                     f"position={position_split_count}, "

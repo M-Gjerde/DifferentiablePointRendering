@@ -1,11 +1,11 @@
 {
-  "study_name": "teapot_10_lr_scale_v1",
+  "study_name": "teapot_20_lr_densification_weekend_v1",
   "dataset_path": "~/phd/datasets/teapot_10_pbdr",
   "ground_truth": "~/phd/models/teapot.ply",
   "baseline_run": null,
   "require_baseline_complete": false,
-  "output_root": "OptimizationOutput/studies/teapot_10_lr_scale_v1",
-  "max_trials": 25,
+  "output_root": "OptimizationOutput/studies/teapot_20_lr_densification_weekend_v1",
+  "max_trials": 80,
   "seed": 0,
   "samples": 500000,
   "evaluation_seed": 0,
@@ -22,12 +22,22 @@
     7000,
     8000,
     9000,
-    10000
+    10000,
+    11000,
+    12000,
+    13000,
+    14000,
+    15000,
+    16000,
+    17000,
+    18000,
+    19000,
+    20000
   ],
   "failure_cd_penalty": 1.0,
-  "sampler_startup_trials": 3,
-  "pruner_startup_trials": 3,
-  "pruner_warmup_iteration": 2000,
+  "sampler_startup_trials": 16,
+  "pruner_startup_trials": 16,
+  "pruner_warmup_iteration": 20000,
   "pruner_interval_iterations": 1000,
   "pruner_min_trials": 2,
   "guardrails": {
@@ -44,8 +54,18 @@
   "base_args": {
     "device": "cpu",
     "target_color_space": "srgb",
-    "iterations": 10000,
+    "iterations": 20000,
     "optimizer_type": "adam",
+    "learning_rate_rotation": 0.005,
+    "learning_rate_albedo": 0.000088,
+    "learning_rate_opacity": 0.00011,
+    "learning_rate_beta": 0.00033,
+    "use_global_lr_decay": false,
+    "global_lr_scale_init": 1.0,
+    "global_lr_scale_final": 0.3,
+    "use_position_lr_decay": true,
+    "position_lr_scale_final": 1.0,
+    "lr_decay_start_iteration": 0,
     "log_interval": 25,
     "save_interval": 50,
     "save_ply_files_interval": 50,
@@ -56,34 +76,29 @@
     "save_final_mesh": true,
     "enable_metrics": true,
     "enable_image_preview": true,
-    "use_global_lr_decay": false,
-    "use_position_lr_decay": false,
     "ssim_weight": 0.0,
     "ssim_window_size": 5,
     "ssim_sigma": 0.75,
     "depth_distort_weight": 100.0,
     "depth_distort_start_iteration": 0,
-    "normal_consistency_weight": 0.0005,
+    "normal_consistency_weight": 0.002,
     "normal_from_depth_use_mean_depth": false,
-    "intra_slab_depth_weight": 1e-5,
-    "curvature_scale_weight": 1e-7,
+    "intra_slab_depth_weight": 0.00001,
+    "curvature_scale_weight": 0.0,
     "opacity_prior_weight": 0.0,
     "share_local_layer_direct_lighting": true,
     "minimum_projected_footprint": false,
     "minimum_projected_footprint_pixels": 0.707,
-    "densification_interval": 100,
     "densification_stats_skip_interval_start": false,
     "densification_downweight_normal_gradients": false,
+    "densification_tangent_only": false,
     "densify_after": 0,
     "prune_after": 0,
     "densification_grad_quantile": 0.0,
-    "densification_grad_abs_min": 0.00025,
-    "densification_grad_abs_min_final": 0.00025,
     "densification_grad_abs_min_decay_start_iteration": 0,
-    "densification_grad_abs_min_decay_end_iteration": 8000,
     "curvature_violation_threshold": 35.0,
     "densification_scale_min": 0.006,
-    "densification_split_offset_scale": 0.7,
+    "densification_split_offset_scale": 0.2,
     "densification_split_scale_factor": 1.4142135623730951,
     "densification_exact_clone_percent_dense": 0.0,
     "densification_scene_extent": 0.0,
@@ -97,27 +112,82 @@
     "inactive_transport_prune_cycles": 1,
     "reset_opacity_interval": 0,
     "reset_opacity_value": 0.025,
-    "rebuild_bvh_interval": 100,
     "use_device_training_step": true,
     "densification_verbose": false
   },
   "search_space": {
     "learning_rate": {
       "type": "float",
-      "low": 0.01,
+      "low": 0.4,
       "high": 10.0,
       "log": true
+    },
+    "learning_rate_position": {
+      "type": "float",
+      "low": 0.0000055,
+      "high": 0.00055,
+      "log": true
+    },
+    "learning_rate_scale": {
+      "type": "float",
+      "low": 0.000011,
+      "high": 0.0011,
+      "log": true
+    },
+    "position_lr_scale_init": {
+      "type": "float",
+      "low": 1.0,
+      "high": 100.0,
+      "log": true
+    },
+    "lr_decay_max_steps": {
+      "type": "categorical",
+      "choices": [0, 1000, 2500, 5000, 7500, 10000]
+    },
+    "densification_grad_abs_min": {
+      "type": "float",
+      "low": 0.0003,
+      "high": 0.003,
+      "log": true
+    },
+    "densification_interval": {
+      "type": "categorical",
+      "choices": [50, 100, 200, 400]
+    }
+  },
+  "linked_parameters": {
+    "densification_grad_abs_min_decay_end_iteration": "lr_decay_max_steps",
+    "rebuild_bvh_interval": "densification_interval"
+  },
+  "derived_parameters": {
+    "densification_grad_abs_min_final": {
+      "source": "densification_grad_abs_min",
+      "scale": 0.1
     }
   },
   "initial_trials": [
     {
-      "learning_rate": 1.0
+      "learning_rate": 1.0,
+      "learning_rate_position": 0.000055,
+      "learning_rate_scale": 0.00011,
+      "position_lr_scale_init": 50.0,
+      "lr_decay_max_steps": 10000,
+      "densification_grad_abs_min": 0.001,
+      "densification_interval": 100
     },
     {
-      "learning_rate": 0.5
-    },
+      "learning_rate": 1.0,
+      "learning_rate_position": 0.000055,
+      "learning_rate_scale": 0.00011,
+      "position_lr_scale_init": 1.0,
+      "lr_decay_max_steps": 0,
+      "densification_grad_abs_min": 0.001,
+      "densification_interval": 100
+    }
+  ],
+  "initial_trial_overrides": [
     {
-      "learning_rate": 2.0
+      "densification_grad_abs_min_decay_end_iteration": 5000
     }
   ]
 }

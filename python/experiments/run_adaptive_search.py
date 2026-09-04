@@ -31,7 +31,7 @@ from metrics.evaluate_runs import (
     safe_float,
     write_dict_csv,
 )
-from experiments.run_hyperparameter_search import (
+from experiments.search_common import (
     CONFIG_CLI_FLAGS,
     build_train_command,
     parameter_digest,
@@ -211,7 +211,54 @@ def validate_spec(spec: dict[str, Any], check_paths: bool = True) -> None:
         if source not in search_space and source not in base_args:
             raise KeyError(f"Linked source '{source}' is not a searched or base parameter.")
 
-    for index, initial in enumerate(spec.get("initial_trials", [])):
+    derived_parameters = spec.get("derived_parameters", {})
+    if not isinstance(derived_parameters, dict):
+        raise TypeError("derived_parameters must be an object.")
+    for target, rule in derived_parameters.items():
+        if target not in CONFIG_CLI_FLAGS:
+            raise KeyError(f"No main.py CLI mapping for derived target: {target}")
+        if target in search_space or target in base_args or target in linked_parameters:
+            raise ValueError(
+                f"Derived target '{target}' must not also be a base, searched, or linked parameter."
+            )
+        if not isinstance(rule, dict):
+            raise TypeError(f"Derived parameter '{target}' must be an object.")
+        source = rule.get("source")
+        if source not in search_space and source not in base_args:
+            raise KeyError(
+                f"Derived source '{source}' for '{target}' is not a searched or base parameter."
+            )
+        for coefficient_name, default in (("scale", 1.0), ("offset", 0.0)):
+            coefficient = rule.get(coefficient_name, default)
+            if (
+                not isinstance(coefficient, (int, float))
+                or isinstance(coefficient, bool)
+                or not math.isfinite(float(coefficient))
+            ):
+                raise ValueError(
+                    f"Derived parameter '{target}' has invalid {coefficient_name}: {coefficient!r}"
+                )
+
+    initial_trials = spec.get("initial_trials", [])
+    initial_trial_overrides = spec.get("initial_trial_overrides", [])
+    if not isinstance(initial_trial_overrides, list):
+        raise TypeError("initial_trial_overrides must be an array.")
+    if len(initial_trial_overrides) > len(initial_trials):
+        raise ValueError(
+            "initial_trial_overrides cannot contain more entries than initial_trials."
+        )
+    override_targets = set(linked_parameters) | set(derived_parameters)
+    for index, overrides in enumerate(initial_trial_overrides):
+        if not isinstance(overrides, dict):
+            raise TypeError(f"initial_trial_overrides[{index}] must be an object.")
+        unknown = set(overrides) - override_targets
+        if unknown:
+            raise ValueError(
+                f"initial_trial_overrides[{index}] may only override linked or derived "
+                f"targets; unknown={sorted(unknown)}"
+            )
+
+    for index, initial in enumerate(initial_trials):
         if not isinstance(initial, dict):
             raise TypeError(f"initial_trials[{index}] must be an object.")
         unknown = set(initial) - set(search_space)
@@ -276,6 +323,32 @@ def apply_linked_parameters(parameters: dict[str, Any], spec: dict[str, Any]) ->
     result = dict(parameters)
     for target, source in spec.get("linked_parameters", {}).items():
         result[target] = result[source]
+    for target, rule in spec.get("derived_parameters", {}).items():
+        source = str(rule["source"])
+        source_value = result[source]
+        if (
+            not isinstance(source_value, (int, float))
+            or isinstance(source_value, bool)
+            or not math.isfinite(float(source_value))
+        ):
+            raise ValueError(
+                f"Derived source '{source}' for '{target}' must be finite and numeric, "
+                f"got {source_value!r}."
+            )
+        result[target] = (
+            float(source_value) * float(rule.get("scale", 1.0))
+            + float(rule.get("offset", 0.0))
+        )
+    return result
+
+
+def apply_initial_trial_overrides(
+    parameters: dict[str, Any], trial: Any
+) -> dict[str, Any]:
+    result = dict(parameters)
+    overrides = trial.user_attrs.get("initial_parameter_overrides", {})
+    if overrides:
+        result.update(overrides)
     return result
 
 
@@ -615,9 +688,12 @@ def make_objective(
 
     def objective(trial: Any) -> float:
         sampled_parameters = suggest_parameters(trial, search_space)
-        parameters = apply_linked_parameters(
-            dict(base_args, **sampled_parameters),
-            spec,
+        parameters = apply_initial_trial_overrides(
+            apply_linked_parameters(
+                dict(base_args, **sampled_parameters),
+                spec,
+            ),
+            trial,
         )
         digest = parameter_digest(parameters)
         run_name = f"trial_{trial.number:04d}_{digest}"
@@ -1254,10 +1330,16 @@ def run_study(spec_path: Path, spec: dict[str, Any], args: argparse.Namespace) -
         output_root=output_root,
         ground_truth_path=ground_truth_path,
     )
-    for initial_parameters in spec.get("initial_trials", []):
+    initial_trial_overrides = spec.get("initial_trial_overrides", [])
+    for index, initial_parameters in enumerate(spec.get("initial_trials", [])):
+        user_attrs: dict[str, Any] = {"initial_design": True}
+        if index < len(initial_trial_overrides) and initial_trial_overrides[index]:
+            user_attrs["initial_parameter_overrides"] = dict(
+                initial_trial_overrides[index]
+            )
         study.enqueue_trial(
             dict(initial_parameters),
-            user_attrs={"initial_design": True},
+            user_attrs=user_attrs,
             skip_if_exists=True,
         )
 

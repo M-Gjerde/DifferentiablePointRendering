@@ -93,6 +93,7 @@ namespace {
         IntraSlabDepth,
         CurvatureScale,
         CurvaturePrimitiveScore,
+        PositionPrimitiveScore,
         DensificationOrigin,
         PrimitiveAge,
         DepthPositionGradient,
@@ -105,7 +106,7 @@ namespace {
         RgbObjectiveGradient,
     };
 
-    constexpr std::array<ViewImageMode, 19> kViewImageModeShortcutOrder = {
+    constexpr std::array<ViewImageMode, 20> kViewImageModeShortcutOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -115,6 +116,7 @@ namespace {
         ViewImageMode::IntraSlabDepth,
         ViewImageMode::CurvatureScale,
         ViewImageMode::CurvaturePrimitiveScore,
+        ViewImageMode::PositionPrimitiveScore,
         ViewImageMode::DensificationOrigin,
         ViewImageMode::PrimitiveAge,
         ViewImageMode::DepthPositionGradient,
@@ -127,7 +129,7 @@ namespace {
         ViewImageMode::RgbObjectiveGradient,
     };
 
-    constexpr std::array<const char*, 19> kViewImageModeLabels = {
+    constexpr std::array<const char*, 20> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -137,6 +139,7 @@ namespace {
         "7 Intra-slab depth",
         "8 Curvature scale",
         "9 Curvature primitive score",
+        "Position primitive score (saved)",
         "Densification split origin",
         "Primitive age",
         "Depth distortion |grad position|",
@@ -189,6 +192,7 @@ namespace {
         bool intraSlabDepthValid = false;
         bool curvatureScaleValid = false;
         bool curvaturePrimitiveScoreValid = false;
+        bool positionPrimitiveScoreValid = false;
         bool densificationOriginValid = false;
         bool primitiveAgeValid = false;
         bool visiblePrimitiveIndicesValid = false;
@@ -205,6 +209,8 @@ namespace {
         std::vector<float> curvatureScale;
         std::vector<float> curvaturePrimitiveScore;
         std::vector<float> curvatureObservedPrimitiveScores;
+        std::vector<float> positionPrimitiveScore;
+        std::vector<float> positionObservedPrimitiveScores;
         std::vector<std::uint8_t> densificationOrigin;
         std::vector<std::uint32_t> primitiveAge;
         std::vector<uint32_t> visiblePrimitiveIndices;
@@ -218,6 +224,10 @@ namespace {
         std::vector<float> rgbObjectiveGradient;
         std::size_t curvatureObservedPrimitiveCount = 0u;
         float curvaturePrimitiveScoreMax = 0.0f;
+        std::size_t positionObservedPrimitiveCount = 0u;
+        float positionPrimitiveScoreMax = 0.0f;
+        float positionPrimitiveSplitThreshold = 0.0f;
+        bool positionPrimitiveMetadataAvailable = false;
         float rgbHalfMseMean = 0.0f;
         float ssimMean = 0.0f;
         float dssimMean = 0.0f;
@@ -234,6 +244,7 @@ namespace {
             intraSlabDepthValid = false;
             curvatureScaleValid = false;
             curvaturePrimitiveScoreValid = false;
+            positionPrimitiveScoreValid = false;
             densificationOriginValid = false;
             primitiveAgeValid = false;
             visiblePrimitiveIndicesValid = false;
@@ -250,6 +261,8 @@ namespace {
             curvatureScale.clear();
             curvaturePrimitiveScore.clear();
             curvatureObservedPrimitiveScores.clear();
+            positionPrimitiveScore.clear();
+            positionObservedPrimitiveScores.clear();
             densificationOrigin.clear();
             primitiveAge.clear();
             visiblePrimitiveIndices.clear();
@@ -263,6 +276,10 @@ namespace {
             rgbObjectiveGradient.clear();
             curvatureObservedPrimitiveCount = 0u;
             curvaturePrimitiveScoreMax = 0.0f;
+            positionObservedPrimitiveCount = 0u;
+            positionPrimitiveScoreMax = 0.0f;
+            positionPrimitiveSplitThreshold = 0.0f;
+            positionPrimitiveMetadataAvailable = false;
             rgbHalfMseMean = 0.0f;
             ssimMean = 0.0f;
             dssimMean = 0.0f;
@@ -1276,8 +1293,10 @@ namespace {
     [[nodiscard]] std::optional<std::filesystem::path> findLatestOptimizationPointCloud(
         const std::filesystem::path& optimizationOutputDirectory) {
         struct RunCandidate {
+            std::filesystem::path runDirectory;
+            std::filesystem::path metricsPath;
             PointCloudSnapshot pointCloud;
-            std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
+            std::filesystem::file_time_type metricsWriteTime = std::filesystem::file_time_type::min();
         };
 
         std::error_code error;
@@ -1286,19 +1305,32 @@ namespace {
         }
 
         std::optional<RunCandidate> bestRun;
-        for (const auto& runEntry : std::filesystem::directory_iterator(optimizationOutputDirectory, error)) {
+        std::filesystem::recursive_directory_iterator runEntry(
+            optimizationOutputDirectory,
+            std::filesystem::directory_options::skip_permission_denied,
+            error);
+        const std::filesystem::recursive_directory_iterator end;
+        while (runEntry != end) {
+            std::error_code entryError;
+            const std::filesystem::directory_entry entry = *runEntry;
+            const bool isMetricsFile =
+                entry.path().filename() == "metrics.csv" &&
+                entry.is_regular_file(entryError) &&
+                !entryError;
+
+            runEntry.increment(error);
             if (error) {
-                break;
-            }
-            if (!runEntry.is_directory(error) || error) {
                 error.clear();
+            }
+            if (!isMetricsFile) {
                 continue;
             }
 
-            const std::filesystem::path runDirectory = runEntry.path();
+            const std::filesystem::path metricsPath = entry.path();
+            const std::filesystem::path runDirectory = metricsPath.parent_path();
             const std::filesystem::path pointsDirectory = runDirectory / "points";
-            if (!std::filesystem::is_directory(pointsDirectory, error)) {
-                error.clear();
+            std::error_code pointsError;
+            if (!std::filesystem::is_directory(pointsDirectory, pointsError) || pointsError) {
                 continue;
             }
 
@@ -1308,14 +1340,16 @@ namespace {
             }
             const PointCloudSnapshot& bestPointCloud = snapshots.back();
 
-            const std::filesystem::file_time_type runWriteTime = std::max(
-                std::max(lastWriteTimeOrMin(runDirectory), lastWriteTimeOrMin(pointsDirectory)),
-                bestPointCloud.writeTime);
-            RunCandidate candidate{.pointCloud = bestPointCloud, .writeTime = runWriteTime};
+            RunCandidate candidate{
+                .runDirectory = runDirectory,
+                .metricsPath = metricsPath,
+                .pointCloud = bestPointCloud,
+                .metricsWriteTime = lastWriteTimeOrMin(metricsPath),
+            };
             if (!bestRun ||
-                candidate.writeTime > bestRun->writeTime ||
-                (candidate.writeTime == bestRun->writeTime &&
-                 candidate.pointCloud.path.filename().string() > bestRun->pointCloud.path.filename().string())) {
+                candidate.metricsWriteTime > bestRun->metricsWriteTime ||
+                (candidate.metricsWriteTime == bestRun->metricsWriteTime &&
+                 candidate.metricsPath.string() > bestRun->metricsPath.string())) {
                 bestRun = candidate;
             }
         }
@@ -1588,6 +1622,10 @@ namespace {
         buffers.ssimIndex.assign(pixelCount, 0.0f);
         buffers.dssim.assign(pixelCount, 0.0f);
         buffers.rgbObjectiveGradient.assign(pixelCount, 0.0f);
+        buffers.rgbHalfMseMean = 0.0f;
+        buffers.ssimMean = 0.0f;
+        buffers.dssimMean = 0.0f;
+        buffers.rgbObjectiveMean = 0.0f;
         const float inverseRgbElementCount =
             1.0f / static_cast<float>(pixelCount * 3u);
         for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
@@ -2774,7 +2812,7 @@ namespace {
         }
     }
 
-    void colorizeCurvaturePrimitiveScores(
+    void colorizeThresholdedPrimitiveScores(
         const std::vector<float>& values,
         uint32_t renderWidth,
         uint32_t renderHeight,
@@ -2792,6 +2830,7 @@ namespace {
             std::isfinite(splitThreshold) && splitThreshold > 1.0e-12f
                 ? splitThreshold
                 : 1.0f;
+        constexpr glm::vec3 kThresholdCrossedColor{1.0f, 0.0f, 1.0f};
         for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
             const std::size_t baseIndex = pixelIndex * 4u;
             displayPixels[baseIndex + 3u] = 255u;
@@ -2800,7 +2839,9 @@ namespace {
                 continue;
             }
             const float normalized = std::clamp(value / safeThreshold, 0.0f, 1.0f);
-            const glm::vec3 color = scalarColor(normalized, colorMap);
+            const glm::vec3 color = value >= safeThreshold
+                ? kThresholdCrossedColor
+                : scalarColor(normalized, colorMap);
             displayPixels[baseIndex + 0u] = channelToByte(color.r);
             displayPixels[baseIndex + 1u] = channelToByte(color.g);
             displayPixels[baseIndex + 2u] = channelToByte(color.b);
@@ -3036,6 +3077,9 @@ int main(int argc, char** argv) {
         ViewImageMode viewImageMode = ViewImageMode::Rendered;
         ScalarColorMap scalarColorMap = ScalarColorMap::Viridis;
         float curvatureViolationDisplayThreshold = 5.0f;
+        float positionWhatIfDisplayThreshold = 0.0f;
+        float positionWhatIfReferenceThreshold = 0.0f;
+        std::filesystem::path positionWhatIfThresholdPointCloudPath;
         int primitiveAgeColdAfterIterations = 1000;
         // Viewer-only diagnostic default. Optimization keeps its renderer-side
         // debug allocations disabled unless explicitly requested there.
@@ -3917,6 +3961,113 @@ int main(int argc, char** argv) {
                         debugDisplayBuffers.curvaturePrimitiveScoreValid = true;
                     }
                     return true;
+                case ViewImageMode::PositionPrimitiveScore:
+                    if (!debugDisplayBuffers.positionPrimitiveScoreValid) {
+                        if (!ensureVisiblePrimitiveIndices()) {
+                            return false;
+                        }
+
+                        debugDisplayBuffers.positionPrimitiveScore.assign(pixelCount, -1.0f);
+                        debugDisplayBuffers.positionObservedPrimitiveScores.clear();
+                        debugDisplayBuffers.positionObservedPrimitiveCount = 0u;
+                        debugDisplayBuffers.positionPrimitiveScoreMax = 0.0f;
+                        debugDisplayBuffers.positionPrimitiveSplitThreshold = 0.0f;
+                        debugDisplayBuffers.positionPrimitiveMetadataAvailable = false;
+
+                        const std::optional<Pale::AssetHandle> pointCloudHandle =
+                            firstPointCloudHandle(scene);
+                        const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
+                            pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
+                        if (pointCloudAsset) {
+                            std::vector<float> primitiveSignals;
+                            std::vector<std::uint32_t> primitiveSampleCounts;
+                            std::vector<float> primitiveThresholds;
+                            primitiveSignals.reserve(sceneGpu.pointCount);
+                            primitiveSampleCounts.reserve(sceneGpu.pointCount);
+                            primitiveThresholds.reserve(sceneGpu.pointCount);
+
+                            bool completeMetadata = true;
+                            for (const Pale::PointGeometry& geometry : pointCloudAsset->points) {
+                                const std::size_t pointCount = geometry.positions.size();
+                                if (geometry.densificationPositionSignals.size() != pointCount ||
+                                    geometry.densificationPositionSampleCounts.size() != pointCount ||
+                                    geometry.densificationPositionThresholds.size() != pointCount) {
+                                    completeMetadata = false;
+                                    break;
+                                }
+                                primitiveSignals.insert(
+                                    primitiveSignals.end(),
+                                    geometry.densificationPositionSignals.begin(),
+                                    geometry.densificationPositionSignals.end());
+                                primitiveSampleCounts.insert(
+                                    primitiveSampleCounts.end(),
+                                    geometry.densificationPositionSampleCounts.begin(),
+                                    geometry.densificationPositionSampleCounts.end());
+                                primitiveThresholds.insert(
+                                    primitiveThresholds.end(),
+                                    geometry.densificationPositionThresholds.begin(),
+                                    geometry.densificationPositionThresholds.end());
+                            }
+
+                            completeMetadata = completeMetadata &&
+                                primitiveSignals.size() == sceneGpu.pointCount;
+                            if (completeMetadata && !primitiveThresholds.empty()) {
+                                const float savedThreshold = primitiveThresholds.front();
+                                completeMetadata = std::isfinite(savedThreshold) &&
+                                    savedThreshold > 0.0f &&
+                                    std::all_of(
+                                        primitiveThresholds.begin(),
+                                        primitiveThresholds.end(),
+                                        [&](float threshold) {
+                                            return threshold == savedThreshold;
+                                        });
+                                if (completeMetadata) {
+                                    debugDisplayBuffers.positionPrimitiveSplitThreshold =
+                                        savedThreshold;
+                                    debugDisplayBuffers.positionPrimitiveMetadataAvailable = true;
+                                    if (positionWhatIfThresholdPointCloudPath !=
+                                            currentPointCloudPath ||
+                                        positionWhatIfReferenceThreshold != savedThreshold ||
+                                        !std::isfinite(positionWhatIfDisplayThreshold) ||
+                                        positionWhatIfDisplayThreshold <= 0.0f) {
+                                        positionWhatIfDisplayThreshold = savedThreshold;
+                                        positionWhatIfReferenceThreshold = savedThreshold;
+                                        positionWhatIfThresholdPointCloudPath =
+                                            currentPointCloudPath;
+                                    }
+                                    debugDisplayBuffers.positionObservedPrimitiveScores.reserve(
+                                        primitiveSignals.size());
+                                    for (std::size_t primitiveIndex = 0u;
+                                         primitiveIndex < primitiveSignals.size();
+                                         ++primitiveIndex) {
+                                        const float signal = primitiveSignals[primitiveIndex];
+                                        if (primitiveSampleCounts[primitiveIndex] == 0u ||
+                                            !std::isfinite(signal) || signal < 0.0f) {
+                                            primitiveSignals[primitiveIndex] = -1.0f;
+                                            continue;
+                                        }
+                                        debugDisplayBuffers.positionObservedPrimitiveScores.push_back(
+                                            signal);
+                                        ++debugDisplayBuffers.positionObservedPrimitiveCount;
+                                        debugDisplayBuffers.positionPrimitiveScoreMax = std::max(
+                                            debugDisplayBuffers.positionPrimitiveScoreMax, signal);
+                                    }
+                                    for (std::size_t pixelIndex = 0u;
+                                         pixelIndex < pixelCount;
+                                         ++pixelIndex) {
+                                        const uint32_t primitiveIndex =
+                                            debugDisplayBuffers.visiblePrimitiveIndices[pixelIndex];
+                                        if (primitiveIndex < primitiveSignals.size()) {
+                                            debugDisplayBuffers.positionPrimitiveScore[pixelIndex] =
+                                                primitiveSignals[primitiveIndex];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        debugDisplayBuffers.positionPrimitiveScoreValid = true;
+                    }
+                    return true;
                 case ViewImageMode::DensificationOrigin:
                     if (!debugDisplayBuffers.densificationOriginValid) {
                         debugDisplayBuffers.densificationOrigin =
@@ -4049,11 +4200,20 @@ int main(int argc, char** argv) {
                             pixels);
                         break;
                     case ViewImageMode::CurvaturePrimitiveScore:
-                        colorizeCurvaturePrimitiveScores(
+                        colorizeThresholdedPrimitiveScores(
                             debugDisplayBuffers.curvaturePrimitiveScore,
                             displayedRenderWidth,
                             displayedRenderHeight,
                             curvatureViolationDisplayThreshold,
+                            scalarColorMap,
+                            pixels);
+                        break;
+                    case ViewImageMode::PositionPrimitiveScore:
+                        colorizeThresholdedPrimitiveScores(
+                            debugDisplayBuffers.positionPrimitiveScore,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            positionWhatIfDisplayThreshold,
                             scalarColorMap,
                             pixels);
                         break;
@@ -4315,7 +4475,8 @@ int main(int argc, char** argv) {
             const auto start = std::chrono::steady_clock::now();
             {
                 Pale::ScopedTimer timer("Viewer adjoint source setup", spdlog::level::debug);
-                prepareRealtimeViewerRgbLossAdjointSource(queue, sensor, lastViewerAdjointLoss);
+                prepareRealtimeViewerRgbLossAdjointSource(
+                    queue, sensor, lastViewerAdjointLoss);
             }
             {
                 Pale::ScopedTimer timer("Viewer adjoint gradient buffer setup", spdlog::level::debug);
@@ -4431,8 +4592,7 @@ int main(int argc, char** argv) {
             const auto start = std::chrono::steady_clock::now();
             tracer.renderForward(renderSensors);
             // Adjoint profiling reuses the raw framebuffer as its source. Capture
-            // the primal linear RGB first so SSIM diagnostics always describe the
-            // displayed forward render.
+            // the primal linear RGB first so SSIM diagnostics describe the forward render.
             std::vector<float> ssimRenderedLinearRgba;
             if (ssimDebugMapsEnabled && cameraSource == CameraSource::SceneXml) {
                 ssimRenderedLinearRgba = Pale::downloadSensorRGBARAW(queue, sensor);
@@ -4802,6 +4962,7 @@ int main(int argc, char** argv) {
                 viewImageMode == ViewImageMode::IntraSlabDepth ||
                 viewImageMode == ViewImageMode::CurvatureScale ||
                 viewImageMode == ViewImageMode::CurvaturePrimitiveScore ||
+                viewImageMode == ViewImageMode::PositionPrimitiveScore ||
                 viewImageMode == ViewImageMode::DepthPositionGradient ||
                 viewImageMode == ViewImageMode::NormalPositionGradient ||
                 viewImageMode == ViewImageMode::IntraSlabPositionGradient ||
@@ -4834,7 +4995,7 @@ int main(int argc, char** argv) {
                 }
 
                 ImGui::TextDisabled(
-                    "Color = C_i / threshold; saturation is the split boundary");
+                    "Below: C_i / threshold colormap; magenta: at/above split boundary");
 
                 const std::size_t splitCandidateCount = static_cast<std::size_t>(
                     std::count_if(
@@ -4848,6 +5009,57 @@ int main(int argc, char** argv) {
                     debugDisplayBuffers.curvatureObservedPrimitiveCount,
                     splitCandidateCount,
                     debugDisplayBuffers.curvaturePrimitiveScoreMax);
+            }
+            if (viewImageMode == ViewImageMode::PositionPrimitiveScore) {
+                if (!debugDisplayBuffers.positionPrimitiveMetadataAvailable) {
+                    ImGui::TextWrapped(
+                        "This PLY does not contain saved position densification statistics. "
+                        "Run optimization again to generate a trustworthy visualization.");
+                } else {
+                    const float savedThreshold =
+                        debugDisplayBuffers.positionPrimitiveSplitThreshold;
+                    ImGui::Text("Saved effective threshold: %.9g", savedThreshold);
+                    const float sliderMinimum = static_cast<float>(std::max(
+                        static_cast<double>(std::numeric_limits<float>::min()),
+                        static_cast<double>(savedThreshold) * 1.0e-3));
+                    const float sliderMaximum = static_cast<float>(std::min(
+                        static_cast<double>(std::numeric_limits<float>::max()),
+                        static_cast<double>(savedThreshold) * 1.0e3));
+                    if (ImGui::SliderFloat(
+                            "What-if position threshold",
+                            &positionWhatIfDisplayThreshold,
+                            sliderMinimum,
+                            sliderMaximum,
+                            "%.9g",
+                            ImGuiSliderFlags_Logarithmic)) {
+                        positionWhatIfDisplayThreshold = std::clamp(
+                            positionWhatIfDisplayThreshold,
+                            sliderMinimum,
+                            sliderMaximum);
+                        updateDisplayTexture();
+                    }
+                    if (ImGui::Button("Use saved##position-threshold")) {
+                        positionWhatIfDisplayThreshold = savedThreshold;
+                        updateDisplayTexture();
+                    }
+                    ImGui::TextDisabled(
+                        "Below: saved G_i / selected threshold; magenta: at/above boundary");
+
+                    const std::size_t splitCandidateCount = static_cast<std::size_t>(
+                        std::count_if(
+                            debugDisplayBuffers.positionObservedPrimitiveScores.begin(),
+                            debugDisplayBuffers.positionObservedPrimitiveScores.end(),
+                            [&](float signal) {
+                                return signal >= positionWhatIfDisplayThreshold;
+                            }));
+                    ImGui::Text(
+                        "Observed: %zu   above selected: %zu   max G_i: %.9g",
+                        debugDisplayBuffers.positionObservedPrimitiveCount,
+                        splitCandidateCount,
+                        debugDisplayBuffers.positionPrimitiveScoreMax);
+                    ImGui::TextDisabled(
+                        "Values are the optimizer's saved interval-average statistics");
+                }
             }
             if (viewImageMode == ViewImageMode::DensificationOrigin) {
                 ImGui::TextDisabled(
@@ -5276,12 +5488,13 @@ int main(int argc, char** argv) {
                             renderRequested = true;
                         }
                     }
-                    if (ImGui::Checkbox("Adjoint direct light", &viewerAdjointDirectLight) && runAdjointEveryRender) {
+                    if (ImGui::Checkbox("Adjoint direct light", &viewerAdjointDirectLight) &&
+                        runAdjointEveryRender) {
                         tracerDirty = true;
                         renderRequested = true;
                     }
                     ImGui::Text("Last adjoint: %.3f ms", lastViewerAdjointMs);
-                    ImGui::Text("RGB loss to black: %.6g", static_cast<double>(lastViewerAdjointLoss));
+                    ImGui::Text("Adjoint RGB objective: %.6g", static_cast<double>(lastViewerAdjointLoss));
                     ImGui::TextWrapped("%s", viewerAdjointStatus.c_str());
                 }
 

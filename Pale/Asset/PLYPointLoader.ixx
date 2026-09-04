@@ -113,6 +113,24 @@ export namespace Pale {
             const bool hasDensificationOrigin =
                 vertexProps.contains("densification_origin");
             const bool hasPrimitiveAge = vertexProps.contains("primitive_age");
+            const bool hasPositionDensificationSignal =
+                vertexProps.contains("densification_position_signal");
+            const bool hasPositionDensificationSampleCount =
+                vertexProps.contains("densification_position_sample_count");
+            const bool hasPositionDensificationThreshold =
+                vertexProps.contains("densification_position_threshold");
+            const bool hasPositionDensificationMetadata =
+                hasPositionDensificationSignal &&
+                hasPositionDensificationSampleCount &&
+                hasPositionDensificationThreshold;
+            if ((hasPositionDensificationSignal ||
+                 hasPositionDensificationSampleCount ||
+                 hasPositionDensificationThreshold) &&
+                !hasPositionDensificationMetadata) {
+                Log::PA_ERROR(
+                    "PLYPointLoader: incomplete position densification metadata");
+                return {};
+            }
             if (!looksQuaternionSurfel) {
                 Log::PA_ERROR("PLYPointLoader: unsupported vertex schema. Expected quaternion surfel format: x y z rot_w rot_x rot_y rot_z su sv albedo_r albedo_g albedo_b opacity beta shape power.");
                 return {};
@@ -128,6 +146,9 @@ export namespace Pale {
             std::shared_ptr<tinyply::PlyData> powerData = plyFile.request_properties_from_element("vertex", {"power"});
             std::shared_ptr<tinyply::PlyData> densificationOriginData;
             std::shared_ptr<tinyply::PlyData> primitiveAgeData;
+            std::shared_ptr<tinyply::PlyData> positionDensificationSignalData;
+            std::shared_ptr<tinyply::PlyData> positionDensificationSampleCountData;
+            std::shared_ptr<tinyply::PlyData> positionDensificationThresholdData;
             if (hasDensificationOrigin) {
                 densificationOriginData =
                     plyFile.request_properties_from_element("vertex", {"densification_origin"});
@@ -135,6 +156,14 @@ export namespace Pale {
             if (hasPrimitiveAge) {
                 primitiveAgeData =
                     plyFile.request_properties_from_element("vertex", {"primitive_age"});
+            }
+            if (hasPositionDensificationMetadata) {
+                positionDensificationSignalData = plyFile.request_properties_from_element(
+                    "vertex", {"densification_position_signal"});
+                positionDensificationSampleCountData = plyFile.request_properties_from_element(
+                    "vertex", {"densification_position_sample_count"});
+                positionDensificationThresholdData = plyFile.request_properties_from_element(
+                    "vertex", {"densification_position_threshold"});
             }
 
             try { plyFile.read(inputFile); } catch (const std::exception &e) {
@@ -157,8 +186,15 @@ export namespace Pale {
             if (!(sameCount("rot_*", rotData) && sameCount("su,sv", scaleData) && sameCount("albedo_*", colorData) && sameCount("opacity", opacityData) && sameCount("beta", betaData) && sameCount("shape", shapeData) && sameCount("power", powerData))) return {};
             if (hasDensificationOrigin && !sameCount("densification_origin", densificationOriginData)) return {};
             if (hasPrimitiveAge && !sameCount("primitive_age", primitiveAgeData)) return {};
+            if (hasPositionDensificationMetadata &&
+                !(sameCount("densification_position_signal", positionDensificationSignalData) &&
+                  sameCount("densification_position_sample_count", positionDensificationSampleCountData) &&
+                  sameCount("densification_position_threshold", positionDensificationThresholdData))) return {};
 
-            std::vector<float> posFloats, rotFloats, scaleFloats, colorFloats, opacityFloats, betaFloats, shapeFloats, powerFloats, densificationOriginFloats, primitiveAgeFloats;
+            std::vector<float> posFloats, rotFloats, scaleFloats, colorFloats, opacityFloats,
+                betaFloats, shapeFloats, powerFloats, densificationOriginFloats,
+                primitiveAgeFloats, positionDensificationSignalFloats,
+                positionDensificationSampleCountFloats, positionDensificationThresholdFloats;
             bool ok = true;
             ok &= ply_detail::copyScalarsToFloatVector(*posData, posFloats, 3);
             ok &= ply_detail::copyScalarsToFloatVector(*rotData, rotFloats, 4);
@@ -175,6 +211,18 @@ export namespace Pale {
             if (hasPrimitiveAge) {
                 ok &= ply_detail::copyScalarsToFloatVector(
                     *primitiveAgeData, primitiveAgeFloats, 1);
+            }
+            if (hasPositionDensificationMetadata) {
+                ok &= ply_detail::copyScalarsToFloatVector(
+                    *positionDensificationSignalData, positionDensificationSignalFloats, 1);
+                ok &= ply_detail::copyScalarsToFloatVector(
+                    *positionDensificationSampleCountData,
+                    positionDensificationSampleCountFloats,
+                    1);
+                ok &= ply_detail::copyScalarsToFloatVector(
+                    *positionDensificationThresholdData,
+                    positionDensificationThresholdFloats,
+                    1);
             }
             if (!ok) {
                 Log::PA_ERROR("PLYPointLoader: failed to unpack quaternion surfel streams");
@@ -195,6 +243,11 @@ export namespace Pale {
             geometry.densificationOrigins.resize(vertexCount, 0u);
             if (hasPrimitiveAge) {
                 geometry.primitiveAges.resize(vertexCount, 0u);
+            }
+            if (hasPositionDensificationMetadata) {
+                geometry.densificationPositionSignals.resize(vertexCount, 0.0f);
+                geometry.densificationPositionSampleCounts.resize(vertexCount, 0u);
+                geometry.densificationPositionThresholds.resize(vertexCount, 0.0f);
             }
 
             for (std::size_t i = 0; i < vertexCount; ++i) {
@@ -218,6 +271,25 @@ export namespace Pale {
                         0.0,
                         static_cast<double>(std::numeric_limits<std::uint32_t>::max()));
                     geometry.primitiveAges[i] = static_cast<std::uint32_t>(std::llround(age));
+                }
+                if (hasPositionDensificationMetadata) {
+                    if (std::isfinite(positionDensificationSignalFloats[i])) {
+                        geometry.densificationPositionSignals[i] =
+                            std::max(positionDensificationSignalFloats[i], 0.0f);
+                    }
+                    if (std::isfinite(positionDensificationSampleCountFloats[i])) {
+                        const double sampleCount = std::clamp(
+                            static_cast<double>(positionDensificationSampleCountFloats[i]),
+                            0.0,
+                            static_cast<double>(std::numeric_limits<std::uint32_t>::max()));
+                        geometry.densificationPositionSampleCounts[i] =
+                            static_cast<std::uint32_t>(std::llround(sampleCount));
+                    }
+                    if (std::isfinite(positionDensificationThresholdFloats[i]) &&
+                        positionDensificationThresholdFloats[i] > 0.0f) {
+                        geometry.densificationPositionThresholds[i] =
+                            positionDensificationThresholdFloats[i];
+                    }
                 }
             }
 

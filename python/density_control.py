@@ -122,6 +122,7 @@ def make_under_reconstruction_clones(
         curvature_direction_uv_np=None,
         curvature_direction_vv_np=None,
         curvature_violation_threshold=0.0,
+        split_tangent_only=True,
 ):
     with torch.no_grad():
         device = positions.device
@@ -342,10 +343,11 @@ def make_under_reconstruction_clones(
             tv_n = tv - torch.sum(tv * tu_n, dim=1, keepdim=True) * tu_n
             tv_n = torch.nn.functional.normalize(tv_n, dim=1, eps=1.0e-12)
 
-            # Split displacement is always tangent-space. The configuration
-            # option controls the position score, while this projected descent
-            # direction remains geometrically valid for the surfel ellipse.
-            position_descent = -tangent_grad[split_idx]
+            position_descent = -(
+                tangent_grad[split_idx]
+                if split_tangent_only
+                else grad_pos[split_idx]
+            )
             position_descent_norm = torch.linalg.norm(position_descent, dim=1, keepdim=True)
             position_direction = torch.where(
                 position_descent_norm > 1.0e-12,
@@ -402,9 +404,11 @@ def make_under_reconstruction_clones(
 
             axis_u = torch.sum(split_direction * tu_n, dim=1)
             axis_v = torch.sum(split_direction * tv_n, dim=1)
-            axis_length = torch.sqrt(torch.clamp(axis_u * axis_u + axis_v * axis_v, min=1.0e-24))
-            axis_u = axis_u / axis_length
-            axis_v = axis_v / axis_length
+            axis_length = torch.sqrt(torch.clamp(axis_u * axis_u + axis_v * axis_v, min=0.0))
+            has_tangent_component = axis_length > 1.0e-12
+            safe_axis_length = torch.clamp(axis_length, min=1.0e-12)
+            axis_u = axis_u / safe_axis_length
+            axis_v = axis_v / safe_axis_length
 
             safe_scale_u = torch.clamp(torch.abs(sc[:, 0]), min=1.0e-8)
             safe_scale_v = torch.clamp(torch.abs(sc[:, 1]), min=1.0e-8)
@@ -412,15 +416,23 @@ def make_under_reconstruction_clones(
                     torch.square(axis_u) / torch.square(safe_scale_u)
                     + torch.square(axis_v) / torch.square(safe_scale_v)
             )
-            split_radius = torch.rsqrt(torch.clamp(inverse_radius_squared, min=1.0e-24))
-            tangent_offset = (
+            tangent_split_radius = torch.rsqrt(
+                torch.clamp(inverse_radius_squared, min=1.0e-24)
+            )
+            normal_split_radius = torch.max(torch.abs(sc), dim=1).values
+            split_radius = torch.where(
+                has_tangent_component,
+                tangent_split_radius,
+                normal_split_radius,
+            )
+            split_offset = (
                     float(clone_offset_scale)
                     * split_radius[:, None]
                     * split_direction
             )
 
-            source_positions = p - 0.5 * tangent_offset
-            child_positions = p + 0.5 * tangent_offset
+            source_positions = p - 0.5 * split_offset
+            child_positions = p + 0.5 * split_offset
 
             child_sc = sc / safe_clone_scale_factor
 

@@ -145,7 +145,7 @@ namespace Pale {
         m_intermediates.gradientRecords =
                 sycl::malloc_device<SurfelGradientRecord>(gradientRecordCapacity, m_queue);
         m_intermediates.maxGradientRecordCount = gradientRecordCapacity;
-        Log::PA_WARN("Allocated gradientRecords: QueueCapacity: {}, adjointSPP {}, adjointShadowSPP {}, {}",
+        Log::PA_INFO("Allocated gradientRecords: QueueCapacity: {}, adjointSPP {}, adjointShadowSPP {}, {}",
                      m_rayQueueCapacity, m_settings.adjointSamplesPerPixel, m_settings.numAdjointPathShadowRays,
                      Utils::formatBytes(sizeGradientRecordsBytes));
 

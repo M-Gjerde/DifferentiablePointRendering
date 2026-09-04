@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -76,12 +77,20 @@ def extract_mesh_from_point_cloud(
 
 
 def extract_mesh_checkpoint(config: OptimizationConfig, iteration: int, points_path: Path) -> Path | None:
-    return extract_mesh_from_point_cloud(
+    mesh_path = extract_mesh_from_point_cloud(
         config=config,
         points_path=points_path,
         mesh_output_subdir=Path("mesh_checkpoints") / f"iter_{iteration:05d}",
         log_prefix=f"[Iter {iteration:04d}]",
     )
+    if mesh_path is None:
+        return None
+
+    latest_mesh_path = config.output_dir / "fuse_post.ply"
+    temporary_latest_mesh_path = config.output_dir / ".fuse_post.ply.tmp"
+    shutil.copy2(mesh_path, temporary_latest_mesh_path)
+    temporary_latest_mesh_path.replace(latest_mesh_path)
+    return mesh_path
 
 
 def extract_final_mesh(config: OptimizationConfig, points_path: Path) -> Path | None:
@@ -773,6 +782,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     densify_position_grad_accum_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
+    snapshot_densification_position_signal_np = np.zeros(
+        (positions.shape[0],), dtype=np.float32,
+    )
+    snapshot_densification_position_sample_count_np = np.zeros(
+        (positions.shape[0],), dtype=np.uint32,
+    )
+    snapshot_densification_position_threshold = max(
+        densification_grad_abs_min,
+        float(np.finfo(np.float32).tiny),
+    )
     # Stores local tangent coordinates (u, v, 0); converted to world space at clone time.
     densify_position_grad_vector_accum_np = np.zeros(tuple(positions.shape), dtype=np.float32)
     densify_curvature_stats_accum = helpers.make_curvature_densification_accumulators(
@@ -1003,6 +1022,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                         densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
                         densification_downweight_normal_gradients=densification_downweight_normal_gradients,
+                        densification_tangent_only=bool(config.densification_tangent_only),
                     )
                     if use_curvature_densification:
                         helpers.update_curvature_densification_statistics(
@@ -1013,6 +1033,22 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             renderer_stats=renderer.get_curvature_densification_stats(),
                             accumulators=densify_curvature_stats_accum,
                         )
+
+                    # Capture the threshold before pruning or cloning changes the
+                    # candidate population. This is the exact scalar used by the
+                    # densification decision later in this iteration.
+                    (
+                        _,
+                        _,
+                        snapshot_densification_position_threshold,
+                        _,
+                    ) = helpers.position_densification_snapshot_statistics(
+                        densify_position_grad_accum_np=densify_position_grad_accum_np,
+                        densify_position_grad_denom_np=densify_position_grad_denom_np,
+                        trainable_surfel_mask=trainable_surfel_mask,
+                        densification_grad_quantile=densification_grad_quantile,
+                        densification_grad_abs_min=active_densification_grad_abs_min,
+                    )
 
                     scheduled_opacity_reset = (
                             reset_opacity_interval > 0
@@ -1328,6 +1364,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
                         visited_training_camera_ids_this_cycle.clear()
 
+                    (
+                        snapshot_densification_position_signal_np,
+                        snapshot_densification_position_sample_count_np,
+                        _,
+                        _,
+                    ) = helpers.position_densification_snapshot_statistics(
+                        densify_position_grad_accum_np=densify_position_grad_accum_np,
+                        densify_position_grad_denom_np=densify_position_grad_denom_np,
+                        trainable_surfel_mask=trainable_surfel_mask,
+                        densification_grad_quantile=densification_grad_quantile,
+                        densification_grad_abs_min=active_densification_grad_abs_min,
+                    )
+
                     if densification_is_due:
                         densify_position_grad_accum_np[:] = 0.0
                         densify_position_grad_denom_np[:] = 0.0
@@ -1442,6 +1491,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             primitive_ages=primitive_ages_from_birth_iterations(
                                 primitive_birth_iteration_np, global_iteration,
                             ),
+                            densification_position_signals=
+                                snapshot_densification_position_signal_np,
+                            densification_position_sample_counts=
+                                snapshot_densification_position_sample_count_np,
+                            densification_position_threshold=
+                                snapshot_densification_position_threshold,
                         )
 
                     if should_extract_mesh_checkpoint:
@@ -1460,6 +1515,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 primitive_ages=primitive_ages_from_birth_iterations(
                                     primitive_birth_iteration_np, global_iteration,
                                 ),
+                                densification_position_signals=
+                                    snapshot_densification_position_signal_np,
+                                densification_position_sample_counts=
+                                    snapshot_densification_position_sample_count_np,
+                                densification_position_threshold=
+                                    snapshot_densification_position_threshold,
                             )
                         checkpoint_mesh_path = extract_mesh_checkpoint(
                             config, global_iteration, iteration_point_cloud_path,
@@ -1587,6 +1648,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 primitive_ages=primitive_ages_from_birth_iterations(
                                     primitive_birth_iteration_np, global_iteration,
                                 ),
+                                densification_position_signals=
+                                    snapshot_densification_position_signal_np,
+                                densification_position_sample_counts=
+                                    snapshot_densification_position_sample_count_np,
+                                densification_position_threshold=
+                                    snapshot_densification_position_threshold,
                             )
                             manual_mesh_path = extract_mesh_checkpoint(
                                 config, global_iteration, manual_points_path,
@@ -1733,6 +1800,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                     densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
                     densification_downweight_normal_gradients=densification_downweight_normal_gradients,
+                    densification_tangent_only=bool(config.densification_tangent_only),
                 )
                 if use_curvature_densification:
                     helpers.update_curvature_densification_statistics(
@@ -1743,6 +1811,22 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         renderer_stats=renderer.get_curvature_densification_stats(),
                         accumulators=densify_curvature_stats_accum,
                     )
+
+                # Capture the threshold before pruning or cloning changes the
+                # candidate population. This is the exact scalar used by the
+                # densification decision later in this iteration.
+                (
+                    _,
+                    _,
+                    snapshot_densification_position_threshold,
+                    _,
+                ) = helpers.position_densification_snapshot_statistics(
+                    densify_position_grad_accum_np=densify_position_grad_accum_np,
+                    densify_position_grad_denom_np=densify_position_grad_denom_np,
+                    trainable_surfel_mask=trainable_surfel_mask,
+                    densification_grad_quantile=densification_grad_quantile,
+                    densification_grad_abs_min=active_densification_grad_abs_min,
+                )
 
                 optimizer.zero_grad(set_to_none=True)
 
@@ -2033,6 +2117,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
                     visited_training_camera_ids_this_cycle.clear()
 
+                (
+                    snapshot_densification_position_signal_np,
+                    snapshot_densification_position_sample_count_np,
+                    _,
+                    _,
+                ) = helpers.position_densification_snapshot_statistics(
+                    densify_position_grad_accum_np=densify_position_grad_accum_np,
+                    densify_position_grad_denom_np=densify_position_grad_denom_np,
+                    trainable_surfel_mask=trainable_surfel_mask,
+                    densification_grad_quantile=densification_grad_quantile,
+                    densification_grad_abs_min=active_densification_grad_abs_min,
+                )
+
                 if densification_is_due:
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
@@ -2120,6 +2217,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         primitive_ages=primitive_ages_from_birth_iterations(
                             primitive_birth_iteration_np, global_iteration,
                         ),
+                        densification_position_signals=
+                            snapshot_densification_position_signal_np,
+                        densification_position_sample_counts=
+                            snapshot_densification_position_sample_count_np,
+                        densification_position_threshold=
+                            snapshot_densification_position_threshold,
                     )
 
                 if should_extract_mesh_checkpoint:
@@ -2138,6 +2241,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             primitive_ages=primitive_ages_from_birth_iterations(
                                 primitive_birth_iteration_np, global_iteration,
                             ),
+                            densification_position_signals=
+                                snapshot_densification_position_signal_np,
+                            densification_position_sample_counts=
+                                snapshot_densification_position_sample_count_np,
+                            densification_position_threshold=
+                                snapshot_densification_position_threshold,
                         )
 
                     checkpoint_mesh_path = extract_mesh_checkpoint(
@@ -2260,6 +2369,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             primitive_ages=primitive_ages_from_birth_iterations(
                                 primitive_birth_iteration_np, global_iteration,
                             ),
+                            densification_position_signals=
+                                snapshot_densification_position_signal_np,
+                            densification_position_sample_counts=
+                                snapshot_densification_position_sample_count_np,
+                            densification_position_threshold=
+                                snapshot_densification_position_threshold,
                         )
                         manual_mesh_path = extract_mesh_checkpoint(
                             config, global_iteration, manual_points_path,
@@ -2434,7 +2549,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                           primitive_ages=primitive_ages_from_birth_iterations(
                               primitive_birth_iteration_np,
                               resume_iteration_offset + int(iteration),
-                          ))
+                          ),
+                          densification_position_signals=
+                              snapshot_densification_position_signal_np,
+                          densification_position_sample_counts=
+                              snapshot_densification_position_sample_count_np,
+                          densification_position_threshold=
+                              snapshot_densification_position_threshold)
 
     print(f"Final parameters written to PLY: {ply_path}")
     final_mesh_path = None
