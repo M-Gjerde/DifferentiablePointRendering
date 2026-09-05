@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--spec",
         type=Path,
-        default=PROJECT_ROOT / "experiments/teapot_adaptive_search.json",
+        default=PROJECT_ROOT / "experiments/horse_weeklong_search.json",
     )
     parser.add_argument(
         "--max-trials",

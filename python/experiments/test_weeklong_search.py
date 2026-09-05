@@ -16,7 +16,7 @@ from experiments import run_adaptive_search as search
 from experiments.search_common import build_train_command
 
 
-SPEC_PATH = Path(__file__).with_name("teapot_weeklong_search.json")
+SPEC_PATH = Path(__file__).with_name("horse_weeklong_search.json")
 
 
 class WeeklongSearchTests(unittest.TestCase):

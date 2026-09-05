@@ -1,8 +1,8 @@
 # Five-day search from the current configuration
 
-`teapot_weeklong_search.json` freezes the 2026-09-05 `config.py` defaults and
-searches 23 interacting parameters. It targets `~/phd/datasets/teapot_10_pbdr`
-and `~/phd/models/teapot.ply`, following the existing search. This is a search
+`horse_weeklong_search.json` freezes the 2026-09-05 `config.py` defaults and
+searches 23 interacting parameters. It targets `~/phd/datasets/horse_10_pbdr`
+and `~/phd/models/horse.ply`. This is the runner's default study and a search
 for settings for that dataset, not evidence of generalization to other scenes.
 
 The current configuration runs first. Seven additional initial trials change
@@ -133,14 +133,14 @@ From the repository root, in your existing `pale` environment:
 conda activate pale
 python -m pip install -r python/experiments/requirements-optuna.txt
 cd python
-python experiments/run_adaptive_search.py --spec experiments/teapot_weeklong_search.json --validate-only
+python experiments/run_adaptive_search.py --validate-only
 ```
 
 Then start it in a persistent terminal session such as tmux (if installed):
 
 ```bash
 tmux new -s pale-search
-python -u experiments/run_adaptive_search.py --spec experiments/teapot_weeklong_search.json 2>&1 | tee /tmp/pale-weeklong-search.log
+python -u experiments/run_adaptive_search.py 2>&1 | tee /tmp/pale-weeklong-search.log
 ```
 
 Detach with Ctrl-B, D; reconnect with `tmux attach -t pale-search`.
@@ -149,11 +149,11 @@ prints a representative training command without starting training.
 Without tmux, launch from the same `python` directory with:
 
 ```bash
-nohup python -u experiments/run_adaptive_search.py --spec experiments/teapot_weeklong_search.json > /tmp/pale-weeklong-search.log 2>&1 < /dev/null &
+nohup python -u experiments/run_adaptive_search.py > /tmp/pale-weeklong-search.log 2>&1 < /dev/null &
 ```
 
 Outputs are under
-`python/OptimizationOutput/studies/teapot_current_config_5day_20260905_v1/`:
+`python/OptimizationOutput/studies/horse_current_config_5day_20260905_v1/`:
 
 - `_study/study_summary.csv`: all trials and their final objective/status.
 - `_study/logs/` and `_study/trials/`: training logs and resolved trial settings.
