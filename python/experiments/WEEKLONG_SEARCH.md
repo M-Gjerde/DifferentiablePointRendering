@@ -71,7 +71,7 @@ confirmed study: prepare a new output root/study name for further exploration.
 | Maximum new fraction | 0.1 / 0.25 / 1 |
 | Tangent-only displacement / full-position statistics | Each on/off |
 | Depth distortion weight | 5–200 log |
-| Normal consistency weight | 0 / 0.0005 / 0.002 / 0.008 |
+| Normal consistency weight | 0 / 0.0005 / 0.002 / 0.005 / 0.008 |
 | Slab-anchor weight | 0 / 1e-6 / 1e-5 / 1e-4 |
 | Minimum surfel area | Current value times 0.25–4, log |
 
