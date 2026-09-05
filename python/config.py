@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 3
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -71,12 +71,12 @@ class OptimizationConfig:
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.3
+    global_lr_scale_final: float = 0.25
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
-    position_lr_scale_final: float = 5.0
+    position_lr_scale_init: float = 20.0
+    position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 15_000
+    lr_decay_max_steps: int = 25_000
     use_device_training_step: bool = True
 
     # Objective and regularizers
@@ -117,9 +117,9 @@ class OptimizationConfig:
     densify_after: int = 0
 
     # Densification candidate thresholds
-    densification_grad_quantile: float = 0.8
-    densification_grad_abs_min: float = 8.0e-5
-    densification_grad_abs_min_final: float = 8.0e-5
+    densification_grad_quantile: float = 0.0
+    densification_grad_abs_min: float = 1.0e-4
+    densification_grad_abs_min_final: float = 1.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     # Apply the gradient quantile independently in log2 rendered/target
@@ -133,7 +133,7 @@ class OptimizationConfig:
     densification_scene_extent: float = 0.0
 
     # Densification split and growth policy
-    densification_split_offset_scale: float = 0.35
+    densification_split_offset_scale: float = 0.1
     densification_split_scale_factor: float = math.sqrt(2)
     densification_max_new_fraction: float = 1.0
     densification_verbose: bool = False
@@ -164,7 +164,7 @@ class OptimizationConfig:
     enable_image_preview: bool = True
 
     # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 2_000
+    mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 50

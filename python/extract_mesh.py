@@ -424,11 +424,24 @@ def load_renderer(run_dir: Path, points_path: Path):
 
 
 def load_point_radius(points_path: Path) -> float:
-    point_cloud = o3d.io.read_point_cloud(str(points_path))
-    points = np.asarray(point_cloud.points)
+    # The tensor reader preserves the custom PLY power attribute, which the
+    # legacy point-cloud reader discards. Match SceneBuild's emitter predicate.
+    point_cloud = o3d.t.io.read_point_cloud(str(points_path))
+
+    if point_cloud.is_empty():
+        raise RuntimeError(f"No points found in {points_path}")
+    if "power" not in point_cloud.point:
+        raise ValueError(f"Missing vertex power property in {points_path}; cannot exclude lights from TSDF scale.")
+
+    points = point_cloud.point.positions.numpy().astype(np.float64)
+    powers = point_cloud.point.power.numpy().reshape(-1)
+    is_emitter = powers > 0.0
+    points = points[~is_emitter]
 
     if points.size == 0:
-        raise RuntimeError(f"No points found in {points_path}")
+        raise RuntimeError(f"No non-emissive points found in {points_path} for TSDF scale.")
+
+    print(f"TSDF scale: using {len(points)} non-emissive points, excluding {np.count_nonzero(is_emitter)} lights")
 
     center = np.mean(points, axis=0)
     return float(np.linalg.norm(points - center, axis=1).max())
